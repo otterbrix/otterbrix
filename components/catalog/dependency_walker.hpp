@@ -24,18 +24,13 @@ namespace components::catalog {
         inline constexpr bool blocks_restrict(char dt) noexcept { return dt == normal; }
     } // namespace deptype
 
-    // dependency_walker — topologically traverses pg_depend starting from a (refclassid,
-    // refobjid) seed and RETURNS the seed's transitive dependents in reverse topological
-    // order (deepest dependents first). It takes no visitor, and the seed is NOT among
-    // the returned objects — the caller appends its own step, which is what makes the
-    // seed's catalog rows go last. Cycles are detected by tracking the in-flight path
-    // and reported through the `cycle_at` out-parameter; NOTHING here throws (rule 2 —
-    // this build has no exceptions, so a back-edge cannot be signalled by one).
-    // Used by the DROP planner to schedule child drops before parent drops without
-    // hanging on pathological pg_depend cycles.
-    //
-    // This walker DOES NOT itself mutate state — it only computes the drop order. The
-    // caller remains responsible for its own MVCC delete + invalidation event emission.
+    // Topologically traverses pg_depend from a (refclassid, refobjid) seed and returns its
+    // transitive dependents in reverse topological order (deepest first); the seed itself is
+    // NOT included -- the caller appends its own step last. Cycles are detected via the
+    // in-flight path and reported through `cycle_at`; nothing here throws. Used by
+    // the DROP planner to schedule child drops before parent drops without hanging on
+    // pathological pg_depend cycles. Does not itself mutate state -- the caller owns the MVCC
+    // delete + invalidation event emission.
     struct dependency_t {
         oid_t classid{0};  // catalog hosting dependent (e.g. pg_class.oid)
         oid_t objid{0};    // dependent's own oid
@@ -48,24 +43,18 @@ namespace components::catalog {
     using fetch_deps_fn =
         std::function<std::pmr::vector<dependency_t>(std::pmr::memory_resource* resource, oid_t cls, oid_t oid)>;
 
-    // Walk from (seed_cls, seed_oid). Returns dependents in reverse topological order:
-    // children before parents. The seed itself is NOT in the result — the caller
-    // appends it last.
+    // Walk from (seed_cls, seed_oid): returns dependents in reverse topological order
+    // (children before parents); the seed itself is NOT in the result — the caller appends
+    // it last.
     //
-    // A SET, NOT A MULTISET: each reachable object appears EXACTLY ONCE, carrying the
-    // deptype of the edge it was first discovered through, however many edges reach
-    // it. Callers that judge a per-object outcome ("this step's own catalog row
-    // deleted 0 rows") depend on that: a repeated object's second delete legitimately
-    // counts 0 and would read as a missing object.
+    // A SET, NOT A MULTISET: each reachable (classid, objid) pair appears EXACTLY ONCE (the
+    // whole pair is the identity, not the bare oid — two objects sharing an oid across
+    // catalogs are two entries). Callers that judge a per-object outcome ("this step's own
+    // row deleted 0 rows") depend on that: a repeated object's second delete would otherwise
+    // read as a missing object.
     //
-    // "Object" here means the WHOLE (classid, objid) pair, which is also what the
-    // visited marks are keyed on. Two objects sharing an oid in two catalogs are two
-    // entries, not one — collapsing them would drop the second out of the result
-    // silently, and a caller cannot delete what the plan does not name.
-    //
-    // On pg_depend back-edge, sets \p cycle_at to the offending oid and returns a
-    // partial order — caller must check `cycle_at == INVALID_OID` before using the
-    // result. INVALID_OID = success.
+    // On pg_depend back-edge, sets \p cycle_at to the offending oid and returns a partial
+    // order — caller must check `cycle_at == INVALID_OID` before using the result.
     std::pmr::vector<dependency_t> topological_drop_order(std::pmr::memory_resource* resource,
                                                           oid_t seed_cls,
                                                           oid_t seed_oid,

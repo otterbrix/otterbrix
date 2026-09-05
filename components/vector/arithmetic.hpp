@@ -88,13 +88,11 @@ namespace components::vector {
 
     // Compute binary arithmetic on two vectors (element-wise).
     //
-    // An OPERAND PAIR ARITHMETIC CANNOT TYPE IS A REFUSAL, never a vector of
-    // logical_type::NA with every row NULL — that is a success-shaped NULL for an operation
-    // that has no meaning, and it makes STRING_LITERAL + BIGINT and BOOLEAN + BOOLEAN come
-    // back as "NA, all null", indistinguishable from real SQL NULLs. This is the vector-level
-    // twin of the same refusal in logical_value_t.
-    // An operand whose TYPE is NA is not a mismatch: an NA-typed vector is this engine's
-    // untyped-NULL column, and SQL says NULL + 1 is NULL. That case still answers NA.
+    // An operand pair arithmetic cannot type is a REFUSAL, never a logical_type::NA vector
+    // with every row NULL — that would make e.g. STRING_LITERAL + BIGINT indistinguishable
+    // from a real SQL NULL (vector-level twin of the same refusal in logical_value_t).
+    // Exception: an operand whose TYPE is NA is this engine's untyped-NULL column, and SQL
+    // says NULL + 1 is NULL, so that case still answers NA.
     core::result_wrapper_t<vector_t> compute_binary_arithmetic(std::pmr::memory_resource* resource,
                                                                arithmetic_op op,
                                                                const vector_t& left,
@@ -117,7 +115,7 @@ namespace components::vector {
 
     // Compute unary negation. A non-numeric operand is a REFUSAL: this entry point had no
     // type guard at all and dispatched straight into unary_neg_wrapper, whose non-numeric
-    // branch THREW std::logic_error — an exception out of a compute path (rule 2).
+    // branch THREW std::logic_error — an exception out of a compute path.
     core::result_wrapper_t<vector_t>
     compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count);
 

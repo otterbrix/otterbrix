@@ -7,31 +7,18 @@
 using namespace components::types;
 namespace otterbrix { namespace type_creation {
 
-    // THE PYBIND TYPE SURFACE NOW HAS AN ARENA, AND IT ARRIVES AS AN ARGUMENT.
-    //
-    // Every factory here is a module-level pybind entry point: no connection, no space, no
-    // caller object is in scope, and the complex_logical_type it builds is handed to the
-    // interpreter, which may hold it for the rest of the process. That used to be the excuse
-    // for a file-local module_arena() returning std::pmr::get_default_resource() -- the one
-    // thing rule 14 forbids -- with a note saying the exit was an arena OWNED BY THE MODULE.
-    //
-    // This is that exit. initialize() takes the module's arena (created in main.cpp's
-    // PYBIND11_MODULE body) and binds it into each entry point, so the arena is named by its
-    // owner and the process default is never asked. It is a COUNTED reference, not a raw
-    // memory_resource*: every factory below hands the same reference to the object it returns
-    // (otterbrix_py_type_t::arena_), so a STRUCT or MAP -- whose child list is a pmr vector on
-    // THIS arena for as long as the python object lives -- keeps the arena alive by itself,
-    // and the module is free to be torn down first.
-    //
-    // EVERY factory takes the arena, including the ones that allocate nothing themselves
-    // (list / array / string): the object they return has to carry the reference, so there is
-    // no such thing here as a factory that does not need the arena.
+    // These module-level pybind factories have no connection/space/caller object to borrow an
+    // arena from, so initialize() binds in the module's own arena (main.cpp's PYBIND11_MODULE
+    // body) instead of reaching for the process default. It's a counted reference, not a raw
+    // memory_resource*: every factory hands the same reference to the object it returns
+    // (otterbrix_py_type_t::arena_), so e.g. a STRUCT/MAP's pmr child vector keeps the arena
+    // alive on its own after the module is torn down. Every factory takes it, even ones that
+    // allocate nothing themselves, since the returned object still must carry the reference.
 
     std::shared_ptr<otterbrix_py_type_t> map_type(const module_arena_ptr& arena,
                                                   const std::shared_ptr<otterbrix_py_type_t>& key_type,
                                                   const std::shared_ptr<otterbrix_py_type_t>& value_type) {
-        // The MAP's entries struct is built on the arena and kept by the extension: this is
-        // one of the two factories whose arena outlives the call, not just the error path.
+        // The MAP's entries struct is built on and kept in the arena beyond this call.
         auto map_type = complex_logical_type::create_map(&arena->resource, key_type->type(), value_type->type());
         return std::make_shared<otterbrix_py_type_t>(arena, map_type);
     }
@@ -123,16 +110,14 @@ namespace otterbrix { namespace type_creation {
     }
 
     std::shared_ptr<otterbrix_py_type_t> decimal_type(const module_arena_ptr& arena, int width, int scale) {
-        // Range-check before narrowing, then let create_decimal own the window: an
-        // out-of-window DECIMAL built here would be a python-side type the engine can
-        // write and never read back.
+        // Range-check before narrowing to uint8_t: an out-of-window DECIMAL built here would
+        // be a python-side type the engine can write and never read back.
         if (width < 0 || scale < 0 || width > components::types::DECIMAL_MAX_WIDTH ||
             scale > components::types::DECIMAL_MAX_WIDTH) {
             throw std::runtime_error("decimal_type: width and scale are out of range");
         }
-        // Not a literal pair: width/scale come from Python, so scale > width reaches the
-        // refusal and its message is what the exception below carries. It therefore needs a
-        // real arena, and the module's arena is the one this boundary is handed.
+        // width/scale come from Python, so scale > width is reachable here and needs a real
+        // arena for the refusal message the exception below carries.
         auto decimal_type = complex_logical_type::create_decimal(&arena->resource,
                                                                  static_cast<uint8_t>(width),
                                                                  static_cast<uint8_t>(scale));
@@ -195,19 +180,15 @@ namespace otterbrix { namespace type_creation {
     }
 
     void initialize(py::module_ m, const module_arena_ptr& arena) {
-        // Rule 6: the module's arena is a precondition, not a hint. Every lambda below
-        // captures a reference to it and will dereference it on the first call from Python,
-        // so a null one has to die here, at import, and not inside a factory much later.
-        // A THROW and not an assert, because an assert is exactly what NDEBUG deletes and the
-        // shipping build would then meet the null one dereference later.
+        // Every lambda below captures and later dereferences `arena`, so a null one
+        // must fail here at import, not inside a factory later. A throw, not an assert:
+        // NDEBUG deletes asserts, and the shipping build would meet the null dereference.
         if (!arena) {
             throw std::runtime_error("type_creation::initialize needs the module's arena");
         }
 
-        // Every entry point is bound through a lambda that CAPTURES the arena by value, which
-        // makes the bound function object an owner too. That is the whole difference between
-        // "the module named its arena" and "the entry point reached for the process global":
-        // one captured reference per door.
+        // Each lambda captures the arena by value, making the bound function object an owner
+        // too, instead of reaching for the process global.
         const auto sqltype_doc = "Create a type object by parsing the 'type_str' string";
         auto typed = [arena](const std::string& type_str) { return type(arena, type_str); };
         m.def("sqltype", typed, sqltype_doc, py::arg("type_str"));

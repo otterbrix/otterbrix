@@ -18,9 +18,7 @@ inline configuration::config make_create_config(const std::filesystem::path& pat
     return config;
 }
 
-// column_index answers a result_wrapper_t rather than a SIZE_MAX sentinel behind an assert,
-// so an embedder asking for a missing column gets a refusal and not a silent sentinel.
-// Unwrap loudly here, the way an embedder should.
+// column_index returns a result_wrapper_t, not a SIZE_MAX sentinel; unwrap loudly here.
 inline uint64_t column_of(const cursor::cursor_t_ptr& c, std::string_view name) {
     auto idx = c->column_index(name);
     REQUIRE_FALSE(idx.has_error());

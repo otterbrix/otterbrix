@@ -1,17 +1,14 @@
-// THE PHYSICAL ERASE OF AN INDEX ENTRY WAITS FOR THE SNAPSHOT FLOOR.
-//
-// An index is allowed to name rows a reader may not see: the table filters them on the point fetch.
-// It is NOT allowed to withhold an id, because nothing downstream can put back a row the index
-// never named. So a committed DELETE may publish its erase only once EVERY live snapshot already
-// hides the row -- once the commit-id horizon has reached the delete's commit_id. An in-memory
-// index gets this for free from its delete_id stamp plus cleanup_versions(lowest_active); a disk
-// index has no stamp, so the wait is a QUEUE in the manager, the actor that owns both halves of the
-// decision.
+// The physical erase of an index entry waits for the snapshot floor. An index may name rows a
+// reader can't see (the table filters them on point fetch), but may not withhold an id -- nothing
+// downstream can put back a row the index never named. So a committed DELETE publishes its erase
+// only once every live snapshot already hides the row (the commit-id horizon reaches the delete's
+// commit_id). An in-memory index gets this for free from delete_id + cleanup_versions; a disk
+// index has no stamp, so the wait is a queue in the manager.
 //
 // integration/cpp/test/test_index_delete_horizon.cpp pins the user-visible half (two overlapping
-// transactions over SQL). What THAT test cannot see is the other end: that the entry is eventually
-// erased for real rather than kept forever, and that the erase is driven by the horizon and by
-// nothing else. Both are asked here, of the manager, with the agent pumped by hand.
+// SQL transactions). What it can't see is the other end -- that the entry is eventually erased
+// for real, driven by the horizon and nothing else -- which is what's asked here directly of the
+// manager, with the agent pumped by hand.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -54,13 +51,11 @@ using services::index::manager_index_t;
 
 namespace {
 
-    // THE COMMIT ID A FIXTURE'S TRANSACTION COMMITTED AT, kept far from the txn id it is derived
-    // from because the two are different id spaces. The txn id says WHICH BUCKET to publish; the
-    // commit id is what the hashed family stamps into its durable txn-log frame and what the
-    // recover gate judges the frame by (bitcask_index_disk.cpp). One number serving as both is
-    // exactly the confusion that let a COMMIT marker of an earlier incarnation vouch for a later
-    // one's frame under a recycled txn id. The rebuild feed (txn_id 0) journals nothing and
-    // carries commit id 0.
+    // Kept far from the txn id it derives from -- different id spaces. txn id says which bucket
+    // to publish; commit id is what the hashed family stamps into its durable txn-log frame and
+    // the recover gate judges it by (bitcask_index_disk.cpp). Reusing one number for both is the
+    // exact confusion that let an earlier incarnation's COMMIT marker vouch for a later frame
+    // under a recycled txn id.
     constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
     constexpr components::catalog::oid_t kTableOid = 17400;
@@ -234,10 +229,9 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     std::filesystem::remove_all(path);
 }
 
-// A held-back erase belongs to an index that still exists. DROP INDEX takes the agent away
-// and destroys it; a queue entry that outlived it would be a send to a torn-down routing
-// entry on the next horizon advance — the class of dangling the registry consolidation
-// exists to make impossible.
+// A held-back erase belongs to an index that still exists. DROP INDEX takes the agent away and
+// destroys it, so a queue entry that outlived it would be a send to a torn-down routing entry on
+// the next horizon advance.
 TEST_CASE("services::index::tearing an index down drops the erases it was still owed") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");

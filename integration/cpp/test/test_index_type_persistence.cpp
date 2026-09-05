@@ -7,20 +7,11 @@
 #include <string>
 #include <vector>
 
-// The index TYPE (btree vs hash) must survive a restart.
-//
-// pg_index carries indtype; bootstrap reads it back and hands it to
-// manager_index_t::spawn_disk_agent, which picks the agent family from it: index_type::hashed
-// -> bitcask LSM, everything else -> ordered B+tree. If the type were lost, a
-// `USING hash` index would come back as a btree POINTED AT THE BITCASK DIRECTORY —
-// the same files, a different reader.
-//
-// "It says hash" is not observable. What IS observable is which backend owns the
-// directory, because the two backends leave disjoint artefacts in it:
-//   bitcask -> CURRENT, bitcask.NNNNNN.data, hash_index.bin
-//   b+tree  -> metadata
-// So the witness is: post-restart writes land in the bitcask segments (their bytes
-// grow) and NO b+tree `metadata` file ever appears beside them.
+// The index TYPE (btree vs hash) must survive a restart: manager_index_t::spawn_disk_agent
+// picks the backend from pg_index.indtype. If lost, a `USING hash` index would come back as a
+// btree POINTED AT THE BITCASK DIRECTORY — same files, different reader, which "it says hash"
+// can't catch. Witness: the backends leave disjoint artefacts (bitcask: CURRENT/bitcask.*.data;
+// b+tree: metadata), so post-restart writes must grow the bitcask segments with no `metadata`.
 
 namespace {
 
@@ -28,8 +19,7 @@ namespace {
         return std::filesystem::exists(dir / "CURRENT");
     }
 
-    // Total bytes of the bitcask segment files. Grows when the bitcask backend
-    // takes a write; stays put when some other backend owns the directory.
+    // Grows only when the bitcask backend owns the directory and takes a write.
     std::uintmax_t bitcask_segment_bytes(const std::filesystem::path& dir) {
         std::uintmax_t total = 0;
         for (const auto& e : std::filesystem::directory_iterator(dir)) {
@@ -43,9 +33,8 @@ namespace {
         return total;
     }
 
-    // The one index directory below the disk root: the directory that holds a
-    // bitcask CURRENT marker. Found by content, not by name — the on-disk layout
-    // is oid-keyed and carries no index name.
+    // Found by content (bitcask CURRENT marker), not by name — the on-disk layout is
+    // oid-keyed and carries no index name.
     std::filesystem::path find_index_dir(const std::filesystem::path& disk_root) {
         for (const auto& e : std::filesystem::recursive_directory_iterator(disk_root)) {
             if (e.is_directory() && has_bitcask_artefacts(e.path())) {
@@ -106,22 +95,11 @@ TEST_CASE("integration::cpp::test_index_type_persistence::hash_index_type_surviv
     CHECK_FALSE(std::filesystem::exists(index_dir / "metadata"));
 }
 
-// The KEY TYPE must survive a restart, and DATE / TIME are where losing it is invisible
-// until it is wrong.
-//
-// A DATE key is physically an INT32 day counter and a TIME key an INT64 microsecond
-// counter; both are written by the binary key codec, which tags the logical type in the
-// stored bytes, and both are probed by services::index::convert(), which must produce the
-// same physical value from the column's own logical type. The catalog is what carries that
-// logical type across a restart: pg_attribute's atttypid for the indexed column, read back
-// at bootstrap and handed to the index agent with the rest of the key description.
-//
-// Lose it and nothing announces itself. An equality probe encoded under the wrong logical
-// tag simply matches nothing, and a RANGE probe is worse than that: it returns a
-// well-formed answer of the wrong rows, because the raw counters still order among
-// themselves. So the witness here is not "the statement succeeded" -- it is that the
-// post-restart index answers ranges and equalities EXACTLY, over rows written on both
-// sides of the restart, with an unindexed twin holding the same data as the oracle.
+// DATE is physically an INT32 day counter, TIME an INT64 microsecond counter; the catalog
+// carries that logical type across a restart via pg_attribute.atttypid. Losing it doesn't
+// announce itself: an equality probe under the wrong tag just matches nothing, and a RANGE
+// probe returns a well-formed answer of the WRONG rows, because the raw counters still order
+// among themselves. So the witness is exact answers across the restart, not "it succeeded".
 namespace {
 
     std::string type_persistence_plan_text(const components::cursor::cursor_t_ptr& cur) {
@@ -165,8 +143,7 @@ TEST_CASE("integration::cpp::test_index_type_persistence::temporal_key_type_surv
         };
         REQUIRE(exec("CREATE DATABASE t;")->is_success());
         REQUIRE(exec("CREATE TABLE t.ti (id BIGINT, d DATE, tm TIME);")->is_success());
-        // The unindexed twin: same rows, no index. It is the oracle for every count below,
-        // so a wrong answer cannot pass by both sides being wrong the same way.
+        // Unindexed oracle: a wrong answer can't pass by both sides being wrong the same way.
         REQUIRE(exec("CREATE TABLE t.tp (id BIGINT, d DATE, tm TIME);")->is_success());
         REQUIRE(exec("CREATE INDEX i_d ON t.ti (d);")->is_success());
         REQUIRE(exec("CREATE INDEX i_tm ON t.ti (tm);")->is_success());
@@ -188,9 +165,8 @@ TEST_CASE("integration::cpp::test_index_type_persistence::temporal_key_type_surv
             return d->execute_sql(session, sql);
         };
 
-        // Post-restart writes go through the rehydrated index. If the key type came back
-        // wrong these would be encoded under it and the two sessions' keys would not
-        // compare -- which the mixed-range probes below are what catch.
+        // If the key type came back wrong, these keys would be encoded differently from the
+        // pre-restart ones — the mixed-range probes below are what would catch that.
         for (const char* row : after) {
             for (const char* table : {"t.ti", "t.tp"}) {
                 const std::string sql = std::string{"INSERT INTO "} + table + " (id, d, tm) VALUES " + row + ";";
@@ -218,8 +194,8 @@ TEST_CASE("integration::cpp::test_index_type_persistence::temporal_key_type_surv
             CHECK(indexed->size() == expected);
         };
 
-        // EQUALITY on a row written BEFORE the restart: the key the pre-restart session
-        // encoded and the probe this session encodes must be the same bytes.
+        // Pre-restart row: the pre-restart encoding and this session's probe must be the
+        // same bytes.
         probe("d = DATE '2024-03-15'", 1);
         probe("tm = TIME '12:30:00'", 1);
         // ... and on one written AFTER it.
@@ -228,9 +204,8 @@ TEST_CASE("integration::cpp::test_index_type_persistence::temporal_key_type_surv
         // A key nothing carries, so the index cannot pass by matching everything.
         probe("d = DATE '2020-05-05'", 0);
 
-        // RANGES spanning the restart. Each answer mixes rows from both sessions, which is
-        // what a lost key type breaks without failing: 2024-02-01 (after) sorts between
-        // 2024-01-01 and 2024-03-15 (both before).
+        // Each range mixes rows from both sessions: 2024-02-01 (after) sorts between
+        // 2024-01-01 and 2024-03-15 (both before) — what a lost key type breaks without failing.
         probe("d < DATE '2024-03-15'", 2);  // 2024-01-01, 2024-02-01
         probe("d >= DATE '2024-03-15'", 3); // 2024-03-15, 2024-06-30, 2024-12-31
         probe("tm > TIME '09:15:00'", 3);   // 12:30, 18:45, 23:59

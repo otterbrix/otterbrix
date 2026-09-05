@@ -1,33 +1,19 @@
-// ============================================================================
-// A CHECK MUST BE EVALUATED, OR REFUSED -- NEVER ACCEPTED AND IGNORED.
+// A CHECK must be evaluated, or refused -- never accepted and ignored.
 //
-// HISTORY, because it explains the shape of these cases. The CHECK text stored in
-// pg_constraint used to be compiled at DML time by a small recogniser that understood
-// exactly four shapes -- `column OP constant`, `column IS [NOT] NULL`, `(A) AND/OR (B)`,
-// `NOT (A)`. Everything else compiled to the constant TRUE: the constraint sat in the
-// catalog, the declaration reported success, and no row was ever judged by it. Three
-// forms below survived deparsing and reached that fate, one of them inverted -- a
-// column-against-column CHECK read the second column as the number 0 and REJECTED rows
-// that satisfied the declared constraint.
+// The CHECK text stored in pg_constraint used to be compiled at DML time by a recogniser
+// that understood exactly four shapes (`column OP constant`, `column IS [NOT] NULL`,
+// `(A) AND/OR (B)`, `NOT (A)`); everything else compiled to constant TRUE, so an
+// unrecognised CHECK sat in the catalog and judged no row, ever, in silence. One inverted
+// case did worse: a column-against-column CHECK read the second column as the number 0 and
+// REJECTED rows that satisfied the declared constraint. Upstream #629 now EVALUATES those
+// forms instead, so the cases below assert the declaration is accepted AND the constraint
+// is enforced on the write, in place of the earlier refusal-at-declaration.
 //
-// This branch answered that with a refusal at declaration. Upstream #629 answered it
-// properly: those forms are now EVALUATED. The refusal is therefore obsolete, and these
-// cases assert the stronger property in its place -- the declaration is accepted AND
-// the constraint is enforced on the write. Owner's per-case consent, 2026-09-05.
-//
-// The invariant each case carries has not moved: a declaration that reported success
-// must not admit the row it forbids, and must not reject the row it permits. What
-// changed is that the first half of the pair is now reachable, so it is asserted
-// directly instead of being guarded behind `if (declared->is_success())`.
-//
-// Two cases keep their original meaning unchanged. `name = 'a > b'` IS one of the
-// recognised forms and must be accepted AND enforced: the operator used to scan for its
-// comparison operator without regard for quoting, so the " > " INSIDE the string
-// literal was taken for the predicate's operator and the whole CHECK collapsed to TRUE.
-// And a CHECK naming a column that does not exist is refused -- upstream resolves the
-// names against the schema at DDL time, which is where an unenforceable constraint
-// should die.
-// ============================================================================
+// Two cases keep their original meaning: `name = 'a > b'` is a recognised form and must be
+// accepted AND enforced (the operator used to scan for " > " without regard for quoting,
+// misreading the literal's own text as the predicate's operator); and a CHECK naming a
+// nonexistent column is refused, since upstream resolves CHECK column names against the
+// schema at DDL time.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -156,33 +142,19 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::operator_inside_a_string_
     CHECK(count_of("SELECT COUNT(*) FROM c.t WHERE id = 2;") == 0);
 }
 
-// ============================================================================
-// A COLUMN NAME THE TABLE DOES NOT HAVE IS A CHECK OVER NOTHING — REFUSED AT
-// THE FIRST WRITE, NEVER SILENTLY ADMITTED.
+// A CHECK naming a column the table does not have is a CHECK over nothing.
 //
-// `CHECK (nosuchcol > 0)` deparses cleanly (it is a recognised shape:
-// column OP constant), so the declaration is accepted. At DML time the operator
-// recogniser's find_col_index missed the column and compiled the predicate to
-// the constant TRUE — the declared constraint judged no row, ever, in silence.
-//
-// The physical-plan floor (operator_check_constraint) now REFUSES a name it
-// cannot find in the written row instead of returning constant TRUE: the write
-// fails loudly rather than being admitted against a constraint enforced by
-// nothing. The IDEAL closure — refusing the typo at the declaration by carrying
-// the mentioned names onto the constraint node and into conkey — belongs to
-// components/sql/transformer plus the enrich-time DDL guard and is not done. What
-// IS guaranteed here: a CHECK the engine cannot bind to a column is loud, not TRUE.
-// ============================================================================
+// `CHECK (nosuchcol > 0)` used to deparse cleanly (a recognised shape: column OP constant)
+// and reach DML time, where the operator recogniser's find_col_index missed the column and
+// compiled the predicate to constant TRUE -- the declared constraint judged no row, ever, in
+// silence. Upstream #629 now resolves a CHECK's column names against the schema at DDL time,
+// so the ALTER case below refuses at declaration. operator_check_constraint's write-time
+// find_col_index guard stays as a floor for whatever inline-form path does not go through
+// that DDL resolution (the two inline cases below still gate on it conditionally).
 
 TEST_CASE("integration::cpp::check_expr_unenforceable::unknown_column_alter_refuses_at_write", "[checkexpr]") {
     MAKE_ENV("unknown_col_alter");
     REQUIRE(exec("CREATE TABLE c.t (a bigint);")->is_success());
-    // Declaration is accepted (there is no DDL-level refusal); the floor is at the write.
-    // UPSTREAM #629 MOVED THE REFUSAL TO THE RIGHT PLACE. The names in a CHECK are now
-    // resolved against the schema at DDL time, so a typo dies at the declaration instead
-    // of surviving in the catalog as a constraint nothing can evaluate. That closes the
-    // recorded gap "a typo in a column name inside CHECK is still not enforced" -- the
-    // declaration, not the first write, is where an unenforceable constraint should die.
     auto declared = exec("ALTER TABLE c.t ADD CONSTRAINT chk_typo CHECK (nosuchcol > 0);");
     INFO("a CHECK naming a column the table does not have must not be accepted");
     REQUIRE(declared->is_error());

@@ -330,18 +330,13 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
 }
 
 // 8. A keyed read that CANNOT BE PERFORMED must not be reported as "no rows".
-//
-// A bare vector with no error slot collapses every failure of a keyed catalog read — an
-// unknown key column, a key-arity mismatch, and (the dangerous one) a scan_local
-// io_error/data_corruption from a failed block pin — into "one empty entry per key",
-// indistinguishable from a legitimate miss: operator_resolve_table
-// read that as "Database does not exist", operator_resolve_constraint built FK metadata
-// out of it. Test 7 above pins the other half: key 99, which genuinely matches nothing,
-// yields an EMPTY entry — empty already means "not found".
-//
-// The injected failure here is an unknown key column: resolve_key_col_indices cannot map
-// it, so no scan runs at all. No failpoint exists in this layer for forcing a real
-// io_error, and this branch reaches the same error path.
+// A bare vector with no error slot used to collapse an unknown key column, a key-arity
+// mismatch, or a real scan_local io_error into the same "one empty entry per key" a
+// legitimate miss produces (operator_resolve_table read that as "Database does not exist").
+// Test 7 above pins the other half: key 99 genuinely matches nothing and empty means
+// not-found.
+// Injected failure here is an unknown key column (resolve_key_col_indices cannot map it, so
+// no scan runs); no failpoint exists at this layer to force a real io_error.
 TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -396,7 +391,6 @@ TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
 }
 
 // 9. A projected keyed read returns the same values in the columns it asked for.
-//
 // Projection is supplied by the CALLER, and the columns it leaves out come back as
 // ordinal-stable placeholders rather than being removed — that is what lets a consumer keep
 // addressing column 3 as column 3. The failure mode is therefore silent: project too narrowly
@@ -477,20 +471,15 @@ TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
 }
 
 // --- THE CATALOG-READ FUNNEL ------------------------------------------------------------
-//
-// manager_disk_t::scan_table is the single door every catalog read goes through
-// (manager_disk_resolve.cpp) — namespace resolve, function resolve, cast lookup,
-// namespace enumeration. Three of its legs can fail to perform the read at all: no agents, no
-// owning agent, and a scan that came back with an error. NONE of them may answer with an EMPTY
-// batch list, because an empty batch list is also what "there are no matching rows" looks like,
-// and a caller handed one reads a failed read as a negative answer. The two cases below are the
-// two shapes of that lie, each pinned against CONTENT that is provably on disk.
+// manager_disk_t::scan_table (manager_disk_resolve.cpp) is the single door every catalog read
+// goes through. Its no-agents / no-owning-agent / scan-error legs must answer with an error,
+// never an empty batch list — empty is also what "no matching rows" looks like. The two cases
+// below pin that against content provably on disk.
 namespace {
 
-    // The T3 interposer seam is process-wide and this fixture opens one .otbx per catalog
-    // table, so filter by path: every handle whose path does not carry the marker is returned
-    // unwrapped, i.e. not interposed at all. Same shape as the scope in
-    // services/disk/tests/test_persistence.cpp and integration/cpp/test/test_catalog_write_refusal.cpp.
+    // The T3 interposer seam is process-wide; filter by path so only the marked table's handle
+    // gets wrapped. Same shape as test_persistence.cpp and
+    // integration/cpp/test/test_catalog_write_refusal.cpp.
     class one_table_fault_scope_t final
         : public components::table::storage::single_file_block_manager_t::file_handle_interposer_t {
     public:
@@ -568,9 +557,7 @@ namespace {
                 std::this_thread::yield();
             }
             REQUIRE(cf.is_ready());
-            // Bind the [[nodiscard]] reply and state something true of it: the sealed WAL
-            // floor is the oldest root any table could still fall back to, so it can never
-            // run ahead of the id this round was told the WAL had reached.
+            // checkpoint_all's [[nodiscard]] reply: the sealed floor can never run ahead of wal_id.
             auto sealed = std::move(cf).take_ready();
             REQUIRE(sealed <= wal_id);
         }
@@ -579,13 +566,10 @@ namespace {
 } // namespace
 
 // CASE 1. A pg_proc scan that CANNOT BE PERFORMED must not be reported as "no such function".
-//
-// Phase 1 lays down a clean database and CHECKPOINTS it, so the five builtin pg_proc rows
-// live in the FILE and not merely in this process's memory. Phase 2 reopens it with the fault
-// seam installed and the plan still CLEAN — the load reads only the header and the metadata
-// chain, so it succeeds and pg_proc's handle comes back wrapped. Only then is the handle
-// poisoned: from that point every read of pg_proc's data blocks fails, which is exactly a
-// buffer-pool refill that cannot reach the platter.
+// Phase 1 checkpoints a clean database so the builtin pg_proc rows are in the FILE, not just
+// memory. Phase 2 reopens with the fault seam installed but still clean (load succeeds, handle
+// comes back wrapped), then poisons the handle so every read of pg_proc's data blocks fails —
+// a buffer-pool refill that cannot reach the platter.
 TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
     const auto dir = std::filesystem::path(resolve_dir() + "_readfail");
     std::filesystem::remove_all(dir);
@@ -609,12 +593,9 @@ TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
     auto poisoned =
         fd2.invoke(&manager_disk_t::resolve_function_by_name, fd2.ctx(), std::string("count"));
     INFO("a pg_proc scan that failed must not answer 'there is no function named count'");
-    // Before the funnel carried an error channel this was an EMPTY vector, indistinguishable
-    // from the honest negative answer — while the row was on the platter.
     REQUIRE(poisoned.has_error());
 
-    // The proof that the emptiness was a LIE and not a fact about the catalog: clear the
-    // poison and the same call over the same file answers with the row.
+    // Clearing the poison and repeating the same call proves the row was there all along.
     plan.crashed = false;
     auto healthy =
         fd2.invoke(&manager_disk_t::resolve_function_by_name, fd2.ctx(), std::string("count"));
@@ -626,11 +607,10 @@ TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
     std::filesystem::remove_all(dir);
 }
 
-// CASE 2. The same lie, one floor down and through a different reader: agent_disk_t::scan_local's
-// "this agent does not own the oid" leg. A manager that never bootstrapped owns no pg_cast, so
-// find_cast_oid's scan cannot run at all — and INVALID_OID is the value the caller
-// (operator_unregister_cast, operator_register_cast.cpp) reads as "there is no such cast
-// row", which is a statement about the catalog that nobody was in a position to make.
+// CASE 2. Same lie through agent_disk_t::scan_local's "this agent does not own the oid" leg. A
+// manager that never bootstrapped owns no pg_cast, so find_cast_oid's scan cannot run at all —
+// answering INVALID_OID would read as "there is no such cast row" to
+// operator_unregister_cast/operator_register_cast.cpp.
 TEST_CASE("services::disk::resolve::an_unowned_catalog_scan_is_not_no_rows") {
     const auto dir = std::filesystem::path(resolve_dir() + "_unowned");
     std::filesystem::remove_all(dir);
@@ -643,7 +623,6 @@ TEST_CASE("services::disk::resolve::an_unowned_catalog_scan_is_not_no_rows") {
                               components::catalog::oid_t{well_known_oid::pg_type_table},
                               components::catalog::oid_t{well_known_oid::pg_class_table});
     INFO("a pg_cast scan that could not be performed must not answer 'no such cast'");
-    // Before scan_local refused by type this was INVALID_OID, i.e. "the catalog says no".
     REQUIRE(cast_oid.has_error());
     CHECK(cast_oid.error().type == core::error_code_t::missing_table);
 

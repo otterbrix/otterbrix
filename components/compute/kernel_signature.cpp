@@ -12,9 +12,8 @@ namespace components::compute {
             return type.type() == types::logical_type::NA;
         }
 
-        // The one indexed resolver in the tree, as a plain function: same_type_resolver() hands
-        // its address to type_resolver_fn together with the index, and output_type::resolve
-        // calls it directly for kind_t::same_type_at_index. No closure, so nothing to erase.
+        // Plain function, not a closure: same_type_resolver() passes its address + index
+        // directly, so there's nothing to erase.
         core::result_wrapper_t<fixed_t> resolve_same_type_at(size_t input_index,
                                                              std::pmr::memory_resource* resource,
                                                              const std::pmr::vector<fixed_t>& in) {
@@ -44,8 +43,8 @@ namespace components::compute {
     }
 
     parameter_type parameter_type::variable(variable_id id, std::pmr::vector<types::complex_logical_type> admissible) {
-        // Through the constructor, NOT by assigning over a default-constructed member: see the
-        // note at that constructor. Assignment would allocate in admissible_'s own resource.
+        // Through the constructor, not by assigning over the default member — see the ctor's
+        // note in kernel_signature.hpp (admissible_ defaults to null_memory_resource()).
         return parameter_type{id, std::move(admissible)};
     }
 
@@ -73,8 +72,7 @@ namespace components::compute {
     core::result_wrapper_t<fixed_t> type_resolver_fn::operator()(std::pmr::memory_resource* resource,
                                                                  const std::pmr::vector<fixed_t>& input_types) const {
         if (empty()) {
-            // Rule 6: a signature that reached execution with no way to name its output type is
-            // a caller mistake, and the caller is holding an error channel. Refuse on it.
+            // Empty resolver is a caller mistake — refuse rather than guess.
             return core::error_t(core::error_code_t::kernel_error,
                                  std::pmr::string{"output type resolver is empty", resource});
         }
@@ -152,8 +150,7 @@ namespace components::compute {
     }
 
     type_resolver_fn same_type_resolver(size_t input_index) {
-        // The index travels as DATA next to a plain function pointer, not as a lambda capture
-        // that would then need erasing. Callers keep writing computed(same_type_resolver(0)).
+        // Index travels as data beside a plain function pointer, not a lambda capture — nothing to erase.
         return type_resolver_fn{&resolve_same_type_at, input_index};
     }
 

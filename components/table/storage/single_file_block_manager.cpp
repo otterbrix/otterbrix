@@ -23,8 +23,7 @@ namespace components::table::storage {
     // --- Database header checksum ---
 
     uint64_t database_header_t::compute_checksum() const {
-        // Two spans, because the checksum slot sits between the fields and the padding and
-        // obviously cannot cover itself. Everything else in the sector IS covered.
+        // Two spans: the checksum slot sits between the fields and the padding and can't cover itself.
         static constexpr size_t SLOT_OFFSET = offsetof(database_header_t, checksum);
         static constexpr size_t SLOT_END = SLOT_OFFSET + sizeof(uint64_t);
         static_assert(SLOT_END < sizeof(database_header_t), "checksum slot must leave a tail to cover");
@@ -36,12 +35,8 @@ namespace components::table::storage {
     }
 
     namespace {
-        // Shadow-paging slot rule: iteration N owns slot 1 when N is odd, slot 2 when N is
-        // even. Consecutive iterations therefore land in DIFFERENT slots — which is the whole
-        // point: writing the new root can never touch the previous one. The corollary is that
-        // an iteration number must never be consumed by a write that did not become durable
-        // (see write_header): a skipped iteration is a slot swap, and a slot swap aims the
-        // next attempt at the last good root.
+        // Iteration N owns slot 1 if odd, slot 2 if even, so consecutive iterations never share a slot.
+        // An iteration must never be consumed by a write that didn't become durable (see write_header).
         constexpr uint64_t header_slot_offset(uint64_t iteration) {
             return (iteration % 2 == 1) ? SECTOR_SIZE : (2 * SECTOR_SIZE);
         }
@@ -87,10 +82,8 @@ namespace components::table::storage {
     core::result_wrapper_t<bool> single_file_block_manager_t::create_new_database() {
         using namespace core::filesystem;
 
-        // Refuse an unusable geometry BEFORE laying down a file. The size arrives through this
-        // manager's constructor, which cannot report, so the first call that can is this one —
-        // and creating the file first would produce a header no build of this engine can ever
-        // open again.
+        // Must refuse before creating the file: the constructor can't report errors, and a file
+        // created with an unusable geometry could never be reopened by any build.
         if (auto usable = set_block_allocation_size(block_allocation_size()); usable.has_error()) {
             return usable;
         }
@@ -110,10 +103,8 @@ namespace components::table::storage {
         }
 #endif
 
-        // Every write below LAYS DOWN the file, so none of their results may be discarded:
-        // that produces a file with no valid slot while the engine is told the database was
-        // created, and the failure then surfaces at the next open, as data_corruption, with
-        // the create long past and nothing left to retry.
+        // Every write here must be checked: a discarded failure reports the database as created
+        // but leaves no valid slot, surfacing only as data_corruption on the next open.
         main_header_t main_header;
         main_header.initialize();
         if (!handle_->write(&main_header, sizeof(main_header), 0)) {
@@ -128,12 +119,9 @@ namespace components::table::storage {
         db_header.block_alloc_size = block_allocation_size();
         db_header.checksum = db_header.compute_checksum();
 
-        // Fresh-file rule: write ONLY the slot iteration 0 owns — never both (write_header: the second
-        // write leaves no previous root), and never the slot iteration 1 owns, which would have the very
-        // first checkpoint overwrite the only valid root and leave the file with no fallback. The
-        // never-written slot reads back as 4 KiB of zeros, which decode as iteration 0 — a TIE with the
-        // real header — pointing at metadata root 0, a REAL block id; nothing but the checksum stops that
-        // from being selected.
+        // Write only the slot iteration 0 owns, never both (see write_header) and never iteration 1's slot,
+        // which would leave the first checkpoint with no fallback root. The unwritten slot reads back as
+        // zeroed iteration 0 — a tie broken only by its checksum.
         if (!handle_->write(&db_header, sizeof(db_header), header_slot_offset(db_header.iteration))) {
             return core::error_t(
                 core::error_code_t::io_error,
@@ -151,8 +139,7 @@ namespace components::table::storage {
         iteration_ = 0;
         max_block_ = 0;
         meta_block_ = INVALID_INDEX;
-        // A brand-new file has no superseded root. Everything stays INVALID/empty until the
-        // first write_header commits one.
+        // No superseded root yet: stays INVALID/empty until the first write_header commits one.
         durable_meta_block_ = INVALID_INDEX;
         durable_free_list_ = INVALID_INDEX;
         return true;
@@ -161,10 +148,8 @@ namespace components::table::storage {
     core::result_wrapper_t<bool> single_file_block_manager_t::load_existing_database() {
         using namespace core::filesystem;
 
-        // A LOAD never creates the file. FILE_CREATE here would have a probe of a MISSING .otbx
-        // silently manufacture a 0-byte file, so "the file never existed" would become
-        // indistinguishable from "the file was truncated" one open later. A missing file is its own
-        // loud, distinct refusal, and the probe leaves the filesystem exactly as it found it.
+        // Load must never create the file: FILE_CREATE here would let a missing .otbx look like a
+        // truncated one. A missing file gets its own distinct refusal.
         if (!std::filesystem::exists(path_)) {
             return core::error_t(
                 core::error_code_t::io_error,
@@ -183,9 +168,7 @@ namespace components::table::storage {
         }
 #endif
 
-        // "Empty" is refused with its own words, loudly distinct from "missing" above: a
-        // 0-byte (or sub-header) file is not a database and is never silently accepted as an
-        // empty table. It is also left byte-identical — nothing below writes.
+        // A 0-byte/sub-header file is refused as corrupt, not treated as an empty table; nothing below writes it.
         const uint64_t file_bytes = handle_->file_size();
         if (file_bytes < sizeof(main_header_t)) {
             return core::error_t(
@@ -214,12 +197,8 @@ namespace components::table::storage {
                                                   buffer_manager.resource()});
         }
 
-        // Both slots are DISK BYTES. A slot exists, for recovery purposes, only if it reads
-        // back whole AND its checksum matches the bytes that came back; a slot that fails
-        // either test is ignored ENTIRELY, no matter what iteration it claims. Value-init so
-        // a short read (a truncated file, or the never-written slot of a fresh database)
-        // leaves defined bytes behind, and branch — never assert — because this is the open
-        // path: an abort here would make the database permanently unopenable.
+        // A slot counts only if it reads back whole AND its checksum matches; value-init covers short
+        // reads. Branch, never assert: an abort here would make the database permanently unopenable.
         database_header_t header1{};
         database_header_t header2{};
         const bool header1_read = handle_->read(&header1, sizeof(header1), SECTOR_SIZE);
@@ -228,10 +207,8 @@ namespace components::table::storage {
         const bool header2_valid = header2_read && header2.checksum_ok();
 
         if (!header1_valid && !header2_valid) {
-            // Terminal refusal: with no external whole-file backup, this message is the
-            // operator's ONLY remaining tool. Describe BOTH slots in full — which failed
-            // how, what iteration each claims, and the stored-vs-computed checksum — and state
-            // that the file was not touched (no rename, no truncation, no quarantine copy).
+            // Terminal refusal: with no external backup this message is the operator's only diagnostic tool,
+            // so it describes both slots fully and confirms the file itself was left untouched.
             auto describe_slot = [](const char* name, bool read_ok, const database_header_t& h) -> std::string {
                 if (!read_ok) {
                     return std::string(name) + ": unreadable (positional read failed)";
@@ -256,34 +233,17 @@ namespace components::table::storage {
                                  buffer_manager.resource()});
         }
 
-        // The winner is the VALID slot with the greater iteration. Comparing iterations alone
-        // would let a slot full of garbage carrying a large iteration beat a good root.
+        // Winner = valid slot with the greater iteration; comparing iterations alone could let
+        // garbage carrying a high iteration beat a good root.
         const database_header_t& active =
             (header1_valid && (!header2_valid || header1.iteration >= header2.iteration)) ? header1 : header2;
 
-        // meta_block == INVALID_INDEX means "never checkpointed — the table is empty and its schema
-        // comes from the catalog". Legalising that needs independent evidence that the file really
-        // is young: corruption that knocks out the newest slot of a CHECKPOINTED file surfaces the
-        // very same header, because the two-slot fallback then selects the initial iteration-0 slot,
-        // whose meta_block is INVALID by construction. Without a second witness, "INVALID = empty"
-        // would convert a corrupt table into a silently empty one.
-        //
-        // The witness is the FILE SIZE, because the writer physically cannot fake it:
-        // create_new_database lays down exactly BLOCK_START bytes, every checkpoint writes its
-        // data/metadata blocks past BLOCK_START and fsyncs them BEFORE its header commits, and no
-        // crash truncates that back. The `.wal_id` sidecar is rejected as the DECIDING witness (a
-        // separate file that can be lost independently of the .otbx, so its absence proves nothing —
-        // the manager layer still uses it in the REFUSING direction only), and so is the catalog (it
-        // lives in tables loaded through this very code path). A file whose FIRST checkpoint crashed
-        // after laying down blocks looks identical here and is refused too rather than guessed at
-        // (rule 6): its rows are still in the WAL, which replays from id 0 with no sidecar.
-        //
-        // The gate applies to the INITIAL header only (iteration 0) — the one header corruption can
-        // SURFACE by knocking out a newer slot, since create_new_database writes it unconditionally
-        // and it never carries a root. INVALID at iteration >= 1 is different in kind: write_header
-        // committed and checksummed those bytes, so it is the writer's own recorded statement ("this
-        // root names no metadata"), and the block manager's contract (with the tests that pin it)
-        // allows committing without one.
+        // meta_block==INVALID at iteration 0 means "never checkpointed" only when file_bytes==BLOCK_START
+        // also proves the file is young — a checkpointed file's newest slot getting corrupted falls back
+        // to this same iteration-0 header, so a size mismatch means refuse, not "empty". The
+        // `.wal_id` sidecar and the catalog are rejected as witnesses: both can be lost/absent independently
+        // of the .otbx. Applies to iteration 0 only; INVALID at iteration >= 1 is write_header's own
+        // checksummed statement that the root names no metadata, which is a legal state.
         if (active.meta_block == INVALID_INDEX && active.iteration == 0) {
             const bool header_is_initial = active.free_list == INVALID_INDEX && active.block_count == 0;
             if (!header_is_initial || file_bytes != BLOCK_START) {
@@ -305,20 +265,10 @@ namespace components::table::storage {
             }
         }
 
-        // GEOMETRY BEFORE ANY ADOPTION: a header that cannot describe this file is not a header to
-        // open, and nothing below should be half-installed when it is refused. The claim is DISK
-        // BYTES, and adopting it unchecked wraps block_size() for any value <=
-        // DEFAULT_BLOCK_HEADER_SIZE, so set_block_allocation_size reports instead of throwing and
-        // the open fails loudly (load_storage_disk_sync hands the refusal to its bootstrap caller,
-        // file untouched).
-        //
-        // UNCONDITIONAL — neither short-circuit is allowed. Skipping on `== 0` would run the engine
-        // on whatever size the CALLER passed to the constructor, a compatibility branch for a header
-        // shape no writer in this build produces (initialize() stores DEFAULT_BLOCK_ALLOC_SIZE,
-        // write_header() stores an already-validated non-zero sector multiple), so a zero is a
-        // corrupt header, not an older format (rule 6: refuse, do not guess). Skipping on
-        // `== block_allocation_size()` would check the header's claim only when it disagreed with
-        // the constructor, so an AGREED-ON nonsense size would be adopted by both unchecked.
+        // Must validate active.block_alloc_size before adopting it (DISK BYTES) — an unusable value would
+        // wrap block_size() rather than throw. Checked unconditionally: skipping on ==0 or
+        // ==block_allocation_size() would both let an agreed-on/older-format-shaped corrupt size slip
+        // through unchecked.
         if (auto adopted = set_block_allocation_size(active.block_alloc_size); adopted.has_error()) {
             return core::error_t(core::error_code_t::data_corruption,
                                  std::pmr::string{"Database header of " + path_ +
@@ -329,11 +279,9 @@ namespace components::table::storage {
         iteration_ = active.iteration;
         meta_block_ = active.meta_block;
         max_block_ = active.block_count;
-        // The slot just selected IS root N. Record its two chain pointers now — the very
-        // next checkpoint overwrites meta_block_ through set_meta_block, and the free-list
-        // pointer only ever exists inside the header struct. Its DATA blocks arrive separately,
-        // from the loader (adopt_durable_root_data_blocks), because only the loader knows which
-        // ids the row_group_pointer_t stream names.
+        // Record root N's chain pointers now: the next checkpoint overwrites meta_block_ via set_meta_block.
+        // Data blocks arrive separately from adopt_durable_root_data_blocks, the only place that reads the
+        // row_group_pointer_t stream.
         durable_meta_block_ = active.meta_block;
         durable_free_list_ = active.free_list;
 
@@ -347,9 +295,8 @@ namespace components::table::storage {
 
     core::result_wrapper_t<bool> single_file_block_manager_t::read(block_t& block) {
         auto location = block_location(block.id);
-        // A short/failed read leaves the buffer holding whatever was in it before. Checking the
-        // checksum of stale bytes would let a read failure masquerade as data_corruption — or,
-        // worse, as a valid block when the buffer happened to hold the right thing.
+        // A failed read leaves stale bytes in the buffer; checksumming them anyway could misreport
+        // a read failure as data_corruption, or worse, as a valid block.
         if (!block.read(*handle_, location)) {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"Failed to read block " + std::to_string(block.id) + " of " + path_,
@@ -386,17 +333,10 @@ namespace components::table::storage {
         uint64_t block_id = INVALID_INDEX;
         bool from_free_list = false;
 
-        // reusable_ ONLY. An empty reusable_ means "nothing is free under the durable root", and the
-        // answer to that is to extend the file (the fall-through below), not to reach into
-        // pending_free_ for blocks that root still reads.
-        //
-        // The free list is DISK BYTES — deserialize_free_list fills it straight from the .otbx — so
-        // "the id I am handing out is not live" is a statement about untrusted input: a branch in
-        // every build, never an assert(), which is gone under NDEBUG — exactly the build where a
-        // reissued live id gets overwritten with a valid CRC and the corruption becomes unfindable.
-        // A live candidate is dropped from the free list for good, the corruption is latched for the
-        // caller that can act on it, and allocation continues, so the failure stays reportable
-        // instead of aborting a path an actor thread runs (rules 6/9).
+        // Draw from reusable_ only — pending_free_ blocks are still read by the durable root, so an empty
+        // reusable_ means "extend the file", not "raid pending_free_". The free list is DISK BYTES, so a
+        // live id found there is a corruption to branch on (never assert — NDEBUG would let it through
+        // silently): drop it from the list, latch, and keep allocating.
         while (!reusable_.empty()) {
             auto it = reusable_.begin();
             const uint64_t candidate = *it;
@@ -414,11 +354,8 @@ namespace components::table::storage {
         }
 
         used_blocks_.insert(block_id);
-        // Every id this round hands out belongs to the root being built (or to the
-        // rebuild's own transient traffic, which the registry covers). Root N was built out of
-        // earlier rounds, so membership here is a proof of "not part of root N" — the
-        // subtraction reclaim_superseded_root needs, computed for free at the one point where
-        // an id enters circulation.
+        // Tracks ids issued since root N, i.e. "not part of root N" — the subtraction
+        // reclaim_superseded_root needs later, computed here for free.
         issued_since_root_.insert(block_id);
 #ifdef DEV_MODE
         dev_issued_.push_back(block_id);
@@ -427,8 +364,7 @@ namespace components::table::storage {
     }
 
     void single_file_block_manager_t::latch_allocation_error(uint64_t block_id, const std::string& reason) {
-        // First one wins: it names the id that proved the block accounting wrong, and later ones
-        // are consequences of the same corrupt input.
+        // First error wins: it names the id that broke accounting; later ones are downstream noise.
         if (allocation_error_.contains_error()) {
             return;
         }
@@ -438,34 +374,13 @@ namespace components::table::storage {
                                                            buffer_manager.resource()});
     }
 
-    // THE DELIBERATE DECISION about a reclaim that could not read root N.
-    //
-    // reclaim_superseded_root walks the durable root's two chains through chain_blocks, which read()s
-    // every sub-block. Merely propagating that error is not enough: the checkpoint fails but
-    // degraded() stays FALSE, and every health gate in the engine keys exclusively on degraded()
-    // (data_table_t::compact, table_storage_t::checkpoint, agent_disk_t::checkpoint_inner), so the
-    // caller keeps compacting. One rotten block in root N's metadata chain then costs a FULL COPY of
-    // the table per round: compact rebuilds into freshly extended blocks (its release goes to
-    // pending_free_, which only a committed header drains) and the reclaim fails on the same block
-    // again. Measured on a 12k-row table: +18 blocks EVERY round, forever, with every health
-    // indicator reporting the file healthy.
-    //
-    // DECISION: LATCH, and do NOT roll the failed round back.
-    //
-    //  * LATCH into allocation_error_, not durability_error_: nothing was written badly, what failed
-    //    is the manager's ability to ACCOUNT for its blocks. Sticky, because root N is the root a
-    //    crash recovers and the engine cannot tell a rotten bit from a transient EIO on the same
-    //    block — guessing "transient" is the guess that keeps rebuilding. Loud, not fatal (rule 6):
-    //    reads and writes continue, WAL records are never sealed away, and every CHECKPOINT reports
-    //    this error until the file is rebuilt.
-    //
-    //  * NO BLIND ROLL BACK: mark_as_free'ing everything in issued_since_root_ would free LIVE TABLE
-    //    STATE — compact has already swapped row_groups_ to the rebuilt collection, and
-    //    column_data_t::checkpoint has already re-pointed live tail segments onto this round's
-    //    blocks. roll_back_uncommitted_round does roll back, but DISCRIMINATES by registry_alive(),
-    //    which is exact: register_block stores a weak_ptr whose only owner is the live
-    //    column_segment_t, and the eviction queue never touches blocks_, so an evicted block stays
-    //    registry-alive as long as a segment owns it.
+    // DECISION: latch into allocation_error_ (not durability_error_) rather than roll back, when a
+    // reclaim can't read root N. Mere propagation leaves degraded() false and every health gate
+    // (data_table_t::compact, table_storage_t::checkpoint, agent_disk_t::checkpoint_inner) keyed on it,
+    // so compact keeps retrying: measured +18 blocks/round forever on a 12k-row table, file reporting
+    // healthy throughout. Blind mark_as_free of issued_since_root_ would free live table state (compact
+    // already swapped row_groups_, checkpoint already re-pointed tail segments); roll_back_uncommitted_root
+    // discriminates via registry_alive() instead.
     core::error_t single_file_block_manager_t::latch_reclaim_failure(const core::error_t& cause,
                                                                      const char* which_chain) {
         core::error_t composed(cause.type,
@@ -496,7 +411,6 @@ namespace components::table::storage {
         // with a live handle in the block registry is live table state. Naming an id the allocator
         // would refuse is a trap for the first caller to appear — it would size or lay out against
         // it — and the only case the two answers differ in is the case the free list is corrupt.
-        //
         // What a peek does NOT mirror is the SIDE EFFECTS: dropping the corrupt candidate and
         // latching the accounting error belong to the allocation that consumes it, not to a look —
         // latching here would let a diagnostic turn a checkpoint into a refusal. So this walks past
@@ -516,18 +430,17 @@ namespace components::table::storage {
     }
 
     void single_file_block_manager_t::mark_as_free(uint64_t block_id) {
-        // Rule 19, and it cannot be an assert(): the ids arriving here are NOT this manager's own.
+        // It cannot be an assert(): the ids arriving here are NOT this manager's own.
         // data_table_t::compact collects them from the live collection, and a segment's big-string
         // overflow ids are rebuilt verbatim from data_pointer_t::overflow_blocks, which
         // data_pointer_t::deserialize reads straight out of the .otbx with no domain check anywhere
         // in between — a path fed by disk bytes. An assert() would abort a debug build on the agent
-        // thread that runs compact, i.e. across an actor boundary (rule 9), and do NOTHING under
+        // thread that runs compact, i.e. across an actor boundary, and do NOTHING under
         // NDEBUG, where a transient-domain id (>= MAXIMUM_BLOCK) would enter the free pool, be
         // promoted by the next durable header, be handed out, and have block_location wrap it:
         // (2^62 + N) * 2^18 == N * 2^18, a REAL live block rewritten with a valid CRC. Branch
         // instead, and latch, so the next write_header refuses to commit a root built on state
         // already known to be inconsistent.
-        //
         // THE BOUNDARY IS THE FILE, not the domain. `>= MAXIMUM_BLOCK` alone accepts every id between
         // the end of the file and 2^62, which is just as unaddressable: the seek lands past EOF and
         // the write extends the file across the whole gap — a corrupt overflow_blocks entry naming
@@ -560,7 +473,6 @@ namespace components::table::storage {
         // checkpoint and releases the OUTGOING collection's blocks — precisely what the CURRENT
         // durable root still points at. So the release means "free once the root being built becomes
         // durable", which is what pending_free_ is for; free_block_id cannot see it from here.
-        //
         // An id already in reusable_ stays there instead of being demoted: reusable_ means the
         // DURABLE root does not reference it, and freeing it again in memory cannot change that.
         // Demoting would quarantine a provably safe block, and staying put keeps the sets disjoint.
@@ -581,13 +493,11 @@ namespace components::table::storage {
     // Promotion, and the decision about a checkpoint that FAILS: a failed checkpoint neither
     // promotes pending_free_ nor discards it. The ids stay quarantined until the NEXT checkpoint
     // whose header becomes durable.
-    //
     // Not promoted, because the blocks are still live under the still-current old root — the root a
     // crash recovers. Not discarded, because the release itself was not undone: data_table_t::compact
     // swapped row_groups_ BEFORE the checkpoint ran, so in memory nothing reaches those blocks and
     // dropping them would leak the space with no path back, on a failure the engine otherwise
     // recovers from (agent_disk defers the entry and retries next round).
-    //
     // The memory/disk disagreement that leaves — COMPACTED table in memory, PRE-compact durable root
     // — costs space, not correctness: the file cannot reuse it until a checkpoint succeeds (one
     // collection's worth per deferred round), a process death reopens on the old root and these
@@ -596,7 +506,6 @@ namespace components::table::storage {
     // the .wal_id sidecar for a failed entry. Promoting on a failure is the one move that would turn
     // this into corruption, so promotion has exactly two callers and both have proof the new header
     // reached the device.
-    //
     // Adopting the new root's chain pointers and data blocks belongs to this same call: both are
     // statements about which root a crash would recover, so splitting them would let the two halves
     // disagree, and both must be made at the instant the header is proven on the device.
@@ -621,25 +530,20 @@ namespace components::table::storage {
     }
 
     // THE FORMULA:
-    //
     //   free = {blocks of root N} u {metadata chain of N} u {free-list chain of N}
     //          - {blocks of root N+1} - {ids live in the block registry}
-    //
     // Neither subtraction is redundant:
-    //
     //   * {blocks of root N+1}. The round under construction allocates its data blocks, metadata
     //     chain and free-list chain out of reusable_, i.e. out of what PREVIOUS rounds released.
     //     Rather than lean on "root N's blocks are not in reusable_ yet" (this function puts them in
     //     pending_free_, which free_block_id never draws from), the subtraction is made explicit
     //     twice over: against the data blocks data_table_t just wrote, and against
     //     issued_since_root_ — every id handed out since the durable root was committed.
-    //
     //   * {ids live in the block registry}. Root N's DATA blocks are live table state whenever the
     //     table was loaded from root N and this round did NOT compact it: the in-memory segments
     //     still point at them and will page them back in. Freeing one would hand it to the next
     //     allocation and overwrite live data with a valid CRC, and the registry is the only thing
     //     that knows this.
-    //
     // WHAT IT COSTS. The ids go into pending_free_, not reusable_, so root N's blocks become issuable
     // only once a root that does NOT name them is on the device: between this call and the fsync
     // inside write_header the file holds TWO complete copies of the table, and a SUCCESSFUL round
@@ -710,7 +614,6 @@ namespace components::table::storage {
     }
 
     // --- Giving back what a FAILED round took ---
-    //
     // THE PROBLEM, measured. A checkpoint round allocates three kinds of block before it commits, and
     // NONE is registered in the block registry: the PACKED COPY (flush_segment routes every column
     // segment through partial_block_manager_t, and only the root's row_group_pointer_t stream names
@@ -719,7 +622,6 @@ namespace components::table::storage {
     // in used_blocks_/issued_since_root_ forever. On a 7.8 MB table that is ~655 KB per round, for as
     // long as the failure persists, while degraded() stays FALSE: reconcile_failed_header_write case
     // 2 deliberately does not latch, so that a transient ENOSPC can still recover.
-    //
     // WHY THIS IS NOT the blanket "free everything in issued_since_root_" that latch_reclaim_failure
     // refuses. The two things a blanket sweep would destroy — the rebuilt collection compact()
     // swapped into row_groups_, and the tail segments column_data_t::checkpoint re-pointed — both
@@ -727,25 +629,20 @@ namespace components::table::storage {
     // and hands the handle to a live column_segment_t that owns it for as long as it is in the tree
     // (eviction unloads the BUFFER, not the handle). So the live tree's dependence on a block is
     // exactly "a live handle in the registry":
-    //
     //     releasable = issued_since_root_ - {ids live in the block registry}
-    //
     // free_block_id is reached from exactly two places (metadata_manager_t::allocate_handle/reserve
     // and partial_block_manager_t::get_block_allocation), and of those only
     // transition_segment_to_disk registers what it allocated, so the three kinds above fall on the
     // releasable side and the live tree's blocks never do.
-    //
     // reusable_ AND NOT pending_free_: pending_free_ means "the DURABLE root still names it", false
     // here by construction (promote_durable_root empties issued_since_root_ the instant a root
     // becomes durable), and it drains only on a committed header — the one event this path exists
     // because it did not happen — so routing them there would keep the file growing at the old rate.
-    //
     // Nothing can still read a released block, though the round may have written garbage into one
     // under a valid CRC: a chain walk of the durable root touches root N's chains, disjoint from
     // issued_since_root_; block_handle_t::load() needs a REGISTERED id and every released one is
     // unregister_block'd; and deserialize_free_list at open reads root N's PUBLISHED list, which
     // either already listed the id or stops short of it (past root N's block_count).
-    //
     // THE HIGH-WATER MARK. This is the sole place that LOWERS max_block_. A failed round's
     // allocations are not a contiguous tail in general, but the part that DID extend the file is by
     // definition its top, so the mark walks down over released ids only and stops at the first id
@@ -904,7 +801,6 @@ namespace components::table::storage {
         // slot, the one holding the last durable root: the retry would overwrite exactly the state it
         // exists to preserve, and two failures in a row could leave no valid slot at all. iteration_
         // takes the candidate only once write AND fsync have succeeded.
-        //
         // A checkpoint whose allocations drew on a free list proven corrupt must not become the
         // durable root: the metadata it just wrote may sit on blocks that are still live table state.
         // Both refusals below return BEFORE a single byte of a header slot is written, so "this
@@ -941,7 +837,6 @@ namespace components::table::storage {
         // holding the PREVIOUS root — that IS the redundancy. Writing both would destroy it: after
         // the second write no previous root remains, and the only crash the layout could survive is
         // one landing exactly between the two writes.
-        //
         // This single slot write is the ONLY durable write of a checkpoint, so both bools are
         // load-bearing and are reported to the caller: on ENOSPC/EIO the checkpoint did NOT happen
         // and the caller must not advance its WAL bookkeeping.
@@ -970,21 +865,17 @@ namespace components::table::storage {
     }
 
     // --- Header/disk divergence (the deliberate decision) ---
-    //
     // A torn 4 KiB header write can leave a CRC-VALID header of the new generation on disk while
     // write() reports failure. That is structural, not bad luck: every byte that differs between two
     // generations lives in bytes 0..47 — inside the FIRST 512-byte hardware sector of the 4 KiB
     // header — and the padding is zeros in every generation, so a partial write reassembles into a
     // byte-exact copy of ONE generation and passes the CRC. The checksum catches zeros, garbage and a
     // never-written slot; it does not catch a tear.
-    //
     // So "the checkpoint failed" and "the new root is on disk" can both be true, and ASSUMING the
     // first — keeping iteration_ and the .wal_id sidecar behind — makes the WAL replay records on
     // restart into a root that already contains them (duplicated rows, not a missing update).
-    //
     // DECISION: read the TWO SLOTS BACK and adopt whatever the disk says, by the same slot-selection
     // rule the open path uses. Three outcomes, each leaving the engine's belief equal to the file:
-    //
     //   1. the active slot is the NEW iteration and the fsync succeeded — the new root is on the
     //      device, and the barrier before it already made the data and metadata blocks durable, so
     //      this checkpoint IS complete however the write call answered. Adopt it and report SUCCESS:
@@ -996,7 +887,6 @@ namespace components::table::storage {
     //      DEVICE, or neither slot reads back, or the winner is a generation this manager never
     //      wrote. The truth cannot be established by reading, so it is not guessed: latch and refuse
     //      every later checkpoint rather than commit a root on top of an unknown one.
-    //
     // Read-back goes through this same handle, i.e. through the page cache, and that is what makes
     // case 2 sound: the page cache is a SUPERSET of the device, so "not even in the page cache" is
     // strictly stronger than "not on the device". Case 1 needs the opposite direction, which is why
@@ -1045,13 +935,11 @@ namespace components::table::storage {
             // previous root demonstrably stands, so this is the RECOVERABLE case and the retry is
             // meant to reach the same slot again. Deliberately NOT latched: that would turn a
             // transient ENOSPC into a permanently degraded manager and defeat the retry.
-            //
             // OPEN, and a real cost: a PERSISTENT write error at this offset is retried forever, and
             // each retried round runs compact() first, rebuilding the collection into freshly
             // extended blocks because reusable_ never refills — a full copy of the table per round.
             // The lever for that is gating the COMPACT on "the previous round failed", not degrading
             // the manager here.
-            //
             // The rollback below closes the other half of that cost. This branch is the only place
             // in the class that can prove the round's own allocations are unreferenced: the read-back
             // has just established that nothing of the new header exists, so root N still stands and
@@ -1128,7 +1016,6 @@ namespace components::table::storage {
 
     // WHAT THE PERSISTED FREE LIST MUST CONTAIN — reusable_ ∪ pending_free_ ∪ {live-only blocks the
     // root being written does not name}.
-    //
     // The third term is what keeps a REOPENED file from leaking. A committed round leaves the live
     // in-memory tree holding blocks the durable root does NOT name: compact's write-through and
     // column_data_t::checkpoint's re-pointed tail segments keep theirs through registered
@@ -1137,7 +1024,6 @@ namespace components::table::storage {
     // references them and no list published them, so the instant the process ends — by crash OR by
     // clean exit — they are orphans a reopened file can never find again, since the reclaim only
     // walks ROOTS. Measured at 6k rows: 8 blocks (2 MiB) leaked per restart.
-    //
     // So publish every id whose ONLY owner is the live tree: registry-alive and not named by the root
     // this list hangs off (pending_root_data_, recorded by reclaim_superseded_root earlier this
     // round). That completes the list's meaning rather than relaxing it — the list is the root's own
@@ -1145,13 +1031,11 @@ namespace components::table::storage {
     // because in that process nothing reaches them; THIS process's pools are untouched, the published
     // chain being disk bytes rather than allocator state. Subtracting pending_root_data_ keeps the
     // fatal direction impossible: an id the root names is never published.
-    //
     // pending_free_ belongs there for the same reason: under the NEW root the outgoing collection is
     // gone, so its blocks are free exactly like reusable_'s, and omitting them would describe the new
     // root as owning blocks nothing points at. The asymmetry with the IN-MEMORY promotion is
     // deliberate — the serialized list describes the root being WRITTEN, reusable_ the root already
     // DURABLE, which still reads pending_free_'s blocks — and write_header makes them one root.
-    //
     // Crash safety of the union: a crash BEFORE the header lands leaves the old header active
     // (write_header writes only the slot the new iteration owns) carrying its OWN free-list pointer
     // from an earlier round, which cannot name these blocks — they were live table data when it was
@@ -1162,7 +1046,6 @@ namespace components::table::storage {
         // The third term (see the doctrine above): blocks owned only by the live tree. Computed
         // before anything allocates — allocation draws from reusable_ and can neither create nor
         // destroy a registry entry — so the set is stable across the reservation below.
-        //
         // THE WRITER OBEYS THE READER'S BOUNDARY, and that boundary is the file:
         // deserialize_free_list refuses any id at or past the block_count of the header it hangs off,
         // and write_header stamps block_count = max_block_. Publishing an id >= max_block_ would
@@ -1207,7 +1090,6 @@ namespace components::table::storage {
         // 256 KiB block one chain block holds ~32,608 ids, so a free list past that size would
         // publish a block of its own chain, and a restart would hand that id out over the chain the
         // durable root still reads.
-        //
         // Reserving up front moves those allocations to before the snapshot. The reservation is sized
         // from the count BEFORE it runs, and reserving can only SHRINK the pool, so the capacity is
         // never short of what the smaller published list needs. No format change and no permanent
@@ -1290,7 +1172,7 @@ namespace components::table::storage {
         std::pmr::vector<uint64_t> staged(buffer_manager.resource());
         for (uint64_t i = 0; i < count && !reader.finished(); ++i) {
             const uint64_t block_id = reader.read<uint64_t>();
-            // Rule 19, and the SAME boundary mark_as_free applies: an id this file does not contain
+            // The SAME boundary mark_as_free applies: an id this file does not contain
             // cannot be handed to the allocator. Two ways to fail it, one guard, because max_block_
             // (installed by load_existing_database from this very header's block_count before this
             // runs — the precondition named at the declaration) can never exceed MAXIMUM_BLOCK:

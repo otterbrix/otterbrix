@@ -32,9 +32,8 @@ namespace services::planner::impl {
                 .cast = binding.cast});
         }
         plan->set_column_bindings(std::move(bindings));
-        // The columns the statement omitted, with the value each must be filled with —
-        // resolved once by enrich from pg_attribute. The operator materialises them into
-        // the chunk before the append (see operator_insert::push).
+        // Columns the statement omitted, with their fill values (resolved once by enrich from
+        // pg_attribute); materialised into the chunk before the append (operator_insert::push).
         components::logical_plan::insert_fill_list_t fill(context.resource);
         fill.reserve(node_insert->fill_list().size());
         for (const auto& column : node_insert->fill_list()) {

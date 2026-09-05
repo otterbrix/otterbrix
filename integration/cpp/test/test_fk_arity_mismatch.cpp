@@ -1,33 +1,12 @@
-// ============================================================================
-// AN FK WHOSE TWO COLUMN LISTS DISAGREE IN LENGTH IS REFUSED BY THE DDL.
-//
-// `FOREIGN KEY (a, b) REFERENCES parent (x)` names two referencing columns and
-// one referenced column. conkey and confkey are read POSITIONALLY by every
-// reader (operator_resolve_constraint pairs child_col_names[i] with
-// parent_col_names[i]), so a length disagreement has no pairing to make and both
-// operators inherit it:
-//
-//   * operator_fk_cascade builds its keys-chunk from parent_col_indices (1
-//     column) and sends child_col_names (2 names) as the key columns;
-//   * operator_fk_check builds it from child_col_indices (2 columns) and sends
-//     parent_col_names (1 name).
-//
-// The disk-side semi-join used to answer that mismatch with ONE EMPTY BUCKET PER
-// KEY. For ON DELETE CASCADE / RESTRICT that empty answer reads as "no child row
-// references this parent": the parent row is deleted and its children stay
-// behind, referencing a row that no longer exists — silently.
-//
-// The operator floor that refuses this at DML time is still there
-// (operator_fk_check.cpp), but a constraint that can never be evaluated must not
-// be reported as ACCEPTED in the first place: today's engine answered
-// `ADD CONSTRAINT` with SUCCESS and then refused EVERY INSERT into the child and
-// EVERY DELETE from the parent until a DROP CONSTRAINT took the constraint
-// back. So the refusal moved up
-// to the DDL, where PostgreSQL puts it, and these cases now assert two things:
-// the ALTER is refused and names the arity, and the constraint DID NOT HALF-LAND
-// — the DML that a landed constraint would have blocked runs unimpeded, and
-// specifically ON DELETE CASCADE does not cascade.
-// ============================================================================
+// conkey/confkey are read positionally (operator_resolve_constraint pairs
+// child_col_names[i] with parent_col_names[i]), so a length mismatch between the two column
+// lists has no pairing to make; the disk-side semi-join used to answer it with one empty
+// bucket per key, which for ON DELETE CASCADE/RESTRICT reads as "no child references this
+// parent" -- the parent row is deleted and orphaned children stay behind silently.
+// The DML-time floor still refuses it (operator_fk_check.cpp), but ADD CONSTRAINT used to
+// answer SUCCESS and then refuse every INSERT/DELETE on the tables until a DROP CONSTRAINT.
+// Refusal moved to the DDL (as PostgreSQL does it); these cases assert the ALTER is refused
+// AND that DML on the tables runs unimpeded afterwards (constraint did not half-land).
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -55,10 +34,7 @@ namespace {
         return out;
     }
 
-    // Two tables and the rows that reference each other, then the lopsided
-    // constraint — which is NOT a seed any more but the first assertion of every
-    // case: the ALTER must be refused and must name the arity. `del_action` is
-    // spliced into ON DELETE, because the refusal has to be independent of it.
+    // `del_action` is spliced into ON DELETE: the refusal must be independent of it.
     void seed_and_require_ddl_refusal(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& del_action) {
         {
             auto s = otterbrix::session_id_t();
@@ -117,11 +93,7 @@ namespace {
 
 } // namespace
 
-// ON DELETE CASCADE over a lopsided FK. The cascade cannot be evaluated, so the
-// ALTER that declares it is refused — and because it is refused, nothing about
-// the two tables changes: the parent DELETE runs as an ordinary DELETE and, the
-// half that matters, DOES NOT CASCADE. A half-landed constraint would show up
-// here as child 10 disappearing along with its parent.
+// A half-landed constraint would show up here as child 10 disappearing with its parent.
 TEST_CASE("integration::cpp::fk_arity_mismatch::cascade_refuses_instead_of_orphaning") {
     auto config = test_create_config(integration_fixture_path("test_fk_arity_mismatch/cascade"));
     test_clear_directory(config);
@@ -135,8 +107,7 @@ TEST_CASE("integration::cpp::fk_arity_mismatch::cascade_refuses_instead_of_orpha
     {
         auto s = otterbrix::session_id_t();
         auto cur = run(dispatcher, s, "DELETE FROM FkArity.parent WHERE id = 1;");
-        // CHECK, not REQUIRE: the row assertions below carry the other half of the
-        // statement — that the refused CASCADE did not fire — and must run either way.
+        // CHECK, not REQUIRE: the row assertions below must still run either way.
         CHECK(cur->is_success());
     }
 
@@ -145,9 +116,6 @@ TEST_CASE("integration::cpp::fk_arity_mismatch::cascade_refuses_instead_of_orpha
     require_child_ids(dispatcher, {10});
 }
 
-// ON DELETE RESTRICT over the same lopsided FK. The refusal must not depend on
-// the referential action: RESTRICT reads the very same per-parent buckets, so it
-// is the DECLARATION that is unevaluable, not the action written on it.
 TEST_CASE("integration::cpp::fk_arity_mismatch::restrict_refuses_instead_of_orphaning") {
     auto config = test_create_config(integration_fixture_path("test_fk_arity_mismatch/restrict"));
     test_clear_directory(config);
@@ -161,8 +129,7 @@ TEST_CASE("integration::cpp::fk_arity_mismatch::restrict_refuses_instead_of_orph
     {
         auto s = otterbrix::session_id_t();
         auto cur = run(dispatcher, s, "DELETE FROM FkArity.parent WHERE id = 1;");
-        // CHECK, not REQUIRE: the row assertions below carry the other half of the
-        // statement — that no child row was touched — and must run either way.
+        // CHECK, not REQUIRE: the row assertions below must still run either way.
         CHECK(cur->is_success());
     }
 
@@ -171,11 +138,6 @@ TEST_CASE("integration::cpp::fk_arity_mismatch::restrict_refuses_instead_of_orph
     require_child_ids(dispatcher, {10});
 }
 
-// The INSERT side of the same constraint, and the reason the refusal had to move
-// to the DDL. While the lopsided ALTER was ACCEPTED, operator_fk_check refused
-// every INSERT into the child — a table taken out of service by a statement the
-// engine had reported as successful, until a DROP CONSTRAINT undid it. With the
-// ALTER refused there is no constraint, so the INSERT lands.
 TEST_CASE("integration::cpp::fk_arity_mismatch::insert_names_the_real_defect") {
     auto config = test_create_config(integration_fixture_path("test_fk_arity_mismatch/insert"));
     test_clear_directory(config);

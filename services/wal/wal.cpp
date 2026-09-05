@@ -169,11 +169,9 @@ namespace services::wal {
               row_count);
 
         encode_buf_.clear();
-        // THE CHAIN MOVES WHEN THE JOURNAL DOES. encode_* answers the crc THIS record will
-        // carry; last_crc_ takes it only after append() accepts the record. Advancing it at
-        // encode time left the chain naming a record that a refused write never put in the
-        // journal — and recover_from_disk() re-derives the chain from the last DECODABLE
-        // record, so a restart disagreed with the running process about where the chain is.
+        // The chain moves when the journal does: last_crc_ takes encode_*'s crc only after
+        // append() accepts the record, or a refused write would leave the chain naming a record
+        // never in the journal — disagreeing with recover_from_disk() on restart.
         const auto record_crc = encode_insert(encode_buf_,
                                               this->resource(),
                                               last_crc_,
@@ -360,10 +358,7 @@ namespace services::wal {
 
         if (sync_mode == wal_sync_mode::OFF) {
             // OFF mode writes nothing, so the chain must not move either: last_crc_ names the
-            // last record IN the journal, and a marker that never lands is not one. This used
-            // to encode the marker and advance the chain "for continuity" — continuity with a
-            // phantom, and a restart (which re-derives the chain from the last decodable
-            // record) would never have agreed with it.
+            // last record IN the journal, and a marker that never lands is not one.
             co_return core::result_wrapper_t<wal::id_t>{wal_id};
         }
 
@@ -425,22 +420,14 @@ namespace services::wal {
     // -----------------------------------------------------------------------
     // load
     //
-    // CONTRACT: THE WHOLE WINDOW (after_wal_id, high-water] OR A REFUSAL. Partial success is not
-    // in it. This is a THIRD question about a damaged journal, and the tree already answers the
-    // other two differently on purpose:
-    //   * wal_reader_t (replay) asks "what may I APPLY?" — a prefix, stopping at the first break,
-    //     because applying across a hole puts later updates onto row versions never restored;
-    //   * recover_from_disk (the id allocator) asks "where do I RESUME?" — a high-water mark over
-    //     the FILES, ignoring breaks entirely, because a page past a break still vouches for the
-    //     ids it carries;
-    //   * this asks "is the window WHOLE?" — and its only caller, the CREATE INDEX catchup
-    //     (operator_create_index_backfill.cpp), turns whatever it gets into index entries and then
-    //     declares the index valid. An answer missing a range makes the published index answer with
-    //     a SUBSET — silently, and for the life of the index. So this question is binary.
-    //
-    // Without the hole check, load concatenates the STOP-A prefix of segment k with the WHOLE of
-    // segment k+1 and reports success — a range with a hole in it, handed to the one caller that
-    // cannot survive one, while wal_reader_t logs the same damage at error level.
+    // CONTRACT: THE WHOLE WINDOW (after_wal_id, high-water] OR A REFUSAL — no partial success. A
+    // third question about a damaged journal, distinct from the other two: wal_reader_t asks
+    // "what may I APPLY" (a prefix, stops at the first break); recover_from_disk asks "where do I
+    // RESUME" (ignores breaks, a page past one still vouches for its ids); this asks "is the
+    // window WHOLE", because its only caller (operator_create_index_backfill.cpp) declares the
+    // index valid on whatever it gets — a missing range would make the published index silently
+    // answer with a SUBSET for its whole life. Without this check, load would concatenate the
+    // STOP-A prefix of segment k with the whole of segment k+1 and report success anyway.
     //
     // Two passes: read all records from all segments, collect the committed txn_ids from COMMIT
     // records, then return only physical records whose txn_id is committed (or txn_id == 0), plus
@@ -656,22 +643,14 @@ namespace services::wal {
                 continue;
             }
 
-            // THE HIGHEST wal_id IN THE FILE IS THE LAST DATA PAGE'S page_end_lsn — ids are
-            // appended in ascending order — BUT THAT FIELD ONLY MEANS SOMETHING IF THE PAGE STILL
-            // VERIFIES. It sits inside the region the page CRC covers, so a corrupt page's copy of
-            // it is precisely what the checksum failed to vouch for, and a low value there is what
-            // this branch unlinks the file for: one flipped byte deleted a segment full of records
-            // ABOVE the checkpoint. Same family as the refusal above — "unreadable is not empty".
-            //
-            // Checking THIS page rather than the whole chain is deliberate: a segment with an
-            // earlier broken page but a verifying last page is fully bounded by that page, and if
-            // the bound is at or below the checkpoint the file is entirely superseded by storage —
-            // removing it also un-pins replay, which would otherwise stop at that break on every
-            // startup for a segment nobody needs. ONE READ decides both halves: splitting it into
-            // verify_page_checksum(pc) and then read_page_header(pc) — a SECOND read of the same
-            // page — swallows that read's failure into a ZEROED header, and page_end_lsn == 0 is
-            // <= every checkpoint id, so a page that reads once and fails once unlinks a segment
-            // whose records sit ABOVE the checkpoint.
+            // The last data page's page_end_lsn is the file's highest wal_id, but only if that
+            // page still VERIFIES — a corrupt page's copy of it is exactly what the checksum
+            // failed to vouch for, and trusting a low value there would unlink a segment full of
+            // records ABOVE the checkpoint. Checking THIS page (not the whole chain) is
+            // deliberate: a segment bounded at or below the checkpoint by its last page is fully
+            // superseded regardless of earlier breaks. ONE READ decides both halves — splitting
+            // into verify_page_checksum then a second read_page_header would swallow that read's
+            // own failure into a zeroed header (page_end_lsn == 0, which unlinks unconditionally).
             wal_page_header_t last_hdr{};
             if (!reader.read_verified_page_header(pc, last_hdr)) {
                 // SKIP THIS FILE, do not refuse the whole truncation: unlike the unopenable
@@ -708,40 +687,17 @@ namespace services::wal {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // recover_from_disk
+    // On startup this must: (1) find the highest wal_id already on disk, (2) pick the segment the
+    // writer resumes into, (3) recover last_crc_. A CRC break answers only these — it does NOT
+    // truncate anything: this reads the remaining segments for the high-water mark alone,
+    // replaying not a byte, since actually truncating the tail would destroy COMMITTED
+    // transactions irreversibly at startup. (An unopenable segment still refuses to start, unlike
+    // a torn trailing page, because an unopenable one yields nothing to bound the id space at
+    // all, while a torn tail is the ordinary crash outcome.)
     //
-    // On startup, scan existing segment files to:
-    //   1. Find the highest wal_id ALREADY ON DISK (so nothing is ever issued twice).
-    //   2. Pick the segment the writer resumes into.
-    //   3. Recover last_crc_ for chain continuity.
-    //
-    // A CRC BREAK ANSWERS ONE OF THOSE QUESTIONS AND NOT THE OTHERS. Logging "truncating at
-    // corruption point" and then `break`ing out of the loop without truncating anything folds all
-    // three answers into "whatever the replay scan managed to read":
-    //   - discover_segments() sorts ascending, so every LATER segment goes unread and
-    //     current_segment_index_ stays on the broken one — the writer then reopens it and appends
-    //     BEHIND the corruption point, where no reader in the tree can reach;
-    //   - read_all_records() stops at the first broken page, so ids living in the pages after it
-    //     are invisible and the allocator resumes below them. The next write reissues them behind
-    //     the break, so the NEXT startup reads the same short prefix and issues the same ids again.
-    //
-    // So this reads the remaining segments for the high-water mark ALONE and replays not a byte of
-    // them: it writes nothing and deletes nothing, the engine opens, no id is handed out twice, and
-    // a repaired segment replays in full on the next start. Actually truncating the tail would
-    // destroy COMMITTED transactions irreversibly, at startup, before anyone has looked at them.
-    // Refusing to start — as this file does for a segment that will not OPEN — does not carry over:
-    // an unopenable segment yields nothing, so the id space cannot be bounded at all, whereas a
-    // torn trailing page is the ORDINARY outcome of a crash and refusing on it would make every
-    // crash a database that will not open.
-    //
-    // WHAT IS STILL LOST: replay stops at the break (wal_reader_t, STOP-A) because applying a range
-    // with a HOLE in it is worse than applying a shorter one, so committed transactions recorded
-    // after the break are NOT re-applied while the corruption stands. Their ids are now reserved
-    // though, so repairing or restoring the segment makes them replayable instead of finding them
-    // overwritten. That case is logged at error level below; a torn tail with nothing behind it is
-    // the benign one and only warns.
-    // -----------------------------------------------------------------------
+    // What is still lost: replay stops at the break (wal_reader_t, STOP-A), so committed
+    // transactions recorded after it are NOT re-applied until the segment is repaired — logged at
+    // error level; a torn tail with nothing behind it only warns.
 
     core::error_t wal_worker_t::recover_from_disk() {
         auto segments = discover_segments();

@@ -12,35 +12,32 @@
 #include <string_view>
 #include <unistd.h>
 
-// A CREATE INDEX BACKFILL MUST FEED THE INDEX IT IS BUILDING, AND NOTHING ELSE.
+// A CREATE INDEX backfill must feed the index it is building, and nothing else.
 //
 // operator_create_index_backfill_t streams the base table and hands each batch to the index
-// manager. The door it used was TABLE-scoped -- manager_index_t::insert_rows(table_oid) --
-// and that handler fans the batch out over EVERY index registered for the oid
-// (`for (const auto& record : it->second)`), which is the right shape for DML: an INSERT
-// must reach every index of the table. A BACKFILL is the opposite case, since the rows it
-// reads are already in every PRE-EXISTING index. So a second CREATE INDEX on a non-empty
-// table re-stages every row into the FIRST index as well, under the build's transaction,
-// and the build's commit publishes them there too -- a second full staging, publication and
-// flush of a table the index already held, per pre-existing index, every time one is added.
+// manager through a TABLE-scoped door, manager_index_t::insert_rows(table_oid), whose handler
+// fans the batch out over EVERY index registered for the oid -- correct for DML (an INSERT
+// must reach every index) but wrong for a backfill, since the rows it reads are already in
+// every pre-existing index. A second CREATE INDEX on a non-empty table therefore re-stages
+// every row into the first index too, under the build's own transaction and commit -- a
+// second full staging, publication and flush per pre-existing index, every time one is added.
 //
-// NO ROW ASSERTION CAN SEE THIS, AND THAT IS WHY THE CASE COUNTS MESSAGES. Both stores dedup
-// a repeated (key, row id) PAIR on the way in -- btree_index_disk_t's bulk append writes the
-// pair as the tree's own key, and bitcask_index_disk_t::insert_bulk_unchecked forwards to
-// insert(), whose first act is that check -- so the fan-out costs the extra work and then
-// answers exactly the same rows. The meter is index_stage_insert_batches(): one bump per
-// index_agent_contract::stage_inserts message the manager sends, i.e. one per INDEX a batch
-// reached.
+// No row assertion can see this, which is why the case counts messages instead: both index
+// stores dedup a repeated (key, row id) pair on the way in (btree_index_disk_t's bulk append
+// writes the pair as the tree's own key; bitcask_index_disk_t::insert_bulk_unchecked forwards
+// to insert(), whose first act is that check), so the fan-out costs the extra work and
+// answers exactly the same rows. The meter, index_stage_insert_batches(), bumps once per
+// index_agent_contract::stage_inserts message the manager sends -- one per index reached.
 //
-// THE COMPARISON IS SELF-CALIBRATING: the same table and the same rows are backfilled twice,
-// once with one index registered and once with two, so the batch/run decomposition of the
-// scan is identical and the only variable is how many indexes each run was fed to. An
-// absolute expected number would encode the scan's batching instead.
+// The comparison is self-calibrating: the same table and rows are backfilled twice, once with
+// one index registered and once with two, so the scan's batch/run decomposition is identical
+// and the only variable is how many indexes each run was fed to -- an absolute expected
+// number would encode the scan's own batching instead.
 //
-// THE EXPLAIN ASSERTION IS LOAD-BEARING for the answer half. Every row assertion below would
-// also pass over a full scan, so the case first proves the predicate is routed to the index
-// it is talking about; the unindexed control (`WHERE id = ...`, id carries no index)
-// separates "the table holds one row" from "the index can find exactly one".
+// The EXPLAIN assertion is load-bearing for the answer half: every row assertion below would
+// also pass over a full scan, so the case first proves the predicate routes to the index it's
+// talking about, and the unindexed control (`WHERE id = ...`) separates "the table holds one
+// row" from "the index can find exactly one".
 
 using namespace test_helpers;
 
@@ -75,22 +72,19 @@ namespace {
 TEST_CASE("integration::cpp::create_index_backfill_addressing::a_second_build_may_not_restage_the_first_index") {
     auto config = make_test_config(fixture_root() + "/db", /*wal_on=*/true);
     config.log.level = log_t::level::off;
-    // THE METER BELOW IS PROCESS-WIDE, SO THE WINDOW IT IS READ OVER HAS TO BE EXCLUSIVE.
-    // g_index_stage_insert_batches (services/index/manager_index.cpp) is bumped from FOUR
-    // places: the DML insert and update legs, the CREATE INDEX backfill this case measures,
-    // and repopulate_table -- the index rebuild an automatic checkpoint drives. The first
-    // two cannot fire inside the window because the window contains exactly one statement
-    // and it is a CREATE INDEX. The fourth is asynchronous and would count as legally as
-    // the backfill does, so it is taken off the board here rather than hoped against: a
-    // threshold this large is never reached by a 200-row table's log. Same knob, same
-    // reason, as test_index_stale_marker_crash.cpp.
+    // The meter below is process-wide, so the window it's read over has to be exclusive.
+    // g_index_stage_insert_batches (services/index/manager_index.cpp) is bumped from the DML
+    // insert/update legs, the CREATE INDEX backfill this case measures, and repopulate_table
+    // (the index rebuild an automatic checkpoint drives). The DML legs can't fire since the
+    // window is exactly one CREATE INDEX statement; repopulate_table is asynchronous and
+    // would count just as legally, so the threshold below takes it off the board rather than
+    // hoping against it -- same knob, same reason, as test_index_stale_marker_crash.cpp.
     //
-    // MEASURED, so the knob is not superstition. At the config default (16 MB) this table
-    // never trips the auto-checkpoint and both windows saw 0 rounds in six runs -- the leak
-    // is latent, not active. Lower the threshold to 1 KB and the same two windows see 2 and
-    // 4 rounds respectively: the meter then counts a checkpoint's repopulate_table beside
-    // the build it is supposed to be measuring. The witness below is what turns "it did not
-    // happen to fire" into "it provably did not fire in this window".
+    // Measured, not superstition: at the config default (16 MB) this table never trips the
+    // auto-checkpoint (0 rounds in both windows, six runs). Lowered to 1 KB, the same two
+    // windows see 2 and 4 rounds -- the meter then counts a checkpoint's repopulate_table
+    // beside the build it's supposed to measure. The witness below turns "it didn't happen to
+    // fire" into "it provably didn't fire in this window".
     config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;
 
     test_spaces space(config);
@@ -115,20 +109,14 @@ TEST_CASE("integration::cpp::create_index_backfill_addressing::a_second_build_ma
 
     // BUILD ONE, with nothing else registered on the table: this is the calibration.
     //
-    // THE ORDER IS THE POINT. The reset comes first, the BASE IS PINNED AT ZERO so a reset
-    // that did not take cannot pass for a build that sent nothing, the action is asserted
-    // SUCCESSFUL, and only then is the meter read: a counter cleared before an attempt that
-    // then failed would be measuring emptiness and calling it a measurement. The second
-    // meter is the exclusivity witness -- an automatic checkpoint round is the one other
-    // thing that could bump the batch counter, and this proves none ran in the window.
-    //
-    // THE THIRD METER IS THE AUTHORSHIP WITNESS, and it is the one that finally makes the
-    // process-wide counter attributable. The checkpoint witness above rules out the one
-    // pollutant that leaves a trace of its own; a SECOND LIVE manager_index_t leaves none,
-    // and its rounds land in the same total and read exactly like the fan-out this case is
-    // hunting. index_stage_insert_foreign_batches() counts the batches staged by any
-    // manager other than the first to stage after the reset, so 0 says the number below is
-    // one manager's sends rather than the process's.
+    // Order matters: reset first (so a reset that didn't take can't pass for a build that
+    // sent nothing), assert the action succeeded, only then read the meter -- a counter
+    // cleared before a failed attempt would be measuring emptiness. The checkpoint-round
+    // witness rules out the one other thing that could bump the batch counter and leaves a
+    // trace of its own; index_stage_insert_foreign_batches() covers what a second live
+    // manager_index_t would not leave a trace of, by counting batches staged by any manager
+    // other than the first to stage after the reset -- 0 means the number below is one
+    // manager's sends, not the process's.
     services::disk::reset_table_checkpoints();
     services::index::reset_index_stage_insert_batches();
     REQUIRE(services::index::index_stage_insert_batches() == 0);

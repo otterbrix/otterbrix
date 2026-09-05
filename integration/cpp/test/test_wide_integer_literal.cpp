@@ -9,28 +9,13 @@
 #include <limits>
 #include <string>
 
-// AN INTEGER LITERAL MUST ARRIVE AS THE NUMBER THAT WAS WRITTEN.
-//
-// The core scanner hands the parser an `int` (core_YYSTYPE::ival in
-// components/sql/parser/scanner.h, and the bison %union built on top of it), so every
-// integer literal has to be checked against int32 BEFORE it is stored there. That check
-// lived behind `#ifdef HAVE_LONG_INT_64` in process_integer_literal
-// (components/sql/parser/scan.l) and nothing in this project defines that macro, so the
-// 64-bit result of strtol() was assigned straight into the 32-bit field:
-//
-//   INSERT INTO t (a) VALUES (9223372036854775807);   -- stored -1
-//   INSERT INTO t (a) VALUES (123456789012345678);    -- stored -1506741426
-//
-// No statement failed. There is no column type that escapes it, because the damage is done
-// in the LEXER, before any type is known. That is a silently wrong answer, which is why
-// every case here checks the VALUE and not merely that the statement succeeded.
-//
-// The other half of the same defect is what the repair must NOT do. Simply enabling the
-// guard sends an oversize literal down the FCONST path, and FCONST is read with atof() —
-// so 9223372036854775807 would come back as 9223372036854775808 (the nearest double) and
-// the wrong answer would merely change shape. So these cases pin EXACT equality on values
-// that no double can represent: every one of them has more significant digits than the 53
-// bits of a double's mantissa.
+// core_YYSTYPE::ival (components/sql/parser/scanner.h) is a 32-bit int; process_integer_literal
+// (scan.l) left the int32 guard behind an undefined `#ifdef HAVE_LONG_INT_64`, so strtol()'s
+// 64-bit result was truncated silently in the lexer: 9223372036854775807 -> -1,
+// 123456789012345678 -> -1506741426, no statement failing and no column type escaping it.
+// REJECTED FIX: just enabling the guard routes overflow through FCONST read via atof(), which
+// rounds 9223372036854775807 up to 9223372036854775808. Fix: FCONST carries exact digits, so
+// tests here assert exact equality past a double's 53-bit mantissa.
 
 using namespace test_helpers;
 
@@ -58,10 +43,8 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::int64_literals_reach_a_b
     REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, a BIGINT);")->is_success());
 
-    // Row 1 is int64's ceiling, row 2 the first value past int32 (the exact boundary the
-    // scanner's guard is about), row 3 int64's floor -- which the grammar reaches as unary
-    // minus over a literal that is itself one past int64's ceiling, so it exercises the
-    // negation path too. Row 4 is the 18-digit value from the original report.
+    // Row 1: int64 ceiling. Row 2: first value past int32. Row 3: int64 floor, reached as
+    // unary minus over one-past-ceiling, exercising the negation path. Row 4: an 18-digit value.
     REQUIRE(exec(d,
                  "INSERT INTO w.t (id, a) VALUES "
                  "(1, 9223372036854775807), "
@@ -88,19 +71,16 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::a_wide_literal_in_a_pred
     REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, a BIGINT);")->is_success());
 
-    // These two literals are DIFFERENT numbers that truncate to the SAME int32.
-    // 9223372036854775807 is 0x7FFF'FFFF'FFFF'FFFF and 4294967295 is 0xFFFF'FFFF; both keep
-    // 0xFFFFFFFF in their low word, so a truncating lexer stores AND compares both as -1, and
-    // a predicate for either one matches both rows -- the wrong answer that a test asserting
-    // only "one row came back for the value I asked for" would still miss, because the two
-    // literals collapse to the same thing consistently.
+    // 9223372036854775807 (0x7FFF'FFFF'FFFF'FFFF) and 4294967295 (0xFFFF'FFFF) share the same
+    // low 32 bits, so a truncating lexer would store AND compare both as -1 — a predicate for
+    // either one would match both rows, consistently, so a single-row assertion wouldn't catch it.
     REQUIRE(exec(d,
                  "INSERT INTO w.t (id, a) VALUES (1, 9223372036854775807), (2, 4294967295), "
                  "(3, 123456789012345678);")
                 ->is_success());
 
-    // A literal on the right of a comparison travels the same lexer as the one that was
-    // written. If it is truncated there, the predicate compares against a DIFFERENT number.
+    // A literal in a predicate travels the same lexer as one being inserted — if truncated
+    // here, the comparison target itself changes.
     {
         auto cur = exec(d, "SELECT id FROM w.t WHERE a = 9223372036854775807;");
         REQUIRE(cur->is_success());
@@ -119,8 +99,8 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::a_wide_literal_in_a_pred
         REQUIRE(cur->size() == 1);
         CHECK(cur->value(0, 0).value<int64_t>() == 3);
     }
-    // Ordering was a lie too: two of these are far above the bound and one is far below,
-    // but as truncated int32s they were -1, -1 and -1506741426 -- all below it.
+    // As truncated int32s these were -1, -1 and -1506741426 — all below the bound, though
+    // two of the real values are far above it.
     {
         auto cur = exec(d, "SELECT id FROM w.t WHERE a > 1000000000000 ORDER BY id;");
         REQUIRE(cur->is_success());
@@ -139,9 +119,8 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::a_literal_past_int64_rea
     REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d NUMERIC(38,0));")->is_success());
 
-    // NUMERIC(38,0) stores a 128-bit scaled integer, so a 29-digit literal is a value the
-    // column can hold exactly. Carrying it there requires the literal itself to survive as
-    // an exact integer past int64 -- neither an int32 nor a double gets it here.
+    // NUMERIC(38,0) holds a 128-bit scaled integer, so this 29-digit literal fits exactly —
+    // but only if it survives the lexer as an exact integer; neither int32 nor double can carry it.
     REQUIRE(exec(d,
                  "INSERT INTO w.t (id, d) VALUES (1, 12345678901234567890123456789), "
                  "(2, -12345678901234567890123456789);")
@@ -163,11 +142,9 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::a_literal_wider_than_its
     REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, small INTEGER);")->is_success());
 
-    // The narrowing cast the insert binding resolves (INTEGER target, wider source) DOES
-    // refuse an out-of-range value -- it always did. It simply never saw one, because the
-    // lexer had already cut the literal down to something that fit: 9223372036854775807
-    // arrived as -1 and was stored without complaint. With the literal intact the refusal
-    // finally fires, which is the difference between a wrong row and no row.
+    // The narrowing-cast refusal always existed — it just never saw an out-of-range value,
+    // because the lexer had already truncated 9223372036854775807 to -1 and stored it silently.
+    // With the literal intact, the refusal fires: a wrong row becomes no row.
     CHECK(exec(d, "INSERT INTO w.t (id, small) VALUES (1, 9223372036854775807);")->is_error());
     CHECK(exec(d, "INSERT INTO w.t (id, small) VALUES (2, 2147483648);")->is_error());
     CHECK(exec(d, "INSERT INTO w.t (id, small) VALUES (3, -2147483649);")->is_error());

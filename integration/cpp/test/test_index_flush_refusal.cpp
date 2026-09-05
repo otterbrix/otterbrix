@@ -6,29 +6,14 @@
 #include <filesystem>
 #include <string>
 
-// A CHECKPOINT MUST NOT REPORT SUCCESS OVER AN INDEX FLUSH THAT FAILED.
+// flush_if_needed() and the *_index_agent_t::force_flush overrides used to swallow a failed
+// force_flush (return void / log-and-reply): a checkpoint downstream saw a clean fan-out from
+// flush_all_indexes and truncated the WAL segments that were the index's only copy.
 //
-// Two swallows sit on the same path and both are closed by the same channel.
-//
-//   * btree_index_disk_t::flush_if_needed() must not return void over a failed force_flush().
-//     The threshold flush is the ONLY thing that puts an ordered index's entries on the device
-//     outside an explicit force_flush, so a failure there is unobservable from above.
-//   * btree_index_agent_t::force_flush / bitcask_index_agent_t::force_flush must answer with
-//     the store's io_error instead of logging it and replying — with a unique_future<void>
-//     contract there is nothing else they COULD do, manager_index_t::flush_all_indexes then
-//     reports a clean fan-out, and operator_checkpoint_t goes on to truncate_before, which
-//     drops exactly the WAL segments that are the last remaining copy of what the index failed
-//     to write.
-//
-// THE INJECTION. core::b_plus_tree::btree_t::flush() writes the leaf list into
-// `<index dir>/metadata`, opened WRITE|FILE_CREATE. Replacing that path with a DIRECTORY makes
-// the open fail, which the store reports as io_error — the same technique
-// test_index_bootstrap_failure uses, and the only one available here (the block-manager fault
-// seam does not cover the B+tree's own files).
-//
-// The INSERT after the break is what leaves the tree dirty: publish_buckets applies the entries
-// and then fails its force_flush, and a failed flush does not reset the dirty state. The
-// CHECKPOINT that follows therefore has real work to do and real reason to refuse.
+// Injection: btree_t::flush() opens `<index dir>/metadata` WRITE|FILE_CREATE; a DIRECTORY there
+// fails the open (test_index_bootstrap_failure's technique — the only one, since the
+// block-manager fault seam doesn't cover the B+tree's own files). The INSERT after leaves the
+// tree dirty via publish_buckets before its force_flush fails.
 
 TEST_CASE("integration::cpp::test_index_flush_refusal::checkpoint_fails_when_an_index_flush_cannot_reach_the_disk") {
     auto config = test_helpers::make_test_config(

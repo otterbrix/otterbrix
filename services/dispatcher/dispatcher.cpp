@@ -269,15 +269,13 @@ namespace services::dispatcher {
                     }
                     for (auto& ex : executors_) {
                         if (ex) {
-                            // THE ONE SEND IN components/ + services/ THAT IS NOT
-                            // actor_zeta::otterbrix::send, and it is not an oversight: this
-                            // addresses a raw actor POINTER, not an address_t, so it takes the
-                            // library's ActorPtr* overload, which our shorthand has no
-                            // counterpart for. The empty-target hazard our shorthand exists to
-                            // refuse cannot arise here either — `if (ex)` has already proved the
-                            // pointer, and executors_ holds owning handles, not addresses.
-                            // The future is deliberately dropped: dealloc happens when the last
-                            // of future/promise releases.
+                            // THE ONE SEND IN components/+services/ that is NOT
+                            // actor_zeta::otterbrix::send: this addresses a raw actor POINTER
+                            // (not an address_t), so it needs the library's ActorPtr* overload,
+                            // which our shorthand has no counterpart for. The empty-target hazard
+                            // the shorthand guards against can't arise here either — `if (ex)` has
+                            // already proved the pointer. The future is dropped deliberately:
+                            // dealloc happens when the last of future/promise releases.
                             [[maybe_unused]] auto [ns, f] =
                                 actor_zeta::send(ex.get(), &collection::executor::executor_t::poke_msg);
                             if (ns)
@@ -461,31 +459,21 @@ namespace services::dispatcher {
         auto new_lowest = txn_manager_.lowest_active_snapshot_horizon();
         if (new_lowest > last_broadcast_horizon_) {
             last_broadcast_horizon_ = new_lowest;
-            // BYPASS (2) OF 3, DECLARED — see core/pipeline_bypass.hpp for the rule and the whole
-            // list. These two sends reach the disk and index managers with no statement behind
-            // them: no logical plan, no planner, no optimizer, no executor.
+            // BYPASS (2 of 3, see core/pipeline_bypass.hpp): these sends reach disk/index with
+            // no plan/executor behind them. Legal because the broadcast carries no rows/query —
+            // the DROP already committed through the pipeline; this is just the reclaim, owned
+            // by the dispatcher (txn_manager_ lives here) at the moment the oldest live snapshot
+            // passes that commit.
             //
-            // WHY IT IS LEGAL: the broadcast carries no rows and describes no query. The DROP that
-            // produced the artefacts already went through the pipeline and COMMITTED; what is left
-            // is the reclaim, and no plan can express it, because it belongs to no statement — it
-            // belongs to the moment the oldest live snapshot passes the commit that dropped them.
-            // The dispatcher owns that moment (txn_manager_ lives here), which is why this is the
-            // only place in the tree that may start a sweep.
-            //
-            // WHAT BREAKS IF A RUNTIME PATH STARTS ONE TOO: the horizon is the ONLY thing standing
-            // between a live reader and a deleted file. A sweep carrying anything other than
-            // txn_manager_.lowest_active_snapshot_horizon(), or issued before the DROP-GC remap
-            // proved above has landed, unlinks .otbx files and erases index entries a live snapshot
-            // is still entitled to read: missing files and silently short answers, with no error
-            // raised anywhere. It would also desynchronise the ack protocol, because
-            // on_subscriber_empty clears the very flags that gate this broadcast.
+            // The horizon is the ONLY thing between a live reader and a deleted file: any value
+            // other than lowest_active_snapshot_horizon(), or firing before the DROP-GC remap
+            // above lands, silently unlinks files a live snapshot can still read.
             auto sweep_broadcast =
                 core::maintenance::pipeline_bypass<core::maintenance::bypass_site::horizon_gc_sweep>([&] {
                     if (disk_has_dropped_ && disk_address_ != actor_zeta::address_t::empty_address()) {
-                        // Fire-and-forget (subscriber acks via on_subscriber_empty).
-                        // Parking the future on pending_void_ is just bookkeeping —
-                        // poll_pending() drains it via is_ready(); dropping it instead
-                        // would be memory-safe too.
+                        // Fire-and-forget (acked via on_subscriber_empty). Parking on
+                        // pending_void_ is bookkeeping only — dropping the future would be
+                        // equally memory-safe.
                         auto disk_send_result =
                             actor_zeta::otterbrix::send(disk_address_,
                                                         &services::disk::manager_disk_t::on_horizon_advanced,
@@ -576,12 +564,10 @@ namespace services::dispatcher {
                 resource(),
                 std::string_view{exec_result.applied_timezone.data(), exec_result.applied_timezone.size()});
             if (tz_err.contains_error()) {
-                // Unreachable today: operator_set_timezone_t validated this exact name
-                // with the SAME recognizer (session_catalog_t::set_timezone over
-                // timezone_to_offset) before persisting it. But a refusal here would
-                // mean pg_settings holds a zone the session cache does not — two
-                // sources of truth — so if the recognizers ever diverge, the statement
-                // is refused loudly instead of reporting success over the split.
+                // Unreachable today: operator_set_timezone_t already validated this name with
+                // the same recognizer before persisting it. But a refusal here would mean
+                // pg_settings and the session cache disagree — two sources of truth — so a
+                // future divergence is refused loudly instead of reporting success over the split.
                 error(log_,
                       "manager_dispatcher_t::execute_plan: session timezone cache refused '{}' AFTER it was "
                       "persisted to pg_settings: {}",
@@ -655,14 +641,12 @@ namespace services::dispatcher {
         }
         // executor_t::register_udf answers a TYPED core::result_wrapper_t; keep that error
         // instead of flattening it — "already registered with this signature" is the reason the
-        // caller needs, and no synthesized text reproduces it. First error wins, every future is
-        // still drained.
+        // caller needs. First error wins, every future is still drained.
         core::error_t fanout_error = core::error_t::no_error();
-        // (executor index, uid) of every executor that DID register — the unwind set for
-        // every failure below this point. Without it a registration the operator (or a
-        // sibling executor) later refuses stays in the per-executor registries, and a RETRY
-        // of the same CREATE FUNCTION meets "already registered with this signature" instead
-        // of the real refusal.
+        // (executor index, uid) of every executor that DID register — the unwind set for every
+        // failure below. Without it, a registration a sibling later refuses stays in
+        // per-executor registries, and a RETRY meets "already registered" instead of the real
+        // refusal.
         std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered(resource());
         registered.reserve(ack_futures.size());
         for (std::size_t i = 0; i < ack_futures.size(); ++i) {
@@ -733,10 +717,8 @@ namespace services::dispatcher {
         auto* ru = static_cast<components::operators::operator_register_udf_t*>(op.get());
         if (op->has_error()) {
             error(log_, "dispatcher_t::register_udf: {}", op->get_error().what);
-            // The operator's catalog half refused (conflict read, pg_proc write, ...).
-            // The per-executor registries were populated BEFORE it ran — unwind them,
-            // or the refused function keeps resolving in every executor of this
-            // process while no durable record of it exists.
+            // Catalog half refused after the per-executor registries were already
+            // populated — unwind them, or the function keeps resolving with no durable record.
             co_await unwind_udf_fanout_(session, std::move(registered));
             co_return op->get_error();
         }
@@ -753,9 +735,8 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<void> manager_dispatcher_t::unwind_udf_fanout_(
         components::session::session_id_t session,
         std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered) {
-        // Two-phase like the registration itself: send every unregister first, then
-        // drain every ack. Dropping by uid is exact — it removes precisely the entry
-        // this fan-out added, never a pre-existing overload of the same name.
+        // Drop by uid: removes exactly the entry this fan-out added, never a
+        // pre-existing overload of the same name.
         std::pmr::vector<actor_zeta::unique_future<bool>> acks(resource());
         acks.reserve(registered.size());
         for (const auto& [idx, uid] : registered) {
@@ -772,9 +753,8 @@ namespace services::dispatcher {
         for (std::size_t k = 0; k < acks.size(); ++k) {
             const bool dropped = co_await std::move(acks[k]);
             if (!dropped) {
-                // An executor that no longer holds the uid it just answered is a broken
-                // invariant, not a tolerable miss — name it loudly. Nothing more can be
-                // done from here: the registration this unwinds was already refused.
+                // An executor missing a uid it just answered with is a broken invariant,
+                // not a tolerable miss — name it loudly; nothing else can be done here.
                 error(log_,
                       "dispatcher_t::register_udf unwind: executor {} did not hold uid {} it had just answered",
                       registered[k].first,
@@ -802,9 +782,8 @@ namespace services::dispatcher {
             }
             ack_futures.push_back(std::move(fut));
         }
-        // executor_t::set_explain_renderer answers a bare bool (its own contract, owned
-        // elsewhere), so the dispatcher names WHICH executor closed the door and on what
-        // request — strictly more than a bare `false` forwarded up.
+        // set_explain_renderer answers a bare bool; the dispatcher names WHICH executor
+        // refused and on what request, rather than forwarding a bare `false`.
         core::error_t fanout_error = core::error_t::no_error();
         for (std::size_t i = 0; i < ack_futures.size(); ++i) {
             const bool res = co_await std::move(ack_futures[i]);
@@ -844,10 +823,8 @@ namespace services::dispatcher {
             }
             ack_futures.push_back(std::move(fut));
         }
-        // Every ack is drained, and then LOOKED AT. An executor that did not hold the overload
-        // still holds whatever it does hold; purging pg_proc/pg_depend on top of that would
-        // leave the catalog claiming the function is gone while an executor still resolves it.
-        // The purge below therefore does not run at all unless every executor confirmed.
+        // pg_proc/pg_depend purge below is skipped unless every executor confirmed the
+        // drop — otherwise the catalog would say the function is gone while one still resolves it.
         core::error_t fanout_error = core::error_t::no_error();
         for (std::size_t i = 0; i < ack_futures.size(); ++i) {
             const bool dropped = co_await std::move(ack_futures[i]);
@@ -986,9 +963,8 @@ namespace services::dispatcher {
             txn_manager_.abort(session);
             try_trigger_cleanup_if_horizon_advanced();
         }
-        // The resolve pass already distinguishes "source/target type is not registered" from
-        // "cast is already registered"; carry ITS cursor error through instead of erasing both
-        // into one `false`.
+        // Carry the resolve pass's own cursor error through — it already distinguishes
+        // "type not registered" from "cast already registered"; don't collapse both to `false`.
         if (!res.cursor) {
             co_return core::error_t{core::error_code_t::other_error,
                                     std::pmr::string{"register_cast: the resolve pass returned no cursor", resource()}};
@@ -1143,10 +1119,8 @@ namespace services::dispatcher {
             }
             ack_futures.push_back(std::move(ack));
         }
-        // Every ack is drained, and then LOOKED AT. An executor that could not drop the cast
-        // keeps APPLYING it; deleting the pg_cast row on top of that leaves the catalog saying
-        // the cast does not exist while a query still gets converted by it. So the row deletion
-        // below is not reached unless every executor confirmed.
+        // pg_cast row deletion below is skipped unless every executor confirmed the drop —
+        // otherwise the catalog would say the cast is gone while a query still applies it.
         core::error_t fanout_error = core::error_t::no_error();
         for (std::size_t i = 0; i < ack_futures.size(); ++i) {
             const bool removed = co_await std::move(ack_futures[i]);
@@ -1366,12 +1340,8 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::txn_accumulate_msg, session: {}", session.data());
         auto* txn_t = txn_manager_.find_transaction(session);
         if (txn_t == nullptr) {
-            // There is no transaction_t to park anything on, and the payload is a whole
-            // statement's worth of work — base insert/delete ranges, created and retired
-            // storage oids, created indexes, pg_catalog row ranges, pg_attribute commit-id
-            // backfills. Dropping it silently makes a lost statement look like a successful
-            // one; the caller gets the refusal and the log gets the size of what was NOT
-            // parked.
+            // No transaction_t to park the payload on; dropping it silently would make a
+            // lost statement look successful, so log what was NOT parked and refuse.
             error(log_,
                   "manager_dispatcher_t::txn_accumulate_msg: session {} has no active transaction; refusing to park "
                   "{} base appends, {} base deletes, {} pg_catalog appends, {} pg_catalog delete-tables, {} "
@@ -1443,16 +1413,11 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<void> manager_dispatcher_t::txn_discard_msg(uint64_t commit_id) {
         trace(log_, "manager_dispatcher_t::txn_discard_msg, commit_id: {}", commit_id);
-        // A LITERAL MIRROR OF txn_publish_msg ABOVE, and of the failure-release net in
-        // execute_plan: mutate the txn manager, then re-evaluate the broadcast. The id
-        // belongs to a commit pipeline that died at an early exit; discard() drops it
-        // from in_flight_commits_ WITHOUT touching published_horizon_, so the floor
-        // rises to the highest genuinely published commit and not one id further.
+        // discard() drops an early-exit commit's id from in_flight_commits_ without touching
+        // published_horizon_, so the floor rises only to the highest genuinely published commit.
         txn_manager_.discard(commit_id);
-        // Without this re-evaluation the horizon moves and nobody is told: the broadcast is
-        // gated on `new_lowest > last_broadcast_horizon_` and fires only from a
-        // txn-completing handler, so the deferred index-delete queue and the DROP tombstones
-        // would wait on an event that already passed.
+        // Re-evaluate: the broadcast only fires from a txn-completing handler, so without this
+        // call the horizon could move with nobody told.
         try_trigger_cleanup_if_horizon_advanced();
         co_return;
     }

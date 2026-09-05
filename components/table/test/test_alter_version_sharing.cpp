@@ -1,22 +1,7 @@
-// ALTER row-version-manager sharing — the identity gate.
-//
-// row_group_t::add_column / remove_column build the successor's row group and immediately call
-// set_version_info(get_or_create_version_info_ptr()), so a table and its ALTER successor share ONE
-// row_version_manager_t per row group — one record of which rows are deleted, by which
-// transaction, at which commit id. That sharing is load-bearing: the parent stays alive and
-// readable across the ALTER, and both views must agree about visibility.
-//
-// No scan or count can gate it. A freshly created manager records no deletes, so it answers
-// "every row visible" — which is exactly what the shared one answers on a table that has only
-// been appended to. The two are indistinguishable through the data. Only the OBJECT tells them
-// apart: its address, and how many row groups own it.
-//
-// The manager is kept in TWO representations at once — an owning smart pointer and a raw
-// std::atomic<row_version_manager_t*> that is the lock-free read path — so this gate also asserts
-// the invariant tying them together: the atomic names the owned object, on both sides of the
-// ALTER. A conversion of the owning half that failed to republish, or published a stale pointer,
-// would leave the read path pointing at nothing (or at a dead object) while every scan still
-// passed.
+// row_group_t::add_column/remove_column share ONE row_version_manager_t between parent and
+// successor row group (set_version_info(get_or_create_version_info_ptr())). A fresh manager and
+// the shared one both report "every row visible" on an append-only table, so no scan/count can
+// tell them apart — only the manager's address and owner count can.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/collection.hpp>
@@ -37,23 +22,17 @@ using namespace components::table;
 
 namespace {
 
-    // Enough rows to span SEVERAL row groups (row_group_size defaults to DEFAULT_VECTOR_CAPACITY):
-    // each row group carries its OWN manager, so sharing has to hold for every one of them, not
-    // just the first.
+    // Spans several row groups (row_group_size defaults to DEFAULT_VECTOR_CAPACITY) since each
+    // carries its own manager.
     constexpr uint64_t CHUNK_ROWS = 1000;
     constexpr uint64_t CHUNKS = 3;
 
-    // The fixture runs on a real .otbx — there is no file-less block manager any more. The row
-    // counts here span more than one row group, so closing one writes its segments through to
-    // the file: this fixture reaches the disk path for real. Not one assertion below is about
-    // the substrate.
     std::string alter_version_sharing_db_path() {
         static std::string path = "/tmp/test_otterbrix_alter_version_sharing_" + std::to_string(::getpid()) + ".otbx";
         return path;
     }
 
-    // Removes any leftover from an earlier process that died holding this pid, then names the
-    // file. Called from the member-init list, so the removal precedes the manager's open.
+    // Comma operator: remove stale file before naming it, ahead of the manager's open.
     const std::string& alter_version_sharing_fresh_db_path() {
         static const std::string path = (std::remove(alter_version_sharing_db_path().c_str()), alter_version_sharing_db_path());
         return path;
@@ -100,17 +79,14 @@ namespace {
         table.finalize_append(state, transaction_data{0, 0});
     }
 
-    // The append path is what creates each row group's manager (append_version_info ->
-    // get_or_create_version_info), so after this every row group has one to share.
+    // Append creates each row group's manager (append_version_info -> get_or_create_version_info).
     void fill(data_table_t& table, version_env_t& env) {
         for (uint64_t c = 0; c < CHUNKS; c++) {
             append_rows(table, env, static_cast<int64_t>(c * CHUNK_ROWS), CHUNK_ROWS);
         }
     }
 
-    // The owning pointer and the atomic raw pointer must never disagree: the atomic is a
-    // non-owning cache of the owner, published by set_version_info and read by everything on the
-    // lock-free path.
+    // The atomic is a non-owning cache of the owning pointer, published by set_version_info.
     void require_representations_agree(const row_group_t* group) {
         REQUIRE(group->version_manager_identity() != nullptr);
         REQUIRE(group->version_manager_published() == group->version_manager_identity());
@@ -181,8 +157,6 @@ TEST_CASE("alter_version_sharing: DROP COLUMN hands the successor the parent's V
         require_representations_agree(parent_group);
         require_representations_agree(child_group);
 
-        // Dropping a column does not touch versions: the successor inherits the SAME manager,
-        // so the rows the parent considers deleted stay deleted through the successor too.
         const row_version_manager_t* shared = parent_group->version_manager_identity();
         REQUIRE(child_group->version_manager_identity() == shared);
         REQUIRE(parent_group->version_manager_owner_count() == 2);
@@ -191,8 +165,7 @@ TEST_CASE("alter_version_sharing: DROP COLUMN hands the successor the parent's V
 }
 
 TEST_CASE("alter_version_sharing: a chain of ALTERs keeps ONE manager per row group") {
-    // Two successive ALTERs off the same parent: the manager must gain an owner each time rather
-    // than being duplicated, which is what the count — not the address alone — proves.
+    // Owner count, not just address, must prove the manager isn't duplicated on the 2nd ALTER.
     version_env_t env;
     auto table = make_table(env);
     fill(*table, env);

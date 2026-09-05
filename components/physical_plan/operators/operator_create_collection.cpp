@@ -21,13 +21,10 @@ namespace components::operators {
         , catalog_writes_(std::move(catalog_writes)) {}
 
     actor_zeta::unique_future<void> operator_create_collection_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Every table is disk-backed. A schemaless (computed, relkind='g') table creates its .otbx with an
-        // empty column set; the schema is adopted from the first appended chunk and serialized by the next
-        // checkpoint. The computed flag is passed EXPLICITLY. `columns_.empty()` here is not a storage-side
-        // heuristic — it is the planner's own relkind definition (planner.cpp rewrite_create_table:
-        // relkind='g' <=> empty column_definitions), applied to the very list plan-gen copied verbatim into
-        // this operator, so the flag and the pg_class row written below cannot disagree. The pg_class row does
-        // not exist yet at this point (catalog writes follow), so relkind cannot be scanned instead.
+        // `columns_.empty()` (computed, relkind='g') mirrors the planner's own relkind definition
+        // (planner.cpp rewrite_create_table) on the same list plan-gen copied here, so this flag and the
+        // pg_class row written below cannot disagree. relkind cannot be scanned instead: the pg_class row
+        // does not exist yet at this point.
         {
             const bool is_computed = columns_.empty();
             auto [_, f] = actor_zeta::otterbrix::send(ctx->disk_address,
@@ -72,10 +69,9 @@ namespace components::operators {
                                                       std::move(row));
             append_futures.push_back(std::move(f));
         }
-        // READ THE REPLIES. These are the pg_class / pg_attribute / pg_depend rows that ARE the table: a CREATE
-        // TABLE whose pg_class row was refused has created nothing the catalog can resolve, and the range alone
-        // cannot say so — a zero count means "nothing asked to be written", not "an append that failed". Every
-        // future is drained before the first refusal is acted on, and the first error is the one carried.
+        // A refused pg_class append leaves nothing the catalog can resolve as this table, so replies must be
+        // checked for errors (a zero count alone just means nothing was asked to be written). Every future is
+        // drained before acting on the first refusal.
         core::error_t append_error = core::error_t::no_error();
         for (auto& f : append_futures) {
             auto rng_r = co_await std::move(f);

@@ -9,42 +9,19 @@
 #include <signal.h>
 #include <unistd.h>
 
-// THE FIXTURE ROOT OF THIS DIRECTORY, QUALIFIED BY PROCESS ID ON PURPOSE.
-//
-// A literal "/tmp/..." data directory is shared by every test binary running at once --
-// two build directories, a second checkout, one ctest -j run beside another -- and the
-// first thing a case does with its directory is test_clear_directory(): remove_all()
-// followed by create_directories(). One process unlinks the segment files, the WAL and
-// the catalog another process has open and is midway through writing.
-//
-// MEASURED, NOT SUSPECTED. Two Debug binaries from two build directories on the same case
-// at the same time, five consecutive iterations: EVERY iteration had exactly one process
-// fail while the other reported "All tests passed". The failures read as real I/O and as
-// engine defects --
-//   filesystem error: in remove_all: Directory not empty [".../orig"]
-//   filesystem error: in remove_all: No such file or directory [".../auto"]
-//   REQUIRE( exec("CREATE INDEX k_idx ON sdb.t (k);")->is_success() ) == false
-//   a pg_catalog system table did not come up, refusing to start: pg_settings
-// -- none about the code under test, and all easy to write off as flakes. A watcher on the
-// shared directory's inode showed it destroyed and recreated INSIDE the winner's run, so
-// the process that went green had validated a database it did not write. That is the
-// dangerous half. Under NDEBUG the DEV_MODE assert()s that might catch the mismatch are
-// compiled out and only the quiet pass is left -- re-run with an NDEBUG binary, it passed
-// while its directory changed inode underneath.
-//
-// Qualifying the root by pid is what the storage-layer and index fixtures already do
-// (services/index/tests/index_fixture_path.hpp, components/table/test/*), and this is that
-// helper for THIS directory -- deliberately per-directory, not shared, so the directories
-// stay independently editable. The helpers are file-scope free functions, matching the
-// neighbouring test_create_config / test_clear_directory in test_config.hpp.
+// Fixture root is qualified by pid: a literal shared "/tmp/..." directory gets
+// remove_all()+create_directories() by the first thing each test case does, so two test
+// binaries running at once corrupt each other's fixtures. Measured: two Debug binaries on
+// the same case at the same time, 5/5 iterations had one process fail on the other's
+// destroyed/recreated directory, reading as unrelated I/O and engine errors. Same convention
+// as services/index/tests/index_fixture_path.hpp and components/table/test/*, kept
+// per-directory rather than shared.
 namespace integration_fixture_detail {
 
-    // A pid-qualified root buys isolation and costs a directory per run, which nothing was
-    // reclaiming: 872 of them (and, once, a full 926 GiB disk) accumulated before this was
-    // added. Reclaimed from BOTH ends because neither end alone is enough -- the sweep
-    // handles the runs this process cannot clean up after (a crash test, an abort, a kill,
-    // all routine here), and the exit hook handles the common case without waiting for a
-    // later run to notice.
+    // Reclaimed from both a sweep here and an atexit hook below: the sweep covers runs that
+    // crashed/aborted/were killed, the hook covers the common exit without waiting on a
+    // later run. Without this, dead pid-qualified roots accumulated unbounded (872 dirs /
+    // 926 GiB observed before this was added).
     inline void reclaim_dead_roots(const std::filesystem::path& shared, const std::filesystem::path& mine) {
         std::error_code ec;
         for (std::filesystem::directory_iterator it{shared, ec}, end; !ec && it != end; it.increment(ec)) {
@@ -55,7 +32,7 @@ namespace integration_fixture_detail {
             const auto suffix = entry.filename().string().substr(std::strlen("otterbrix_integration_"));
             char* parsed = nullptr;
             const long owner = std::strtol(suffix.c_str(), &parsed, 10);
-            // Anything but a whole number is not ours to judge; a live owner keeps its root.
+            // Not a whole number, or a live owner: not ours to reclaim.
             if (parsed == nullptr || *parsed != '\0' || owner <= 0 || ::kill(static_cast<::pid_t>(owner), 0) == 0) {
                 continue;
             }
@@ -82,16 +59,10 @@ inline const std::filesystem::path& integration_fixture_root() {
     return root;
 }
 
-// `name` is the fixture's leaf, relative to the pid-qualified root. Sub-directories are
-// fine: the leaf is joined as a path, and the engine creates the intermediate directories
-// it needs.
 inline std::filesystem::path integration_fixture_path(std::string_view name) {
     return integration_fixture_root() / name;
 }
 
-// The shared temporary directory the pid-qualified root sits in -- named ONCE, here,
-// derived from the root rather than spelled a second time, so there is exactly one place
-// in this directory that knows where fixtures live.
 inline const std::filesystem::path& integration_fixture_shared_root() {
     static const std::filesystem::path shared = integration_fixture_root().parent_path();
     return shared;
@@ -99,9 +70,8 @@ inline const std::filesystem::path& integration_fixture_shared_root() {
 
 namespace integration_fixture_detail {
 
-    // Component-wise prefix test. Not `string().starts_with()`: that answers yes for
-    // "/tmp/otterbrix_integration_123" against a root of "/tmp/otterbrix_integration_12",
-    // which is a DIFFERENT process's directory.
+    // Component-wise, not string().starts_with(): that would match
+    // ".../otterbrix_integration_123" against root ".../otterbrix_integration_12".
     [[nodiscard]] inline bool path_is_within(const std::filesystem::path& path,
                                              const std::filesystem::path& prefix) {
         auto p = path.begin();
@@ -116,19 +86,10 @@ namespace integration_fixture_detail {
 
 } // namespace integration_fixture_detail
 
-// Is `path` safe to hand to a fixture -- that is, is it NOT an unqualified root directly
-// under the shared temporary directory?
-//
-// Two answers are safe and one is not:
-//   * under integration_fixture_root()      -- qualified by this process's pid. Safe.
-//   * outside integration_fixture_shared_root() entirely -- another process's remove_all()
-//     cannot reach it through /tmp at all. Safe, and this is what keeps paths a test builds
-//     itself (a copy of a crashed directory, a caller-supplied root) working.
-//   * anywhere else under the shared temporary directory -- "/tmp/test_foo",
-//     "/tmp/otterbrix/integration/test_foo", even a hand-rolled "/tmp/test_foo_<pid>".
-//     REFUSED: the first two are shared by every binary running at once, and the third is a
-//     SECOND pid convention, which splits the fixture root in two and leaves neither
-//     cleanable by one rule.
+// Safe: under integration_fixture_root() (pid-qualified), or entirely outside
+// integration_fixture_shared_root() (unreachable by another process's remove_all()).
+// Refused: anything else under the shared root, including a second, different pid
+// convention -- that would split the fixture root in two, cleanable by no single rule.
 [[nodiscard]] inline bool integration_fixture_path_is_qualified(const std::filesystem::path& path) {
     const std::filesystem::path normal = path.lexically_normal();
     if (!integration_fixture_detail::path_is_within(normal, integration_fixture_shared_root())) {

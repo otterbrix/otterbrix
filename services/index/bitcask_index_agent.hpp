@@ -1,16 +1,10 @@
 #pragma once
 
-// THE HASHED FAMILY'S AGENT, AND THE WHOLE HASHED INDEX. It holds a bitcask_index_disk_t BY VALUE
-// AND BY ITS CONCRETE TYPE -- the store is a member, not a pointee -- so every question an erased
-// agent would have to ask its backend at runtime (does this backend own a txn log? does it have a
-// bulk window to open? can it answer an ordered probe?) is answered here by the type instead. See
-// btree_index_agent.hpp for the ordered twin; the two are deliberately separate bodies, and
-// index_agent_contract.hpp says why.
+// The hashed family's agent and index. Holds bitcask_index_disk_t by value (not type-erased) so
+// backend capabilities resolve by type; see btree_index_agent.hpp for the ordered twin and
+// index_agent_contract.hpp for why they are separate classes.
 //
-// IT ALSO HOLDS THE UNCOMMITTED HALF: the BUFFER of this transaction's not-yet-durable writes.
-// Keeping that buffer in a different actor from the store those writes belong to means the two
-// halves of one answer have to be stitched together after the read comes back. It sits beside the
-// store instead, and read_rows below returns both halves already merged.
+// Also holds the buffer of this transaction's uncommitted writes, merged into read_rows below.
 
 #include "bitcask_index_disk.hpp"
 #include "index_agent_contract.hpp"
@@ -43,11 +37,8 @@
 
 namespace services::index {
 
-    // Owns its bitcask store exclusively; callers reach it only via mailbox sends to its
-    // address (no shared mutable state across the actor boundary, rule 10).
-    //
-    // No DROP TABLE GC handler here: on-disk index files sit alongside table files and
-    // are unlinked by manager_disk_t's on_horizon_advanced sweep.
+    // No separate DROP TABLE handler: manager_index_t's unregister_collection sends the same
+    // drop() to every agent when the owning table is dropped (services/index/manager_index.cpp).
     class bitcask_index_agent_t final : public actor_zeta::basic_actor<bitcask_index_agent_t> {
         using path_t = std::filesystem::path;
         using session_id_t = index_agent_contract::session_id_t;
@@ -57,52 +48,31 @@ namespace services::index {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        // The agent's own type, spelled here because the alias below it needs the class to
-        // be named first. Typed by THIS class: actor_zeta::pmr::deleter_t deallocates
-        // sizeof(static type).
+        // Must name the concrete class: actor_zeta::pmr::deleter_t deallocates sizeof(static type).
         using agent_ptr_t = std::unique_ptr<bitcask_index_agent_t, actor_zeta::pmr::deleter_t>;
 
-        // WHICH BACKEND THIS FAMILY IS, as a compile-time constant of the class.
-        //
-        // manager_index_t copies this into the record it keeps per index and publishes it to
-        // the planner through all_indexed_descriptions -> context_storage_t. That is the ONLY
-        // thing that tells an ordered index from a hashed one OVER THE SAME COLUMN, which is a
-        // legal pair, and losing it makes `USING hash` a word the planner cannot honour.
+        // Published to the planner via manager_index_t::get_indexed_descriptions; the only thing
+        // that distinguishes an ordered index from a hashed one on the same column (a legal
+        // pair) and lets `USING hash` mean anything to the planner.
         static constexpr components::logical_plan::index_type index_type_v =
             components::logical_plan::index_type::hashed;
 
-        // A HASH BUCKET HAS NO ORDERING, so nothing but equality can be asked of this family
-        // -- also a compile-time constant, and also copied into the manager's record. It has to
-        // be readable by the manager BEFORE it sends anything: the manager refuses a range
-        // predicate on this family with a core::error_t, and without a static answer up there
-        // the misrouted read would reach read_rows() below and be refused only after a round
-        // trip.
+        // false: a hash bucket has no ordering. Read at compile time by manager_index_t so a
+        // range predicate on this family is refused before send, not after a round trip to
+        // read_rows() below.
         static constexpr bool supports_ordered_probe_v = false;
 
-        // THE DOOR. An agent, or the reason its store could not be opened -- as a VALUE, not as a
-        // flag on an agent that exists anyway. The agent opens its own backing (rule 10): the open
-        // runs in this function, in this translation unit, and nothing is created at a spawn site
-        // and handed across. An agent only ever exists over a store that opened, and a caller
-        // cannot reach one without going through result_wrapper_t first.
+        // Publishes a spawned agent only if its store opened; on failure the half-built agent is
+        // destroyed here and the index stays UNREGISTERED (costs a full scan; aborting would cost
+        // the whole engine its start -- see integration test test_index_bootstrap_failure).
         //
-        // On an error the half-built agent is destroyed here, so the caller has nothing to unwind
-        // and leaves the index UNREGISTERED -- an index that will not open costs a full scan, while
-        // aborting costs the whole engine its start (integration test
-        // test_index_bootstrap_failure).
+        // Two steps because the store is a non-movable member: spawn builds it in place (no I/O),
+        // then open_store() runs before the agent's address is given out.
         //
-        // TWO STEPS INSIDE, ONE STEP OUTSIDE: the agent is spawned (which builds its store in
-        // place, doing no I/O) and then open_store() is run on it, before its address has been
-        // handed to anyone. Splitting them is what the by-value store costs and all it costs -- the
-        // store is not movable, so it cannot be built elsewhere and moved in.
-        //
-        // committed_commit_ids: the WAL-replay set of the COMMIT IDS every durable COMMIT marker
-        // carries, forwarded to the txn-log recover gate. Fresh, post-bootstrap agents pass an
-        // EMPTY set. This parameter exists ONLY here: the ordered family owns no txn log and its
-        // factory does not take one. COMMIT ids and not txn ids, because only the commit clock is
-        // re-derived from the durable frontier at reopen -- see the gate in bitcask_index_disk.cpp.
-        //
-        // index_oid = pg_index.indexrelid; the agent's on-disk directory is
-        // ${path_db}/${table_oid}/${index_oid}/ -- oid-keyed, never name-keyed.
+        // committed_commit_ids: WAL-replay COMMIT ids forwarded to the txn-log recover gate
+        // (empty on fresh bootstrap); the ordered family has no txn log so its factory takes
+        // none. Commit ids, not txn ids -- see the gate in bitcask_index_disk.cpp. index_oid is
+        // pg_index.indexrelid; on-disk path is ${path_db}/${table_oid}/${index_oid}/.
         [[nodiscard]] static core::result_wrapper_t<agent_ptr_t>
         create(std::pmr::memory_resource* resource,
                const path_t& path_db,
@@ -113,13 +83,9 @@ namespace services::index {
                log_t& log,
                std::pmr::set<std::uint64_t> committed_commit_ids);
 
-        // BUILDS THE STORE, it does not receive one. The store is a member BY VALUE and cannot be
-        // moved into place (bitcask_index_disk_t's deleted copy ctor suppresses the implicit move),
-        // so what crosses this signature is the store's PARAMETERS and the store is constructed in
-        // the member initializer list. Construction is still infallible, because the ctor it runs
-        // does no I/O: the open is open_store() below, and create() above is the only thing that
-        // calls it -- a constructor cannot refuse (rule 2), so the step that can fail is not a
-        // constructor. Public because actor_zeta::spawn placement-news the actor.
+        // Store built by value in the member-init list (bitcask_index_disk_t is non-movable);
+        // the ctor does no I/O so it cannot fail -- open_store() below is the fallible
+        // half, called only from create(). Public because actor_zeta::spawn placement-news the actor.
         bitcask_index_agent_t(std::pmr::memory_resource* resource,
                               const path_t& path_db,
                               components::catalog::oid_t table_oid,
@@ -146,10 +112,9 @@ namespace services::index {
         read_rows(session_id_t session, components::expressions::compare_type compare, value_t key, uint64_t txn_id);
         unique_future<core::error_t> force_flush(session_id_t session);
 
-        // Bound to the contract, in the contract's order -- that is what makes
-        // msg_id<bitcask_index_agent_t, &bitcask_index_agent_t::drop> and
-        // msg_id<btree_index_agent_t, &btree_index_agent_t::drop> the same number, and it
-        // is the only reason manager_index_t may send to a bare address.
+        // Bound in the contract's order: this is what makes msg_id<bitcask_index_agent_t, &drop>
+        // and msg_id<btree_index_agent_t, &drop> the same number, so manager_index_t can send to
+        // a bare address.
         using dispatch_traits = actor_zeta::implements<index_agent_contract,
                                                        &bitcask_index_agent_t::drop,
                                                        &bitcask_index_agent_t::clear,
@@ -166,66 +131,47 @@ namespace services::index {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
-        // Opens the store this agent just built and says why it could not, as a VALUE.
-        // Called by create() IMMEDIATELY after the agent is spawned and by nothing else:
-        // the pair (spawn, open_store) is one step seen from outside, and the agent is
-        // destroyed unpublished when the second half of it fails. That is the whole reason
-        // an agent can be assumed to have an open store everywhere below.
+        // Called by create() only, immediately after spawn; the agent is destroyed unpublished
+        // if this fails, so every handler below can assume the store is open.
         [[nodiscard]] core::error_t open_store();
 
-        // Run the segment compaction the store's rotations left owed, on this agent's own
-        // thread, at the end of the write handler that caused them -- and only when that
-        // write succeeded. The whole reasoning, including why this is not a message this
-        // agent sends to itself, is at the definition in bitcask_index_agent.cpp.
-        // Folds the merge's own refusal into the write round that paid the debt (wave
-        // #305): answers the write_error when there is one, the merge's answer otherwise.
+        // Runs the segment compaction the store's rotations left owed, after a successful write,
+        // on this agent's own thread; see the definition in bitcask_index_agent.cpp for why not
+        // a self-sent message. Returns the write's error if any, else the merge's.
         [[nodiscard]] core::error_t pay_merge_debt(core::error_t write_error);
 
         log_t log_;
         components::catalog::oid_t table_oid_;
-        // BY VALUE, and OPEN: create() is the only door, and it destroys the agent rather than
-        // publishing one whose store did not open, so every handler can read it without asking
-        // first. There is no unique_ptr because there is nothing a pointer could buy -- this agent
-        // is the sole owner and the type is fixed at compile time. CONCRETE type, because the
-        // long-key loader (load_hash_key_at, handed to every disk_hash_table_t call) and the
-        // durable txn log are bitcask's alone, and holding the type is what keeps them reachable
-        // without a runtime question.
+        // By value and always open (create() is the only door). Concrete type, not a pointer:
+        // the long-key loader load_hash_key_at and the durable txn log are reachable only
+        // through it.
         bitcask_index_disk_t store_;
         bool is_dropped_{false};
 
-        // THE UNCOMMITTED HALF, in per-transaction buckets.
+        // Per-transaction buckets of uncommitted writes. Keys are stored ENCODED
+        // (codec::append_logical_value over the normalized key), matching exactly what
+        // bitcask_index_disk_t::key_bytes_for_hash hashes/memcmps on the committed side, and
+        // normalized the same way (narrow ints widened to BIGINT/UBIGINT) so a SMALLINT probe
+        // matches a BIGINT-stored key.
         //
-        // A pending entry keeps its key ENCODED, in the record format the bitcask store uses
-        // (codec::append_logical_value over the NORMALIZED key, byte-for-byte what
-        // codec::encode_disk_hash_key produces for the same value). Two reasons, both load-bearing:
-        // the comparison that decides whether a pending key satisfies the probe must be the SAME
-        // comparison the committed half was answered by, and that one hashes and memcmps these
-        // exact bytes (bitcask_index_disk_t::key_bytes_for_hash); and the encoding is where the
-        // HASHED family's normalization happens (narrow integers widened to BIGINT / UBIGINT), so a
-        // SMALLINT probe and the BIGINT-stored key it should match land on the same bytes.
-        //
-        // Bucket 0 is "committed for everyone but not yet durable" -- the rebuild feeds stage into
-        // it and commit_inserts publishes it alongside whatever transaction is committing.
+        // Bucket 0 = committed-but-not-yet-durable: rebuild stages into it, commit_inserts
+        // publishes it alongside whichever transaction is committing.
         using pending_row_t = std::pair<std::pmr::string, int64_t>;
         using pending_rows_t = std::pmr::vector<pending_row_t>;
         using pending_txn_map_t = std::pmr::unordered_map<uint64_t, pending_rows_t>;
         pending_txn_map_t pending_inserts_;
         pending_txn_map_t pending_deletes_;
 
-        // key -> the bitcask store's key bytes, NORMALIZED first. The row id is NOT
-        // appended: a bucket carries it beside the key, and the merge needs the key alone.
+        // Normalized key bytes only, no row id -- the bucket carries that separately.
         [[nodiscard]] std::pmr::string encode_key(const value_t& key) const;
 
-        // Publish one bucket pair ({txn_id} and 0) into the store and erase them.
-        // Shared by the insert and delete legs, which differ only in which map they take
-        // from and which store call they make -- that difference is the `apply` callable.
+        // Publishes and erases one bucket pair ({txn_id}, 0); shared between the insert and
+        // delete legs via the `apply` callable, the only thing that differs between them.
         template<typename ApplyFn>
         [[nodiscard]] core::error_t publish_buckets(pending_txn_map_t& buckets, uint64_t txn_id, ApplyFn&& apply);
     };
 
-    // The contract, checked where the class is written (see index_agent_contract.hpp): a
-    // handler this agent forgot, mistyped or bound out of order fails HERE and not at the
-    // send site in manager_index.cpp.
+    // Catches a forgotten/mistyped/misordered handler here, not at the send site in manager_index.cpp.
     static_assert(index_agent_impl<bitcask_index_agent_t>,
                   "bitcask_index_agent_t does not satisfy the index agent contract");
 

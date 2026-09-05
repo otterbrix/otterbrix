@@ -1,26 +1,15 @@
-// ============================================================================
-// VISIBILITY ON THE POINT FETCH (index -> storage_fetch by row_id).
+// The index answer is a SUPERSET filter, not a visibility one (manager_index_t::
+// search_with_preferred_type: the table decides what a reader may SEE). storage_fetch did not
+// apply that: the point-fetch path gathered cells without ever calling
+// row_version_manager_t::fetch(txn, row), so the index -> fetch-by-row_id route leaked rows
+// outside the reader's snapshot.
 //
-// The index answer is deliberately a SUPERSET filter, not a visibility one:
-// manager_index_t::search_with_preferred_type says so in as many words — "which
-// committed rows a reader may SEE is the table's decision, and storage_fetch applies
-// it". storage_fetch did NOT apply it: the point-fetch path resolved the row group and
-// gathered the cells without ever asking row_version_manager_t::fetch(txn, row), so the
-// whole "index -> fetch by row_id" route handed a reader rows its snapshot must not
-// contain.
+// WHERE id = ... routes through the index (the broken leg); WHERE val = ... is an unindexed
+// scan control on the same row — the scan leg has always hidden it correctly.
 //
-// The two SELECTs below differ ONLY in which column the equality names:
-//   WHERE id = ...   -> INDEXED  -> index_scan  -> storage_fetch (the broken leg)
-//   WHERE val = ...  -> UNINDEXED-> full_scan   -> storage_fetch_next_batch (MVCC-correct)
-// Same session, same snapshot, same row. The scan leg has always hidden the row; only the
-// point-fetch leg leaked it, so a disagreement between the two is the defect itself and
-// not a claim about snapshot semantics in general.
-//
-// THE ROW IS PAST 1024 ON PURPOSE. Version slots are addressed per row group while the
-// point fetch names collection-ABSOLUTE row ids, so a row inside the FIRST row group
-// cannot tell a correct rebase from a missing one — every MVCC test that stops at ten
-// rows is blind to that whole class.
-// ============================================================================
+// The row sits past row_group_size (1024): version slots are addressed per row group while the
+// point fetch names collection-ABSOLUTE ids, so a row in the first row group can't tell a
+// correct rebase from a missing one.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -30,9 +19,7 @@ using namespace components;
 using namespace components::cursor;
 
 namespace {
-    // > row_group_size (1024): the row appended after the reader's snapshot lands
-    // in the SECOND row group, so its version slot is only found through the
-    // absolute->group-local rebase.
+    // > row_group_size (1024): forces the absolute->group-local rebase for this row's slot.
     constexpr unsigned kSeedRows = 2000;
     constexpr int64_t kLateId = 500000;
 
@@ -115,9 +102,8 @@ TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_honours_the_rea
         q << "SELECT id, val FROM VisDb.t WHERE id = " << kLateId << ";";
         auto cur = exec(dispatcher, reader, q.str());
         REQUIRE(cur->is_success());
-        // The index returns the row_id (a superset answer); a storage_fetch that
-        // gathers it without consulting the row version manager shows the reader a
-        // row committed after its own snapshot — while the scan leg above hides it.
+        // storage_fetch gathers the row without consulting the row version manager, leaking
+        // it past its snapshot while the scan leg above hides it.
         REQUIRE(cur->size() == 0);
     }
 
@@ -134,10 +120,9 @@ TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_honours_the_rea
     }
 }
 
-// The reader must not be over-filtered either: rows committed BEFORE its snapshot
-// stay visible through the point fetch for the whole transaction, including after
-// another session has deleted and committed them. This is the guard against
-// "fix visibility by hiding everything".
+// The other direction: rows committed before the snapshot must stay visible through the point
+// fetch even after another session deletes and commits them — the guard against "fix
+// visibility by hiding everything".
 TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_keeps_rows_the_snapshot_owns") {
     auto config = test_create_config(integration_fixture_path("test_index_fetch_visibility/retain"));
     test_clear_directory(config);

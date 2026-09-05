@@ -15,11 +15,8 @@
 
 namespace components::operators {
 
-    // Test-observable counter of BATCHES the streaming backfill scan consumed (one bump per non-empty
-    // storage_fetch_next_batch reply): over a table > DEFAULT_VECTOR_CAPACITY the count must exceed 1, proving
-    // the loop iterated instead of materializing the whole table in one scan. Process-global + relaxed: coarse
-    // instrumentation, not a synchronization primitive; off every hot path. DEV_MODE-only, mirroring
-    // services::collection::executor::streaming_pipeline_runs().
+    // DEV_MODE test counter: batches consumed by the streaming backfill scan (proves it streams instead of
+    // loading the table whole). Process-global + relaxed — coarse instrumentation, not a sync primitive.
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_create_index_backfill_batches{0};
@@ -45,18 +42,9 @@ namespace components::operators {
         , indkey_(std::move(indkey)) {}
 
     actor_zeta::unique_future<void> operator_create_index_backfill_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // NO INDEX ACTOR, NO INDEX — AND SAYING SO IS THE WHOLE POINT. This branch used to mark_executed() and
-        // report SUCCESS for a CREATE INDEX that registered nothing, created nothing, backfilled nothing and never
-        // flipped pg_index.indisvalid. The durable half stayed consistent (indisvalid false, so a restart declines
-        // to attach it) precisely BECAUSE the statement did nothing — which is exactly what the user was not told.
-        // Every production topology spawns the index manager UNCONDITIONALLY (integration/cpp/base_spaces.cpp
-        // spawns it before the dispatcher exists, with no config gate), so an empty index address is a mis-wired
-        // engine, not a supported mode. The quiet success was pinned only by two dispatcher harnesses that synced
-        // empty_address() into the sync_pack's third slot; both now wire a real manager_index_t, and
-        // test_wave_exec_dispatcher's create_index_refuses_without_an_index_manager pins THIS refusal instead.
-        //
-        // Refusal, not abort: CREATE INDEX is a write path with an error channel all the way back to the cursor,
-        // and rule 6's "loud" means reported, not fatal.
+        // Refuses instead of the old mark_executed()+silent-success: an unwired index actor means a mis-wired
+        // engine (every production topology spawns manager_index_t unconditionally), not a legitimate no-op mode.
+        // Pinned by test_wave_exec_dispatcher's create_index_refuses_without_an_index_manager.
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
             set_error(core::error_t{core::error_code_t::index_create_fail,
                                     std::pmr::string{"CREATE INDEX: no index manager is wired to this executor; "
@@ -81,8 +69,8 @@ namespace components::operators {
                                                       keys_,
                                                       index_type_,
                                                       ctx->execution_context.timezone_offset);
-        // create_index answers with a core::error_t and nothing else: an index's identity
-        // below the planner is its indexrelid, which is right here in index_oid_.
+        // create_index answers with a core::error_t only; the index's identity below the planner is
+        // index_oid_, already known here.
         auto create_error = co_await std::move(ixf);
 
         if (create_error.contains_error()) {
@@ -93,20 +81,15 @@ namespace components::operators {
             co_return;
         }
 
-        // CREATE back-channel: record the index this statement brought into being (owning table oid + indexrelid)
-        // so the COMMIT publishes it and a same-txn ABORT drops the still-uncommitted index
-        // (operator_abort_transaction fans manager_index_t::drop_index per drained created_index). Mirror of the
-        // operator_create_collection storage back-channel; gated on a non-zero txn id (autocommit/bootstrap txn 0
-        // commits the index inline).
+        // CREATE back-channel (table oid + indexrelid): COMMIT publishes it, a same-txn ABORT drops it via
+        // drained created_index. Gated on non-zero txn id — autocommit/bootstrap txn 0 commits inline.
         if (ctx->txn.transaction_id != 0) {
             ctx->created_indexes.push_back(components::table::created_index_t{table_oid_, index_oid_});
         }
 
-        // WAL retention guard: register build_start_wal_position so a concurrent checkpoint+truncate cannot drop
-        // records the catchup loop still needs. Routed via mailbox (sync inter-actor calls are forbidden inside
-        // the executor actor). The matching unregister fires at every exit below; build_start_registered gates it
-        // so a never-registered guard is never double-unregistered. No RAII: a destructor cannot co_await the
-        // unregister.
+        // WAL retention guard: pins build_start_wal_position so a concurrent checkpoint+truncate cannot drop
+        // records the catchup loop still needs. build_start_registered gates the unregister at every exit
+        // below (no RAII possible — a destructor cannot co_await).
         services::wal::id_t build_start_wal_position{0};
         bool build_start_registered = false;
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
@@ -122,26 +105,10 @@ namespace components::operators {
             build_start_registered = true;
         }
 
-        // EVERY FAILURE EXIT FROM HERE ON MUST TAKE THE ENGINE BACK OUT OF THE REGISTRY.
-        //
-        // create_index above did TWO things: it wrote the (still indisvalid=false) catalog row and it REGISTERED A
-        // LIVE ENGINE with manager_index_t. Only the first is undone for us. The registry — not
-        // pg_index.indisvalid — is what the planner consults: get_indexed_keys reports this key, can_use_index
-        // says yes, and create_plan_match replaces full_scan with index_scan. So a half-built engine left
-        // registered does not merely waste memory, it ANSWERS QUERIES.
-        //
-        // The executor does not remove it on this path: its undo_create_index calls all sit inside the
-        // `needs_ddl_txn && exec_result.cursor->is_success()` block, covering failures AFTER this operator
-        // succeeded. A failure of the OPERATOR ITSELF lands in the `else if (... is_error())` branch, which calls
-        // revert_failed_txn only — that reverts the catalog appends and the PENDING index entries and leaves the
-        // engine registered AND EMPTY. ctx->created_indexes is not lifted either (execute_sub_plan breaks out on
-        // the error before the lift), so the ABORT fan-out never sees it.
-        //
-        // Releasing the WAL retention guard is folded into this closure rather than repeated at each exit: a guard
-        // left registered pins the checkpoint truncation point for the life of the process. drop_index tolerates
-        // an unknown engine, so the closure cannot collide with the executor's own undo on the success paths. The
-        // memory_resource parameter is not decoration: an argless coroutine lambda has nothing for the promise to
-        // extract its allocator from and aborts at runtime.
+        // Every failure from here on must take the engine back out of the registry: the planner consults the
+        // registry (not pg_index.indisvalid), so a half-built engine left registered ANSWERS QUERIES, and the
+        // executor's undo_create_index only covers failures after this operator succeeds. frame_resource must
+        // stay a real parameter — an argless coroutine lambda aborts at runtime with no allocator to extract.
         auto abandon_build = [this, ctx, &build_start_wal_position, &build_start_registered](
                                  [[maybe_unused]] std::pmr::memory_resource* frame_resource)
             -> actor_zeta::unique_future<void> {
@@ -163,14 +130,10 @@ namespace components::operators {
             co_return;
         };
 
-        // backfill — STREAM the table in bounded batches and feed each into the index. Reuses the streaming
-        // storage_fetch_next_batch cursor primitive (no new disk method): cursor_id==0 OPENs, the agent-minted id
-        // ADVANCEs, and a drained cursor replies an empty batch. Peak scan memory is one batch + index state.
-        // Index entries are stamped with each batch's TRUE physical row ids (batch->row_ids, fed to insert_rows
-        // one contiguous run at a time — see below), because the MVCC-filtered scan skips deleted rows and its ids
-        // are gapped. Each iteration does at most one fetch await followed by the insert awaits, sequential across
-        // the loop; the executor coroutine's single-slot continuation is republished+cleared between the awaits,
-        // so there is no lost wakeup.
+        // backfill — STREAM the table in bounded batches via the storage_fetch_next_batch cursor (cursor_id==0
+        // OPENs, agent-minted id ADVANCEs, empty batch means drained), so peak scan memory is one batch + index
+        // state. Index entries are stamped with each batch's TRUE physical row ids, fed one contiguous run at a
+        // time (see below) — the MVCC-filtered scan skips deleted rows, so ids are gapped.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
             bool scan_ok = true;
@@ -201,32 +164,12 @@ namespace components::operators {
                 g_create_index_backfill_batches.fetch_add(1, std::memory_order_relaxed);
 #endif
 
-                // The fetched batch is an MVCC-filtered scan: deleted / invisible rows are SKIPPED, so
-                // batch->row_ids carries the TRUE — possibly GAPPED — physical row ids. The staging door stamps
-                // contiguous ids from the physical_row_start it is given, so feed it one maximal contiguous row-id
-                // RUN at a time, based at that run's first physical id (never assume gap-free ids). The extra
-                // awaits stay sequential in this operator coroutine — same lost-wakeup discipline as the
-                // fetch/insert pair above.
-                //
-                // THE DOOR IS THE INDEX-ADDRESSED ONE, and that is not a style choice.
-                // manager_index_t::insert_rows(table_oid) fans its batch out over EVERY index registered for the
-                // oid — right for DML, where an INSERT owes every index of the table, and exactly backwards for a
-                // BACKFILL, whose rows are already in every PRE-EXISTING index and missing only from the one being
-                // built. Through that door a second CREATE INDEX on a non-empty table re-stages and re-publishes
-                // the whole table into the first index as well: 2 staging messages per run where the first build
-                // sends 1 (test_create_index_backfill_addressing). Not a wrong answer — both stores dedup a
-                // repeated (key, row id) pair — but a full extra pass over the table per pre-existing index, every
-                // time an index is added. apply_wal_record_for_index takes the indexrelid and feeds that engine
-                // alone, which is what the catchup leg below calls too.
-                //
-                // ITS ERROR CHANNEL IS THE BUILD'S COMMIT, not this await. The contract returns void, so a staging
-                // an agent refused is RECORDED against this build's transaction (manager_index_t::catchup_failures_)
-                // and refuses the commit_inserts that publishes the build — the one door it must pass — after which
-                // executor.cpp's undo_create_index drops the engine and reverts the pg_index row. Same mechanism the
-                // catchup leg relies on, pinned end-to-end by test_create_index_catchup_refusal. The cost is
-                // LATENCY, not loudness: the scan runs to the end before the refusal surfaces. An immediate refusal
-                // would need an index-addressed insert door WITH an error channel on
-                // services/index/index_contract.hpp; there is none today.
+                // batch->row_ids is TRUE but GAPPED (deleted rows skipped), so feed apply_wal_record_for_index one
+                // maximal contiguous run at a time, based at that run's first physical id. Uses
+                // apply_wal_record_for_index (index-addressed), not insert_rows(table_oid), which would fan out
+                // to every index of the table and re-stage it into pre-existing indexes too
+                // (test_create_index_backfill_addressing). This await's contract returns void; errors surface
+                // later through commit_inserts (test_create_index_catchup_refusal).
                 const auto& batch_chunk = *reply.batch;
                 const auto* row_ids = batch_chunk.row_ids.data<int64_t>();
                 uint64_t run_start = 0;
@@ -265,28 +208,15 @@ namespace components::operators {
                 co_return;
             }
 
-            // NO BASE-TABLE APPEND RANGE IS RECORDED HERE, AND RECORDING ONE DESTROYS DATA. dml_append_range_t
-            // names PHYSICAL ROWS THIS STATEMENT APPENDED TO THE TABLE, and this operator appends none: it reads
-            // the table and writes to the INDEX. A range of {table_oid_, 0, backfilled_count} would name every row
-            // the scan just READ, as if this statement had written them.
-            //
-            // On the success path that goes unnoticed, because the DDL commit clears exec_result.dml_appends before
-            // the commit operator sees it (routing them would storage-re-commit already-committed rows) and the
-            // index is published through the commit_id back-channel instead. On the FAILURE path the executor folds
-            // exec_result.dml_appends into one storage_revert_appends — so a CREATE INDEX that failed would
-            // UN-APPEND THE FIRST backfilled_count ROWS OF THE TABLE ITSELF: a refused WAL catchup over a 40-row
-            // table left the table answering with 0 rows.
-            //
-            // The pending index entries this loop created are not orphaned by the absence of a range: every failure
-            // exit calls abandon_build, which drops the engine outright, and the failure exits after this operator
-            // succeeds go through the executor's own undo_create_index (also a drop_index).
+            // No dml_append_range_t is recorded here: naming the scanned rows as "appended" would make a failed
+            // CREATE INDEX UN-APPEND those real table rows via storage_revert_appends (observed: a refused
+            // catchup over a 40-row table left it answering with 0 rows). The index publishes via the commit_id
+            // back-channel instead; failure exits drop the engine via abandon_build.
         }
 
-        // CREATE INDEX bounded-retry WAL catchup. The snapshot scan above may have missed rows committed
-        // concurrently with the build, so re-apply every PHYSICAL_{INSERT,DELETE,UPDATE} for table_oid written
-        // after build_start_wal_position (retention-guarded above) to the in-memory index. Bounded retry guards
-        // against write-heavy workloads that never quiesce; each iteration advances catchup_start_wal to the max
-        // wal_id seen, so it terminates once load() finds nothing past the watermark.
+        // CREATE INDEX bounded-retry WAL catchup: re-apply every PHYSICAL_{INSERT,DELETE,UPDATE} written after
+        // build_start_wal_position to catch rows committed concurrently with the snapshot scan above. Bounded
+        // retry guards against write-heavy workloads that never quiesce.
         constexpr int MAX_CATCHUP_ITERATIONS = 10;
         services::wal::id_t catchup_start_wal = build_start_wal_position;
         bool converged = false;
@@ -303,11 +233,8 @@ namespace components::operators {
                                                            catchup_start_wal);
             auto wal_records_result = co_await std::move(lf);
             if (wal_records_result.has_error()) {
-                // An empty list means "the catchup has converged", so `load` must REFUSE rather than answer empty
-                // for a journal that cannot show the window whole (a break that HIDES ids inside it, not merely one
-                // that ends it) — otherwise an unreadable segment converges the loop and the index is published
-                // missing every row that segment described. The refusal has to take the engine with it: a registered
-                // engine whose backfill stopped early is what the planner would answer from.
+                // load() must REFUSE (not answer empty) on an unreadable WAL segment: an empty reply here means
+                // "converged" and would silently publish the index missing every row that segment described.
                 set_error(wal_records_result.error());
                 mark_failed();
                 co_await abandon_build(resource_);
@@ -321,22 +248,14 @@ namespace components::operators {
             }
 
             services::wal::id_t max_wal_id_seen = catchup_start_wal;
-            // Non-const iteration so rec.physical_data can be moved into the apply_wal_record_for_index message.
-            // Replayed entries are tagged with the CREATE INDEX txn_id and stay PENDING until the post-pipeline
-            // commit_inserts publishes them with the scan rows. DELETE/UPDATE: the WAL record ships only row_ids,
-            // but mark_delete_row needs the original key columns, so we storage_fetch(row_ids) to recover the OLD
-            // chunk (O(deleted_rows) reads per iteration). UPDATE is replayed as two messages (NEW-insert +
-            // synthesized OLD-delete).
+            // Replayed entries stay PENDING until commit_inserts publishes them with the scan rows. DELETE/UPDATE
+            // WAL records ship only row_ids, so mark_delete_row's key columns are recovered via
+            // storage_fetch(row_ids); UPDATE replays as two messages (NEW-insert + synthesized OLD-delete).
             //
-            // Two-phase within this WAL batch:
-            //   Phase 1 sends every OLD-chunk storage_fetch (DELETE/UPDATE) to the disk mailbox without awaiting —
-            //   the fetches are mutually independent (distinct row-id sets) — and also advances max_wal_id_seen.
-            //   Phase 2 awaits them back into a per-record old_chunk slot.
-            //   Phase 3 replays the apply_wal_record_for_index messages in WAL order to the SAME manager_index
-            //   mailbox; FIFO on that single mailbox preserves the replay order even though the sends are not
-            //   awaited in the loop, so awaiting (phase 4) is completion-sync only.
-            // A record's OLD-delete apply consumes the OLD chunk fetched for the SAME record, so the fetch await
-            // (phase 2) must complete before the matching apply send (phase 3) — the phase split guarantees that.
+            // Four phases: (1) send every OLD-chunk fetch unawaited (mutually independent, distinct row-id
+            // sets); (2) await them into per-record slots; (3) send apply_wal_record_for_index in WAL order to
+            // the same manager_index mailbox (FIFO preserves order without awaiting here); (4) await completion.
+            // A record's OLD-delete apply needs its own fetch done first, which the phase split guarantees.
             std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> old_chunks(resource_);
             old_chunks.resize(wal_records.size());
             std::pmr::vector<
@@ -360,14 +279,10 @@ namespace components::operators {
                     continue;
                 }
 
-                // Recover the OLD key chunks for DELETE/UPDATE. If the fetch cannot run or returns empty (rows
-                // physically gone), the slot stays an empty batch, which the manager tolerates BY CONTRACT: its
-                // catchup applies an insert leg only and drops the delete leg whole (an undecided journal delete
-                // may not shrink an index — manager_index.cpp, the missing-leg note). What is NOT tolerated does
-                // not ride the WAL-id convergence check below — that check only proves the journal went quiet. The
-                // real guard is the manager's: a record its registry cannot place, or a staging an agent refuses,
-                // is RECORDED against this build's transaction (catchup_failures_) and refuses the commit_inserts
-                // that publishes the build.
+                // Empty OLD-chunk fetch (rows physically gone) is tolerated: manager_index_t drops the delete leg
+                // and keeps the insert leg only (services/index/manager_index.cpp). A genuinely bad record instead
+                // fails via catchup_failures_ refusing commit_inserts — NOT via the WAL-id convergence check below,
+                // which only proves the journal went quiet.
                 const bool needs_old_chunk = (rec.record_type == services::wal::wal_record_type::PHYSICAL_DELETE ||
                                               rec.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) &&
                                              !rec.physical_row_ids.empty() &&
@@ -388,10 +303,9 @@ namespace components::operators {
                                                                 // No projection: the backfill hands whole rows
                                                                 // to the index engine's chunk binding.
                                                                 std::vector<size_t>{},
-                                                                // RAW, and an EMPTY transaction_data is NOT a
-                                                                // substitute: these rows are read BECAUSE they
-                                                                // were deleted, and an empty txn means "see
-                                                                // everything COMMITTED", which hides them.
+                                                                // RAW + the real txn, not empty transaction_data:
+                                                                // empty means "committed only", hiding these
+                                                                // just-deleted rows.
                                                                 components::table::transaction_data{},
                                                                 components::table::fetch_visibility_t::RAW,
                                                                 // The backfill needs every named row's old
@@ -402,10 +316,9 @@ namespace components::operators {
                 }
             }
 
-            // Phase 2: await every fetch back into its slot. An ERROR reply is NOT the tolerated EMPTY batch ("the
-            // rows are physically gone", which manager_index logs+skips): an index caught up from silently empty OLD
-            // chunks diverges from the table, so the CREATE INDEX must fail loudly instead. The first error wins, but
-            // every in-flight future is still awaited (completion-sync) so no reply lands on an abandoned continuation.
+            // Phase 2: an ERROR reply is NOT the tolerated EMPTY batch ("rows physically gone") — an index caught
+            // up from silently-empty OLD chunks diverges from the table, so this must fail loudly. First error
+            // wins, but every future is still awaited so none lands on an abandoned continuation.
             core::error_t fetch_error = core::error_t::no_error();
             for (std::size_t i = 0; i < fetch_futures.size(); ++i) {
                 auto fetched_r = co_await std::move(fetch_futures[i]);
@@ -418,9 +331,8 @@ namespace components::operators {
                 old_chunks[fetch_slots[i]] = std::move(fetched_r.value());
             }
             if (fetch_error.contains_error()) {
-                // Mirror the streaming-scan / non-convergence exits: the index was never
-                // published and no snapshot saw it, so release the WAL retention guard
-                // before failing so the next checkpoint can truncate freely.
+                // Release the WAL retention guard before failing (mirrors the streaming-scan exit) so the
+                // next checkpoint can truncate freely.
                 if (build_start_registered) {
                     auto [_u, uf] =
                         actor_zeta::otterbrix::send(ctx->wal_address,
@@ -496,11 +408,9 @@ namespace components::operators {
                 }
             }
 
-            // Completion-sync only. apply_wal_record_for_index's contract returns void,
-            // so a refused apply cannot answer through these futures — the manager
-            // records it against this build's txn (catchup_failures_) and refuses the
-            // build's commit_inserts, the one door it must pass to publish (proven
-            // end-to-end by test_create_index_catchup_refusal).
+            // Completion-sync only: apply_wal_record_for_index returns void, so a refused apply surfaces later
+            // via catchup_failures_ refusing commit_inserts, not through these futures
+            // (test_create_index_catchup_refusal).
             for (auto& af : apply_futures) {
                 co_await std::move(af);
             }
@@ -514,9 +424,8 @@ namespace components::operators {
             catchup_start_wal = max_wal_id_seen;
         }
         if (!converged) {
-            // Graceful fail: the index was never published and no snapshot saw it, so it is
-            // immediately GC-able — but only once the engine is out of the registry, which
-            // abandon_build does along with the retention-guard release.
+            // Graceful fail: not published, so GC-able once abandon_build drops the engine and
+            // releases the retention guard.
             set_error(core::error_t{core::error_code_t::index_create_fail,
                                     std::pmr::string{"CREATE INDEX failed to converge after MAX_CATCHUP_ITERATIONS "
                                                      "on high-write table. Retry during low-traffic window. "
@@ -570,10 +479,8 @@ namespace components::operators {
                                                         std::move(valid_row));
             auto rng_r = co_await std::move(wf);
             if (rng_r.has_error()) {
-                // This is the row that flips the index to indisvalid. Refused, the index stays
-                // invalid on disk — but the ENGINE is registered and the planner reads the
-                // registry, not the row, so "no reader will use it" only holds once the
-                // engine is gone too.
+                // This row flips indisvalid; if refused, the engine stays registered (the planner
+                // reads the registry, not the row) until abandon_build removes it.
                 set_error(rng_r.error());
                 mark_failed();
                 co_await abandon_build(resource_);

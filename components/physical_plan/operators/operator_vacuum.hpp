@@ -6,25 +6,14 @@ namespace components::operators {
 
     // VACUUM — global no-arg operation.
     //
-    // Steps (in await_async_and_resume):
-    //   1. manager_disk_t::vacuum_all — for every user storage, cleanup_versions (drop tuple versions older
-    //      than lowest_active_start_time). Implemented globally on the disk side; called once. It ANSWERS how
-    //      many storages it renumbered.
-    //   2. manager_index_t::cleanup_all_versions — called once if index_address is set.
-    //   3. An index rebuild, IF AND ONLY IF step 1 reported a renumbering.
-    //   4. pg_computed_column GC (tombstones + stale versions) and the physical column compaction for
-    //      relkind='g' tables, driven by a drained pg_class scan.
+    // Steps: 1) manager_disk_t::vacuum_all (cleanup_versions per storage; answers how many were
+    // renumbered). 2) manager_index_t::cleanup_all_versions. 3) index rebuild, ONLY IF step 1
+    // reported a renumbering. 4) pg_computed_column GC + physical column compaction for relkind='g'.
     //
-    // ON STEP 3, AND WHY IT IS CONDITIONAL. A full rebuild is owed for exactly one reason: something moved a
-    // physical row id, because that is what an index entry stores. Only data_table_t::compact does, and its
-    // single call site is agent_disk_t::checkpoint_inner — a route VACUUM does not take, so an unconditional
-    // rebuild pays a drained scan of every table plus a clear-and-refill of every index for a renumbering
-    // that never happened. The condition is a FACT rather than a guess: vacuum_all returns the count,
-    // produced inside vacuum_inner at the line a compact would occupy, so re-enabling compaction there
-    // re-arms this rebuild without anyone having to remember. And when it does fire it calls
-    // services::index::repopulate_indexes_after_compaction — the SAME driver the CHECKPOINT statement and
-    // the WAL auto-checkpoint use — rather than a third longhand copy of the loop, which is how the
-    // auto-checkpoint came to have no rebuild at all.
+    // Step 3 fires only because compact() moves row ids (indexes store them), and compact()'s only
+    // call site (checkpoint_inner) is a route VACUUM doesn't take — so an unconditional rebuild would
+    // almost always be wasted work. Uses services::index::repopulate_indexes_after_compaction, the
+    // same driver as CHECKPOINT/auto-checkpoint.
     //
     // Reads pipeline_context.lowest_active_start_time (set by the executor from txn_manager_t).
     class operator_vacuum_t final : public read_write_operator_t {

@@ -1,17 +1,6 @@
-// ============================================================================
-// A PLAN THAT DECLARES UPSERT MUST NOT BE EXECUTED AS A PLAIN UPDATE.
-//
-// node_update_t carries an `upsert` flag and PRINTS it ($upsert: 1), so a plan
-// built with it asserts insert-or-update semantics. operator_update accepted the
-// flag into upsert_ and then never read it: an upsert plan whose match found
-// nothing reported SUCCESS with 0 affected rows — no insert, no error, and
-// nothing anywhere to say the promised semantics were not delivered. No SQL
-// reaches this flag (the grammar has neither `upsert` nor ON CONFLICT); the
-// logical-plan API does, which is how this test drives it.
-//
-// Rule 6: an engine that does not implement what the plan declares refuses the
-// plan, loudly, instead of executing a quieter statement in its place.
-// ============================================================================
+// node_update_t's `upsert` flag is refused by operator_update rather than run as a
+// plain UPDATE reporting success with 0 rows. No SQL reaches this flag (no `upsert`/ON CONFLICT
+// in the grammar) — only the logical-plan API does, which is how this test drives it.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

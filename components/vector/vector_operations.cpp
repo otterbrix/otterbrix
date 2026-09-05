@@ -1002,24 +1002,19 @@ namespace components::vector::vector_ops {
               uint64_t source_offset,
               uint64_t target_offset) {
         assert(source_offset <= source_count);
-        // THE PRECONDITION IS LOGICAL EQUALITY, AND IT IS STRICTER THAN THE PHYSICAL ONE A
-        // CALLER IS TEMPTED TO CHECK. The overload below dispatches on the SOURCE's physical
-        // type and writes target.data<T>() with that same T, so the two mismatches it can be
-        // handed are not the same kind of wrong:
-        //   * physical types AGREE, logical types do not (DATE/INTEGER over INT32;
-        //     TIME/TIMESTAMP/BIGINT/DECIMAL over INT64) — a well-defined bit copy that answers
-        //     with the wrong VALUE, e.g. a day count read as an integer key;
-        //   * physical types DISAGREE — a type-punned write through the target's buffer.
-        // Under NDEBUG this assert is gone and both proceed, which is how a caller guarding on
-        // to_physical_type() alone (fk_hash_semijoin's key normalization, services/disk/
-        // agent_disk.cpp) came to SIGABRT in Debug and silently mis-answer in Release on the
-        // same statement. A caller that cannot promise logical equality must cast first.
+        // The precondition is LOGICAL equality, stricter than the physical one a caller is
+        // tempted to check: this overload dispatches on the SOURCE's physical type and writes
+        // target.data<T>() with that same T, so physical-agree/logical-differ (DATE/INTEGER over
+        // INT32) copies the wrong VALUE, and physical-disagree is a type-punned write. A caller
+        // guarding on to_physical_type() alone (fk_hash_semijoin's key normalization,
+        // services/disk/agent_disk.cpp) hit exactly this: SIGABRT in Debug, silent mis-answer in
+        // Release, since NDEBUG drops the assert. A caller that can't promise logical equality
+        // must cast first.
         assert(source.type() == target.type());
-        // NOTE, unrelated to the pair above and NOT fixed here: this assert is stricter than the
-        // body it delegates to. The 7-argument overload gives NA on either side an explicit
-        // meaning (copy into NA writes nothing; copy out of NA nulls every target row), so an
-        // NA/typed pair is supported THERE and refused HERE — and only in Debug. Making the two
-        // agree needs a caller that actually reaches it, which is not shown yet.
+        // Unrelated, not fixed here: this assert is stricter than the 7-argument overload it
+        // delegates to, which gives NA on either side an explicit meaning (copy into NA writes
+        // nothing; copy out of NA nulls every target row) — so an NA/typed pair is supported
+        // there and refused here, in Debug only.
         uint64_t copy_count = source_count - source_offset;
         copy(source, target, indexing, source_count, source_offset, target_offset, copy_count);
     }
@@ -1054,11 +1049,10 @@ namespace components::vector::vector_ops {
                     }
                 }
             } else {
-                // `assert(false)` with no else here copies NOTHING and writes no validity
-                // under NDEBUG, while the caller (operator_update's ARRAY-element leg) reports
-                // success -- an UPDATE of one element of a string-array column silently changes
-                // nothing. Strings copy like every other leg; set_value deep-copies the payload
-                // into the target's own string heap.
+                // `assert(false)` with no else here copied NOTHING under NDEBUG while the caller
+                // (operator_update's ARRAY-element leg) reported success — an UPDATE of one
+                // element of a string-array column silently changed nothing. set_value
+                // deep-copies the payload into the target's own string heap.
                 auto sdata = source.data<std::string_view>();
                 auto& smask = source.validity();
                 auto& tmask = target.validity();
@@ -1163,7 +1157,7 @@ namespace components::vector::vector_ops {
                     if (valid) {
                         // A bare static_cast TRUNCATES silently: INT32 70000 -> INT16 4464,
                         // and an out-of-range index key then hashes equal to an unrelated stored
-                        // key. Out of range is a refusal (rule 6).
+                        // key. Out of range is a refusal.
                         if (!cast_value_fits<DstType, SrcType>(sdata[i])) {
                             return i;
                         }

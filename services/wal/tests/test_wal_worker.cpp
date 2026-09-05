@@ -61,14 +61,10 @@ inline std::pmr::vector<data_chunk_t> to_batch(std::unique_ptr<data_chunk_t> chu
     return batch;
 }
 
-// PID-QUALIFIED, the same way every other fixture root in this directory already is
-// (test_wal_txn_id_reuse.cpp:66, test_wal_torn_write.cpp:30, test_wal_load_hole.cpp:67, ...).
-// ~test_wal_worker ends in remove_all(path_), and the scope-local cases below call
-// remove_all on their own subtree too, so a second run of this binary against a literal
-// shared root deletes the segments the first run is still writing. That is not theoretical
-// here: this tree is built in several directories at once and `ctest -j` is run from more
-// than one of them -- the await_ready deadline below already says "under TSAN or
-// parallel-ctest". test_wal_manager.cpp carries the same root for the same reason.
+// PID-QUALIFIED, like every other fixture root in this directory: a literal shared root would
+// let a second concurrent run of this binary delete segments the first run is still writing —
+// not theoretical, since this tree builds in several directories at once and `ctest -j` runs
+// from more than one of them. test_wal_manager.cpp carries the same root for the same reason.
 static const std::filesystem::path base_wal_worker_path =
     "/tmp/otterbrix_test_wal_worker_" + std::to_string(static_cast<long>(::getpid()));
 
@@ -136,13 +132,10 @@ struct test_wal_worker {
                 size_t row_count,
                 uint64_t row_start = 0,
                 catalog_ns::oid_t table_oid = kTestTableOid) {
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: off THAT singleton the payload never reaches core::pmr::otterbrix_resource --
-        // which under ASAN IS resource_tracer_t, the only thing that would report a chunk
-        // still alive after the manager is gone. resource_ outlives the asynchronous processing
-        // three times over: ~test_wal_worker stops the scheduler and resets manager_,
-        // resource_ is declared BEFORE the manager so it is destroyed AFTER it, and
-        // otterbrix_resource is thread-safe in both builds.
+        // Built on the fixture's own arena, never the process-global new_delete_resource
+        // singleton (which under ASAN is resource_tracer_t, the only thing that would report a
+        // chunk still alive after the manager is gone): resource_ is declared BEFORE the manager
+        // so it outlives it through teardown.
         auto* arena = &resource_;
         auto chunk = gen_data_chunk(row_count, arena);
         auto chunk_ptr = to_batch(std::make_unique<data_chunk_t>(std::move(chunk)));
@@ -180,13 +173,8 @@ struct test_wal_worker {
                 const std::pmr::vector<int64_t>& row_ids,
                 size_t row_count,
                 catalog_ns::oid_t table_oid = kTestTableOid) {
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: off THAT singleton the payload never reaches core::pmr::otterbrix_resource --
-        // which under ASAN IS resource_tracer_t, the only thing that would report a chunk
-        // still alive after the manager is gone. resource_ outlives the asynchronous processing
-        // three times over: ~test_wal_worker stops the scheduler and resets manager_,
-        // resource_ is declared BEFORE the manager so it is destroyed AFTER it, and
-        // otterbrix_resource is thread-safe in both builds.
+        // Built on the fixture's own arena (never the process-global singleton — see the note
+        // on the first occurrence in this file).
         auto* arena = &resource_;
         auto chunk = gen_data_chunk(row_count, arena);
         auto chunk_ptr = to_batch(std::make_unique<data_chunk_t>(std::move(chunk)));
@@ -389,13 +377,8 @@ TEST_CASE("wal_worker::corruption_stop") {
 
         // Write several records in one transaction.
         for (int i = 0; i < 5; ++i) {
-            // Built on the fixture's OWN arena, never the process-global new_delete_resource
-            // singleton: off THAT singleton the payload never reaches core::pmr::otterbrix_resource --
-            // which under ASAN IS resource_tracer_t, the only thing that would report a chunk
-            // still alive after the manager is gone. resource outlives the asynchronous processing
-            // three times over: the enclosing block stops the scheduler and drops the manager,
-            // resource is declared BEFORE the manager so it is destroyed AFTER it, and
-            // otterbrix_resource is thread-safe in both builds.
+            // Built on the fixture's own arena (never the process-global singleton — see the note
+            // on the first occurrence in this file).
             auto* arena = &resource;
             auto chunk = gen_data_chunk(4, arena);
             auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -516,13 +499,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         scheduler->start();
 
         {
-            // Built on the fixture's OWN arena, never the process-global new_delete_resource
-            // singleton: off THAT singleton the payload never reaches core::pmr::otterbrix_resource --
-            // which under ASAN IS resource_tracer_t, the only thing that would report a chunk
-            // still alive after the manager is gone. resource outlives the asynchronous processing
-            // three times over: the enclosing block stops the scheduler and drops the manager,
-            // resource is declared BEFORE the manager so it is destroyed AFTER it, and
-            // otterbrix_resource is thread-safe in both builds.
+            // Built on the fixture's own arena (never the process-global singleton — see the note
+            // on the first occurrence in this file).
             auto* arena = &resource;
             auto chunk = gen_data_chunk(8, arena);
             auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -630,13 +608,8 @@ TEST_CASE("wal_worker::segment_rotation") {
     // Write many records with enough data to exceed the small segment size.
     actor_zeta::unique_future<core::result_wrapper_t<services::wal::id_t>> last_fut;
     for (uint64_t i = 0; i < 50; ++i) {
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: off THAT singleton the payload never reaches core::pmr::otterbrix_resource --
-        // which under ASAN IS resource_tracer_t, the only thing that would report a chunk
-        // still alive after the manager is gone. resource outlives the asynchronous processing
-        // three times over: the enclosing scope stops the scheduler and drops the manager,
-        // resource is declared BEFORE the manager so it is destroyed AFTER it, and
-        // otterbrix_resource is thread-safe in both builds.
+        // Built on the fixture's own arena (never the process-global singleton — see the note
+        // on the first occurrence in this file).
         auto* arena = &resource;
         auto chunk = gen_data_chunk(20, arena);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -682,13 +655,8 @@ TEST_CASE("wal_worker::spanning_record") {
 
     // Write a single large insert.
     {
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: off THAT singleton the payload never reaches core::pmr::otterbrix_resource --
-        // which under ASAN IS resource_tracer_t, the only thing that would report a chunk
-        // still alive after the manager is gone. env.resource_ outlives the asynchronous processing
-        // three times over: ~test_wal_worker stops the scheduler and resets manager_,
-        // env.resource_ is declared BEFORE the manager so it is destroyed AFTER it, and
-        // otterbrix_resource is thread-safe in both builds.
+        // Built on the fixture's own arena (never the process-global singleton — see the note
+        // on the first occurrence in this file).
         auto* arena = &env.resource_;
         std::pmr::vector<components::types::complex_logical_type> types(arena);
         types.emplace_back(components::types::logical_type::BIGINT, "id");
@@ -752,13 +720,8 @@ TEST_CASE("wal_worker::fsync_full_mode") {
 
     // Write + commit.
     {
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: off THAT singleton the payload never reaches core::pmr::otterbrix_resource --
-        // which under ASAN IS resource_tracer_t, the only thing that would report a chunk
-        // still alive after the manager is gone. resource outlives the asynchronous processing
-        // three times over: the enclosing scope stops the scheduler and drops the manager,
-        // resource is declared BEFORE the manager so it is destroyed AFTER it, and
-        // otterbrix_resource is thread-safe in both builds.
+        // Built on the fixture's own arena (never the process-global singleton — see the note
+        // on the first occurrence in this file).
         auto* arena = &resource;
         auto chunk = gen_data_chunk(10, arena);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),
@@ -826,13 +789,8 @@ TEST_CASE("wal_worker::fsync_off_mode") {
     scheduler->start();
 
     {
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: off THAT singleton the payload never reaches core::pmr::otterbrix_resource --
-        // which under ASAN IS resource_tracer_t, the only thing that would report a chunk
-        // still alive after the manager is gone. resource outlives the asynchronous processing
-        // three times over: the enclosing scope stops the scheduler and drops the manager,
-        // resource is declared BEFORE the manager so it is destroyed AFTER it, and
-        // otterbrix_resource is thread-safe in both builds.
+        // Built on the fixture's own arena (never the process-global singleton — see the note
+        // on the first occurrence in this file).
         auto* arena = &resource;
         auto chunk = gen_data_chunk(10, arena);
         auto [ns, fut] = actor_zeta::otterbrix::send(manager->address(),

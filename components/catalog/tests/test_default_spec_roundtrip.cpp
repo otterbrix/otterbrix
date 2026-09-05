@@ -11,17 +11,11 @@
 
 // pg_attribute.attdefspec round-trip.
 //
-// The flat-text form this replaced ("type_name:value") lost data in four ways, all of
-// them silently, and all of them by writing "" — which the decoder read back as "this
-// column has no default":
-//   1. composite types were not persisted AT ALL (scalar_type_to_name returned "" and
-//      the caller forwarded that as success), so a DEFAULT on ARRAY / LIST / STRUCT
-//      simply disappeared;
-//   2. nor were most scalars: the encoder's switch covered BOOLEAN, the integers,
-//      FLOAT/DOUBLE and STRING_LITERAL, so DATE, TIME, TIMESTAMP and DECIMAL fell into
-//      `default: return ""` the same way;
-//   3. an explicit `DEFAULT NULL` was indistinguishable from having no default (both
-//      decoded to nullopt) even though the checks used the distinction;
+// The flat-text form this replaced ("type_name:value") silently lost data by writing ""
+// (read back as "no default") in four ways:
+//   1. composite types were not persisted AT ALL;
+//   2. most non-trivial scalars (DATE/TIME/TIMESTAMP/DECIMAL) fell into the same "" case;
+//   3. an explicit `DEFAULT NULL` was indistinguishable from having no default;
 //   4. floats were rendered by std::to_string — six digits — so a DOUBLE default was
 //      rounded on its way to disk.
 // Each case below is one of those.
@@ -30,17 +24,13 @@ using namespace components::catalog;
 using namespace components::types;
 
 namespace {
-    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
-    // path, and that message belongs to the caller, so the caller has to name an arena it owns
-    // rather than reach for the process-global one (rule 14).
+    // This file's one DECIMAL arena; not the process-global one.
     std::pmr::memory_resource* decimal_resource() {
         static core::pmr::otterbrix_resource arena;
         return &arena;
     }
 
-    // create_decimal reports an out-of-window (width, scale) through core::error_t now,
-    // instead of an assert that vanished under NDEBUG. Every literal these tests use is
-    // inside the window, so the helper checks the result and hands back the type.
+    // Every width/scale used in this file is in-window, so the check below never fires.
     components::types::complex_logical_type
     make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
         auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
@@ -50,12 +40,9 @@ namespace {
 } // namespace
 
 namespace {
-    // The same arena the DECIMAL helper above names, for the same reason (rule 14): this file
-    // has one answer to "where does this live", not two.
     auto* g_resource = decimal_resource();
 
-    // The persisted path, both directions: encode as CREATE TABLE would, decode as the
-    // plan does, with the column type (which lives next door in atttypspec).
+    // Encode as CREATE TABLE would, decode as the plan does (column type from atttypspec).
     std::optional<logical_value_t> round_trip(const logical_value_t& v, const complex_logical_type& column_type) {
         std::string spec;
         REQUIRE_FALSE(encode_default_spec(g_resource, v, spec).contains_error());
@@ -238,9 +225,7 @@ TEST_CASE("catalog::default_spec::explicit_null_default_is_not_absence") {
 }
 
 TEST_CASE("catalog::default_spec::unencodable_default_is_an_error") {
-    // Rule 6. A type the value codec cannot carry must FAIL at CREATE TABLE / ALTER SET
-    // DEFAULT. The old encoder answered "" here, which every reader downstream took to
-    // mean the column had no default — a loss nobody was told about.
+    // A type the value codec cannot carry must FAIL, not silently encode as "".
     const logical_value_t hugeint(g_resource, static_cast<int128_t>(1) << 100);
     std::string spec;
     auto ec = encode_default_spec(g_resource, hugeint, spec);
@@ -254,10 +239,7 @@ TEST_CASE("catalog::default_spec::unencodable_default_is_an_error") {
 }
 
 TEST_CASE("catalog::default_spec::corrupt_spec_is_reported_not_ignored") {
-    // A non-empty spec that does not decode is CATALOG CORRUPTION. Reading it as "no
-    // default" is exactly the silent path this encoding exists to close: the constraint
-    // layer would clear a row on the strength of a default the write path then failed
-    // to apply.
+    // A non-empty spec that fails to decode is CATALOG CORRUPTION, not "no default".
     const complex_logical_type column_type{logical_type::BIGINT};
     std::optional<logical_value_t> out;
 

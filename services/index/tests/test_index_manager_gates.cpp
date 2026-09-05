@@ -1,10 +1,6 @@
-// MANAGER-LEVEL GATES.
-//
-// Each case drives manager_index_t's own handlers directly with the one agent pumped by
-// hand, the way test_index_delete_horizon.cpp and test_index_catchup_delete_bucket.cpp
-// do. The helpers are copied from there deliberately, for the reason stated there: a
-// shared helper header for these files would be the start of a test framework nobody
-// asked for.
+// Manager-level gates. Each case drives manager_index_t's own handlers directly with the one
+// agent pumped by hand, as test_index_delete_horizon.cpp and test_index_catchup_delete_bucket.cpp
+// do; the helpers are duplicated from there rather than shared, per those files' note.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -257,25 +253,17 @@ TEST_CASE("services::index::manager::a catchup record the registry cannot place 
     std::filesystem::remove_all(path);
 }
 
-// THE STAGING LEG MUST FEED THE INDEX IT NAMES, AND REFUSE WHEN IT CANNOT FIND IT.
+// apply_wal_record_for_index takes an indexrelid, but used to look up only the TABLE and stage
+// into EVERY index registered for it, using index_oid solely in its log lines. Two consequences:
 //
-// apply_wal_record_for_index takes an indexrelid and its declaration says it "locates the engine
-// for (table_oid, index_oid)". It did not: the body looked the TABLE up and then staged the batch
-// into EVERY record registered for that oid, using index_oid in its log lines and nowhere else. Two
-// consequences, and the second is why this case exists:
-//
-//   * a build fed the table's other indexes rows they already held -- not a wrong answer,
-//     because both stores dedup a repeated (key, row id) pair, but a full extra staging and
-//     publication per pre-existing index (measured at the SQL surface by
+//   * a build fed the table's other indexes rows they already held -- deduped, not wrong, but a
+//     full extra staging and publication per pre-existing index (measured at the SQL surface by
 //     integration/cpp/test/test_create_index_backfill_addressing.cpp);
-//   * an indexrelid the registry does NOT hold was INDISTINGUISHABLE from one it does. A record
-//     naming an unregistered index means the build's rows are going nowhere, and the fan-out
-//     answered it by staging into the table's other indexes and returning quietly. The
-//     handler's contract returns void, so the refusal is recorded against the build's
-//     transaction and surfaced at the commit_inserts the build must pass to publish.
+//   * an unregistered indexrelid was indistinguishable from a registered one: its rows went
+//     nowhere while the fan-out staged into the table's other indexes and returned quietly. Now
+//     recorded against the build's transaction and surfaced at its commit_inserts.
 //
-// This is the channel the MAIN backfill leg now depends on as well --
-// operator_create_index_backfill_t stages its scan runs through this same addressed door.
+// operator_create_index_backfill_t's main backfill leg depends on this same addressed door too.
 TEST_CASE("services::index::manager::a staging record naming an unregistered index fails the build's commit") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -284,8 +272,9 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
     auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
 
-    // The table IS registered and DOES carry an index -- so the #122 gate (no registry entry
-    // for the table) cannot be what answers here. The record below names a DIFFERENT index.
+    // The table IS registered and DOES carry an index -- so the previous case's gate (no
+    // registry entry for the table) cannot be what answers here. The record below names a
+    // DIFFERENT index.
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
                       ->bootstrap_index_sync(kTableOid,
@@ -324,8 +313,8 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
         REQUIRE(commit.contains_error());
     }
 
-    // The abort mirror clears it, exactly as it does for the #122 refusal. This table DOES
-    // carry a live agent, so the revert is a real round trip and has to be pumped.
+    // The abort mirror clears it, exactly as it does for the previous case's refusal. This
+    // table DOES carry a live agent, so the revert is a real round trip and has to be pumped.
     {
         auto agents = manager->owned_btree_agents_sync();
         REQUIRE(agents.size() == 1);

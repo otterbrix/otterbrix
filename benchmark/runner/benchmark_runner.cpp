@@ -28,11 +28,8 @@ public:
 
 private:
     static configuration::config make_config(const benchmark_configuration_t& config) {
-        // One base directory, named, under the CWD -- not the bare `current_path()/"disk"`
-        // and `current_path()/"wal"`. Hand-assigning those splits one database across two roots
-        // (create_config keeps both trees under `<base>/wal`) and drops them straight into
-        // whatever directory the runner was launched from, which is how `disk/` and `wal/` end
-        // up in the repository root.
+        // One named base dir via create_config -- not bare `current_path()/"disk"` and
+        // `.../"wal"`, which scatter both into whatever directory the runner was launched from.
         auto cfg = configuration::config::create_config(std::filesystem::current_path() /
                                                         "otterbrix_benchmark_data");
         cfg.log.level = log_t::level::off;
@@ -347,15 +344,10 @@ benchmark_result_t benchmark_runner_t::run_single(benchmark_t& bench, const benc
     }
 
     try {
-        // Fresh persisted state per benchmark. Every disk instance points at the
-        // same base directory — see benchmark_instance_t::make_config — so without a reset
-        // each load() re-runs CREATE TABLE IF NOT EXISTS and appends its @load_csv rows
-        // onto the previously persisted table, doubling row counts across benchmarks
-        // (60k -> 120k -> 180k ...). Clear the persisted tree before opening the instance.
-        // Unconditional, not gated on `--disk`: with every table disk-backed, a run without
-        // that flag would accumulate silently.
-        // Best-effort (error_code, no throw): a missing dir is not an error, and the fresh
-        // instance recreates it.
+        // Fresh persisted state per benchmark: every instance points at the same base
+        // directory (benchmark_instance_t::make_config), so without a reset each load()
+        // reruns CREATE TABLE IF NOT EXISTS and appends onto the previous run's rows,
+        // doubling row counts across benchmarks (60k -> 120k -> 180k ...).
         if (!config.skip_load) {
             std::error_code ec;
             std::filesystem::remove_all(std::filesystem::current_path() / "otterbrix_benchmark_data", ec);

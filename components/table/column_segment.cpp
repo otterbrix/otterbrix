@@ -17,15 +17,12 @@ namespace components::table {
     namespace impl {
 
         static constexpr uint64_t DEFAULT_STRING_BLOCK_LIMIT = 4096;
-        // The marker is uint64 block id + int64 offset — the dictionary reservation, the writer
-        // and the reader MUST all agree on this width. An 8-byte value here makes
-        // write_string_marker (16 bytes) overrun the reservation and overwrite the previous
-        // dictionary entry, and read_string_marker memcpy 8 bytes into a uint32_t.
+        // Marker width (uint64 block id + int64 offset) must match the dictionary reservation
+        // (write_string_marker writes 16 bytes) and the reader's memcpy width.
         static constexpr uint64_t BIG_STRING_MARKER_BASE_SIZE = sizeof(uint64_t) + sizeof(int64_t);
         static constexpr uint64_t INVALID_BLOCK = uint64_t(-1);
-        // Overflow blocks are TRANSIENT buffer-manager blocks; their ids start at
-        // storage::MAXIMUM_BLOCK (1<<62). The old impl-local uint32(1<<30) was a second,
-        // different MAXIMUM_BLOCK that made every real overflow id fail is_valid.
+        // Must be storage::MAXIMUM_BLOCK: a second, different local MAXIMUM_BLOCK made every
+        // real overflow id fail is_valid.
         static constexpr uint64_t MAXIMUM_BLOCK = storage::MAXIMUM_BLOCK;
 
         struct string_location_t {
@@ -33,12 +30,8 @@ namespace components::table {
                 : block_id(block_id)
                 , offset(offset) {}
             string_location_t() = default;
-            // block_id has THREE legal states and no others:
-            //   INVALID_BLOCK        -> inline string, `offset` indexes the segment dictionary;
-            //   >= MAXIMUM_BLOCK     -> transient overflow block, live in this process only;
-            //   <  MAXIMUM_BLOCK     -> a real FILE block written by the checkpoint.
-            // Without the third state a checkpointed big string is unreadable after a reload:
-            // the marker names a transient block that died with the writing process.
+            // block_id: INVALID_BLOCK = inline (offset indexes the dictionary); >= MAXIMUM_BLOCK
+            // = transient overflow block; < MAXIMUM_BLOCK = a real FILE block from the checkpoint.
             bool is_overflow() const { return block_id != INVALID_BLOCK; }
             uint64_t block_id;
             int64_t offset;
@@ -54,19 +47,12 @@ namespace components::table {
 
         static constexpr uint16_t DICTIONARY_HEADER_SIZE = sizeof(dictionary_compression_header_t);
 
-        // The width of ONE element in a segment's RAW payload. This is not always
-        // complex_logical_type::size(): a LIST segment stores the uint64 child-offset per row
-        // (see the LIST legs of string-free append / fixed_size_scan / finalize_append, all of
-        // which use uint64_t), while the logical size is sizeof(list_entry_t) == 16.
-        //
-        // Every consumer that walks the payload as raw bytes -- the checkpoint's
-        // CONSTANT/RLE/DICTIONARY analysis and the compressed scan/fetch paths -- must use
-        // THIS width. Using the logical 16 for a LIST segment made the checkpoint compress
-        // twice the segment's real extent (folding whatever followed the offsets into the
-        // "values") and made the compressed scan write 16 bytes per row into a result vector
-        // sized 8 bytes per row: an 8 KiB heap overrun per 1024-row vector, reachable from a
-        // plain SELECT on a reloaded LIST column. It corrupted the pmr pool silently because
-        // the byte STREAM happened to round-trip, so only the overrun was wrong.
+        // Width of ONE element in a segment's RAW payload -- not always
+        // complex_logical_type::size(): a LIST segment stores a uint64 child-offset per row,
+        // while sizeof(list_entry_t) == 16. Every raw-byte consumer (checkpoint compression,
+        // compressed scan/fetch) must use this width; using 16 for LIST made the compressed
+        // scan write 16 bytes/row into an 8-byte/row result vector -- an 8 KiB heap overrun per
+        // 1024-row vector on a plain SELECT.
         uint64_t stored_element_size(const types::complex_logical_type& type) {
             if (type.to_physical_type() == types::physical_type::LIST) {
                 return sizeof(uint64_t);
@@ -113,7 +99,7 @@ namespace components::table {
             memcpy(&offset, target, sizeof(int64_t));
         }
 
-        // No throw: this runs on the scan/fetch hot path and across actor boundaries (rules 2/9).
+        // No throw: this runs on the scan/fetch hot path and across actor boundaries.
         // A dictionary offset outside the block is corruption; the caller turns `false` into a
         // data_corruption error on its own state channel.
         bool fetch_string_location(string_dictionary_container_t dict,
@@ -161,17 +147,10 @@ namespace components::table {
             return core::error_t(core::error_code_t::data_corruption, std::move(message));
         }
 
-        // The `default:` leg of every physical-type dispatch below. NOT dead code even now
-        // that the whole fixed-width family is covered: physical_type still carries STRUCT,
-        // UNION, ARRAY, NA, UNKNOWN and INVALID, and a segment is a leaf that owns bytes, so
-        // none of them can be served here (a STRUCT/ARRAY column owns no segment of its own —
-        // struct_column_data_t / array_column_data_t hand the work to the child columns).
-        //
-        // NOT a `throw std::logic_error`: that is the wrong channel twice over — rule 2
-        // (errors are core::error_t) and rule 9, since a read runs inside an actor-zeta
-        // coroutine whose unhandled_exception() aborts the PROCESS, so an unreadable column
-        // would take the whole database down instead of failing one statement. Loud, not
-        // fatal (rule 6).
+        // The `default:` leg of every physical-type dispatch below: STRUCT/ARRAY/UNION/NA/etc.
+        // own no segment of their own, so none can be served here. Reports core::error_t rather
+        // than throwing: a throw inside an actor-zeta coroutine aborts the whole process, not
+        // just the statement.
         core::error_t unsupported_segment_type_error(column_segment_t& segment, const char* what) {
             std::pmr::string message(segment.block->block_manager.buffer_manager.resource());
             message.append(what);
@@ -180,20 +159,11 @@ namespace components::table {
             return core::error_t(core::error_code_t::unimplemented_yet, std::move(message));
         }
 
-        // Resolve the block a big-string marker points at. TWO id domains, disjoint by
-        // construction:
-        //   * id >= MAXIMUM_BLOCK -> TRANSIENT block allocated by write_string_memory in this
-        //     process; it lives in state.overflow_blocks and dies with the process.
-        //   * id <  MAXIMUM_BLOCK -> a real FILE block. The checkpoint copies the payload there
-        //     and rewrites the marker; the reload registers it from the persisted list before
-        //     the first read (column_segment_t ctor). A marker in this domain that nobody
-        //     registered is corruption, NOT "look it up anyway": registering an arbitrary id
-        //     would read whatever else lives at that block.
-        //
-        // NOT fprintf + assert(false) + std::abort(): this is reachable from a plain SELECT,
-        // and killing the host process makes the database impossible to open. Rule 6 wants
-        // LOUD, not FATAL: report through the caller's error channel and let the scan/fetch
-        // unwind.
+        // Resolve the block a big-string marker points at. id >= MAXIMUM_BLOCK is a TRANSIENT
+        // block (state.overflow_blocks); id < MAXIMUM_BLOCK is a real FILE block, registered on
+        // reload from the persisted list. An unregistered id in either domain is corruption, not
+        // "look it up anyway" — reported through the caller's error channel, not
+        // assert+abort: this is reachable from a plain SELECT.
         std::shared_ptr<storage::block_handle_t>
         resolve_overflow_block(column_segment_t& segment, uint64_t block_id, core::error_t& error) {
             auto* raw_state = segment.segment_state();
@@ -251,13 +221,10 @@ namespace components::table {
                 return std::string_view(nullptr, 0);
             }
             if (location.is_overflow()) {
-                // Big string: the bytes live in a separate overflow block -- TRANSIENT while the
-                // segment is only in memory, a real FILE block once it has been checkpointed.
-                // The returned view borrows those bytes, so the pin must outlive it: park the
-                // handle in the fetch state's `handles` map (keyed by block id, exactly like the
-                // segment's own block) instead of pinning locally and releasing on return. A
-                // disk overflow block is evictable+reloadable, so a released pin really can
-                // move the bytes out from under the view.
+                // Big string: bytes live in a separate overflow block. The returned view
+                // borrows them, so the pin must outlive it -- park the handle in the fetch
+                // state's `handles` map rather than pinning locally and releasing on return (a
+                // disk overflow block is evictable+reloadable).
                 auto overflow = resolve_overflow_block(segment, location.block_id, state.fetch_error);
                 if (!overflow) {
                     return std::string_view(nullptr, 0);
@@ -305,10 +272,8 @@ namespace components::table {
                 borrowed =
                     std::string_view(reinterpret_cast<char*>(base_ptr + dict.end - location.offset), string_length);
             } else {
-                // Big-string overflow: the marker points at a separate overflow block
-                // holding [uint32 length][bytes]. Resolve, pin, then intern. The pin is
-                // local to this resolution and released when `pinned` destructs -- safe
-                // because the bytes are COPIED into the result-owned heap below.
+                // Big-string overflow: resolve, pin, then intern. The pin is local and
+                // released when `pinned` destructs -- safe since the bytes are copied below.
                 auto overflow = resolve_overflow_block(segment, location.block_id, error);
                 if (!overflow) {
                     return std::string_view(nullptr, 0);
@@ -336,12 +301,9 @@ namespace components::table {
 
             auto& buffer_manager = segment.block->block_manager.buffer_manager;
             auto block_size = segment.block_manager().block_size();
-            // One string's [uint32 length][bytes] record must fit ONE block, because the
-            // checkpoint persists it as one contiguous run inside one file block. Unchecked, the
-            // allocation below exceeds the block size for a string larger than a block; the
-            // payload then has no representable on-disk form at all, so it is silently dropped
-            // and the reload aborts. Refuse LOUDLY at write time instead of writing something
-            // that cannot survive a restart (rules 2/6 -- reported, not thrown, not a fallback).
+            // One string's [uint32 length][bytes] record must fit ONE block (the checkpoint
+            // persists it as one contiguous run). Refuse at write time rather than writing a
+            // payload with no representable on-disk form.
             if (static_cast<uint64_t>(total_length) > block_size) {
                 std::pmr::string message(buffer_manager.resource());
                 message.append("string value of ");
@@ -466,10 +428,8 @@ namespace components::table {
             if (state.result_outlives_pins) {
                 // The caller keeps this chunk after our pins are gone, so the bytes have to be the
                 // result's own. Same mechanism the bulk scan path uses.
-                // Guard the heap the same way string_scan_partial does: a STRING vector built by
-                // a data_chunk_t already carries one, but this leg is now also reached for a
-                // STRUCT FIELD's vector, and interning into a missing/wrong-typed buffer would be
-                // exactly the dangling read this branch exists to prevent.
+                // Guard the heap like string_scan_partial: this leg is now also reached for a
+                // STRUCT FIELD's vector, which may lack (or mistype) the auxiliary buffer.
                 auto aux_buffer = result.auxiliary();
                 if (!aux_buffer || aux_buffer->type() != vector::vector_buffer_type::STRING) {
                     aux_buffer = std::make_shared<vector::string_vector_buffer_t>(result.resource());
@@ -1099,41 +1059,29 @@ namespace components::table {
                                                                     *aux,
                                                                     state.scan_error);
                 previous_offset = base_data[static_cast<uint64_t>(start) + i];
-                // An unresolvable overflow block / a corrupt dictionary offset is not a
-                // per-cell hiccup: stop the vector immediately so the caller sees the error
-                // instead of a tail of silently empty strings. column_data_t::scan_vector and
-                // row_group_t propagate scan_error upward.
+                // Stop the vector immediately on error rather than leaving a tail of silently
+                // empty strings; column_data_t::scan_vector propagates scan_error upward.
                 if (state.scan_error.contains_error()) {
                     return;
                 }
             }
         }
 
-        // The arena a column segment's statistics live on, taken from the block the segment is
-        // built over. It is a function and not an inline dereference in the initializer list so
-        // that the check can stand AHEAD of the dereference it guards: segment_statistics_ is
-        // initialized from this resource, so a constructor BODY runs too late to say anything
-        // about a null handle.
-        //
-        // An invariant rather than a refusal, established by reading every construction site:
-        // create_segment forwards an error-checked register_transient_memory (make_shared /
-        // pin(...).block_handle(), never null) and column_data_t's checkpoint and reload paths
-        // forward block_manager_t::register_block, which returns a locked live entry or a
-        // make_shared. There is no caller that can deliver null, and no channel here to report
-        // it through. Under NDEBUG the check is gone and a null handle is a null dereference,
-        // which is the same answer this code gave before, one line later.
+        // A function, not an inline dereference in the initializer list, so the null-check can
+        // stand AHEAD of segment_statistics_'s own initialization from this resource (a
+        // constructor body would run too late). Every construction site is checked to never
+        // deliver null; under NDEBUG the assert is gone and a null handle just dereferences,
+        // same as before this check existed.
         static std::pmr::memory_resource* segment_arena(const std::shared_ptr<storage::block_handle_t>& block) {
             assert(block && "a column segment takes its arena from its block; the handle cannot be null");
             return block->block_manager.buffer_manager.resource();
         }
     } // namespace impl
 
-    // The block parameter is deliberately NOT named `block`: it used to shadow the member of
-    // that name, and the shadow killed the size guard below. `assert(!block || ...)` in the body
-    // read the PARAMETER, which the initializer list had already moved into the member, and a
-    // moved-from std::shared_ptr is guaranteed empty -- so `!block` was true for every segment
-    // ever built and the comparison behind it never ran. The same assert in the two move
-    // constructors reads the MEMBER and is live, which is what kept the dead one looking right.
+    // Parameter deliberately named `block_p`, not `block`: it used to shadow the member, so
+    // `assert(!block || ...)` in the body read the (moved-from, always-empty) PARAMETER and the
+    // size guard behind it never ran. The move constructors' copy of that assert reads the
+    // member and is live, which is what kept the dead one looking right.
     column_segment_t::column_segment_t(std::shared_ptr<storage::block_handle_t> block_p,
                                        const types::complex_logical_type& type,
                                        int64_t start,
@@ -1149,16 +1097,12 @@ namespace components::table {
         , block_id_(block_id)
         , offset_(offset)
         , segment_size_(segment_size)
-        // The segment's arena is the buffer manager's, reached through the block this segment
-        // is built over -- the same road this constructor's own error message takes a few lines
-        // down (the register_block loop). Read from `this->block`, which is already initialized
-        // here (it is declared ahead of the statistics), and screened by impl::segment_arena so
-        // the null check stands ahead of the dereference instead of behind it.
+        // Reads `this->block` (already initialized, declared ahead of the statistics),
+        // screened by impl::segment_arena so the null check stands ahead of the dereference.
         , segment_statistics_(impl::segment_arena(this->block)) {
-        // Now that nothing shadows the member, the guard is the one that was meant: a segment
-        // that does not fit its block overruns it on the first scan. The disk path screens the
-        // same number ahead of the constructor and reports data_corruption
-        // (column_data_t::initialize_column), so what is left here is the in-process invariant.
+        // A segment that does not fit its block overruns it on the first scan. The disk path
+        // screens the same number ahead of the constructor (data_corruption); this is the
+        // in-process invariant.
         assert(segment_size_ <= block_manager().block_size());
 
         if (type.type() == types::logical_type::VALIDITY) {
@@ -1186,25 +1130,12 @@ namespace components::table {
             }
             auto state = std::make_unique<uncompressed_string_segment_state>();
             if (segment_state) {
-                // A reloaded STRING segment's dictionary holds big-string markers that name real
-                // FILE blocks (the checkpoint rewrote them out of the transient domain). Register
-                // those blocks NOW so the first read resolves instead of missing. This is the only
-                // path that fills the parameter the ctor has always accepted and nobody ever
-                // passed -- which is exactly why a checkpointed big string was unreadable after a
-                // reload.
-                //
-                // register_block() creates a weak-registry handle for an EXISTING file block; it
-                // takes nothing from the free list, so reopening still allocates ZERO blocks. The
-                // handles are UNLOADED and reloadable, so the pool evicts and re-reads them like
-                // any packed data block -- they are not pinned here.
-                //
-                // register_block ANSWERS, and the answer is not decoration: it is false when this
-                // same list already named that block. persist_string_overflow dedupes out_blocks,
-                // so no writer of this format can emit a duplicate -- seeing one means the pointer
-                // stream is corrupt, and accepting it would leave on_disk_blocks disagreeing with
-                // the file about what this segment owns (which is what drives compact's reclaim).
-                // It cannot throw out of a constructor on the open path (rules 2/6/9), so it is
-                // latched and column_data_t::initialize_column reports it.
+                // A reloaded STRING segment's dictionary holds big-string markers naming real FILE
+                // blocks; register them now so the first read resolves. register_block() takes
+                // nothing from the free list (reopening allocates zero blocks) and answers false
+                // only if the list already named that block — persist_string_overflow dedupes on
+                // write, so a duplicate means a corrupt pointer stream. Can't throw out of a
+                // constructor, so it latches and initialize_column reports it.
                 for (uint64_t overflow_block_id : segment_state->blocks) {
                     if (!state->register_block(this->block->block_manager, overflow_block_id)) {
                         if (!construction_error_.contains_error()) {
@@ -1256,10 +1187,8 @@ namespace components::table {
             return false;
         }
         if (segment_size < impl::DICTIONARY_HEADER_SIZE + tuple_count * sizeof(int32_t)) {
-            // The offset array does not fit the segment -- reading it here would run off the
-            // block. Answer YES so persist_string_overflow runs and reports the corruption
-            // through its error channel; a silent "no markers, copy verbatim" would be a
-            // fallback around a corrupt segment.
+            // Offset array doesn't fit the segment. Answer YES so persist_string_overflow runs
+            // and reports the corruption, instead of silently copying it verbatim.
             return true;
         }
         // A negative dictionary offset IS the "this row is a big-string marker" encoding
@@ -1299,10 +1228,8 @@ namespace components::table {
         }
         auto* offsets = reinterpret_cast<int32_t*>(segment_copy + impl::DICTIONARY_HEADER_SIZE);
 
-        // A NULL row copies the PREVIOUS row's dictionary offset verbatim (string_append), so a
-        // NULL that follows a big string names the very same marker. Rewriting a marker twice
-        // would re-resolve the already-rewritten (not yet registered) id and fail, so each
-        // marker position is handled exactly once.
+        // A NULL row copies the PREVIOUS row's dictionary offset verbatim, so a NULL following a
+        // big string names the same marker; handle each marker position exactly once.
         std::pmr::unordered_set<uint64_t> rewritten(resource);
 
         for (uint64_t i = 0; i < tuple_count; i++) {
@@ -1349,16 +1276,11 @@ namespace components::table {
             }
 
             // One [uint32 length][bytes] record per string, placed by the SAME shared
-            // partial_block_manager that packs data and validity segments: a record above the
-            // 0.8 threshold takes a dedicated block, a smaller one is packed alongside other
-            // payloads. The resulting block is an ordinary disk block -- reloadable, evictable,
-            // never pinned by the segment state.
+            // partial_block_manager that packs data and validity segments.
             const auto allocation = pbm.get_block_allocation(record_size);
             pbm.write_to_block(allocation.block_id, allocation.offset_in_block, payload, record_size);
             impl::write_string_marker(marker, allocation.block_id, static_cast<int64_t>(allocation.offset_in_block));
-            // Several payloads pack into one partial block, so the same id comes back
-            // repeatedly. Record it once: the list is persisted, replayed into the segment
-            // state on load, and walked by collect_disk_block_ids.
+            // Packing means the same block id can come back repeatedly; record it once.
             if (std::find(out_blocks.begin(), out_blocks.end(), allocation.block_id) == out_blocks.end()) {
                 out_blocks.push_back(allocation.block_id);
             }
@@ -1404,10 +1326,8 @@ namespace components::table {
                                 scan_vector_type scan_type) {
         if (scan_type == scan_vector_type::SCAN_ENTIRE_VECTOR) {
             // The entire-vector leg REPLACES the result wholesale, so a non-zero result_offset
-            // would be silently dropped — rows already written at [0, result_offset) overwritten.
-            // Unreachable today (get_vector_scan_type only answers ENTIRE_VECTOR for non-flat
-            // results, which no offset-writing caller produces), but the commented-out assert
-            // that stood guard here vanished under NDEBUG; the refusal now rides scan_error.
+            // would silently overwrite rows already written at [0, result_offset). Unreachable
+            // today, kept as a live guard (an assert here would vanish under NDEBUG).
             if (result_offset != 0) {
                 state.scan_error =
                     core::error_t(core::error_code_t::invalid_parameter,
@@ -1689,7 +1609,7 @@ namespace components::table {
             auto& buffer_manager = block->block_manager.buffer_manager;
             // A resident managed block normally cannot fail to pin, but "normally" is not a
             // channel: skipping the dictionary rollback splices the reverted payload onto the
-            // next appended string. The refusal now rides the revert_append chain (rule 6).
+            // next appended string. The refusal now rides the revert_append chain.
             auto pinned = buffer_manager.pin(block);
             if (pinned.has_error()) {
                 return pinned.convert_error<bool>();
@@ -1717,16 +1637,10 @@ namespace components::table {
             }
             {
                 auto& handle = pinned.value();
-                // The bitmap starts at the SEGMENT's offset inside the block, not at the block
-                // base: a write-through/checkpoint-packed validity segment shares its block with
-                // other segments at block_offset() != 0 (partial-block packing), and the data segment packed
-                // at offset 0 is typically the SAME column's values. Addressing handle.ptr()
-                // directly smeared this 0xFF reset over that neighbour, so after a multi-row-group
-                // revert the surviving rows of the first packed column read mask bytes (-1/-2).
-                // Byte-wise on purpose: the reset starts at an arbitrary BIT boundary, so the
-                // shared first byte is patched separately and the tail is memset — a word-wide
-                // view buys nothing here. (The packer now 8-aligns segment starts, so a uint64_t*
-                // view would be legal again; keeping bytes avoids the width assumption entirely.)
+                // The bitmap starts at the SEGMENT's offset inside the block, not the block base:
+                // a packed validity segment shares its block with other segments, and addressing
+                // handle.ptr() directly smeared the 0xFF reset over a packed neighbour. Byte-wise
+                // on purpose, since the reset starts at an arbitrary bit boundary.
                 auto* bitmap = handle.ptr() + block_offset();
                 uint64_t revert_start;
                 if (start_bit % 8 != 0) {

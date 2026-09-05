@@ -1,12 +1,6 @@
-// output_type's resolver channel, pinned on two axes at once.
-//
-// SHAPE (rule 14): the resolver a kernel signature carries must not be a type-erasing
-// std::function. The three assertions below say that in terms nothing can satisfy by
-// accident -- an erasing wrapper is neither trivially copyable nor trivially
-// destructible, and it does not fit in three pointers.
-//
-// ANSWERS: the same file pins what each of the three output kinds actually resolves to,
-// so a change of the storage shape cannot quietly change the answers with it.
+// Pins two things: that the resolver stays non-type-erasing (std::function is banned --
+// a type-erasing wrapper couldn't pass the trivially-copyable/destructible/3-pointer checks
+// below), and that all three output kinds still resolve to the right answer.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/compute/kernel_signature.hpp>
@@ -85,7 +79,7 @@ TEST_CASE("components::compute::output_type::a_resolver_that_was_never_set_refus
     core::pmr::otterbrix_resource resource;
     const auto inputs = two_inputs(&resource);
 
-    // Rule 6: an empty resolver is a caller mistake, and it has to arrive as an error on the
+    // An empty resolver is a caller mistake, and it has to arrive as an error on the
     // channel. std::function answered this with std::bad_function_call.
     auto computed = output_type::computed(type_resolver_fn{});
     auto resolved = computed.resolve(&resource, inputs);

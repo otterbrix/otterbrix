@@ -7,24 +7,11 @@
 
 using namespace components::catalog;
 
-// ---------------------------------------------------------------------------
-// A TOKEN parse_oid_csv COULD NOT READ HAS TO BE REPORTED, BECAUSE THE RESULT
-// CANNOT CARRY IT.
-//
-// This parses pg_constraint.conkey / confkey — the column lists of FOREIGN KEY,
-// UNIQUE and PRIMARY KEY constraints. Those lists are read POSITIONALLY and
-// enforced as ORDERED TUPLES, and every guard downstream checks a list against
-// ITSELF (the resolved column names against the attoid list they came from). So
-// a token that is dropped on the way in is invisible from then on: the shortened
-// list agrees with itself, passes every guard, and the engine enforces a
-// DIFFERENT constraint than the one written — or, when nothing survives, none at
-// all, while the statement still reports success.
-//
-// `ok` is the only place that fact exists. The cases below are what a caller
-// must be able to tell apart; the ROUND-TRIP case at the bottom pins that a
-// list encode_oid_csv produced always reads back whole, so the channel cannot
-// start refusing sound catalogs.
-// ---------------------------------------------------------------------------
+// Parses pg_constraint.conkey/confkey. Every downstream guard checks such a list against
+// ITSELF, so a token silently dropped on the way in still passes every guard — the engine
+// then enforces a different constraint than the one written. `ok` is the only place that
+// fact can surface, hence it must be true on every well-formed input and false on every
+// malformed one (the round-trip case at the bottom pins the well-formed half).
 
 TEST_CASE("parse_oid_csv: a well-formed list reads back whole and clean", "[oid_csv]") {
     bool ok = false;
@@ -51,9 +38,8 @@ TEST_CASE("parse_oid_csv: a token that is not a number is reported, not dropped"
 }
 
 TEST_CASE("parse_oid_csv: a token with trailing garbage is reported, not truncated", "[oid_csv]") {
-    // std::from_chars stops at the first character it cannot use and still reports
-    // success, so "12x" reads as 12 unless the WHOLE token is required — a key column
-    // silently swapped for whichever column oid 12 happens to be.
+    // std::from_chars stops at the first unusable character and still reports success,
+    // so "12x" would read as 12 unless the WHOLE token is required.
     bool ok = true;
     const auto out = parse_oid_csv("12x", ok);
     REQUIRE_FALSE(ok);
@@ -70,9 +56,7 @@ TEST_CASE("parse_oid_csv: an empty token between commas is reported", "[oid_csv]
 }
 
 TEST_CASE("parse_oid_csv: a list that lost EVERY token is empty AND unreadable", "[oid_csv]") {
-    // The shape that repeals a declared key in silence: the caller's emptiness check
-    // alone cannot tell this from a constraint written with no columns, and only one
-    // of the two is corruption.
+    // An emptiness check alone can't tell this from a constraint with no columns.
     bool ok = true;
     const auto out = parse_oid_csv("zz", ok);
     REQUIRE_FALSE(ok);
@@ -92,18 +76,10 @@ TEST_CASE("parse_oid_csv: everything encode_oid_csv writes reads back ok", "[oid
     }
 }
 
-// ---------------------------------------------------------------------------
-// TWO SHAPES THAT MUST NOT PASS: the string decodes to a DIFFERENT list than the
-// one that was written, and answers `ok == true` while doing it.
-// ---------------------------------------------------------------------------
-
 TEST_CASE("parse_oid_csv: a list cut off at a comma is reported, not silently shortened", "[oid_csv]") {
-    // "7,11,13" truncated after the second separator. A loop that stops as soon as
-    // the last comma is the final character never looks at the token AFTER it, so a
-    // list that lost its tail reads back clean. This is
-    // the exact shape a short write / truncated page leaves, and it is the one
-    // shape the caller cannot recover: the surviving tokens are a shorter key
-    // that agrees with every length guard downstream.
+    // "7,11,13" truncated after the second separator — the exact shape a short write /
+    // truncated page leaves. A loop that stops when the last comma is the final
+    // character never looks past it, so the shortened list would read back clean.
     bool ok = true;
     const auto out = parse_oid_csv("7,11,", ok);
     INFO("a two-column key was written; a two-column key reads back — but the third is gone");
@@ -120,11 +96,8 @@ TEST_CASE("parse_oid_csv: a lone trailing comma is an empty token, not an empty 
 
 TEST_CASE("parse_oid_csv: a token too large for an oid is reported, not folded onto another column",
           "[oid_csv]") {
-    // oid_t is 32 bits; a read through a 64-bit `unsigned long` that static_casts the
-    // result makes 4294967297 == 2^32 + 1 READ AS 1 —
-    // the key column silently swapped for whichever column oid 1 happens to be.
-    // That is the neighbouring-column shift with the length guard looking the
-    // other way: one token in, one token out, lengths agree.
+    // oid_t is 32 bits; a 64-bit read that static_casts the result would make
+    // 4294967297 == 2^32 + 1 READ AS 1, silently swapping the key column.
     bool ok = true;
     const auto out = parse_oid_csv("4294967297", ok);
     REQUIRE_FALSE(ok);
@@ -133,9 +106,7 @@ TEST_CASE("parse_oid_csv: a token too large for an oid is reported, not folded o
 }
 
 TEST_CASE("parse_oid_csv: the largest representable oid still reads back", "[oid_csv]") {
-    // The range check must be the type's range, not a rounder number: an oid one
-    // below the ceiling is an ordinary oid and refusing it would turn a sound
-    // catalog into a refusing one.
+    // The range check must be the type's range, not a rounder number.
     bool ok = false;
     const auto out = parse_oid_csv("4294967295", ok);
     REQUIRE(ok);

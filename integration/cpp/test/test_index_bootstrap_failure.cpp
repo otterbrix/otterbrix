@@ -6,22 +6,13 @@
 #include <string>
 
 // An index whose disk storage cannot be opened must not take the engine down at startup.
-//
-// The per-index hash storage (<disk>/<table_oid>/<indexrelid>/hash_index.bin) is opened by the
-// AGENT that owns it, inside bitcask_index_disk_t::open(), which reports by value; it used to
-// be opened by bootstrap_indexes_sync and handed in as a shared handle (removed, rule
-// 10). The DECISION stays where it was: the agent's create() hands bootstrap_index_sync
-// either an agent or the reason there is none, and on a reason it SKIPS the index entirely —
-// registering nothing, publishing no address, never scheduling it. An index that will not open
-// costs a full scan, whereas aborting costs the whole engine its start. The construct/open
-// SPLIT is what makes that possible: the agent embeds its store by value and builds it with a
-// ctor that does no I/O, then create() runs open() and returns what it says. The
-// construct-and-open ctor, which asserts and aborts on exactly the failures this path exists
-// to survive (unopenable file, unreadable or incompatible header), is reached only by the
-// backend's own tests.
-//
-// The hashed branch is only reachable because indtype is persisted: without it every index
-// comes back from a restart as `single` and the injection below never meets the code it aims at.
+// The per-index hash storage is opened by the AGENT itself, inside bitcask_index_disk_t::open()
+// (reports by value; no shared handle). On failure, create() hands bootstrap_index_sync
+// no agent, and the index is SKIPPED — unregistered, unpublished — rather than aborting the
+// engine. The construct-and-open ctor, which asserts and aborts on the same failures, is reached
+// only by the backend's own tests.
+// Reachable only because indtype is now persisted: without it a restarted index always comes
+// back as `single` and this hashed-storage injection never meets its target.
 
 TEST_CASE("integration::cpp::test_index_bootstrap_failure::engine_starts_when_an_index_cannot_open") {
     auto config = test_create_config(integration_fixture_path("test_index_bootstrap_failure/restart"));
@@ -43,8 +34,8 @@ TEST_CASE("integration::cpp::test_index_bootstrap_failure::engine_starts_when_an
         REQUIRE(exec("CREATE INDEX k_idx ON b.t USING hash (k);")->is_success());
         REQUIRE(exec("INSERT INTO b.t (id, k) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
 
-        // The on-disk layout is oid-keyed (<disk>/<table_oid>/<indexrelid>/) and carries no
-        // index name, so find the index directory by content: it owns the hash storage file.
+        // The oid-keyed layout carries no index name, so find the directory by its
+        // hash_index.bin file instead.
         for (const auto& entry : std::filesystem::recursive_directory_iterator(config.disk.path)) {
             if (entry.is_directory() && std::filesystem::exists(entry.path() / "hash_index.bin")) {
                 index_dir = entry.path();
@@ -54,9 +45,8 @@ TEST_CASE("integration::cpp::test_index_bootstrap_failure::engine_starts_when_an
         REQUIRE_FALSE(index_dir.empty());
     }
 
-    // The engine is down; make the per-index storage file unopenable for the next start —
-    // a directory where disk_hash_table_t::create expects a regular file. The agent's own
-    // open is what meets it now.
+    // Make the storage file unopenable for the next start: disk_hash_table_t::create expects
+    // a regular file, so replace it with a directory.
     const auto storage_file = index_dir / "hash_index.bin";
     std::filesystem::remove_all(storage_file);
     std::filesystem::create_directories(storage_file);

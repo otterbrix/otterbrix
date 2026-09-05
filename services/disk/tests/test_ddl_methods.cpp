@@ -1117,16 +1117,12 @@ TEST_CASE("services::disk::ddl::computing_table_pg_attribute_empty") {
     REQUIRE(rr2.columns[0].atttypid == components::catalog::well_known_oid::int64_type);
 }
 
-// A CATALOG ROW THAT CANNOT BE WRITTEN IS REPORTED, NOT COUNTED AS ZERO.
-//
-// Answering with a bare pg_catalog_append_range_t collapses all three of
-// append_pg_catalog_row's failures — a refused append, a cast that could not be made, and this
-// one, a catalog oid whose OWNING agent holds no storage — into {oid, 0, 0}. Every caller reads
-// a zero-count range as "nothing was asked to be written" and carries on; that is how a DDL
-// statement reports success over a catalog row that does not exist.
-//
-// The oid below is routed exactly like any other: pool_idx_for_oid names its owner before the
-// message is sent. What is missing is the storage, not the ownership.
+// A catalog row that can't be written must be reported, not counted as zero. A bare
+// pg_catalog_append_range_t collapses all three of append_pg_catalog_row's failures (a refused
+// append, a failed cast, and this one -- a catalog oid whose owning agent holds no storage) into
+// {oid, 0, 0}, and every caller reads a zero-count range as "nothing was asked to be written."
+// The oid below routes normally (pool_idx_for_oid names its owner before sending); what's
+// missing is the storage, not the ownership.
 TEST_CASE("services::disk::ddl::catalog_append_refuses_when_the_owner_has_no_storage") {
     fixture fx;
 
@@ -1161,16 +1157,13 @@ TEST_CASE("services::disk::ddl::catalog_append_refuses_when_the_owner_has_no_sto
     CHECK(no_op.value().count == 0);
 }
 
-// THE CAST ON THE CATALOG APPEND PATH RUNS, AND ITS RESULT IS THE ROW.
-//
-// A GUARD ON THE SUCCESS PATH. `assert(!casted_val.has_error() && "numeric/string column cast
-// can not fail")` followed by .value() would not hold: the guard above it admits STRING_LITERAL
-// on either side, so it does NOT establish what the assert claims — and under NDEBUG the assert
-// is gone while .value() still reads the value half of a possibly-errored result. No input
-// reaches a failing cast today (logical_value_t's string->integer leg goes through atoll, which
-// answers 0 for anything rather than refusing), so what this case pins is that the cast is on
-// the path and its OUTPUT is what gets stored. Break the cast leg — make it return an error, or
-// drop the result — and this fails.
+// The catalog append path's cast runs, and its result is the row. A guard on the success path:
+// `assert(!casted_val.has_error() && "...cast can not fail")` followed by .value() doesn't hold,
+// since the guard above it admits STRING_LITERAL on either side -- under NDEBUG the assert is
+// gone while .value() still reads the value half of a possibly-errored result. No input reaches
+// a failing cast today (string->integer goes through atoll, which answers 0 rather than
+// refusing), so this case pins that the cast is on the path and its output is what gets stored;
+// breaking the cast leg (return an error, or drop the result) fails it.
 TEST_CASE("services::disk::ddl::catalog_append_stores_the_cast_result_not_the_raw_cell") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nscast");
@@ -1206,14 +1199,11 @@ TEST_CASE("services::disk::ddl::catalog_append_stores_the_cast_result_not_the_ra
     CHECK(probe.oid == probe_oid);
 }
 
-// A REPLAY MUTATION FOR A TABLE WITH NO STORAGE IS REFUSED.
-//
-// These three helpers are the WAL-replay path, and "oid not owned by this agent — no-op" is not
-// what the miss means: manager_disk_t picks the agent with pool_idx_for_oid BEFORE forwarding,
-// so ownership is settled and the agent reading the miss IS the owner. What is missing is the
-// storage, and a replay mutation dropped there is a journalled change recovery declined to
-// restore — rows the WAL says are deleted staying alive after a restart, with nothing anywhere
-// to notice.
+// A replay mutation for a table with no storage must be refused. These three helpers are the
+// WAL-replay path; a miss here isn't "oid not owned by this agent" (manager_disk_t settles
+// ownership via pool_idx_for_oid before forwarding) but "storage missing" -- a replay mutation
+// dropped there is a journalled change recovery declined to restore, leaving rows the WAL says
+// are deleted alive after a restart with nothing to notice.
 TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_storage") {
     fixture fx;
 

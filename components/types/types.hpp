@@ -343,29 +343,16 @@ namespace components::types {
 
     physical_type to_physical_type(logical_type type);
 
-    // THE DECIMAL WINDOW — the single authority on which (width, scale) pairs a DECIMAL
-    // may carry.
-    //
-    // It is not a taste question: it is the window the PERSISTENT form accepts.
-    // components::types::decode_type_spec refuses width==0, width>DECIMAL_MAX_WIDTH and
-    // scale>width as data_corruption, and that decoder runs on the table checkpoint
-    // (.otbx) and on every WAL chunk header. A type outside this window can therefore be
-    // written and never read back — a database that opens today and does not open after
-    // the next restart. So the window is enforced at CONSTRUCTION (create_decimal), which
-    // is upstream of every writer, rather than at the writer alone.
-    //
-    // width>38 has no scaled-integer storage at all (int128 is the widest we have), which
-    // is where the upper bound comes from; width==0 can hold no digit; scale>width would
-    // mean more fraction digits than digits.
+    // The only (width, scale) pairs decode_type_spec will accept on replay (checkpoint/WAL);
+    // enforced here, at construction, so an out-of-window DECIMAL can never be written.
+    // Upper bound is int128, the widest scaled-integer storage available.
     inline constexpr uint8_t DECIMAL_MAX_WIDTH = 38;
 
     constexpr bool is_valid_decimal_spec(uint8_t width, uint8_t scale) noexcept {
         return width >= 1 && width <= DECIMAL_MAX_WIDTH && scale <= width;
     }
 
-    // Raw scaled-integer storage for a DECIMAL of `width` digits. Returns
-    // physical_type::INVALID for a width outside the window — the caller decides what an
-    // impossible width means in its context; this function never throws and never guesses.
+    // Returns physical_type::INVALID for a width outside the window; never throws.
     physical_type decimal_storage_for_width(uint8_t width) noexcept;
 
     constexpr logical_type promote_type(logical_type type1, logical_type type2) {
@@ -484,16 +471,9 @@ namespace components::types {
 
         static bool type_is_constant_size(logical_type type);
 
-        // Rule 6: an out-of-window (width, scale) is an ERROR, not an assert. An assert
-        // vanishes under NDEBUG — exactly the build users ship — and lets a DECIMAL(0,0) /
-        // DECIMAL(39,0) / DECIMAL(5,7) reach the checkpoint, which writes it happily and
-        // then refuses to read it back forever. See is_valid_decimal_spec.
-        //
-        // `resource` is where the refusal message lives, and it is read ONLY on the refusal
-        // path: a well-formed DECIMAL allocates nothing from it. It is a parameter and not a
-        // process-global because rule 14 leaves no global to reach for, and because the callers
-        // already hold an arena where they stand. create_map and create_variant below take one
-        // for the same reason.
+        // Out-of-window (width, scale) is an ERROR, not an assert -- an assert
+        // vanishes under NDEBUG and lets a bad DECIMAL reach the checkpoint unreadably.
+        // `resource` backs only the refusal message; a well-formed DECIMAL allocates nothing.
         [[nodiscard]] static core::result_wrapper_t<complex_logical_type>
         create_decimal(std::pmr::memory_resource* resource, uint8_t width, uint8_t scale, std::string alias = "");
         static complex_logical_type

@@ -163,16 +163,8 @@ namespace components::compute {
     private:
         core::error_t check_init() {
             if (!kernel_ctx_) {
-                // NO IMPLICIT INIT (rule 6). Self-initialising against a process-global arena
-                // would let an executor whose caller forgot init() silently run on memory
-                // nobody had asked for. Both
-                // in-tree producers of this object (function::make_executor and the three
-                // function::execute overloads) init it with the caller's context before
-                // handing it out, so reaching this is a caller bug, and it is answered, not
-                // papered over. The message is built on in_types_' own resource: that vector
-                // is moved in from make_executor's caller, so it carries the caller's arena
-                // even on the one path where init() never ran. No process-global resource is
-                // reachable from here, and none is needed.
+                // NO IMPLICIT INIT: every in-tree caller inits before use, so this is
+                // a caller bug, not papered over with a process-global arena.
                 return core::error_t(core::error_code_t::kernel_error,
                                      std::pmr::string{"function executor used before init(): "
                                                       "no execution context was ever supplied",

@@ -112,11 +112,9 @@ namespace components::table {
             }
         }
 
-        // DECIMAL zone-map leg (entry: wide DECIMAL columns got only null counts). The vector
-        // stores SCALED integers whose width follows the decimal's precision
-        // (decimal_storage_for_width); min/max are collected in that raw space and carried as
-        // DECIMAL-typed logical values of the COLUMN's own type, so ordering below (set_min /
-        // merge) compares scaled integers of one and the same (width, scale).
+        // DECIMAL zone-map leg: values are SCALED integers (width follows
+        // decimal_storage_for_width); min/max are collected in that raw space and carried as
+        // DECIMAL logical values of the column's own (width, scale).
         template<typename T>
         void update_decimal_stats_typed(base_statistics_t& stats,
                                         std::pmr::memory_resource* resource,
@@ -189,8 +187,7 @@ namespace components::table {
                     update_decimal_stats_typed<types::int128_t>(stats, resource, vec, count);
                     break;
                 default: {
-                    // An impossible storage width for a DECIMAL: no bounds are fabricated,
-                    // only nulls are counted (min/max stay absent -> no pruning claim).
+                    // Impossible storage width for a DECIMAL: count nulls only, no fabricated bounds.
                     const auto& validity = vec.validity();
                     uint64_t null_count = 0;
                     if (vec.get_vector_type() == vector::vector_type::CONSTANT) {
@@ -208,10 +205,9 @@ namespace components::table {
             }
         }
 
-        // The raw scaled integer of a DECIMAL-typed value, whatever its storage width.
-        // create_decimal parks narrow widths in data_ (read back via value<int64_t>) and only
-        // INT128-wide decimals in data128_ — reading value<int128_t>() on a narrow one answers
-        // the WRONG union member.
+        // Raw scaled integer of a DECIMAL value: narrow widths live in data_ (value<int64_t>()),
+        // only INT128-wide ones in data128_ — value<int128_t>() on a narrow one reads the wrong
+        // union member.
         types::int128_t decimal_raw(const types::logical_value_t& val) {
             if (val.type().to_physical_type() == types::physical_type::INT128) {
                 return val.value<types::int128_t>();
@@ -315,9 +311,8 @@ namespace components::table {
                     auto raw = reader.read<types::int128_t>();
                     auto dec_type = types::complex_logical_type::create_decimal(resource, width, scale);
                     if (dec_type.has_error()) {
-                        // A (width, scale) outside the window can only come from a corrupt
-                        // stream. This helper has no error channel; answering NA leaves min/max
-                        // ABSENT (the zone map claims nothing) rather than fabricating a bound.
+                        // (width, scale) outside range = corrupt stream; no error channel here,
+                        // so answer NA and leave min/max ABSENT rather than fabricate a bound.
                         return types::logical_value_t(resource,
                                                       types::complex_logical_type{types::logical_type::NA});
                     }

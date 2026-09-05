@@ -59,17 +59,8 @@ namespace core::filesystem {
     bool directory_exists(local_file_system_t&, const path_t& directory);
     bool create_directory(local_file_system_t&, const path_t& directory);
     bool remove_directory(local_file_system_t&, const path_t& directory);
-    // THE PER-ENTRY CALLBACK OF list_files, AS A NON-OWNING VIEW.
-    //
-    // std::function is forbidden (rule 14) and buys nothing on this road: the callback is
-    // used only while the call is on the stack and is never stored, so there is nothing to
-    // own. A view is the caller's callable plus the one function that knows how to call it.
-    // Every caller in the tree hands in a lambda written at the call itself, whose lifetime
-    // covers the whole full-expression and therefore the whole call.
-    //
-    // That is also why this is a named type and not a raw pair: A list_files_callback_t MUST
-    // NOT OUTLIVE THE CALL it was passed to. Keeping one keeps a pointer to a callable that
-    // is already gone.
+    // Non-owning view of the list_files callback (std::function is forbidden).
+    // Must not outlive the call it was passed to -- it holds a dangling pointer otherwise.
     class list_files_callback_t {
     public:
         template<typename callable_t,

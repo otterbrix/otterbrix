@@ -93,11 +93,8 @@ namespace components::operators {
                                                       &services::disk::manager_disk_t::allocate_oids_batch,
                                                       std::size_t{1});
         auto allocated = co_await std::move(oaf);
-        // Like every validation above, this refusal lands BEFORE the first catalog mutation.
-        // Consuming a round that delivered nothing (allocate() answers INVALID_OID) sends the
-        // pg_attribute row out with attoid = 0, so ALTER TABLE ADD COLUMN reports success over
-        // a column with no identity — and the identity is what the backfill below hands to the
-        // storage that will materialise it, and what a later DROP COLUMN keys its tombstone on.
+        // Before the first catalog mutation: a round that delivered nothing would send the pg_attribute
+        // row out with attoid = 0, reporting success over a column with no identity to backfill or drop.
         catalog::oid_t attoid = catalog::INVALID_OID;
         if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "alter_column_add", attoid);
             ec_oid.contains_error()) {
@@ -109,7 +106,7 @@ namespace components::operators {
         const std::string typspec = catalog::encode_type_spec(column_.type());
         std::string defspec;
         if (column_.has_default_value()) {
-            // Rule 6: a DEFAULT that cannot be persisted fails the ALTER here, before any
+            // A DEFAULT that cannot be persisted fails the ALTER here, before any
             // catalog row is written — never a column that claims a default it has lost.
             if (auto ec_spec = catalog::encode_default_spec(resource_, column_.default_value(), defspec);
                 ec_spec.contains_error()) {
@@ -157,23 +154,15 @@ namespace components::operators {
             ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
                 attoid,
                 components::pg_attribute_commit_id_backfill_t::kind_t::added_at,
-                // An added_at marker carries a second half — not a release and not a rename, but the delivery
-                // of this column's IDENTITY to the storage that will materialise it. ALTER TABLE ADD COLUMN
-                // writes pg_attribute and stops; the storage column appears later, out of the first INSERT that
-                // carries it, on an agent that cannot read pg_attribute. Naming the table and the attname here
-                // lets manager_disk_t::update_pg_attribute_commit_id_fields park this attoid on the owning agent,
-                // so the materialised column is born with it instead of with a 0 the bootstrap would refuse.
+                // Delivers this column's identity to the storage agent, which can't read pg_attribute itself:
+                // manager_disk_t::update_pg_attribute_commit_id_fields uses table/attname to park the attoid
+                // on the owning agent before the first INSERT materialises the column.
                 table_oid_,
                 std::string(column_.name()),
                 std::string{},
-                // ...and the column's TYPE with it, plus the DEFAULT in the very encoding that
-                // just went into pg_attribute.attdefspec (`defspec` above — one string, so the
-                // agent's copy cannot drift from the catalog's). Until an INSERT materialises the
-                // column, the storage still has to ANSWER it — pg_attribute shows it from this
-                // statement on, so `SELECT <it>` is a legal query with a legal answer, and that
-                // answer is the DEFAULT in every existing row (PostgreSQL 11+ attmissingval;
-                // ADD COLUMN ... DEFAULT does not rewrite the table there either) or NULL when
-                // there is no default. The agent has no catalog to read either fact from.
+                // TYPE + DEFAULT travel with it: until an INSERT materialises the column, `SELECT <it>` is
+                // already a legal query (PostgreSQL 11+ attmissingval semantics), and the agent has no
+                // catalog to read the answer from otherwise.
                 components::pg_attribute_commit_id_backfill_t::added_column_type_t{column_.type(), defspec}});
         }
 

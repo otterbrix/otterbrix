@@ -1,36 +1,25 @@
-// ============================================================================
-// A CONSTRAINT ENTRY THAT DOES NOT NAME ITS TABLE REPEALS EVERY CONSTRAINT ON
-// THAT TABLE, IN SILENCE.
-//
-// operator_resolve_constraint_t opened its per-entry loop with three facts
-// sharing ONE `continue`:
+// operator_resolve_constraint_t used to open its per-entry loop with three facts sharing ONE
+// `continue`:
 //
 //     if (ctx->disk_address == empty_address() || tables_node_ == nullptr ||
 //         entry.target >= tables_node_->entries().size()) {
 //         continue;
 //     }
 //
-// The first two are TOPOLOGY — no disk to ask, no tables node to read out of —
-// and a gather that has nowhere to look has nothing to gather. The third is not
-// topology: `target` is a POSITION in the tables node, and an out-of-range one
-// (resolve_entry_t::no_target, size_t(-1), is the default) is a plan assembled
-// without naming the table its constraints belong to. Skipping it leaves fks,
-// check_exprs, unique_constraints AND pk_columns all empty at once — exactly what
-// "this table declares no constraints" looks like — so enrich stamps nothing on
-// the DML node, the planner splices no constraint operator, and every declared
-// key on the table stops existing while the statement reports success.
+// The first two are topology -- no disk to ask, no tables node to read out of -- and a
+// gather with nowhere to look has nothing to gather. The third is not topology: `target` is
+// a POSITION in the tables node, and an out-of-range one (resolve_entry_t::no_target,
+// size_t(-1), is the default) is a plan assembled without naming the table its constraints
+// belong to. Skipping it left fks, check_exprs, unique_constraints and pk_columns all empty
+// at once -- exactly what "this table declares no constraints" looks like -- so every
+// declared key on the table stopped existing while the statement reported success.
 //
-// HOW THE PLAN IS PRODUCED HERE. Everything is the engine's own: the database,
-// the table and its UNIQUE come from plain SQL; the INSERT is an ordinary
-// hand-built plan of the shape the C++/C API produces (make_node_insert +
-// name_catalog_target, as in test_arithmetic and test_batch_execution), and its
-// catalog lookups are registered through the transformer's own
-// register_catalog_resolve_table. Exactly ONE thing differs between the two
-// INSERTs below — the `target` field of the constraint entry — and the assertion
-// is on the CONTENT of the table: how many rows carrying the same `code` are in
-// it afterwards. The control INSERT proves the harness has teeth: with `target`
-// naming the table, the very same plan is refused by the UNIQUE.
-// ============================================================================
+// The plan here is entirely the engine's own: database, table and its UNIQUE come from plain
+// SQL; the INSERT is a hand-built plan of the shape the C++/C API produces (make_node_insert +
+// name_catalog_target, as in test_arithmetic / test_batch_execution), with catalog lookups
+// registered through register_catalog_resolve_table. Exactly ONE thing differs between the
+// two INSERTs below -- the constraint entry's `target` -- and the control case (target naming
+// the table) proves the harness has teeth: the same plan is refused by the UNIQUE.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

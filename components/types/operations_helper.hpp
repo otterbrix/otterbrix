@@ -279,10 +279,8 @@ namespace components::types {
         absl::MakeInt128(0x13426172C74D82, 0x2B878FE800000000),
         absl::MakeInt128(0xC097CE7BC90715, 0xB34B9F1000000000),
         absl::MakeInt128(0x785EE10D5DA46D9, 0xF436A000000000),
-        // 10^38. It is representable both ways — int128's minimum is -2^127 = -1.70141...e38
-        // and -10^38 clears it by 7.0e37 — and it must stay in the array: TWO readers index
-        // 38, decimal_length()'s `>= POWERS_OF_TEN[38]` test and int_to_decimal's
-        // POWERS_OF_TEN[width - scale], which reaches it for the perfectly legal NUMERIC(38,0).
+        // 10^38 must stay: decimal_length() and int_to_decimal() both index POWERS_OF_TEN[38]
+        // for the legal NUMERIC(38,0).
         absl::MakeInt128(0x4B3B4CA85A86C47A, 0x98A224000000000)
     };
 

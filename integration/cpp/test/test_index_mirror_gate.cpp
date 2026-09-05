@@ -23,13 +23,11 @@ static std::string mirror_gate_plan_text(const components::cursor::cursor_t_ptr&
 // chunk a second time, shipped it across a mailbox, and the index manager walked the rows
 // against an empty index list.
 //
-// THE PLAN SHAPE IS HALF THE CASE, and it is the half the disk layout made load-bearing. An
-// index is a disk-backed engine (there is no in-memory one), so "the table has no
-// index on this key" has exactly one correct consequence -- has_index_on says no, the planner
-// builds a full scan, and the rows come from the heap. The forbidden outcome is an Index Scan
-// over a key nothing indexes: manager_index_t would answer index_not_exists and the statement
-// would fail, or worse, answer nothing at all. Counting mirror sends alone cannot tell those
-// apart, because a plan that never reaches an index sends nothing either way.
+// The plan shape matters as much as the count: since every index is disk-backed (no in-memory
+// index exists), a table with no index on this key must plan a Seq Scan — an Index Scan over an
+// unindexed key would hit manager_index_t's index_not_exists, or answer nothing. Counting
+// mirror sends alone can't tell those apart, since a plan that never reaches an index sends
+// nothing either way.
 TEST_CASE("integration::cpp::test_index_mirror_gate::table_without_indexes_skips_the_index") {
     auto config = test_create_config(integration_fixture_path("test_index_mirror_gate/plain"));
     test_clear_directory(config);
@@ -73,18 +71,11 @@ TEST_CASE("integration::cpp::test_index_mirror_gate::table_without_indexes_skips
 // The guard on the other side matters just as much: an indexed table MUST still mirror, or the
 // table stays right while the index quietly goes stale.
 //
-// WHAT THE DISK LAYOUT CHANGED. The index no longer holds the rows this test writes: the mirror
-// send hands them to manager_index_t, which buckets them per transaction and passes them to the
-// index's own disk agent at commit; a read is a message to that agent and comes back with what
-// the agent's store holds. So "the row reached the index" is now a claim about a store in
-// another actor, and only a read that actually TRAVELS there can check it.
-//
-// Which is why the plan shape is asserted before every count below. A Seq Scan would answer
-// every query here correctly out of the heap -- and would keep answering correctly if the index
-// had received nothing at all, which is exactly the failure this case exists to catch. And an
-// Index Scan that comes back short is the other forbidden outcome (rule 6): a REGISTERED engine
-// answering fewer rows than the table holds, silently. The unindexed twin is the oracle for
-// what "the table holds".
+// "The row reached the index" is a claim about a store in another actor (the index's own disk
+// agent, reached via manager_index_t at commit) — only a read that actually travels there can
+// check it. Hence the plan-shape assertion before every count below: a Seq Scan would answer
+// correctly even with an empty index, and a registered index answering short is the silent
+// wrong answer that is forbidden. The unindexed twin is the oracle for what "the table holds".
 TEST_CASE("integration::cpp::test_index_mirror_gate::indexed_table_still_mirrors") {
     auto config = test_create_config(integration_fixture_path("test_index_mirror_gate/indexed"));
     test_clear_directory(config);
@@ -154,22 +145,14 @@ TEST_CASE("integration::cpp::test_index_mirror_gate::indexed_table_still_mirrors
     CHECK(probe("k >= 102") == 2);
 }
 
-// ---------------------------------------------------------------------------
-// TWO INDEXES OVER ONE COLUMN, and dropping one of them.
+// Two indexes over one column (ordered + hash) are legal — manager_index_t::create_index
+// rejects duplicates on the PAIR (keys, type), and the planner only routes a range predicate
+// to an index when a non-hashed one also covers the key.
 //
-// `CREATE INDEX i ON t (k)` and `CREATE INDEX j ON t USING hash (k)` both succeed:
-// manager_index_t::create_index rejects a duplicate on the PAIR (keys, type), and the
-// planner counts on the pair existing — it only routes a range predicate to an index when
-// a NON-hashed index also covers the key.
-//
-// The index registry used to answer "which key sets are indexed" out of a map holding ONE
-// slot per key set, beside the list that actually OWNS the indexes. Registering the second
-// index could not write the taken slot, and dropping EITHER index erased it by key — taking
-// the SURVIVOR's registration with it. From that moment the table looked unindexed while
-// still holding a live index: the planner stopped choosing it (this test), DML stopped
-// mirroring into it, and the compact/repopulate gates that count the table's indexes read
-// zero.
-// ---------------------------------------------------------------------------
+// The bug: the registry answered "which key sets are indexed" from a map keyed by key set
+// alone (one slot per set), separate from the list that owns the indexes. Dropping either twin
+// erased that shared slot, taking the survivor's registration with it — the planner stopped
+// choosing it, DML stopped mirroring into it, and the compact/repopulate gates saw zero indexes.
 TEST_CASE("integration::cpp::test_index_mirror_gate::dropping_a_twin_index_leaves_the_survivor_live") {
     auto config = test_create_config(integration_fixture_path("test_index_mirror_gate/twin"));
     test_clear_directory(config);

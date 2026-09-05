@@ -1,31 +1,20 @@
-// A DROPPED AGENT MUST REFUSE A WRITE, NOT PERFORM ONE.
-//
-// drop() releases the agent's store: the ordered family resets its btree_t (db_ becomes null) and
-// the hashed one resets its segment handle, its txn-log handle and its keydir. Every write path
-// below that point dereferences one of those. The read side has said so since the read went through
-// the mailbox -- read_rows() checks is_dropped_ and answers with an error -- and force_flush()
-// checks it too. The WRITE handlers never did:
+// A dropped agent must refuse a write, not perform one. drop() releases the store (btree_t's
+// db_ becomes null; bitcask resets its segment handle, txn-log handle and keydir), and every
+// write path below dereferences one of those, unlike the read side which already checks
+// is_dropped_:
 //
 //     btree      insert_bulk_unchecked -> db_->append(...)          // db_ == nullptr
 //     bitcask    apply_txn_inserts     -> append_snapshot -> file_->seek_position()
 //                insert_bulk_unchecked -> ... -> hash_index_->put   // both reset
 //
-// A write is TWO messages now -- stage_* records it in the transaction's bucket, commit_* publishes
-// that bucket into the store -- and BOTH must refuse. Staging into a dropped agent would not crash,
-// which is exactly why it has to be checked: the bucket would take the rows and nothing would ever
-// read it again, so the statement would be told its rows are indexed by an index that no longer
-// exists.
+// A write is two messages (stage_* records into the bucket, commit_* publishes it), and BOTH
+// must refuse: staging into a dropped agent wouldn't crash, so an unchecked stage would leave
+// rows in a bucket nothing ever reads while the statement is told they're indexed.
 //
-// The agent keeps a LIVE ADDRESS after its drop is handled -- it is destroyed by its owner, a
-// separate step -- so a message posted before that owner lets go still arrives at these handlers.
-// Nothing above them can filter it out: the manager can only stop NEW sends, and the whole reason
-// drop_index and the GC sweeps await the drop reply is that a message already in the mailbox cannot
-// be recalled.
-//
-// The answer is an ERROR, not a silent skip: reporting no_error would tell a statement its rows are
-// in the index when the index no longer exists, and commit_inserts folds exactly this value into
-// what it returns. The test drives each agent by hand (cooperative_actor::resume(1)) so "drop
-// handled, write posted behind it" is a state it chooses rather than races for.
+// The agent keeps a live address after drop (destroyed separately by its owner), so a message
+// posted before that still arrives here -- nothing upstream can recall a mailboxed message.
+// The test drives each agent by hand (cooperative_actor::resume(1)) to reach that state
+// deterministically rather than race for it.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -63,13 +52,11 @@ using services::index::index_agent_contract;
 
 namespace {
 
-    // THE COMMIT ID A FIXTURE'S TRANSACTION COMMITTED AT, kept far from the txn id it is derived
-    // from because the two are different id spaces. The txn id says WHICH BUCKET to publish; the
-    // commit id is what the hashed family stamps into its durable txn-log frame and what the
-    // recover gate judges the frame by (bitcask_index_disk.cpp). One number serving as both is
-    // exactly the confusion that let a COMMIT marker of an earlier incarnation vouch for a later
-    // one's frame under a recycled txn id. The rebuild feed (txn_id 0) journals nothing and
-    // carries commit id 0.
+    // Kept far from the txn id it derives from -- different id spaces. txn id says which bucket
+    // to publish; commit id is what the hashed family stamps into its durable txn-log frame and
+    // the recover gate judges it by (bitcask_index_disk.cpp). Reusing one number for both is the
+    // exact confusion that let an earlier incarnation's COMMIT marker vouch for a later frame
+    // under a recycled txn id.
     constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
     constexpr components::catalog::oid_t kTableOid = 17200;

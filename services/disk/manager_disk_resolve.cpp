@@ -13,15 +13,10 @@ namespace services::disk {
     // scheduler_disk_ threads, avoiding a borrowed-pointer race. transaction_data{}
     // = "see all committed".
 
-    // The four resolve_* readers below flow through this funnel; the C++-side row
-    // filtering stays in each caller (it differs per table: equality on name,
-    // name-match collect, enumerate).
-    //
-    // A READ THAT COULD NOT BE PERFORMED IS AN ERROR, NEVER AN EMPTY ANSWER. An empty batch
-    // list is exactly what "no matching rows" looks like, so returning one from the three legs
-    // below would turn an unreadable catalog into a negative fact about it: no such namespace,
-    // no such function, no such cast. Same shape, same words, as read_chunks_by_key three
-    // functions below.
+    // The four resolve_* readers below flow through this funnel; each keeps its own row
+    // filtering (differs per table). A read that could not be performed must be an ERROR,
+    // never an empty batch — empty is also what "no matching rows" looks like (same rule as
+    // read_chunks_by_key below).
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::scan_table(components::catalog::oid_t table_oid,
                                std::unique_ptr<components::table::table_filter_t> filter,
@@ -47,18 +42,14 @@ namespace services::disk {
         if (needs_sched) {
             scheduler_disk_->enqueue(agent.get());
         }
-        // The agent reply carries the scan_error (buffer-pool OOM, data_corruption, a block the
-        // device would not give back). Pass it through untouched — the reader that asked is the
-        // one that has to fail, and it needs the reason, not a synthesized one.
+        // Pass the agent's scan_error through untouched (buffer-pool OOM, data_corruption, ...)
+        // so the reader gets the real reason, not a synthesized one.
         co_return co_await std::move(fut);
     }
 
-    // ctx.txn, NOT the default snapshot — the same rule resolve_function_by_name and
-    // find_cast_oid below carry. On transaction_data{} this scan sees only committed rows, so a
-    // namespace created inside an open transaction is invisible to ITS OWN resolve and one
-    // dropped in it still answers found=true; any verdict built on the negative ("no such
-    // namespace" collision checks, follow-up DDL in the txn) then reads a lie.
-    // A zero-txn ctx carries transaction_data{0,...}, which sees exactly the committed state.
+    // ctx.txn, not the default snapshot (same rule below): on transaction_data{} a namespace
+    // created or dropped inside an open transaction reads as its opposite to its own resolve,
+    // lying to name-collision / follow-up-DDL checks in that transaction.
     manager_disk_t::unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
     manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name) {
         resolve_namespace_result_t out(resource());
@@ -89,13 +80,10 @@ namespace services::disk {
         co_return out;
     }
 
-    // ctx.txn, NOT the default snapshot. operator_unregister_udf_t reads this answer and then
-    // scrubs each m.oid through delete_pg_catalog_rows_many, treating a spec that deleted
-    // nothing as a refusal — "the function is still in the catalog". That verdict is only sound
-    // while the two see the same pg_proc: the delete's scan carries the caller's transaction
-    // (agent_disk_t::delete_pg_catalog_rows_inner), so a read on transaction_data{} would list
-    // rows this transaction has already deleted, and the scrub of a row that is gone would be
-    // reported as a catalog that refused to give it up.
+    // ctx.txn, not the default snapshot: operator_unregister_udf_t treats a delete-spec count
+    // of 0 as "function still in catalog", and the delete's own scan
+    // (agent_disk_t::delete_pg_catalog_rows_inner) carries the caller's transaction — a read on
+    // transaction_data{} would disagree by still listing rows this transaction already deleted.
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
     manager_disk_t::resolve_function_by_name(execution_context_t ctx, std::string name) {
         std::pmr::vector<resolve_function_result_t> out(resource());
@@ -133,7 +121,6 @@ namespace services::disk {
     // INVALID_OID stays the in-band "there is no such cast" INSIDE the wrapper: DROP CAST has
     // to tell "no pg_cast row exists" (do_not_exists) from "the read failed", and collapsing
     // the former into an error would destroy exactly that distinction.
-    //
     // ctx.txn, for the reason given on resolve_function_by_name above: operator_unregister_cast_t
     // turns THIS oid into a delete spec and reads a zero count as "the cast is still in the
     // catalog". The delete sees the caller's transaction, so this read has to as well — both so

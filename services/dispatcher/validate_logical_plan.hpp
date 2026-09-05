@@ -74,17 +74,11 @@ namespace services::dispatcher {
                                                         const components::graph_execution_context& execution_context,
                                                         std::vector<components::table::column_definition_t>& columns);
 
-    // Rule 6 gate for a TYPE the DDL is about to make durable — the type half of what
-    // convert_column_defaults does for a DEFAULT value.
-    //
-    // The persistent form of a column type (components::types::encode_type_spec, which
-    // writes the table checkpoint and every WAL chunk header) refuses a DECIMAL outside
-    // the width/scale window and nesting past the format depth limit. Both are reachable
-    // from ordinary SQL, and refused only by the READER they cost a checkpoint that
-    // succeeds and a next startup that fails with data_corruption, permanently, with no
-    // statement left to blame. Asking the real encoder here — not a copy of its rules —
-    // is what keeps the DDL window and the durable window the same window.
-    //
+    // Gates a TYPE the DDL is about to make durable, using the real encoder
+    // (components::types::encode_type_spec) rather than a copy of its rules: a DECIMAL outside
+    // the width/scale window or nesting past the depth limit is reachable from ordinary SQL, and
+    // refused only by the reader costs a checkpoint that succeeds and a next startup that fails
+    // with data_corruption, permanently, with no statement left to blame.
     // `subject` names what is being refused ("column 'c'", "type 'deep'").
     [[nodiscard]] core::error_t gate_persistable_type(std::pmr::memory_resource* resource,
                                                       const std::string& subject,

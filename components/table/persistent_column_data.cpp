@@ -59,15 +59,11 @@ namespace components::table {
                 std::make_unique<persistent_column_data_t>(persistent_column_data_t::deserialize(resource, reader));
         }
 
-        // Statistics fields are read UNCONDITIONALLY. The `if (!reader.finished())` guards
-        // that wrapped them were a backward-compatibility reader for record shapes no build of
-        // this format ever ships (CURRENT_VERSION is 0 forever, serialize() above always
-        // writes both fields) — and they never even guarded what they claimed: finished_ is
-        // LAZY (it flips only when a read exhausts the chain), so at guard time it is false
-        // for every record deserialized mid-stream and the branch was taken regardless. A
+        // Statistics fields are read UNCONDITIONALLY now: the removed `if (!reader.finished())`
+        // guards never guarded anything (finished_ is LAZY, false for every mid-stream record,
+        // so the branch always ran) and format's CURRENT_VERSION is 0 forever anyway. A
         // genuinely truncated record now lands in the reader's own sticky data_corruption
-        // (read past end of chain), which the load boundary checks — loud, not defaulted
-        // (rule 6, no fallback).
+        // instead of being silently defaulted.
         auto has_stats_flag = reader.read<uint8_t>();
         if (has_stats_flag != 0) {
             result.statistics = base_statistics_t::deserialize(resource, reader);

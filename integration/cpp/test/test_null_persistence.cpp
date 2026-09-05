@@ -4,27 +4,17 @@
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 
-// NULL values must survive a checkpoint + restart.
+// NULL values must survive a checkpoint + restart. Hazard: a checkpoint flushing only MAIN
+// segments leaves the validity bitmap unwritten, so reload manufactures an all-valid
+// (0xFF-filled) one per data pointer, turning every checkpointed NULL into a non-NULL
+// zero/empty value. Fix: the persisted validity child (column_data.hpp: checkpoint_children —
+// child_columns[0] is always the validity child).
 //
-// THE HAZARD. A checkpoint that flushes only each column's MAIN segments leaves the validity
-// bitmap unwritten, and the reload then MANUFACTURES one validity segment per data pointer
-// which `column_segment_t`'s constructor 0xFF-fills — all-valid. Every NULL in a checkpointed
-// table silently becomes a non-NULL zero/empty value. What keeps that out is the PERSISTED
-// validity child (components/table/column_data.hpp, checkpoint_children: child_columns[0] is
-// always the validity child).
+// Restart tests mostly replay the WAL (no checkpoint involved) and persistence tests assert
+// only non-NULL values and row COUNTS, both right either way, so nothing else catches this.
 //
-// Why nothing else catches it:
-//   * restart tests that pass mostly replay the WAL, which rebuilds rows from records
-//     and therefore preserves NULLs — the loss only appears once a CHECKPOINT has folded
-//     the rows into the .otbx and the WAL no longer carries them;
-//   * the existing persistence tests assert on non-NULL values and on row COUNTS, and the
-//     count is right either way. That is exactly what makes the corruption silent.
-//
-// Disk is the only storage mode, so every NULL in every table is subject to it.
-//
-// The checks below deliberately probe THREE distinct observations of the same fact, because
-// a partial fix could satisfy one and not the others: IS NULL as a predicate, the cursor's
-// own is_null() on the read-back cell, and a COUNT that ignores NULLs.
+// Each case probes THREE independent observations (IS NULL, cursor is_null(), a
+// NULL-ignoring COUNT), since a partial fix could satisfy one and not the others.
 
 TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and_restart") {
     auto config = test_create_config(integration_fixture_path("test_null_persistence/basic"));
@@ -107,12 +97,9 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and
     }
 }
 
-// NULLs INSIDE nested columns must survive too. A LIST/ARRAY/STRUCT column carries
-// validity at TWO levels: the top-level cell (the whole list/struct is NULL) and the
-// interior (an element / a field is NULL). Both levels live in validity bitmaps that a
-// checkpoint must persist; the nested column DATA already round-trips, so a lost bitmap
-// here is the same silent corruption as in a flat column — the reloaded cell reads as a
-// present zero/empty value.
+// NULLs INSIDE nested columns must survive too: a LIST/ARRAY/STRUCT column carries validity
+// at TWO levels (the whole cell, and an interior element/field), each its own bitmap subject
+// to the same checkpoint hazard as a flat column.
 TEST_CASE("integration::cpp::test_null_persistence::nested_nulls_survive_checkpoint_and_restart") {
     auto config = test_create_config(integration_fixture_path("test_null_persistence/nested"));
     test_clear_directory(config);
@@ -244,11 +231,9 @@ TEST_CASE("integration::cpp::test_null_persistence::nested_nulls_survive_checkpo
     }
 }
 
-// NULLs BEYOND the first row group (1024 rows) and beyond the first vector must survive
-// as well. This branch has a documented history of bugs that only appear past the first
-// 1024 rows (per-vector / per-row-group state that the first block masks), so a 3-row
-// round-trip is not proof. 3000 rows span three row groups; the NULL pattern (every
-// 100th id) puts NULLs in ALL of them, including past row 2048.
+// NULLs BEYOND the first row group (1024 rows) must survive too -- per-vector/per-row-group
+// state can mask bugs that only show past the first block, so a 3-row round-trip isn't proof.
+// 3000 rows span three row groups; NULLs every 100th id land in all three, including past 2048.
 TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row_group") {
     auto config = test_create_config(integration_fixture_path("test_null_persistence/multi_rg"));
     test_clear_directory(config);
@@ -322,8 +307,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row
             CHECK(cur->value(0, 0).value<int64_t>() == NULLS);
         }
         {
-            // Rows past the SECOND row-group boundary (id > 2048): the documented
-            // past-the-first-vector failure mode.
+            // Rows past the second row-group boundary (id > 2048).
             auto cur = exec("SELECT COUNT(*) FROM b.big WHERE v IS NULL AND id > 2048;");
             INFO("NULLs past row 2048 (third row group) must survive");
             REQUIRE(cur->is_success());

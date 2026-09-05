@@ -49,9 +49,7 @@ namespace otterbrix {
         if (!result) {
             throw std::runtime_error("result closed");
         }
-        // A statement with no result set -- INSERT, UPDATE, every DDL -- carries a
-        // row COUNT in size() and no columns at all. Handing back that many empty
-        // tuples would be noise; the count is what len() is for.
+        // No result set (INSERT/UPDATE/DDL): row count lives in size(), not columns.
         if (columns.empty()) {
             return py::none();
         }
@@ -103,8 +101,7 @@ namespace otterbrix {
         if (!result) {
             throw std::runtime_error("result closed");
         }
-        // Same reason as fetchone(): a statement with no result set has a row
-        // count and no columns, and there is no frame to build out of that.
+        // Same as fetchone(): no result set means no columns to build a frame from.
         if (columns.empty()) {
             return py::none();
         }

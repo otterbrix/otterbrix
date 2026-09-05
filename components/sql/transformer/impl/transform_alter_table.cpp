@@ -9,14 +9,8 @@ namespace components::sql::transform {
 
     namespace {
 
-        // What the user typed, per RenameStmt object kind: the keyword that follows
-        // ALTER, plus the sub-object keyword for the forms that rename something
-        // INSIDE a relation (`ALTER TABLE ... RENAME CONSTRAINT x TO y`).
-        //
-        // Enumerated with NO `default:` on purpose. A `default:` over an object-kind
-        // enum is what turns every non-column RENAME into a silent no-op; here the
-        // compiler has to break the build when the parser learns a new kind rather
-        // than let it fall into a generic sentence.
+        // No `default:` on purpose: the compiler must break the build when the parser
+        // learns a new ObjectType, rather than let it fall through to a generic sentence.
         struct rename_form_t {
             std::string_view stmt_keyword;
             std::string_view sub_keyword; // empty when the object itself is renamed
@@ -106,8 +100,7 @@ namespace components::sql::transform {
             return {};
         }
 
-        // The constraint kind as the user spelled it, for refusals that have to say
-        // WHICH constraint they will not add. No `default:`, same reason as above.
+        // No `default:`, same reason as above.
         std::string_view constraint_kind_keyword(ConstrType kind) noexcept {
             switch (kind) {
                 case CONSTR_NULL:
@@ -138,13 +131,9 @@ namespace components::sql::transform {
             return {};
         }
 
-        // Spells one ALTER TABLE clause back out. A refusal must name the FORM that
-        // was written: in a multi-clause statement "unsupported subcommand" does not
-        // tell the user which clause lost them the statement.
-        //
-        // This table's `default:` picks WORDING only — the refusal that calls it is
-        // unconditional, so a subtype missing here still fails loudly, it just fails
-        // with a less specific sentence — wording, never BEHAVIOUR.
+        // Spells one ALTER TABLE clause back out so a multi-clause statement's refusal names
+        // WHICH clause it refused. This table's `default:` only picks wording — the caller's
+        // refusal is unconditional either way.
         void append_alter_table_form(std::pmr::string& out, const AlterTableCmd& cmd) {
             const std::string_view name = cmd.name ? std::string_view{cmd.name} : std::string_view{};
             auto column_clause = [&](std::string_view tail) {
@@ -164,9 +153,8 @@ namespace components::sql::transform {
                 case AT_AlterColumnType:
                     return column_clause("TYPE ...");
                 case AT_ColumnDefault: {
-                    // One subtype, two forms. `def` is a ColumnDef either way — the
-                    // grammar builds one for DROP DEFAULT too — so the discriminator is
-                    // the default EXPRESSION, which DROP DEFAULT leaves absent.
+                    // One subtype, two forms; the grammar builds a ColumnDef for DROP DEFAULT
+                    // too, so the discriminator is the (absent) default expression.
                     const bool has_expr = cmd.def && nodeTag(cmd.def) == T_ColumnDef &&
                                           pg_ptr_cast<ColumnDef>(cmd.def)->raw_default != nullptr;
                     return column_clause(has_expr ? "SET DEFAULT ..." : "DROP DEFAULT");
@@ -258,19 +246,15 @@ namespace components::sql::transform {
             }
         }
 
-        // Every refusal below ends the same way, because the outcome is the same:
-        // the statement was rejected whole, nothing in the table moved.
         constexpr std::string_view alter_table_refusal_tail = " is not implemented; the table was not altered";
 
     } // namespace
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_rename(RenameStmt& node) {
         if (node.renameType != OBJECT_COLUMN) {
-            // Everything that is not RENAME COLUMN is REFUSED here. Returning an
-            // empty-named DROP COLUMN node instead lands on operator_alter_column_drop_t,
-            // which no-ops on an empty name: `ALTER TABLE t RENAME TO t2`, `ALTER INDEX i
-            // RENAME TO i2` and `ALTER VIEW v RENAME TO v2` would report SUCCESS and leave
-            // the object under its old name. Rule 6: name the form the user wrote and refuse.
+            // Everything but RENAME COLUMN is refused: an empty-named DROP COLUMN node
+            // no-ops on operator_alter_column_drop_t, so e.g. `ALTER TABLE t RENAME TO t2`
+            // would otherwise report SUCCESS and leave the object under its old name.
             const rename_form_t form = rename_form_of(node.renameType);
             std::pmr::string msg{"ALTER ", resource_};
             if (!form.stmt_keyword.empty()) {
@@ -332,17 +316,14 @@ namespace components::sql::transform {
             return n;
         };
         if (!node.cmds || node.cmds->lst.empty()) {
-            // The grammar cannot build this. Fabricating an empty-named DROP COLUMN node
-            // out of it executes as a successful no-op, and a statement with nothing to do
-            // is a malformed statement, not a successful one.
+            // The grammar cannot build this; a statement with nothing to do is malformed,
+            // not a successful no-op.
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"ALTER TABLE requires at least one subcommand", resource_});
         }
-        // A constraint clause lowers to a DIFFERENT node type (node_create_constraint)
-        // and returns straight out of the loop below, discarding both the subcommands
-        // already collected and every clause after it: `ADD COLUMN x, ADD CONSTRAINT uq
-        // UNIQUE (x)` would add the constraint and silently forget the column. One node
-        // cannot carry both shapes, so a constraint clause has to stand alone.
+        // A constraint clause lowers to a different node type and returns straight out of
+        // the loop below, so `ADD COLUMN x, ADD CONSTRAINT uq UNIQUE (x)` would silently
+        // forget the column — a constraint clause must stand alone.
         const bool single_clause = node.cmds->lst.size() == 1;
         std::vector<logical_plan::alter_table_subcommand_t> subs;
         subs.reserve(node.cmds->lst.size());
@@ -351,9 +332,6 @@ namespace components::sql::transform {
             switch (cmd->subtype) {
                 case AT_AddColumn: {
                     if (!cmd->def || nodeTag(cmd->def) != T_ColumnDef) {
-                        // Skipping the clause leaves `subs` empty, which the tail of this
-                        // function turns into the empty-named DROP COLUMN no-op. Refuse
-                        // instead.
                         return core::error_t(
                             core::error_code_t::sql_parse_error,
                             std::pmr::string{"ALTER TABLE ... ADD COLUMN requires a column definition", resource_});
@@ -376,9 +354,8 @@ namespace components::sql::transform {
                     break;
                 }
                 case AT_DropColumn: {
-                    // An empty column name IS a no-op sentinel: operator_alter_column_drop_t
-                    // returns success without touching anything when it sees one. It must
-                    // never be built, not even from a malformed AST.
+                    // An empty column name is a no-op sentinel for operator_alter_column_drop_t;
+                    // must never be built, not even from a malformed AST.
                     if (!cmd->name || *cmd->name == '\0') {
                         return core::error_t(
                             core::error_code_t::sql_parse_error,
@@ -387,11 +364,7 @@ namespace components::sql::transform {
                     logical_plan::alter_table_subcommand_t sub;
                     sub.kind = logical_plan::alter_table_kind::drop_column;
                     sub.column_name = cmd->name;
-                    // `DROP COLUMN IF EXISTS` — carried through to the node. It is
-                    // observable only because a missing column no longer succeeds silently.
                     sub.missing_ok = cmd->missing_ok;
-                    // RESTRICT/CASCADE, per clause, through the one drop_behavior_of
-                    // choke-point (bare = restrict_, PostgreSQL parity).
                     sub.behavior = drop_behavior_of(cmd->behavior);
                     subs.push_back(std::move(sub));
                     break;
@@ -470,13 +443,9 @@ namespace components::sql::transform {
                         // name, so neither depends on registration order.
                         fk_node->set_ref_relname(ref_rel);
                         register_catalog_resolve_tables(resource_, &catalog_resolves_, targets);
-                        // `REFERENCES parent` with the referenced column list omitted
-                        // binds to the parent's PRIMARY KEY (SQL). opt_column_list
-                        // yields NIL — a shared EMPTY List, not a null pointer — so
-                        // "omitted" is an empty name list, never an absent pk_attrs.
-                        // The key lives in the parent's pg_constraint rows, so ask for
-                        // that table's constraint gather too: enrich reads pk_columns
-                        // straight off the entry instead of probing the catalog itself.
+                        // Omitted referenced column list binds to the parent's PRIMARY KEY;
+                        // ask for that table's constraint gather too (enrich reads pk_columns
+                        // off the resolved entry).
                         if (fk_node->ref_col_names().empty() && !ref_rel.empty()) {
                             register_catalog_resolve_table(resource_,
                                                            &catalog_resolves_,
@@ -543,10 +512,6 @@ namespace components::sql::transform {
                         }
                         return wrap_primary(logical_plan::node_ptr{std::move(uq_node)});
                     }
-                    // A constraint kind that falls off the end of this arm leaves `subs`
-                    // empty and lands on the empty-named DROP COLUMN, so
-                    // `ADD CONSTRAINT ex EXCLUDE (...)` would report success and add no
-                    // constraint at all. Name the kind that was refused.
                     {
                         std::pmr::string msg{"ALTER TABLE ... ADD CONSTRAINT ", resource_};
                         if (constr->conname && *constr->conname != '\0') {
@@ -564,8 +529,6 @@ namespace components::sql::transform {
                     }
                 }
                 case AT_DropConstraint: {
-                    // The grammar always fills the name; an empty one would make enrich
-                    // look up "" and refuse with a nameless message — refuse it here.
                     if (!cmd->name || cmd->name[0] == '\0') {
                         return core::error_t(
                             core::error_code_t::sql_parse_error,
@@ -575,15 +538,10 @@ namespace components::sql::transform {
                     logical_plan::alter_table_subcommand_t sub;
                     sub.kind = logical_plan::alter_table_kind::drop_constraint;
                     sub.constraint_name = cmd->name;
-                    // `IF EXISTS`: a missing name is an error, IF EXISTS is the one
-                    // no-op success PostgreSQL grants (enrich reads this flag).
                     sub.missing_ok = cmd->missing_ok;
                     sub.behavior = drop_behavior_of(cmd->behavior);
                     subs.push_back(std::move(sub));
-                    // The name-to-oid hop rides a names-only constraint gather: enrich
-                    // reads constraint_oids off the resolved entry and stamps the
-                    // subcommand. names_only, so a doubled-PRIMARY-KEY catalog cannot
-                    // refuse its own repair statement.
+                    // names_only so a doubled-PRIMARY-KEY catalog cannot refuse its own repair statement.
                     register_catalog_resolve_table(resource_,
                                                    &catalog_resolves_,
                                                    db,
@@ -592,15 +550,8 @@ namespace components::sql::transform {
                     break;
                 }
                 default: {
-                    // A `break` here swallows every subcommand this switch does not
-                    // implement — RENAME TO, ALTER COLUMN TYPE / SET DEFAULT / DROP
-                    // DEFAULT / SET NOT NULL / DROP NOT NULL, SET TABLESPACE, OWNER TO,
-                    // VALIDATE CONSTRAINT and the rest — leaving `subs` empty so the tail
-                    // below produces an empty-named DROP COLUMN node, which
-                    // operator_alter_column_drop_t no-ops on: every one of those statements
-                    // would report SUCCESS and alter nothing. Rule 6: refuse, and quote back
-                    // the clause that was written so a multi-clause statement says WHICH
-                    // clause it refused.
+                    // Every subcommand this switch doesn't implement lands here; refuse and
+                    // quote back the clause so a multi-clause statement says WHICH one.
                     std::pmr::string msg{"ALTER TABLE ... ", resource_};
                     append_alter_table_form(msg, *cmd);
                     msg += alter_table_refusal_tail;
@@ -609,20 +560,14 @@ namespace components::sql::transform {
             }
         }
         if (subs.empty()) {
-            // Unreachable: the loop above either pushes a subcommand or returns, and an
-            // empty command list was refused before it. Kept as a guard that fails loudly —
-            // the one thing this branch must never do is mint the empty-named DROP COLUMN
-            // node that turns a refusal into a silent success.
+            // Unreachable (the loop above either pushes a subcommand or returns); a defensive
+            // refusal so this branch can never mint the empty-named DROP COLUMN no-op.
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"ALTER TABLE produced no subcommand to execute", resource_});
         }
-        // ONE construction path for every clause count. A `subs.size() == 1` special case
-        // that re-builds the single subcommand through the two- or three-argument
-        // convenience constructors drops every field those constructors have no parameter
-        // for — that is how `DROP COLUMN IF EXISTS x` loses its missing_ok, leaving IF
-        // EXISTS indistinguishable from its absence in the one shape it matters for. The
-        // multi constructor takes the subcommands as built, so there is nothing to keep in
-        // step.
+        // One construction path for every clause count: a `subs.size() == 1` special case
+        // through the convenience constructors would drop fields like missing_ok, losing
+        // `DROP COLUMN IF EXISTS x`.
         return wrap_primary(logical_plan::make_node_alter_table_multi(resource_, std::move(subs)));
     }
 

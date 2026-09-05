@@ -13,12 +13,9 @@ namespace services::index {
 
         namespace codec = components::index::codec;
 
-        // Narrow signed / unsigned integers widened to their 64-bit form, exactly as
-        // bitcask_index_disk_t::key_bytes_for_hash does before hashing. Without it a SMALLINT probe
-        // and the BIGINT-encoded key it should match hash to different buckets, and the txn-local
-        // half of an answer would key differently from the committed half. This is the HASHED
-        // family's own step and has no counterpart on the ordered side, where the b+tree stores and
-        // compares the column's own type.
+        // Widen like bitcask_index_disk_t::key_bytes_for_hash does, so a SMALLINT probe hashes to
+        // the same bucket as its BIGINT-encoded key. No counterpart on the ordered side, which
+        // compares the column's native type.
         components::types::logical_value_t normalize_hash_key(const components::types::logical_value_t& key) {
             using namespace components::types;
             switch (key.type().type()) {
@@ -26,11 +23,7 @@ namespace services::index {
                 case logical_type::SMALLINT:
                 case logical_type::INTEGER:
                 case logical_type::BIGINT: {
-                    // Signed-integer widening can not fail for the types this switch
-                    // admits; still, never assert-then-value() (a failed cast in Release
-                    // would deref an empty optional). A non-widenable key keeps its native
-                    // representation -- identical to the default branch, and self-consistent
-                    // between stage and probe (both normalize the same way).
+                    // Not assert-then-value(): a failed cast in Release would deref an empty optional.
                     auto casted = key.cast_as(complex_logical_type(logical_type::BIGINT), {});
                     if (casted.has_error()) {
                         return key;
@@ -52,25 +45,13 @@ namespace services::index {
             }
         }
 
-        // Does the staged bucket key satisfy `compare` against the encoded probe?
-        //
-        // BYTE equality rather than value equality, and that is what makes the two halves of one
-        // answer agree: the committed half comes out of a store that HASHES and memcmps these exact
-        // bytes, so a probe that compares equal by value but differs by byte (-0.0 against +0.0)
-        // would be found in the pending half and missed in the committed one. It is also the only
-        // comparison this family can express at all: a hashed key may be DECIMAL --
-        // is_representable_index_key_type admits it for hashed and refuses it for ordered -- and
-        // physical_value carries no DECIMAL tag, so the ordered agent's decoder aborts on one.
-        // Comparing bytes never has to decode.
-        //
-        // eq is the DOMAIN, not a re-check of the predicate: read_rows below refuses every other
-        // predicate with a core::error_t before this is ever reached, and manager_index_t refuses
-        // it a round trip earlier still, off supports_ordered_probe_v.
+        // Byte equality, not value equality: the committed half hashes/memcmps these exact bytes, so
+        // a probe equal by value but different by byte (-0.0 vs +0.0) would match in the pending half
+        // and miss in the committed one. Only `eq` reaches here -- read_rows and manager_index_t
+        // (supports_ordered_probe_v) both refuse any other predicate first.
         bool key_satisfies(std::string_view stored, std::string_view probe) { return stored == probe; }
 
-        // ${path_db}/${table_oid}/${index_oid} -- this agent's own on-disk directory,
-        // derived HERE and nowhere else: the store is built inside the agent, so the only
-        // translation unit that knows the layout is this one. oid-keyed, never name-keyed.
+        // ${path_db}/${table_oid}/${index_oid}, oid-keyed (never name-keyed).
         std::filesystem::path index_directory(const std::filesystem::path& path_db,
                                               components::catalog::oid_t table_oid,
                                               components::catalog::oid_t index_oid) {
@@ -89,15 +70,10 @@ namespace services::index {
                                   uint64_t segment_record_limit,
                                   log_t& log,
                                   std::pmr::set<std::uint64_t> committed_commit_ids) {
-        // The open runs BEFORE anyone can address the actor, and its failure is the return value.
-        // There is therefore no such thing as a REACHABLE agent whose store did not open: a caller
-        // cannot forget to ask, because there is nothing to ask -- it holds either an agent or a
-        // reason.
-        //
-        // The store is BUILT INSIDE THE AGENT, in its member initializer list, from the parameters
-        // below. Nothing is created here and handed across, which is why the open can only happen
-        // after the spawn: the store is not movable, so it cannot be opened elsewhere and moved in.
-        // The path is derived in the agent's own translation unit.
+        // The open runs before anyone can address the actor, so a reachable agent always has an
+        // opened store -- the caller gets either an agent or a reason, never an agent to double-check.
+        // The store is built in the agent's initializer list (it is not movable), so it can only be
+        // opened after the spawn, not created here and handed in.
         auto agent = actor_zeta::spawn<bitcask_index_agent_t>(resource,
                                                               path_db,
                                                               table_oid,
@@ -106,9 +82,7 @@ namespace services::index {
                                                               segment_record_limit,
                                                               log,
                                                               std::move(committed_commit_ids));
-        // The deferred half. On a failure the agent is destroyed by this scope, having
-        // never published its address, and the caller gets the reason instead -- the store's
-        // own failures (an unopenable keydir file, a segment CRC mismatch) stay values.
+        // On failure the agent is destroyed here, never having published its address.
         if (auto open_error = agent->open_store(); open_error.contains_error()) {
             return open_error;
         }
@@ -128,9 +102,8 @@ namespace services::index {
         : actor_zeta::basic_actor<bitcask_index_agent_t>(resource)
         , log_(log.clone())
         , table_oid_(table_oid)
-        // IN PLACE, with the deferred-open ctor: no I/O runs here, so there is no failure
-        // for a constructor to be unable to report (rule 2). create() runs open_store()
-        // the instant this returns.
+        // Deferred-open ctor: no I/O here, so nothing for a constructor to fail to report
+        //. create() runs open_store() the instant this returns.
         , store_(index_directory(path_db, table_oid, index_oid),
                  resource,
                  flush_threshold,
@@ -212,10 +185,8 @@ namespace services::index {
     }
 
     bitcask_index_agent_t::unique_future<core::error_t> bitcask_index_agent_t::clear(session_id_t session) {
-        // Wipe stored data in place; the agent stays alive and writable so the repopulate
-        // path can re-stage with txn_id == 0 right after. A dropped agent has no store --
-        // clearing it would be a use-after-free, and saying so is what keeps a repopulate
-        // of a dropped index from reporting success.
+        // Wipes stored data in place; the agent stays alive so repopulate can re-stage with
+        // txn_id == 0 right after. A dropped agent has no store to clear.
         trace(log_, "bitcask_index_agent_t::clear, session: {}", session.data());
         if (is_dropped_) {
             co_return core::error_t{
@@ -223,37 +194,15 @@ namespace services::index {
                 std::pmr::string{"bitcask_index_agent_t::clear: the index has been dropped", resource()}};
         }
         auto clear_error = store_.clear();
-        // BOTH HALVES, AND THE BUCKETS GO EVEN WHEN THE STORE REFUSED. They are the
-        // not-yet-durable half of the same index, so a clear that wiped only the store would
-        // leave a rebuilt index answering with rows the scan it was rebuilt from never
-        // produced -- and keeping them BECAUSE the store refused is worse still: the
-        // repopulate that follows this call in the same FIFO would have commit_inserts
-        // publish a bucket belonging to the index this call failed to empty.
-        //
-        // ONLY THE REBUILD'S OWN BUCKET, and that bound is the whole point. The rebuild
-        // stages and commits under txn id 0 (manager_index.cpp, repopulate_table: the
-        // stage_inserts/commit_inserts pair is sent with `uint64_t{0}`), so bucket 0 is the
-        // one this call is a part of. Taking EVERY transaction's bucket instead was a defect:
-        // a writer that staged before a rebuild's burst and commits after it lost its batch
-        // here, and its commit then took the empty-journal road and reported success over
-        // nothing -- the heap kept the row, the index did not. That is a SHORT index answer,
-        // the one direction the design forbids outright, since a row the index never names is
-        // never fetched and never filtered. The mirror cost a staged delete that never landed.
-        // Both are pinned per family by test_index_agent_rebuild_clear.cpp.
-        //
-        // AND THE BOUND IS THE WHOLE FILE'S NOW, not this handler's alone. When it was written it
-        // was true of clear() only: commit_inserts/commit_deletes still took bucket 0 along with
-        // the committing transaction's own, so "bucket 0 belongs to the rebuild" read as an
-        // invariant two handlers out of three did not keep. They keep it now -- see
-        // publish_buckets -- so this paragraph may be read as the property it looks like.
-        //
-        // The staged row ids survive the round: a pending txn id is above every compact
-        // watermark, so has_versions_above defers the compaction that would renumber them.
+        // Both buckets erase even when the store refused -- bucket 0 is the not-yet-durable half
+        // of the same index, and leaving it would let a later commit publish it into an index this
+        // call failed to empty. Only bucket 0: taking every pending bucket was a past bug that
+        // silently shortened the index for any writer staged before/committed after this call
+        // (pinned by test_index_agent_rebuild_clear.cpp). Ids survive the erase because a pending
+        // txn id blocks compaction (has_versions_above), so nothing renumbers them first.
         pending_inserts_.erase(0);
         pending_deletes_.erase(0);
-        // THE STORE'S ANSWER IS THE HANDLER'S ANSWER. Replacing it with no_error would have
-        // manager_index_t::repopulate_table -- which awaits this future and folds it into its
-        // first_error -- folding a constant.
+        // The store's own error, not no_error -- repopulate_table folds this into its first_error.
         co_return clear_error;
     }
 
@@ -266,10 +215,8 @@ namespace services::index {
               values.size(),
               txn_id,
               session.data());
-        // drop() released the store and the buckets. A dropped agent keeps a live address
-        // and any message posted before the owner destroys it still arrives here. Refuse
-        // LOUDLY: reporting no_error would tell the statement its rows are indexed when
-        // the index no longer exists.
+        // A dropped agent keeps a live address, so a message posted before destruction can still
+        // arrive here; no_error would wrongly tell the statement its rows got indexed.
         if (is_dropped_) {
             co_return core::error_t{
                 core::error_code_t::index_not_exists,
@@ -316,72 +263,36 @@ namespace services::index {
         co_return core::error_t::no_error();
     }
 
-    // THE SEGMENT MERGE, RUN AS THIS AGENT'S OWN WORK.
-    //
-    // Rotating the active segment leaves a compaction owed; this pays it, ONCE, at the end of the
-    // write handler the rotation happened inside. A worker thread of the store's own would put two
-    // threads on one keydir and cost a mutex -- the mailbox would stop being the only thing
-    // deciding what happens in what order.
-    //
-    // WHY HERE AND NOT AT THE ROTATION: rotation happens inside a single record append, and a
-    // statement big enough to fill N segments rotates N times, so merging there would charge that
-    // statement N whole-keydir compactions, each in the middle of a half-written record. Here it is
-    // charged one, over a store that is between records.
-    //
-    // WHY NOT A MESSAGE TO ITSELF: the message id space is index_agent_contract's, POSITIONAL and
-    // SHARED with btree_index_agent_t, so a merge message would have to be an eleventh entry on a
-    // contract whose other implementation has no merge, and `implements<>` refuses a binding that
-    // does not match the contract's shape. It would also buy little -- the manager awaits this
-    // handler's reply, so the cost would move to the next statement rather than off the agent.
-    //
-    // NOT AFTER A FAILED WRITE: piling a whole-keydir compaction onto a store that has just failed
-    // to write can only add a second failure to the one the statement is already reporting. The
-    // debt keeps -- the store holds the flag and the next write that succeeds pays it.
+    // Merges once per commit, here rather than: a dedicated worker thread (a second thread on one
+    // keydir needs a mutex, breaking mailbox-only ordering); at rotation time (a statement filling
+    // N segments would pay N compactions mid-record); or a self-message (the agent contract's
+    // message ids are positional and shared with btree_index_agent_t -- no room for an eleventh op
+    // with no counterpart there). Skipped after a failed write: the debt stays and the next
+    // successful write pays it.
     core::error_t bitcask_index_agent_t::pay_merge_debt(core::error_t write_error) {
         if (write_error.contains_error()) {
             return write_error;
         }
-        // THE MERGE'S OWN REFUSAL RIDES THIS ROUND'S REPLY. Parking it in the store's
-        // pending_write_error_ would surface it on the NEXT force_flush -- the wrong round, and
-        // the wrong step to debug. The write itself landed (write_error above is clean), so
-        // what this reports is "stored, but the storage is refusing maintenance", the same
-        // shape disk_hash_table's put reports for a failed auto-rehash.
+        // Not parked in the store's pending_write_error_: that would surface on the NEXT
+        // force_flush, the wrong round to report it in.
         return store_.merge_pending_segments();
     }
 
-    // Take THE COMMITTING TRANSACTION'S OWN BUCKET, hand every entry to `apply`, and erase it.
-    //
-    // ONE BUCKET, NOT A PAIR. This used to publish bucket `txn_id` AND bucket 0 -- the rebuild's
-    // stage -- on the stated ground that bucket 0 is "committed for everyone, so it must reach disk
-    // with whatever transaction gets there first". The ground does not hold up: bucket 0 has
-    // exactly one feeder, manager_index_t::repopulate_table, and that feeder posts
-    // clear -> stage_inserts(0) -> commit_inserts(0) into one agent's FIFO with no co_await between
-    // them, so bucket 0 is ALWAYS empty by the time any other transaction's commit is dequeued.
-    // The fold was therefore never publishing anything today -- and the day a cross-actor await is
-    // added to that loop, it would start handing the rebuild's rows to a stranger's commit. See the
-    // journalled leg in commit_inserts for what that costs there, and the case
-    // "a foreign commit does not journal the rebuild's bucket" in
-    // tests/test_index_agent_commit_retry.cpp for the pin.
-    //
-    // Narrowing costs nothing on the other side either: read_rows folds bucket 0 in for EVERY
-    // reader, so rows left in it between a foreign commit and the rebuild's own commit are still
-    // answered -- they are simply not durable yet, which is exactly what the bucket means.
-    //
-    // Keys are decoded back into a logical_value_t on the way out because the store's write doors
-    // take one. The round trip is not wasted: the encoding is what made the staged key comparable
-    // with the committed half while it sat in the bucket, and the store normalizes the decoded key
-    // again on the way in, which is idempotent.
+    // ONE bucket, not a pair: this used to also publish bucket 0 (the rebuild's stage) on the
+    // theory that "committed for everyone" means whoever commits first flushes it. That never
+    // actually fired -- repopulate_table's clear->stage(0)->commit(0) run with no co_await between
+    // them, so bucket 0 is always empty when another commit is dequeued -- but would have handed
+    // the rebuild's rows to a stranger's commit the day a cross-actor await got added. Pinned by
+    // test_index_agent_commit_retry.cpp. read_rows still folds bucket 0 in for every reader, so
+    // this narrowing changes nothing about visibility.
+    // Keys round-trip to logical_value_t because the store's write doors take one; the store
+    // re-normalizes on the way in, so the round trip is idempotent.
     template<typename ApplyFn>
     core::error_t
     bitcask_index_agent_t::publish_buckets(pending_txn_map_t& buckets, uint64_t txn_id, ApplyFn&& apply) {
-        // The bytes came out of this actor's own encode_key(); a refusal is encoder/decoder
-        // drift, not a flipped bit. It is still refused rather than published: `apply` would
-        // hand the store an NA key, which hashes like any other value and would answer a
-        // later probe for a key nobody ever inserted.
+        // Refused rather than published: an NA key hashes like any other value and would answer a
+        // later probe for a key nobody inserted.
         bool decode_ok = true;
-        // Written as a plain lookup rather than a bucket-taking helper: a helper parameterized by
-        // bucket id is what let the second call on 0 sit here unremarked, and one call site does
-        // not need one.
         if (auto it = buckets.find(txn_id); it != buckets.end()) {
             for (const auto& [encoded, row_id] : it->second) {
                 size_t pos = 0;
@@ -400,7 +311,6 @@ namespace services::index {
         }
         // The rows are only in the index once this succeeds. Reporting no_error on a failed flush
         // would leave the statement believing the index matches the table when it does not.
-        //
         // AND THE BUCKET IS ERASED ONLY AFTER THE FLUSH SAYS YES, the same ordering the
         // journalled txn!=0 legs keep. An erase inside the walk above, ahead of this verdict, would
         // clear the bucket even when the flush refused -- an fsync the device rejected, or a put
@@ -434,19 +344,16 @@ namespace services::index {
             // journalled under its txn_id (which is what arms the crash-recover gate) and
             // applied in one call. The erased agent asked its backend has_txn_log() here;
             // holding the type answers it.
-            //
             // The journal takes the whole statement at once, so the bucket is materialized
             // into the store's own pair vector rather than fed entry by entry.
             std::vector<std::pair<value_t, size_t>> journal;
             // A key that would not decode must not reach the DURABLE txn log: the frame it lands in
             // is replayed by every later open, so one NA key would be re-inserted into the index on
             // every restart from then on.
-            //
             // THE BUCKET IS READ HERE AND ERASED ONLY AFTER THE JOURNAL SAYS YES. An erase inside
             // this collector, ahead of apply_txn_inserts, would lose the staged batch on a journal
             // IO refusal, and a RETRY of the same commit would find an empty bucket and report
             // success over nothing.
-            //
             // AND ONLY THIS TRANSACTION'S BUCKET, never bucket 0 as well. The frame this journal
             // becomes is stamped with `txn_id` AND `commit_id`, and recover_txn_log applies a frame
             // only when that COMMIT id is in the WAL's committed set -- so folding the rebuild's
@@ -485,7 +392,6 @@ namespace services::index {
                 // The third one is why the erase is here: `pending_inserts_[txn_id]` was
                 // materialized by stage_inserts, and a road that returns without taking it back
                 // leaks one empty bucket per such transaction for the life of the agent.
-                //
                 // ITS OWN BUCKET AND NOTHING ELSE. Now that the collector above no longer folds
                 // bucket 0 in, "the journal is empty" no longer implies "bucket 0 is empty" --
                 // erasing 0 here would be the same theft this handler just stopped committing.
@@ -537,7 +443,6 @@ namespace services::index {
             // Symmetric with commit_inserts, and the cost of getting it wrong is larger here:
             // a delete frame naming an NA key removes nothing, so the row stays in the index
             // after every replay while the statement was told the delete landed.
-            //
             // And the same erase-only-after-success ordering as commit_inserts: a journal
             // refusal must leave the staged deletes in their bucket, or the retried commit
             // reports success while the row stays in the index forever. Same single bucket, too,
@@ -669,16 +574,13 @@ namespace services::index {
         // point of the buffer living beside the store. Add what has not reached disk yet, and only
         // what the ASKING transaction is entitled to see. Two buckets, two map lookups -- not a
         // walk of every pending transaction:
-        //
         //   bucket 0    committed for everyone but not yet durable. The repopulate path refills it
         //               between its clear() and its closing commit, and a read that lands in that
         //               window would otherwise see a wiped index.
         //   bucket txn  this transaction's own staged inserts and deletes.
-        //
         // Every other bucket belongs to a transaction that has not committed, and is skipped
         // because it is not looked up at all -- no stamp to compare, no visibility predicate to get
         // wrong.
-        //
         // Keys are compared ENCODED: the bucket holds the key exactly as encode_key produced it, so
         // encoding the probe the same way makes the comparison byte-for-byte and applies the SAME
         // normalization (narrow ints widened to BIGINT/UBIGINT) to both sides.

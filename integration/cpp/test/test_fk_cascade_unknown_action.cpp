@@ -1,38 +1,26 @@
-// ============================================================================
-// AN ON DELETE ACTION THE CASCADE CANNOT READ MUST NOT BE READ AS "NO CHILDREN".
+// An ON DELETE action the cascade cannot read must not be read as "no children".
 //
-// operator_fk_cascade_t dispatches on fk_.del_action — the char it read out of
-// pg_constraint.confdeltype — and the switch ended:
+// operator_fk_cascade_t dispatches on fk_.del_action -- the char read out of
+// pg_constraint.confdeltype -- and the switch used to end with `default: break;` before
+// mark_executed(), so an action outside {'a','r','c','n','d'} performed NO cascade, reported
+// SUCCESS, and let the DELETE underneath the operator stand: the parent row goes and every
+// child row that referenced it stays behind pointing at nothing -- the exact outcome the
+// operator exists to prevent, produced by the operator itself. It was the last of three
+// silent exits in this file; an unresolved parent index and an unresolved child position
+// both used to fall the same way and now all three refuse out loud.
 //
-//     default:
-//         break;
-//     }
-//     mark_executed();
+// The pg_constraint row here is written by the engine itself, through the same
+// node_create_constraint_t -> rewrite_create_constraint -> build_create_constraint_writes
+// path every ALTER TABLE ... ADD CONSTRAINT FOREIGN KEY takes; the test only sets del_action
+// on the node to a char the engine has no meaning for, which build_create_constraint_writes
+// stores in confdeltype verbatim. Not reachable from SQL, deliberately: both SQL routes
+// (transform_alter_table and extract_table_constraints) normalize the action, keeping it
+// only when it's one of the five. What's left is a catalog written by another build or
+// writer, which is what a floor is for.
 //
-// so an action outside {'a','r','c','n','d'} performed NO cascade, reported
-// SUCCESS, and let the DELETE underneath the operator stand: the parent row goes
-// and every child row that referenced it stays behind pointing at nothing — the
-// exact outcome the operator exists to prevent, produced by the operator itself.
-// It is the last of the three silent exits in this file; an unresolved parent
-// index and an unresolved child position both used to `mark_executed();
-// co_return;` and both now refuse out loud.
-//
-// HOW THE ROW IS PRODUCED HERE. The pg_constraint row is written by the ENGINE,
-// through the same node_create_constraint_t -> rewrite_create_constraint ->
-// build_create_constraint_writes path every ALTER TABLE ... ADD CONSTRAINT
-// FOREIGN KEY takes. The test only sets del_action on the node to a char the
-// engine has no meaning for, which build_create_constraint_writes stores in
-// confdeltype verbatim.
-//
-// PATH NOT NAMED FROM SQL, deliberately: both SQL routes normalize the action
-// (transform_alter_table and extract_table_constraints each keep it only when it
-// is one of the five). What is left is a catalog written by another build or
-// another writer, which is what a floor is for.
-//
-// THE CONTROLS PROVE THE STAND HAS TEETH: the identical plan with 'r' refuses
-// the parent DELETE, and with 'c' removes the child row — both read off the
-// CONTENT of the two tables in the same run.
-// ============================================================================
+// The controls prove the stand has teeth: the identical plan with 'r' refuses the parent
+// DELETE, and with 'c' removes the child row -- both read off the content of the two tables
+// in the same run.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

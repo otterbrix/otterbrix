@@ -64,9 +64,7 @@ TEST_CASE("components::table::data_table") {
     union_fields.emplace_back(logical_type::STRING_LITERAL, "string");
     complex_logical_type union_type = complex_logical_type::create_union(union_fields, "test_union");
 
-    // The substrate is a real .otbx. `test_size` above is deliberately more than one row group,
-    // so closing a group writes its segments through to the file — this case genuinely reaches
-    // the disk transition. Substrate only: no assertion below is about it.
+    // Real .otbx: test_size is more than one row group, so closing a group writes through to disk.
     const std::string db_path = "/tmp/test_otterbrix_data_table_" + std::to_string(::getpid()) + ".otbx";
     std::remove(db_path.c_str());
     core::filesystem::local_file_system_t fs;
@@ -371,8 +369,7 @@ TEST_CASE("components::table::data_table") {
                 rows.set_value(local, static_cast<int64_t>(base + local));
             }
             data_chunk_t result(&resource, data_table->copy_types(), count);
-            // Rows appended at txn 0 and never deleted: visible to any snapshot. The mode is
-            // spelled out because fetch_visibility_t carries no default.
+            // fetch_visibility_t carries no default, so SNAPSHOT is spelled out.
             data_table->fetch(result,
                               column_indices,
                               rows,

@@ -1,18 +1,6 @@
-// A pmr MEMBER THAT NOBODY INITIALISES IS NOT NEUTRAL — IT IS PINNED TO THE PROCESS DEFAULT.
-//
-// execution_dag_t takes a resource and hands it to slots_, data_storage_, output_slots_,
-// reduction_nodes_, nodes_ and order_ in its member-initialiser list, and to key_nodes_,
-// chunk_nodes_, group_nodes_ and single_group_ through {resource_} default member initialisers.
-// slot_sizes_ and key_slots_ had NEITHER. A default-constructed std::pmr::polymorphic_allocator
-// is std::pmr::get_default_resource(), so those two allocated on the process-global arena — out
-// of reach of resource_tracer_t and of every arena-scoped diagnostic, in a class whose whole
-// point is that the caller names where its storage lives.
-//
-// key_slots_ is observable directly (key_slots() is public). slot_sizes_ is private and has no
-// accessor, so it is measured instead: a counting resource is installed AS the process default
-// around prepare(), which is where slot_sizes_.assign(slots_.size(), 0) takes its one block.
-// Zero allocations there is the only passing answer, and the byte count in the INFO names the
-// vector when it is not zero.
+// regression test: an uninitialised pmr member binds to get_default_resource(), not the
+// caller's arena. slot_sizes_ is private, so it is measured via a counting resource installed
+// as the process default rather than read back directly.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -53,8 +41,7 @@ namespace {
         bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
     };
 
-    // Immortal on purpose: it is the process default for the duration of one construction, and
-    // whatever it hands out in that window may be freed long after the window closes.
+    // leaked on purpose: memory it hands out may be freed long after this window closes
     counting_resource_t& process_default_probe() {
         static counting_resource_t* probe = new counting_resource_t();
         return *probe;
@@ -77,8 +64,7 @@ TEST_CASE("components::execution_dag::every internal vector lives on the arena t
     auto& probe = process_default_probe();
     probe.reset();
 
-    // The graph is built INSIDE the window on purpose: a member that consults the process
-    // default does so at CONSTRUCTION, and binds to whatever is installed then.
+    // constructed inside the window: pmr members bind to the default resource at construction time
     std::optional<execution_dag_t> graph;
     {
         default_resource_window_t window{&probe};

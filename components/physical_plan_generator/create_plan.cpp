@@ -115,11 +115,9 @@ namespace services::planner {
                         case components::logical_plan::alter_column_op::drop:
                             return impl::create_plan_computed_field_unregister(context, node);
                         case components::logical_plan::alter_column_op::rename:
-                            // computed rename is not emitted: rewrite_alter_table never sets
-                            // computed_ on a rename clause, because a document table's
-                            // RENAME is answered by operator_alter_column_rename_t itself —
-                            // it reads pg_class on its refusal path anyway and takes the
-                            // wording from that row's relkind. See the refusal there.
+                            // computed rename is never emitted: rewrite_alter_table never sets computed_
+                            // on a rename clause, since a document table's RENAME is answered by
+                            // operator_alter_column_rename_t itself.
                             return nullptr;
                     }
                     return nullptr;

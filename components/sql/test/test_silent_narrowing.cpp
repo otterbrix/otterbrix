@@ -1,18 +1,6 @@
-// The contract: a clause the executor does not implement is REFUSED at the
-// transformer, never silently dropped, and a literal under a declared cast carries
-// the DECLARED type, never the one the literal happened to parse as.
-//
-// Unrefused, every case here is a statement that reports success while quietly
-// answering a different question:
-//   - a window function runs as a plain aggregate (one value per group);
-//   - SELECT ... INTO returns rows and creates no table;
-//   - FOR UPDATE locks nothing;
-//   - a duplicate WITH name keeps the FIRST body and drops the second;
-//   - CREATE TABLE swallows EXCLUDE and every constraint ATTRIBUTE;
-//   - CREATE SEQUENCE swallows CYCLE / CACHE / OWNED BY / RESTART;
-//   - CAST(1.5 AS INT) answers a DOUBLE, CAST('123' AS BIGINT) a string;
-//   - `numeric(38,20) DEFAULT 0.1234...` stores the nearest double, not the digits;
-//   - `1e400` becomes +Infinity, because floatVal() is atof() and atof says nothing.
+// The contract: a clause the executor does not implement is REFUSED at the transformer, never
+// silently dropped, and a literal under a declared cast carries the DECLARED type, never the one
+// the literal happened to parse as.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
@@ -44,9 +32,7 @@ using v = components::types::logical_value_t;
         REQUIRE_FALSE(result.get_error().contains_error());                                                            \
     }
 
-// A single-parameter WHERE clause: the one bound constant must equal VALUE —
-// type included. logical_value_t::operator== is exact, so a double 2.0 does
-// NOT pass for an int32 2.
+// logical_value_t::operator== is exact, so a double 2.0 does not pass for an int32 2.
 #define TEST_WHERE_PARAM(QUERY, VALUE)                                                                                 \
     SECTION(QUERY) {                                                                                                   \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
@@ -72,21 +58,17 @@ TEST_CASE("components::sql::narrowing::window_functions_refused") {
     TEST_TRANSFORMER_ERROR(
         "SELECT number, avg(number) OVER (PARTITION BY name) FROM db.tbl;",
         R"_(window function OVER is not supported yet: avg(...) would have been computed as a plain aggregate)_");
-    // The named-window form: the WINDOW clause itself is dropped by the
-    // transformer, with or without an OVER referencing it.
+    // The WINDOW clause itself is dropped, with or without an OVER referencing it.
     TEST_TRANSFORMER_ERROR("SELECT sum(number) FROM db.tbl WINDOW w AS (PARTITION BY name);",
                            R"_(the WINDOW clause is not supported yet)_");
     // An OVER buried in an expression, not at the top of the select list.
     TEST_TRANSFORMER_ERROR(
         "SELECT number + sum(number) OVER () FROM db.tbl;",
         R"_(window function OVER is not supported yet: sum(...) would have been computed as a plain aggregate)_");
-    // Aggregate-internal ORDER BY / WITHIN GROUP share the same seam: the
-    // ordering the user asked for is read by nobody.
     TEST_TRANSFORMER_ERROR(
         "SELECT array_agg(name ORDER BY number) FROM db.tbl;",
         R"_(aggregate ORDER BY / WITHIN GROUP is not supported yet: the ordering would have been dropped)_");
-    // And VARIADIC: func_variadic is read by nobody, so f(VARIADIC arr) would
-    // quietly run as f(arr) — a different call.
+    // func_variadic is read by nobody, so f(VARIADIC arr) would quietly run as f(arr).
     TEST_TRANSFORMER_ERROR(
         "SELECT concat_ws(VARIADIC name) FROM db.tbl;",
         R"_(VARIADIC is not supported yet: the argument would have been passed unexpanded)_");
@@ -113,18 +95,14 @@ TEST_CASE("components::sql::narrowing::duplicate_with_names_refused") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    // A silent emplace no-op on the second `c` runs the query against the FIRST
-    // body and reports success.
+    // A silent emplace no-op on the second `c` would run the query against the FIRST body.
     TEST_TRANSFORMER_ERROR(
         "WITH c AS (SELECT a FROM db.big), c AS (SELECT b FROM db.big) SELECT * FROM c;",
         R"_(WITH query name "c" specified more than once)_");
-    // A name arriving from ANOTHER WITH of the same statement: with one flat
-    // registration map the reference would silently resolve to whichever body
-    // registered FIRST — for a shadowing inner WITH, the wrong one.
+    // One flat registration map would resolve a shadowing inner WITH to whichever body registered FIRST.
     TEST_TRANSFORMER_ERROR(
         "WITH c AS (SELECT a FROM db.big) SELECT * FROM (WITH c AS (SELECT b FROM db.big) SELECT * FROM c) s;",
         R"_(WITH query name "c" is already defined in this statement: WITH scoping is not supported yet)_");
-    // Distinct names stay accepted.
     TEST_TRANSFORMER_OK("WITH c AS (SELECT a FROM db.big), d AS (SELECT b FROM db.big) SELECT * FROM c;");
 }
 
@@ -133,25 +111,21 @@ TEST_CASE("components::sql::narrowing::create_table_constraint_kinds_refused") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    // Table-level EXCLUDE parses, and a `default: continue` in
-    // extract_table_constraints makes it vanish — the table created without it.
+    // A `default: continue` in extract_table_constraints would make table-level EXCLUDE vanish silently.
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT, EXCLUDE (a WITH =));",
         R"_(EXCLUDE constraints are not supported yet: the constraint would have been silently dropped)_");
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT, CONSTRAINT ex EXCLUDE (a WITH =));",
         R"_(EXCLUDE constraints are not supported yet: the constraint would have been silently dropped)_");
-    // Column-level constraint ATTRIBUTES (deferrability) ride the same seam in
-    // extract_column_constraints.
+    // Column-level constraint ATTRIBUTES (deferrability) ride the same seam in extract_column_constraints.
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT UNIQUE DEFERRABLE);",
         R"_(the DEFERRABLE constraint attribute is not supported yet: it would have been silently dropped)_");
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT UNIQUE INITIALLY DEFERRED);",
         R"_(the INITIALLY DEFERRED constraint attribute is not supported yet: it would have been silently dropped)_");
-    // Table-level deferrability travels as FIELDS on the constraint node
-    // (processCASbits in gram.y), not as separate ATTR entries — a second
-    // carrier for the same dropped attribute.
+    // Table-level deferrability travels as FIELDS on the constraint node (gram.y's processCASbits), a second carrier for the same attribute.
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT, UNIQUE (a) DEFERRABLE);",
         R"_(the DEFERRABLE constraint attribute is not supported yet: it would have been silently dropped)_");
@@ -194,8 +168,7 @@ TEST_CASE("components::sql::narrowing::cast_targets_honoured") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    // Numeric literal, integer target: the DECLARED type answers, fractions
-    // round half away from zero (PostgreSQL numeric -> int).
+    // Fractions round half away from zero (PostgreSQL numeric -> int).
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1.5 AS INT);", v(&resource, int32_t{2}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(2.4 AS SMALLINT);", v(&resource, int16_t{2}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS BIGINT);", v(&resource, int64_t{1}));
@@ -225,8 +198,7 @@ TEST_CASE("components::sql::narrowing::cast_targets_honoured") {
                            R"_(invalid input for a cast to BOOLEAN: 1.5)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE x = CAST('x' AS UUID);",
                            R"_(a literal cast to UUID is not supported yet)_");
-    // A refused TARGET TYPE is a refusal, not a silent string — NUMERIC without
-    // (width, scale) is the case.
+    // NUMERIC without (width, scale) is a refused target type, not a silent string.
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE x = CAST(1.5 AS NUMERIC);",
                            R"_(Incorrect modifiers for DECIMAL, width and scale required)_");
 }
@@ -239,9 +211,7 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
     using components::types::complex_logical_type;
     using components::types::int128_t;
 
-    // 123456789.12345678901234567890 at scale 20:
-    // 123456789 * 10^20 + 12345678901234567890 — 29 significant digits, more
-    // than a double can carry — the shape atof mangles.
+    // 123456789.12345678901234567890 at scale 20 has 29 significant digits — more than a double can carry.
     const int128_t ten_to_10 = int128_t{10000000000LL};
     const int128_t scaled = int128_t{123456789} * ten_to_10 * ten_to_10 + int128_t{1234567890123456789LL} * 10 +
                             int128_t{0}; // 12345678901234567890 assembled inside int128
@@ -262,13 +232,10 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
                          v::create_decimal(&resource, t32_res.value(), int64_t{200}));
     }
 
-    // A value that needs more integer digits than the declared width has left
-    // over is an overflow, refused — not truncated, not rounded away.
+    // An overflow is refused, not truncated or rounded away.
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST('100' AS NUMERIC(2,1));",
                            R"_(numeric field overflow: 100 does not fit NUMERIC(2, 1))_");
 
-    // The INSERT path: the VALUES chunk holds the DECIMAL value itself — the
-    // scaled int128, digit for digit — not a double approximation of it.
     SECTION("INSERT VALUES carries the exact decimal") {
         auto select = linitial(raw_parser(
             &arena_resource,
@@ -291,23 +258,11 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
     }
 }
 
-// The DEFAULT clause of a column definition is the ONE place the transformer
-// already holds the target type — the column is being DECLARED on the same line —
-// and it used to throw that knowledge away and read the literal by its own
-// spelling. For a DECIMAL column that is lossy before anything downstream can
-// help: `numeric(38,20) DEFAULT 0.12345678901234567890` went through
-// numeric_literal_value's double tail and landed on 0.12345678901234567168 —
-// 12345678901234567168 against the written 12345678901234567890 once scaled,
-// short by 722 at the 20th decimal place — and no later cast to the column's type
-// can put back digits the double never carried.
-//
-// Everything that is NOT a DECIMAL column keeps reading its default exactly as
-// before: the integer ladder in numeric_literal_value is already exact to 128
-// bits, and a DOUBLE column wants the double. That control is pinned below,
-// because widening this to every declared type would turn `c integer DEFAULT 7`
-// into an INTEGER at the transformer and flip the ALTER-vs-CREATE divergence that
-// services/collection/executor.cpp's convert_column_defaults already performs, once, for BOTH
-// spellings (pinned by "alter_add_column_default_is_coerced_like_create_table").
+// `numeric(38,20) DEFAULT 0.12345678901234567890` used to go through numeric_literal_value's
+// double tail and land on ...567168 — short by 722 at the 20th decimal place. Scoped to DECIMAL
+// only: widening it to every type would flip the ALTER-vs-CREATE divergence that
+// services/collection/executor.cpp's convert_column_defaults already performs for both spellings
+// (see test "alter_add_column_default_is_coerced_like_create_table").
 TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -317,7 +272,6 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
     using components::types::int128_t;
     using components::types::logical_type;
 
-    // The default of the single column of a single-column CREATE TABLE.
     auto only_default = [&](const char* query) {
         auto stmt = linitial(raw_parser(&arena_resource, query));
         auto wrap = transformer.transform(transform::pg_cell_to_node_cast(stmt)).finalize();
@@ -331,7 +285,6 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
         return create->column_definitions().front().default_value();
     };
 
-    // 0.12345678901234567890 at scale 20 is the 20 written digits, verbatim.
     // Assembled inside int128 because 12345678901234567890 is past int64's max.
     const int128_t written = int128_t{1234567890123456789LL} * 10;
     auto dec_res = complex_logical_type::create_decimal(&resource, 38, 20);
@@ -385,20 +338,9 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
     }
 }
 
-// AN EXPONENT IS A SPELLING, NOT A LOSS OF PRECISION. PostgreSQL's numeric input
-// reads one: `1e-5::numeric(10,6)` is 0.000010, `1.5e3::numeric(10,2)` is 1500.00,
-// `1e3::int` is 1000. The exact reader that replaced the double tail under a
-// DECLARED target refused every one of them with "not a decimal number", so the
-// half of the precision fix that lives in this component turned legal statements
-// into errors: `numeric(10,6) DEFAULT 1e-5` stopped parsing at all, where before
-// the exact reader existed it stored the nearest double. A ceiling on precision is
-// not a ban on a spelling.
-//
-// The exponent is applied by MOVING THE POINT through the written digits, so the
-// reading stays exact — multiplying by 10^exp would put back the rounding the
-// exact path exists to remove. What must NOT change is what the reader refuses:
-// an empty or non-numeric exponent is still malformed, and a shift that carries
-// the value past the declared width is still an overflow.
+// The exact reader that replaced the double tail under a declared target used to refuse valid
+// PostgreSQL exponent syntax ("not a decimal number"); the exponent must instead be applied by
+// MOVING THE POINT through the written digits, not by multiplying by 10^exp (which would put the rounding back).
 TEST_CASE("components::sql::narrowing::decimal_literal_exponent") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -430,19 +372,15 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exponent") {
     // A shift far past the scale is zero, not a refusal and not garbage.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST('1e-40' AS NUMERIC(10,6));",
                      v::create_decimal(&resource, dec(10, 6), int64_t{0}));
-    // The integer ladder reads the same spelling through the same parser: an
-    // exponent literal under an INTEGER target is PostgreSQL's 1e3::int == 1000.
+    // PostgreSQL's 1e3::int == 1000.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1e3 AS INTEGER);", v(&resource, int32_t{1000}));
 
     // --- what the shift must NOT swallow.
-    // A shift that carries the value past the declared width is an overflow, and
-    // it says so with the literal as written.
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST(1e3 AS NUMERIC(3,1));",
                            R"_(numeric field overflow: 1e3 does not fit NUMERIC(3, 1))_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST('1e400' AS NUMERIC(10,6));",
                            R"_(numeric field overflow: 1e400 does not fit NUMERIC(10, 6))_");
-    // An exponent with no digits, or with something that is not a digit, is still
-    // malformed — the reader never reads a prefix and calls it a number.
+    // The reader never reads a prefix and calls it a number.
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST('1e' AS NUMERIC(10,2));",
                            R"_(not a decimal number: 1e)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST('1e+' AS NUMERIC(10,2));",
@@ -455,13 +393,9 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exponent") {
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST('1e2e3' AS NUMERIC(10,2));",
                            R"_(not a decimal number: 1e2e3)_");
 
-    // --- the shift is bounded BY THE MANTISSA, not by a constant.
-    // Both literals below carry a mantissa longer than any fixed clamp on the exponent,
-    // which is how a constant bound stops being sound: it drags written digits back
-    // inside the declared scale, answering a number for a value that is zero, or stops
-    // the mantissa short of the width, answering a value for one that overflows. The
-    // digits are built here rather than spelled out so the query and the refusal it must
-    // quote back cannot drift apart.
+    // --- the shift is bounded BY THE MANTISSA, not by a constant clamp: a fixed clamp would drag
+    // digits back inside scale (wrongly answering a value) or cut them short of width (a false overflow).
+    // Digits are built here, not spelled out, so the query and the refusal it must quote back cannot drift apart.
     SECTION("a mantissa longer than any constant clamp still shifts down to zero") {
         // 10^149 shifted down by 1000 is 10^-851: zero at every declarable scale.
         std::string huge = "1";
@@ -474,8 +408,7 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exponent") {
         auto params = wrap.value().parameters;
         REQUIRE(params->parameters().parameters.size() == 1);
         const auto& bound = params->parameter(core::parameter_id_t(uint16_t(0)));
-        // NUMERIC(38, ...) is stored as int128, so the expected payload is written as
-        // one: an int64 zero is a different physical value and would not compare equal.
+        // NUMERIC(38, ...) is stored as int128; an int64 zero is a different physical value.
         const auto zero = v::create_decimal(&resource, dec(38, 6), components::types::int128_t{0});
         REQUIRE(bound.type() == zero.type());
         REQUIRE(bound == zero);
@@ -535,11 +468,7 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exponent") {
     }
 }
 
-// floatVal() is atof(): it answers +/-inf for a literal past the double range and
-// 0.0 for text it cannot read, in both cases WITHOUT saying so. An unadorned
-// `1e400` reaching a plan as +Infinity is a value no column holds and no
-// comparison orders — the same silent wrong answer the integer ladder above this
-// tail already refuses to give past uint128.
+// floatVal() is atof(): it answers +/-inf for a literal past the double range, without saying so.
 TEST_CASE("components::sql::narrowing::double_literal_out_of_range_is_refused") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -559,9 +488,7 @@ TEST_CASE("components::sql::narrowing::subscript_read_by_tag") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    // A subscript wider than int32 leaves the scanner as a T_Float carrying its
-    // digits; reading `ival` without looking at the tag renders the BIT PATTERN OF
-    // A POINTER into the column path.
+    // A subscript wider than int32 leaves the scanner as a T_Float; reading `ival` without the tag renders a pointer's bit pattern into the column path.
     SECTION("INSERT INTO db.tbl (arr[3000000000]) VALUES (5);") {
         auto select =
             linitial(raw_parser(&arena_resource, "INSERT INTO db.tbl (arr[3000000000]) VALUES (5);"));

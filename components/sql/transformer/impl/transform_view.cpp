@@ -7,19 +7,14 @@
 namespace components::sql::transform {
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_view(ViewStmt& node) {
-        // CREATE VIEW v (x, y) AS ... — the column aliases rename the body's output
-        // columns. They are NOT carried anywhere below this point, so accepting the
-        // form would store a body whose column names differ from the ones the view
-        // promises, and `SELECT x FROM v` would fail with "column not found" once the
-        // body is spliced in. Rule 6: refuse it here rather than half-support it.
+        // Column aliases aren't propagated below, so a later `SELECT x FROM v` would
+        // see mismatched names — refuse rather than half-support them.
         if (node.aliases != nullptr && list_length(node.aliases) > 0) {
             return core::error_t(
                 core::error_code_t::sql_parse_error,
                 std::pmr::string{"CREATE VIEW with a column alias list is not supported yet", resource_});
         }
-        // The body is stored verbatim and re-parsed on every read of the view, so it
-        // must be exactly what the user wrote — see view_body_text.hpp for what this
-        // replaces.
+        // Stored verbatim and re-parsed on every read, so it must match exactly what the user wrote.
         VALUE_OR_RETURN(auto query_sql,
                         view_body_text(resource_, raw_sql_, node.query_location, node.query_end_location, "CREATE VIEW"));
 

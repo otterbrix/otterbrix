@@ -208,17 +208,11 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
         REQUIRE(cur->size() == static_cast<std::size_t>(COUNT));                                                       \
     } while (false)
 
-// Index disk layout is oid-keyed (${path}/${table_oid}/${index_name}).
-// The test fixture creates exactly one user table, so we resolve the
-// table_oid by scanning for the numeric directory that contains the named
-// index dir.
 /* The on-disk index layout is oid-keyed (<disk>/<table_oid>/<indexrelid>/) and carries no
- * name, so resolve NAME -> indexrelid through pg_class (the only place the name lives),
- * then look for the oid-named directory. A dropped index loses both its pg_class row and
- * its directory, so "not found" covers either signal disappearing. */
+ * name, so this looks up the directory g_created_index_dirs recorded for NAME at CREATE
+ * time. A dropped index removes that directory, so "not found" means exactly that. */
 #define CHECK_EXISTS_INDEX(NAME, EXISTS)                                                                               \
     do {                                                                                                               \
-        /* the oid-keyed layout carries no name; the binding was recorded at CREATE time */                            \
         bool found = false;                                                                                            \
         auto rec = g_created_index_dirs.find(NAME);                                                                    \
         if (rec != g_created_index_dirs.end()) {                                                                       \
@@ -762,31 +756,27 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 48;", 0);
 }
 
-// VACUUM must not resurrect committed deletes, and the seq-scan path and the index path
-// must not disagree about which rows exist.
+// VACUUM must not resurrect committed deletes, and the seq-scan path and the index path must
+// not disagree about which rows exist.
 //
 // The version-info GC (row_version_manager_t::cleanup_append -> chunk_info::cleanup) only
-// ever looks at a FULL vector — vcount == DEFAULT_VECTOR_CAPACITY — and the default
-// row_group_size is DEFAULT_VECTOR_CAPACITY too, so it is exactly the full row groups of a
-// table that reach it. vacuum_rebuild_visible above runs on 50 rows and never gets there;
-// this case fills a whole row group so it does.
+// ever looks at a FULL vector (vcount == DEFAULT_VECTOR_CAPACITY, which is also the default
+// row_group_size), so only full row groups reach it. vacuum_rebuild_visible above runs on 50
+// rows and never gets there; this case fills a whole row group so it does.
 //
 // Plain SQL, no crash and no restart: insert 1024 rows, commit a DELETE of the first 500,
-// then VACUUM with no other transaction active (so the GC floor is already past the
-// delete's commit). Both the unqualified scan and the indexed predicates must still report
-// the 524 survivors. Two VACUUMs, because the two legs of the defect ripen at different
-// depths: a partially deleted vector loses its stamps on the first pass, a fully deleted
-// one only after the second.
+// then VACUUM with no other transaction active. Both the unqualified scan and the indexed
+// predicates must still report the 524 survivors. Two VACUUMs, since the two legs of the
+// defect ripen at different depths: a partially deleted vector loses its stamps on the first
+// pass, a fully deleted one only after the second.
 //
-// MEASURED, about the index leg specifically: the two paths did NOT disagree while the GC
-// was dropping the stamps — they lied together. `SELECT WHERE count < 500` returned the
-// same 500 resurrected rows the bare scan did, because operator_vacuum_t runs vacuum_all
-// (the heap-side GC) BEFORE it rebuilds each table's index through
-// manager_index_t::repopulate_table, and that rebuild feeds off a fresh scan of the heap.
-// manager_index_t::cleanup_all_versions deletes nothing on its own (a documented no-op
-// since the in-memory index went away). The index predicates stay anyway: they pin the
-// agreement, so a future change that reclaims index entries without the heap agreeing shows
-// up here.
+// Measured, about the index leg specifically: the two paths did not disagree while the GC was
+// dropping the stamps -- they lied together, since operator_vacuum_t runs vacuum_all (the
+// heap-side GC) BEFORE it rebuilds each table's index through manager_index_t::repopulate_table,
+// and that rebuild feeds off a fresh scan of the already-vacuumed heap.
+// manager_index_t::cleanup_all_versions is a documented no-op (no in-memory index left to
+// clean). The index predicates stay anyway, pinning the agreement so a future change that
+// reclaims index entries without the heap agreeing shows up here.
 TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row_group") {
     constexpr int kRows = 1024;  // exactly one full row group / one full vector
     constexpr int kDeleted = 500;

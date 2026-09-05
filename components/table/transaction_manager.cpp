@@ -90,11 +90,10 @@ namespace components::table {
     }
 
     void transaction_manager_t::discard(uint64_t commit_id) {
-        // ONE member erased under the ONE existing lock_ (rule 12): no second lock, no
-        // new edge in the lock order, no wait, no spin, and deliberately no CAS —
-        // published_horizon_ must not move, or the discarded transaction would be
-        // published by the act of forgetting it. See the header for why the erase is
-        // sound at all (nothing durable or reader-visible carries a discarded id).
+        // Only the existing lock_: no new lock, no new ordering edge. No CAS on
+        // purpose -- published_horizon_ must not move, or discarding a txn would publish it
+        // by the act of forgetting it. See the header for why the erase itself is sound
+        // (nothing durable or reader-visible carries a discarded id).
         std::lock_guard guard(lock_);
         in_flight_commits_.erase(commit_id);
     }
@@ -136,20 +135,17 @@ namespace components::table {
     uint64_t transaction_manager_t::lowest_active_start_time() const {
         std::lock_guard guard(lock_);
         uint64_t lowest = active_start_times_.empty() ? current_timestamp_.load() : *active_start_times_.begin();
-        // THE VACUUM GATE MUST HONOUR THE PROCARRAY, NOT JUST THE START TIMES. This value
-        // feeds cleanup_versions -> chunk_info::cleanup, which COLLAPSES every version slot
-        // whose stamps are <= the value into "visible to all". Two commit-id populations sit
-        // BELOW the lowest active start time and are still not visible to everybody:
-        //   * committed-but-unpublished ids: commit() has already erased the txn from
-        //     active_/active_start_times_, but until publish() every snapshot taken NOW
-        //     carries the id in in_flight_snapshot and must not see its rows. Collapsing
-        //     the slot publishes the commit by the act of forgetting it.
-        //   * ids a LIVE snapshot still rejects: an id that was in flight when a reader
-        //     began stays in that reader's in_flight_snapshot even after publish() removes
-        //     it from the global set, so the reader's floor must be honoured per txn.
-        // Both clamps mirror visible_to_all_locked(); the start-time floor above stays the
-        // base so this name keeps its start-time-space contract (and its tests). Ids start
-        // at 1, so the -1 cannot underflow. Same lock, no new ordering edge (rule 12).
+        // The vacuum gate must honour the procarray, not just start times: this value feeds
+        // cleanup_versions -> chunk_info::cleanup, which collapses every version slot at or
+        // below it into "visible to all". Two commit-id populations sit below the lowest
+        // active start time and are still not visible to everybody:
+        //   * committed-but-unpublished: commit() already erased the txn from active_/
+        //     active_start_times_, but until publish() a snapshot taken now still carries
+        //     the id in in_flight_snapshot and must not see its rows.
+        //   * ids a live snapshot still rejects: one in flight when a reader began stays in
+        //     that reader's in_flight_snapshot even after publish() removes it globally.
+        // Both clamps mirror visible_to_all_locked(); ids start at 1, so -1 cannot underflow.
+        // Same lock, no new ordering edge.
         if (!in_flight_commits_.empty()) {
             lowest = std::min(lowest, *in_flight_commits_.begin() - 1);
         }
@@ -170,23 +166,19 @@ namespace components::table {
 
     uint64_t transaction_manager_t::lowest_active_snapshot_horizon() const {
         std::lock_guard guard(lock_);
-        // BOTH public names answer the SAME question — see visible_to_all_locked().
+        // Both public names answer the SAME question — see visible_to_all_locked(). The
+        // weaker answer (published_horizon_ when active_ is empty, else min snapshot_horizon
+        // alone) is NOT enough: it ignores in_flight_commits_, so it's blind to a SMALLER
+        // commit-id still in flight while publish() has already advanced past it (publish()
+        // keeps the max ever published; commit() pipelines finish in any order). A snapshot
+        // taken in that window still reads the smaller id's rows while the broadcast already
+        // licensed the index sweep to erase them — the index then silently answers a subset
+        // of the table.
         //
-        // The weaker answer — published_horizon_ when active_ is empty, otherwise the min over
-        // snapshot_horizon alone — is NOT enough, because both branches ignore
-        // in_flight_commits_. It covers only the special case that a COMMITTING txn cannot
-        // reclaim its OWN tombstones early (its remap runs pre-publish, so the horizon reaches
-        // its id only after it), and is blind to ANOTHER, SMALLER commit-id still in flight:
-        // publish() keeps the MAXIMUM ever published while commit() pipelines finish in any
-        // order, so published_horizon_ routinely sits ABOVE an unpublished id. A snapshot taken
-        // in that window carries the smaller id in in_flight_snapshot and still reads its rows,
-        // while the broadcast would already have licensed the index sweep to erase their entries
-        // — the index then answers a subset of the table, silently.
-        //
-        // Ordering is imposed on READING the horizon, not on publish(): no commit waits for
-        // another, so no mutual exclusion is introduced (rule 12). Two names are kept because
-        // they carry different CONSUMER contracts — DROP tombstone reclaim vs. version-history
-        // collapse — not two sources of truth (rule 16 is about the single computation below).
+        // Ordering is on READING the horizon, not on publish() (no commit waits for another).
+        // Two names are kept for different CONSUMER contracts — DROP tombstone
+        // reclaim vs. version-history collapse — not two sources of truth (one computation below
+        // feeds both).
         return visible_to_all_locked();
     }
 
@@ -195,16 +187,13 @@ namespace components::table {
         return visible_to_all_locked();
     }
 
-    // Callers hold lock_. It is NOT recursive: the two public wrappers above each
-    // take it exactly once and call in here, so no path locks twice and no new edge
-    // is added to the lock order.
+    // Callers hold lock_ (not recursive: both public wrappers take it once, then call here).
     //
-    // MONOTONE IN THE SAFE DIRECTION — the property dispatcher.cpp's
-    // `new_lowest > last_broadcast_horizon_` gate rests on. Each of the three terms
-    // only ever rises: published_horizon_ never decreases (publish() CASes upward);
-    // min(in_flight_commits_) never decreases, because ids are handed out strictly
-    // increasing and publish() always removes one of the already-issued ids; and an
-    // active txn's contribution only disappears (raising the min) when it ends.
+    // MONOTONE IN THE SAFE DIRECTION — the property dispatcher.cpp's `new_lowest >
+    // last_broadcast_horizon_` gate rests on. Each term only rises: published_horizon_ never
+    // decreases (publish() CASes upward); min(in_flight_commits_) never decreases since ids
+    // are issued strictly increasing and publish() removes one already-issued id; an active
+    // txn's contribution only disappears (raising the min) when it ends.
     uint64_t transaction_manager_t::visible_to_all_locked() const {
         uint64_t watermark = published_horizon_.load(std::memory_order_relaxed);
         // Committed-but-unpublished ids: every snapshot taken from now on carries

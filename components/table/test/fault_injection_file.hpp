@@ -1,25 +1,12 @@
 #pragma once
 
-// Fault-injection file handle + crash simulation (test-side).
-//
-// A faulty_file_handle_t wraps the real database file handle (installed through the
-// DEV_MODE interposer seam in single_file_block_manager_t) and can:
-//   - fail every positional write after the Nth one (fail_after_writes);
-//   - tear one write in half and fail everything after it (torn_at_write), on the
-//     positional AND the sequential overload alike;
-//   - fail every read of ONE block location (fail_reads_at_location) — a rotten block, i.e.
-//     the failure a walk of the durable root's metadata chain has to survive;
-//   - simulate kill -9: an undo journal records the pre-image of every write — positional and
-//     sequential alike — since the last successful sync(); crash_revert() rolls the file back
-//     to exactly its state at the last fsync — the conservative crash semantics (nothing
-//     unsynced survived). After crash_revert() every further I/O on the handle fails.
-//
-// No test may lay out crash states by hand; reopening the reverted file — or a filesystem
-// copy of it — under a fresh environment IS the "state after kill".
-//
-// The wrapper must always delegate to the wrapped inner handle: the filesystem free
-// functions reinterpret_cast their handle argument to the platform handle type, so passing
-// the wrapper itself into them would read a garbage fd.
+// Fault-injection file handle + crash simulation (test-side): wraps the real database file
+// handle (installed through the DEV_MODE interposer seam in single_file_block_manager_t) to
+// fail writes/reads/syncs on a plan, and to simulate kill -9 via crash_revert() (an undo
+// journal rolls the file back to exactly its state at the last fsync).
+// Must always delegate to the wrapped inner handle: the filesystem free functions
+// reinterpret_cast their handle argument to the platform handle type, so passing the wrapper
+// itself into them would read a garbage fd.
 
 #include <cstddef>
 #include <cstring>
@@ -35,42 +22,27 @@ namespace otterbrix_test {
     struct fault_plan_t {
         // Fail the (N+1)th and every later positional write. 0 = off.
         uint64_t fail_after_writes{0};
-        // Fail the Nth and every later positional write (1-BASED, the fail_syncs_from
-        // convention). 0 = off. Exists because fail_after_writes counts ALLOWED successes and
-        // its zero is the off switch, so it cannot express "no write succeeds at all" — which
-        // is exactly the k=0 point of the crash matrix. The two knobs compose by OR:
-        // whichever names the current write first fails it.
+        // Fail the Nth and every later positional write (1-based). 0 = off. Exists because
+        // fail_after_writes counts ALLOWED successes and its 0 means "off", so it can't
+        // express "zero writes succeed". The two knobs compose by OR.
         uint64_t fail_writes_from{0};
         // Tear the Nth positional write (1-based): persist only its first half, then fail
         // it and everything after. 0 = off.
         uint64_t torn_at_write{0};
-        // Fail the Nth sync() and every later one (1-BASED, unlike fail_after_writes above,
-        // which is a count-of-successes). 0 = off. 1 fails the very first sync, which is the
-        // only one create_new_database issues. Models the write that reached the page cache
-        // and never reached the device — the failure mode the checkpoint's second fsync
-        // exists to catch.
+        // Fail the Nth sync() and every later one (1-based). 0 = off; 1 fails the very first
+        // sync, the only one create_new_database issues. Models a write that reached the page
+        // cache but never the device — what the checkpoint's second fsync exists to catch.
         uint64_t fail_syncs_from{0};
-        // Fail every positional write that lands in a HEADER SLOT (offset SECTOR_SIZE or
-        // 2 * SECTOR_SIZE — the two slots write_header alternates between), and nothing else.
-        // The other write knobs above are COUNTED, so arming them for a checkpoint's header
-        // also fails the data and metadata writes that precede it; those latch
-        // durability_error_ and leave the block manager degraded, which is a different state
-        // with a different caller (agent_disk_t::checkpoint_inner defers a degraded entry
-        // instead of retrying it). This knob names the commit point directly, so it produces
-        // the RECOVERABLE checkpoint failure — write_header's case 2, where both slots read
-        // back as the iteration this manager already believed and nothing is latched.
-        //
-        // IT NAMES THE OFFSETS, NOT THE CALLER. create_new_database writes the very first
-        // header into header_slot_offset(0) == 2 * SECTOR_SIZE as well, so a plan armed while a
-        // file is being CREATED fails the creation instead ("Failed to write the initial
-        // database header"), which is a different failure with a different caller. Arm it
-        // around the round that must fail, not around the fixture.
+        // Fails only positional writes landing in a header slot (write_header's two
+        // alternating offsets), producing the RECOVERABLE checkpoint failure (write_header's
+        // case 2) instead of the degraded state the COUNTED knobs above would cause by also
+        // failing the preceding data/metadata writes. Names the offsets, not the caller:
+        // create_new_database's first header write lands at the same offset, so arming this
+        // during file creation fails creation instead — arm it around the round under test.
         bool fail_writes_at_header_slots{false};
-        // Fail every positional READ that starts at this exact file offset. That offset is a
-        // block location (single_file_block_manager_t::block_location), so this models ONE
-        // rotten/unreadable block rather than a dead file — the shape a metadata-chain walk
-        // has to survive. UINT64_MAX = off, because offset 0 is the main header and therefore
-        // a legitimate read target that cannot serve as the sentinel.
+        // Fails the one positional READ at this exact offset — models a single rotten block,
+        // the case a metadata-chain walk must survive. UINT64_MAX = off; 0 can't be the
+        // sentinel since it's the main header's legitimate offset.
         uint64_t fail_reads_at_location{std::numeric_limits<uint64_t>::max()};
         // Set by crash_revert(): every further I/O fails.
         bool crashed{false};
@@ -123,18 +95,12 @@ namespace otterbrix_test {
         }
 
         core::filesystem::write_result_t write(void* buffer, uint64_t nr_bytes) override {
-            // The block manager and the WAL both write POSITIONALLY, so this overload used
-            // to only count and delegate. The bitcask index appends SEQUENTIALLY -- its
-            // record writer and its txn-log writer both take this door -- so the same
-            // knobs answer here. Nothing that used this header before reaches this overload,
-            // so nothing that passed before changes.
-            //
-            // THE THIRD KNOB WAS MISSING HERE, and its absence hid the defect this seam is
-            // meant to stage: torn_at_write was honoured only by the POSITIONAL overload, so
-            // the one consumer that appends -- the bitcask index -- could be refused outright
-            // but could never be torn. A torn SEQUENTIAL write is precisely the case in which
-            // bytes land, the descriptor moves, and the answer must still say "refused";
-            // without it, nothing in the suite could ask a caller whether it learns N.
+            // The block manager and WAL write positionally; the bitcask index's record and
+            // txn-log writers append sequentially through this overload instead, so it shares
+            // the same knobs. torn_at_write previously was honoured only by the positional
+            // overload, so a torn sequential append could be refused but never torn — the
+            // case where bytes land, the descriptor moves, yet the caller must still see
+            // "refused".
             if (plan_.crashed) {
                 return core::filesystem::write_result_t::refused(0);
             }
@@ -145,13 +111,10 @@ namespace otterbrix_test {
             if (plan_.fail_writes_from != 0 && plan_.writes_seen >= plan_.fail_writes_from) {
                 return core::filesystem::write_result_t::refused(0);
             }
-            // THE JOURNAL COVERS THIS OVERLOAD TOO. crash_revert() promises the file exactly
-            // as it stood at the last fsync, and it keeps that promise in two halves: the
-            // pre-images undo overwrites, the synced-length truncate undoes growth. A
-            // sequential write that APPENDS is covered by the second half alone, which is why
-            // the omission has never fired -- but a sequential write after a seek() into the
-            // middle of the file overwrites, and nothing would have put those bytes back. The
-            // position is the INNER handle's: this wrapper has no descriptor of its own.
+            // crash_revert() undoes overwrites via pre-images and growth via the
+            // synced-length truncate; a sequential write after seek() into the middle relies
+            // on the pre-image half, unlike a plain append. Uses the INNER handle's position
+            // — this wrapper keeps no descriptor of its own.
             record_undo(inner_->seek_position(), nr_bytes);
             if (plan_.torn_at_write != 0 && plan_.writes_seen == plan_.torn_at_write) {
                 // Persist only the first half and report the refusal WITH that count -- the
@@ -216,19 +179,16 @@ namespace otterbrix_test {
             return inner_->trim(offset_bytes, length_bytes);
         }
 
-        // APPEND-STYLE CALLERS MOVE THE DESCRIPTOR, and the descriptor that matters is the
-        // inner one: the free functions behind these read the handle they are given as a
-        // platform handle, so answering from `this` would read a garbage fd (see the note at
-        // the top of this file). Nothing is injected here -- a seek is not a device
-        // operation a plan knob models -- they exist only to keep the wrapper transparent.
+        // Must delegate to the inner descriptor (see the file-header note); nothing to
+        // inject here, a seek isn't a device operation any plan knob models.
         bool seek(uint64_t location) override { return inner_->seek(location); }
 
         uint64_t seek_position() override { return inner_->seek_position(); }
 
         uint64_t file_size() override { return inner_->file_size(); }
 
-        // Delegating, and it must FORWARD the refusal: a slot of its own answering "no error"
-        // while the wrapped handle refused would be a new liar (core/file/file_handle.hpp).
+        // Must forward the refusal: answering "no error" while the wrapped handle refused
+        // would make this wrapper a liar too.
         core::error_t close() override { return inner_->close(); }
 
         // Simulate kill -9: revert every positional write since the last successful sync

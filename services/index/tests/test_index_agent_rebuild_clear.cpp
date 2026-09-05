@@ -1,37 +1,28 @@
-// A REBUILD'S clear() MUST NOT DESTROY ANOTHER TRANSACTION'S STAGED BATCH.
+// A rebuild's clear() must not destroy another transaction's staged batch.
 //
 // manager_index_t::repopulate_table (VACUUM / CHECKPOINT) posts clear -> stage_inserts(0) ->
-// commit_inserts(0) to every agent of the table in one uninterrupted burst. The burst is FIFO
-// against the agent's mailbox, but a writer transaction that staged BEFORE it and commits AFTER
-// it straddles the whole burst -- and clear() wipes pending_inserts_/pending_deletes_ WHOLESALE,
-// every bucket of every transaction, not just the rebuild's own bucket 0.
+// commit_inserts(0) to every agent in one uninterrupted burst. FIFO against the agent's mailbox,
+// but a writer transaction that staged before the burst and commits after it straddles the
+// whole thing -- and clear() used to wipe pending_inserts_/pending_deletes_ wholesale, every
+// bucket of every transaction, not just the rebuild's own bucket 0.
 //
-// What that costs is not a superset. The rebuild feed is a visibility-filtered scan taken under
-// the maintenance statement's snapshot, so an uncommitted writer's rows are NOT in it; and the
-// writer's own commit finds an empty bucket, takes the `journal.empty()` road and reports
-// no_error. The heap ends up with the row and the index without it -- an index scan then answers
-// with FEWER rows than a sequential scan, silently, with every statement reporting success.
+// The cost was not a superset: the rebuild feed is a visibility-filtered scan under the
+// maintenance snapshot, so an uncommitted writer's rows are not in it, and the writer's own
+// commit then finds an empty bucket and reports no_error (the `journal.empty()` road). The heap
+// keeps the row, the index doesn't -- an index scan silently answers fewer rows than a
+// sequential scan. The mirror case: a staged DELETE wiped by clear leaves the row in the
+// rebuilt index after the deleting transaction commits.
 //
-// The mirror case costs the other direction: a staged DELETE wiped by the clear leaves the row in
-// the rebuilt index after the deleting transaction commits.
+// Same rule as test_index_agent_commit_retry.cpp pins one level down: a bucket belongs to the
+// transaction that staged it, and nothing but that transaction's own commit, revert or drop may
+// take it away.
 //
-// The rule these cases pin is the same one test_index_agent_commit_retry.cpp pins one level down:
-// a bucket belongs to the transaction that staged it, and nothing but that transaction's own
-// commit, revert or drop may take it away.
-//
-// BOTH CASES WERE WRITTEN RED and carried [!shouldfail] until the owner ruled, on 2026-09-05,
-// that clear() must narrow to its own bucket. The tag is gone; these now pin the fixed
-// behaviour. The failure they used to show, per family:
-//     :143  CHECK( read(42, onlooker) == std::vector<int64_t>{7} )   ->  { } == { 7 }
-//     :175  CHECK( read(42, onlooker).empty() )                      ->  false
-//
-// The staged physical row ids are provably still valid across the round: a pending txn id is
-// >= TRANSACTION_ID_START and so above every compact watermark, so
-// table_storage_t::has_versions_above defers the compaction for the whole round
-// (agent_disk_t::checkpoint_inner). The narrowing inverted one standing assertion --
-// test_index_agent_buffer.cpp, SECTION("clear() wipes the buckets as well as the tree") --
-// which was rewritten to the new contract under the same ruling; it now checks that the
-// COMMITTED row goes and the onlooker's OWN staged row stays.
+// Staged physical row ids stay valid across the round because a pending txn id is >=
+// TRANSACTION_ID_START, above every compact watermark, so table_storage_t::has_versions_above
+// defers compaction for the whole round (agent_disk_t::checkpoint_inner). The fix narrowed
+// clear() to bucket 0; test_index_agent_buffer.cpp's SECTION("clear() wipes the tree and the
+// REBUILD's bucket, and nobody else's") was updated under the same ruling to check that the
+// committed row goes and the onlooker's own staged row stays.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -74,13 +65,11 @@ using services::index::index_agent_contract;
 
 namespace {
 
-    // THE COMMIT ID A FIXTURE'S TRANSACTION COMMITTED AT, kept far from the txn id it is derived
-    // from because the two are different id spaces. The txn id says WHICH BUCKET to publish; the
-    // commit id is what the hashed family stamps into its durable txn-log frame and what the
-    // recover gate judges the frame by (bitcask_index_disk.cpp). One number serving as both is
-    // exactly the confusion that let a COMMIT marker of an earlier incarnation vouch for a later
-    // one's frame under a recycled txn id. The rebuild feed (txn_id 0) journals nothing and
-    // carries commit id 0.
+    // Kept far from the txn id it derives from -- different id spaces. txn id says which bucket
+    // to publish; commit id is what the hashed family stamps into its durable txn-log frame and
+    // the recover gate judges it by (bitcask_index_disk.cpp). Reusing one number for both is the
+    // exact confusion that let an earlier incarnation's COMMIT marker vouch for a later frame
+    // under a recycled txn id.
     constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
     constexpr components::catalog::oid_t kTableOid = 17500;

@@ -33,7 +33,7 @@ namespace components::catalog {
         [[nodiscard]] oid_t oid() const noexcept { return oid_; }
         // Immutable after first non-INVALID assignment: re-stamping the same value is a
         // no-op; changing to a different value is a programmer error and ABORTS — loud
-        // in every build, debug and NDEBUG alike (rule 2: no exceptions to throw, and a
+        // in every build, debug and NDEBUG alike: there is no exception to throw, and a
         // silent no-op would let two identities of the same table diverge unseen).
         void set_oid(oid_t oid);
 

@@ -13,7 +13,7 @@ namespace {
 
     constexpr uint64_t capacity = 8;
 
-    // Rule 14: never the process default resource — the project's own pool, as in
+    // Never the process default resource — the project's own pool, as in
     // every other vector test.
     std::pmr::memory_resource* resource() {
         static core::pmr::otterbrix_resource resource;

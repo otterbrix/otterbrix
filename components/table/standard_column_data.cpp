@@ -50,11 +50,9 @@ namespace components::table {
                                           vector::vector_t& result,
                                           uint64_t target_count) {
         assert(state.row_index == state.child_states[0].row_index);
-        // The validity child writes into the SAME result vector as the main data, so its scan
-        // state must target the same result base. Without this sync a scan that spans multiple
-        // vectors into one growing chunk (collection_scan_state::scan — compact's rebuild) wrote
-        // every vector's NULL bits at offset 0, folding the whole table's NULL pattern into the
-        // first 1024 rows (and reading every later row as non-NULL) while the data landed right.
+        // Targets the same result base as the main data: without this sync a multi-vector scan
+        // into one growing chunk (compact's rebuild) folded the whole table's NULL pattern into
+        // the first 1024 rows while the data landed right.
         state.child_states[0].result_offset = state.result_offset;
         auto scan_count = column_data_t::scan(vector_index, state, result, target_count);
         validity.scan(vector_index, state.child_states[0], result, target_count);
@@ -87,7 +85,7 @@ namespace components::table {
     core::result_wrapper_t<bool> standard_column_data_t::initialize_append(column_append_state& state) {
         auto base = column_data_t::initialize_append(state);
         if (base.has_error()) {
-            return base; // out_of_memory (rules 2/9)
+            return base; // out_of_memory: no exceptions across actors
         }
         column_append_state child_append;
         auto child = validity.initialize_append(child_append);
@@ -103,7 +101,7 @@ namespace components::table {
                                                                      uint64_t count) {
         auto base = column_data_t::append_data(state, uvf, count);
         if (base.has_error()) {
-            return base; // out_of_memory (rules 2/9)
+            return base; // out_of_memory: no exceptions across actors
         }
         return validity.append_data(state.child_appends[0], uvf, count);
     }
@@ -121,7 +119,7 @@ namespace components::table {
         // narrow column and its validity bitmap can share blocks. The caller flushes `pbm` once.
         auto base = column_data_t::transition_to_disk(pbm);
         if (base.has_error()) {
-            return base; // io_error / out_of_memory (rules 2/9)
+            return base; // io_error / out_of_memory: no exceptions across actors
         }
         return validity.transition_to_disk(pbm);
     }
@@ -159,11 +157,9 @@ namespace components::table {
                                                                        uint64_t update_count,
                                                                        uint64_t depth) {
         if (depth >= column_path.size()) {
-            // The FULL update — this class's own override — never the base leg directly: the
-            // base updates only the data column, and a value written over a backfilled-NULL
-            // row without its validity bit stays invisible. Dormant until
-            // collection_t::update_column started routing paths here (entry #16); the ALTER
-            // extension test read NULL where it wrote a value.
+            // The FULL update (this class's override), never the base leg directly: the base
+            // updates only the data column, so a value written over a backfilled-NULL row
+            // without its validity bit stayed invisible.
             return update(column_path[0], update_vector, row_ids, update_count);
         } else {
             return validity.update_column(column_path, update_vector, row_ids, update_count, depth + 1);
@@ -195,10 +191,8 @@ namespace components::table {
     core::result_wrapper_t<bool>
     standard_column_data_t::checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
                                                 persistent_column_data_t& persistent) {
-        // The validity bitmap is persisted as the single child column (v1 convention:
-        // child_columns[0] is validity). Its segments are flushed through the SAME
-        // partial_block_manager as the main data, so the bitmap is packed into shared
-        // blocks and lands disk-backed + reloadable on reload.
+        // v1 convention: child_columns[0] = validity. Flushed through the SAME
+        // partial_block_manager as the main data, so it's packed into shared blocks too.
         auto child = validity.checkpoint(partial_block_manager);
         if (child.has_error()) {
             return child.convert_error<bool>(); // out_of_memory
@@ -213,9 +207,8 @@ namespace components::table {
         if (own.has_error()) {
             return own;
         }
-        // v1 checkpoints carry the REAL validity bitmap as the single child column. A missing
-        // or mismatched record is data_corruption — never "assume all-valid": that silent
-        // fallback is exactly the bug that lost every checkpointed NULL.
+        // A missing or mismatched validity record is data_corruption, never assume-all-valid:
+        // that silent fallback is exactly the bug that lost every checkpointed NULL.
         if (persistent_data.child_columns.size() != 1) {
             return core::error_t(
                 core::error_code_t::data_corruption,

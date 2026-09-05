@@ -12,34 +12,14 @@
 #include <thread>
 #include <vector>
 
-// ============================================================================
-// THE MAILBOX IS THE ONLY THING THAT ORDERS A HASHED INDEX.
-//
-// bitcask_index_disk_t used to hold a shared_mutex for a concrete reason: it started a
-// std::thread of its own and pushed every segment merge onto it (rotate_active_segment
-// -> enqueue_task). So an index had TWO serialization domains -- its agent's mailbox and
-// that mutex -- and the second existed only to make the first one's guarantee false. The
-// merge is the agent's own work now, run at the end of the write handler that caused the
-// rotation, and the mutex is gone with the thread.
-//
-// A GREP PROVES NOTHING HERE. "No mutex left" is satisfied just as well by a forgotten
-// door that reaches the store without going through the mailbox at all -- exactly the
-// shape of the thing being removed. What has to be exercised is the real path: many
-// CLIENT THREADS, through the dispatcher, reading and writing ONE index at once, hard
-// enough that the merger actually runs.
-//
-// THE VOLUME IS PART OF THE ASSERTION. bitcask_segment_record_limit is configured down to
-// a handful of records so the committed inserts below rotate the active segment many
-// times over, and the fixture ASSERTS afterwards -- off CURRENT and the on-disk segment
-// ids -- that they did and that a merged segment was published. Without that a green run
-// would mean only that the merger never ran.
-//
-// The reader threads ask about ANCHOR keys, inserted once before the storm and never
-// touched by a writer, so their answer is invariant and any reader that sees something
-// else has seen a torn read of a keydir or a segment set a merge was rewriting underneath
-// it. Catch2's assertion macros are not thread-safe, so the readers count violations into
-// atomics and the main thread asserts after the join.
-// ============================================================================
+// bitcask_index_disk_t no longer runs merges on its own thread behind a shared_mutex; merge is
+// now the agent's own work, run inline at the end of the write handler that triggers rotation.
+// A static "no mutex" check can't prove that — only concurrent client threads, through the
+// dispatcher, hammering one index hard enough to force real merges, can.
+// bitcask_segment_record_limit is set low so inserts rotate (and merge) many times over, and
+// the fixture asserts on-disk that they did. Reader threads probe ANCHOR keys written once
+// before the storm; any other answer is a torn read racing a merge. Catch2 assertions are not
+// thread-safe, so readers count violations into atomics and the main thread asserts after join.
 
 namespace {
 
@@ -65,8 +45,7 @@ namespace {
         return out;
     }
 
-    // The one index directory below the disk root: found by content (a bitcask CURRENT
-    // marker), because the on-disk layout is oid-keyed and carries no index name.
+    // Found by content (a CURRENT marker): the oid-keyed layout carries no index name.
     std::filesystem::path find_bitcask_index_dir(const std::filesystem::path& disk_root) {
         for (const auto& e : std::filesystem::recursive_directory_iterator(disk_root)) {
             if (e.is_directory() && std::filesystem::exists(e.path() / "CURRENT")) {
@@ -130,9 +109,8 @@ TEST_CASE("integration::cpp::index_concurrent_merge::readers_and_writers_share_o
         REQUIRE(exec("CREATE TABLE cm.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX t_k ON cm.t USING hash (k);")->is_success());
 
-        // The anchors: three rows under one key, never written again. Three rather than
-        // one because a reader that keeps only the last row id per key answers a
-        // singleton correctly and would slip through.
+        // Three anchor rows under one key, not one: a reader that keeps only the last row
+        // id per key would answer a singleton correctly and slip through.
         for (int i = 0; i < kAnchorRows; ++i) {
             REQUIRE(exec("INSERT INTO cm.t (id, k) VALUES (" + std::to_string(i) + ", " +
                          std::to_string(kAnchorKey) + ");")
@@ -159,9 +137,8 @@ TEST_CASE("integration::cpp::index_concurrent_merge::readers_and_writers_share_o
         std::atomic<size_t> write_failures{0};
         std::atomic<size_t> reads_done{0};
 
-        // Each writer owns a disjoint id/key range, so the writers never contend for a
-        // row and every failure the fixture reports is about the index, not about two
-        // statements fighting over one tuple.
+        // Disjoint id/key ranges per writer: no row contention, so a reported failure is
+        // about the index, not two statements fighting over one tuple.
         auto writer = [&](size_t worker_id) {
             const int base = 1000 + static_cast<int>(worker_id) * 1000;
             for (int i = 0; i < kStatementsPerWriter; ++i) {
@@ -212,18 +189,15 @@ TEST_CASE("integration::cpp::index_concurrent_merge::readers_and_writers_share_o
         CHECK(reads_done.load(std::memory_order_relaxed) ==
               static_cast<size_t>(kProbesPerReader) * kReaderThreads);
 
-        // READ THE LAYOUT WHILE THE ENGINE IS STILL UP: shutdown runs a CHECKPOINT, which
-        // repopulates every index with one bulk load, and a bulk load suppresses rotation
-        // on purpose — a post-shutdown directory says nothing about how the index was
-        // written.
+        // Read the layout before shutdown: shutdown runs a CHECKPOINT that repopulates every
+        // index with one bulk load, which suppresses rotation — a post-shutdown directory
+        // says nothing about how the index was actually written.
         index_dir = find_bitcask_index_dir(config.disk.path);
         REQUIRE_FALSE(index_dir.empty());
         REQUIRE(current_segment_id(index_dir) >= kFirstRegularSegmentId);
         rotations = current_segment_id(index_dir) - kFirstRegularSegmentId;
         merged = merged_segment_exists(index_dir);
 
-        // The whole point of the volume: if nothing rotated, nothing merged, and a green
-        // run above would have proved only that the merger never got a chance to race.
         INFO("rotations observed: " << rotations);
         CHECK(rotations >= kMinRotations);
         INFO("a segment with a reserved id (0 or 1) is the merger's published output");

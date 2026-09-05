@@ -228,10 +228,9 @@ namespace {
             {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::BIGINT)},
             {output_type::fixed(logical_type::STRING_LITERAL)});
         vector_kernel k2(std::move(sig2), vector_substring_2);
-        // BOUND, not (void)-cast: rule 14 bans the cast, and add_kernel is [[nodiscard]] because it
-        // refuses on a full slot table or an arity that does not match the function's
-        // (function.hpp:172-190). Both are compile-time constants at these registration sites, so
-        // the assert states an invariant of this file rather than screening runtime input.
+        // Bound, not (void)-cast, which is banned: add_kernel only refuses on a full slot
+        // table or an arity mismatch, both compile-time constants at these registration sites, so
+        // the assert states a file invariant rather than screening runtime input.
         [[maybe_unused]] const auto added_k2 = fn->add_kernel(resource, std::move(k2));
         assert(!added_k2.contains_error() && "string kernel must fit the declared slots and arity");
 

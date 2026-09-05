@@ -16,8 +16,7 @@ namespace core::b_plus_tree {
     typedef const data_t* const_data_ptr_t;
 
     constexpr uint32_t INVALID_SIZE = uint32_t(-1);
-    // The default block size
-    constexpr uint32_t DEFAULT_BLOCK_SIZE = 262144; // 32 Kb
+    constexpr uint32_t DEFAULT_BLOCK_SIZE = 262144; // 256 KiB
     // Block is used as page analog and 4 Gb is enough for that purpose
     constexpr uint32_t MAX_BLOCK_SIZE = uint32_t(-1) - 1; // 4 Gb
 
@@ -336,16 +335,11 @@ namespace core::b_plus_tree {
         return block;
     }
 
-    // THE TWO PLACES IN THIS LIBRARY THAT TOUCH A THROWING ALLOCATOR, and the whole reason they
-    // exist: std::pmr::memory_resource::allocate has no non-throwing form, so a resource that
-    // refuses can only say so by throwing. The throw is turned into a VALUE here and is never seen
-    // anywhere above -- each body is one call into an allocating operation, so a throw out of one
-    // of them means exactly "the resource refused" and nothing else. Callers get a value.
-    //
-    // The callers must NOT do this inline: a `try { ... } catch (...) { evict; retry; }` around a
-    // live path puts the retry INSIDE the catch, where a second refusal has nothing above it to
-    // catch it and the throw crosses the actor that owns the index -- and `catch (...)` there also
-    // swallows whatever else the path can raise. Nothing above this line catches anything.
+    // The only two places in this library that touch a throwing allocator: memory_resource::
+    // allocate has no non-throwing form, so a refusal can only throw, and this turns it into a
+    // value -- nothing above this line catches anything. Not inlined at call sites on purpose:
+    // a `try { ... } catch (...) { evict; retry; }` around a live path would put the retry
+    // inside the catch, where a second refusal has nothing left to catch it.
     [[nodiscard]] inline std::unique_ptr<block_t>
     create_initialize_nothrow(std::pmr::memory_resource* resource,
                               block_t::index_t (*func)(const block_t::item_data&),

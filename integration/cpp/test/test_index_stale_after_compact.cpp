@@ -14,46 +14,15 @@
 #include <string_view>
 #include <thread>
 
-// WHAT A LOOKUP THROUGH THE INDEX MUST ANSWER ONCE A COMPACTION HAS RENUMBERED THE TABLE
-// UNDER IT.
-//
-// data_table_t::compact rebuilds a table at row id 0 and hands every surviving row a fresh,
-// gap-free physical id. An index entry stores that id -- in the agent's tree and in its
-// on-disk directory alike -- so the instant a compacting round commits, every index of every
-// table it touched is wrong. Both shapes of the failure are SILENT:
-//   * an id that names no row group is DROPPED by collection_t::fetch, shortening the answer;
-//   * an id that now belongs to a different survivor is gathered as if it were the match, so
-//     the query succeeds and returns somebody else's row.
-//
-// compact() has ONE call site (agent_disk_t::checkpoint_inner, reached only through
-// manager_disk_t::checkpoint_all) and TWO orchestrations above it. One case per orchestration,
-// because they failed differently:
-//
-//   1. THE CHECKPOINT STATEMENT (operator_checkpoint_t, and the shutdown checkpoint in
-//      ~base_otterbrix_t) always rebuilt, and the rebuild is DURABLE before the statement
-//      returns -- btree_index_agent_t::publish_buckets closes commit_inserts with
-//      store_.force_flush(). The first case is a guard, not a reproduction: crash straight
-//      after a compacting CHECKPOINT, reopen, and the index must still find the row.
-//
-//   2. THE WAL AUTO-CHECKPOINT (run_auto_checkpoint), which fires commit_txn once the log
-//      outgrows wal.auto_checkpoint_threshold_bytes, mirrored the statement's steps and NOT
-//      its rebuild -- the second case needs no crash and no restart to show a wrong row.
-//
-// THE EXPLAIN ASSERTION IS LOAD-BEARING in both, on the SAME query text the row assertions
-// use: without it either case goes green through a full scan if the index fails to bootstrap
-// or the planner stops routing `WHERE k = ...` to it. Each is paired with an UNINDEXED control
-// on the same table and row (k is indexed, id is not), so "the row is there" and "the index
-// can find it" stay separate facts.
-//
-// kill -9 is the mechanism of test_index_rebuild_crash.cpp: COPY the live data directory while
-// the engine is up -- the destructor's CHECKPOINT then mutates only the ORIGINAL -- and reopen
-// the COPY under a fresh engine. No test lays out files by hand.
+// compact() renumbers every surviving row's physical id; a stale index entry then silently
+// returns the wrong row or none. Two call paths reach compact() (CHECKPOINT statement, WAL
+// auto-checkpoint), one case below per path. EXPLAIN assertions are load-bearing: without them
+// a case can pass via a full scan instead of the index. Crash methodology: test_index_rebuild_crash.cpp.
 
 namespace {
 
-    // > row_group_size (1024) by a wide margin: 3000 rows span three row groups, and
-    // deleting the middle third moves the tail by a full 1000 ids, so a stale index cannot
-    // accidentally still name the right row.
+    // 3 row groups (> row_group_size 1024 each); deleting the middle third shifts the tail
+    // by a full 1000 ids so a stale index cannot accidentally still name the right row.
     constexpr int64_t kRows = 3000;
     constexpr int64_t kDeleteFrom = 1001; // inclusive
     constexpr int64_t kDeleteTo = 2000;   // inclusive
@@ -180,17 +149,15 @@ TEST_CASE("integration::cpp::index_stale_after_compact::a_crash_after_a_compacti
             REQUIRE(plan->is_success());
             const auto text = plan_text(plan);
             INFO("post-crash plan for the indexed query:\n" << text);
-            // A crash that caught the index directory mid-rebuild leaves nothing for
-            // bootstrap_index_sync to open, and the index is then skipped entirely and the
-            // same SQL answered by a Seq Scan. That must fail here, not pass quietly.
+            // If the crash caught the index mid-rebuild, bootstrap_index_sync finds nothing to
+            // open and the query silently falls back to a Seq Scan instead of failing here.
             REQUIRE(text.find("Index Scan") != std::string::npos);
         }
         {
             auto cur = exec(indexed_query());
             REQUIRE(cur->is_success());
-            // The rebuild's clear() drops the on-disk index directory outright; what makes
-            // this survive a crash is that commit_inserts force_flush()es the refilled tree
-            // before the statement returns. Take that flush away and this is a 0-row answer.
+            // Only commit_inserts' force_flush() before the statement returns makes this
+            // survive the crash; without it clear() leaves a 0-row answer.
             REQUIRE(cur->size() == 1);
             CHECK(cur->value(0, 0).value<int64_t>() == kSurvivorId);
         }
@@ -205,23 +172,10 @@ TEST_CASE("integration::cpp::index_stale_after_compact::a_crash_after_a_compacti
     std::filesystem::remove_all(crash_dir);
 }
 
-// THE SECOND DOOR INTO THE SAME DEFECT, and the one that was actually open.
-//
-// compact() has one call site (agent_disk_t::checkpoint_inner) but TWO orchestrations
-// above it. The CHECKPOINT statement is one; manager_wal_replicate_t::run_auto_checkpoint
-// is the other — it fires from commit_txn once the log outgrows
-// wal.auto_checkpoint_threshold_bytes, and its own comment calls it the "self-orchestrated
-// analogue of the CHECKPOINT statement operator". It mirrored the statement's steps (a)-(d)
-// and NOT its index rebuild, so every automatic round renumbered the indexed tables and
-// left their indexes holding pre-compact ids.
-//
-// This needs no crash and no restart to show: with a small threshold and a front-of-table
-// delete per round, `WHERE k = <key of the last row>` came back with a DIFFERENT row's id —
-// the compaction had moved the row the stale entry named, and collection_t::fetch gathered
-// whatever now sits at that physical id. A wrong answer, reported as a success.
-//
-// The guard against a vacuous pass is table_checkpoints(): if no automatic round ran, the
-// case proves nothing and says so instead of going green.
+// Same defect via manager_wal_replicate_t::run_auto_checkpoint: it mirrored the statement's
+// compact steps but not its index rebuild, so an automatic round renumbers indexed tables while
+// their indexes keep pre-compact ids. No crash needed. table_checkpoints() guards against a
+// vacuous pass if no automatic round ran.
 TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_rebuilds_what_it_renumbers") {
     auto config = test_create_config(integration_fixture_path("test_index_stale_after_compact/auto"));
     test_clear_directory(config);
@@ -267,9 +221,8 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
     services::disk::reset_table_checkpoints();
     services::index::reset_index_repopulations();
 
-    // Churn until an AUTOMATIC round is observed. Each round deletes a row from the FRONT of
-    // the table, which is what gives the next compaction a shift to hand out: deleting the
-    // tail would renumber nothing and the case would be blind.
+    // Deletes from the FRONT each round (not the tail) -- only that gives the next compaction
+    // ids to shift, so an automatic round can be observed.
     int64_t next = 100000;
     int64_t doomed = 1;
     for (int round = 0; round < 200 && services::disk::table_checkpoints() == 0; ++round) {
@@ -287,17 +240,9 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
         ++doomed;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    // The automatic round is fire-and-forget off commit_txn, so what follows WAITS FOR THE
-    // EVENT the two assertions below read, not for a clock. A bare sleep_for(500ms) stood
-    // here, and it was load-bearing: MEASURED at this point, table_checkpoints() is already
-    // 2 while index_repopulations() is still 0 in every run, and the repopulation lands
-    // 41-69 ms later (idle and under a 24-way CPU load alike). With the wait taken out the
-    // case fails 3 runs out of 3 on `CHECK(index_repopulations() > 0)` with `0 > 0`. So the
-    // question was never whether to wait -- it was whether to wait a guessed 500 ms or
-    // until the thing happened. The deadline below is a ceiling on an already-broken run,
-    // not the expected wait: the loop leaves the instant both meters are non-zero, which on
-    // this machine is the first few polls. 30 s matches the event wait in
-    // test_index_stale_marker_crash.cpp.
+    // Poll, don't sleep-then-check: MEASURED index_repopulations() lands 41-69 ms after
+    // table_checkpoints() becomes non-zero, so a bare sleep_for(500ms) here failed 3/3 runs
+    // on `0 > 0`. 30 s deadline matches test_index_stale_marker_crash.cpp.
     const auto wait_started = std::chrono::steady_clock::now();
     {
         const auto deadline = wait_started + std::chrono::seconds(30);

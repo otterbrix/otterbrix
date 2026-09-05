@@ -1,35 +1,20 @@
-// ===========================================================================
-// THE PARENT-SIDE COLUMN INDEX IS READ WITHOUT ASKING HOW WIDE THE ROW IS.
+// The parent-side column index must be checked against the row's actual width.
 //
-// operator_fk_cascade_t builds its child-key lookup out of the DELETE's matched
-// parent rows, addressed by fk_.parent_col_indices:
+// operator_fk_cascade_t builds its child-key lookup out of the DELETE's matched parent
+// rows, addressed by fk_.parent_col_indices via `chunk.data[par_indices[j]]`. `data` is a
+// std::pmr::vector and operator[] does not check its bound, so an index past the end of the
+// parent row would read off the end of the chunk's column array -- a type, then a whole
+// vector_t, taken from whatever follows in memory. The CHILD side of the same operator
+// already carries a width guard ("too few to hold referencing column at position P"); a
+// guard on one side of a pair hides what happens on the other.
 //
-//     for (auto pidx : par_indices) {
-//         key_types.push_back(in_chunks.front().data[pidx].type());
-//     }
-//     ...
-//     vector_ops::copy(chunk.data[par_indices[j]], keys.data[j], chunk.size(), 0, 0);
+// The two facts about par_indices that ARE checked (`absent`, and an empty list) are checked
+// immediately above this loop, so this case is neither: an index that is a number and is not
+// a position in the row it addresses.
 //
-// `data` is a std::pmr::vector and operator[] does not check its bound, so an
-// index past the end of the parent row is a read off the end of the chunk's
-// column array — a type, and then a whole vector_t, taken from whatever follows
-// it in memory.
-//
-// The CHILD side of the same operator carries a width guard ("the child row batch
-// has N column(s), too few to hold referencing column at position P"). A guard
-// standing on one side of a pair hides what happens on the other: the child index
-// is refused with a sentence, the parent index is read out of bounds.
-//
-// The two facts about par_indices that ARE checked (`absent`, and an empty list)
-// are checked immediately above this loop, so this case is neither of them: it is
-// an index that is a number and is not a position in the row it addresses.
-//
-// PATH NOT NAMED FROM SQL. parent_col_indices is stamped by enrich against the
-// parent's resolved schema, so a live plan agrees with the rows the DELETE
-// matched. This is the floor under that agreement, proven by driving the operator
-// directly: everything below the guard would have to run on a column that is not
-// there.
-// ===========================================================================
+// Not reachable from SQL: parent_col_indices is stamped by enrich against the parent's
+// resolved schema, so a live plan agrees with the rows the DELETE matched. This is the floor
+// under that agreement, proven by driving the operator directly.
 
 #include <catch2/catch_test_macros.hpp>
 #include <core/pmr.hpp>

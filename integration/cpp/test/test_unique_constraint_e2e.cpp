@@ -382,21 +382,9 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_off_key_skips_ex
     }
 }
 
-// ---------------------------------------------------------------------------
-// (J) A DECLARED KEY IS NEVER A NO-OP — asserted on the TABLE CONTENTS, not on
-//     the statement status.
-//
-// A key column the write-set does not carry must be a REFUSAL, never a skipped
-// group: the rows are already written when this operator runs, so skipping leaves
-// the duplicate in the table and the statement reports success — a declared UNIQUE
-// / PRIMARY KEY enforcing nothing. Status alone cannot see that; row COUNT under
-// the key can.
-//
-// This is the sentinel for that condition. No SQL reaches that guard on this tree
-// (see the comment on it in operator_unique_constraint.cpp), so what this test pins
-// is the OTHER half of the contract — the enforced path stays enforced, measured on
-// contents — and its sensitivity to the void condition was proven by injection.
-// ---------------------------------------------------------------------------
+// A declared key is never a no-op: a write-set missing a key column must REFUSE, never skip
+// the group, since the row is already written by the time this operator runs (guard in
+// operator_unique_constraint.cpp). Asserted on table contents, not statement status.
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::declared_key_never_admits_a_duplicate_row") {
     auto config = make_test_config(
         integration_fixture_path("test_unique_constraint_e2e/declared_key_never_admits_a_duplicate_row"));
@@ -446,17 +434,11 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::declared_key_never_admi
 // (K) THE WRITE-SET EXPOSES EVERY KEY COLUMN, ON EVERY DML SHAPE THAT REACHES
 //     THE UNIQUE SINK.
 //
-// The write-side guard added with (J) refuses a group whose column has no
-// position in the written row. That refusal is only correct if no ordinary
-// statement can produce such a write-set — otherwise it would brick working SQL.
-// These are the shapes where the written row could plausibly have carried fewer
-// columns than the key names: an UPDATE that SETs only part of a composite key,
-// a key on a column that ALTER TABLE added after the table was created, an
-// INSERT fed from a SELECT rather than a VALUES list, a quoted mixed-case
-// identifier, and an UPDATE with a RETURNING projection over it.
-//
-// Each must behave EXACTLY as if nothing had changed: the duplicate refused and
-// absent from the table, never the guard's "has no position in the written row".
+// The (J) write-side guard refuses a group whose column has no position in the written row;
+// that's only correct if no ordinary statement can produce such a write-set. Covers: UPDATE
+// setting only part of a composite key, a key on a column ALTER TABLE added later, INSERT
+// fed from a SELECT, a quoted mixed-case identifier, and UPDATE with RETURNING. Each must
+// refuse the duplicate normally, never trip the guard's "has no position" error.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::every_dml_shape_exposes_the_key_columns") {
     auto config = make_test_config(

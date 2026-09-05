@@ -1,16 +1,6 @@
-// row_group_t::evaluate_predicate materialises every column a pushed predicate binds by
-// point-fetching it, and the column_fetch_state it fetches through owns two things that are
-// PER-COLUMN in intent: the child states a nested column reads its fields through, and the
-// pin handles that keep a fetched string's bytes addressable. One state shared across all
-// bound columns aliases the first; making it per-ITERATION would break the second, because
-// the chunk is handed to run_graph AFTER the loop and a borrowed string_view outlives a pin
-// released at the end of the iteration that took it.
-//
-// The shape that satisfies both is the one row_group_t::fetch_row already uses: ONE state
-// whose lifetime spans the graph run, and a per-column CHILD of it. This test exercises a
-// predicate that binds two long-string columns at once -- long, because a string_t of 12
-// bytes or fewer is inlined and never points into a block, so short values would not touch
-// the pins this is about.
+// Regression test for row_group_t::evaluate_predicate's fetch_state sharing (see the "ONE
+// state ... CHILD of it" comment there): binds two long-string (>12 byte, non-inlined)
+// columns in one predicate to catch child-state aliasing and premature pin release.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/execution_dag_builder.hpp>
@@ -56,8 +46,8 @@ namespace {
         ~predicate_env() { std::remove(predicate_state_db_path().c_str()); }
     };
 
-    // 40 characters: well past the 12-byte inline limit of string_t, so the value lives in a
-    // block and the fetched view borrows a pin.
+    // 43 characters: past the 12-byte inline limit of string_t, so the value lives in a block
+    // and the fetched view borrows a pin.
     std::string wide_string(char tag, size_t index) {
         std::string s(1, tag);
         s += "-";
@@ -94,8 +84,8 @@ TEST_CASE("components::table::predicate::two_long_string_columns_in_one_predicat
         table->finalize_append(state, transaction_data{0, 0});
     }
 
-    // a >= wide_string('a', 100) AND b < wide_string('b', 200) — both bound columns are long
-    // strings, so evaluate_predicate fetches both through the state under test.
+    // a >= wide_string('a', 100) AND b < wide_string('b', 200): both bound columns are long
+    // strings, so both go through the fetch_state under test.
     namespace expr = components::expressions;
     const core::parameter_id_t lo_id{0};
     const core::parameter_id_t hi_id{1};
@@ -139,8 +129,6 @@ TEST_CASE("components::table::predicate::two_long_string_columns_in_one_predicat
             const auto a = a_cell.value<std::string_view>();
             const auto b = b_cell.value<std::string_view>();
             INFO("row " << (produced + row) << " a=" << a << " b=" << b);
-            // Each column must hold ITS OWN value: 'a' rows carry the a-tag, 'b' rows the
-            // b-tag, and the two must agree on the index encoded in them.
             REQUIRE(a.substr(0, 2) == "a-");
             REQUIRE(b.substr(0, 2) == "b-");
             REQUIRE(a.substr(2) == b.substr(2));

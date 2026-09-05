@@ -42,11 +42,8 @@ namespace components::operators {
 
     void operator_hash_group_t::add_value(const std::pmr::string& name,
                                           const types::complex_logical_type& result_type) {
-        // group_value_t is not allocator-aware, so the vector's own resource reaches its ELEMENTS
-        // through nothing: `{name, result_type}` would copy-construct the member string, and
-        // std::pmr::string's copy constructor does not propagate the source allocator -- every
-        // aggregate's output name would sit on the default resource while the operator that reads
-        // it lives on resource_. Naming the resource is the only way to say where it lives.
+        // group_value_t isn't allocator-aware, so `{name, result_type}` would copy-construct the
+        // string onto the default resource instead of resource_ — must name the resource explicitly.
         values_.push_back(group_value_t{std::pmr::string(name, resource_), result_type});
     }
 

@@ -83,10 +83,8 @@ namespace components::types {
         static logical_value_t create_list(std::pmr::memory_resource* r,
                                            const complex_logical_type& type,
                                            const std::vector<logical_value_t>& values);
-        // Builds a LIST value carrying the DECLARED list type as-is -- extension
-        // (field_id/required) included -- where create_list above wraps the given CHILD type
-        // into a fresh default extension. Use this when the list type already exists (a
-        // column's declared type); use create_list when only the element type is known.
+        // Unlike create_list (wraps a CHILD type in a fresh extension), keeps the DECLARED
+        // list type as-is; use this when the list type already exists.
         static logical_value_t create_list_from_type(std::pmr::memory_resource* r,
                                                      const complex_logical_type& list_type,
                                                      const std::vector<logical_value_t>& values);

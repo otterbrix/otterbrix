@@ -1,17 +1,8 @@
-// Shadow paging: the double-header protocol must actually keep a PREVIOUS root, the header
-// sector must be self-validating, and winner selection must be a validity test rather than an
-// integer compare.
-//
-// Three defects, three gates:
-//   (1) one slot per checkpoint  — the other slot keeps the previous root;
-//   (2) database_header_t::checksum is computed on write and verified on read;
-//   (3) the winner is the slot with a VALID checksum AND the greater iteration; garbage
-//       with any iteration whatsoever loses, and two invalid slots are data_corruption.
-//
-// Crash states are produced ONLY through the fault-injection seam (fault_injection_file.hpp).
-// Corruption states — a slot overwritten with garbage — are produced by mutating the file's
-// bytes directly, exactly as the existing block-checksum and bad-magic tests do: that is
-// injected corruption, not a hand-laid crash state.
+// Shadow paging must (1) keep a PREVIOUS root in the other slot, (2) validate the header via
+// checksum, and (3) pick the winner by checksum validity + iteration, not a naked int compare.
+// Crashes are produced only via the fault-injection seam (fault_injection_file.hpp); corruption
+// is produced by mutating the file's bytes directly, matching the existing checksum/bad-magic
+// tests — never a hand-laid crash state.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -84,8 +75,8 @@ namespace {
         }
     }
 
-    // The exact sequence of table_storage_t::checkpoint() (services/disk/manager_disk.cpp):
-    // table metadata -> set_meta_block -> free list -> fsync -> header -> fsync.
+    // Mirrors table_storage_t::checkpoint() (services/disk/manager_disk.cpp): table metadata ->
+    // set_meta_block -> free list -> fsync -> header -> fsync.
     void checkpoint_production(tstorage::single_file_block_manager_t& bm, data_table_t& table) {
         tstorage::metadata_manager_t meta_mgr(bm);
         tstorage::metadata_writer_t writer(meta_mgr);
@@ -151,9 +142,8 @@ namespace {
         REQUIRE(f.good());
     }
 
-    // A whole sector of random bytes carrying an arbitrary (typically huge) iteration.
-    // The checksum field is nudged if the random draw happens to be self-consistent, so a
-    // trial always tests what it claims to test.
+    // A whole sector of random bytes with an arbitrary iteration. The checksum is nudged if
+    // the random draw happens to already be self-consistent, so a trial always tests garbage.
     tstorage::database_header_t garbage_slot(std::mt19937_64& rng, uint64_t iteration) {
         tstorage::database_header_t h;
         auto* bytes = reinterpret_cast<uint8_t*>(&h);
@@ -173,9 +163,8 @@ namespace {
         return std::vector<char>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     }
 
-    // Whole-file comparison as a plain bool. Catch2 stringifies the operands of a failing
-    // REQUIRE(a == b), and these operands are multi-megabyte byte vectors — the stringify
-    // itself aborts the run before the failure can be reported.
+    // Plain bool, not REQUIRE(a == b) directly: Catch2 would stringify multi-megabyte byte
+    // vectors on a failing compare and abort the run before reporting the failure.
     bool same_bytes(const std::vector<char>& a, const std::vector<char>& b) {
         return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size()) == 0;
     }
@@ -194,12 +183,9 @@ namespace {
 
 } // namespace
 
-// --- Defect (1): the redundancy write destroys the previous root ---------------------
-//
-// Two checkpoints in a row. Under a real double-header protocol the file must end up
-// holding BOTH roots: the new one in the slot this iteration owns, the previous one in the
-// slot it does not. HEAD writes the same header to both slots, so the previous root is
-// gone and the two slots are byte-identical.
+// Defect (1) this guards against: writing the same header to both slots destroyed the
+// previous root. Two checkpoints must leave the file holding BOTH roots — new in the slot
+// this iteration owns, previous in the other.
 TEST_CASE("shadow_header: a checkpoint writes ONE slot and leaves the previous root in the other") {
     const std::string path = shadow_db_path("prev_root");
     remove_file(path);
@@ -267,10 +253,8 @@ TEST_CASE("shadow_header: a crash after a checkpoint leaves the PREVIOUS root op
 
         const auto post_b = read_whole_file(path);
 
-        // A THIRD checkpoint, caught in flight. Its data and metadata blocks go to the file;
-        // the fsync barrier and the header write never happen, because the power goes out
-        // first. This is the only interesting moment for a crash: after checkpoint B's fsync
-        // there is nothing in flight to lose, and a "crash" there would revert nothing at all.
+        // A THIRD checkpoint, caught in flight before its fsync/header write: the only crash
+        // point with something to lose, since after B's fsync nothing is in flight.
         append_rows(*table, env, 4000, 2000);
         {
             tstorage::metadata_manager_t meta_mgr(bm);
@@ -278,21 +262,16 @@ TEST_CASE("shadow_header: a crash after a checkpoint leaves the PREVIOUS root op
             REQUIRE_FALSE(table->checkpoint(writer).has_error());
             REQUIRE_FALSE(writer.flush().has_error());
             bm.set_meta_block(writer.get_block_pointer().block_pointer);
-            // The free list is serialized into metadata blocks too; the pointer it returns
-            // would have gone into the header that this crash never writes. Bind the result
-            // anyway: a discarded [[nodiscard]] here would hide a real failure of the very
-            // write this case is about.
+            // Bind the result, don't discard it: a real failure here must not hide behind a
+            // dropped [[nodiscard]].
             REQUIRE_FALSE(bm.serialize_free_list().has_error());
         }
 
-        // kill -9 right here: everything since the last successful fsync is lost. That
-        // fsync was checkpoint B's, so the frozen file is exactly the post-B state — "after
-        // the header write, before the next checkpoint".
+        // kill -9 right here: the frozen file is exactly the post-B state (last successful fsync).
         REQUIRE(scope.last() != nullptr);
 
-        // A crash test whose crash reverts nothing is not coverage, it only reads like
-        // coverage. Prove the seam has something to take away BEFORE taking it, and prove it
-        // put the file back to the last fsync boundary afterwards.
+        // Prove the seam has something to take away before taking it, and that crash_revert()
+        // restores exactly the post-B (last-fsync) bytes afterwards.
         const auto pre_crash = read_whole_file(path);
         REQUIRE_FALSE(same_bytes(pre_crash, post_b));
 
@@ -309,7 +288,6 @@ TEST_CASE("shadow_header: a crash after a checkpoint leaves the PREVIOUS root op
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, copy_path);
         REQUIRE_FALSE(bm.load_existing_database().has_error());
 
-        // The recovered root is B.
         CHECK(rows_at_root(env, bm, bm.meta_block(), 5000) == 4000);
 
         // And the previous root is still there, still valid, still openable.
@@ -356,23 +334,16 @@ TEST_CASE("shadow_header: the durable header carries a verifiable checksum") {
     tampered.meta_block += 1;
     CHECK_FALSE(tampered.checksum_ok());
 
-    // ...and on the padding too: the CRC domain is the WHOLE sector, with no carve-out, so a
-    // stray byte anywhere in it is caught. This is NOT a statement about torn writes — a tear
-    // reassembles into a byte-exact copy of one generation and passes; the case below pins
-    // that.
+    // ...and on the padding too: the CRC domain is the whole sector, no carve-out (this is not
+    // about torn writes — see below).
     tstorage::database_header_t stray = newest;
     stray.padding[sizeof(stray.padding) - 1] ^= 0xFF;
     CHECK_FALSE(stray.checksum_ok());
 
-    // What the checksum does NOT catch, pinned so the guarantee cannot be re-derived wrongly:
-    // a TORN header write. Every byte that differs between two generations — the fields at
-    // 0..39 and the checksum at 40..47 — sits in the FIRST 512-byte hardware sector of this
-    // 4 KiB header, and bytes 48.. are zeros in every generation. Splice the two REAL
-    // generations on disk at a 512-byte boundary (exactly what a tear across hardware sectors
-    // leaves behind) and the result is byte-identical to a whole header of one generation: it
-    // passes, and it is not merely "valid-looking", it IS that generation. A writer cannot
-    // produce a padding state the earlier case implied, which is why that case proves
-    // something else. What survives a tear is the two-slot layout, not this CRC.
+    // Confirms database_header_t::checksum_ok's documented gap: fields+checksum fit in the
+    // first 48 bytes of the first 512-byte hardware sector, and bytes 48.. are zero in every
+    // generation, so splicing two real generations at that boundary reassembles into a
+    // byte-exact single generation — passes, because it IS that generation.
     static constexpr size_t HARDWARE_SECTOR = 512;
     REQUIRE(s0.checksum_ok());
     REQUIRE(s1.checksum_ok());
@@ -388,9 +359,8 @@ TEST_CASE("shadow_header: the durable header carries a verifiable checksum") {
     remove_file(path);
 }
 
-// --- Defect (3): winner selection is a naked integer compare --------------------------
-//
-// The plan's fuzz gate: garbage with ANY iteration must never beat a valid slot.
+// Defect (3): winner selection must not be a naked integer compare — garbage with ANY
+// iteration must never beat a valid slot.
 TEST_CASE("shadow_header: garbage with a huge iteration never beats a valid slot") {
     const std::string path = shadow_db_path("fuzz");
     const std::string pristine = path + ".pristine";
@@ -413,15 +383,8 @@ TEST_CASE("shadow_header: garbage with a huge iteration never beats a valid slot
     }
     std::filesystem::copy_file(path, pristine, std::filesystem::copy_options::overwrite_existing);
 
-    // Both slots are good roots now, so smashing either one still leaves a root that
-    // carries real data — the gate can demand the DATA back, not merely "no crash".
-    //
-    // REQUIRE, not CHECK. This is a PRECONDITION, not a finding: the loop below smashes one
-    // slot per trial and demands specific rows from the other, and it can only mean that if
-    // the other slot really is a valid root. Continuing past a failed precondition runs 64
-    // trials on a false premise and reports whatever they happen to say. Downgrading it is not
-    // justified on any build this test is compiled into: two checkpoints on a fresh file leave two
-    // valid slots, and if they do not, nothing below is a measurement.
+    // REQUIRE, not CHECK: a precondition, not a finding. If the two checkpoints above did not
+    // leave two valid slots, the 64 trials below smash and re-check against a false premise.
     REQUIRE(valid_slot_count(pristine) == 2);
 
     tstorage::database_header_t s0;
@@ -440,8 +403,7 @@ TEST_CASE("shadow_header: garbage with a huge iteration never beats a valid slot
 
         for (int trial = 0; trial < TRIALS; trial++) {
             std::filesystem::copy_file(pristine, path, std::filesystem::copy_options::overwrite_existing);
-            // Iterations that dwarf anything the engine will ever reach, including the
-            // sign-bit and all-ones corners.
+            // Iterations that dwarf anything real, including the sign-bit and all-ones corners.
             const uint64_t huge = (trial == 0)   ? UINT64_MAX
                                   : (trial == 1) ? (uint64_t(1) << 63)
                                                  : (rng() | (uint64_t(1) << 62));
@@ -497,12 +459,9 @@ TEST_CASE("shadow_header: two invalid slots report data_corruption and leave the
     remove_file(path);
 }
 
-// --- Fresh-file nuance ----------------------------------------------------------------
-//
-// A brand-new file has exactly ONE valid slot: the one iteration 0 owns. The other is
-// never written, and must be rejected on its checksum rather than accidentally winning an
-// iteration tie at 0 — where it would hand out meta_block 0, a REAL block id, instead of
-// INVALID_INDEX.
+// A brand-new file has exactly ONE valid slot (iteration 0's); the never-written other slot
+// reads back as zeros — an iteration-0 TIE pointing at meta_block 0, a REAL block id — and
+// must be rejected on its checksum, not win the tie.
 TEST_CASE("shadow_header: a freshly created database opens cleanly with one valid slot") {
     const std::string path = shadow_db_path("fresh");
     remove_file(path);
@@ -523,9 +482,6 @@ TEST_CASE("shadow_header: a freshly created database opens cleanly with one vali
         CHECK(bm.free_blocks() == 0);
     }
 
-    // The never-written slot reads back as zeros — meaning it claims iteration 0 (a TIE
-    // with the real initial header) and metadata root 0, a REAL block id. Its failing
-    // checksum is the only thing between a fresh database and that garbage root.
     int rejected = 0;
     for (int slot = 0; slot < 2; slot++) {
         tstorage::database_header_t h;
@@ -558,13 +514,9 @@ TEST_CASE("shadow_header: a freshly created database opens cleanly with one vali
     remove_file(path);
 }
 
-// --- A FAILED header write must not move the target slot ------------------------------
-//
-// The slot is a pure function of iteration_ parity. Incrementing iteration_ unconditionally
-// BEFORE the write has a failed header write still advance the counter, so the retry aims at
-// the OTHER slot — the one holding the last durable root — and overwrites the very state it
-// exists to preserve. A retry must reuse the slot the failed attempt was aiming at; the
-// previous root is not the retry's to spend.
+// Slot = f(iteration_ parity). Incrementing iteration_ before the write means a FAILED header
+// write still advances the counter, aiming a retry at the slot holding the last durable root —
+// overwriting the very state a retry exists to preserve.
 TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME slot") {
     const std::string path = shadow_db_path("retry_slot");
     remove_file(path);
@@ -648,12 +600,9 @@ TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME sl
     remove_file(path);
 }
 
-// --- create_new_database must not throw its write results away -------------------------
-//
-// Reporting a failed open is not enough: the two writes and the fsync that actually LAY DOWN
-// the file must report too. Discarding them lets a single failed write produce a file with no
-// valid slot while the engine is told the database was created. The very next open of that
-// file is data_corruption, and by then the create is long past.
+// The writes and fsync inside create_new_database must report failure too, not just the open
+// call: discarding them lets a bad write produce a rootless file while the caller is told
+// creation succeeded, surfacing only as data_corruption on the next open.
 TEST_CASE("shadow_header: create_new_database reports a write that did not land") {
     SECTION("the header slot write fails") {
         const std::string path = shadow_db_path("create_slot_fail");
@@ -706,17 +655,10 @@ TEST_CASE("shadow_header: create_new_database reports a write that did not land"
     }
 }
 
-// --- meta_block == INVALID_INDEX is "never checkpointed", but ONLY with evidence ---------
-//
-// A freshly created .otbx legitimately carries meta_block == INVALID_INDEX until its first
-// checkpoint commits. Corruption that knocks out the newest slot of a CHECKPOINTED file
-// leaves the very same header visible (the two-slot fallback selects the initial iteration-0
-// slot, whose meta_block is INVALID by construction), so "INVALID = empty" without a second
-// witness converts a corrupt table into a silently empty one. The witness the open trusts is
-// the one the writer physically cannot fake: a file that has never allocated a block is
-// EXACTLY BLOCK_START bytes (three header sectors), while any checkpoint lays down blocks
-// past BLOCK_START before its header commits. A file whose selected root says INVALID but
-// whose size says "blocks exist" is refused loudly, byte-identical.
+// A fresh file legitimately has meta_block == INVALID_INDEX, but a CHECKPOINTED file whose
+// newest slot got corrupted falls back to that SAME iteration-0/INVALID header — silently
+// looking empty. The witness that can't be faked: file size == BLOCK_START only for a file
+// that never allocated a block; anything larger with an INVALID root is refused.
 TEST_CASE("shadow_header: a never-checkpointed file opens as legitimately empty") {
     const std::string path = shadow_db_path("young_open");
     remove_file(path);
@@ -762,9 +704,8 @@ TEST_CASE("shadow_header: a checkpointed file falling back to the initial empty 
         REQUIRE(s1.meta_block == tstorage::INVALID_INDEX);
     }
 
-    // Corruption knocks out the checkpointed root. The surviving valid slot is the initial
-    // one — the file now LOOKS like a never-checkpointed database at the header level, but
-    // its 2000 rows occupy blocks past BLOCK_START, and that is the witness.
+    // Corruption knocks out the checkpointed root, leaving the initial slot valid: the header
+    // now LOOKS never-checkpointed, but its 2000 rows occupy blocks past BLOCK_START.
     std::mt19937_64 rng(0xA76A76A7ULL);
     write_slot(path, 0, garbage_slot(rng, 1));
     REQUIRE(std::filesystem::file_size(path) > tstorage::BLOCK_START);
@@ -811,10 +752,9 @@ TEST_CASE("shadow_header: an initial root whose header contradicts the file is r
     }
 
     SECTION("the initial slot itself claims blocks") {
-        // Deliberately corrupt input (valid CRC over inconsistent fields): an iteration-0
-        // slot with meta_block INVALID but block_count > 0 was never written by any engine
-        // path — initialize() zeroes block_count and the first write_header always carries a
-        // real meta_block. Internal contradiction, refused even at BLOCK_START size.
+        // Valid CRC over inconsistent fields: no engine path writes meta_block == INVALID with
+        // block_count > 0 (initialize() zeroes block_count; the first write_header carries a
+        // real meta_block). Internal contradiction, refused even at BLOCK_START size.
         const std::string path = shadow_db_path("young_contradiction");
         remove_file(path);
         shadow_env_t env;

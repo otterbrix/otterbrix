@@ -28,26 +28,11 @@ namespace components::operators {
         const logical_plan::limit_t& limit() const { return limit_; }
 
         // --- Push-based streaming pipeline source (buffered batch point-fetch) ---
-        // The index search is ONE-SHOT — it returns the whole matched row-id set in a single future — so this
-        // source materializes the ids ONCE (the FIRST source_next call) into the [pos_, end_) window. It then
-        // issues ONE storage_fetch for the whole window; the disk agent batches the reply into
-        // <= DEFAULT_VECTOR_CAPACITY chunks (each stamped with the absolute row_ids it actually carries, so a
-        // downstream DELETE/UPDATE/index sees the right rows), which this source buffers in batch_ and emits
-        // one-chunk-per-call.
-        //   The fetch runs under the reader's own snapshot, so a chunk can be SHORTER than its slice of the
-        // window: the index answers with a superset of ids and the table decides which of them this transaction
-        // may see. The LIMIT head cap therefore travels ON the fetch message, as storage_fetch's post-visibility
-        // `limit`, and never touches the matched-id list — the same place full_scan puts it
-        // (storage_fetch_next_batch's post-filter matched-row cap).
-        //   The FIRST call's sequential cross-actor co_awaits (index search + storage_types + the one window
-        // storage_fetch) live in this NESTED operator coroutine (driven by co_await from execute_pipeline), not
-        // in a behavior() handler, so the actor-zeta single-slot awaited continuation is republished+cleared
-        // between sequential awaits — no lost-wakeup.
-        //   index_scan is built ONLY when create_plan_match_ proves an index exists on a real table
-        // (can_use_index), so table_oid_ is always valid — there is no no-table shape here, unlike full_scan and
-        // transfer_scan, which carry an explicit INVALID_OID sentinel because a no-FROM SELECT lowers onto them.
-        // An INVALID_OID reaching this operator is a physgen defect, and the schema read in source_next refuses
-        // it rather than draining to an empty guard. role() is unconditionally source.
+        // The index search is ONE-SHOT: the first source_next call materializes the whole matched row-id set
+        // into [pos_, end_) and issues ONE storage_fetch for it. A chunk can be SHORTER than its window slice
+        // — the index answers a superset of ids and the table's snapshot decides visibility, so the LIMIT cap
+        // rides on storage_fetch's post-visibility `limit`, not on trimming the id list. table_oid_ is always
+        // valid here (index_scan is only built when can_use_index proves a real table).
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
         [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx) override;
@@ -73,15 +58,9 @@ namespace components::operators {
             s.end();
         }
 
-        // Windowing core: run the one-shot index search (txn-aware visibility), store the matched
-        // ids in row_ids_vec_, and open the fetch window [pos_=0, end_=row_ids_vec_.size()) over them —
-        // OFFSET is operator_limit's, the LIMIT cap rides on the fetch. A search that matched nothing
-        // leaves an empty window.
-        //
-        // Returns the manager's error when the search could not be ANSWERED (no engine
-        // for the oid, no index on the predicate key, a failed read in the index's disk
-        // agent) — distinct from a search that answered "no rows", which is no_error()
-        // over an empty window.
+        // Windowing core: run the one-shot index search, store matched ids in row_ids_vec_, and open the
+        // fetch window [0, row_ids_vec_.size()) over them (the LIMIT cap rides on the fetch, not here).
+        // Returns an error when the search could not be ANSWERED — distinct from answering "no rows".
         actor_zeta::unique_future<core::error_t> open_index_window(pipeline::context_t* ctx);
 
         // Fetch the whole matched window [pos_, end_) in ONE storage_fetch. The disk agent batches the

@@ -20,43 +20,31 @@
 #include <unistd.h>
 #include <vector>
 
-// WHAT A RESTART MUST NOT DO AFTER A COMPACTING ROUND DIED BETWEEN THE COMPACTION AND THE
-// INDEX REBUILD.
+// What a restart must not do after a compacting round died between the compaction and the
+// index rebuild: a CHECKPOINT round compacts each table (new physical ids, committed by the
+// .otbx header and its `.wal_id` sidecar) and then rebuilds every index against them. Between
+// those two durable acts the device holds a POST-COMPACT TABLE UNDER PRE-COMPACT INDEXES, and
+// that state SURVIVES — base_spaces rebuilds no index at startup and WAL replay maintains
+// none. Closing this window needs a durable fact ("these indexes name pre-compact rows and
+// have not been rebuilt"), written before the compaction and cleared only after the rebuild's
+// force_flush, read by bootstrap. test_checkpoint_rebuild_before_truncate orders the rebuild
+// ahead of truncation but closes a different hole, not this one.
 //
-// A CHECKPOINT round compacts each table (data_table_t::compact rebuilds it at row id 0 and
-// hands every surviving row a NEW physical id, committed by the .otbx header and its
-// `.wal_id` sidecar) and then rebuilds every index against the new ids. Between those two
-// durable acts the device holds a POST-COMPACT TABLE UNDER PRE-COMPACT INDEXES, and that
-// state SURVIVES: base_spaces rebuilds no index at startup and WAL replay maintains none, so
-// whatever the interrupted round left is the answer the engine gives forever. Ordering the
-// rebuild ahead of the truncation (test_checkpoint_rebuild_before_truncate) closes a
-// different hole and does not shorten this window by one instruction; closing THIS one needs
-// a durable fact -- "these indexes name pre-compact rows and have not been rebuilt", written
-// before the compaction, cleared only after the rebuild's force_flush lands, and READ BY
-// BOOTSTRAP.
+// The window is entered without a debugger by stripping the read bit off the index directory
+// for one CHECKPOINT: the rebuild's last leg (manager_index_t::repopulate_table ->
+// index_agent_contract::clear) begins with collect_segments(), a filesystem listing that is
+// also clear()'s ONE early return, so a directory it cannot list leaves the store untouched —
+// the exact state a kill -9 in the window leaves. The directory is copied while the engine is
+// up (same crash mechanism as test_index_rebuild_crash and test_index_stale_after_compact) and
+// reopened under a fresh engine.
 //
-// HOW THE WINDOW IS ENTERED WITHOUT A DEBUGGER. The rebuild's last leg is
-// manager_index_t::repopulate_table -> index_agent_contract::clear, and for the bitcask
-// (index_type::hashed) backend clear() begins with collect_segments(), a std::filesystem
-// listing of the index directory that is also clear()'s ONE early return -- a directory it
-// cannot list leaves the store exactly as it was. Stripping the read bit off that directory
-// for the length of one CHECKPOINT therefore produces the exact durable state a kill -9 in
-// the window leaves: compaction committed, index untouched and still naming pre-compact rows.
-// The statement also fails, which is correct and beside the point; the point is the directory
-// that failure leaves behind. It is copied while the engine is up (the crash mechanism of
-// test_index_rebuild_crash and test_index_stale_after_compact -- the destructor's CHECKPOINT
-// then mutates only the ORIGINAL) and reopened under a fresh engine.
-//
-// GUARDS, because a case in this family can go green for several wrong reasons:
-//   * THE COMPACTION MUST REALLY HAVE HAPPENED -- checkpoint_inner writes an entry's
-//     `.wal_id` sidecar only after data_table_t::compact returned true, so a sidecar that
-//     moved is proof of a renumbering rather than merely of a round;
-//   * THE REBUILD MUST REALLY HAVE REFUSED -- the LIVE engine's index must disagree with its
-//     own full scan after the armed round; a round that compacted nothing and a rebuild that
-//     quietly succeeded both leave the two agreeing;
-//   * THE INJECTION MUST BE REAL -- a suite running as root would list the directory anyway;
-//   * THE READ PATH MUST BE THE INDEX -- before the crash, EXPLAIN on the same query text the
-//     value assertions use says Index Scan.
+// Guards, because this family can go green for the wrong reason:
+//   * the compaction really happened — checkpoint_inner writes the `.wal_id` sidecar only
+//     after data_table_t::compact returns true;
+//   * the rebuild really refused — the LIVE engine's index must disagree with its own full
+//     scan after the armed round;
+//   * the injection is real — a suite running as root would list the directory anyway;
+//   * the read path is the index — EXPLAIN on the same query text says Index Scan.
 
 using namespace test_helpers;
 
@@ -286,13 +274,10 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
                          " AND id <= " + std::to_string(kDeleteTo) + ";")
                     ->is_success());
 
-        // THE ERASES MUST HAVE LANDED BEFORE THE INJECTION GOES IN. A committed DELETE does
-        // not reach the index inside the statement -- commit_deletes queues it and the horizon
-        // sweep publishes it once no live snapshot can want the rows -- and that publication
-        // is a WRITE whose tail LISTS the index directory. Arming over an unfinished erase
-        // would refuse the round's FLUSH step instead of its REBUILD step, and the round would
-        // end before it ever compacted anything. The disk-round guard below fails rather than
-        // passing for the wrong reason if this wait is ever too short.
+        // Erases must land BEFORE the injection: a committed DELETE queues in commit_deletes and
+        // the horizon sweep publishes it later via a write that lists the index directory. Arming
+        // over an unfinished erase would hit the round's FLUSH step instead of REBUILD, ending it
+        // before anything compacts.
         {
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
             while (services::index::index_deferred_deletes() != 0 &&
@@ -302,26 +287,14 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
             INFO("the deferred-erase queue has to be empty before the fault goes in");
             REQUIRE(services::index::index_deferred_deletes() == 0);
 
-            // AND THE ERASES MUST HAVE LANDED, NOT MERELY BEEN SENT. The horizon sweep
-            // subtracts from that meter where it ERASES the queue entry
-            // (manager_index_t::on_horizon_advanced) and only awaits the agents'
-            // commit_deletes futures further down, so a zero meter proves the messages are
-            // in the agents' mailboxes and nothing more. A sleep_for(500ms) here would be a
-            // clock guessing at an event.
+            // AND LANDED, not merely sent: the horizon sweep decrements this meter when it erases
+            // the queue entry but only awaits the agents' commit_deletes futures afterward, so a
+            // zero meter alone only proves the messages reached the mailbox. An index scan is a
+            // message to that same FIFO mailbox, and commit_deletes has no suspension point before
+            // co_return, so an answer coming back proves the erase ahead of it finished.
             //
-            // THE EVENT IS OBSERVABLE: an index scan is a message to the SAME agent
-            // addresses commit_deletes went to, a mailbox is FIFO, and
-            // bitcask_index_agent_t::commit_deletes carries NO suspension point -- it runs
-            // apply_txn_deletes / publish_buckets straight through to co_return on the
-            // agent's own thread -- so an answer coming back proves the erase write ahead of
-            // it is finished. That is what this read is: the same probe set the pre-round
-            // agreement check below uses, ordered here so the injection cannot be armed over
-            // an unfinished erase.
-            //
-            // HONEST ABOUT THE EVIDENCE: shortening that sleep to zero did NOT make the case
-            // fail in eight runs (five idle, three under a 24-way CPU load), so this is a
-            // shape fix and not a reproduction. What it buys is a barrier that does not
-            // depend on a duration being guessed generously enough.
+            // MEASURED: shortening this wait to zero did not fail in 8 runs (5 idle, 3 under
+            // 24-way load) — this is a shape fix, not a reproduction of a flake.
             INFO("a read through the index orders the injection after the erase write");
             REQUIRE(disagreements_with_the_full_scan(d) == 0);
         }
@@ -350,16 +323,12 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
         std::string round_two_reason;
 
         {
-            // Read + execute, NO WRITE. The rebuild's first act per index is
-            // index_agent_contract::clear, and for bitcask that is: list the segments (still
-            // allowed), then UNLINK them, CURRENT, the txn log and the applied-offset
-            // sidecar, then re-open. Every one of those is a WRITE TO THE DIRECTORY, so the
-            // kernel refuses them all and the store is left holding exactly the segments it
-            // held before -- i.e. the PRE-COMPACT row ids -- while the table underneath has
-            // just been renumbered. That is the durable shape a kill -9 in this window
-            // leaves, produced here without a debugger. An already-open descriptor is not
-            // reached by chmod, so the round's earlier index FLUSH (step 1, an fsync on open
-            // handles) still succeeds and the round gets as far as compacting.
+            // Read + execute, NO WRITE. index_agent_contract::clear lists the segments (still
+            // allowed) then unlinks them, CURRENT, the txn log and the offset sidecar — all
+            // writes, all refused by the kernel — leaving the store holding the pre-compact
+            // segments under a table that has just been renumbered. An already-open descriptor
+            // is untouched by chmod, so the round's earlier index FLUSH still succeeds and the
+            // round gets as far as compacting.
             dir_permissions_guard_t no_writes(bitcask_dir,
                                               std::filesystem::perms::owner_read |
                                                   std::filesystem::perms::owner_exec);
@@ -390,13 +359,10 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
              << round_two_reason);
         REQUIRE(round_two_reason.find("could not be removed by clear()") != std::string::npos);
 
-        // NOTHING IS ASSERTED ABOUT THE LIVE ENGINE'S ANSWERS HERE, and that is deliberate
-        // rather than an omission: clear() ran its unlink pass over a directory it could not
-        // write, so the store is left without an open active segment and refuses reads until
-        // it is reopened. That is loud and correct, and it is NOT the state under test. The
-        // state under test is what the DEVICE holds -- the old segments, naming pre-compact
-        // rows, under a table that has just been renumbered -- and the only way to ask about
-        // that is to reopen it.
+        // Nothing is asserted about the live engine's answers here, deliberately: clear()'s
+        // failed unlink pass leaves the store without an open active segment, refusing reads
+        // until reopened — loud and correct, but not the state under test. That state is what
+        // the DEVICE holds, which only a reopen can ask about.
 
         // kill -9 happens here. Nothing on disk is staged by hand: the fault above lived in
         // this process only, so the copy is simply what the device holds right now.

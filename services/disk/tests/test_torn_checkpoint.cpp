@@ -29,25 +29,25 @@
 
 #include "../../../components/table/test/fault_injection_file.hpp"
 
-// Torn-checkpoint recovery WITHOUT any external backup machinery.
+// Torn-checkpoint recovery without any external backup machinery.
 //
-// The six cases here are REAL crash tests: every crash is produced through the sanctioned
-// T3 fault seam (fault_injection_file.hpp) driving the production checkpoint of
-// table_storage_t — no test lays a database file out by hand, and every recovery assertion
-// reads the DATA back and compares it to a named root (N or N+1), never just "the open
-// succeeded". Two seam facts the arithmetic depends on: the scope wraps the handle at OPEN
-// time, so it is installed BEFORE the storage is constructed; and arming is ABSOLUTE over
-// the plan's life, so every round arms relative to the counters it sees at that moment
-// (a blanket fail_after_writes would also kill the DATA writes, latch durability_error_,
-// and hide the point under test behind the degraded() gate).
+// The six cases here are real crash tests: every crash is produced through the sanctioned T3
+// fault seam (fault_injection_file.hpp) driving the production checkpoint of table_storage_t --
+// no test lays a database file out by hand, and every recovery assertion reads the data back and
+// compares it to a named root (N or N+1), never just "the open succeeded". Two seam facts the
+// arithmetic depends on: the scope wraps the handle at open time, so it installs before the
+// storage is constructed; and arming is absolute over the plan's life, so every round arms
+// relative to the counters it sees at that moment (a blanket fail_after_writes would also kill
+// the data writes, latch durability_error_, and hide the point under test behind the degraded()
+// gate).
 //
 // What these cases pin:
-//   * a crash at ANY point of a round reopens to root N or root N+1 through the two-slot
+//   * a crash at any point of a round reopens to root N or root N+1 through the two-slot
 //     shadow-paged header alone (proven per crash point by the crash matrix in
 //     components/table/test/test_checkpoint_crash_matrix.cpp);
-//   * a file that will not open is REFUSED as an error value — data_corruption, full slot
-//     diagnostics — and left byte-identical: no rename, no truncation, no quarantine copy,
-//     and a probing open of a MISSING file creates nothing;
+//   * a file that will not open is refused as an error value (data_corruption, full slot
+//     diagnostics) and left byte-identical -- no rename, no truncation, no quarantine copy, and
+//     a probing open of a missing file creates nothing;
 //   * a stray sidecar in the engine-owned `table.otbx.*` namespace (the whole-file backup /
 //     quarantine files of builds predating shadow paging) is a loud refusal, not something
 //     silently ignored or deleted.
@@ -359,16 +359,17 @@ TEST_CASE("services::disk::torn::torn_write_mid_round_recovers_root_n_without_ar
     cleanup_torn_dir();
 }
 
-// 5. A stray sidecar in the engine-owned `table.otbx.*` namespace — exactly what a build
-// predating shadow paging leaves behind as its whole-file backup / quarantine files — is a LOUD
-// refusal on the real load path, and nothing is touched: the .otbx stays byte-identical and
-// the stray is neither deleted nor renamed. Removing the stray makes the same file load again.
+// 5. A stray sidecar in the engine-owned `table.otbx.*` namespace -- exactly what a build
+// predating shadow paging leaves behind as its whole-file backup / quarantine files -- is a
+// loud refusal on the real load path, and nothing is touched: the .otbx stays byte-identical
+// and the stray is neither deleted nor renamed. Removing the stray makes the same file load
+// again.
 //
-// THE REFUSAL IS THE WHOLE START, NOT ONE TABLE. Coming up with the victim system table simply
-// absent would mean an EMPTY catalog over live storage, and the next DDL minting fresh oids on
-// top of it. A start that did not happen is recoverable; a catalog that silently lost a table
-// is not. The refusal still writes nothing, deletes nothing, and preserves the operator's
-// evidence — and the final block proves recoverability by removing the stray and starting again.
+// The refusal is the whole start, not one table: coming up with the victim system table simply
+// absent would mean an empty catalog over live storage, and the next DDL minting fresh oids on
+// top of it. A start that didn't happen is recoverable; a catalog that silently lost a table is
+// not. The refusal writes nothing, deletes nothing, and preserves the operator's evidence; the
+// final block proves recoverability by removing the stray and starting again.
 TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_untouched") {
     namespace catalog = components::catalog;
     cleanup_torn_dir();
@@ -453,14 +454,14 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
     cleanup_torn_dir();
 }
 
-// 6. Terminal refusal semantics — the cost of having no external backup, pinned exactly.
-// (a) A MISSING file is refused as its own distinct error and the probing open creates NOTHING
-// (a FILE_CREATE probe would leave a 0-byte file behind). (b) An EMPTY file — external
-// truncation, or the droppings of such a probe — is refused with its own distinct words, never
-// accepted as an empty table. (c) Rot under the durable root that kills BOTH header slots
-// is data_corruption carrying full per-slot diagnostics (which slot, claimed iteration,
-// stored vs computed checksum), surfaced as a VALUE (no throw), with the file left
-// byte-identical for offline inspection: no rename, no truncation, no quarantine copy.
+// 6. Terminal refusal semantics -- the cost of no external backup, pinned exactly. (a) A
+// missing file is refused as its own distinct error, and the probing open creates nothing (a
+// FILE_CREATE probe would leave a 0-byte file behind). (b) An empty file (external truncation,
+// or the droppings of such a probe) is refused with its own distinct words, never accepted as
+// an empty table. (c) Rot under the durable root that kills both header slots is
+// data_corruption carrying full per-slot diagnostics (which slot, claimed iteration, stored vs
+// computed checksum), surfaced as a value (no throw), file left byte-identical for offline
+// inspection: no rename, no truncation, no quarantine copy.
 TEST_CASE("services::disk::torn::unopenable_file_is_refused_as_a_value_and_left_byte_identical") {
     cleanup_torn_dir();
     std::filesystem::create_directories(torn_test_dir());

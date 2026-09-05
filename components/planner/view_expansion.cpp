@@ -124,17 +124,14 @@ namespace components::planner {
         view_body_t out;
         std::pmr::monotonic_buffer_resource parser_arena(resource);
         void* parse_cell = nullptr;
-        // raw_parser really does throw (the canonical entry point,
-        // wrapper_dispatcher_t::execute_sql, wraps it in exactly this try/catch and
-        // converts to error_t). This IS the exception -> error_t boundary; removing it
-        // would let an exception escape into an actor coroutine (rule 9).
+        // raw_parser really does throw; wrapper_dispatcher_t::execute_sql wraps it the same way. This is the
+        // exception -> error_t boundary — removing it would let an exception escape into an actor coroutine
+        //.
         try {
             auto* parsed = raw_parser(&parser_arena, view_sql.c_str());
-            // parser.h's contract: the list is never null (so a `!parsed` test proves nothing), but it may be
-            // EMPTY — the grammar accepted the text and found no statement in it — and it may hold several
-            // statements. linitial() alone reads the FRONT cell either way: past the end of the pmr::list for
-            // an empty body, and silently discarding every statement after the first otherwise, so the
-            // discarded half of a stored view body never comes back and the splice reports success.
+            // parser.h's list is never null (a `!parsed` test proves nothing) but may be EMPTY or hold several
+            // statements; linitial() alone would read past the end of an empty list, or silently drop every
+            // statement after the first — so both counts are checked before it's called.
             if (list_length(parsed) == 0) {
                 out.error = schema_error(resource, "the view body re-parsed into no statement");
                 return out;
@@ -157,18 +154,14 @@ namespace components::planner {
         components::sql::transform::transformer local_transformer(resource, view_sql.c_str());
         auto tr = local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_cell)).finalize();
         if (tr.has_error()) {
-            // error_on, NOT a bare copy: error_t's copy assignment rebuilds the message with
-            // std::pmr::string's COPY constructor, which does not propagate the allocator, so
-            // the text would land on the process default resource -- the hazard spelled out at
-            // error_t's own assignment operators. Every other refusal in this function goes
-            // through schema_error(resource, ...) for the same reason.
+            // error_on, not a bare copy: error_t's copy assignment rebuilds the message via std::pmr::string's
+            // copy ctor, which doesn't propagate the allocator, landing it on the process default (see
+            // error_t's own assignment operators). Every other refusal here uses schema_error(resource, ...).
             out.error = core::error_on(resource, tr.error());
             return out;
         }
-        // A body that flattened into several plans (a sub-query in the view) also
-        // carries sub_query_results binding ids in the OUTER plan's parameter space.
-        // Taking only the last plan would drop those bindings and leave the sub-query
-        // unbound. Refuse instead (rule 6).
+        // Taking only the last of several flattened plans (a sub-query in the view) would drop the
+        // sub_query_results binding ids it carries in the OUTER plan's parameter space — refuse instead.
         if (tr.value().sub_queries.size() > 1) {
             out.error = schema_error(resource, "a view body containing a sub-query is not supported yet");
             return out;

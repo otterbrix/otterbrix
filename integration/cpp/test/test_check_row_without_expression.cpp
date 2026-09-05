@@ -1,37 +1,13 @@
-// ============================================================================
-// A CHECK ROW WITH NO EXPRESSION MUST NOT QUIETLY REPEAL THE CHECK.
-//
-// operator_resolve_constraint decoded a 'c' pg_constraint row like this:
-//
-//     } else if (contype == 'c' && direction == direction_t::outgoing) {
-//         if (con_chunk.is_null(conexpr, ci)) { continue; }
-//         const auto conexpr_sv = con_chunk.get_value<std::string_view>(conexpr, ci);
-//         if (conexpr_sv.empty()) { continue; }
-//
-// — two `continue`s that drop the row on the floor: check_exprs stays empty, the planner
-// splices no operator_check_constraint, and the table takes every row while every
-// statement reports success. Two branches up, IN THE SAME LOOP, an unreadable `contype`
-// is refused out loud with exactly this argument — "what it declares cannot be determined,
-// so it cannot be enforced or dismissed". A CHECK row with no expression is the same fact
-// one field over.
-//
-// HOW THE ROW IS PRODUCED HERE. It is written by the ENGINE: the plan is a CREATE TABLE
-// carrying an INLINE constraint node — the shape transform_table builds for
-// `CREATE TABLE t (..., CONSTRAINT c CHECK (...))` — run through the same enrich ->
-// rewrite_create_table -> build_create_constraint_writes path. The test only hands that
-// node over with its check expression unset, the state any writer that lost the expression
-// leaves behind: build_create_constraint_writes writes col 10 only `if (is_check &&
-// !check_expr.empty())`, so contype lands as 'c' and conexpr lands NULL.
-//
-// PATH NOT NAMED FROM SQL, deliberately: both live SQL routes are closed one floor up —
-// transform_table refuses an inline CHECK whose expression deparsed to nothing, and
-// executor_t::execute_plan_full refuses a standalone ADD CONSTRAINT CHECK with an empty
-// expression. What is left is a catalog written before those gates, which is what a floor
-// is for.
-//
-// THE CONTROL PROVES THE STAND HAS TEETH: same helper, same node, same CREATE TABLE — with
-// the expression present the CHECK is gathered, enforced, and the violating row stays out.
-// ============================================================================
+// operator_resolve_constraint drops a 'c' pg_constraint row with a NULL/empty conexpr via two
+// `continue`s: check_exprs stays empty, no operator_check_constraint is spliced, and the
+// table silently accepts every row. Two branches up in the same loop, an unreadable contype
+// IS refused with this exact argument; an empty CHECK expression is the same fact one field
+// over.
+// Not reachable via SQL: transform_create_table and execute_plan_full both already refuse an
+// empty CHECK expression at the two live SQL routes. This drives the plan node directly
+// (set_inline_with_table + empty check_expression_sql) to reach the catalog state a writer
+// that lost the expression would leave (build_create_constraint_writes only writes conexpr
+// `if (is_check && !check_expr.empty())`).
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -61,11 +37,7 @@ namespace {
         return out;
     }
 
-    // CREATE TABLE <rel> (id bigint, code bigint, CONSTRAINT <name> CHECK (<expr>))
-    // as a plan: the production create node, the production INLINE constraint
-    // child (set_inline_with_table, exactly as transform_table hangs it off the
-    // create node), the production executor. `expr` empty is the defect shape —
-    // conexpr is then written NULL.
+    // `expr` empty is the defect shape: conexpr is then written NULL.
     components::cursor::cursor_t_ptr create_table_with_check(otterbrix::wrapper_dispatcher_t* d,
                                                              const std::string& db,
                                                              const std::string& rel,
@@ -105,8 +77,6 @@ namespace {
 
 } // namespace
 
-// THE CONTROL. The same node with an expression on it: the CHECK is gathered
-// from the same catalog row shape and enforced, so the violating row stays out.
 TEST_CASE("integration::cpp::check_row_without_expression::a_check_with_an_expression_is_enforced") {
     auto config = make_test_config(integration_fixture_path("test_check_row_without_expression/control"));
     test_spaces space(config);
@@ -131,10 +101,8 @@ TEST_CASE("integration::cpp::check_row_without_expression::a_check_with_an_expre
     REQUIRE(column_i64(stored, 0) == std::vector<int64_t>{1});
 }
 
-// THE DEFECT. The same statement with the expression missing. The engine accepts
-// the constraint and then cannot read it — so either the declaration or the write
-// that rides on the unread constraint has to be refused. What must never happen
-// is the third answer: both accepted, and the CHECK silently gone.
+// Either the declaration or the write riding on the unread constraint must be refused;
+// what must never happen is both accepted and the CHECK silently gone.
 TEST_CASE("integration::cpp::check_row_without_expression::a_check_row_with_no_expression_is_not_passed_over") {
     auto config = make_test_config(integration_fixture_path("test_check_row_without_expression/no_expr"));
     test_spaces space(config);
@@ -158,9 +126,6 @@ TEST_CASE("integration::cpp::check_row_without_expression::a_check_row_with_no_e
     }
 }
 
-// LOUD IS NOT FATAL. The refusal rides on the statement that would have been
-// written under the unread CHECK; the database around it still reads, still
-// writes where no such row exists, and still drops.
 TEST_CASE("integration::cpp::check_row_without_expression::an_unreadable_check_row_does_not_brick_the_database") {
     auto config = make_test_config(integration_fixture_path("test_check_row_without_expression/not_bricked"));
     test_spaces space(config);
@@ -168,9 +133,8 @@ TEST_CASE("integration::cpp::check_row_without_expression::an_unreadable_check_r
 
     seed(d);
     create_table_with_check(d, "cur", "t", "chk_code", "");
-    // Rows written before the CHECK is ever read: a bricked database takes them
-    // with it. This INSERT is itself the statement the unreadable row refuses, so
-    // its status is not asserted — only that everything AROUND it still works.
+    // Status not asserted: this INSERT is itself the statement the unreadable row
+    // refuses. Only that everything around it still works.
     exec(d, "INSERT INTO cur.t (id, code) VALUES (1, 100), (2, 200);");
     REQUIRE(exec(d, "CREATE TABLE cur.other (id bigint);")->is_success());
 

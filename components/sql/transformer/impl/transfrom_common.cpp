@@ -16,11 +16,9 @@ namespace components::sql::transform {
     namespace {
         // The aggregate a HAVING names may sit ANYWHERE inside a target-list entry — as the entry
         // itself, under a CAST, inside a CASE arm, or as an operand of arithmetic — so matching it
-        // means descending the whole expression rather than inspecting its top node. A call matches
-        // on name AND arguments AND the DISTINCT flag: two aggregates of the same name are
-        // different aggregates, and count(DISTINCT x) is a different aggregate from count(x) —
-        // a match that ignores `distinct` binds `HAVING count(DISTINCT x)` to a projected
-        // count(x) and silently counts duplicates.
+        // means descending the whole expression rather than inspecting its top node. Matches on
+        // name AND arguments AND the DISTINCT flag: ignoring `distinct` would bind
+        // `HAVING count(DISTINCT x)` to a projected count(x) and silently count duplicates.
         const expressions::expression_i* find_call(const expressions::expression_i* expr,
                                                    const std::string& name,
                                                    const std::pmr::vector<expressions::param_storage>& args,
@@ -270,11 +268,9 @@ namespace components::sql::transform {
                 if (cast->arg && nodeTag(cast->arg) == T_ColumnRef) {
                     VALUE_OR_RETURN(auto target_type, get_type(resource_, cast->typeName));
                     VALUE_OR_RETURN(auto col, columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(cast->arg), names));
-                    // `col ::? type` in a predicate — variant SELECTION, not a cast (the same
-                    // rule the jsonb-chain `::?` branch below follows): the key carries the
-                    // requested type so find_types picks the matching multi-type variant column
-                    // instead of refusing the name as ambiguous. Lowering it to a cast asks for
-                    // the column first, which is exactly the ambiguity `::?` exists to resolve.
+                    // `col ::? type` in a predicate is variant SELECTION, not a cast (same rule as
+                    // the jsonb-chain `::?` branch below) — a plain cast would ask for the column
+                    // first, the exact ambiguity `::?` exists to resolve.
                     if (context.cast_annotates_key && cast->variant_select) {
                         auto variant = std::move(col.field);
                         variant.set_cast_type(target_type);
@@ -383,11 +379,8 @@ namespace components::sql::transform {
             }
             case T_FuncCall: {
                 auto* func = pg_ptr_cast<FuncCall>(node);
-                // OVER / VARIADIC / an aggregate-internal ORDER BY are read by NOBODY on any of
-                // the three placements below, so a decorated call has to be refused before it is
-                // lowered as if it were plain: an OVER call would run as a bare aggregate (one
-                // value per group instead of one per row), VARIADIC would pass its argument
-                // unexpanded, and the ordering would simply vanish.
+                // OVER / VARIADIC / aggregate-internal ORDER BY are read by nobody below, so a
+                // decorated call must be refused rather than lowered as if it were plain.
                 RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *func));
                 if (context.aggregates == expression_placement_t::call) {
                     VALUE_OR_RETURN(auto call, transform_a_expr_func(func, names, context.plan));
@@ -420,9 +413,7 @@ namespace components::sql::transform {
                     }
                 }
                 // Not in SELECT — mint it onto the group node so the aggregation operator
-                // computes it for HAVING (PostgreSQL does not require a HAVING aggregate to be
-                // projected). The DISTINCT flag travels onto the minted aggregate: dropped here,
-                // `HAVING count(DISTINCT x)` silently computes count(x).
+                // computes it for HAVING; the DISTINCT flag travels onto the minted aggregate too.
                 std::string alias = "__having_" + funcname + "_" + std::to_string(aggregate_counter_++);
                 auto agg_expr = make_aggregate_expression(resource_, funcname, expressions::key_t{resource_, alias});
                 for (auto& arg : args) {
@@ -615,12 +606,9 @@ namespace components::sql::transform {
     core::result_wrapper_t<std::string> transformer::get_str_value(Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast:
-                // A cast key is just its underlying constant rendered as text:
-                // 'x'::text -> "x", 5::bigint -> "5", TRUE -> "t". Recurse so the
-                // operand's real node type drives the conversion. Collapsing EVERY cast
-                // to the boolean strings "true"/"false" both mis-keys 'x'::text and
-                // dereferences a non-string cast argument's integer union member as a
-                // char* — a segfault.
+                // Recurse so the operand's real node type drives the conversion. Collapsing
+                // every cast to "true"/"false" instead mis-keys 'x'::text and dereferences a
+                // non-string argument's integer union member as a char* — a segfault.
                 return get_str_value(pg_ptr_cast<TypeCast>(node)->arg);
             case T_A_Const: {
                 auto value = &(pg_ptr_cast<A_Const>(node)->val);

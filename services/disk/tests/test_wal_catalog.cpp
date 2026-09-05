@@ -198,10 +198,10 @@ TEST_CASE("services::disk::wal_catalog::bootstrap_alone_no_wal") {
 }
 
 // 1b. The default the bootstrap seeds must be a value the engine itself recognizes. It used
-//     to seed 'UTC' — which core::date::timezone_to_offset refuses (the recognizer's contract
-//     is lowercase input, and the one SQL ingress lowercases before it stores), so EVERY start
-//     of EVERY node seeded a default and then WARNed about refusing it, and the stored
-//     catalog's timezone offset never came from the setting it had just written.
+//     to seed 'UTC', which core::date::timezone_to_offset refuses (the recognizer's contract is
+//     lowercase input, and the one SQL ingress lowercases before storing), so every start of
+//     every node seeded a default and then warned about refusing it, and the stored catalog's
+//     timezone offset never came from the setting it had just written.
 TEST_CASE("services::disk::wal_catalog::bootstrap_seeds_a_recognized_timezone") {
     auto dir = wal_cat_dir() + "/tz_default";
     cleanup_dir(dir);
@@ -573,10 +573,8 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
     cleanup_dir(dir);
 }
 
-// ---------------------------------------------------------------------------
-// Wave-disk cases: the PHYSICAL_ADD_COLUMN journal leg on the append and update
-// paths, and the backfill's replay leg.
-// ---------------------------------------------------------------------------
+// The PHYSICAL_ADD_COLUMN journal leg on the append and update paths, and the backfill's
+// replay leg.
 
 namespace {
     // Count the PHYSICAL_ADD_COLUMN records the journal holds for one table.
@@ -627,21 +625,21 @@ namespace {
     }
 } // namespace
 
-// THE ADD-COLUMN JOURNAL RECORD IS AWAITED, NOT FIRE-AND-FORGET. Schema growth on the append
+// The add-column journal record is awaited, not fire-and-forget. Schema growth on the append
 // path sends its PHYSICAL_ADD_COLUMN record ahead of the PHYSICAL_INSERT to the same FIFO WAL
-// worker; dropping that future would leave the record's outcome unread. It is kept and DRAINED
-// after the insert await — a completed future by then (same FIFO worker, send order), so the
-// drain never suspends and the handler keeps its single suspension point. This case pins the
-// drained path end-to-end on the happy side: a growth
-// append with WAL wired must succeed, materialise the row, AND land exactly one
-// PHYSICAL_ADD_COLUMN record in the journal, wal-id-ordered AHEAD of the PHYSICAL_INSERT it
-// enabled. A hang in the drain (the lost-wakeup the ordering guards against) or a mis-read
-// of the future fails here. The pure "add-column write refused while the insert write
-// succeeds" isolation is NOT stageable at this layer — wal_page_writer coalesces both small
-// records into one buffered page and one file write, so any file-level fault that reaches
-// the add-column write reaches the insert write too, and the insert's already-awaited
-// refusal covers the append on either leg. The drain's value is that the add-column outcome is
-// not LEAKED, proven structurally plus by this happy-path guard.
+// worker; dropping that future would leave its outcome unread. It's kept and drained after the
+// insert await -- already complete by then (same FIFO worker, send order), so the drain never
+// suspends and the handler keeps its single suspension point.
+//
+// This case pins the drained path end-to-end on the happy side: a growth append with WAL wired
+// must succeed, materialise the row, and land exactly one PHYSICAL_ADD_COLUMN record in the
+// journal, wal-id-ordered ahead of the PHYSICAL_INSERT it enabled. A hang in the drain (the
+// lost-wakeup the ordering guards against) or a misread of the future fails here. The pure
+// "add-column write refused while the insert write succeeds" isolation isn't stageable at this
+// layer -- wal_page_writer coalesces both small records into one buffered page and one file
+// write, so any file-level fault reaching the add-column write reaches the insert write too, and
+// the insert's already-awaited refusal covers the append either way. The drain's value is that
+// the add-column outcome isn't leaked, proven structurally plus by this happy-path guard.
 TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_ahead_of_the_insert") {
     auto dir = wal_cat_dir() + "/addcol_journaled";
     cleanup_dir(dir);
@@ -744,13 +742,13 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
     cleanup_dir(dir);
 }
 
-// THE BACKFILL'S REPLAY LEG, PINNED WITHOUT THE DESTRUCTOR CHECKPOINT. The added_at_commit_id
-// stamp is patched in memory and journalled as a PHYSICAL_UPDATE; after a kill with NO
-// checkpoint the journal is the stamp's ONLY carrier. The restart test in integration absorbs
-// the stamp through the teardown checkpoint, which leaves the record's content and the
-// disk-side replay leg (direct_update_sync) unpinned there. This fixture never checkpoints:
-// phase B replays the journal through the same direct_* methods base_spaces replay uses and the
-// stamp must come back.
+// The backfill's replay leg, pinned without the destructor checkpoint. The added_at_commit_id
+// stamp is patched in memory and journalled as a PHYSICAL_UPDATE; after a kill with no
+// checkpoint, the journal is the stamp's only carrier. The restart test in integration absorbs
+// the stamp through the teardown checkpoint, leaving the record's content and the disk-side
+// replay leg (direct_update_sync) unpinned there. This fixture never checkpoints: phase B
+// replays the journal through the same direct_* methods base_spaces replay uses, and the stamp
+// must come back.
 TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_through_the_journal_alone") {
     auto dir = wal_cat_dir() + "/backfill_replay";
     cleanup_dir(dir);

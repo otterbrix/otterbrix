@@ -21,15 +21,10 @@ namespace components::table::storage {
 
         // try to fit into an existing partial block
         for (auto& pb : partial_blocks_) {
-            // Place every segment at an 8-byte-aligned offset. The offset is persisted in the
-            // data pointer and dereferenced after reload with the segment's own element type:
-            // uint64_t* for validity bitmaps (validity_scan/_partial, validity_fetch_row),
-            // int32_t* for string dictionary offsets, and the raw T* that fixed_size_scan hands
-            // to the result vector. Byte-granular packing (e.g. a validity bitmap right after a
-            // 4-byte CONSTANT INT32 segment) made every one of those reads misaligned — UB that
-            // -fsanitize=alignment flags on a plain scan of the reloaded table, and the file
-            // keeps handing out the bad offset forever. The ≤7 padding bytes stay zeroed
-            // (write_to_block memsets fresh buffers) and are never addressed.
+            // Place every segment at an 8-byte-aligned offset: the offset is dereferenced after
+            // reload as uint64_t*/int32_t*/T*, and byte-granular packing made those reads
+            // misaligned UB (caught by -fsanitize=alignment). Padding bytes stay zeroed
+            // (write_to_block memsets fresh buffers).
             uint64_t aligned_offset = align_value<uint64_t>(pb.used_bytes);
             if (aligned_offset + segment_size <= pb.block_capacity) {
                 pb.used_bytes = static_cast<uint32_t>(aligned_offset + segment_size);
@@ -73,11 +68,9 @@ namespace components::table::storage {
     }
 
     core::result_wrapper_t<bool> partial_block_manager_t::flush_partial_blocks() {
-        // Write all accumulated block buffers to disk. The FIRST failure ends the flush and is
-        // returned: continuing would pile more unobserved writes on top of a file that already
-        // has a hole in it, and the caller's checkpoint is over either way. The buffers are
-        // still cleared, because the segments they belong to have already been re-pointed at
-        // these block ids — holding them would only pretend the round can be resumed.
+        // First failure ends the flush and is returned; buffers are still cleared regardless,
+        // since their segments are already re-pointed at these block ids (the round is over
+        // either way).
         core::result_wrapper_t<bool> result = true;
         for (auto& [block_id, block] : block_buffers_) {
             auto written = block_manager_.write(*block, block_id);

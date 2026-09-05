@@ -1,22 +1,9 @@
-// WHAT THIS FILE MEASURES: the two things column_data_t's update-overlay predicate is asked
-// and the one thing data_table_t must NOT offer.
+// has_update_segment() answers "an update_segment_t object exists", NOT "this column's rows
+// differ from their base": writing back the same value allocates the overlay and the
+// predicate stays true forever after.
 //
-//  * has_update_segment() answers "an update_segment_t object exists on this column", NOT
-//    "this column's rows differ from their base". The two are different answers, and the
-//    difference is REACHABLE, not theoretical: an update that writes back the value already
-//    stored allocates the overlay and reports true forever after, on a column whose contents
-//    never changed. Three consumers read it -- check_zonemap and get_vector_scan_type inside
-//    column_data.cpp, and the per-segment report services/disk/manager_disk_t::
-//    has_pending_update_overlay folds over -- and only the last one stated the over-report,
-//    in ITS OWN header, so a reader of the declaration never saw it. The name carries it now.
-//
-//  * the ALTER TYPE successor constructor of data_table_t is GONE, on purpose. It never
-//    assigned row_groups_ while it DID demote its parent out of root, so the first call would
-//    have handed back a table whose every hot method dereferences a null collection
-//    (adopt_types / initialize_scan / row_group_size / calculate_size / total_rows) on top of
-//    a parent that refuses its own writes. It had zero callers, and both halves it needed --
-//    collection_t::alter_type and row_group_t::alter_type -- are commented out. A compile
-//    error is the loudest refusal available, so the declaration is the refusal.
+// The ALTER TYPE successor constructor of data_table_t stays undeclared on purpose --
+// see the note in data_table.hpp / data_table.cpp where it used to stand.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_data.hpp>
@@ -97,8 +84,7 @@ namespace {
         return table.update(*state, row_ids, payload);
     }
 
-    // The same answer as seen by the only production consumer: the per-segment report
-    // services/disk/manager_disk_t::has_pending_update_overlay folds over.
+    // Same answer as services/disk/table_storage_t::has_pending_update_overlay folds over.
     std::size_t segments_reporting_updates(data_table_t& table) {
         std::size_t reporting = 0;
         for (const auto& info : table.get_column_segment_info()) {
@@ -124,9 +110,8 @@ namespace {
 
 } // anonymous namespace
 
-// The over-report, driven without injecting a single failure: the update writes the value the
-// row already holds. Nothing about the column's contents changes -- and the predicate flips
-// from false to true and stays there, because what it answers is "a segment object exists".
+// The update writes the value the row already holds; nothing about the column's contents
+// changes, yet the predicate flips false -> true and stays there.
 TEST_CASE("components::table::column_data::an_update_that_changes_no_value_still_reports_an_update_segment") {
     overlay_env env;
     auto table = make_one_column_table(env);
@@ -149,9 +134,8 @@ TEST_CASE("components::table::column_data::an_update_that_changes_no_value_still
     REQUIRE(segments_reporting_updates(*table) > 0);
 }
 
-// The negative half, so the case above cannot pass on a predicate that simply answers true:
-// a table that was only appended to reports NO overlay on any of its segments, and a column
-// that was never written to at all answers the predicate BY NAME.
+// Negative half, so the case above cannot pass on a predicate that always answers true: a
+// table only appended to reports NO overlay, and a column never written to answers BY NAME.
 TEST_CASE("components::table::column_data::an_appended_only_column_reports_no_update_segment") {
     overlay_env env;
     auto table = make_one_column_table(env);

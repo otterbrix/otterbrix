@@ -1,19 +1,17 @@
 // Reclaim root N once root N+1 is durable.
 //
 // The two-slot header makes the previous root real, and the split free pool keeps a block the
-// durable root still names from being handed out. Neither covers the other direction: with
-// nothing ever freeing the SUPERSEDED root, a checkpoint of an UNCHANGED table extends the
-// file every single round, forever.
+// durable root still names from being handed out. Neither frees the SUPERSEDED root itself, so
+// without this, checkpointing an UNCHANGED table extends the file every round, forever.
 //
 // The freeing formula this file gates:
 //
 //     free = {blocks of root N} u {metadata chain of N} u {free-list chain of N}
 //            - {blocks of root N+1} - {ids live in the block registry}
 //
-// Reachability is defined by the LOADER, never by a second chain walk of this file's own
-// invention: block_reachability_walker.hpp SCRATCH-LOADS a table from the durable root and
-// takes the registry delta, so the walker and the engine cannot disagree about what a root
-// references. Every gate below is phrased against that walker.
+// Reachability is defined by the LOADER, not a second chain walk of this file's own invention:
+// block_reachability_walker.hpp SCRATCH-LOADS a table from the durable root and takes the
+// registry delta, so the walker and the engine cannot disagree about what a root references.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -165,7 +163,7 @@ namespace {
 } // namespace
 
 // ---------------------------------------------------------------------------------------
-// PROBE (measurement, not a gate): the numbers this task is required to report.
+// PROBE (measurement, not a gate): per-round growth and load-time allocation.
 // ---------------------------------------------------------------------------------------
 TEST_CASE("root_reclaim: PROBE measure per-round growth and load-time allocation", "[a7.3][probe]") {
     const auto path = reclaim_db_path("probe");
@@ -210,9 +208,8 @@ TEST_CASE("root_reclaim: PROBE measure per-round growth and load-time allocation
             checkpoint_production(bm, *table);
             auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
             REQUIRE(report.ok);
-            // Round 1 is THE COMPACTING ROUND the task asks to be measured: the file holds two
-            // copies of the table at once from here on, because root N's blocks are only
-            // reusable after root N+1's header is on the device.
+            // Round 1: the file holds two copies of the table at once from here on, because
+            // root N's blocks are only reusable after root N+1's header is on the device.
             WARN("[probe] round " << round << ": block_count " << before_blocks << " -> " << bm.total_blocks()
                                   << " (+" << (bm.total_blocks() - before_blocks) << ")"
                                   << " file_size " << before_size << " -> " << file_size_of(path)
@@ -231,13 +228,11 @@ TEST_CASE("root_reclaim: PROBE measure per-round growth and load-time allocation
 }
 
 // ---------------------------------------------------------------------------------------
-// GATE 1 — on an UNCHANGED database the file does not grow round to
-// round.
+// GATE 1 — on an UNCHANGED database the file does not grow round to round.
 //
-// The defect: every checkpoint writes a fresh metadata chain, a fresh free-list chain and a
-// fresh set of packed data blocks, and nothing frees the superseded root's copies of any of
-// the three. Measured on the probe above: +5 blocks EVERY round, forever, on a table nobody
-// touched.
+// Without this, every checkpoint writes a fresh metadata chain, free-list chain, and packed
+// data blocks, freeing none of the superseded root's copies: measured on the probe above,
+// +5 blocks EVERY round, forever, on a table nobody touched.
 // ---------------------------------------------------------------------------------------
 TEST_CASE("root_reclaim: an unchanged database does not grow round to round", "[a7.3]") {
     const auto path = reclaim_db_path("steady");
@@ -290,15 +285,11 @@ TEST_CASE("root_reclaim: nothing reclaimed is reachable from the new root or liv
     remove_file(path);
     reclaim_env_t env;
 
-    // ONE session, and every checkpoint is preceded by a compact -- the exact shape
-    // agent_disk_t::checkpoint_inner runs. That matters for the ZERO below: the engine keeps
-    // two physical copies of a table at all times (the live write-through tree, uncompressed,
-    // and the checkpoint's packed compressed copy), and it is compact() that releases the
-    // previous live tree. A session that appends and then closes WITHOUT compacting strands
-    // its live tree -- no root ever named those blocks, so no root reclaim can find them
-    // either. That one-off cost per unclean session is measured in the PROBE above and is a
-    // different defect from the one the root reclaim fixes; it is not smuggled into this gate by choosing
-    // a session shape that hides it.
+    // ONE session, every checkpoint preceded by a compact -- the shape agent_disk_t::
+    // checkpoint_inner runs. compact() is what releases the previous live tree (the engine keeps
+    // two physical copies of a table: the live write-through tree and the checkpoint's packed
+    // copy); a session that closes WITHOUT compacting strands its live tree instead, a
+    // different, already-measured defect (see PROBE above), not one hidden by this gate's shape.
     tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
     REQUIRE(!bm.create_new_database().has_error());
     auto table = make_table(env, bm);
@@ -418,19 +409,15 @@ TEST_CASE("root_reclaim: crash between reclaim and header write leaves root N re
 // ---------------------------------------------------------------------------------------
 // ITEM 2 — one TRANSIENT I/O error must not make the file grow without bound.
 //
-// Both latches (durability_error_, allocation_error_) make write_header return BEFORE
-// promote_durable_root(), and both are sticky by design. So after a single transient
-// EIO/ENOSPC pending_free_ never drains again for the life of the manager: free_block_id
-// draws only from reusable_, reusable_ stays empty, and every rebuild extends the file.
-// Meanwhile nothing upstream looks at the latch — agent_disk_t::checkpoint_inner keeps
-// calling compact() every round — so the table grows by its own full size EVERY round,
-// forever.
+// durability_error_ / allocation_error_ make write_header return BEFORE promote_durable_root(),
+// and both latch sticky. So after one transient EIO/ENOSPC, pending_free_ never drains again:
+// free_block_id draws only from the empty reusable_, and every rebuild extends the file --
+// nothing upstream checks the latch, so agent_disk_t::checkpoint_inner keeps compacting every
+// round, growing the table by its own full size each time.
 //
-// The defect: block_count climbs by a full copy per round after ONE failed fsync.
-// The chosen fix is that a DEGRADED manager stops the rebuild: data_table_t::compact refuses
-// (the round is skipped exactly like the MVCC-gate skip), table_storage_t::checkpoint
-// refuses with the latched error, and agent_disk_t::checkpoint_inner logs and defers. Reads
-// keep working — loud is not fatal.
+// Fix: a DEGRADED manager stops the rebuild -- data_table_t::compact refuses (like the MVCC-gate
+// skip), table_storage_t::checkpoint refuses with the latched error, and checkpoint_inner logs
+// and defers. Reads keep working -- loud is not fatal.
 // ---------------------------------------------------------------------------------------
 TEST_CASE("root_reclaim: one transient fsync failure does not grow the file without bound", "[a7.3]") {
     const auto path = reclaim_db_path("degraded");
@@ -504,22 +491,20 @@ TEST_CASE("root_reclaim: one transient fsync failure does not grow the file with
         CHECK(bm.total_blocks() == after_failure);
     }
 
-    // Loud is NOT fatal (rule 6): the degraded table still serves reads.
+    // Loud is NOT fatal: the degraded table still serves reads.
     REQUIRE(scan_and_count(*table, env) == RECLAIM_ROWS);
 
     remove_file(path);
 }
 
 // ---------------------------------------------------------------------------------------
-// Rule 19: the candidate list is DISK BYTES, so it must not reach an assert().
+// The candidate list is DISK BYTES, so it must not reach an assert().
 //
-// The reclaim's candidates come from two disk-fed places: the durable root's data blocks,
-// which data_table_t::load_from_disk collects out of data_pointer_t::block_pointer.block_id
-// (a full uint64 read straight off the file, with no domain check between the reader and
-// here), and the two chain walks. block_manager_t::unregister_block guards its input with
-// `assert(id < MAXIMUM_BLOCK)` — an abort in a debug build, on the agent thread inside the
-// checkpoint coroutine (rule 9), and NOTHING under NDEBUG, where a transient-domain id would
-// then be fed to block_location and wrapped onto a real live block.
+// Reclaim candidates come from disk-fed sources (data_table_t::load_from_disk reads
+// data_pointer_t::block_pointer.block_id as a raw uint64, no domain check) and two chain walks.
+// block_manager_t::unregister_block guards with `assert(id < MAXIMUM_BLOCK)`: an abort in debug
+// (on the agent thread, inside the checkpoint coroutine), and NOTHING under NDEBUG,
+// where a transient-domain id would then wrap onto a real live block.
 //
 // A candidate outside the addressable domain must be dropped and latched, in every build.
 // ---------------------------------------------------------------------------------------
@@ -560,24 +545,15 @@ TEST_CASE("root_reclaim: a transient-domain candidate is dropped and latched, no
 // ---------------------------------------------------------------------------------------
 // A FAILED RECLAIM must not fail every checkpoint forever while the file grows.
 //
-// reclaim_superseded_root walks root N's chains through metadata_manager_t::chain_blocks,
-// which pins each sub-block via single_file_block_manager_t::read(). read() reports
-// io_error / data_corruption; propagating that without latching leaves the checkpoint failed
-// while degraded() stays false. Every health gate keys exclusively on degraded()
-// (data_table_t::compact, table_storage_t::checkpoint, agent_disk_t::checkpoint_inner), so
-// none of them fires: the next round compacts again, rebuilds the whole collection into
-// freshly extended blocks (compact's release goes to pending_free_, which only a COMMITTED
-// header drains), failed the same walk, and did it again. One rotten bit in root N's
-// metadata chain therefore cost a full copy of the table PER ROUND, forever, with every
-// health indicator reporting the file healthy.
+// reclaim_superseded_root walks root N's chains by pinning sub-blocks (read() can report
+// io_error / data_corruption). Propagating that without latching leaves degraded() == false, and
+// every health gate (data_table_t::compact, table_storage_t::checkpoint,
+// agent_disk_t::checkpoint_inner) keys exclusively on degraded(): so the next round compacts
+// again, rebuilds into freshly extended blocks, fails the same walk, and repeats -- a full copy
+// of the table PER ROUND while every health indicator reports the file healthy.
 //
-// DECISION, written down: a failed reclaim LATCHES (allocation_error_ — it is exactly a
-// "this manager can no longer account for its blocks" failure), and the failed round does
-// NOT roll its allocations back. See the long note at reclaim_superseded_root for why the
-// rollback would be the more dangerous half.
-//
-// The defect: degraded() == false after the failed round, and block_count climbs every
-// round after it.
+// DECISION: a failed reclaim LATCHES (allocation_error_) and does NOT roll its allocations back
+// -- see the long note at reclaim_superseded_root for why rollback is the more dangerous half.
 // ---------------------------------------------------------------------------------------
 TEST_CASE("root_reclaim: a failed reclaim latches degraded and stops the file growing", "[a7.3][item_a]") {
     const auto path = reclaim_db_path("reclaim_read_error");
@@ -668,30 +644,24 @@ TEST_CASE("root_reclaim: a failed reclaim latches degraded and stops the file gr
         CHECK(bm.total_blocks() == after_failure);
     }
 
-    // Loud is NOT fatal (rule 6): the degraded table still serves reads.
+    // Loud is NOT fatal: the degraded table still serves reads.
     REQUIRE(scan_and_count(*table, env) == RECLAIM_ROWS);
 
     remove_file(path);
 }
 
 // ---------------------------------------------------------------------------------------
-// A collection held across compact must not strip the registry entry of a block id
-// that has since been REUSED by the live table.
+// A collection held across compact must not strip the registry entry of a block id that has
+// since been REUSED by the live table.
 //
-// data_table_t::row_group() hands out COUNTED collection copies BY VALUE (the count lives
-// inside collection_t), so the replaced collection outlives compact() for as long as any holder
-// keeps its copy. compact() mark_as_free's + unregister_block(id)'s
-// the outgoing collection's ids while that collection's segments still own handles for them;
-// the ids go to pending_free_, a committed header promotes them to reusable_, and the next
-// round hands one back out and register_block()s a FRESH handle for it. When the stale holder
-// finally lets go, an old handle destructor that erased blocks_[id] by ID would take the
-// LIVE handle's slot with it. registry_alive(id) then reads false while a live segment is
-// still reading the block, and registry_alive is the subtraction that stops
-// reclaim_superseded_root from freeing live table state.
-//
-// The defect: the reused ids lose their registry entry the moment the stale collection is
-// released, and the next compacting checkpoint frees blocks the live table is reading (the
-// walker reports them as unexplained and the scan stops matching).
+// data_table_t::row_group() hands out COUNTED collection copies BY VALUE, so a held copy
+// outlives compact(). compact() unregister_block()s the outgoing collection's ids while that
+// collection's segments still hold handles for them; the ids cycle pending_free_ -> reusable_
+// and the next round hands one back out with a FRESH handle. If the stale holder's later
+// destructor then erased blocks_[id] by ID, it would take the LIVE handle's slot with it --
+// registry_alive(id) would read false while a live segment is still reading the block, and
+// registry_alive is exactly the subtraction that stops reclaim_superseded_root from freeing
+// live table state.
 // ---------------------------------------------------------------------------------------
 TEST_CASE("root_reclaim: a collection held across compact does not strip a reused block's registry entry",
           "[a7.3][item_c]") {

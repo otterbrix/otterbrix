@@ -46,11 +46,8 @@ namespace services::index {
 
         constexpr uint64_t overflow_page_id_base = 1ULL << 40;
 
-        // THE HEADER SEAL. Without a magic and a checksum a flipped bit that still produces a
-        // plausible field -- a bucket count off by one re-addresses EVERY key -- would be
-        // loaded and served. The first 12 bytes of the header page are otherwise unused and
-        // carry the file's NAME plus the proof its fields arrived unchanged: 8 bytes of magic
-        // at [0,8) and a CRC32C over the six header fields [12,40) at [8,12).
+        // Magic + CRC32C over the header fields catch corruption (e.g. an off-by-one bucket
+        // count) that would otherwise be loaded and served silently.
         constexpr char hash_header_magic[8] = {'o', 't', 'b', 'x', 'h', 'a', 's', 'h'};
         constexpr size_t hash_header_fields_offset = 12;
         constexpr size_t hash_header_fields_size = 28;
@@ -67,57 +64,32 @@ namespace services::index {
             return v != nullptr && std::strcmp(v, stage) == 0;
         }
 
-        // THE ONE FAILURE A TEST CANNOT STAGE FROM OUTSIDE. Every other I/O refusal this class can
-        // meet is reachable from the filesystem -- an unopenable path, a file shorter than the page
-        // a chain points at -- and the cases below use exactly that. A REFUSED OVERFLOW ALLOCATION
-        // is not: it is a positional write to an fd this class opened O_RDWR itself, and nothing a
-        // test can do to the path makes that write fail (chmod does not reach an open descriptor,
-        // and the block manager's interposer wraps single_file_block_manager_t, which this class
-        // does not use).
-        //
-        // So the seam is here, DEV_MODE only, armed where the failure really happens rather than
-        // where the test wants to observe it: allocate_overflow_page answers 0, which is precisely
-        // what a failed page write makes it answer, and the refusal then travels the production
-        // path -- through insert_payload_into_bucket_unlocked's error, through the split's copy
-        // loop -- instead of short-circuiting it. put() meets the same refusal through the same
-        // door, which is what makes the injection's sensitivity checkable.
+        // Unstageable from the filesystem, unlike other I/O refusals here: this is a write to an
+        // fd this class already opened O_RDWR itself. Armed where the real failure would happen
+        // (allocate_overflow_page returns 0), so the refusal travels the real production path.
         bool overflow_alloc_failpoint() {
             const char* v = std::getenv("OTTERBRIX_DISK_HASH_OVERFLOW_ALLOC_FAILPOINT");
             return v != nullptr && *v != '\0' && std::strcmp(v, "0") != 0;
         }
 
-        // THE OTHER FAILURE NO TEST CAN STAGE FROM OUTSIDE, and for a sharper reason than the one
-        // above: reset_storage re-creates its files through the SAME open_or_create the first open
-        // runs, so any on-disk arrangement that breaks the re-creation breaks the first open too --
-        // and the store never gets as far as a reset. Only a change of state BETWEEN the two can
-        // refuse it (an EIO, or the volume going read-only between the two opens), and that is what
-        // this seam stands in for. It is armed at the worst reachable moment: both files are
-        // already unlinked and the re-creation is the step that says no. THE PERMISSION CASE IS NOT
-        // ONE OF THESE: opening this index is ALREADY a write to its directory (see
-        // bitcask_index_disk_t::open), so a directory that cannot be written to never reaches a
-        // reset.
+        // reset_storage re-creates its files through the same open_or_create the first open runs,
+        // so only a state change BETWEEN unlink and re-creation (e.g. the volume going read-only)
+        // can refuse it -- unstageable from outside, so this simulates it after the unlink.
         bool reset_reopen_failpoint() {
             const char* v = std::getenv("OTTERBRIX_DISK_HASH_RESET_FAILPOINT");
             return v != nullptr && *v != '\0' && std::strcmp(v, "0") != 0;
         }
 
-        // THE ONE STATE NOTHING OUTSIDE CAN ARRANGE: an unlink that reported success and left
-        // the name in place. No filesystem this runs on does that, and that is precisely why
-        // the check it feeds cannot be exercised any other way -- the check exists because
-        // reset_storage's postcondition ("the file is gone") is the whole basis on which the
-        // caller replays its segments into a table it believes is empty, and a postcondition
-        // that is only ever trusted is not a postcondition. Skipping the two removes puts the
-        // re-open in front of exactly the files the wipe was supposed to have taken away.
+        // No filesystem here leaves a name in place after a successful unlink, so this simulates
+        // it to exercise reset_storage's postcondition check ("the file is really gone") that
+        // the caller's replay-into-empty-table relies on.
         bool reset_skip_wipe_failpoint() {
             const char* v = std::getenv("OTTERBRIX_DISK_HASH_SKIP_WIPE_FAILPOINT");
             return v != nullptr && *v != '\0' && std::strcmp(v, "0") != 0;
         }
 
-        // THE CLOSING FLUSH'S FAILURE, unstageable from outside for the same
-        // reason as the overflow allocation above: it is a write to an fd this class opened
-        // itself, and nothing done to the path reaches an open descriptor. Armed where the
-        // failure would really happen -- the destructor's persist -- so the report travels
-        // the production path.
+        // Unstageable from outside, same reason as overflow_alloc_failpoint above; armed at the
+        // destructor's own persist.
         bool close_flush_failpoint() {
             const char* v = std::getenv("OTTERBRIX_DISK_HASH_CLOSE_FAILPOINT");
             return v != nullptr && *v != '\0' && std::strcmp(v, "0") != 0;
@@ -144,11 +116,8 @@ namespace services::index {
         : file_path_(file_path)
         , overflow_file_path_(std::filesystem::path(file_path).concat(".ovf"))
         , memory_resource_(memory_resource) {
-        // A missing resource or a zero bucket count is a caller bug, not an I/O
-        // failure: nothing can recover from it, and with no resource there is not
-        // even anything to build the message on. I/O failures are different
-        // — they are environmental, so they travel as a value, and this ctor opens
-        // nothing at all: whoever runs open_or_create() owns its answer.
+        // Caller bug (assert), not an I/O failure: I/O failures are environmental and travel
+        // as a value instead; this ctor opens nothing itself.
         assert(memory_resource && "disk_hash_table: resource required");
         assert(bucket_count > 0 && "disk_hash_table: bucket_count must be > 0");
         header_.bucket_count_value = bucket_count;
@@ -182,11 +151,8 @@ namespace services::index {
 
     disk_hash_table_t::~disk_hash_table_t() {
         if (file_) {
-            // THE CLOSING FLUSH SAYS SO WHEN IT FAILS. Two assert(false) arms would be compiled
-            // out by -DNDEBUG, dropping a failed closing persist in complete silence in
-            // release. A destructor has no value channel (rule 2 forbids the exception that
-            // would be the alternative), so the loud-not-fatal form is a line on stderr, in
-            // EVERY build mode -- the same door bitcask uses for its active-segment tail cut.
+            // No value channel in a destructor, and assert(false) would be compiled
+            // out under NDEBUG, so a failed closing flush is reported loudly on stderr instead.
             const bool header_persisted = !close_flush_failpoint() && persist_header();
             const bool synced = sync_files();
             if (!header_persisted || !synced) {
@@ -317,7 +283,6 @@ namespace services::index {
     // its hash belongs to the new bucket, so no walk ever looks where it is. Measured on the case
     // below: a refused overflow allocation part-way through the copy left 160 of 400 rows
     // unreachable, on disk as well as in memory.
-    //
     // WHAT A REFUSAL LEAVES BEHIND, precisely. Phase 2 has not run, so bucket_count, split_bucket
     // and level are untouched and every read still addresses the source bucket -- which phase 3
     // never cleans, so it still holds every entry. The new bucket's page and any overflow pages the
@@ -452,7 +417,6 @@ namespace services::index {
             // Auto-rehash path batches split durability barriers to avoid one fsync pair per split.
             // Crash safety is preserved because source buckets are never destructively cleaned
             // before header publication.
-            //
             // LEAVING THE LOOP ON A FAILURE IS NOT OPTIONAL: only a SUCCESSFUL split advances
             // bucket_count, which is this loop's own condition, so a split that refuses and is not
             // acted on spins here forever. That was already true of the failures the old code could
@@ -542,19 +506,16 @@ namespace services::index {
     }
 
     // THE RE-OPEN THAT DOES NOT TAKE THE WIPE ON TRUST.
-    //
     // open_or_create() cannot stand at the end of reset_storage, and the reason is its very first
     // decision: it branches on file_size() and takes load_existing_file whenever the size is not
     // zero. That is the exact outcome the paragraph above refuses to produce, reached by a
     // different road -- the unlink reported success, the name is somehow still there, and the
     // caller replays its segments into a table it believes is empty while every entry that survived
     // answers from an offset nothing has verified.
-    //
     // A successful unlink means the NAME IS GONE, so what these two opens create must be new and
     // therefore empty. Anything else is a postcondition that did not hold, and there is no repair
     // for it here. It refuses, the caller's open() hands the reason up, and the index loses its
     // registration rather than the process its life.
-    //
     // THE PRICE, in full: two fstats and one extra open() of the overflow file per index open
     // (initialize_new_file opens it again). Nothing per operation.
     core::error_t disk_hash_table_t::open_after_wipe_or_refuse() {
@@ -584,13 +545,11 @@ namespace services::index {
     // BOTH HANDLES GO AND THE OBJECT STAYS. Its one caller is a wipe that could not finish, where
     // the table's contents have stopped describing anything on the device: answering out of them
     // would be answering out of a keydir whose segments were just unlinked.
-    //
     // Refusing afterwards costs no flag and no per-door guard, because the geometry already does it
     // -- main_page_count() and overflow_page_count() answer 0 with no handle, and read_page checks
     // the page id against them BEFORE it dereferences anything, so every read comes back as
     // page_read_failure. So does every write: each begins by reading the page it is about to
     // change. The destructor's closing header flush is skipped for the same reason.
-    //
     // The state is not an error living in a field: it carries no message and guards no door. It is
     // the table's RESOURCES, and the next successful reset_storage re-opens both files and puts it
     // back to work.

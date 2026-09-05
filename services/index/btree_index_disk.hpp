@@ -18,21 +18,15 @@
 
 namespace services::index {
 
-    // Ordered-index probe encoder: logical key -> the physical_value the on-disk b+tree
-    // compares with. Carries exactly the ordered half of
-    // components::index::codec::is_representable_index_key_type (the CREATE INDEX gate);
-    // any other type is a gate/encoder drift bug and aborts.
+    // Ordered-index probe encoder: logical key -> the physical_value the b+tree compares with.
+    // Carries exactly the ordered half of is_representable_index_key_type (the CREATE INDEX
+    // gate); any other type is a gate/encoder drift bug and aborts.
     [[nodiscard]] components::types::physical_value convert(const components::types::logical_value_t& value);
 
-    // THE ORDERED STORE. No base class, and deliberately none coming: an erased base exists so that
-    // one agent can hold either family behind one pointer and ASK it at runtime which it is -- does
-    // it own a txn log, has it a bulk window, can it answer an ordered probe. There is one agent
-    // class per family, each holding its store BY VALUE and by this concrete type, so the type
-    // answers all three; a base would buy a vtable plus three abort-only stubs (btree
-    // apply_txn_inserts, btree apply_txn_deletes, an empty set_bulk_mode) and nothing else. What
-    // such a base would own -- the resource, the flush accounting, the by-value read shorthands --
-    // is duplicated in bitcask_index_disk_t instead, and that duplication is the cheaper half of
-    // the trade.
+    // No base class: one agent per family holds its store by value and concrete type instead, so
+    // backend questions (txn log? bulk window? ordered probe?) resolve by type, not virtual
+    // dispatch -- a base here would buy only a vtable plus three abort-only stubs. The shared bits
+    // (resource, flush accounting) are duplicated in bitcask_index_disk_t instead.
     //
     // TODO: add checkpoints to avoid flushing b+tree after each call
     class btree_index_disk_t final {
@@ -51,36 +45,27 @@ namespace services::index {
         btree_index_disk_t(const btree_index_disk_t&) = delete;
         btree_index_disk_t& operator=(const btree_index_disk_t&) = delete;
 
-        // The resource every answer this store produces is built on. A result built
-        // anywhere else is a result built on the process default resource.
+        // The resource every answer this store produces is built on (not the process default).
         [[nodiscard]] std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
-        // WRITES, and each reports whether the data it wrote reached the device. A write
-        // whose threshold flush failed left the tree naming entries no reader will ever find
-        // again after a restart; returning void made that indistinguishable from success.
+        // Each write reports whether its threshold flush reached the device -- a void return
+        // would make an entry lost to a failed flush indistinguishable from success.
         [[nodiscard]] core::error_t insert(const value_t& key, size_t value);
         [[nodiscard]] core::error_t remove(value_t key);
         [[nodiscard]] core::error_t remove(const value_t& key, size_t row_id);
 
-        // READS. Every answer is COMPLETE -- an index that reports a subset is a wrong answer, not
-        // a fast one -- and every answer comes back in ASCENDING key order. AND EVERY ANSWER CAN BE
-        // "I COULD NOT READ THIS RECORD": a leaf record is [key][uint64 row id], and a record whose
-        // key the codec refuses would otherwise come back as ROW ID 0, a legitimate row id the
-        // reader cannot tell from a real one. data_corruption travels instead, and
-        // btree_index_agent_t::read_rows fails the QUERY with it.
+        // Every answer is complete (a subset would be a wrong answer, not a fast one) and in
+        // ascending key order. An undecodable record would otherwise surface as row id 0,
+        // indistinguishable from a real one -- data_corruption travels instead, failing the query.
         [[nodiscard]] core::error_t find(const value_t& value, result& res) const;
-        // The ordered contract in full: eq / ne / lt / lte / gt / gte, every one of them
-        // an inclusive-bounded ascending walk of the tree. It is THE reason this family
-        // exists, and it is why btree_index_agent_t answers supports_ordered_probe_v with
-        // true where the hashed family answers false.
+        // The ordered contract in full (eq/ne/lt/lte/gt/gte), each an inclusive-bounded
+        // ascending walk -- the reason supports_ordered_probe_v is true for this family.
         [[nodiscard]] core::error_t
         scan_range(components::expressions::compare_type compare, const value_t& value, result& res) const;
 
-        // Shorthands for two of scan_range's six predicates, and their names are
-        // HISTORICAL: they are not the STL iterator positions. lower_bound(k) is the open
-        // ray BELOW k (key < k) and upper_bound(k) the open ray ABOVE it (key > k). The
-        // inclusive halves -- key <= k and key >= k, which SQL's <= and >= need -- are
-        // compare_type::lte and ::gte, asked of scan_range directly.
+        // Names are HISTORICAL, not STL iterator positions: lower_bound(k) is key < k, and
+        // upper_bound(k) is key > k. The inclusive halves (<=, >=) are compare_type::lte/gte,
+        // asked of scan_range directly.
         [[nodiscard]] core::error_t lower_bound(const value_t& value, result& res) const {
             return scan_range(components::expressions::compare_type::lt, value, res);
         }
@@ -88,15 +73,10 @@ namespace services::index {
             return scan_range(components::expressions::compare_type::gt, value, res);
         }
 
-        // By-value shorthands, built on resource_. Never on a default-constructed std::pmr::vector,
-        // which is std::pmr::get_default_resource() by consequence.
-        //
-        // THESE THREE ARE THE TEST-FACING FORM and are the only doors on this class that do not
-        // hand the refusal on -- there is nowhere for it to go in a `result`. That is not a
-        // swallowed error: no production caller uses them (btree_index_agent_t::read_rows and this
-        // class's own dedup probes all take the out-parameter form above), and a refusal still
-        // cannot pass unnoticed, because find/scan_range STOP at the record they could not read.
-        // The answer comes back SHORT, and every test that calls these asserts on its size.
+        // Test-facing shorthands, built on resource_ (never a default-constructed
+        // std::pmr::vector). Not a swallowed error: no production caller uses them, and a
+        // refusal still can't pass unnoticed -- find/scan_range stop at the unreadable record,
+        // so the answer comes back short and every test asserts on its size.
         [[nodiscard]] result find(const value_t& value) const {
             result res(resource_);
             [[maybe_unused]] const auto unreported = find(value, res);
@@ -114,36 +94,25 @@ namespace services::index {
         }
 
         void drop();
-        // Wipe all stored index data IN PLACE, keeping the backing live and writable: subsequent
-        // insert/remove repopulate cleanly. NOT the terminal drop -- the file survives
-        // (re-initialized empty) and the instance stays usable.
-        //
-        // AND IT REPORTS THE ONE REFUSAL IT CAN SEE: a tree directory that would not be removed.
-        // The tree is reloaded over the survivor either way, so the instance stays usable and its
-        // contents stay honest -- they are simply the contents this call promised to erase. Without
-        // this, index_agent_contract::clear told the truth about one of its two implementations.
+        // Wipes index data in place (not the terminal drop -- the directory survives,
+        // re-initialized empty). Reports the one refusal it can see: a directory that would
+        // not remove, over which the tree is reloaded either way, keeping the old contents.
         [[nodiscard]] core::error_t clear();
         // Returns io_error when the data did not reach the disk. The caller must fail the
         // statement: a discarded failure here means the table and its index disagree, and
         // nothing downstream would ever notice.
         [[nodiscard]] core::error_t force_flush();
 
-        // Bulk-load fast path: append/erase without the per-op find() dedup, persisting once via
-        // force_flush(). Removes the O(rows^2) cost of insert()/remove() calling find() per row.
-        // They never call flush_if_needed, so there is no bulk-mode WINDOW to open -- the caller
-        // force_flush()es once at the end.
-        //
-        // WHAT THE CALLER GUARANTEES: each (key, row_id) PAIR is fed at most once and, for the
-        // remove side, is present. NOT unique KEYS -- a non-unique index is the ordinary case, and
-        // every rebuild feed replays a whole table, repeated keys included.
+        // Bulk fast path: append/erase without the per-op find() dedup, persisting once via the
+        // caller's force_flush() (O(rows) vs O(rows^2)). Caller guarantees each (key, row_id)
+        // PAIR is fed at most once -- not unique keys, which the ordinary non-unique index breaks.
         void insert_bulk_unchecked(const value_t& key, size_t value);
         void remove_bulk_unchecked(const value_t& key, size_t row_id);
 
     private:
-        // A NULL key is neither stored nor looked up. The invariant is owned by
-        // index_key_is_null (services/index/index_agent_contract.hpp) and enforced by both
-        // agents; this is the store's own second door on it, because the backend tests
-        // reach these methods directly. Defined next to the reasons in the .cpp.
+        // A NULL key is neither stored nor looked up (index_key_is_null's rule,
+        // index_agent_contract.hpp), enforced here too since backend tests reach this class
+        // directly. Defined next to the reasons in the .cpp.
         [[nodiscard]] static bool key_is_absent(const value_t& key) noexcept;
 
         [[nodiscard]] bool should_flush() const noexcept { return ops_since_flush_ >= flush_threshold_; }

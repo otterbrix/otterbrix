@@ -18,11 +18,8 @@ namespace services::planner::impl {
             // as "invalid query plan" via the standard executor error path.
             return nullptr;
         }
-        // The body plan is NOT compiled. Only WITH NO DATA reaches here (the
-        // transformer refuses the form that would need populating), so a compiled
-        // body operator would have no consumer. The body still shapes the matview:
-        // enrich derives inferred_columns from it and the planner writes its SQL
-        // into pg_rewrite.
+        // Body plan is NOT compiled (only WITH NO DATA reaches here, so it has no consumer); it
+        // still shapes the matview via enrich's inferred_columns and the planner's pg_rewrite SQL.
         // Move catalog_writes out of the node into the operator.
         auto writes_vec = const_cast<node_create_matview_t*>(cm)->take_catalog_writes();
         std::vector<components::operators::operator_create_matview_t::catalog_write_t> writes;

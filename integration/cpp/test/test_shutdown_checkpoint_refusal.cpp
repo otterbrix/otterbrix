@@ -11,21 +11,9 @@
 #include <string>
 #include <unistd.h>
 
-// THE SHUTDOWN CHECKPOINT'S ANSWER MUST NOT VANISH.
-//
-// ~base_otterbrix_t runs one last CHECKPOINT statement so the journal is folded into storage
-// before the engine goes down. That statement HAS an error channel — execute_plan returns the
-// cursor every refused step of the round fails into — and the destructor used to drop the
-// cursor on the floor and wrap the call in a catch (...) that swallowed the rest. A failed
-// final checkpoint is the difference between "the next start replays a journal" and "the next
-// start replays nothing", and the operator deserves to read WHICH of the two happened.
-//
-// A destructor has no caller to answer, so the loudest honest channel it has is the error
-// log. The case below makes the final CHECKPOINT fail deterministically — the WAL truncation
-// step meets segments that will not open, and operator_checkpoint fails the statement on a
-// refused truncate — and then reads the engine's log back.
-//
-// BEFORE: the log said "checkpoint complete"-nothing; no line reported the refusal.
+// ~base_otterbrix_t's final CHECKPOINT used to drop its result cursor and swallow errors in a
+// catch (...): a failed shutdown checkpoint left no sign of whether the next start replays a
+// journal or replays nothing. A destructor has no caller, so the refusal must reach the error log.
 
 using namespace test_helpers;
 
@@ -82,9 +70,8 @@ TEST_CASE("integration::cpp::shutdown_checkpoint::a_refused_final_checkpoint_is_
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::err;
-    // Small segments so the load below rolls the journal over: truncate_before never opens
-    // the writer's CURRENT segment, so a single-segment journal would give the armed refusal
-    // nothing to refuse.
+    // Small segments so the load rolls the journal over: truncate_before never opens the
+    // writer's CURRENT segment, so a single segment gives the armed refusal nothing to hit.
     config.wal.max_segment_size = 16 * 1024;
 
     wal_open_refusal_t fault;
@@ -108,15 +95,12 @@ TEST_CASE("integration::cpp::shutdown_checkpoint::a_refused_final_checkpoint_is_
         };
         load_batches(0, 8);
 
-        // A COMPLETED round first: the truncation floor is W-TORN — min over each table's
-        // PREVIOUS checkpoint id — so the very first round answers 0 and skips the truncate
-        // step entirely. The shutdown checkpoint below is then the SECOND round, whose floor
-        // is this round's id, and its truncation actually opens the closed segments.
+        // A completed round first: the truncation floor is the min of each table's PREVIOUS
+        // checkpoint id, so the very first round answers 0 and skips truncation entirely. The
+        // shutdown checkpoint is then the SECOND round, whose floor actually opens closed segments.
         REQUIRE(exec(d, "CHECKPOINT;")->is_success());
 
-        // Fresh journal traffic AFTER the completed round, enough to roll the journal over:
-        // truncate_before never opens the writer's CURRENT segment, so at least one segment
-        // must be closed again by the time the shutdown checkpoint runs.
+        // More traffic to roll the journal over again before the shutdown checkpoint.
         load_batches(8, 16);
 
         // The journal must have rolled over, otherwise the fault below meets nothing.

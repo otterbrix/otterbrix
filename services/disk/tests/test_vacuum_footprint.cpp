@@ -1,20 +1,18 @@
-// VACUUM and the commit-path cleanup must not GROW the file.
+// VACUUM and the commit-path cleanup must not grow the file.
 //
-// The free pool is split. mark_as_free files a released id into pending_free_, and
-// pending_free_ drains into reusable_ in exactly ONE place — promote_durable_root, reached
-// only when a header naming the new root is on the device. free_block_id draws only from
-// reusable_.
+// The free pool is split: mark_as_free files a released id into pending_free_, which drains
+// into reusable_ only at promote_durable_root, reached once a header naming the new root is on
+// the device. free_block_id draws only from reusable_.
 //
-// So a compact() that is NOT followed by a committed header cannot RETURN space; it can only
-// SPEND it: data_table_t::compact rebuilds the live tree through transition_to_disk ->
+// So a compact() not followed by a committed header can't return space, only spend it:
+// data_table_t::compact rebuilds the live tree via transition_to_disk ->
 // partial_block_manager_t::get_block_allocation -> free_block_id (an empty reusable_ means
-// "extend the file"), and files the outgoing tree into pending_free_ where nothing can reach
-// it.
+// "extend the file"), and files the outgoing tree into pending_free_ where nothing can reach it.
 //
 // agent_disk_t::vacuum_inner and agent_disk_t::maybe_cleanup_inner never checkpoint, so neither
-// may call compact(): vacuum_inner would do it for EVERY entry on EVERY call — with no dead-row
-// gate at all — so a VACUUM on a table with nothing to reclaim would rewrite the whole table
-// into freshly extended blocks, return nothing, and grow the .otbx by a full copy per call.
+// may call compact(): vacuum_inner would do it for every entry on every call with no dead-row
+// gate at all, so a VACUUM on a table with nothing to reclaim would rewrite the whole table into
+// freshly extended blocks, return nothing, and grow the .otbx by a full copy per call.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -241,25 +239,23 @@ TEST_CASE("services::disk::vacuum::repeated_vacuum_does_not_grow_the_file", "[it
     CHECK(total == VACUUM_ROWS);
 }
 
-// ---------------------------------------------------------------------------------------
-// A failed checkpoint must STOP the compaction, or the file grows without bound.
+// A failed checkpoint must stop the compaction, or the file grows without bound.
 //
-// The header write is retried against the SAME slot on purpose: iteration_ does not
-// advance on failure and the slot is a pure function of it, so a transient ENOSPC recovers by
-// simply trying again. Case 2 of reconcile_failed_header_write deliberately does NOT latch for
-// exactly that reason -- latching would turn a transient error into a permanently degraded
-// manager.
+// The header write retries against the SAME slot on purpose: iteration_ doesn't advance on
+// failure and the slot is a pure function of it, so a transient ENOSPC recovers by trying again
+// -- reconcile_failed_header_write's case 2 deliberately doesn't latch for that reason, since
+// latching would turn a transient error into a permanently degraded manager.
 //
-// The cost of that choice is this: a PERSISTENT write error at that offset is retried forever,
-// and every retried round runs compact() FIRST. Under the split free pool a compact whose header
-// never commits cannot return space, only spend it -- the rebuilt tree is allocated by
-// extending the file (reusable_ never refills without a committed header) and the outgoing tree
-// lands in pending_free_ where nothing can reach it. So each round costs a full copy of the
-// table, forever, while storage_degraded() stays false and every health gate reports fine.
+// The cost: a persistent write error at that offset retries forever, and every retried round
+// runs compact() first. Under the split free pool, a compact whose header never commits can't
+// return space, only spend it -- the rebuilt tree extends the file (reusable_ never refills
+// without a committed header) while the outgoing tree lands in pending_free_, unreachable. Each
+// round costs a full copy of the table, forever, with storage_degraded() staying false and every
+// health gate reporting fine.
 //
-// The fix is not to latch, it is to stop COMPACTING: after a failed round the entry still
-// attempts its checkpoint (so a transient error recovers on the next round) but does so WITHOUT
-// the rebuild. Without the gate the .otbx grows by a full copy on every round.
+// The fix is to stop compacting, not to latch: after a failed round the entry still attempts
+// its checkpoint (so a transient error recovers next round) but without the rebuild. Without the
+// gate the .otbx grows by a full copy every round.
 TEST_CASE("services::disk::vacuum_footprint::a_failed_checkpoint_stops_compaction") {
     // The interposer wraps a handle at OPEN time, so it has to be installed before the storage
     // is created — arming it later would leave the already-open handle unwrapped.
@@ -274,20 +270,19 @@ TEST_CASE("services::disk::vacuum_footprint::a_failed_checkpoint_stops_compactio
     const uint64_t healthy = file_size_of(path);
     REQUIRE(healthy > 0);
 
-    // Aim at the UNLATCHED failure specifically. Failing the fsync latches durability_error_ and
-    // the existing degraded() gate already stops the compaction — that path is covered. The one
-    // that is NOT covered is a failed header WRITE with the previous root intact
-    // (reconcile_failed_header_write case 2), which deliberately does not latch so the same-slot
-    // retry can recover a transient error. So: measure a healthy round's write count first, then
-    // fail everything after it, and the next round's writes all succeed until its final header
-    // write.
+    // Aims at the unlatched failure specifically: a failed fsync latches durability_error_, and
+    // the existing degraded() gate already stops compaction on that path. Not covered is a
+    // failed header write with the previous root intact (reconcile_failed_header_write case 2),
+    // which deliberately doesn't latch so the same-slot retry can recover a transient error. So:
+    // measure a healthy round's write count first, then fail everything after it, so the next
+    // round's writes all succeed until its final header write.
     //
-    // WHY THE APPENDS. checkpoint(10) left every table clean, and a round skips a table it has
-    // nothing to write for, so without these two rows both the measuring round and the first
-    // failing round would be no-ops and the fault would never be reached (writes_per_round came
-    // back 0). One row before each is all that is needed: from there the failures themselves keep
-    // the entry dirty, because the flag is cleared only by a COMMITTED header. The measured count
-    // is then the user table's alone — every system table is unchanged and writes nothing.
+    // The appends are needed because checkpoint(10) left every table clean and a round skips a
+    // table with nothing to write, so without these two rows both the measuring round and the
+    // first failing round would be no-ops (writes_per_round would come back 0). One row before
+    // each is enough: the failures themselves then keep the entry dirty, since the flag clears
+    // only on a committed header. The measured count is the user table's alone -- every system
+    // table is unchanged and writes nothing.
     append_one_row(fx, table_oid, VACUUM_ROWS);
     plan.writes_seen = 0;
     fx.checkpoint(services::wal::id_t{15});
@@ -295,12 +290,11 @@ TEST_CASE("services::disk::vacuum_footprint::a_failed_checkpoint_stops_compactio
     REQUIRE(writes_per_round > 0);
     WARN("[failed-round gate] writes in a healthy round: " << writes_per_round);
 
-    // Re-arm every round so that ONLY the final header write fails and every data/metadata
-    // write of that round lands. That is a persistent bad sector at the header offset — the
-    // one shape that reaches reconcile_failed_header_write case 2 without anything latching.
-    // A blanket "fail all writes from N" instead fails the DATA blocks too, and
-    // checksum_and_write latches on those, so the existing degraded() gate stops the
-    // compaction and the defect hides behind it.
+    // Re-arms every round so only the final header write fails and the rest of that round's
+    // data/metadata writes land -- a persistent bad sector at the header offset, the one shape
+    // reaching reconcile_failed_header_write case 2 without anything latching. A blanket "fail
+    // all writes from N" would fail the data blocks too, and checksum_and_write latches on
+    // those, so the existing degraded() gate would stop compaction and hide the defect.
     auto failed_round = [&](uint64_t wal) {
         plan.writes_seen = 0;
         plan.fail_after_writes = writes_per_round - 1;
@@ -322,18 +316,17 @@ TEST_CASE("services::disk::vacuum_footprint::a_failed_checkpoint_stops_compactio
     WARN("[failed-round gate] healthy=" << healthy << " after 1st failure=" << after_first_failure << " after "
                                         << (ROUNDS + 1) << " failures=" << after_more_failures << " (~" << per_round
                                         << " B/round)");
-    // WHY THIS IS EQUALITY AND NOT A BOUND. The COMPACT gate alone (no round after the first
-    // pays for another rebuild) leaves a residual: every retried round writes its own packed
-    // copy, its own metadata chain and its own free-list chain, and nothing releases them — no
-    // root names them and no mark_as_free runs. Measured on this fixture: ~655360 B per round,
-    // forever, with storage_degraded() false throughout.
+    // Equality, not a bound: the compact gate alone (no round after the first pays for another
+    // rebuild) still leaves a residual, since every retried round writes its own packed copy,
+    // metadata chain and free-list chain, and nothing releases them (no root names them, no
+    // mark_as_free runs). Measured on this fixture: ~655360 B per round, forever, with
+    // storage_degraded() false throughout.
     //
-    // roll_back_uncommitted_round() closes that: a round PROVEN not to have committed a header
-    // (here: reconcile_failed_header_write case 2, where the read-back shows the previous root
-    // still standing) returns every id it issued that the block registry does not hold, into
-    // reusable_ -- so the next retried round spends the SAME blocks instead of extending the
-    // file. Same fixture: 0 B per round. Anything else means a failed round leaked or reissued
-    // something.
+    // roll_back_uncommitted_round() closes that: a round proven not to have committed a header
+    // (here, reconcile_failed_header_write case 2, where the read-back shows the previous root
+    // still standing) returns every id it issued that the block registry doesn't hold, into
+    // reusable_, so the next retried round spends the same blocks instead of extending the file.
+    // Same fixture: 0 B per round. Anything else means a failed round leaked or reissued something.
     CHECK(after_more_failures == after_first_failure);
     CHECK(per_round == 0);
 
@@ -360,8 +353,8 @@ TEST_CASE("services::disk::vacuum_footprint::a_failed_checkpoint_stops_compactio
         disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid));
     CHECK(total_after_recovery == VACUUM_ROWS + 2);
 
-    // NOTE for a later round of work: this table has no dead rows, so compact() has nothing to
-    // rebuild here. A version with DELETEs would exercise the registry-alive side of the
-    // discrimination on the production path too; the unit-level gates in
-    // components/table/test/test_failed_round_rollback.cpp cover that side directly.
+    // This table has no dead rows, so compact() has nothing to rebuild here; a version with
+    // DELETEs would exercise the registry-alive side of the discrimination on the production
+    // path too. The unit-level gates in components/table/test/test_failed_round_rollback.cpp
+    // cover that side directly.
 }

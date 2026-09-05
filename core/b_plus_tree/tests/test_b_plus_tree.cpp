@@ -1007,13 +1007,11 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
     }
 }
 
-// split() and balance_with() shrink a block IN PLACE by moving items out of it, and two of the
-// three sites that do so never marked that block modified — so flush() never wrote it and the
-// file kept the pre-split bytes.
-//
-// Nothing noticed before because flush() rewrote every leaf's header unconditionally, and count()
-// reads that header — so the counters looked right while the block behind them was stale. These
-// tests therefore ignore the counters and walk the actual items back off the disk.
+// Regression: split()/balance_with() shrink a block in place by moving items out, and two of
+// the three sites doing so never marked the block modified, so flush() never rewrote it and the
+// file kept the pre-split bytes. Went unnoticed because flush() rewrote every leaf's header
+// unconditionally and count() reads that header, so counters looked right over a stale block.
+// These tests ignore the counters and walk the actual items back off disk.
 TEST_CASE("core::b_plus_tree::segment_tree_split_persists_the_shrunk_source") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_split_persistence");
@@ -1100,8 +1098,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_split_persists_the_shrunk_source") {
         CHECK(all[i] == i);
     }
 
-    // The scratch items are the test's, not the tree's: without this every ASAN run of this
-    // binary ends in a leak report that has nothing to do with what is being tested.
+    // Free the test's own scratch buffers (not the tree's) so ASAN doesn't flag them.
     for (auto& dummy : test_data) {
         resource.deallocate(dummy.buffer, dummy.size);
     }
@@ -1209,8 +1206,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_balance_persists_the_shrunk_source") 
         CHECK(all[i] == i);
     }
 
-    // The scratch items are the test's, not the tree's: without this every ASAN run of this
-    // binary ends in a leak report that has nothing to do with what is being tested.
+    // Free the test's own scratch buffers (not the tree's) so ASAN doesn't flag them.
     for (auto& dummy : test_data) {
         resource.deallocate(dummy.buffer, dummy.size);
     }
@@ -1301,8 +1297,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_close_gaps_moves_unloaded_blocks") {
     INFO("expected " << expected.size() << " surviving items, read " << actual.size() << " back from disk");
     CHECK(actual == expected);
 
-    // The scratch items are the test's, not the tree's: without this every ASAN run of this
-    // binary ends in a leak report that has nothing to do with what is being tested.
+    // Free the test's own scratch buffers (not the tree's) so ASAN doesn't flag them.
     for (auto& dummy : test_data) {
         resource.deallocate(dummy.buffer, dummy.size);
     }
@@ -1376,8 +1371,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_remove_index_loads_the_last_block_of_
         CHECK(tree.contains_index(segment_tree_t::index_t(1000 + i)));
     }
 
-    // The scratch items are the test's, not the tree's: without this every ASAN run of this
-    // binary ends in a leak report that has nothing to do with what is being tested.
+    // Free the test's own scratch buffers (not the tree's) so ASAN doesn't flag them.
     for (auto& dummy : test_data) {
         resource.deallocate(dummy.buffer, dummy.size);
     }
@@ -1463,14 +1457,11 @@ TEST_CASE("core::b_plus_tree::segment_tree_remove_charges_a_multi_block_key_once
     }
 }
 
-// Both persistence layers write a fixed-size region but initialised only its head: segment_tree_t's
-// leaf header is allocated at 2 * DEFAULT_BLOCK_SIZE with three counters set, and btree_t::flush()
-// allocates METADATA_SIZE and fills two counters plus one id per leaf. The rest of each region was
-// whatever the allocator handed over, and flush() writes the WHOLE region to disk.
-//
-// The test poisons the pool with a recognisable pattern, frees it so the tree gets that memory,
-// and then looks for the pattern in the file. Anything found there is heap contents that leaked
-// onto disk — it also makes the files non-reproducible run to run.
+// Both persistence layers write a fixed-size region but initialize only its head (leaf header,
+// or METADATA_SIZE's two counters plus one id per leaf); the rest is whatever the allocator
+// handed over, and flush() writes the whole region. This poisons the pool with a recognisable
+// pattern, frees it so the tree gets that memory, and checks the file for the pattern -- a hit
+// is heap contents leaked onto disk.
 TEST_CASE("core::b_plus_tree::flush_does_not_write_uninitialised_memory") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_uninitialised");
@@ -1640,14 +1631,10 @@ TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
     }
 }
 
-// flush() called write(), truncate() and sync() and threw every result away, then cleared the
-// per-block `modified` flags and the per-leaf dirty flag regardless. A write that failed — a full
-// disk, a revoked descriptor — was therefore reported as a successful flush AND marked the leaf
-// clean, so the next flush skipped it and the data was gone for good.
-//
-// The failure is injected by handing the leaf a read-only descriptor: pwrite() on an O_RDONLY fd
-// returns -1, and core::filesystem::write already reports that by value (it just had no one
-// listening).
+// Regression: flush() threw away the write()/truncate()/sync() results and cleared the dirty
+// flags regardless, so a failed write (full disk, revoked descriptor) was reported as success
+// and marked clean, skipping it on the next flush and losing the data for good. Failure is
+// injected via a read-only descriptor: pwrite() on an O_RDONLY fd returns -1.
 TEST_CASE("core::b_plus_tree::flush_reports_io_failure_and_stays_dirty") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_io_failure");
@@ -1738,14 +1725,10 @@ TEST_CASE("core::b_plus_tree::flush_persists_an_emptied_tree") {
     }
 }
 
-// THE CHECKSUM ONLY EVER RAN INSIDE AN assert, at both of the sites that read a block off the
-// disk (segment_tree.cpp, clean_load() and load_segment_()). Under -DNDEBUG -- which is every
-// release build -- it did not run at all, and the four file reads around it dropped their results
-// too, so the ordered index family had NOTHING checking what came back from the device.
-//
-// The fault here is one flipped bit in a stored payload. The block keeps its exact shape, so
-// nothing else in the load path can notice: before this test, both load paths served the flipped
-// bytes as if they were the bytes that had been written.
+// Regression: the checksum only ever ran inside an assert, at both sites that read a block off
+// disk (segment_tree.cpp clean_load()/load_segment_()), so release builds (-DNDEBUG) never ran
+// it -- nothing checked what came back from the device. Fault injected here is one flipped bit
+// in a stored payload; the block keeps its exact shape, so nothing else in the load path notices.
 TEST_CASE("core::b_plus_tree::a_flipped_bit_in_a_block_is_refused_not_served") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_bitflip");
@@ -2068,9 +2051,9 @@ TEST_CASE("core::b_plus_tree::a_failed_eviction_write_does_not_drop_the_block") 
 
 // The load path must not carry `try { block = create_initialize(...); } catch (...) {
 // unload_old_segments_(); block = create_initialize(...); }` -- a live try/catch in the hot path
-// (rule 2), catching everything, with the retry INSIDE the catch where a second refusal has
+//, catching everything, with the retry INSIDE the catch where a second refusal has
 // nothing above it to catch it. That second throw leaves segment_tree_t, leaves btree_t, and in
-// otterbrix it crosses the actor that owns the index (rule 9). The two append() sites around
+// otterbrix it crosses the actor that owns the index. The two append() sites around
 // split_append_nothrow answer with a value for the same reason.
 TEST_CASE("core::b_plus_tree::an_allocation_refusal_comes_back_as_a_value") {
     auto resource = core::pmr::otterbrix_resource();
@@ -2196,13 +2179,11 @@ TEST_CASE("core::b_plus_tree::a_corrupt_leaf_still_opens_answers_and_drops") {
     CHECK_FALSE(directory_exists(fs, testing_directory));
 }
 
-// The same unguarded growth one level down. A leaf's block metadata lives in the header region and
-// holds max_segments entries -- 8191 -- and TWO things can walk past that: insert_segment_ moving
-// metadata_end_ forward with nothing stopping it, and clean_load()/lazy_load() placing
-// metadata_end_ from a count they take off the DISK. The second one is reachable with one poked
-// field, and it is driven below at the real constant; the first needs 8191 resident blocks of
-// 256 KB, so the number the guard compares against is lowered for it and the guard itself runs
-// unchanged.
+// Same unguarded growth one level down: a leaf's block metadata holds max_segments entries
+// (8191), and both insert_segment_ (advancing metadata_end_ unbounded) and clean_load()/
+// lazy_load() (placing it from a disk count) can walk past that. The disk path is driven at the
+// real constant via one poked field; the insert path needs 8191 resident 256 KB blocks, so its
+// guarded ceiling is lowered instead.
 TEST_CASE("core::b_plus_tree::the_block_metadata_array_is_guarded_on_both_sides") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_metadata_capacity");
@@ -2291,16 +2272,11 @@ TEST_CASE("core::b_plus_tree::the_block_metadata_array_is_guarded_on_both_sides"
     }
 }
 
-// METADATA_SIZE holds two counters and then one uint64 id per leaf -- 32 766 of them. flush()
-// walked the leaf list writing one id per leaf into that fixed buffer with nothing stopping it at
-// the end, and load() sized both its read and its node array by a count it took off the DISK
-// without comparing it to anything.
-//
-// The write side cannot be driven honestly: 32 766 leaves is 32 766 leaf files with a
-// half-megabyte header written into each on every flush. dev_set_max_leaf_nodes() lowers the
-// number the guard compares against so that the guard itself runs for real; the number it defends
-// in a release build is fixed by MAX_LEAF_NODES, and the second half of this test drives that
-// exact constant from the read side, where one poked field reaches it.
+// METADATA_SIZE holds two counters and one uint64 id per leaf (32 766 of them); without a
+// guard, flush() writes past that fixed buffer and load() sizes its read off an uncompared disk
+// count. The write side can't be driven honestly (32 766 leaf files, a 256 KB header
+// each per flush), so dev_set_max_leaf_nodes() lowers the compared-against number to exercise
+// the same guard for real; the read side drives the actual MAX_LEAF_NODES via one poked field.
 TEST_CASE("core::b_plus_tree::the_leaf_ceiling_is_guarded_on_both_sides") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("btree_leaf_ceiling");
@@ -2389,16 +2365,12 @@ TEST_CASE("core::b_plus_tree::the_leaf_ceiling_is_guarded_on_both_sides") {
     }
 }
 
-// THE STAND-IN poison_segment_() LEAVES BEHIND IS AN EMPTY BLOCK, and split() treats every block
-// it walks as a real one. unique_indices_count() answers 0, the line below it subtracts
-// `prev_index == max_index()` -- and an EMPTY block answers max_index() with
-// numeric_limits<index_t>::max(), which is a default-constructed physical_value, which is exactly
-// what `prev_index` is on the first iteration. So `count` goes 0 - 1 = SIZE_MAX, the "split inside
-// this block" branch is taken, and split_uniques() is called on a block with nothing in it, where
-// `last_metadata_->index` dereferences one metadata entry PAST the end of the allocation.
-//
-// Under -DNDEBUG the assert that would have caught the zero is not compiled, so this is a
-// heap-buffer-overflow READ of size 24 (sizeof(physical_value)) in block_t::split_uniques.
+// poison_segment_()'s stand-in is an empty block, but split() treats every block it walks as
+// real: unique_indices_count() answers 0, and on the first iteration `prev_index == max_index()`
+// is true for an empty block too (both are a default-constructed physical_value), so `count`
+// goes 0 - 1 = SIZE_MAX, takes the "split inside this block" branch, and split_uniques()
+// dereferences `last_metadata_->index` one entry past the allocation -- a heap-buffer-overflow
+// READ of size 24 (sizeof(physical_value)) under -DNDEBUG, where the guarding assert compiles out.
 TEST_CASE("core::b_plus_tree::split_does_not_carve_up_a_block_it_could_not_read") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_split_poisoned");
@@ -2478,16 +2450,12 @@ TEST_CASE("core::b_plus_tree::split_does_not_carve_up_a_block_it_could_not_read"
     }
 }
 
-// "Nothing may ever write it back" -- the promise made where `unreadable` is declared. flush()
-// keeps it by looking at the LEAF's poisoned flag, and split()/balance_with()/merge() move a whole
-// node_t into ANOTHER leaf: the `unreadable` flag rides along with the block, the destination's
-// poisoned flag does not, and the destination is clean and flushes happily. The stand-in is empty,
-// so what lands on the device is a block with nothing in it, written over a block that had rows --
-// and the destination reopens without a word, because nothing failed on ITS side.
-//
-// One bad block low in the leaf reaches the "move the whole block" branch rather than the
-// "carve it up" branch of the case above: `prev_index` has a real value by then, so the
-// subtraction leaves count at 0 and 0 fits in any remaining budget.
+// The "nothing may ever write it back" promise (where `unreadable` is declared) breaks when
+// split()/balance_with()/merge() move a whole node_t into ANOTHER leaf: the block's `unreadable`
+// flag moves with it, but the destination's poisoned flag doesn't, so the destination flushes
+// happily and writes the empty stand-in over a block that had real rows. A bad block low in the
+// leaf reaches this "move the whole block" branch rather than "carve it up", since `prev_index`
+// already has a real value there and the subtraction leaves count at 0.
 TEST_CASE("core::b_plus_tree::an_unreadable_block_is_never_carried_into_another_leaf") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_stand_in_travels");
@@ -3288,15 +3256,11 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         }
     }
 }
-// The leaf HEADER had no checksum at all: header_t is bare counters and
-// the block_metadata array behind them is what places every range lookup -- so a flipped
-// bit in a counter or a key boundary passed the single structural check (segment count vs
-// capacity) and the leaf answered WRONG, silently. The blocks each carry a CRC; the
-// region that says where the blocks are and what they cover carried none.
-//
-// The tampering here zeroes the three counters -- a header that is structurally
-// PLAUSIBLE (0 segments fits every bound) and factually false: the leaf loads empty over
-// a file full of rows and, without the seal, reports nothing on the channel.
+// Regression: the leaf header had no checksum, only the single structural check (segment count
+// vs capacity), so a flipped bit in a counter or key boundary passed silently -- unlike the
+// blocks, which each carry a CRC. Tampering here zeroes the three counters: structurally
+// plausible (0 segments fits every bound) but factually false, so the leaf loads empty over a
+// file full of rows and, without the seal, reports nothing on the channel.
 TEST_CASE("core::b_plus_tree::a_tampered_leaf_header_is_refused_not_believed") {
     auto resource = core::pmr::otterbrix_resource();
     local_file_system_t fs = local_file_system_t();
@@ -3351,16 +3315,12 @@ TEST_CASE("core::b_plus_tree::a_tampered_leaf_header_is_refused_not_believed") {
     remove_directory(fs, testing_directory);
 }
 
-// THE OOM LEG OF A LAZY BLOCK LOAD MUST NOT BE A NULL DEREFERENCE.
-//
-// load_segment_() has three refusal legs. Two of them (a refused read, a failed checksum)
-// poison the slot with a VALID empty stand-in, which is what keeps every walk below
-// memory-safe. The third -- the allocation refusal -- CANNOT leave a stand-in (a stand-in is
-// itself a block allocation), so the slot stays EMPTY, exactly as lazy_load() left it. The
-// segment_tree iterators' operator*/operator-> then dereferenced that null without asking.
-// The walks now go through the checked door (iterator::get()), skip what could not be
-// loaded, and the refusal is on the tree's channel; a later walk with memory available
-// heals by itself, exactly like a poisoned slot does.
+// Regression: of load_segment_()'s three refusal legs, a refused read or failed checksum poison
+// the slot with a valid empty stand-in, but the allocation-refusal leg can't (a stand-in is
+// itself an allocation), so the slot stays null -- and the iterators' operator*/operator-> used
+// to dereference it unchecked. Walks now go through the checked door (iterator::get()), skip
+// what couldn't load, and report on the tree's channel; a later walk with memory available heals
+// on its own, like a poisoned slot does.
 TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_block") {
     // Refuses every allocation while armed; the arming happens BETWEEN load() (metadata only
     // for integer keys -- the blocks stay unloaded) and the scan that needs the blocks.
@@ -3460,17 +3420,11 @@ TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_bl
     remove_directory(fs, testing_directory);
 }
 
-// A FAILED LEAF FLUSH MUST NOT PUT A NEW METADATA FILE OVER THE LAST GOOD ONE.
-//
-// btree_t::flush() walks the leaves with `ok = node->flush() && ok;` -- and then wrote the
-// metadata list UNCONDITIONALLY, naming every leaf INCLUDING the one whose flush refused.
-// For a brand-new leaf that refusal means its file was never created, so the metadata now
-// names a file the directory does not hold -- and load() answers that with the WHOLE tree
-// empty (a named-but-missing leaf cannot be told apart from a truncation, so nothing may be
-// served). One refused leaf flush therefore cost every row of every OTHER leaf at the next
-// open, loudly but totally. The fix: a flush that could not write every leaf does not
-// replace the metadata at all -- the last-good list stays, every file it names exists, and
-// the false return says the NEW state is not durable.
+// Regression: flush() used to write the metadata list unconditionally, naming every leaf
+// including the one whose flush refused. For a brand-new leaf that means a file that was never
+// created, and load() answers a named-but-missing leaf by emptying the WHOLE tree -- so one
+// refused leaf flush cost every row of every OTHER leaf at the next open. Now a flush that
+// couldn't write every leaf leaves the last-good metadata in place instead.
 TEST_CASE("core::b_plus_tree::a_refused_leaf_flush_does_not_poison_the_metadata") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("btree_flush_refused_leaf");

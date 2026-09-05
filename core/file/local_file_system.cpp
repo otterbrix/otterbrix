@@ -1,28 +1,9 @@
 #include "local_file_system.hpp"
 
-// NO WINDOWS IMPLEMENTATION LIVES IN THIS FILE, AND SAYING SO OUT LOUD IS THE POINT.
-//
-// What stood under `#ifdef PLATFORM_WINDOWS` here was not platform support. No configuration
-// this tree builds ever compiled it -- CI is macOS and Linux -- so it rotted freely for as long
-// as it existed, and every change to the core/file interface was checked by the POSIX half
-// alone. Measured before removal, with the Win32 SDK types supplied so that every diagnostic
-// came from the arm itself and not from a missing header: 24 hard errors and one silently
-// value-less `bool`.
-//   - the handle/IO arm, 16 errors: a parameter redefined as a different type (was line 717),
-//     `&` parsed after `!=` (724), calls to file_size / set_file_pointer / directory_exists /
-//     file_exists with the wrong arity (762 twice, 807, 900, 918, 922, 944, 947), a lambda
-//     using `fs` without capturing it (931, 933), `this` inside a free function (950);
-//   - the path/environment arm, 8 errors: path_t IS std::filesystem::path, which has no
-//     size(), no operator[], no substr() and no make_prefered() (110, 113, 116, 125, 126, 128);
-//   - a `bool` function whose body simply ends (767-773).
-// Repairing all of that would still not have linked: `trim` and `last_modified_time` had no
-// Windows definition at all -- the second was spelled `llast_modified_time` -- and
-// set_file_pointer / file_pointer were written as free functions, leaving the members of
-// local_file_system_t undefined.
-//
-// So the honest answer is a refusal at the earliest point, not an implementation that only
-// pretends to exist (rule 6: loud, and never silent). A refusal cannot rot; that code could,
-// and did.
+// No Windows implementation: the removed `#ifdef PLATFORM_WINDOWS` arm never compiled under
+// this tree's CI (macOS/Linux only) and had rotted -- 24 compile errors and one no-op `bool`
+// when checked with Win32 types supplied. A loud refusal beats code that only
+// pretends to work.
 #ifdef PLATFORM_WINDOWS
 #error "core/file/local_file_system.cpp has no Windows implementation. The POSIX arm is the only one this tree builds or tests; a Windows port has to be written and given a CI job, not resurrected from the dead arm that used to sit here."
 #endif
@@ -177,18 +158,9 @@ namespace core::filesystem {
         unix_file_handle_t(local_file_system_t& file_system, path_t path, int fd)
             : file_handle_t(file_system, std::move(path))
             , fd(fd) {}
-        // THE ONE CALLER THAT HAS NOWHERE TO SEND A REFUSAL. close() below returns
-        // core::error_t now, and this call site cannot hand it upward: a destructor's only
-        // channel above itself is a throw, and a throw crossing a destructor is
-        // std::terminate -- trading a report about ONE lost write for the loss of the whole
-        // process, including every other handle that was still going to be flushed. Rule 6
-        // asks refusals to be LOUD, not FATAL, so this prints and drops.
-        //
-        // The value is bound to a NAMED local and then read, so that the drop is a decision
-        // and not an oversight -- error_t is [[nodiscard]] and rule 14 forbids the (void)
-        // cast that would otherwise silence it. close() has already put the path and errno on
-        // stderr by the time control gets here; the line below adds the one fact close()
-        // cannot know, which is that nobody is going to act on it.
+        // A destructor can't propagate close()'s core::error_t upward (throwing here would
+        // terminate); print-and-drop is the loud-not-fatal option. Bound to a named
+        // local so [[nodiscard]] can't be silenced with a (void) cast.
         ~unix_file_handle_t() override {
             const core::error_t closed = unix_file_handle_t::close();
             if (closed.contains_error()) {
@@ -204,37 +176,26 @@ namespace core::filesystem {
     public:
         core::error_t close() override {
             if (fd == -1) {
-                // Already closed. Idempotent AND honest: there is no refusal to re-report, and
-                // answering io_error here would make every second close a lie.
+                // Already closed: no refusal to re-report, so a second close is not an error.
                 return core::error_t::no_error();
             }
-            // ::close CAN FAIL, and its failure is not cosmetic: on a write-back filesystem
-            // this is where a deferred write error (EIO) is finally reported, so a discarded
-            // return is a lost write reported as a clean close. That is why this returns
-            // core::error_t and no longer void -- see the note at the declaration in
-            // core/file/file_handle.hpp.
+            // ::close can fail (a deferred write-back EIO surfaces here), so a discarded
+            // return would report a lost write as a clean close -- see core/file/file_handle.hpp.
             const int rc = ::close(fd);
             const int err = errno; // read BEFORE anything else can overwrite it
 
-            // THE DESCRIPTOR IS RELEASED EITHER WAY, including on EINTR, and that is the one
-            // place this file deliberately clears state before knowing the call succeeded: on
-            // this platform (and on Linux) close() consumes the descriptor before it can
-            // report, so keeping fd set would invite a second close of a number the kernel may
-            // have already handed to another opener.
+            // fd is released regardless of the result, including on EINTR: close() consumes
+            // the descriptor before it can report, so a kept fd risks a double-close of a
+            // number the kernel may have already handed to another opener.
             fd = -1;
 
             if (rc == 0) {
                 return core::error_t::no_error();
             }
 
-            // BOTH HALVES OF THE REFUSAL, split by what can be carried where. The variable half
-            // -- which file, which errno -- goes to stderr, because the value cannot hold it:
-            // core::error_t's message is a std::pmr::string and this layer owns no arena to
-            // build one on (rule 14 leaves no process-global to borrow, and an arena owned by
-            // the handle would die before a caller could read the string). The value therefore
-            // carries the CODE with an empty message anchored on null_memory_resource, which
-            // allocates nothing by construction -- exactly what error_t::no_error() already
-            // does -- and the caller learns THAT the close was refused.
+            // Message goes to stderr, not the returned error_t: this layer owns no arena to
+            // build a std::pmr::string on (a handle-owned arena would die before the
+            // caller could read it). The value carries only the code, on null_memory_resource.
             std::fprintf(stderr,
                          "core::filesystem::unix_file_handle_t::close: closing '%s' failed (errno %d: %s); "
                          "data written to it may not have reached the device\n",
@@ -391,12 +352,8 @@ namespace core::filesystem {
             auto bytes_to_write = std::min<uint64_t>(uint64_t(std::numeric_limits<int32_t>::max()), uint64_t(nr_bytes));
             int64_t current_bytes_written = ::write(fd, buffer, bytes_to_write);
             if (current_bytes_written <= 0) {
-                // THE COUNT SURVIVES THE REFUSAL. write(2) short-counts before it refuses --
-                // a file-size rlimit, a filling volume and a signal all produce that shape --
-                // so answering with the refusing call's -1 would drop every byte the earlier
-                // iterations already put on the device and moved the descriptor past. The
-                // caller would be told "nothing", could not tell a stump from an untouched
-                // file, and so could neither truncate it nor rewind to it.
+                // bytes_written from earlier iterations survives the refusal -- otherwise the
+                // caller can't tell a partial write from an untouched file.
                 return write_result_t::refused(bytes_written);
             }
             bytes_written += static_cast<uint64_t>(current_bytes_written);
@@ -568,13 +525,8 @@ namespace core::filesystem {
     bool file_sync(local_file_system_t&, file_handle_t& handle) {
         int fd = reinterpret_cast<unix_file_handle_t&>(handle).fd;
 #if defined(__APPLE__)
-        // On Darwin fsync(2) only pushes dirty pages to the DRIVE, not through
-        // the drive's own write cache — after a crash the data is there, after a
-        // POWER LOSS it may not be. F_FULLFSYNC is the barrier that reaches the
-        // platter; every sync in this engine is a durability barrier (WAL,
-        // checkpoint root, bitcask segment), so anything less is a silent lie.
-        // No fsync fallback when it fails (rule 6): a filesystem that cannot
-        // give the barrier reports false and the caller decides, loudly.
+        // Darwin fsync(2) doesn't flush the drive's own write cache; F_FULLFSYNC does.
+        // No silent fallback on failure: caller decides.
         if (::fcntl(fd, F_FULLFSYNC) == -1) {
             return false;
         }

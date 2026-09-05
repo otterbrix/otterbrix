@@ -38,11 +38,9 @@ namespace components::operators {
     //
     // NULL handling: a key with any NULL column is SKIPPED (SQL UNIQUE treats NULLs
     // as distinct; PRIMARY KEY columns are NOT NULL, enforced upstream by
-    // operator_check_constraint). Every table column is IN the rows this reads — an
-    // INSERT that omitted one had it expanded to its DEFAULT (or to NULL) before the
-    // append — so the key is extracted from what was STORED. Assembling it from the
-    // plan's own copy of the default is how the uniqueness verdict comes to be about a
-    // value the write path never wrote. On the first duplicate it
+    // operator_check_constraint). Every table column is already IN the rows this reads (an omitted
+    // INSERT column was expanded to its DEFAULT/NULL before the append), so the key comes from what
+    // was STORED, not from the plan's own copy of the default. On the first duplicate it
     // sets a core::error_t — no silent dedup, no throw across the mailbox (R2/R9).
     class operator_unique_constraint_t final : public read_write_operator_t {
     public:

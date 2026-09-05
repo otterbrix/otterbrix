@@ -1015,12 +1015,9 @@ TEST_CASE("checkpoint_load: shared partial block survives reopen after table gro
     cleanup_test_file();
 }
 
-// Nested-column persistence: a LIST/ARRAY/STRUCT column keeps its payload in CHILD
-// column_data_t nodes (elements, fields) plus a validity bitmap, and the checkpoint has to
-// carry those too. Persist only the top-level segments and the reloaded table has typed
-// columns with EMPTY children — the child scan then asserts on a null segment
-// (state.current). These three cases pin the full data round-trip through checkpoint +
-// load_from_disk.
+// LIST/ARRAY/STRUCT payload lives in CHILD column_data_t nodes; persisting only the top-level
+// segments leaves the reload with typed columns but EMPTY children (child scan asserts on a null
+// segment).
 
 TEST_CASE("checkpoint_load: LIST column round-trips its child data") {
     using namespace components::table;
@@ -1274,15 +1271,9 @@ TEST_CASE("checkpoint_load: STRUCT column round-trips its fields") {
     cleanup_test_file();
 }
 
-// NULL validity must round-trip through checkpoint + load, across MULTIPLE row groups,
-// and the reload must leave every validity segment DISK-BACKED without allocating new
-// blocks. Two distinct defects are pinned here:
-//   1. the checkpoint never wrote the validity bitmap, so the reload manufactured an
-//      all-valid one — every NULL silently became a present zero/empty value;
-//   2. the manufactured bitmaps were written THROUGH to the data file on every load, so
-//      merely REOPENING a table allocated fresh blocks and grew the file each time.
-// With validity persisted, the reload registers the checkpointed blocks and allocates
-// nothing.
+// Regression: (1) checkpoint never wrote the validity bitmap, so reload manufactured an all-valid
+// one and every NULL silently became present; (2) the manufactured bitmap was written THROUGH on
+// every load, so merely reopening a table grew the file.
 TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new blocks") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -1291,8 +1282,7 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
     cleanup_test_file();
 
     test_env_t env;
-    // Three row groups (row group size == DEFAULT_VECTOR_CAPACITY == 1024): NULL bits must
-    // survive past the first vector and the first row group.
+    // 3 row groups (row group size == DEFAULT_VECTOR_CAPACITY == 1024).
     constexpr uint64_t NUM_ROWS = 3000;
     constexpr uint64_t NULL_STEP = 7;
     auto is_null_row = [](uint64_t row) { return row % NULL_STEP == 0; };
@@ -1359,8 +1349,7 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
         REQUIRE(!loaded_result.has_error());
         auto& loaded = loaded_result.value();
 
-        // Loading must REGISTER the persisted validity blocks, not manufacture + write
-        // through fresh ones: the block count is exactly what the checkpoint left.
+        // Must REGISTER persisted validity blocks, not manufacture + write through fresh ones.
         CHECK(bm.total_blocks() == blocks_after_checkpoint);
 
         uint64_t scanned = 0;
@@ -1391,13 +1380,10 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
     cleanup_test_file();
 }
 
-// compact() must preserve NULLs. Its rebuild scans the WHOLE table into ONE growing chunk
-// (collection_scan_state::scan loops row groups into the same result), and the validity
-// child's scan state never tracked the parent's result_offset: every vector's NULL bits
-// landed at chunk offset 0. The rebuilt table then held the union of ALL row groups' NULL
-// patterns folded into its first 1024 rows (bit = row mod 1024) and read every later row
-// as non-NULL — and since the disk agent compacts before every checkpoint, this is what
-// got persisted. Total NULL COUNT is preserved by the fold, which is what kept it silent.
+// Regression: the validity child's scan state never tracked the parent's result_offset during
+// compact's whole-table rebuild, so every vector's NULL bits landed at chunk offset 0 -- folding
+// all row groups' NULL patterns into the first 1024 rows (bit = row mod 1024) and reading every
+// later row as non-NULL. Total NULL count was preserved by the fold, which is what kept it silent.
 TEST_CASE("checkpoint_load: compact preserves NULL validity across row groups") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -1461,14 +1447,10 @@ TEST_CASE("checkpoint_load: compact preserves NULL validity across row groups") 
     cleanup_test_file();
 }
 
-// Same NULL round-trip, but appended in 100-ROW batches so appends CROSS row-group
-// boundaries mid-call (the SQL INSERT path appends per-statement chunks that almost never
-// align with the 1024-row group size). Pinned bug: an append that rolled into a fresh row
-// group kept writing NULL bits through the PREVIOUS group's validity buffer, so the live
-// disk table held a first-group bitmap with every later group's NULL pattern folded into
-// it (bit = row mod 1024) and all-valid bitmaps for the later groups — which is exactly
-// what the checkpoint then persisted. A 1024-aligned append (the test above) never hits
-// this.
+// 100-row batches (unlike the test above) so appends CROSS row-group boundaries mid-call, matching
+// the SQL INSERT path. Regression: an append rolling into a fresh row group kept writing NULL bits
+// through the PREVIOUS group's validity buffer, folding later groups' NULL pattern into the first
+// group's bitmap (bit = row mod 1024) and leaving later groups all-valid.
 TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -1480,8 +1462,8 @@ TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
     constexpr uint64_t NUM_ROWS = 3000;
     constexpr uint64_t BATCH = 100; // never aligned with the 1024-row group size
     constexpr uint64_t NULL_STEP = 100;
-    // Row `r` is NULL when (r + 1) is a multiple of 100 — matching the integration test's
-    // id % 100 == 0 pattern so the fold (row mod 1024) is observable and distinct per group.
+    // Matches integration/cpp/test/test_null_persistence.cpp's NULL_STEP so the fold
+    // (bit = row mod 1024) is observable and distinct per group.
     auto is_null_row = [](uint64_t row) { return (row + 1) % NULL_STEP == 0; };
 
     meta_block_pointer_t table_pointer;
@@ -1571,24 +1553,12 @@ TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
 
 // A LIST segment's RAW payload is one uint64 child-offset per row -- that is what the LIST legs of
 // append / fixed_size_scan / finalize_append write and read. complex_logical_type::size() for LIST
-// is sizeof(list_entry_t) == 16, twice that, so column_segment_t::type_size must NOT be taken from
-// it -- every raw-byte consumer would then take the wrong width:
-//
-//   * the checkpoint's CONSTANT/RLE/DICTIONARY analysis walks 16 bytes per row, i.e. TWICE the
-//     segment's real extent, folding whatever follows the offsets into the "values";
-//   * the compressed scan writes 16 bytes per row into the uint64 offset vector that
-//     list_column_data_t::scan_count sizes at 8 bytes per row -- an 8 KiB heap overrun per
-//     1024-row vector, reachable from a plain SELECT on any reloaded LIST column.
-//
-// Neither shows in the emitted BYTE STREAM, which round-trips: the first half lands on the offsets
-// correctly and only the run past the end of the buffer is wrong. It surfaces as a pmr-pool
-// "pointer being freed was not allocated" abort in the LIST round-trip case above, but only for
-// heap layouts where the trailing 8 KiB happens to cover pool metadata -- which is why it looks
-// like a flake.
-//
-// All-empty lists make every stored offset zero, so the checkpoint picks CONSTANT and the
-// persisted segment is exactly ONE stored element. That single number is the whole bug: 8 with the
-// correct physical width, 16 with the logical one.
+// is sizeof(list_entry_t) == 16, twice that -- so column_segment_t::type_size taken from it makes
+// the checkpoint's compression analysis walk 16 bytes/row (2x the real extent) and the compressed
+// scan write 16 bytes/row into the 8-byte-sized offset vector: an 8 KiB heap overrun per 1024-row
+// vector on a plain SELECT. Byte-exact-looking round-trip; surfaces as an intermittent pmr-pool
+// free-not-allocated abort only when the overrun happens to land on pool metadata. All-empty lists
+// make the checkpoint pick CONSTANT with segment_size == 8 (physical) vs. the buggy 16 (logical).
 TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element width") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -1605,8 +1575,7 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
     auto list_type = complex_logical_type::create_list(logical_type::UBIGINT);
     auto column = column_data_t::create_column(&env.resource, bm, 0, 0, list_type);
     {
-        // The append state must not outlive the checkpoint: checkpointing re-points still-
-        // managed child segments and drops the block_handle its pin refers to.
+        // Must not outlive the checkpoint: checkpointing drops the block_handle its pin refers to.
         column_append_state append_state;
         REQUIRE_FALSE(column->initialize_append(append_state).has_error());
 
@@ -1625,8 +1594,7 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
     REQUIRE_FALSE(persistent.has_error());
     REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());
 
-    // The LIST node's own data pointers are its offsets segments (its children are the
-    // validity bitmap and the element column).
+    // data_pointers is the LIST's own offsets segment; validity/elements are its children.
     REQUIRE(persistent.value().data_pointers.size() == 1);
     const auto& dp = persistent.value().data_pointers[0];
     REQUIRE(dp.tuple_count == NUM_ROWS);
@@ -1657,15 +1625,10 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
 }
 
 TEST_CASE("checkpoint_load: 4-byte CONSTANT segment must not misalign the segments packed after it") {
-    // Layout regression: the partial-block packer places segments back-to-back, and the
-    // resulting offset is PERSISTED in the data pointer, so it survives restart. An INT32
-    // column whose values are all identical flushes as a 4-byte CONSTANT segment; before the
-    // packer aligned placements, everything packed after it — this column's validity bitmap
-    // (read through uint64_t*) and the next column's UNCOMPRESSED BIGINT payload (handed to
-    // the result vector as a raw int64 pointer by fixed_size_scan) — sat at offset 4 mod 8.
-    // Scanning the reloaded table then performed misaligned uint64/int64 loads: undefined
-    // behaviour, observable under -fsanitize=alignment. This test is the sanitizer repro and
-    // the value-level round-trip check in one.
+    // Regression: before the partial-block packer aligned placements, a 4-byte CONSTANT segment
+    // (this INT32 column) pushed everything after it -- validity bitmap and the next BIGINT
+    // column -- to offset 4 mod 8, a persisted misalignment producing undefined uint64/int64 loads
+    // on scan (-fsanitize=alignment).
     using namespace components::table;
     using namespace components::table::storage;
     using namespace components::types;

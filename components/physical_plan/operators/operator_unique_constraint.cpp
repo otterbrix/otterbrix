@@ -78,11 +78,8 @@ namespace components::operators {
         // One constraint group at a time. Each group is an independent UNIQUE/PK
         // constraint; a violation in any group fails the whole write.
         for (const auto& group : unique_groups_) {
-            // AN EMPTY KEY COLUMN LIST ENFORCES NOTHING. Every row would carry the
-            // same zero-column key, so the group is either meaningless or its column
-            // list was lost on the way here. Skipping it is this operator's SUCCESS
-            // path, which is the one reading a declared key must never have. Same
-            // refusal, same reason, as operator_fk_check_t's `indices.empty()`.
+            // Empty key list enforces nothing; skipping (treating it as success) would let a declared
+            // UNIQUE/PK enforce nothing. Same refusal as operator_fk_check_t's indices.empty().
             if (group.empty()) {
                 set_error(core::error_t{
                     core::error_code_t::invalid_constraint,
@@ -90,23 +87,9 @@ namespace components::operators {
                 co_return;
             }
 
-            // EVERY KEY COLUMN MUST HAVE A POSITION IN THE WRITTEN ROW. The rows are MATERIALISED — an omitted
-            // column was expanded to its DEFAULT (or to NULL) before the append — so every key column of a table
-            // group is present and the key is read straight off the stored value.
-            //
-            // Skipping the group instead is this operator's SUCCESS path: the rows are ALREADY written when a
-            // constraint sink runs, so a skipped group leaves the duplicate in the table and reports success — the
-            // declared UNIQUE / PRIMARY KEY enforcing nothing. There is no reading of an absent column that is a
-            // uniqueness check, so refuse and name the column. This is the write-side half of the resolve-side
-            // guard in operator_resolve_constraint (which refuses a group whose attoids do not resolve instead of
-            // dropping it), and the exact shape of operator_fk_check_t's "referencing column has no position in
-            // the written row".
-            //
-            // The one route that could reach here through plain SQL is a dynamic-schema (relkind='g') table, whose
-            // columns live in pg_computed_column and are per-row rather than per-table; UNIQUE / PRIMARY KEY on
-            // such a table is refused at DDL (executor_t::execute_plan_full), and a group left over from a catalog
-            // written before that gate is refused one step earlier, at resolve. So this guard names no live SQL
-            // path — it is the floor under a write-set that disagrees with the catalog about the table's shape.
+            // Rows are materialised (an omitted column expands to its DEFAULT/NULL before append), so every
+            // key column has a position; skipping this group would be a silent success while the duplicate is
+            // already written. Write-side half of the resolve-side guard in operator_resolve_constraint.
             std::vector<uint64_t> sources;
             sources.reserve(group.size());
             for (const auto& col_name : group) {
@@ -121,10 +104,8 @@ namespace components::operators {
                 sources.push_back(col);
             }
 
-            // Materialize the group's key columns once per chunk: zero-copy REFERENCES
-            // of the stored columns. Every downstream layer (hash, NULL skip, verify,
-            // LAYER-2 key extraction) reads these key chunks, so col_ids is simply
-            // 0..k-1 over them.
+            // Materialize the group's key columns once per chunk as zero-copy references; col_ids is simply
+            // 0..k-1 over them since every downstream layer reads these key chunks.
             std::pmr::vector<types::complex_logical_type> key_types(resource_);
             key_types.reserve(sources.size());
             for (const auto src : sources) {
@@ -136,15 +117,9 @@ namespace components::operators {
                 const uint64_t n = chunk.size();
                 components::vector::data_chunk_t keys_chunk(resource_, key_types, n == 0 ? 1 : n);
                 for (std::size_t j = 0; j < sources.size(); ++j) {
-                    // EVERY CHUNK IS READ AT THE FRONT CHUNK'S POSITIONS, SO EVERY CHUNK MUST HAVE THE FRONT
-                    // CHUNK'S LAYOUT. "One DML — one schema" makes this a floor rather than a live path; without
-                    // it a disagreeing chunk is not refused but READ ANYWAY — a narrower chunk past the end of its
-                    // column array (chunk.data is a std::pmr::vector and operator[] does not check its bound), a
-                    // reordered one at the WRONG column, so the declared key deduplicates somebody else's values in
-                    // silence. Same per-chunk guard, same reason, as the parent-side width check in
-                    // operator_fk_cascade_t. Checked before reference() below — the largest ordinal this loop reads
-                    // — and the TYPE must match too: the key chunk is typed once from the front chunk, and
-                    // hash/cells_equal read the referenced buffer under that type.
+                    // Every chunk is read at the front chunk's positions, so every chunk must share its layout
+                    // and type — otherwise operator[] reads past the array's end or the wrong column, in silence.
+                    // Same per-chunk guard as operator_fk_cascade_t's width check.
                     if (sources[j] >= chunk.column_count() ||
                         chunk.data[sources[j]].type().alias() != group[j] ||
                         chunk.data[sources[j]].type() != key_types[j]) {
@@ -192,11 +167,8 @@ namespace components::operators {
                     // hash() takes column_ids by non-const ref; hand it a copy.
                     std::vector<uint64_t> hash_cols = col_ids;
                     chunk.hash(hash_cols, hash_vec);
-                    // data_chunk_t::hash returns a CONSTANT hash vector when every key
-                    // column it hashed is itself CONSTANT — only element 0 is written.
-                    // The per-row hashes[row] read below assumes FLAT, so broadcast it.
-                    // The write path materialises its fill columns FLAT, so this is a
-                    // guard on the vector kind rather than on any particular producer.
+                    // hash() returns a CONSTANT vector (only element 0 written) when every key column hashed
+                    // is itself CONSTANT; hashes[row] below assumes FLAT, so broadcast it.
                     if (hash_vec.get_vector_type() != components::vector::vector_type::FLAT) {
                         hash_vec.flatten(n);
                     }
@@ -245,27 +217,15 @@ namespace components::operators {
                 counts.push_back(chunk_count);
             }
 
-            // LAYER 2 — existing-row detection. After LAYER 1 every qualifying key is unique in the batch, so the
-            // just-written row contributes exactly one row to its key's scan result: a match count > 1 means a
-            // pre-existing distinct row.
-            //
-            // NO DISK ACTOR is TOPOLOGY: there is nobody to ask about stored rows, so the layer does not run and
-            // the within-batch guarantee above stands alone. That is how the operator's unit tests drive it.
+            // LAYER 2 — existing-row detection. After LAYER 1 every qualifying key is unique in the batch, so a
+            // match count > 1 means a pre-existing distinct row. No disk actor is topology (unit tests), not
+            // corruption — skip the layer.
             if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
                 continue;
             }
-            // AN UNRESOLVED TABLE OID IS NOT TOPOLOGY. The disk actor is right there and the operator would be
-            // declining to use it, which is this operator's SUCCESS path: the rows are ALREADY written when a
-            // constraint sink runs, so skipping the stored-row scan leaves a duplicate of a stored row in the
-            // table and reports success — the declared UNIQUE / PRIMARY KEY enforced nothing against anything
-            // already there. The two guards above refuse an empty key column list and a key column with no
-            // position in the written row for exactly that reason; an oid that never resolved is the same fact
-            // about the table instead of about the columns, so it is refused the same way.
-            //
-            // This names no live SQL path. Both splice sites (planner.cpp rewrite_insert / rewrite_update) pass
-            // the oid of the very node whose unique_groups came from catalog_resolves_t::constraints_for(table_oid),
-            // and that lookup returns nullptr for INVALID_OID — so a non-empty group list implies a resolved oid.
-            // It is the floor under a write-set that reached the sink without one.
+            // Unresolved oid is corruption, not topology — refuse rather than silently skip the stored-row
+            // scan. Both splice sites (planner.cpp rewrite_insert / rewrite_update) pass an oid from
+            // catalog_resolves_t::constraints_for, which never returns a non-empty group list for INVALID_OID.
             if (table_oid_ == catalog::INVALID_OID) {
                 set_error(core::error_t{
                     core::error_code_t::invalid_constraint,
@@ -275,12 +235,10 @@ namespace components::operators {
                 co_return;
             }
 
-            // STRADDLE-PACK all qualifying rows of the group (across input chunks) into keys chunks of EXACTLY
-            // DEFAULT_VECTOR_CAPACITY rows, then scan each packed chunk once. Total scans =
-            // ceil(total_qualifying / 1024), instead of one scan per input chunk (which under-fills every chunk
-            // and multiplies the mailbox round-trips on multi-chunk inserts). LAYER 1 has already made every
-            // qualifying key unique across the batch, so a key's scan-match count is never split by packing and
-            // the `> 1` threshold — "the just-written row plus a pre-existing distinct row" — still holds.
+            // STRADDLE-PACK all qualifying rows of the group into keys chunks of EXACTLY DEFAULT_VECTOR_CAPACITY
+            // rows, then scan each packed chunk once — ceil(total_qualifying / 1024) scans instead of one per
+            // input chunk (which under-fills chunks and multiplies mailbox round-trips). LAYER 1 already made
+            // every qualifying key unique across the batch, so repacking cannot split a key's scan-match count.
             uint64_t total_qualifying = 0;
             for (uint64_t q : counts) {
                 total_qualifying += q;

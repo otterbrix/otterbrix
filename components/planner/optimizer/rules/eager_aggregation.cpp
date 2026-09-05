@@ -59,10 +59,8 @@ namespace components::planner::optimizer {
         }
 
         ce::key_t local_key(std::pmr::memory_resource* resource, const ce::key_t& src, size_t local_idx) {
-            // `src` belongs to the node being rewritten; the result belongs to the NEW partial
-            // node this rule builds on `resource`. Place the copy there, so the name and the
-            // path below end up on one and the same arena — the rule's, which owns every node it
-            // makes.
+            // `src` belongs to the node being rewritten; the copy must land on `resource` (the
+            // rule's own arena) since the result belongs to the NEW partial node this rule builds.
             ce::key_t k{src, resource}; // copy storage (name) + flags onto `resource`
             std::pmr::vector<size_t> p{resource};
             p.push_back(local_idx);
@@ -267,9 +265,8 @@ namespace components::planner::optimizer {
             // otherwise the partial emits only its aggregates and the join probes a column that
             // is not there. Collected first, appended below the group_fields so the output order
             // is [keys..., join key, aggregates...], which key_partial_pos/agg_partial_pos assume.
-            // Staging only -- every element is copied into an expression on `resource` below --
-            // but the elements are placed on `resource` too, so no key in this rule's working
-            // set silently lands on the process default.
+            // Staging only (copied into an expression on `resource` below), but placed on
+            // `resource` too so nothing in this rule's working set lands on the process default.
             std::vector<ce::key_t> emitted_keys;
             for (size_t i = 0; i < keys.size(); ++i) {
                 const size_t local = key_merged[i] - base;

@@ -13,17 +13,14 @@
 using namespace components::types;
 
 namespace {
-    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
-    // path, and that message belongs to the caller, so the caller has to name an arena it owns
-    // rather than reach for the process-global one (rule 14).
+    // Not the process-global resource: create_decimal's refusal message needs a
+    // caller-owned arena.
     std::pmr::memory_resource* decimal_resource() {
         static core::pmr::otterbrix_resource arena;
         return &arena;
     }
 
-    // create_decimal reports an out-of-window (width, scale) through core::error_t. Every
-    // literal these tests use is inside the window, so the helper checks the result and
-    // hands back the type.
+    // Every literal these tests use is inside the window, so this asserts rather than propagates.
     components::types::complex_logical_type
     make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
         auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
@@ -34,9 +31,8 @@ namespace {
 
 namespace {
 
-    // Encode -> decode -> compare. Checks both operator== and (for the interesting types)
-    // targeted accessors, because operator== treats a GENERIC-extension type and an
-    // extension-less type as equal — the accessors prove the extension really came back.
+    // Also checked by targeted accessors below: operator== treats a GENERIC-extension type
+    // and an extension-less type as equal, so it alone can't prove the extension came back.
     complex_logical_type roundtrip(std::pmr::memory_resource* resource, const complex_logical_type& type) {
         std::pmr::vector<std::byte> spec(resource);
         auto encoded = encode_type_spec(type, spec);
@@ -419,11 +415,8 @@ TEST_CASE("types::type_spec_codec::encode_refuses_unpersistable_types") {
     }
 }
 
-// The write side must refuse EXACTLY the values the read side refuses. Every decode-side
-// rejection that is about a VALUE (rather than about a truncated or lying buffer) needs a
-// mirror here, because a value the encoder accepts and the decoder rejects is a file that
-// can be written and never read — and the read failure lands at startup, where no
-// statement is left to blame and no retry is possible.
+// A value the encoder accepts and the decoder rejects is a file written and never read
+// again, with the failure landing at startup, not at a statement that could be blamed.
 TEST_CASE("types::type_spec_codec::encode_refuses_what_decode_refuses") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -450,9 +443,8 @@ TEST_CASE("types::type_spec_codec::encode_refuses_what_decode_refuses") {
 
     INFO("nesting depth: the encoder stops where the decoder stops");
     {
-        // Build a LIST chain one level at a time and find the deepest type the ENCODER
-        // accepts. Whatever that depth is, the DECODER must accept the bytes it produced —
-        // and one level deeper must be refused by the encoder rather than written.
+        // Finds the deepest LIST chain the encoder accepts; the decoder must accept those
+        // exact bytes, and one level deeper must be refused by the encoder, not written.
         complex_logical_type nested{logical_type::BIGINT};
         unsigned deepest_encodable = 0;
         std::pmr::vector<std::byte> deepest_spec(&resource);

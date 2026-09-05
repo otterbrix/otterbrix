@@ -1,38 +1,13 @@
-// ============================================================================
-// A STATEMENT MUST NOT REPORT SUCCESS OVER WORK THAT WAS NEVER PARKED.
-//
-// manager_dispatcher_t::txn_accumulate_msg is the ONE door through which a
-// statement's finished work reaches the dispatcher-owned transaction_t: base
-// insert and delete ranges, the storage oids a CREATE brought up and a DROP
-// retired, pg_catalog row ranges, pg_attribute commit-id backfills. It answers
-// core::error_t and refuses with transaction_inactive when the session has no
-// transaction_t to park any of that on (dispatcher.cpp).
-//
-// Its two callers in the executor — the DML tail and the DDL tail of
-// execute_plan_full — used to `co_await std::move(acf);` without binding the
-// answer, so a refusal was invisible: they went on to run_commit_pipeline_,
-// which drained a transaction_t holding NOTHING, took the empty-COMMIT leg,
-// allocated no commit id and published nothing — while the cursor still said
-// success. Rows physically appended to the heap were never made visible.
-//
-// WHY THIS IS A SENTINEL AND NOT A DIRECT REPRODUCTION. The path is not named
-// from SQL: execute_plan_full opens every statement with txn_begin_session_msg,
-// whose begin_transaction is idempotent and always leaves an active txn behind,
-// and nothing on the INSERT / UPDATE / DELETE / SET TIMEZONE / VACUUM / DDL
-// routes ends that txn before the accumulate — the abort legs (txn_abort_msg,
-// the empty-COMMIT abort inside txn_commit_drain_msg, the dispatcher's failure
-// release) all run strictly after it.
-//
-// What this file pins instead is the INVARIANT the swallowed answer broke:
-//
-//     a statement reports success  <=>  its work is visible afterwards
-//
-// stated as an equality so BOTH directions fail loudly; the defect breaks
-// exactly one of them. Sensitivity proven by injection: making
-// txn_accumulate_msg refuse every payload carrying base appends turns the DML
-// case below red on the un-fixed tail and leaves the equality intact
-// (false <=> false) on the fixed one.
-// ============================================================================
+// txn_accumulate_msg is the only path for a statement's finished work (base appends/deletes,
+// oids, catalog rows) to reach the transaction; it refuses with transaction_inactive when
+// there's no active txn (dispatcher.cpp). Its two callers in execute_plan_full used to await
+// it without checking the result, so a refusal was silent: commit ran on an empty txn and
+// reported success while the work stayed invisible.
+// No SQL route reaches txn_accumulate_msg without an active txn (execute_plan_full always
+// begins one first), so this can't be reproduced directly. Instead it pins the invariant the
+// bug broke — success <=> visible, as an equality so either direction failing is caught — and
+// proves the equality is sensitive by injecting a forced refusal, which turns the DML case
+// red on the unfixed tail.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -51,8 +26,8 @@ namespace {
         return dispatcher->execute_sql(session, sql);
     }
 
-    // Rows a fresh session (fresh snapshot) can see — i.e. rows that were really
-    // published, not merely appended to the heap by an unparked statement.
+    // A fresh session/snapshot: distinguishes published rows from rows merely
+    // appended to the heap by an unparked statement.
     std::size_t visible_rows(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& table) {
         auto cur = test_helpers::exec(dispatcher, "SELECT * FROM " + table + ";");
         REQUIRE(cur->is_success());
@@ -71,9 +46,6 @@ TEST_CASE("integration::cpp::accumulate_refusal::a_successful_dml_statement_has_
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE AccDb;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE AccDb.t (id bigint, val bigint);")->is_success());
 
-    // Autocommit INSERT: the accumulate parks the append range and the implicit
-    // COMMIT right behind it publishes it. A refusal read by nobody leaves the
-    // rows on the heap and the cursor claiming three rows were inserted.
     {
         auto ins = test_helpers::exec(dispatcher, "INSERT INTO AccDb.t (id, val) VALUES (1, 10), (2, 20), (3, 30);");
         const bool reported_success = ins->is_success();
@@ -83,8 +55,7 @@ TEST_CASE("integration::cpp::accumulate_refusal::a_successful_dml_statement_has_
         REQUIRE(reported_success);
     }
 
-    // Autocommit UPDATE: parks an append range (the new version) AND a delete
-    // range (the old one).
+    // UPDATE parks both an append range (new version) and a delete range (old one).
     {
         auto upd = test_helpers::exec(dispatcher, "UPDATE AccDb.t SET val = 99 WHERE id = 2;");
         auto cur = test_helpers::exec(dispatcher, "SELECT * FROM AccDb.t WHERE val = 99;");
@@ -96,7 +67,6 @@ TEST_CASE("integration::cpp::accumulate_refusal::a_successful_dml_statement_has_
         REQUIRE(reported_success);
     }
 
-    // Autocommit DELETE: parks a delete range only.
     {
         auto del = test_helpers::exec(dispatcher, "DELETE FROM AccDb.t WHERE id = 3;");
         const bool reported_success = del->is_success();
@@ -117,9 +87,8 @@ TEST_CASE("integration::cpp::accumulate_refusal::an_explicit_transaction_publish
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE AccDb;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE AccDb.t (id bigint, val bigint);")->is_success());
 
-    // Inside BEGIN..COMMIT the accumulate is the ONLY channel: no implicit
-    // commit follows the statement, so a refused park means the COMMIT two
-    // statements later has nothing to publish and takes the empty-COMMIT leg.
+    // No implicit commit follows a statement here, so a refused park means the later
+    // COMMIT has nothing to publish and takes the empty-COMMIT leg.
     auto txn = otterbrix::session_id_t();
     REQUIRE(exec(dispatcher, txn, "BEGIN;")->is_success());
     auto ins = exec(dispatcher, txn, "INSERT INTO AccDb.t (id, val) VALUES (1, 10), (2, 20);");
@@ -142,10 +111,8 @@ TEST_CASE("integration::cpp::accumulate_refusal::a_successful_ddl_statement_has_
 
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE AccDb;")->is_success());
 
-    // The DDL tail ships pg_class / pg_attribute / pg_depend row ranges and the
-    // created storage oid through the same door. A refusal read by nobody leaves
-    // a CREATE TABLE claiming success over a catalog that does not describe the
-    // table, so the table is not there to be written.
+    // The DDL tail ships pg_class/pg_attribute/pg_depend rows and the created oid
+    // through the same door.
     {
         auto ddl = test_helpers::exec(dispatcher, "CREATE TABLE AccDb.t (id bigint, val bigint);");
         auto use = test_helpers::exec(dispatcher, "INSERT INTO AccDb.t (id, val) VALUES (1, 10);");
@@ -155,15 +122,10 @@ TEST_CASE("integration::cpp::accumulate_refusal::a_successful_ddl_statement_has_
         REQUIRE(reported_success);
     }
 
-    // CREATE INDEX rides the same tail and additionally parks a created_index.
-    // Here the invariant is not an equality but an unconditional one, because a
-    // table without an index still answers a point lookup by scanning: WHATEVER
-    // the CREATE INDEX ends up reporting, the row must remain findable. A
-    // CREATE INDEX whose ranges were never parked leaves its engine registered
-    // with manager_index_t holding entries that were never committed; that
-    // engine then captures the lookup and answers it EMPTY, so the statement
-    // does not merely fail to build an index — it takes rows away from later
-    // readers of a table it never touched.
+    // Invariant here is unconditional, not an equality: a table without an index still
+    // scans, so the row must stay findable regardless of what CREATE INDEX reports. If its
+    // ranges were never parked, manager_index_t's engine registers anyway and then captures
+    // the lookup, answering it empty instead of falling back to a scan.
     {
         auto ddl = test_helpers::exec(dispatcher, "CREATE INDEX idx_acc ON AccDb.t (id);");
         auto use = test_helpers::exec(dispatcher, "SELECT * FROM AccDb.t WHERE id = 1;");

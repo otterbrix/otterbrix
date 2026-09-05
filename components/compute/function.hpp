@@ -89,9 +89,8 @@ namespace components::compute {
         virtual size_t num_kernels() const = 0;
         virtual void accept_visitor(function_visitor& visitor) const = 0;
 
-        // `ctx` is not optional and has no default: it names the memory resource everything
-        // below allocates from. See the note over exec_context_t in kernel_utils.hpp for what
-        // a default would cost.
+        // `ctx` is not optional: it names the memory resource everything below allocates
+        // from. See the note over exec_context_t in kernel_utils.hpp for the cost of a default.
         virtual core::result_wrapper_t<datum_t>
         execute(const vector::data_chunk_t& args, const function_options* options, exec_context_t& ctx) const;
 
@@ -105,13 +104,10 @@ namespace components::compute {
         dispatch_exact(std::pmr::memory_resource* resource,
                        const std::pmr::vector<types::complex_logical_type>& types) const;
 
-        // BY REFERENCE, and the reference is what matters: the by-value parameter this
-        // replaced was copy-constructed from the caller's lvalue, and a std::pmr::vector copy
-        // does NOT inherit the source's allocator -- select_on_container_copy_construction
-        // hands back a default-constructed polymorphic_allocator, i.e. the process-global
-        // default resource. One 16-byte allocation per execute() landed there even after the
-        // defaulted exec_context_t was gone, and the value was never read: the body ignores
-        // this argument entirely.
+        // BY REFERENCE: the by-value parameter this replaced was copy-constructed from the
+        // caller's lvalue, and std::pmr::vector copy does NOT inherit the source's allocator
+        // (select_on_container_copy_construction returns the default resource) -- a stray
+        // allocation on the process-global resource, for an argument the body never reads.
         virtual core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
         get_best_executor(std::pmr::memory_resource* resource,
                           const std::pmr::vector<types::complex_logical_type>& types) const;
@@ -292,17 +288,9 @@ namespace components::compute {
         // cross-registry stable.
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function_with_uid(function_uid uid,
                                                                                  function_ptr function);
-        // Register one BUILTIN. uids are REGISTRATION ORDER, so the uid this
-        // insert lands on must be exactly the DEFAULT_FUNCTIONS row bearing the
-        // function's name: one missed, extra or misordered registration would
-        // silently SHIFT the whole table and every later lookup would run the
-        // WRONG function. On any failure — a refused add, a name absent from
-        // DEFAULT_FUNCTIONS, a uid mismatch — the registry poisons itself: the
-        // first error is recorded, every function is dropped, and every further
-        // add refuses with that error. A broken builtin table serves NOTHING
-        // (loud "function not found" at every lookup) instead of the wrong
-        // function. The recorded error is the refusal channel of builtin
-        // registration: builtin_registration_error().
+        // Registration order must match the function's DEFAULT_FUNCTIONS row exactly: a
+        // missed/misordered add would otherwise SHIFT the uid table and serve the WRONG
+        // function silently. Any mismatch poisons the whole registry instead (poison_builtins_).
         void add_builtin(function_ptr function);
         // no_error() when builtin registration succeeded (or has not run).
         [[nodiscard]] const core::error_t& builtin_registration_error() const noexcept;
@@ -352,15 +340,12 @@ namespace components::compute {
         std::pair<std::string, function_uid>{"cbrt", 13},
         std::pair<std::string, function_uid>{"factorial", 14}};
 
-    // Register the whole builtin set. Every insert goes through
-    // function_registry_t::add_builtin, which pins each function to its
-    // DEFAULT_FUNCTIONS uid and poisons the registry on any mismatch — so a
-    // missed or reordered registration can no longer shift the uid table
-    // silently; interrogate builtin_registration_error() for the outcome.
+    // Every insert goes through add_builtin, which pins uids to DEFAULT_FUNCTIONS and
+    // poisons the registry on mismatch; check builtin_registration_error() for the outcome.
     void register_default_functions(function_registry_t& registry);
-    // ORDERED STAGES of register_default_functions — never call standalone: on
-    // a fresh registry a stage's functions would land below their table uids
-    // and the add_builtin check would poison the registry.
+    // ORDERED STAGES of register_default_functions -- never call standalone: on a fresh
+    // registry a stage's functions would land below their DEFAULT_FUNCTIONS uids and
+    // add_builtin would poison the registry.
     void register_string_functions(function_registry_t& registry);
     void register_expand_functions(function_registry_t& registry);
     void register_math_functions(function_registry_t& registry);

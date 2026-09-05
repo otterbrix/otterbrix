@@ -43,13 +43,9 @@ namespace services::wal {
             }
 
             auto db_name = entry.path().filename().string();
-            // THE SAME classification the manager's startup scan applies
-            // (parse_database_dir_name, base.hpp). Replay must not walk EVERY
-            // directory: a foreign-named one would be replayed in full while the
-            // manager refuses to manage it, and the wal ids it carries never bound
-            // the id allocator — next_wal_id() could then reissue ids UNDER records
-            // this replay had already applied. Foreign content is skipped LOUDLY
-            // here exactly as it is there; the two walks must never disagree.
+            // Same classification as the manager's startup scan (parse_database_dir_name,
+            // base.hpp) — the two walks must never disagree, or a foreign-named directory
+            // could be replayed while its wal ids never bounded the id allocator.
             components::catalog::oid_t db_oid;
             if (!parse_database_dir_name(db_name, db_oid)) {
                 warn(log_,
@@ -111,13 +107,11 @@ namespace services::wal {
         for (const auto& seg_path : segments) {
             wal_page_reader_t reader(resource_, seg_path);
 
-            // AN UNOPENABLE SEGMENT IS NOT THE SAME FAILURE AS A BROKEN CRC CHAIN, and only
-            // the second one is survivable here. A CRC break still yields every record before
-            // the break, so the STOP-A below truncates the replay at a known point and what
-            // came earlier is complete. A segment that never opened yields NOTHING, and the
-            // segments after it open fine — so continuing would replay a range with a HOLE in
-            // the middle: rows whose earlier deletes/updates were never applied. Refuse and
-            // let the caller decide; base_spaces.cpp declines to start.
+            // An unopenable segment is not survivable like a CRC break: a CRC break still yields
+            // every record before it (STOP-A truncates at a known point), but an unopened segment
+            // yields NOTHING while later segments open fine, so continuing would replay a range
+            // with a HOLE in the middle. Refuse and let the caller decide (base_spaces.cpp declines
+            // to start).
             if (!reader.is_open()) {
                 error(log_,
                       "wal_reader , segment '{}' could not be opened , replay refuses rather than coming up "
@@ -130,13 +124,10 @@ namespace services::wal {
             // Verify CRC chain. read_all_records will still return valid records up to the
             // corruption point (STOP-A).
             //
-            // THE TWO CASES ARE NOT THE SAME EVENT AND MUST NOT SHARE A LOG LINE. A break
-            // with nothing verifiable behind it is the ordinary crash-torn tail: replay ends
-            // where the writer did and loses no whole page. A break with pages still
-            // verifying past it means COMMITTED TRANSACTIONS SIT BEYOND THE POINT REPLAY WILL
-            // REACH — they are not re-applied, and no amount of restarting changes that until
-            // the segment is repaired or restored. That is the one thing a reader of this log
-            // has to be told, and it is told at error level.
+            // Two different events, logged differently: a break with nothing verifiable past it
+            // is the ordinary crash-torn tail (replay loses no whole page), but pages still
+            // verifying past the break mean committed transactions sit beyond where replay
+            // reaches, and stay that way until the segment is repaired — logged at error level.
             const auto scan = reader.scan_pages();
             const bool chain_ok = scan.chain_intact;
             if (!chain_ok && scan.verified_pages_after_break > 0) {
@@ -171,27 +162,16 @@ namespace services::wal {
             }
         }
 
-        // Keep only records belonging to committed transactions. The rule is the SHARED
-        // filter (filter_committed_records, wal.hpp) that wal_worker_t::load also applies — a
-        // second, independently written copy of it here drifts into testing membership in an
-        // unordered set of committed txn ids. Txn ids are recycled across restarts, so that
-        // test promotes uncommitted records of the CURRENT incarnation on the strength of a
-        // COMMIT marker from a PREVIOUS one.
+        // Uses the SHARED filter (filter_committed_records, wal.hpp) that wal_worker_t::load also
+        // applies: an independent copy here would test membership by txn id, which is recycled
+        // across restarts and would promote uncommitted records under a stale marker.
         auto committed = filter_committed_records(std::move(all_records), nullptr);
 
-        // AND THE EXPORT IS TAKEN FROM THE FILTERED RESULT, NOT FROM THE FILTER'S OWN
-        // committed_out. That parameter answers in TXN IDS, and a txn id cannot identify a
-        // transaction across a restart — the index txn-log recover gate that consumes this set
-        // was applying frames of the CURRENT incarnation's uncommitted transactions on the
-        // strength of a marker an EARLIER one wrote under the recycled id. So nullptr is passed
-        // above and the COMMIT IDS are read off the markers here: filter_committed_records keeps
-        // every valid COMMIT marker in its result, and a marker's commit_id is issued at most
-        // once in the life of the database (restore_commit_clock re-derives the clock from the
-        // durable frontier at every reopen, unlike next_transaction_id_).
-        //
-        // ZERO IS NOT A COMMIT ID — the clock starts at 1 — so a marker carrying zero says
-        // nothing about any transaction and is not exported; the gate refuses a zero-stamped
-        // frame on its own side as well, so neither half depends on the other for it.
+        // Export is taken from the filtered result, not the filter's own committed_out param:
+        // that param answers in TXN IDS, which are recycled across restarts and so cannot
+        // identify a transaction durably. nullptr is passed above instead, and COMMIT IDS are
+        // read off the markers here — a commit_id is issued at most once in the database's life.
+        // Zero is not a commit id (the clock starts at 1), so a zero-stamped marker is not exported.
         if (committed_out != nullptr) {
             for (const auto& r : committed) {
                 if (r.is_commit_marker() && r.commit_id != 0) {

@@ -1,13 +1,9 @@
-// The big-string (>= DEFAULT_STRING_BLOCK_LIMIT = 4096 bytes) overflow path. The zone had no
-// coverage at all (the longest string anywhere else in the repo is 199 chars), and it is the
-// one place where a dictionary slot does not hold the value itself but a MARKER naming another
-// block. Two things have to hold together and both are pinned here:
-//   * the marker's dictionary reservation must match what write_string_marker writes
-//     (BIG_STRING_MARKER_BASE_SIZE, uint64 + int64) — a smaller reservation has the first big
-//     string overrun it and every next one overwrite the previous entry;
-//   * the block id in a marker must be read back in the domain it was written in. A TRANSIENT
-//     id (>= MAXIMUM_BLOCK) truncated to 32 bits resolves as a REAL file block on the wrong
-//     manager.
+// Big-string (>= DEFAULT_STRING_BLOCK_LIMIT = 4096 bytes) overflow path: a dictionary slot
+// holds a MARKER naming another block, not the value itself. Pins two invariants: the
+// marker's dictionary reservation must match write_string_marker (BIG_STRING_MARKER_BASE_SIZE,
+// uint64 + int64), and a marker's block id must be read back in the domain it was written in —
+// a TRANSIENT id (>= MAXIMUM_BLOCK) truncated to 32 bits resolves as a REAL file block on the
+// wrong manager.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_data.hpp>
@@ -126,19 +122,16 @@ TEST_CASE("big_strings: two big strings in one segment do not overwrite each oth
 
         auto values = scan_strings(*table, 10);
         REQUIRE(values.size() == 2);
-        CHECK(values[0] == first);  // a second marker must not overwrite the first entry
+        CHECK(values[0] == first);
         CHECK(values[1] == second);
     }
     cleanup_bigstr_file();
 }
 
-// The two cases above read the table while it is STILL IN MEMORY, so they pin only half the
-// path. This one takes a big string through a real checkpoint and a real reload.
-//
-// What it guards: write_string_memory puts the payload in a TRANSIENT block that dies with
-// the process. Copying the segment block verbatim at checkpoint time persists the marker but
-// not the block it names, so a reload builds a FRESH segment state with no overflow block to
-// resolve against and the value is unreadable.
+// Takes a big string through a real checkpoint + reload (the two cases above only exercise
+// the in-memory path). Guards against: write_string_memory's payload lives in a TRANSIENT
+// block; if checkpoint copied the segment verbatim without persisting that block, reload
+// would build a fresh segment with nothing to resolve the marker against.
 TEST_CASE("big_strings: a >=4096-byte string survives checkpoint and reload") {
     using namespace components::table::storage;
     cleanup_bigstr_file();
@@ -158,7 +151,7 @@ TEST_CASE("big_strings: a >=4096-byte string survives checkpoint and reload") {
 
         append_string_rows(*table, env, {big, small});
 
-        // Sanity before the checkpoint: in memory it is already correct today.
+        // Sanity before the checkpoint.
         auto pre = scan_strings(*table, 10);
         REQUIRE(pre.size() == 2);
         REQUIRE(pre[0] == big);
@@ -193,11 +186,10 @@ TEST_CASE("big_strings: a >=4096-byte string survives checkpoint and reload") {
 }
 
 // ---------------------------------------------------------------------------------------
-// The checkpoint moves the overflow PAYLOAD into real file blocks, records
-// their ids in data_pointer_t::overflow_blocks, and rewrites every dictionary marker out of
-// the transient id domain (>= storage::MAXIMUM_BLOCK) into the on-disk one. The reload path
-// registers those blocks on the segment, so a marker resolves on the first read. The cases
-// below pin that round trip, the reclaim path, and the error channel that replaced the abort.
+// Checkpoint moves overflow PAYLOAD into real file blocks, records their ids in
+// data_pointer_t::overflow_blocks, and rewrites dictionary markers into the on-disk domain;
+// reload registers those blocks so a marker resolves on first read. Cases below pin that
+// round trip, the reclaim path, and the error channel that replaced the abort.
 // ---------------------------------------------------------------------------------------
 
 namespace {
@@ -324,10 +316,8 @@ TEST_CASE("big_strings: a big string past the first row group survives checkpoin
     cleanup_bigstr_file();
     bigstr_env_t env;
 
-    // Row group size == DEFAULT_VECTOR_CAPACITY == 1024, so rows 1024+ live in the SECOND row
-    // group and rows 2048+ in the third. This branch has a documented history of bugs that
-    // only appear past the first vector, so the big strings sit there on purpose: the first
-    // row group holds none at all.
+    // Row group size == DEFAULT_VECTOR_CAPACITY == 1024, so rows 1024+ land in the second row
+    // group, 2048+ in the third; big strings placed there on purpose, none in the first group.
     constexpr uint64_t NUM_ROWS = 2600;
     constexpr uint64_t ROW_SECOND = 1500;
     constexpr uint64_t ROW_THIRD = 2500;
@@ -378,10 +368,9 @@ TEST_CASE("big_strings: big and small strings interleaved with NULLs survive che
     cleanup_bigstr_file();
     bigstr_env_t env;
 
-    // The interleaving matters: a NULL row copies the PREVIOUS row's dictionary offset
-    // verbatim, so a NULL that follows a big string names the very same overflow marker. The
-    // checkpoint must not rewrite that marker twice (the second pass would re-resolve an
-    // already-rewritten id), and the reload must still report the row as NULL.
+    // NULL copies the PREVIOUS row's dictionary offset verbatim, so a NULL right after a big
+    // string names the very same overflow marker — checkpoint must not rewrite it twice (a
+    // second pass would re-resolve an already-rewritten id), and reload must still show NULL.
     std::vector<maybe_string> values;
     values.emplace_back(std::string("small-0"));
     values.emplace_back(std::string(4500, 'A'));
@@ -442,8 +431,8 @@ TEST_CASE("big_strings: reopening a table with big strings allocates no new bloc
         REQUIRE(!loaded_result.has_error());
         auto& loaded = loaded_result.value();
 
-        // Registering the persisted overflow blocks must REVIVE existing file blocks, never
-        // take fresh ones off the free list: the count is exactly what the checkpoint left.
+        // Registering persisted overflow blocks must REVIVE existing file blocks, never take
+        // fresh ones off the free list — count must equal what the checkpoint left.
         CHECK(bm.total_blocks() == written.blocks_after_checkpoint);
 
         auto read_back = scan_maybe_strings(*loaded, values.size());
@@ -462,21 +451,19 @@ TEST_CASE("big_strings: reopening a table with big strings allocates no new bloc
 
 namespace {
 
-    // Builds a one-column STRING column_data_t and appends `values` to it in a single chunk.
-    // Working one level below data_table_t is what makes the two cases below possible at all:
-    // they need the column_segment_t itself (to corrupt a marker) and the persistent record
-    // (to check what the checkpoint wrote down).
+    // Builds a one-column STRING column_data_t directly — the two cases below need the
+    // column_segment_t itself (to corrupt a marker) and the persistent record (to check what
+    // the checkpoint wrote).
     std::pmr::vector<complex_logical_type> string_column_types(std::pmr::memory_resource* resource) {
         std::pmr::vector<complex_logical_type> types(resource);
         types.emplace_back(logical_type::STRING_LITERAL);
         return types;
     }
 
-    // Overwrites the block id named by the single big-string marker of `segment`. The layout
-    // asserted here is exactly what string_append writes: [uint32 dict_size][uint32 dict_end]
-    // at the segment start, and the 16-byte (uint64 block id, int64 offset) marker packed at
-    // dict_end - dict_size. The REQUIREs make a layout change fail loudly instead of letting
-    // the test silently patch unrelated bytes.
+    // Overwrites the block id named by `segment`'s one big-string marker. Layout mirrors
+    // string_append exactly: [uint32 dict_size][uint32 dict_end] at segment start, 16-byte
+    // (uint64 block id, int64 offset) marker at dict_end - dict_size. The REQUIREs make a
+    // layout change fail loudly instead of silently patching unrelated bytes.
     void overwrite_only_overflow_marker(bigstr_env_t& env,
                                         column_segment_t& segment,
                                         uint64_t new_block_id,
@@ -502,10 +489,9 @@ namespace {
 
 } // namespace
 
-// The failure path, proved rather than asserted in a comment. A marker resolve_overflow_block
-// cannot resolve must report through the fetch/scan error channel and leave the process
-// standing: an abort there is reachable from a plain SELECT, NDEBUG included, so a single bad
-// byte in one dictionary would make the whole database impossible to open.
+// A marker resolve_overflow_block can't resolve must report through the fetch/scan error
+// channel, not abort: an abort here is reachable from a plain SELECT (NDEBUG included), so
+// one bad dictionary byte would make the whole database unopenable.
 TEST_CASE("big_strings: an unresolvable overflow block reports an error and does not abort") {
     bigstr_env_t env;
     tstorage::transient_block_manager_t block_manager(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -537,9 +523,8 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
         REQUIRE(cell.value<std::string_view>() == big);
     }
 
-    // 2^62 + k is the TRANSIENT domain -- the exact shape of the id in the original crash
-    // report (4611686018427387909 == 2^62 + 5). 4242 is the on-disk domain. Both must be
-    // reported, neither may abort.
+    // 2^62 + k is the TRANSIENT domain (matches an actual crash report: 4611686018427387909 ==
+    // 2^62 + 5); 4242 is on-disk. Both must be reported, neither may abort.
     const uint64_t bogus_transient = tstorage::MAXIMUM_BLOCK + 424242;
     const uint64_t bogus_on_disk = 4242;
 
@@ -586,28 +571,27 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
     }
 }
 
-// Blocks must be RECLAIMED. data_table_t::compact frees the old collection's disk blocks via
-// collect_disk_block_ids; if the big-string overflow blocks are not reported there, the file
-// grows by the whole payload on every compact round, forever.
+// Overflow blocks must be RECLAIMED: data_table_t::compact frees old blocks via
+// collect_disk_block_ids — if they aren't reported there, the file grows by the whole payload
+// on every compact round, forever.
 TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compact reclaim") {
     cleanup_bigstr_file();
     bigstr_env_t env;
     tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, bigstr_db_path());
     REQUIRE(!bm.create_new_database().has_error());
 
-    // The 220 000-byte value matters: its [uint32 length][bytes] record is above the
-    // partial_block_manager's 0.8-of-a-block threshold, so it gets a DEDICATED overflow block
-    // that no segment lives in. Without that, a small overflow record can land in the same
-    // packed block as the validity segment, and collect_disk_block_ids would report the id
-    // through the segment leg -- the test would pass while the overflow leg did nothing.
+    // 220 000 bytes is above partial_block_manager's 0.8-of-a-block threshold, so it gets a
+    // DEDICATED overflow block no segment lives in — otherwise a small overflow record can
+    // share a packed block with the validity segment, and collect_disk_block_ids would report
+    // the id through the segment leg while the overflow leg does nothing.
     std::vector<std::string> values{std::string(220000, 'm'), std::string("small"), std::string(7000, 'n')};
 
     auto column =
         column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::STRING_LITERAL});
     {
-        // The append state must be gone before the checkpoint: checkpointing re-points the
-        // still-managed validity segment to disk, which drops the block_handle the append
-        // state's pin refers to (documented in column_data_t::transition_segment_to_disk).
+        // Append state must be gone before the checkpoint: checkpointing re-points the
+        // still-managed validity segment to disk, dropping the block_handle the append
+        // state's pin refers to (see column_data_t::transition_segment_to_disk).
         column_append_state append_state;
         REQUIRE_FALSE(column->initialize_append(append_state).has_error());
 
@@ -635,8 +619,7 @@ TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compa
     REQUIRE_FALSE(recorded.empty());
     for (uint64_t id : recorded) {
         INFO("overflow block " << id);
-        // The marker's id domain is unambiguous: a persisted overflow id is a REAL file block,
-        // never a transient one.
+        // A persisted overflow id is always a REAL file block, never a transient one.
         CHECK(id < tstorage::MAXIMUM_BLOCK);
     }
 
@@ -661,11 +644,10 @@ TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compa
         }
     }
 
-    // The reloaded overflow blocks must behave like every other packed block: DISK-BACKED
-    // (reloadable) and unpinned once the read is done, so the pool can evict and re-read
-    // them. A managed or permanently pinned overflow block would trade the correctness bug
-    // for pool exhaustion. register_block dedupes through the weak registry, so this hands
-    // back the very handle the segment state holds.
+    // Reloaded overflow blocks must be DISK-BACKED and unpinned once read, so the pool can
+    // evict and re-read them — a managed/pinned overflow block would trade the correctness
+    // bug for pool exhaustion. register_block dedupes through the weak registry, so this
+    // returns the same handle the segment state holds.
     for (uint64_t id : recorded) {
         INFO("overflow block " << id);
         auto handle = bm.register_block(id);
@@ -686,16 +668,12 @@ TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compa
 
 // compact() must fail LOUDLY on a scan error — never truncate.
 //
-// The rebuild loop tested only chunk.size() == 0, never
-// state.table_state.has_error(). collection_scan_state::scan sets
-// row_group = nullptr and returns false on error, so the loop saw an "empty"
-// chunk, broke, swapped the TRUNCATED collection in, and then mark_as_free +
-// unregister_block recycled every disk block of the old collection. The rows
-// were gone and their blocks handed out again — reachable on an UNCORRUPTED
-// database too, because initialize_scan's buffer-pool OOM lands in the same
-// unchecked channel. This case injects the error via a corrupted overflow
-// marker (post-checkpoint, so the table is DISK-backed and the reclaim leg is
-// live) and pins: compact reports failure, no row is lost, no block is freed.
+// The rebuild loop only checked chunk.size() == 0, not state.table_state.has_error() (a scan
+// error also yields an "empty" chunk from collection_scan_state::scan), so it swapped in the
+// TRUNCATED collection and freed the old collection's blocks — rows lost, blocks reused.
+// Reachable on an uncorrupted DB too, via a buffer-pool OOM in the same unchecked channel.
+// This case triggers it via a corrupted overflow marker post-checkpoint (disk-backed, reclaim
+// leg live) and checks: compact fails, no row lost, no block freed.
 // ---------------------------------------------------------------------------------------
 
 TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no blocks") {
@@ -711,9 +689,8 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
     columns.emplace_back("payload", logical_type::STRING_LITERAL);
     auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "compact_loud");
 
-    // Append ONE big-string row, keeping the payload segment pointer for the
-    // marker surgery below (the segment object lives in the column's tree; the
-    // append state itself is scoped out before the checkpoint re-points blocks).
+    // Append ONE big-string row, keeping the payload segment pointer for the marker surgery
+    // below — the append state itself is scoped out before the checkpoint re-points blocks.
     column_segment_t* payload_segment = nullptr;
     {
         auto types = table->copy_types();
@@ -731,8 +708,8 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
         table->finalize_append(state, transaction_data{0, 0});
     }
 
-    // Checkpoint: the payload moves into real file blocks and the marker is
-    // rewritten into the on-disk domain — compact's reclaim leg is now live.
+    // Checkpoint: payload moves into real file blocks, marker rewritten to the on-disk
+    // domain — compact's reclaim leg is now live.
     {
         tstorage::metadata_manager_t meta_mgr(bm);
         tstorage::metadata_writer_t writer(meta_mgr);
@@ -749,10 +726,9 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
         REQUIRE(values[0] == big);
     }
 
-    // Corrupt the marker so the compact rebuild scan fails. The LIVE segment is
-    // still managed after the checkpoint (write-through re-points only COMPLETE
-    // segments; this one holds a single row), so the live marker is still in
-    // the transient domain — name an unregistered transient block.
+    // Corrupt the marker so the rebuild scan fails. The live segment (a single row, so not
+    // write-through re-pointed) is still in the transient domain — name an unregistered
+    // transient block.
     overwrite_only_overflow_marker(env,
                                    *payload_segment,
                                    /*new_block_id=*/tstorage::MAXIMUM_BLOCK + 424242,
@@ -777,12 +753,10 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
 
 // column_data_t::update must not discard the pre-image read error.
 //
-// update() fetches the row's PRIOR version into base_vector and hands it to
-// update_internal as the version-chain pre-image. state.scan_error was never
-// checked, so a failed big-string read (corrupt overflow marker, buffer-pool
-// OOM) recorded an EMPTY string as the row's prior version: a rollback or an
-// older snapshot then materialises "" where the big string was. The update
-// must surface the fetch error instead of committing a poisoned pre-image.
+// update() fetches the row's PRIOR version into base_vector for update_internal, but never
+// checked state.scan_error — a failed big-string read (corrupt marker, buffer-pool OOM)
+// recorded an EMPTY string as the prior version, so a rollback/older snapshot would
+// materialise "" where the big string was. Must surface the fetch error instead.
 // ---------------------------------------------------------------------------------------
 
 TEST_CASE("big_strings: update surfaces a failed pre-image read instead of recording ''") {
@@ -818,20 +792,16 @@ TEST_CASE("big_strings: update surfaces a failed pre-image read instead of recor
     REQUIRE(update_r.error().type == core::error_code_t::data_corruption);
 }
 
-// A duplicated overflow id in the PERSISTED list is corruption, and it must reach the load's
-// error channel.
+// A duplicated overflow id in the PERSISTED list is corruption and must reach the load's
+// error channel: uncompressed_string_segment_state::register_block answers false on a
+// duplicate, but its only caller (the column_segment_t reload constructor) used to drop that
+// answer on the floor. The writer dedupes (persist_string_overflow), so a duplicate here means
+// a corrupt stream; accepting it silently would make on_disk_blocks disagree with the file,
+// so collect_disk_block_ids (compact's reclaim) reports the wrong set.
 //
-// uncompressed_string_segment_state::register_block answers false when the same block id is
-// offered twice, and its only caller -- the column_segment_t reload constructor -- dropped the
-// answer on the floor. The writer never emits a duplicate (persist_string_overflow dedupes
-// out_blocks), so seeing one means the metadata stream is corrupt; silently accepting it means
-// on_disk_blocks disagrees with what the file says the segment owns, and collect_disk_block_ids
-// -- which drives compact's reclaim -- reports the wrong set.
-//
-// This branch is REACHABLE because shadow paging genuinely reuses block ids, so a stale
-// or crossed pointer stream can name one twice. It runs on the agent thread inside the
-// checkpoint/open coroutine, where a throw is fatal (rules 2/9), so the answer is latched on
-// the segment and reported by column_data_t::initialize_column, which already returns a
+// Reachable in practice: shadow paging reuses block ids, so a stale/crossed pointer stream can
+// name one twice. Runs inside the checkpoint/open coroutine where a throw is fatal (rules
+// 2/9), so the answer is latched and reported via column_data_t::initialize_column's
 // result_wrapper_t.
 TEST_CASE("big_strings: a duplicated persisted overflow block is data_corruption, not silence") {
     cleanup_bigstr_file();
@@ -860,18 +830,16 @@ TEST_CASE("big_strings: a duplicated persisted overflow block is data_corruption
     REQUIRE_FALSE(persistent.has_error());
     REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());
 
-    // A clean reload of the untouched pointer set must still work -- the guard is about
-    // DUPLICATES, not about overflow lists in general.
+    // A clean reload must still work — the guard is about DUPLICATES, not overflow lists.
     {
         auto clean =
             column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::STRING_LITERAL});
         REQUIRE_FALSE(clean->initialize_column(persistent.value()).has_error());
     }
 
-    // Now corrupt the stream the way a crossed/stale pointer would: the same overflow block
-    // named twice for one segment. Mutated in place -- persistent_column_data_t owns its child
-    // nodes through unique_ptr and is deliberately move-only. No file bytes are laid by hand:
-    // this is the production load path fed a corrupt pointer set.
+    // Corrupt the stream the way a crossed/stale pointer would: the same overflow block named
+    // twice for one segment. Mutated in place (persistent_column_data_t is move-only); no file
+    // bytes are laid by hand — this is the production load path fed a corrupt pointer set.
     auto& corrupted = persistent.value();
     bool duplicated = false;
     for (auto& dp : corrupted.data_pointers) {

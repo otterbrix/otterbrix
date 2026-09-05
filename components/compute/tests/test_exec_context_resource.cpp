@@ -1,17 +1,8 @@
-// compute must allocate from the resource its CALLER named, and from nothing else. The
-// process-global std::pmr default resource is banned outright (rule 14 lists
-// std::pmr::get_default_resource among the forbidden constructs), and it is where a defaulted
-// `exec_context_t& ctx = default_exec_context()` argument would point: a function-local static
-// exec_context_t built on get_default_resource(), i.e. one process-wide arena shared by every
-// caller that did not spell a context out.
-//
-// The measurement below does not read the code: it installs a counting resource AS the process
-// default and counts what compute takes from it while running a function. The only way that
-// count is zero is if nothing in the path consults the global default.
-//
-// The counting resource is immortal on purpose. It is installed as the process default for the
-// duration of one call, and anything allocated through it in that window may be freed long
-// after the window closes.
+// Guards against a regression to a process-global default resource (get_default_resource() is
+// banned; a removed default_exec_context() used to fall back to it). Measured,
+// not read from the code: a counting resource is installed as the process default and must see
+// zero allocations while compute runs. It is deliberately leaked -- it stays installed only for
+// one call, but frees from that window can land after the window closes.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/compute/function.hpp>

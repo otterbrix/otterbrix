@@ -38,7 +38,7 @@ namespace {
     using namespace services::wal;
 
     // ONE resource for the whole file. wal_page_reader_t / wal_page_writer_t take it
-    // explicitly: reaching for std::pmr::get_default_resource() is what rule 14 forbids, and
+    // explicitly: reaching for std::pmr::get_default_resource() is forbidden, and
     // neither could build the diagnostics their error channel carries without one.
     core::pmr::otterbrix_resource test_resource;
 

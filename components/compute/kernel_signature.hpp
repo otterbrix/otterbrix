@@ -53,11 +53,8 @@ namespace components::compute {
 
     private:
         parameter_type() = default;
-        // MOVE-CONSTRUCTS admissible_, and that is the whole point: assigning a vector over a
-        // default-constructed member is move-ASSIGNMENT, which for a pmr vector with a
-        // DIFFERENT allocator relocates element by element and allocates in the TARGET's
-        // resource. Constructing takes the source's buffer AND its resource, so nothing is
-        // allocated and the caller's arena is preserved.
+        // Constructs admissible_ rather than assigning over the default member: assignment onto
+        // a pmr vector with a different allocator relocates elements into the TARGET's resource.
         parameter_type(variable_id id, std::pmr::vector<types::complex_logical_type> admissible)
             : is_variable_(true)
             , id_(id)
@@ -66,33 +63,18 @@ namespace components::compute {
         bool is_variable_{false};
         variable_id id_{0};
         types::complex_logical_type type_{types::logical_type::ANY};
-        // null, NOT get_default_resource() and NOT new_delete_resource(): both of those are
-        // process-global arenas, and a default member initializer runs on every
-        // default-construction, so either one would silently decide this vector's arena.
-        // NOTHING is allowed to allocate through this initializer: exact() and variable(id)
-        // leave the vector empty forever, and variable(id, admissible) MOVES a caller-owned
-        // vector -- with the caller's own resource -- in over it. So an allocation here means
-        // a new path filled admissible_ without bringing a resource, and null makes that
-        // refuse loudly instead of quietly borrowing an arena nobody chose (rule 6).
+        // null_memory_resource() on purpose: this member is never allocated through
+        // directly, so an allocation here is a bug that should fail loudly, not quietly borrow
+        // a process-global arena.
         std::pmr::vector<types::complex_logical_type> admissible_{std::pmr::null_memory_resource()};
     };
 
     using fixed_t = types::complex_logical_type;
 
-    // The callable a signature carries for an output whose type is only known once the input
-    // types are. NOT std::function: rule 14 forbids it, and nothing here needs what it buys.
-    // Type erasure exists to store arbitrary captured state; the whole tree has exactly TWO
-    // resolver shapes, and only one of them captures anything at all:
-    //   stateless -- a capture-less lambda or free function, passed in verbatim (today:
-    //                test_execution.cpp and test_prorettype_channel.cpp);
-    //   indexed   -- what same_type_resolver(i) produces, whose entire state IS the index i
-    //                (kernels/aggregate.cpp x4, integration test_udfs.cpp).
-    // Keeping the two apart as two pointers plus one size_t means no vtable, no allocation,
-    // and a trivially copyable object -- pinned by
-    // components::compute::output_type::the_resolver_carries_no_erased_state.
-    //
-    // An EMPTY resolver reports on the error channel (rule 6). std::function answered the same
-    // call by throwing std::bad_function_call, which this engine has no way to catch.
+    // Not std::function: only two resolver shapes exist -- stateless (capture-less
+    // callable) and indexed (same_type_resolver(i), state = i) -- so two pointers + a size_t
+    // erase nothing, staying trivially copyable; an empty one reports via the error channel
+    // instead of throwing bad_function_call.
     struct type_resolver_fn {
         using stateless_fn_t = core::result_wrapper_t<fixed_t> (*)(std::pmr::memory_resource* resource,
                                                                    const std::pmr::vector<fixed_t>& input_types);
@@ -102,11 +84,9 @@ namespace components::compute {
 
         type_resolver_fn() = default;
 
-        // IMPLICIT, and a TEMPLATE, and both on purpose. Implicit so `computed(lambda)` keeps
-        // reading as it does today; a template because a non-template ctor taking
-        // stateless_fn_t would need lambda -> stateless_fn_t -> type_resolver_fn, two
-        // user-defined conversions in one implicit sequence, which is ill-formed. Deducing F
-        // and casting in the initializer spends only one.
+        // Implicit template, not a non-template ctor taking stateless_fn_t directly: that would
+        // need lambda -> stateless_fn_t -> type_resolver_fn, two user-defined conversions in one
+        // implicit sequence (ill-formed). Deducing F and casting inline spends only one.
         template<typename F>
         requires(!std::is_same_v<std::remove_cvref_t<F>, type_resolver_fn> &&
                  std::is_convertible_v<F, stateless_fn_t>) type_resolver_fn(F&& fn) noexcept
@@ -153,10 +133,9 @@ namespace components::compute {
     private:
         output_type() = default;
 
-        // kind_ IS the discriminator -- there is no second copy of the answer to fall out of
-        // step with it. The two introspectable kinds resolve straight out of fixed_value_ /
-        // input_index_, and resolver_ is read only for kind_t::custom. (std::variant, which
-        // used to hold a duplicate of the fixed value alongside these, is banned by rule 14.)
+        // kind_ is the sole discriminator: the introspectable kinds read straight from
+        // fixed_value_/input_index_, resolver_ only for kind_t::custom. (std::variant, which
+        // duplicated the fixed value here before, is rule-14 banned.)
         kind_t kind_{kind_t::custom};
         fixed_t fixed_value_{types::logical_type::ANY};
         size_t input_index_{0};

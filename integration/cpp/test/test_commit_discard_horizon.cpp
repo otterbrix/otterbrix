@@ -14,40 +14,35 @@
 #include <string>
 #include <thread>
 
-// ===========================================================================
-// AN ORPHANED commit_id MUST NOT PIN THE HORIZON FOR THE LIFE OF THE PROCESS.
+// An orphaned commit_id must not pin the horizon for the life of the process.
 //
 // operator_commit_transaction inserts the commit_id into
 // transaction_manager_t::in_flight_commits_ in its first hop (txn_commit_drain_msg ->
 // commit()) and removes it only in its last (txn_publish_msg -> publish()). Any co_return
 // between them leaks the id: the txn is already out of active_, so neither ROLLBACK nor the
-// dispatcher's failure-release net can reach it. visible_to_all_locked() floors the horizon
-// on min(in_flight_commits_) - 1, and that ONE number gates every reclaim path --
+// dispatcher's failure-release net can reach it. visible_to_all_locked() floors the horizon on
+// min(in_flight_commits_) - 1, and that ONE number gates every reclaim path --
 // data_table_t::compact()'s MVCC gate, the DROP-GC tombstone sweep, and the deferred
 // index-delete sweep in manager_index_t::on_horizon_advanced. The deferred-delete queue is
-// UNBOUNDED BY CONSTRUCTION (eviction from it is the very defect it exists to prevent), so
-// it grows for the rest of the process.
+// unbounded by construction (eviction from it is the defect it exists to prevent), so it
+// grows for the rest of the process.
 //
-// in_flight_commits_ is private to the dispatcher and unreachable from a SQL session, so what
-// is asserted is the CONSEQUENCE, through two DEV_MODE meters:
-// index_deferred_deletes() falls only in on_horizon_advanced, so its return to baseline IS
-// the horizon having moved -- process-wide and non-resetting, hence every check is a
-// DIFFERENCE; index_repopulations() guards that the un-pinning was not bought with a full
-// index rebuild. The queue is polled for QUEUE STATE against a deadline, never for
-// wall-clock time.
+// in_flight_commits_ is private and unreachable from a SQL session, so what's asserted is the
+// consequence, through two DEV_MODE meters: index_deferred_deletes() falls only in
+// on_horizon_advanced, so its return to baseline IS the horizon having moved (process-wide and
+// non-resetting, hence every check is a difference); index_repopulations() guards that the
+// un-pinning was not bought with a full index rebuild. The queue is polled for its own state
+// against a deadline, never for wall-clock time.
 //
-// The COMPACTION half is proved one level down, in
-// components/table/test/test_mvcc_operations.cpp ("orphaned_commit_blocks_compaction"),
-// where compact() takes the watermark as an argument. Deliberately not re-attempted here:
-// the CHECKPOINT statement rebuilds every indexed table whether or not its compact was
-// refused, so no counter at this level tells a compaction that ran from one that was skipped.
+// The compaction half is proved one level down, in components/table/test/test_mvcc_operations.cpp
+// ("orphaned_commit_blocks_compaction"), where compact() takes the watermark as an argument --
+// not re-attempted here since CHECKPOINT rebuilds every indexed table whether or not its
+// compact was refused, so no counter at this level distinguishes the two.
 //
-// THE EARLY EXIT IS DRIVEN, NOT SIMULATED. services::wal::dev_set_wal_file_interposer refuses
-// the fsync of the COMMIT marker (written under wal_sync_mode::FULL, and the operator checks
-// its reply), so COMMIT returns an error -- the proof the run really reached that exit. The
-// seam is armed only between the last DML statement and the COMMIT, so nothing else in the
-// transaction can be the refusal.
-// ===========================================================================
+// The early exit is driven, not simulated: dev_set_wal_file_interposer refuses the fsync of
+// the COMMIT marker (wal_sync_mode::FULL, checked by the operator), so COMMIT returns an
+// error -- proof the run reached that exit. The seam is armed only between the last DML
+// statement and the COMMIT, so nothing else in the transaction can be the refusal.
 
 namespace {
 
@@ -102,15 +97,11 @@ namespace {
 
 } // namespace
 
-// ===========================================================================
-// THE PIN. A transaction that dies at the WAL-marker exit must not stop the sweeps
-// that every LATER transaction depends on.
-//
-// THE DEFECT: the orphaned id sits in in_flight_commits_ forever, the
-// horizon never rises past it, try_trigger_cleanup_if_horizon_advanced's
-// `new_lowest > last_broadcast_horizon_` gate never re-fires, and the deferred
-// index-delete queue -- fed by the ORDINARY delete that follows -- never drains.
-// ===========================================================================
+// A transaction that dies at the WAL-marker exit must not stop the sweeps every LATER
+// transaction depends on: the orphaned id sits in in_flight_commits_ forever, the horizon
+// never rises past it, try_trigger_cleanup_if_horizon_advanced's
+// `new_lowest > last_broadcast_horizon_` gate never re-fires, and the deferred index-delete
+// queue -- fed by the ordinary delete that follows -- never drains.
 TEST_CASE("integration::cpp::commit_discard_horizon::an_orphaned_commit_id_stops_the_sweeps") {
     auto config = make_test_config(integration_fixture_path("test_commit_discard_horizon/sweeps"),
                                    /*wal_on=*/true);
@@ -163,21 +154,17 @@ TEST_CASE("integration::cpp::commit_discard_horizon::an_orphaned_commit_id_stops
     CHECK(services::index::index_repopulations() == repopulations_before);
 }
 
-// ===========================================================================
-// THE ORDERING GUARD -- it pins the step ORDER itself, not the discard.
-//
-// The discard is only sound because NOTHING durable or reader-visible carries the
-// discarded commit_id: after the reorder the WAL marker is the LAST step that can
-// fail, so every step that stamps the id (the DROP-GC remap, the pg_attribute
-// backfill, commit_deletes' queue entry and both storage_publish_* calls) runs
+// The ordering guard: it pins the step ORDER itself, not the discard. The discard is sound
+// only because nothing durable or reader-visible carries the discarded commit_id -- the WAL
+// marker is the LAST step that can fail, so every step that stamps the id (the DROP-GC remap,
+// the pg_attribute backfill, commit_deletes' queue entry, both storage_publish_* calls) runs
 // strictly below it and cannot have run at the exit.
 //
-// Put storage_publish_* back above the marker and this test fails: the doomed rows
-// would carry the discarded id as their added_at_commit_id, the discard would take
-// that id out of every future snapshot's in-flight set, and the very next published
-// commit would drag published_horizon_ above it -- publishing, late and silently, a
-// transaction the engine refused and reported as an error.
-// ===========================================================================
+// Put storage_publish_* back above the marker and this test fails: the doomed rows would
+// carry the discarded id as their added_at_commit_id, the discard would take that id out of
+// every future snapshot's in-flight set, and the next published commit would drag
+// published_horizon_ above it -- publishing, late and silently, a transaction the engine
+// refused and reported as an error.
 TEST_CASE("integration::cpp::commit_discard_horizon::a_discarded_transactions_rows_never_appear") {
     auto config = make_test_config(integration_fixture_path("test_commit_discard_horizon/visibility"),
                                    /*wal_on=*/true);

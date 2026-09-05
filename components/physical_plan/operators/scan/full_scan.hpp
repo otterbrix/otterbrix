@@ -69,11 +69,8 @@ namespace components::operators {
             guard_types_.clear();
         }
 
-        // Release an OPEN, un-drained cursor. Nothing agent-side reclaims it — the drain
-        // paths only fire when the source keeps pulling — and a live cursor permanently gates
-        // compact() on its table. Called by the executor when it stops pumping a source early
-        // (error mid-pump, satisfied LIMIT, abandoned sub-plan). Idempotent: after the cursor
-        // drains, or once released, cursor_id_ is 0 and this is a no-op.
+        // Release an OPEN, un-drained cursor: nothing agent-side reclaims it otherwise, and a live
+        // cursor permanently gates compact() on its table. Idempotent once drained/released (cursor_id_ == 0).
         [[nodiscard]] actor_zeta::unique_future<void> release_cursor(pipeline::context_t* ctx) override;
         [[nodiscard]] bool holds_open_cursor() const noexcept override { return cursor_id_ != 0 && !drained_; }
 

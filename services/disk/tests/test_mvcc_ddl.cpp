@@ -500,7 +500,6 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_visible_in_same_txn") {
 // session are hidden), classifies the field as new, allocates a
 // distinct attoid and appends a row. After both commit, pg_computed_column
 // has two rows for (relid, attname).
-//
 // Resolver tolerance: pick max(attversion), break ties by lowest attoid;
 // VACUUM GCs stale versions later. Strict serialization (per-table
 // lock or composite actor handler) is deferred — a multi-session concurrent
@@ -542,16 +541,9 @@ TEST_CASE("services::disk::mvcc::vacuum_insert_concurrent_TODO") {
          "INSERTs invisible to VACUUM, fully-committed rows are stable.");
 }
 
-// ===========================================================================
-// THE PER-SPEC COUNT ITSELF: WHAT delete_pg_catalog_rows_many ANSWERS WITH.
-//
-// Six operators now decide whether a DDL statement succeeded by indexing into this vector —
-// "spec i deleted 0 rows" is a refusal for the specs that name a row the operator had already
-// read, and a healthy no-op for the specs that are a scrub template. That reading needs two
-// things from this reply and had a test for neither: the counts must be POSITIONAL (one entry
-// per spec, in spec order, so deleted[i] really is about specs[i]) and a zero must be an
-// honest count rather than an error.
-// ===========================================================================
+// WHAT delete_pg_catalog_rows_many ANSWERS WITH. Six operators decide DDL success by indexing
+// into this vector, so the counts must be POSITIONAL (deleted[i] is about specs[i]) and a zero
+// must be an honest count, not an error.
 TEST_CASE("services::disk::mvcc::delete_many_counts_each_spec_in_order") {
     fixture fx;
     const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("counted_ns"));
@@ -574,22 +566,10 @@ TEST_CASE("services::disk::mvcc::delete_many_counts_each_spec_in_order") {
     CHECK(deleted.value()[2] == 0);
 }
 
-// ===========================================================================
-// THE DELETE SEES WHAT ITS OWN TRANSACTION SEES — the floor under the "zero is a refusal"
-// verdicts, and the defect that made them fire on legal statements.
-//
-// agent_disk_t::delete_pg_catalog_rows_inner must scan under ctx.txn. Scanning with no
-// transaction leaves collection_scan_state::txn at {0, 0}, so rows written INSIDE a transaction
-// (insert_id == transaction_id) are invisible to the very transaction that wrote them. Every
-// caller that reads a zero here as "the row I just read is still in the catalog" — ALTER TABLE
-// DROP COLUMN on its live pg_attribute row, DROP INDEX on its identity rows, DROP FUNCTION on
-// pg_proc, DROP CAST on pg_cast — would then refuse whenever the row it named had been created
-// in the open transaction, while its own read routes (read_chunks_by_key and the resolve
-// funnel) carry ctx.txn and see the row perfectly well.
-//
-// The count of 1 here IS the guard those verdicts stand on: 0 is the value they turn into
-// "the catalog would not give the row up".
-// ===========================================================================
+// THE DELETE MUST SEE ITS OWN TRANSACTION. agent_disk_t::delete_pg_catalog_rows_inner scans
+// under ctx.txn — scanning with no transaction hides rows the SAME txn just wrote
+// (insert_id == transaction_id), so ALTER/DROP callers reading a 0 count as "row still in
+// catalog" (DROP COLUMN, DROP INDEX/FUNCTION/CAST) would refuse legal same-txn statements.
 TEST_CASE("services::disk::mvcc::delete_many_sees_its_own_uncommitted_row") {
     fixture fx;
     const uint64_t txn1 = TRANSACTION_ID_START + 555;
@@ -627,12 +607,9 @@ TEST_CASE("services::disk::mvcc::delete_many_sees_its_own_uncommitted_row") {
     CHECK(deleted.value()[0] == 1);
 }
 
-// resolve_namespace scans on the caller's ctx.txn, not the DEFAULT snapshot
-// (transaction_data{}) — the same rule the row-delete path follows. On the default snapshot a
-// namespace created inside an open transaction is invisible to ITS OWN resolve, so any verdict
-// built on "found == false" (name collision checks, follow-up DDL in the same txn) reads a lie.
-// With ctx.txn a txn sees its own uncommitted row (this case), other sessions do not (case 2
-// above), and a zero-txn ctx sees exactly the committed state.
+// resolve_namespace scans on ctx.txn, not the default snapshot: on the default, a namespace
+// created inside an open transaction is invisible to ITS OWN resolve, so name-collision /
+// follow-up-DDL checks built on "found == false" would lie.
 TEST_CASE("services::disk::mvcc::resolve_namespace_sees_its_own_uncommitted_row") {
     fixture fx;
     auto uncommitted = TRANSACTION_ID_START + 1;

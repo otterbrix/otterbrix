@@ -248,11 +248,10 @@ namespace components::operators {
         // Only a scan source that opened one answers true.
         [[nodiscard]] virtual bool holds_open_cursor() const noexcept { return false; }
 
-        // SOURCE: release an open cursor without draining it. The executor calls this when it
-        // stops pumping a source early — an error mid-pump, a satisfied LIMIT, an abandoned
-        // sub-plan — because nothing agent-side reclaims an abandoned cursor and a live one
-        // permanently gates compact() on its table. Idempotent; default no-op for every
-        // operator that owns no cursor.
+        // SOURCE: release an open cursor without draining it, called when the executor stops
+        // pumping a source early (error mid-pump, satisfied LIMIT, abandoned sub-plan) — nothing
+        // agent-side reclaims an abandoned cursor, and a live one permanently gates compact().
+        // Idempotent; default no-op.
         [[nodiscard]] virtual actor_zeta::unique_future<void> release_cursor(pipeline::context_t* ctx);
 
         // STREAMING / SINK: consume exactly one input batch. A streaming operator
@@ -324,9 +323,9 @@ namespace components::operators {
         }
         void clear(); //todo: replace by copy
 
-        // One entry point, by const reference: it rebuilds the message on this operator's
-        // resource (core::error_on), so handing it an rvalue would save nothing and an
-        // &&-overload could only reintroduce the producer-arena adoption it exists to stop.
+        // By const reference only: it rebuilds the message on this operator's resource
+        // (core::error_on), so an &&-overload could only reintroduce the producer-arena adoption
+        // this exists to stop.
         void set_error(const core::error_t& error);
         bool has_error() const noexcept;
         const core::error_t& get_error() const noexcept;

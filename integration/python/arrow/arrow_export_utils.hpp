@@ -14,11 +14,8 @@ namespace otterbrix {
 
     namespace pyarrow {
 
-        //! `resource` holds the schema's type list for the length of this call and nothing
-        //! longer: the ArrowSchema is exported to pyarrow before it returns. It is an
-        //! argument rather than the process default because rule 14 leaves no global to
-        //! reach for, and because the only caller shape here -- a connection or a space --
-        //! always has an arena where it stands.
+        //! `resource` is an argument, not a process default: it holds the schema's
+        //! type list only for this call, until the ArrowSchema is exported to pyarrow.
         py::object to_arrow_table(std::pmr::memory_resource* resource,
                                   const std::vector<components::types::complex_logical_type>& types,
                                   const std::vector<std::string>& names,

@@ -1,22 +1,14 @@
-// ============================================================================
-// `REFERENCES parent` WITHOUT A COLUMN LIST MUST BIND TO THE PARENT'S PRIMARY KEY.
+// `REFERENCES parent` without a column list must bind to the parent's primary key.
 //
-// SQL lets the referenced column list be omitted:
-//
-//     FOREIGN KEY (pid) REFERENCES D.parent
-//
-// PostgreSQL resolves it to the primary key of the referenced table, and refuses the
-// DDL outright when that table has no primary key ("there is no primary key for
-// referenced table"). Otterbrix did neither: the transformer copied an absent pk_attrs
-// as an EMPTY ref list, enrich resolved that to an empty confkey, and pg_constraint got
-// a row whose referenced side names nothing. operator_resolve_constraint drops such a
-// row on the floor (it requires BOTH name lists to be non-empty), so the constraint the
-// user declared simply did not exist:
-//
-//   * an orphan INSERT — a value with no matching parent row — succeeded;
-//   * ON DELETE RESTRICT did not block deleting a referenced parent;
-//   * ON DELETE CASCADE left the children behind, pointing at nothing.
-// ============================================================================
+// SQL lets the referenced column list be omitted (`FOREIGN KEY (pid) REFERENCES D.parent`).
+// PostgreSQL resolves it to the primary key of the referenced table, and refuses the DDL
+// outright when that table has no primary key. Otterbrix did neither: the transformer
+// copied an absent pk_attrs as an EMPTY ref list, enrich resolved that to an empty confkey,
+// and pg_constraint got a row whose referenced side names nothing. operator_resolve_constraint
+// drops such a row on the floor (it requires BOTH name lists to be non-empty), so the
+// constraint the user declared simply did not exist: an orphan INSERT succeeded, ON DELETE
+// RESTRICT did not block deleting a referenced parent, and ON DELETE CASCADE left the
+// children behind, pointing at nothing.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

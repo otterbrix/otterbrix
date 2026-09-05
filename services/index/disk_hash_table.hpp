@@ -17,33 +17,13 @@
 
 namespace services::index {
 
-    // The one question a hash page cannot answer on its own. An entry whose encoded key was longer
-    // than disk_hash_table_t::inline_key_limit stores only a PREFIX (truncated_prefix_len bytes)
-    // plus the (log_file_id, log_offset) of the record that carries the whole key, so deciding
-    // whether such an entry matches a probe means reading that record back -- and only the store
-    // that WROTE the record can do that. Removing the hook is not an option, and its cost is
-    // silent: keys_equal() would answer false for EVERY key longer than inline_key_limit, so a
-    // hashed index on a long key would return zero rows and report nothing.
-    //
-    // A TEMPLATE parameter, not a virtual interface and not a std::function (rule 14). The
-    // customization point is NOT virtual, and there is one implementation (bitcask_index_disk_t)
-    // and one production caller, both known at compile time, so the callable is simply deduced and
-    // the erasure goes -- the same reasoning for_each below records. The loader travels WITH the
-    // call instead of being installed on the table: nothing is stored, so it cannot dangle, there
-    // is no unhook to forget in a destructor, and no null state for keys_equal to silently answer
-    // false from.
+    // An entry whose key exceeds inline_key_limit stores only a truncated prefix plus
+    // (log_file_id, log_offset); resolving it means reading that record back through the store
+    // that wrote it. Passed as a template parameter, not a virtual hook: one
+    // implementation, one caller, both known at compile time.
     template<typename loader_t>
     concept hash_key_loader = requires(const loader_t& load_full_key, uint32_t log_file_id, uint64_t log_offset) {
-        // THE ANSWER IS THE KEY ITSELF, not a flag saying a key was put somewhere. Success cannot
-        // be reported without producing the key, and a read that could not happen cannot be
-        // reported silently: it is a core::error_t travelling as a value. The record's KIND is not
-        // asked here -- a tombstone carries the same full key a value record does, and whether the
-        // key still holds rows is answered one layer up by read_rows_at's own three-way result.
-        //
-        // std::pmr::string, not std::string (rule 8): the key comes back from a store that has a
-        // resource of its own. It is spelled in the CONCEPT because that is what makes it binding
-        // -- a loader that answered with a default-allocated string would not satisfy this and
-        // would not compile.
+        // std::pmr::string, not std::string: the key comes back from a store with its own resource.
         { load_full_key(log_file_id, log_offset) } -> std::same_as<core::result_wrapper_t<std::pmr::string>>;
     };
 
@@ -62,45 +42,28 @@ namespace services::index {
             bool key_truncated{false};
         };
 
-        // Factory returning the instance, or a core::error_t when the on-disk storage cannot be
-        // brought up (file/overflow-file open failure, an unreadable or incompatible header).
-        // Production code MUST use this: the direct ctor below aborts on the same failures,
-        // mirroring bitcask_index_disk_t's deferred-open ctor plus open() vs its construct-and-open
-        // ctor. The failure is a VALUE the whole way down, and result_wrapper_t makes a caller
-        // confront it before it can reach the table; nothing is recorded in the object and nothing
-        // has to be asked for afterwards.
+        // Production code MUST use this, not the direct ctor below, which aborts on the same
+        // open failures instead of returning them.
         [[nodiscard]] static core::result_wrapper_t<std::unique_ptr<disk_hash_table_t>>
         create(const std::filesystem::path& file_path,
                uint32_t bucket_count,
                std::pmr::memory_resource* memory_resource);
 
-        // No defaulted arguments, and the resource in particular is never defaulted to null
-        // (rule 14): an assert is the only thing that would catch a null one, and NDEBUG
-        // compiles it out. Both parameters are stated at every call site.
+        // No defaulted arguments: a null memory_resource would only be caught by an
+        // assert, which NDEBUG compiles out.
         disk_hash_table_t(const std::filesystem::path& file_path,
                           uint32_t bucket_count,
                           std::pmr::memory_resource* memory_resource);
         ~disk_hash_table_t();
 
-        // A WRITE THAT DID NOT LAND SAYS SO, and says why: an entry that could not be
-        // placed, or an auto-rehash the entry tripped that could not finish. Both are
-        // environmental, both leave the table CONSISTENT (see split_one_bucket_unlocked),
-        // and both mean the next write is likely to fail too -- so the caller is told
-        // rather than left to discover it from a load factor that never comes down.
+        // Failure means the entry could not be placed, or an auto-rehash it tripped could not
+        // finish; the table stays consistent either way (see split_one_bucket_unlocked).
         [[nodiscard]] core::error_t
         put(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
 
-        // THE READS, each carrying the loader that resolves a truncated entry. The parameter is
-        // what makes the resolution impossible to forget: a caller that has no way to read a record
-        // back cannot call these at all, instead of calling them and quietly missing every long
-        // key.
-        //
-        // A WALK THAT COULD NOT FINISH REFUSES. Each of these follows a bucket's page chain, and a
-        // `break` out of the chain when read_page says no would hand back whatever had been
-        // collected so far -- making "this key has three rows" indistinguishable from "the disk
-        // would not let me finish counting", a SUBSET presented as the whole answer on the only
-        // read path there is. The failure is a VALUE, and result_wrapper_t is [[nodiscard]], so a
-        // caller cannot go on reading the rows without meeting it first.
+        // A page chain walk that cannot finish refuses instead of returning a partial row set --
+        // a `break` on read_page failure would make "three rows" indistinguishable from "disk
+        // wouldn't let me finish counting".
         template<hash_key_loader loader_t>
         [[nodiscard]] core::result_wrapper_t<std::vector<value_ref_t>>
         get_all(std::string_view key, const loader_t& load_full_key) const {
@@ -148,10 +111,8 @@ namespace services::index {
             return std::optional<value_ref_t>{all.front()};
         }
 
-        // TRUE means an entry was removed, FALSE means the key (or the key/value pair) is
-        // not in the table -- and the error means the walk could not reach the answer, or
-        // reached it and could not persist the removal. Folding the third case into the second
-        // would tell erase_all_refs_for_key's loop that it was done.
+        // error_t here is distinct from "not found" (false): folding the two would tell
+        // erase_all_refs_for_key's loop it was done when the walk had actually failed.
         template<hash_key_loader loader_t>
         [[nodiscard]] core::result_wrapper_t<bool> erase(std::string_view key, const loader_t& load_full_key) {
             return erase_matching(key, std::nullopt, load_full_key);
@@ -163,23 +124,9 @@ namespace services::index {
             return erase_matching(key, std::optional<int64_t>(value), load_full_key);
         }
 
-        // Rule 14: the callable is a TEMPLATE parameter, not a type-erased `function` wrapper.
-        // Nothing here forces erasure -- for_each is not a virtual customization point, so the
-        // callable is simply deduced, and the erased form would heap-allocate for the capturing
-        // lambdas both callers pass. The body lives in the header so the callable stays a template
-        // parameter at every call site.
-        //
-        // THE ORDER IS PART OF THE CONTRACT, not an implementation detail: buckets ascending, each
-        // bucket's primary page before its overflow chain, slots 0..count-1 within a page. Both
-        // production callers (bitcask_index_disk_t::load_entries and ::merge_immutable_segments)
-        // accumulate through a by-reference capture, so this is the order they observe and hand on.
-        // `cb` is invoked synchronously, once per live entry, never stored or deferred, and NOT
-        // forwarded, because it is called in a loop.
-        //
-        // AND IT REFUSES rather than stopping early, for the reason get_all does: a walk that broke
-        // out of a chain would hand its caller a PREFIX of the order it promises -- load_entries
-        // would rebuild a table's index from part of it, and the merge would relocate part of a
-        // segment and then delete the whole segment.
+        // Template parameter, not std::function: avoids heap allocation for the
+        // capturing lambdas both callers pass. Order (buckets ascending, primary page before
+        // overflow) is part of the contract -- load_entries and merge_immutable_segments rely on it.
         template<typename callback_t>
         [[nodiscard]] core::error_t for_each(callback_t&& cb) const {
             byte_buffer_t page(memory_resource_);
@@ -214,43 +161,22 @@ namespace services::index {
             return core::error_t::no_error();
         }
 
-        // GROW TO new_bucket_count, one linear-hashing split at a time, and say why it
-        // could not: a split that cannot copy every entry it owes the new bucket refuses
-        // instead of publishing, so a failure here means the addressing state was NOT
-        // advanced and the table still answers exactly as it did before the call.
+        // A split that cannot copy every entry it owes the new bucket refuses instead of
+        // publishing; on failure the addressing state is unchanged.
         [[nodiscard]] core::error_t rehash(uint32_t new_bucket_count);
         [[nodiscard]] core::error_t trigger_rehash_if_needed();
         bool set_auto_rehash_suppressed(bool suppressed) noexcept;
         uint32_t bucket_count() const;
         double load_factor() const;
-        // A REFUSED fsync IS AN ANSWER, not two dropped bools: the one caller that has to know
-        // -- bitcask_index_disk_t::sync_if_dirty, whose value force_flush hands to the
-        // checkpoint before it trims the WAL -- would otherwise be told the keydir was durable
-        // whatever the device said.
+        // A refused fsync must reach bitcask_index_disk_t::sync_if_dirty, whose force_flush
+        // result gates the checkpoint that trims the WAL.
         [[nodiscard]] core::error_t sync();
-        // WIPE AND RE-CREATE AN EMPTY TABLE OF THE SAME WIDTH, reporting the reason it could not by
-        // value. The object identity survives: the store that owns this table re-uses it instead of
-        // re-opening the file.
-        //
-        // It stands on the OPEN path (bitcask_index_disk_t::load_from_disk), which is why it cannot
-        // be a void wipe: with no channel it would have to end in std::abort() one call away from
-        // every start of the engine, and an environmental refusal has to cost the INDEX its
-        // registration, never the ENGINE its process. There is deliberately no void door beside
-        // this one, so that abort is structurally unreachable rather than guarded by a test.
-        //
-        // The width (bucket_count) and the hash seed OUTLIVE the wipe: the replay that follows
-        // refills a table of the size it just had, rather than 1024 buckets with auto-rehash
-        // suppressed for the whole replay, and a fixed seed keeps the layout reproducible across
-        // runs. The suppression flag is NOT touched -- the caller set it for the length of its
-        // replay, and clearing it here would let a rehash run in the middle of one.
-        //
-        // WHAT IT NEEDS FROM THE FILESYSTEM: `w` on the DIRECTORY holding these two files, for the
-        // unlinks. Not a requirement this adds -- the owning index publishes its CURRENT pointer
-        // through a temp file and a rename on every open, so `w` on that directory is already the
-        // price of opening the index at all (see the contract above bitcask_index_disk_t::open).
+        // Wipes and re-creates an empty table of the same width and hash seed, keeping object
+        // identity so the owning store can reuse it instead of reopening the file. Called from
+        // the open path (bitcask_index_disk_t::load_from_disk), so failure is reported rather
+        // than aborting -- it costs the index its registration, not the whole engine. Needs `w`
+        // on the directory holding both files, for the unlinks.
         [[nodiscard]] core::error_t reset_storage();
-        // RELEASE BOTH BACKING FILES, leaving the table addressable and loud. For a caller
-        // whose wipe could not finish -- see the definition for why this needs no flag.
         void close_storage();
 
     private:
@@ -262,11 +188,9 @@ namespace services::index {
         };
 
         struct decoded_entry_t {
-            // False when the slot could not be decoded (a corrupt page): the caller skips the
-            // entry instead of receiving a throw. This class reports failure by value — its
-            // public API already does (put/erase/rehash return bool, get returns optional), and
-            // an exception here would unwind through an actor coroutine whose
-            // unhandled_exception() is empty, turning a bad page into a hang.
+            // False on a corrupt page; callers skip rather than throw -- an exception here would
+            // unwind into an actor coroutine whose unhandled_exception() is empty, hanging instead
+            // of failing.
             bool valid{false};
             uint16_t stored_key_len{0};
             uint32_t full_key_len{0};
@@ -293,33 +217,21 @@ namespace services::index {
             uint32_t hash_seed_value{0};
         };
 
-        // Tag ctor: sets the members up and opens NOTHING. Both doors above run
-        // open_or_create() themselves and act on the value it returns -- the direct ctor
-        // by aborting, create() by handing it back -- so there is no failure recorded in
-        // the object for one of them to remember to ask about.
+        // Sets the members up and opens nothing; callers run open_or_create() themselves.
         struct defer_open_tag {};
         disk_hash_table_t(const std::filesystem::path& file_path,
                           uint32_t bucket_count,
                           std::pmr::memory_resource* memory_resource,
                           defer_open_tag);
 
-        // The open path, reporting by value the whole way: each of these returns the
-        // reason it could not finish, and its caller either hands that reason up or
-        // aborts on it. error_t is [[nodiscard]], so a dropped failure does not compile.
-        //
-        // io_failure is the one way they say why: an index_create_fail error_t carrying
-        // the message, built on THIS table's resource (which is why it is a member and
-        // not a free function).
+        // Builds an index_create_fail error_t on this table's resource, which is why it's a
+        // member rather than a free function.
         [[nodiscard]] core::error_t io_failure(const std::string& message) const;
-        // The one reason every chain walk in this class can stop: a page the chain points
-        // at could not be read (a short/rotten file, a truncated overflow file). io_error
-        // rather than index_create_fail -- nothing is being created, an existing structure
-        // could not be read.
         [[nodiscard]] core::error_t page_read_failure(uint64_t page_id) const;
         [[nodiscard]] core::error_t page_write_failure(uint64_t page_id) const;
         [[nodiscard]] core::error_t open_or_create();
-        // The tail of reset_storage, and deliberately NOT open_or_create: it refuses a file
-        // that outlived the unlink instead of loading it as an existing table. See the body.
+        // Tail of reset_storage, deliberately not open_or_create: refuses a file that outlived
+        // the unlink instead of loading it as an existing table.
         [[nodiscard]] core::error_t open_after_wipe_or_refuse();
         [[nodiscard]] core::error_t initialize_new_file();
         [[nodiscard]] core::error_t load_existing_file();
@@ -351,18 +263,9 @@ namespace services::index {
 
         decoded_entry_t decode_entry(const byte_buffer_t& page, const slot_t& slot) const;
 
-        // A TRUNCATED entry is resolved through the loader the CALLER handed in, which reads the
-        // record the whole key was written with. That read wants the owning store's reader lock,
-        // and every caller left is the owning store itself, which takes its own lock FIRST and
-        // hands in a loader that does NOT take it again -- one order, no cycle. An AB-BA inversion
-        // would need a thread that takes THIS table's structures first and the store's second;
-        // nothing outside the store reaches the keydir.
-        //
-        // TRUE = this entry's key IS the probe. FALSE = it is a different key. AN ERROR = the
-        // question could not be decided, because the record carrying the whole key could not be
-        // read. Folding the third case into the second would tell get_all "no such row" and
-        // try_erase_in_page "no such key" -- a SUBSET presented as the whole answer. Same three-way
-        // shape, and the same reason, as erase() above and bitcask_index_disk_t::read_rows_at.
+        // No AB-BA risk: the loader is handed in by the owning store, which takes its own lock
+        // first and does not take it again inside the loader.
+        // error_t is distinct from "false" here too, for the reason noted on erase() above.
         template<hash_key_loader loader_t>
         [[nodiscard]] core::result_wrapper_t<bool>
         keys_equal(std::string_view query_key, const decoded_entry_t& entry, const loader_t& load_full_key) const {
@@ -404,21 +307,11 @@ namespace services::index {
             return false;
         }
 
-        // TRUE = removed here, FALSE = not in this page, walk the overflow chain, ERROR = could not
-        // decide. No `bool& erased` out-parameter beside the return: only two of its four
-        // combinations would be reachable, so it would duplicate the return value and still have no
-        // room for the third answer.
-        //
-        // THE ONE THING AN ERROR HERE GUARANTEES IS ABOUT THIS BUFFER, AND NOTHING WIDER. The page
-        // is mutated on the two lines before `return true` and nowhere else, so a refusal hands
-        // erase_matching back the bytes it was given and no write_page follows. That is NOT the
-        // same as "an erase that refused changed nothing": erase_all_refs_for_key calls erase() in
-        // a LOOP, and every pass that answered true already wrote its page and dropped
-        // entry_count_, so a refusal on the third pass leaves the first two removals in the file.
-        // That PARTIAL removal is reported rather than rolled back -- which is why the callers
-        // return the refusal instead of carrying on (append_snapshot hands it up BEFORE the put
-        // that would re-point the key). What repairs it is not an undo but the next open, whose
-        // rebuild is the keydir's only author and derives every entry from the segments.
+        // Three-way result rather than a `bool& erased` out-param: only two of its four
+        // combinations would be reachable. A refusal only guarantees THIS page's buffer is
+        // untouched -- if erase_all_refs_for_key's loop already committed earlier passes, that
+        // partial removal is left in place and fixed by the next open's keydir rebuild, not
+        // rolled back here.
         template<hash_key_loader loader_t>
         [[nodiscard]] core::result_wrapper_t<bool> try_erase_in_page(byte_buffer_t& page,
                                                                      std::string_view key,
@@ -455,18 +348,15 @@ namespace services::index {
         put_unlocked(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
         [[nodiscard]] core::error_t
         insert_payload_into_bucket_unlocked(uint32_t bucket_id, uint32_t key_hash, const byte_buffer_t& payload);
-        // A COUNT THAT COULD NOT FINISH REFUSES. Breaking out of a chain whose page will not
-        // read and answering with the count of the readable part would have open_or_create
-        // publish it as entry_count_ -- a load factor quietly understating the file. Same rule
-        // as every other walk in this class.
+        // Refuses rather than returning a partial count, which open_or_create would otherwise
+        // publish as entry_count_ -- a load factor quietly understating the file.
         [[nodiscard]] core::result_wrapper_t<uint64_t> count_entries_unlocked() const;
         [[nodiscard]] core::error_t rehash_unlocked(uint32_t new_bucket_count);
         [[nodiscard]] core::error_t maybe_rehash_if_needed_unlocked();
         [[nodiscard]] core::error_t split_one_bucket_unlocked(bool durable_commit = true);
         bool slot_belongs_to_bucket_unlocked(uint32_t key_hash, uint32_t bucket_id) const;
-        // Refuses a zero bucket count as a VALUE, not by assert: an assert is compiled out
-        // under NDEBUG and the arithmetic behind it computes split_bucket = 0 - 1 = UINT32_MAX
-        // and keeps running.
+        // Refuses a zero bucket count by value, not assert: an assert compiles out under NDEBUG,
+        // and the arithmetic behind it would compute split_bucket = 0 - 1 = UINT32_MAX.
         [[nodiscard]] core::error_t initialize_linear_state_from_bucket_count();
         uint32_t bucket_id_for_hash(uint32_t key_hash) const;
 
@@ -477,12 +367,8 @@ namespace services::index {
 
         std::filesystem::path file_path_;
         std::filesystem::path overflow_file_path_;
-        // NO MUTEX, deliberately. This table has exactly one owner -- bitcask_index_disk_t --
-        // and that store has exactly one owner, its agent, whose mailbox is the serialization
-        // domain for every call that reaches here (rule 10). A shared_mutex here would be a
-        // THIRD serialization domain under two that already guarantee single-threaded access,
-        // and a lock that only ever runs uncontended still taxes every read and hides the
-        // ownership story.
+        // No mutex: single owner (bitcask_index_disk_t) behind a single actor mailbox already
+        // serializes every call here; a lock would be a redundant third layer.
         core::filesystem::local_file_system_t fs_;
         std::unique_ptr<core::filesystem::file_handle_t> file_;
         std::unique_ptr<core::filesystem::file_handle_t> ovf_file_;

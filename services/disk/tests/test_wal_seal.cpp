@@ -22,34 +22,12 @@
 #include <thread>
 #include <unistd.h>
 
-// ---------------------------------------------------------------------------
-// WAL SEALING. checkpoint_all's return value is the floor handed to
-// wal_worker_t::truncate_before, which DELETES every WAL segment lying entirely at or below it.
-// The one invariant that matters here:
-//
-//     truncating the WAL must never discard a record a restart would still need.
-//
-// The floor that satisfies it is min(prev_checkpoint_wal_id) over EVERY entry the agents own — not
-// over the entries that were checkpointed this round. checkpoint_inner defers entries for four
-// documented reasons (degraded block storage, an open scan cursor, version stamps above the compact
-// watermark, a checkpoint that returned an error) and a deferred entry keeps its old file, its old
-// sidecar and its UNCHANGED prev_checkpoint_wal_id — which it still feeds into the min. That
-// contribution is what pins the floor below the records the deferred table has not persisted yet.
-//
-// A fifth path writes nothing and is NOT a deferral: an entry unchanged since its durable root
-// skips the rebuild, but advances prev <- current and current <- this round's id exactly as a
-// rewrite would have, writes its sidecar, and contributes the same prev. That is why every number
-// below is unchanged: the floor a round reports does not depend on which entries had work to do.
-// See services/disk/tests/test_checkpoint_dirty.cpp.
-//
-// These tests own the two ends of that contract:
-//   * floor_pinned_by_deferred_table — a table that does NOT get checkpointed holds the floor down
-//     while every other table races ahead, across consecutive rounds, and a restart proves its rows
-//     really never reached the file.
-//   * no_seal_when_no_entry_reports_a_floor — the min_prev_id == max() edge case: no entry reported
-//     anything, so there is no floor to seal at and checkpoint_all must answer 0 ("do not truncate")
-//     rather than pass the sentinel on as a truncation boundary.
-// ---------------------------------------------------------------------------
+// WAL SEALING invariant: checkpoint_all's floor feeds wal_worker_t::truncate_before, which
+// deletes every segment at or below it. The floor must be min(prev_checkpoint_wal_id) over
+// EVERY entry the agents own, not just the ones checkpointed this round — a deferred entry's
+// UNCHANGED prev still feeds that min, pinning the floor below its unpersisted records. See
+// services/disk/tests/test_checkpoint_dirty.cpp for the unchanged-table path that also
+// contributes to this min without rewriting a file.
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -99,10 +77,8 @@ namespace {
             return std::move(future).take_ready();
         }
 
-        // One checkpoint round; returns the WAL floor checkpoint_all reports, i.e. the exact
-        // value that would be passed to truncate_before. The watermark is always
-        // "everything is visible to all" — no snapshot is open in this fixture, so the MVCC
-        // gate never fires and the only deferral in play is the one a test sets up.
+        // Returns checkpoint_all's WAL floor. Watermark is max() (no open snapshot), so the
+        // only deferral in play is whatever the test sets up.
         services::wal::id_t checkpoint_round(services::wal::id_t wal_id) {
             return invoke(&manager_disk_t::checkpoint_all,
                           session_id_t{},
@@ -111,7 +87,6 @@ namespace {
         }
     };
 
-    // Append `count` BIGINT rows numbered [first, first + count) to an existing table.
     void append_rows(fresh_disk& fd, catalog::oid_t table_oid, uint64_t first, uint64_t count) {
         uint64_t written = 0;
         while (written < count) {
@@ -137,7 +112,6 @@ namespace {
         }
     }
 
-    // A disk-backed user table carrying `rows` rows.
     catalog::oid_t make_seeded_table(fresh_disk& fd, uint64_t rows) {
         auto ns_oid = test_create_namespace(fd, "seal_ns");
         std::vector<components::table::column_definition_t> columns;
@@ -154,8 +128,7 @@ namespace {
         return table_oid;
     }
 
-    // OPEN a cursor and read exactly ONE batch, leaving it un-drained: the agent erases the
-    // active_scans_ entry only on a drain, so this is the state that gates the oid.
+    // Un-drained: the agent erases the active_scans_ entry only on a drain.
     uint64_t open_undrained_cursor(fresh_disk& fd, catalog::oid_t table_oid) {
         auto reply = fd.invoke(&manager_disk_t::storage_fetch_next_batch,
                                session_id_t{},
@@ -173,30 +146,9 @@ namespace {
     }
 } // namespace
 
-// 1. SEALING INVARIANT. A table whose checkpoint did NOT happen pins the WAL floor at its
-//    own number, no matter how far the tables around it advance.
-//
-//    The deferral lever here is the production one that is fully deterministic from the
-//    outside: an un-drained fetch-next cursor. checkpoint_inner refuses to touch an oid with
-//    a live cursor (the cursor holds an absolute row position into the un-swapped
-//    collection), so that entry keeps its file, its sidecar and its prev_checkpoint_wal_id
-//    while every other table in the round moves on.
-//
-//    Timeline (the wal ids are what checkpoint_all is told the WAL has reached):
-//      round 1 @ 100 -> every table: prev 0,   current 100.  floor 0 ("do not truncate").
-//      round 2 @ 200 -> every table: prev 100, current 200.  floor 100.  (Nothing has
-//                       changed since round 1, so this round advances the chain without
-//                       rewriting a single file.)
-//      rows are appended to the user table and a cursor is opened on it and abandoned.
-//      round 3 @ 300 -> user table DEFERRED (prev 100, current 200);
-//                       everything else: prev 200, current 300.  floor must be 100.
-//      round 4 @ 400 -> user table DEFERRED again;
-//                       everything else: prev 300, current 400.  floor must STILL be 100.
-//
-//    100 is the deferred table's own contribution, and dropping it from the min is what
-//    "sealing advanced too far" looks like: the round would report 200, then 300, and
-//    truncate_before would delete the segments carrying the appends the deferred table has
-//    not persisted. The restart at the end proves those appends really are only in the WAL.
+// SEALING INVARIANT: a table deferred by a live fetch-next cursor pins the WAL floor at its
+// own prev_checkpoint_wal_id across rounds while every other table advances; a restart proves
+// the appends made after that floor really are only in the WAL.
 TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
     auto dir = seal_dir() + "/deferred";
     std::filesystem::remove_all(dir);
@@ -209,44 +161,34 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
         fd.manager->bootstrap_system_tables_sync();
         table_oid = make_seeded_table(fd, kRowsBeforeSeal);
 
-        // Round 1. No table has a superseded root yet, so prev is 0 everywhere and the floor
-        // is 0 — which the WAL side reads as "do not truncate". A first checkpoint never seals.
+        // First checkpoint never seals: no superseded root yet, floor 0.
         REQUIRE(fd.checkpoint_round(services::wal::id_t{100}) == services::wal::id_t{0});
 
-        // Round 2. Now every table's fall-back root is the one taken at 100, so 100 is the
-        // floor. It is NOT 200: the records between 100 and 200 are still live for any table
-        // whose next round dies before its header commit and reopens that root. (Nothing has
-        // changed since round 1, so this round rewrites nothing — the arithmetic is
-        // the same either way, which is the point.)
+        // Unchanged since round 1, so this rewrites nothing but still advances prev to 100.
         REQUIRE(fd.checkpoint_round(services::wal::id_t{200}) == services::wal::id_t{100});
 
-        // Rows that no checkpoint has folded into the file yet.
         append_rows(fd, table_oid, kRowsBeforeSeal, kRowsAfterSeal);
 
-        // Abandon a cursor on the table: from here on checkpoint_inner defers this oid.
+        // From here on checkpoint_inner defers this oid.
         const auto cursor_id = open_undrained_cursor(fd, table_oid);
         REQUIRE(cursor_id != 0);
         REQUIRE(fd.manager->has_active_scan_for_oid_sync(table_oid));
 
-        // Round 3: the deferred table holds the floor at its own prev while the rest of the
-        // catalog moves to prev 200.
+        // Deferred table holds the floor at 100 while the rest of the catalog moves to 200.
         REQUIRE(fd.checkpoint_round(services::wal::id_t{300}) == services::wal::id_t{100});
 
-        // Round 4: the deferred entry still has not moved, so neither may the floor — even
-        // though the tables around it have now reached prev 300.
+        // Still deferred, so the floor must stay at 100 despite the rest reaching 300.
         REQUIRE(fd.checkpoint_round(services::wal::id_t{400}) == services::wal::id_t{100});
 
-        // The premise, stated against the entry itself: its durable root is still the one
-        // committed in round 2. Rounds 3 and 4 wrote nothing for it.
+        // Durable root is still the one committed in round 2.
         auto peeked = fd.manager->peek_checkpoint_wal_id_from_disk(table_oid,
                                                                     catalog::well_known_oid::main_database);
         REQUIRE_FALSE(peeked.has_error());
         REQUIRE(peeked.value() == services::wal::id_t{200});
     }
 
-    // And the premise proven the hard way: a fresh manager over the same directory reopens
-    // the table from that round-2 root, and the rows appended afterwards are simply not
-    // there. They exist only in the WAL — which is exactly why the floor had to stay at 100.
+    // Proof: a fresh manager reopens the table from the round-2 root; rows appended after it
+    // exist only in the WAL.
     {
         fresh_disk fd2(dir);
         fd2.manager->bootstrap_system_tables_sync();
@@ -261,23 +203,20 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
     std::filesystem::remove_all(dir);
 }
 
-// 2. EDGE CASE — min_prev_id == max(). The agents exist but own no checkpointable entry, so
-//    not one of them reports a WAL floor and the cross-agent min stays at the sentinel.
-//    Sealing on it would hand truncate_before wal::id_t max(), i.e. authorize deleting the
-//    entire WAL. checkpoint_all must answer 0, the "do not truncate" value, instead.
+// EDGE CASE: no entry reports a floor, so the cross-agent min stays at the max() sentinel.
+// checkpoint_all must answer 0, not the sentinel — sealing on it would authorize deleting the
+// entire WAL.
 TEST_CASE("services::disk::wal_seal::no_seal_when_no_entry_reports_a_floor") {
     auto dir = seal_dir() + "/empty";
     std::filesystem::remove_all(dir);
     std::filesystem::create_directories(dir);
 
     {
-        // No bootstrap: the agents are spawned (the config path is non-empty) but their
-        // storages_ slices are empty, so checkpoint_inner iterates nothing and returns the
-        // max() sentinel from every one of them.
+        // No bootstrap: storages_ is empty, so checkpoint_inner returns the max() sentinel.
         fresh_disk fd(dir);
         REQUIRE(fd.checkpoint_round(services::wal::id_t{500}) == services::wal::id_t{0});
-        // Not the sentinel, and not the current wal id either — both would be a truncation
-        // boundary above records nothing has persisted.
+        // Not the current wal id either — that would also be a truncation boundary above
+        // records nothing has persisted.
         REQUIRE(fd.checkpoint_round(services::wal::id_t{500}) !=
                 std::numeric_limits<services::wal::id_t>::max());
     }

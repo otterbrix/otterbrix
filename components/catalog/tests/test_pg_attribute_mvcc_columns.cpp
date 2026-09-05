@@ -11,21 +11,14 @@
 #include <memory_resource>
 #include <vector>
 
-// CREATE TABLE must write pg_attribute's two MVCC columns itself.
+// CREATE TABLE must write pg_attribute's added_at_commit_id (col 10) / dropped_at_commit_id
+// (col 11) itself: operator_resolve_table uses them for snapshot visibility, and leaving them
+// to vector_t's memset-on-allocate would make column visibility depend on an initialisation
+// that exists for unrelated reasons.
 //
-// pg_attribute has twelve columns; added_at_commit_id is 10 and dropped_at_commit_id is 11, both
-// declared NOT NULL and both used by the reader to decide whether a column is visible to a snapshot
-// (operator_resolve_table skips a row whose added_at is past the snapshot, or whose dropped_at is
-// non-zero and at or before it). Leaving those two to the buffer's initial state would rest the
-// visibility of every column of every table on vector_t memsetting every buffer it allocates — an
-// initialisation that exists for unrelated reasons, and narrowing it would make columns silently
-// vanish from a table.
-//
-// This is a characterisation test, not a reproducing one: the poison resource below fills
-// allocations with 0xA5, but vector_t's constructor memsets the buffer straight afterwards and the
-// validity mask starts all-valid, so unwritten cells read as non-NULL zeros whatever the allocator
-// hands over. What it does buy is that it fails the instant anyone stops zeroing pg_attribute's
-// buffer.
+// Characterisation, not reproduction: the poison resource fills allocations with 0xA5, but
+// vector_t's ctor memsets right after and the validity mask starts all-valid, so this can't
+// fail against the old writer — it only catches a future regression that stops zeroing.
 
 namespace {
     // Hands out memory that is deliberately NOT zero, so a cell nobody wrote cannot be mistaken for
@@ -90,10 +83,8 @@ TEST_CASE("catalog::ddl::create_table_writes_the_mvcc_columns_of_pg_attribute") 
     REQUIRE(saw_pg_attribute);
 }
 
-// Every table is disk-backed. The pg_class row's relstoragemode column stays
-// (write-only, no readers) and is ALWAYS written 'd' — for regular tables and for
-// the schemaless computed (relkind='g') creation path alike. This is the write-site
-// half; the integration half (a plain CREATE TABLE producing a .otbx) lives in
+// pg_class.relstoragemode is always written 'd' (every table is disk-backed), for regular
+// and schemaless computed (relkind='g') tables alike. Integration counterpart:
 // test_persistence::b1a_disk_is_default.
 TEST_CASE("catalog::ddl::create_table_writes_relstoragemode_disk_always") {
     using namespace components::catalog;

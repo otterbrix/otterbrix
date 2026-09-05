@@ -15,12 +15,9 @@ namespace core::filesystem {
         file_system(const FSC& fs)
             : FSC(fs) {}
 
-        // THE ONLY WAY OUT TO THE FREE FUNCTIONS, and the reason every wrapper below spells
-        // it. The wrappers take `file_system<FSC>&`, so an unqualified call on that argument
-        // selects the WRAPPER again -- an unconditional infinite recursion, and a silent one
-        // for as long as nothing in the tree instantiates the template. The backend
-        // is a PRIVATE base, so a cast from outside the class cannot reach it either; the
-        // conversion is done here, where it is legal, once.
+        // Every wrapper below calls through this: an unqualified call on a `file_system<FSC>&`
+        // argument would select the WRAPPER again (infinite recursion, silent until the
+        // template is instantiated). FSC is a private base, so only this class can convert.
         FSC& backend() noexcept { return *this; }
     };
 

@@ -24,75 +24,30 @@
 #include <thread>
 #include <vector>
 
-// WHAT THE WAL AUTO-CHECKPOINT MAY NOT DO WHEN ITS INDEX REBUILD REFUSES.
-//
-// manager_wal_replicate_t::run_auto_checkpoint is the self-orchestrated analogue of CHECKPOINT:
-// (a) flush the indexes, (c) checkpoint_all the storage -- compacting every entry the MVCC gate
-// lets it and handing every surviving row a NEW physical id -- (c2) rebuild the indexes against
-// those new ids, (d) truncate the WAL below the boundary the checkpoint reported.
-//
-// (d) is the only destructive step and (c2) is the round's last chance to fail recoverably. The
-// ORDER was already right; the ERROR HANDLING was not -- a refused rebuild was logged and the
-// round fell through into the truncation. Both outcomes leave a stale index (nothing rebuilds one
-// at startup: base_spaces does not, WAL replay maintains none), but only truncation ALSO unlinks
-// journal segments, and a stale index whose journal was trimmed underneath it is beyond repair by
-// a later round. No statement sits above this frame, so "fail the query" is not on the menu; the
-// answer is what step (a) already does for a refused index flush -- log, rebase the byte window,
-// release the dedup guard, abandon the round -- and stay repeatable, which this case pins too.
-//
-// HOW THE REBUILD IS MADE TO REFUSE. repopulate_table -> index_agent_contract::clear, and for the
-// bitcask (index_type::hashed) backend clear() begins with collect_segments(), a std::filesystem
-// listing of the index directory -- also the ONE early return in clear(): a directory it cannot
-// list leaves the store untouched (handles open, keydir intact, segments intact) and reports the
-// refusal by value. Stripping the read bit off that directory for one automatic round therefore
-// yields a genuinely refused rebuild AND a healthy store to retry it with. chmod does not reach an
-// already-open descriptor, so nothing merely writing or fsyncing notices it.
-//
-// HOW THE TRUNCATION IS DETECTED, and why not by counting files. Whether a round destroys a
-// segment depends on the boundary it was handed, min(prev_checkpoint_wal_id) over every table: a
-// round where the MVCC gate deferred one busy table reports the PREVIOUS boundary and removes
-// nothing, however faithfully it ran (d). Measured that way the case went green over an unfixed
-// build about half the time. Boundary-independent is that (d) READS -- truncate_before opens every
-// candidate segment through wal_page_reader_t for its highest wal id before deciding anything --
-// while the writer only opens the segment it appends to, and a rotation opens a HIGHER ordinal
-// than any seen so far. So "a WAL segment below the high-water mark was opened" isolates the
-// truncation step from every other WAL file access, through the same dev_set_wal_file_interposer
-// seam the neighbouring truncate cases use -- counting rather than refusing, so the round stays
-// free to do whatever it was going to do.
-//
-// GUARDS, because a case in this family can go green for several wrong reasons:
-//   * the round RAN AND FINISHED -- a disk agent counted it, the WAL manager counted its exit;
-//     reading the journal at "started", or on a timer, reads a round short of its destructive step;
-//   * it REACHED ITS REBUILD -- index_repopulations();
-//   * that rebuild REFUSED over a table that really was renumbered -- the index must disagree with
-//     the full scan afterwards, which covers both a round that compacted nothing and a rebuild
-//     that quietly succeeded;
-//   * the lookup GOES THROUGH THE INDEX -- EXPLAIN on the same query text must say Index Scan;
-//   * the detector CAN FIRE AT ALL -- the unfaulted round at the end trips the very counter the
-//     armed round is required to leave at zero.
-//
-// The WAL is churned through a SECOND, UNINDEXED table, so no churn statement opens a bitcask file
-// and the only listing of the index directory inside the armed window is the rebuild's own.
+// A refused index rebuild in run_auto_checkpoint's round (flush -> checkpoint_all -> rebuild ->
+// WAL truncate) must abandon the round rather than fall through to truncation: truncation is the
+// round's only destructive step, and nothing rebuilds an index at startup or during WAL replay, so
+// a stale index whose journal was already trimmed is unrepairable.
+// Truncation is detected by counting WAL segment opens below the high-water ordinal, not by
+// counting files removed afterwards: the boundary handed to a round (min(prev_checkpoint_wal_id)
+// over every table) can report the previous checkpoint's and remove nothing even on a faithful
+// run -- the file-count check passed on an unfixed build about half the time.
 
 using namespace test_helpers;
 
 namespace {
 
-    // > row_group_size (1024) by a wide margin: 3000 rows span three row groups.
+    // > row_group_size (1024): 3000 rows span three row groups.
     constexpr int64_t kRows = 3000;
     constexpr int64_t kDeleteFrom = 1001; // inclusive
     constexpr int64_t kDeleteTo = 2000;   // inclusive
 
-    // Small enough that the churn below rolls the journal over many times: the truncation
-    // step has to have superseded segments to read, and the writer's own segment is never
-    // one of them.
+    // Small enough to rotate the journal over many segments during the churn below.
     constexpr std::size_t kSegmentBytes = 16 * 1024;
 
-    // Reached by a bounded churn loop, and far enough above the setup that the setup itself
-    // does not trip it.
+    // Above the setup's own WAL usage, so the setup alone can't trip it.
     constexpr std::uintmax_t kAutoCheckpointBytes = 2ull * 1024ull * 1024ull;
 
-    // One churn statement's worth of WAL: 100 rows of a 300-character payload.
     constexpr int kChurnRowsPerStatement = 100;
     constexpr std::size_t kChurnPayloadChars = 300;
 
@@ -120,9 +75,8 @@ namespace {
         }
     }
 
-    // WAL BYTES WITHOUT INDEX BYTES. adb.pad carries no index, so a statement against it
-    // grows the journal and opens no bitcask file -- which is what keeps the armed window
-    // free of any listing but the rebuild's.
+    // adb.pad carries no index, so churn against it grows the journal without opening a
+    // bitcask file.
     void churn_once(otterbrix::wrapper_dispatcher_t* d, int64_t& next_id) {
         const std::string payload(kChurnPayloadChars, 'x');
         std::string sql = "INSERT INTO adb.pad (id, payload) VALUES ";
@@ -137,7 +91,6 @@ namespace {
         REQUIRE(exec(d, sql)->is_success());
     }
 
-    // THE FULL SCAN IS THE TRUTH. `SELECT id, k` carries no predicate an index could serve.
     std::map<int64_t, int64_t> full_scan_truth(otterbrix::wrapper_dispatcher_t* d) {
         auto cur = exec(d, "SELECT id, k FROM adb.t;");
         REQUIRE(cur->is_success());
@@ -158,9 +111,7 @@ namespace {
         REQUIRE(text.find("Index Scan") != std::string::npos);
     }
 
-    // How many probe keys the index answers DIFFERENTLY from the full scan. Zero is an index
-    // that names the rows its table actually holds; anything else is one left naming
-    // pre-compact ids.
+    // Nonzero means the index still names pre-compact ids.
     std::size_t index_disagreements_with_the_full_scan(otterbrix::wrapper_dispatcher_t* d) {
         const auto truth = full_scan_truth(d);
         the_lookup_must_go_through_the_index(d);
@@ -191,8 +142,7 @@ namespace {
         return disagreements;
     }
 
-    // `wal_<database>_<ordinal>` — the ordinal is what orders the journal, and the writer only
-    // ever moves forward through it. Anything that is not a segment answers nothing.
+    // `wal_<database>_<ordinal>`; anything else is not a segment.
     std::optional<uint64_t> segment_ordinal(const std::filesystem::path& path) {
         const auto name = path.filename().string();
         if (name.size() < 4 || name.compare(0, 4, "wal_") != 0) {
@@ -211,9 +161,8 @@ namespace {
         return ordinal;
     }
 
-    // WAL segments are regular files sitting DIRECTLY under `${wal}/${database}/`; the table
-    // tree and the index directories share that root but keep their files at least one
-    // directory deeper, so this flat descent cannot pick one up.
+    // WAL segments sit directly under `${wal}/${database}/`; table and index files share that
+    // root but are at least one directory deeper, so this flat descent can't pick them up.
     std::set<std::filesystem::path> wal_segments(const std::filesystem::path& wal_root) {
         std::set<std::filesystem::path> segments;
         std::error_code ec;
@@ -261,15 +210,10 @@ namespace {
         return gone;
     }
 
-    // THE TRUNCATION STEP, WITNESSED WITHOUT BEING INTERFERED WITH.
-    //
-    // Every handle the WAL opens comes through this seam. While armed, an open of a segment
-    // BELOW the high-water ordinal is counted: the writer never goes backwards (a rotation
-    // opens a higher ordinal, which raises the mark instead), so in a running engine the only
-    // thing that reads a superseded segment is truncate_before deciding whether to unlink it.
-    // The handle is always passed through -- refusing would stop the round from removing
-    // anything, and then "the segments are still there" would be true of the unfixed build
-    // too.
+    // Counts opens of segments below the high-water ordinal: the writer never opens backward (a
+    // rotation only raises the mark), so in a running engine only truncate_before reads a
+    // superseded segment. The handle is always passed through -- refusing it would itself stop
+    // the round from truncating anything.
     class superseded_segment_watch_t final : public services::wal::wal_file_interposer_t {
     public:
         superseded_segment_watch_t() { services::wal::dev_set_wal_file_interposer(this); }
@@ -278,8 +222,7 @@ namespace {
         superseded_segment_watch_t(const superseded_segment_watch_t&) = delete;
         superseded_segment_watch_t& operator=(const superseded_segment_watch_t&) = delete;
 
-        // Seeded from the directory at arm time: starting the mark at zero would let the
-        // truncation's own first read raise it and go uncounted.
+        // Starting the mark at zero would let truncation's own first read raise it uncounted.
         void arm(uint64_t high_water_ordinal) noexcept {
             high_water_.store(high_water_ordinal, std::memory_order_relaxed);
             superseded_reads_.store(0, std::memory_order_relaxed);
@@ -311,9 +254,7 @@ namespace {
         std::atomic<uint64_t> superseded_reads_{0};
     };
 
-    // The bitcask index directory is found by CONTENT: it is the one holding a CURRENT
-    // marker, which bitcask writes as soon as it opens. adb.t carries the only index in this
-    // database, so there is exactly one.
+    // Found by content, not name: the directory holding bitcask's CURRENT marker.
     std::filesystem::path find_bitcask_dir(const std::filesystem::path& disk_root) {
         std::filesystem::path found;
         std::error_code ec;
@@ -328,10 +269,8 @@ namespace {
         return found;
     }
 
-    // RAII around a DIRECTORY's permission bits. The refusal is the filesystem's own -- a
-    // listing the kernel will not produce -- which is what collect_segments() meets and what
-    // clear() turns into its one clean early return. The bits go back in the destructor so a
-    // case that trips an assertion still leaves /tmp cleanable.
+    // Bits are restored in the destructor so a case that trips an assertion still leaves /tmp
+    // cleanable.
     struct dir_permissions_guard_t {
         std::filesystem::path directory;
         std::filesystem::perms previous;
@@ -352,20 +291,16 @@ namespace {
         dir_permissions_guard_t& operator=(const dir_permissions_guard_t&) = delete;
     };
 
-    // CHMOD DOES NOT BIND A SUPERUSER, so a suite run as root would turn the injection into
-    // one that never happened. Ask the filesystem whether the bits took, rather than asking
-    // getuid(): the question is about the effect.
+    // chmod does not bind a superuser: a suite run as root must check the effect, not getuid().
     bool directory_really_refuses_listing(const std::filesystem::path& directory) {
         std::error_code ec;
         std::filesystem::directory_iterator it(directory, ec);
         return static_cast<bool>(ec);
     }
 
-    // Churn until an automatic round has STARTED (a disk agent counted it), then wait until it
-    // has ENDED (the WAL manager counted its exit). Both halves are needed and neither is a
-    // timer: the round is fire-and-forget off commit_txn and the truncation is the LAST thing
-    // it does, so a case that measured at "started" -- or after some number of milliseconds --
-    // would be measuring a round that had not got there yet.
+    // Waits for round START then END (both counted, not timed): the round is fire-and-forget
+    // off commit_txn, and truncation is its last step, so a timer risks reading a round that
+    // hasn't got there yet.
     bool churn_until_an_automatic_round_completes(otterbrix::wrapper_dispatcher_t* d,
                                                   int64_t& next_id,
                                                   int max_statements) {
@@ -385,15 +320,8 @@ namespace {
 
 } // namespace
 
-// Step (c2) called repopulate_indexes_after_compaction, logged whatever it returned and
-// carried straight on into step (d). With the rebuild refused the round still went to the
-// journal: the seam below counted truncate_before reading the superseded segments, and on the
-// runs where the round's boundary reached them it unlinked twelve of the thirteen captured
-// files as well.
-//
-// With the refusal ending the round -- the same shape step (a) already uses for a refused
-// index flush -- step (d) is never entered, and the round that follows, with nothing in its
-// way, does the rebuild and the truncation both.
+// Measured on the unfixed build: the refused rebuild still let truncation run, unlinking twelve
+// of the thirteen captured segments.
 TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_may_not_cost_the_journal") {
     auto config = test_create_config(integration_fixture_path("test_auto_checkpoint_rebuild_refusal/db"));
     test_clear_directory(config);
@@ -402,8 +330,8 @@ TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_
     config.wal.max_segment_size = kSegmentBytes;
     config.wal.auto_checkpoint_threshold_bytes = kAutoCheckpointBytes;
 
-    // Declared before the engine so the seam is installed while the WAL opens its files, and
-    // still installed while it tears them down. It is inert until armed.
+    // Declared before the engine so the seam is installed for the WAL's whole lifetime; inert
+    // until armed.
     superseded_segment_watch_t watch;
 
     test_spaces space(config);
@@ -411,10 +339,9 @@ TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_
 
     REQUIRE(exec(d, "CREATE DATABASE adb;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE adb.t (id bigint, k bigint);")->is_success());
-    // USING hash -> the bitcask backend, whose clear() reports a directory it cannot list by
-    // value and leaves the store untouched. That is the refusal this case injects.
+    // USING hash -> bitcask backend, whose clear() reports a directory it cannot list and
+    // leaves the store untouched -- the refusal this case injects.
     REQUIRE(exec(d, "CREATE INDEX t_k ON adb.t USING hash (k);")->is_success());
-    // The WAL engine: no index, so its statements never open a bitcask file.
     REQUIRE(exec(d, "CREATE TABLE adb.pad (id bigint, payload text);")->is_success());
 
     load(d);
@@ -427,8 +354,8 @@ TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_
                      " AND id <= " + std::to_string(kDeleteTo) + ";")
                 ->is_success());
 
-    // Two clean rounds with churn between them, so the journal that goes into the armed
-    // window holds a run of superseded segments for the truncation step to read.
+    // Two clean rounds with churn between them, so the armed window's journal holds superseded
+    // segments for truncation to read.
     REQUIRE(exec(d, "CHECKPOINT;")->is_success());
     for (int i = 0; i < 12; ++i) {
         churn_once(d, churn_id);
@@ -441,15 +368,9 @@ TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_
     INFO("front-of-table deletes, so the armed round's compaction has a shift to hand out");
     REQUIRE(exec(d, "DELETE FROM adb.t WHERE id >= 1 AND id <= 10;")->is_success());
 
-    // AND THOSE ERASES MUST HAVE LANDED BEFORE THE INJECTION GOES IN. A committed DELETE does
-    // not reach the index inside the statement -- commit_deletes queues it and the horizon
-    // sweep publishes it once no live snapshot can want the rows -- and that publication is a
-    // WRITE, whose tail (bitcask_index_agent_t::pay_merge_debt) LISTS the index directory.
-    // Arming over an unfinished erase therefore refused step (a)'s flush instead of step
-    // (c2)'s rebuild, and the round ended before it ever reached the disk. The wait is on the
-    // queue's own depth, and the short settle after it covers the store-side tail of the last
-    // publication, which outlives the counter. If it ever proves too short the case says so:
-    // the disk-round guard below fails rather than passing for the wrong reason.
+    // Must drain the deferred-delete queue before arming: its publication (horizon sweep) also
+    // lists the index directory (bitcask_index_agent_t::pay_merge_debt), so arming over an
+    // unfinished erase would trip step (a)'s flush refusal instead of the rebuild targeted here.
     {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         while (services::index::index_deferred_deletes() != 0 && std::chrono::steady_clock::now() < deadline) {
@@ -473,9 +394,7 @@ TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_
 
     bool round_completed = false;
     {
-        // Write + execute, no read: the path still resolves (so already-open descriptors and
-        // by-name opens are unaffected) but it cannot be LISTED, which is the door
-        // collect_segments() knocks on.
+        // write+exec, no read: already-open descriptors are unaffected, only listing fails.
         dir_permissions_guard_t no_listing(bitcask_dir,
                                            std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec);
         INFO("the injection has to be real: a suite running as root would list it anyway");
@@ -500,24 +419,17 @@ TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_
          "and neither a round that compacted nothing nor a rebuild that quietly succeeded could");
     REQUIRE(index_disagreements_with_the_full_scan(d) > 0);
 
-    // THE POINT. The truncation is the round's only destructive step, and the round has just
-    // failed the step that was its last chance to fail recoverably, so it must not have gone
-    // near the journal at all.
     INFO("superseded segments the abandoned round read: " << reads_by_the_abandoned_round);
     REQUIRE(reads_by_the_abandoned_round == 0);
 
-    // The same claim at file level. It is a CHECK rather than the gate because it depends on
-    // the boundary the round was handed -- a round that deferred one busy table reports the
-    // previous boundary and removes nothing however faithfully it ran step (d) -- so it
-    // corroborates the gate above without being able to stand in for it.
+    // CHECK not REQUIRE: file-level removal depends on the round's boundary, so this
+    // corroborates but can't replace the gate above.
     const auto gone = missing_from_disk(watched_segments);
     INFO("segments the abandoned round destroyed: " << gone.size() << " of " << watched_segments.size());
     CHECK(gone.empty());
 
-    // AND THE ROUND MUST BE REPEATABLE. An abandoned round that wedged the dedup guard, or
-    // left a window nothing could trip again, would trade a recoverable failure for a
-    // permanent one -- which is the whole reason abandoning is allowed to be the answer here.
-    // The next automatic round runs with nothing in its way and must finish the whole job.
+    // The next round must also complete cleanly: an abandoned round that wedged the dedup
+    // guard would trade a recoverable failure for a permanent one.
     services::index::reset_index_repopulations();
     watch.arm(highest_segment_ordinal(config.wal.path));
     const bool next_round_completed = churn_until_an_automatic_round_completes(d, churn_id, 400);
@@ -531,9 +443,8 @@ TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_
     REQUIRE(services::index::index_repopulations() > 0);
     CHECK(index_disagreements_with_the_full_scan(d) == 0);
 
-    // NOT VACUOUS (4), and it is what makes the zero above mean something: the very counter
-    // the abandoned round had to leave at zero is one an unobstructed round in this same
-    // journal trips immediately.
+    // Confirms the counter can fire at all -- the same one the abandoned round had to leave
+    // at zero.
     INFO("superseded segments the next round read: " << reads_by_the_next_round);
     REQUIRE(reads_by_the_next_round > 0);
 }

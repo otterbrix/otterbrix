@@ -160,7 +160,7 @@ namespace otterbrix {
             if (batch_res.has_error()) {
                 throw std::runtime_error(std::string(batch_res.error().what));
             }
-            // Intrusively refcounted (rule 14) — see arrow_wrapper.hpp; `auto` follows the owner.
+            // Intrusively refcounted — see arrow_wrapper.hpp; `auto` follows the owner.
             auto batch = std::move(batch_res.value());
             while (batch->arrow_array.length == 0 && batch->arrow_array.release) {
                 auto next_res = global_state.stream->get_next_chunk(resource);

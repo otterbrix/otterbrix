@@ -5,27 +5,21 @@
 #include <string>
 
 // Invariant under test: a secondary index contains exactly the non-NULL keys of the live rows.
-//
 // A NULL key must never enter an index. Before the fix it did, with three distinct failure modes,
 // selected by where the NULL sat and what type the column was:
-//
 //   * DROP    — cast_as(NA -> BIGINT) throws (operations_helper.hpp: the NA case is commented out,
 //               falling into `default: throw`). The throw escapes an actor coroutine whose
 //               unhandled_exception() is empty under NDEBUG, so the insert loop dies mid-batch and
 //               the caller is told it succeeded. Every row after the NULL is missing from the index.
-//   * INVENT  — if the NULL is the FIRST key, the ordered in-memory index of the day latched
-//               stored_type_ = NA (that class no longer exists; the mode is recorded because it is
-//               what the invariant below was written against), the
+//   * INVENT  — if the NULL is the FIRST key, the index latched stored_type_ = NA, the
 //               cast becomes a no-op, and the b-tree fills with mixed NA/typed keys. operator< then
 //               switches on the left operand's type and returns false for NA, so NA compares
 //               "equivalent" to every value while the values are ordered among themselves — not a
 //               strict weak ordering. Lookups return rows that do not match.
 //   * CRASH   — on a TEXT column, comparing a typed value against an NA dereferences a null string.
-//
 // Every query below runs against BOTH an indexed and an unindexed twin holding identical data, and
 // asserts the absolute expected count. Cross-checking alone is not enough: some of these bugs can
 // make both tables wrong, and an equality-only check would pass on two identically wrong answers.
-//
 // Disk and WAL are ON deliberately: the CREATE INDEX backfill branch is skipped entirely when there
 // is no disk address, which would make half of this matrix vacuous.
 

@@ -188,10 +188,8 @@ namespace components::types {
     }
 
     bool physical_value::less_128_(const physical_value& other) const noexcept {
-        // INT128/UINT128 join the numeric family. Promote the narrow side; sign-aware for
-        // the mixed signed/unsigned pairing; floating pairings go through double (lossy for
-        // >2^53 — the documented cross-domain semantics, covered by the int128<->double
-        // matrix test).
+        // Sign-aware promotion for the mixed signed/unsigned pairing; floating pairings go
+        // through double (lossy for >2^53, by design).
         auto as_int128 = [](const physical_value& v) -> int128_t {
             switch (v.type_) {
                 case physical_type::UINT8:

@@ -131,13 +131,9 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
             return c;
         }())
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_))
-        // A REAL index manager, not empty_address(). The empty slot pinned the quiet
-        // no-op in operator_create_index_backfill (see the same note in
-        // test_variant_e3_differential.cpp): with no index actor wired the operator
-        // marked itself executed and reported success without creating anything, and
-        // the CREATE INDEX cases below REQUIREd that success. Production always spawns
-        // the index manager (integration/cpp/base_spaces.cpp), so the operator now
-        // refuses on an empty address and the harness matches production.
+        // A REAL index manager, not empty_address() (see test_variant_e3_differential.cpp):
+        // with none wired, operator_create_index_backfill used to report success without
+        // creating anything. Production always spawns it (integration/cpp/base_spaces.cpp).
         , manager_index_(actor_zeta::spawn<services::index::manager_index_t>(resource,
                                                                             scheduler_,
                                                                             log_,
@@ -489,12 +485,9 @@ TEST_CASE("services::dispatcher::wave3::empty_target_send_dies_loudly") {
     REQUIRE(WIFSIGNALED(status));
 }
 
-// The column list of INSERT ... SELECT into a computed (relkind='g') table carries the
-// same NAME semantics as everywhere else. Skipping set_column_bindings for relkind='g'
-// leaves the insert operator with nothing to rename by, so `INSERT INTO g (x, y) SELECT
-// a, b` lands and REGISTERS columns a and b — the written (x, y) vanishing without a
-// word. A list whose arity disagrees with the projection is a refusal, not a silent
-// partial mapping.
+// Skipping set_column_bindings for a computed (relkind='g') table's INSERT ... SELECT would
+// leave the operator nothing to rename by, so `INSERT INTO g (x, y) SELECT a, b` would land and
+// register a and b — the written (x, y) vanishing silently.
 TEST_CASE("services::dispatcher::wave4::insert_select_column_list_renames_into_computed_table") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("insert_select_rename_computed"));
@@ -565,16 +558,13 @@ TEST_CASE("services::dispatcher::wave4::create_index_refuses_a_taken_name") {
     REQUIRE(test.execute_sql("CREATE INDEX idx2 ON cdi.t (b);")->is_success());
 }
 
-// A column written NULL in EVERY row of a VALUES source has no type, so it is dropped
-// from the source chunk before anything downstream sees it — and the statement then died
-// as a bare count disagreement ("INSERT names 2 columns but the source provides 1") that
-// named neither the column that went missing nor the reason. The count is a symptom; the
-// cause is a typeless column, and the drop site is the last place that still knows which
-// written name it belonged to, because the drop is exactly what breaks the 1:1
-// correspondence between the written list and the chunk's columns.
+// A column written NULL in every row of a VALUES source has no type, so it's dropped from the
+// source chunk before anything downstream sees it — which used to die as a bare arity mismatch
+// ("INSERT names 2 columns but the source provides 1") naming neither the column nor the reason.
+// The drop site is the last place that still knows which written name it belonged to.
 //
-// Both halves are asserted: the refusal still carries the arity sentence (nothing that
-// already reads it changes), and it now also names the column and says why.
+// Both halves are asserted: the arity sentence stays, and it now also names the column and says
+// why.
 TEST_CASE("services::dispatcher::wave4::insert_names_the_all_null_column_it_drops") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("insert_all_null_column_named"));
@@ -605,14 +595,10 @@ TEST_CASE("services::dispatcher::wave4::insert_names_the_all_null_column_it_drop
     REQUIRE(test.execute_sql("INSERT INTO anc.t (id, v) VALUES (1, NULL), (2, 7);")->is_success());
 }
 
-// A CREATE INDEX that reaches an executor with NO index manager wired must be refused,
-// not answered with success. operator_create_index_backfill used to mark itself executed
-// and return on that branch: the statement registered nothing, created nothing,
-// backfilled nothing and never flipped pg_index.indisvalid, and the cursor said SUCCESS.
-// The quiet success was invisible because this fixture and test_variant_e3_differential
-// both synced empty_address() into the sync_pack's third slot; both wire a real
-// manager_index_t now, and this case keeps the seam alive on purpose so the refusal
-// itself is pinned rather than the silence.
+// A CREATE INDEX reaching an executor with NO index manager wired must be refused, not
+// answered with success: operator_create_index_backfill used to report SUCCESS on that branch
+// without registering, creating, backfilling, or flipping pg_index.indisvalid. This case keeps
+// the empty-address seam alive on purpose so the refusal itself stays pinned.
 TEST_CASE("services::dispatcher::wave4::create_index_refuses_without_an_index_manager") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(),
@@ -629,47 +615,23 @@ TEST_CASE("services::dispatcher::wave4::create_index_refuses_without_an_index_ma
     CHECK(std::string(cur->get_error().what).find("index manager") != std::string::npos);
 }
 
-// The two spellings of a DEFAULT AGREE, and this pins the parity by EXECUTION:
+// CREATE TABLE and ALTER TABLE ADD COLUMN must coerce a DEFAULT identically: both route through
+// the same convert_column_defaults / cast_registry_ (services/collection/executor.cpp, "ALTER
+// TABLE: DEFAULT coercion"), mirroring PostgreSQL's single cookDefault() shared by DefineRelation
+// and ATExecAddColumn (COERCION_ASSIGNMENT, erroring only when no assignment cast exists).
 //
-//   * CREATE TABLE casts. `c integer DEFAULT 7` stores INTEGER 7 although the literal 7 is
-//     BIGINT (numeric_literal_value's T_Integer arm), because services/collection's executor
-//     hands the column list to convert_column_defaults, which resolves an assignment cast and
-//     REPLACES the stored value.
-//   * ALTER TABLE ADD COLUMN casts TOO, through the SAME convert_column_defaults and the same
-//     cast_registry_ (services/collection/executor.cpp, "ALTER TABLE: DEFAULT coercion", right
-//     after the DDL rewrite — only there does each ADD COLUMN clause exist as its own
-//     node_alter_column_t whose column() is writable).
+// What still refuses: a DEFAULT with no assignment cast to the column's type.
+// catalog::alter_column_validators::validate_default_value_type stays load-bearing as a SECOND
+// line — the coercion only runs on the ALTER STATEMENT path, so a host-built plan handing
+// node_alter_column_t straight to the operator skips it entirely, leaving the validator the only
+// check left. Do not read this test as license to remove it.
 //
-// THIS SECTION USED TO PIN THE OPPOSITE — that ALTER REFUSED the divergence — and the owner
-// flipped it on 2026-09-05 under rule 17, together with the decision to close the parity gap.
-// The shape is PostgreSQL's: one cookDefault(), called by both DefineRelation and
-// ATExecAddColumn, coercing with COERCION_ASSIGNMENT and erroring only when no assignment cast
-// exists. Parity there cannot be broken because there is one path; here it now cannot either,
-// because there is one convert_column_defaults.
-//
-// WHAT STILL REFUSES, AND IS PINNED BELOW: a DEFAULT the registry has no assignment cast to the
-// column's type for. Behind that, catalog::alter_column_validators::validate_default_value_type
-// (called from operator_alter_column_add) stays as the SECOND line and MUST NOT be read as "now
-// removable": the coercion runs on the ALTER STATEMENT path only, so a host-built plan handing a
-// node_alter_column_t straight to the operator never passes through it, and the validator is then
-// the only check between a divergent DEFAULT and the catalog.
-//
-// attdefspec is a TYPE-DIRECTED codec: the payload SHAPE is still derived from the column type
-// it is decoded against. But read_typed_value (components/index/logical_value_binary_codec.hpp)
-// also stores, and checks, one logical tag byte per present value, so it refuses a SAME-WIDTH
-// divergence (BIGINT read as TIMESTAMP) as well as the WIDTH divergence (BIGINT read as
-// INTEGER) it always caught.
-//
-// THAT DEMOTES validate_default_value_type TO THE SECOND LINE OF DEFENCE, AND IT MUST NOT BE
-// READ AS "NOW REMOVABLE": the two refuse at different moments. The validator refuses at ALTER
-// time, before the first catalog write — the divergence never reaches disk and the statement
-// fails with "default value type mismatch". The codec guarantees only that a divergence which
-// somehow DID reach disk cannot be read back as a valid value of the wrong type, and says so as
-// data_corruption. Dropping the validator would turn a rejected statement into a persisted row
-// nobody can read afterwards.
-//
-// Neither codec arm asserts, so Debug and NDEBUG give the same answer. The one pair the section
-// below spells out is the worst of a space the next TEST_CASE walks whole.
+// attdefspec is TYPE-DIRECTED: read_typed_value (components/index/logical_value_binary_codec.hpp)
+// checks a logical tag byte per value, so it also catches a SAME-WIDTH divergence (BIGINT read as
+// TIMESTAMP), not just the WIDTH divergence it always caught. That's a deeper backstop, not a
+// replacement: the validator refuses at ALTER time before any catalog write; the codec only
+// guarantees a divergence that somehow reached disk can't be read back as the wrong type
+// (data_corruption). Dropping the validator would turn a rejected statement into an unreadable row.
 TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like_create_table") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("alter_add_default_type"));
@@ -783,25 +745,13 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like
 }
 
 
-// The type tag, over the WHOLE pair space. The section above pins the single worst pair;
-// this pins every one of them — the pair that mattered was found by ENUMERATING the
-// space, not by reading the code, and an enumeration is what keeps it closed. The
-// sixteen scalars attdefspec can carry give 240 ordered wrong-type pairs; all 240 must
-// be refused, and the 16 self-pairs must still round-trip.
-//
-// Before the tag byte, 50 of the 240 were accepted SILENTLY — they decoded into a
-// perfectly valid value of the WRONG type: BIGINT read as UBIGINT / TIME / TIMESTAMP /
-// TIMESTAMP_TZ / DOUBLE, INTEGER as UINTEGER / DATE / FLOAT, BOOLEAN / TINYINT /
-// UTINYINT interchangeably, and SMALLINT with USMALLINT. BIGINT/DOUBLE was the worst of
-// them: a bit-pattern reinterpretation rather than a relabelling. The other 190 were
-// caught only because their widths happened to disagree, which is a length check and not
-// a type check — it is the reason this case counts pairs instead of trusting that one.
-//
-// This needs no dispatcher fixture: it drives the catalog encode/decode boundary
-// (components/catalog/system_table_schemas.cpp) over the codec in
-// components/index/logical_value_binary_codec.hpp. It lives beside the case above
-// because it is that case generalised, and because a reader who weakens one must see
-// the other.
+// The type tag over the WHOLE pair space: 16 scalars give 240 ordered wrong-type pairs, all
+// must refuse, and the 16 self-pairs must still round-trip. Before the tag byte, 50 of the 240
+// were accepted SILENTLY as a valid value of the wrong type (e.g. BIGINT read as
+// TIMESTAMP/DOUBLE — a bit-pattern reinterpretation, not just a relabelling); the other 190 were
+// only caught because their widths happened to disagree. Drives the catalog encode/decode
+// boundary directly (components/catalog/system_table_schemas.cpp over
+// components/index/logical_value_binary_codec.hpp), no dispatcher fixture needed.
 TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_refuses_every_wrong_type_pair") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     auto* resource = mr.get();
@@ -888,18 +838,11 @@ TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_refuses_every_wrong_
     CHECK(self_round_trips == 16);
 }
 
-// NULL and the nested types, against the same tag. Two things have to stay true that a
-// per-value tag could plausibly have broken.
-//
-// NULL carries NO tag, and must not: presence 0 ends the value, and a NULL is NA-typed
-// in this engine (logical_value_t::is_null() IS type() == NA), so there is no type for a
-// tag to agree with. Writing the column's type there would invent one.
-//
-// Nested values carry the tag at EVERY level, not just the outermost, and this is the
-// case that earns the extra byte per leaf. The divergence a DEFAULT can carry is
-// per-leaf: a STRUCT<BIGINT, STRING> payload read against STRUCT<TIMESTAMP, STRING> is
-// the same same-width swap as the scalar one, one level down. An outer-only tag would
-// see two STRUCTs, agree, and let the field underneath reinterpret silently.
+// Two invariants a per-value tag could plausibly break: NULL carries NO tag (presence 0 ends
+// the value, and NULL is NA-typed here, so there's no type to agree with); and nested values
+// carry the tag at EVERY level, not just the outermost — a STRUCT<BIGINT,STRING> read against
+// STRUCT<TIMESTAMP,STRING> is the same same-width swap one level down, which an outer-only tag
+// would miss.
 TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_spares_null_and_reaches_every_leaf") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     auto* resource = mr.get();

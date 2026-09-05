@@ -36,13 +36,10 @@ namespace components::operators {
         const auto& indices = fk_.child_col_indices;
         const std::size_t absent = std::numeric_limits<std::size_t>::max();
 
-        // THE TWO COLUMN LISTS MUST BE THE SAME LENGTH. The keys-chunk below carries one column per
-        // child_col_indices entry, while the key column NAMES sent with it are parent_col_names — the two counts
-        // have to agree for the parent-side lookup to mean anything, and nothing on the DDL path makes them
-        // agree: `FOREIGN KEY (a, b) REFERENCES parent (x)` is accepted verbatim and each list is resolved to
-        // attoids independently. Left unchecked, the disk side gets a key chunk it cannot read and answers one
-        // empty bucket per key, which this operator reports as "referenced row not found in parent table" — a
-        // violation message pointing at data that is perfectly fine. Name the actual defect instead.
+        // child_col_indices and parent_col_names must be the same length; nothing on the DDL path enforces
+        // this for a lopsided `FOREIGN KEY (a, b) REFERENCES parent (x)`. Left unchecked, the disk side gets
+        // an unreadable key chunk and answers empty buckets, which reads as a data violation instead of the
+        // real constraint defect.
         if (indices.size() != fk_.parent_col_names.size()) {
             std::pmr::string what{"FK constraint: foreign key column count mismatch — ", resource_};
             what.append(std::to_string(indices.size()).c_str());
@@ -54,13 +51,9 @@ namespace components::operators {
             co_return;
         }
 
-        // EVERY REFERENCING COLUMN MUST HAVE A POSITION IN THE WRITTEN ROW. A different defect from the arity
-        // mismatch above — the two lists can agree in length and still name a column this write-set does not
-        // expose — and it takes the operator's QUIETEST path: an unresolved position means the row qualifies for
-        // no parent lookup, so every row is skipped, the qualifying count stays 0, and 0 is this operator's
-        // SUCCESS path — an INSERT/UPDATE accepted with its foreign key checked against nothing at all. There is
-        // no reading of an absent column that is a check, so refuse and name the column.
-        // (Constant per FK: the positions are the same for every row.)
+        // Different defect from the arity check: an unresolved position takes the QUIETEST path (every row
+        // skipped, qualifying count 0, which is this operator's SUCCESS) — an FK silently checked against
+        // nothing. Refuse and name the column instead. (Positions are constant per FK.)
         if (indices.empty()) {
             set_error(core::error_t{
                 core::error_code_t::invalid_constraint,
@@ -88,10 +81,8 @@ namespace components::operators {
             parent_col_names.emplace_back(n);
         }
 
-        // Collect the qualifying child rows as a per-chunk SELECTION, preserving the MATCH null policy + error
-        // path. Each input chunk's qualifying keys become their own owned keys-chunk, verified by one
-        // scan_by_keys call per input chunk (below); scan_by_keys does ONE single-pass hash semi-join scan of the
-        // parent per call, so the whole verify is O(child_rows + parent_rows), not O(keys * parent_rows).
+        // Per-chunk qualifying SELECTION, verified by one scan_by_keys call per chunk: a single-pass hash
+        // semi-join, so the whole verify is O(child_rows + parent_rows), not O(keys * parent_rows).
         // qualifying[c] = selection into in_chunks[c]; counts[c] = its qualifying count.
         std::pmr::vector<components::vector::indexing_vector_t> qualifying(resource_);
         std::pmr::vector<uint64_t> counts(resource_);
@@ -160,11 +151,9 @@ namespace components::operators {
             co_return;
         }
 
-        // Verify the qualifying keys against the parent table ONE input chunk at a time. Each input chunk holds
-        // <= DEFAULT_VECTOR_CAPACITY rows, so its keys-chunk is bounded; gathering ALL streamed batches into one
-        // carrier would overflow the chunk capacity. Each keys-chunk is an OWNED copy (it crosses the mailbox;
-        // actors must not share buffers). The per-chunk scans are sequential co_awaits living in this nested
-        // operator coroutine (driven by the executor) — no lost-wakeup.
+        // Verified one input chunk at a time (bounded keys-chunk; gathering all batches would overflow
+        // capacity). Each keys-chunk is an OWNED copy; the per-chunk scans are sequential co_awaits — no
+        // lost-wakeup.
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
         key_types.reserve(indices.size());
         for (auto idx : indices) {

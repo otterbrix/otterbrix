@@ -1,28 +1,27 @@
-// THE CREATE INDEX CATCHUP MAY ADD TO THE INDEX. IT MAY NOT TAKE ANYTHING AWAY.
+// The CREATE INDEX catchup may add to the index; it may not take anything away.
 //
-// operator_create_index_backfill scans the table under the build transaction's snapshot and then
-// re-reads the journal past the build's start watermark, so rows committed while the scan ran are
-// not missed. It hands each record to manager_index_t::apply_wal_record_for_index, and that handler
-// has ONE leg: PHYSICAL_INSERT/UPDATE stage inserts, PHYSICAL_DELETE is recognised and dropped.
+// operator_create_index_backfill scans under the build's snapshot, then re-reads the journal past
+// the build's start watermark so rows committed mid-scan aren't missed. Each record goes to
+// manager_index_t::apply_wal_record_for_index, which has one leg: PHYSICAL_INSERT/UPDATE stage
+// inserts, PHYSICAL_DELETE is recognised and dropped.
 //
-// The delete leg is not a mirror of the insert leg, for the same reason commit_deletes holds its
-// erases back. A physical record reaches the journal BEFORE its transaction has decided anything,
-// and the filter is the COMMIT marker, which crash recovery reads and this catchup does not. So the
-// same undecided record fails in opposite directions on the two legs:
+// The delete leg isn't a mirror of the insert leg, for the same reason commit_deletes holds its
+// erases back: a physical record reaches the journal before its transaction has decided anything,
+// and only the COMMIT marker (which crash recovery reads, not this catchup) can filter it. So an
+// undecided record fails in opposite directions:
 //
-//   INSERT leg  names a row nobody can see  -> a SUPERSET, and storage_fetch drops it under
-//                                              the reader's own snapshot.
-//   DELETE leg  takes an id off a LIVE row  -> a SUBSET, and nothing downstream can put back
-//                                              an id the index never named.
+//   INSERT leg  names a row nobody can see  -> a SUPERSET, dropped by storage_fetch under the
+//                                              reader's own snapshot.
+//   DELETE leg  takes an id off a LIVE row  -> a SUBSET, and nothing downstream can restore an
+//                                              id the index never named.
 //
-// On top of that such a bucket would have no exit. A build publishes through commit_inserts; the
-// batch commit_deletes keys off the base-table DELETE ranges, which a build has none of. So the
-// staged deletes were neither published nor reverted -- they stayed in the agent for the life of
-// the index, and read_rows merges the ASKING transaction's own bucket, so the one reader they were
-// visible to was the build itself, which they answered SHORT.
+// Such a staged-delete bucket would also have no exit: a build publishes through commit_inserts,
+// and commit_deletes keys off base-table DELETE ranges a build has none of. The staged deletes
+// would sit in the agent for the index's whole life, visible only to the build itself (read_rows
+// merges the asking transaction's own bucket), which they'd answer short.
 //
-// Both test cases below drive the manager's handlers directly with the agent pumped by hand, the
-// way test_index_delete_horizon.cpp does, so the interleaving is chosen rather than raced for.
+// Both cases drive the manager's handlers directly with the agent pumped by hand, as
+// test_index_delete_horizon.cpp does, so the interleaving is chosen rather than raced for.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -71,10 +70,8 @@ namespace {
     constexpr components::catalog::oid_t kTableOid = 17500;
     constexpr components::catalog::oid_t kIndexOid = 17501;
 
-    // Resume the coroutine `fut` is suspended in, the way the manager's own loop thread
-    // does. Copied from test_index_delete_horizon.cpp deliberately, for the reason stated
-    // there: a shared helper header for three test files would be the start of a test
-    // framework nobody asked for.
+    // Resume the coroutine `fut` is suspended in, the way the manager's own loop thread does.
+    // Duplicated from test_index_delete_horizon.cpp rather than shared, per that file's note.
     template<typename T>
     bool resume_awaited(const actor_zeta::unique_future<T>& fut) {
         auto handle = fut.coroutine_handle();
@@ -148,15 +145,13 @@ namespace {
 
 } // namespace
 
-// THE RED ONE.
-//
-// Three rows are backfilled by the scan leg (keys 10/20/30 at physical ids 0/1/2). The journal then
-// shows one PHYSICAL_DELETE for the middle row -- a record with no commit marker behind it, which
-// is every physical record the catchup can ever see. A full scan of the table at this point still
-// answers all three rows: nothing committed that delete. The index must answer with AT LEAST those
-// three ids, to every reader, the build included. A staged delete would sit in
-// pending_deletes_[build txn], and read_rows merges the asking transaction's own bucket -- so the
-// build's own read comes back {0, 2}.
+// Three rows are backfilled by the scan leg (keys 10/20/30 at physical ids 0/1/2). The journal
+// then shows one PHYSICAL_DELETE for the middle row -- a record with no commit marker behind it,
+// which is every physical record the catchup can ever see. A full scan at this point still
+// answers all three rows: nothing committed that delete, so the index must answer with at least
+// those three ids to every reader, build included. A staged delete would instead sit in
+// pending_deletes_[build txn], and read_rows merges the asking transaction's own bucket -- so
+// the build's own read would come back {0, 2}.
 TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the built index") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -266,12 +261,9 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
     std::filesystem::remove_all(path);
 }
 
-// THE DIRECTION GUARD.
-//
-// The bucket the build left behind cannot be fixed by publishing it later, so this pins
-// the other end: a horizon that has run past every commit id in sight must not erase
-// anything the catchup saw. Nothing committed those deletes -- the horizon has no opinion
-// about them and must not be given one.
+// The bucket the build left behind can't be fixed by publishing it later, so this pins the
+// other end: a horizon that has run past every commit id in sight must not erase anything the
+// catchup saw. Nothing committed those deletes, so the horizon has no opinion on them.
 TEST_CASE("services::index::the horizon does not erase what a CREATE INDEX catchup read") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");

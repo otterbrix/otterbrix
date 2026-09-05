@@ -35,9 +35,7 @@ namespace {
     std::filesystem::path sys_dir_for(const std::filesystem::path& base) {
         return base / std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::main_database));
     }
-    // The on-disk layout is OID-keyed: <base>/<db_oid>/<table_oid>/table.otbx. The
-    // table OID comes straight off system_table_def_t::relation_oid — there is no
-    // name→oid mapping to mirror here.
+    // Layout is OID-keyed: <base>/<db_oid>/<table_oid>/table.otbx.
     std::filesystem::path coll_dir_for(const std::filesystem::path& base, components::catalog::oid_t tbl_oid) {
         return sys_dir_for(base) / std::to_string(static_cast<unsigned>(tbl_oid));
     }
@@ -100,17 +98,14 @@ namespace {
                 std::this_thread::yield();
             }
             REQUIRE(cf.is_ready());
-            // Bind the [[nodiscard]] reply and state something true of it: the sealed WAL
-            // floor is the oldest root any table could still fall back to, so it can never
-            // run ahead of the id this round was told the WAL had reached.
+            // Sealed floor can never run ahead of the wal id this round reports.
             auto sealed = std::move(cf).take_ready();
             REQUIRE(sealed <= wal_id);
         }
     };
 
-    // The T3 interposer seam is process-wide and a bootstrap opens one .otbx per system
-    // table, so filter by path: every handle whose path does not carry the marker is returned
-    // unwrapped. Same shape as the scopes in test_persistence.cpp / test_resolve.cpp.
+    // The interposer seam is process-wide; filter by path so only the targeted table's
+    // handle is wrapped. Same shape as the scopes in test_persistence.cpp / test_resolve.cpp.
     class one_table_fault_scope_t final
         : public components::table::storage::single_file_block_manager_t::file_handle_interposer_t {
     public:
@@ -136,7 +131,6 @@ namespace {
         std::string marker_;
     };
 
-    // Append `count` BIGINT rows numbered [0, count) to an existing user table.
     void append_rows(disk_only_fixture& fx, components::catalog::oid_t table_oid, uint64_t count) {
         std::pmr::vector<components::types::complex_logical_type> types(&fx.resource);
         components::types::complex_logical_type t{components::types::logical_type::BIGINT};
@@ -236,10 +230,8 @@ TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
     cleanup_boot_dir();
 }
 
-// 4. Empty config_disk.path — bootstrap is a safe no-op. An empty path names no directory a
-// .otbx could live in, so the call refuses with a logged error instead of manufacturing a
-// relative-path database under the process CWD. What this case pins: the call is safe,
-// idempotent, and leaves nothing behind.
+// 4. Empty config_disk.path — bootstrap refuses with a logged error instead of manufacturing
+// a relative-path database under the process CWD.
 TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
     core::pmr::otterbrix_resource resource;
     log_t log = initialization_logger("python", "/tmp/docker_logs/");
@@ -319,20 +311,10 @@ TEST_CASE("services::disk::sysboot::load_after_bootstrap_in_same_process") {
     cleanup_boot_dir();
 }
 
-// --- A SYSTEM TABLE THAT DID NOT COME UP MUST STOP THE START ----------------------------
-//
-// bootstrap_one (manager_disk_bootstrap.cpp) had three ways to leave a pg_* table
-// absent while reporting nothing an operator could act on:
-//   * a failed load_storage_disk_sync was logged at WARN and the lambda returned false
-//     ("not freshly created"), which ALSO skipped the seeding branch — so the engine came up
-//     with an EMPTY catalog over live storage and the next DDL minted fresh oids on top of it;
-//   * create_storage_disk_sync returns void, so a create whose very first write failed left
-//     no storage and no word about it;
-//   * a system table that LOADED cleanly with zero rows (the crash-before-first-checkpoint
-//     shape) was indistinguishable from a table that was already there and full.
-// The three cases below pin those three, each on CONTENT, and case A additionally pins that
-// the refusal is survivable: the process goes on and a repeat start with the cause removed
-// comes up.
+// A system table that fails to load/create used to come up silently (WARN + empty catalog, or
+// no word at all on a failed create) instead of refusing. The three cases below pin that a
+// failed open/create now stops the start, and that the refusal is survivable (case 9: a repeat
+// start with the cause removed comes up with prior content intact).
 
 // 9. A system table that CANNOT BE OPENED refuses the start, loudly — and the process lives.
 TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") {
@@ -361,10 +343,8 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
         fd.checkpoint(services::wal::id_t{100});
     }
 
-    // Phase 2 — pg_class cannot be read at all. Offset 0 is the main header, the first read
-    // load_existing_database issues, and 0 is a legal value for the knob (its off switch is
-    // UINT64_MAX, fault_injection_file.hpp). The load fails through
-    // construction_failed() -> data_corruption (manager_disk_io.cpp).
+    // Offset 0 is the main header, the first read on open; the knob's off switch is
+    // UINT64_MAX, not 0, so this value legitimately fails the read.
     {
         otterbrix_test::fault_plan_t plan;
         plan.fail_reads_at_location = 0;
@@ -379,9 +359,7 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
         REQUIRE(plan.reads_failed > 0);
     }
 
-    // Phase 3 — THE SURVIVAL PROOF. The refusal above unwound out of a live manager (the
-    // first throw on this path to do so) and wrote nothing: the same directory opens again
-    // with the cause gone, and it still holds phase 1's CONTENT.
+    // Survival proof: the refusal wrote nothing, so a repeat open still holds phase 1's content.
     {
         disk_only_fixture fd3(base);
         REQUIRE_NOTHROW(fd3.manager->bootstrap_system_tables_sync());
@@ -398,18 +376,11 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
     cleanup_boot_dir();
 }
 
-// 10. THE CORRUPTION MECHANISM, stated as an assertion. restore_oid_generator_sync skips a
-// system table whose entry is null (manager_disk_bootstrap.cpp), so a catalog table
-// that did not come up takes its oids out of the frontier: the generator is left at its
-// default seed (FIRST_USER_OID - 1) and the next allocation hands out an oid that is ALIVE on
-// disk. After the refusal there is nothing to mint over, because there is no start.
-//
-// The victim is pg_namespace and the live object is a NAMESPACE on purpose. A namespace's
-// oid is written to exactly one place (build_create_namespace_writes touches pg_namespace and
-// nothing else), so losing that table loses the only record of the oid. Losing pg_class
-// instead does NOT reproduce the collision — a table's attoids are allocated from the same
-// batch and land in pg_attribute ABOVE the table's own oid, so the frontier survives in a
-// neighbouring table. The hole is real either way; it just is not universal.
+// 10. restore_oid_generator_sync skips a system table whose entry is null, so a catalog table
+// that did not come up drops its oids from the frontier and the next allocation collides with
+// an oid still alive on disk. Victim is pg_namespace, not pg_class: a namespace's oid lives
+// only in pg_namespace, while a table's attoids also land in pg_attribute above it, so losing
+// pg_class alone would not reproduce the collision.
 TEST_CASE("services::disk::sysboot::a_catalog_that_did_not_come_up_never_lowers_the_oid_frontier") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
@@ -450,18 +421,15 @@ TEST_CASE("services::disk::sysboot::a_catalog_that_did_not_come_up_never_lowers_
     cleanup_boot_dir();
 }
 
-// 11. The CREATE leg of the same hole. create_storage_disk_sync returns void
-// (agent_disk.cpp records the construction failure and drops the entry), so a system
-// table whose very first write failed leaves bootstrap_one returning "freshly created" over a
-// storage that does not exist — and the seeding that follows appends into nothing.
+// 11. create_storage_disk_sync returns void, so a system table whose very first write failed
+// used to leave bootstrap_one reporting "freshly created" over storage that does not exist.
 TEST_CASE("services::disk::sysboot::uncreatable_system_table_refuses_the_start") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());
     std::filesystem::create_directories(base);
 
     otterbrix_test::fault_plan_t plan;
-    // fail_writes_from is compared with >=, so 1 fails every write on the wrapped handle from
-    // the first one on — including the header write that creates the file.
+    // Compared with >=, so 1 fails every write including the header write that creates the file.
     plan.fail_writes_from = 1;
     one_table_fault_scope_t scope(
         plan,
@@ -488,14 +456,9 @@ TEST_CASE("services::disk::sysboot::uncreatable_system_table_refuses_the_start")
     cleanup_boot_dir();
 }
 
-// 12. THE SILENT TWIN — a system table that loads HEALTHY and EMPTY.
-//
-// A crash between "the system table's .otbx was created" and "its first checkpoint committed"
-// leaves a proven-young file: exactly BLOCK_START bytes, no `.wal_id` sidecar. That file opens
-// cleanly (the builtin schema is overlaid) and yields ZERO rows, so reading it as "not freshly
-// created" skips every seeding branch with nothing anywhere reporting an error — the catalog is
-// simply empty. This is NOT a refusal case either: the file is healthy, and a refusal would
-// repeat on every start forever.
+// 12. A crash between "otbx created" and "first checkpoint committed" leaves a proven-young
+// file (exactly BLOCK_START bytes, no .wal_id sidecar) that opens cleanly with zero rows. This
+// is not a refusal case: the file is healthy and must be seeded, not left empty.
 TEST_CASE("services::disk::sysboot::a_system_table_that_loads_empty_is_seeded_again") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());

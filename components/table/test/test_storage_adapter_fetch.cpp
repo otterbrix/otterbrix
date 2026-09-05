@@ -1,16 +1,11 @@
-// table_storage_adapter_t::fetch must not swallow column_fetch_state::fetch_error.
+// table_storage_adapter_t::fetch must not swallow column_fetch_state::fetch_error: with
+// result_outlives_pins = true, big strings route through fetch_string_owned, and an
+// unresolved overflow marker writes data_corruption into state.fetch_error that a `void`
+// fetch has nobody to read — the caller (agent_disk_t::storage_fetch_inner) ships an empty
+// payload as success.
 //
-// The adapter's fetch sets result_outlives_pins = true, which routes big strings to
-// fetch_string_owned; when the overflow marker cannot be resolved that leg writes
-// data_corruption into state.fetch_error. A `void` override has nobody able to read it, and
-// the read then returns an EMPTY string quietly: the live path
-// (agent_disk_t::storage_fetch_inner -> storage->fetch) ships the wrong answer across the
-// mailbox as if it had succeeded.
-//
-// These cases pin the fix: storage_t::fetch returns core::result_wrapper_t<bool>
-// (the same shape fetch_next_batch already uses for scan_error), the adapter
-// surfaces state.fetch_error through it, and the intact path still returns the
-// exact bytes — owned, not borrowed from a pin that dies with the call.
+// Fix shape: storage_t::fetch returns core::result_wrapper_t<bool>, same as
+// fetch_next_batch's scan_error.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -45,10 +40,9 @@ namespace {
             , buffer_manager(&resource, fs, buffer_pool) {}
     };
 
-    // Overwrites the block id named by the single big-string marker of `segment`.
-    // Same layout surgery as test_big_strings.cpp: [uint32 dict_size][uint32 dict_end]
-    // at the segment start, one 16-byte (uint64 block id, int64 offset) marker packed
-    // at dict_end - dict_size. The REQUIREs make a layout change fail loudly.
+    // Overwrites the block id named by the sole big-string marker of `segment` (same layout
+    // surgery as test_big_strings.cpp: [dict_size][dict_end] header, one 16-byte marker at
+    // dict_end - dict_size). The REQUIREs fail loudly if that layout ever changes.
     void overwrite_only_overflow_marker(adapter_env_t& env, column_segment_t& segment, uint64_t new_block_id) {
         auto pinned = env.buffer_manager.pin(segment.block);
         REQUIRE_FALSE(pinned.has_error());
@@ -89,8 +83,7 @@ namespace {
         REQUIRE_FALSE(out.table->append_lock(state).has_error());
         REQUIRE_FALSE(out.table->initialize_append(state).has_error());
         REQUIRE_FALSE(out.table->append(chunk, state).has_error());
-        // The payload column's active segment, grabbed before finalize: the
-        // segment object itself lives in the column's segment tree and stays valid.
+        // Grabbed before finalize; stays valid since the segment lives in the column's segment tree.
         REQUIRE(state.append_state.states != nullptr);
         out.payload_segment = state.append_state.states[1].current;
         REQUIRE(out.payload_segment != nullptr);
@@ -114,8 +107,7 @@ TEST_CASE("storage_adapter: fetch returns owned big-string bytes on the intact p
     vector_t row_ids(&env.resource, logical_type::BIGINT, 1);
     row_ids.data<int64_t>()[0] = 0;
 
-    // The row was appended at txn 0 and never deleted, so any snapshot sees it; the mode
-    // is named explicitly because fetch_visibility_t has no default.
+    // fetch_visibility_t has no default, so SNAPSHOT is named explicitly.
     auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
     REQUIRE_FALSE(fetch_r.has_error());
     REQUIRE(out.size() == 1);
@@ -129,8 +121,7 @@ TEST_CASE("storage_adapter: a fetch failure reaches the storage caller as an err
     const std::string big(5000, 'r');
     auto built = build_big_string_table(env, bm, big);
 
-    // The exact shape of the original crash report: a transient-domain id the
-    // block manager has never registered.
+    // The exact shape of the original crash report: an unregistered transient-domain id.
     overwrite_only_overflow_marker(env, *built.payload_segment, tstorage::MAXIMUM_BLOCK + 424242);
 
     components::storage::table_storage_adapter_t adapter(*built.table, &env.resource);
@@ -141,9 +132,7 @@ TEST_CASE("storage_adapter: a fetch failure reaches the storage caller as an err
     vector_t row_ids(&env.resource, logical_type::BIGINT, 1);
     row_ids.data<int64_t>()[0] = 0;
 
-    // A `void storage.fetch(...)` would leave the data_corruption the string leg records with
-    // NO reader, and the caller would ship a silently EMPTY payload as if the read had succeeded
-    // (observed: `0 == 5000 (0x1388)`).
+    // Pre-fix this returned an empty payload as if the read succeeded (observed: 0 == 5000).
     auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
     REQUIRE(fetch_r.has_error());
     REQUIRE(fetch_r.error().type == core::error_code_t::data_corruption);

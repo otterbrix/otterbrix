@@ -1,32 +1,8 @@
-// ============================================================================
-// WHAT ANSWERS A PLAIN `CREATE INDEX`.
-//
-// SQL has exactly one explicit index spelling, `USING hash`. Everything else —
-// including no USING clause at all — is index_type::single, so an ordinary
-// `CREATE INDEX i ON t (c)` is the default and by far the common case.
-//
-// Its committed rows have always been written to an on-disk b+tree, but they were also
-// kept in a second, in-memory copy that every SELECT was answered from; the tree was
-// write-only, rebuilt into memory at start-up and never read again. This file pins the
-// engine change — reads now travel a message to the index's own agent, which reads the
-// tree — and it has to pin it with something other than row counts, because the two
-// engines return the same rows when both are healthy. A facade that registers, gets
-// chosen by the planner and answers out of a leftover in-memory structure would satisfy
-// every count assertion in the suite while changing nothing.
-//
-// So each case asserts THREE things at once:
-//   * the plan really uses the index (without this the file is a full-scan test in
-//     disguise, and would pass with the index deleted);
-//   * the ROWS are exactly right, by id, not merely right in number;
-//   * services::index::index_agent_reads() moved, i.e. the answer came out of the disk
-//     agent rather than out of memory.
-//
-// The range predicates carry a second load. The agent's read message was once
-// equality-only — there was no message a `<`, `<=`, `>`, `>=` or `<>` could travel on —
-// so those queries could not have been answered this way even in principle. Every range
-// case below is both a correctness gate and a witness that the message now carries the
-// predicate.
-// ============================================================================
+// Plain `CREATE INDEX` (no USING) is index_type::single. Its rows must now be read
+// through the index agent's on-disk tree, not an in-memory copy: each probe checks
+// the plan uses Index Scan, rows are exactly right by id, and index_agent_reads()
+// moved, since a facade could otherwise pass on row counts alone. Range predicates
+// (<, <=, >, >=) exercise a read message that used to be equality-only.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -54,9 +30,8 @@ namespace {
         return out;
     }
 
-    // Every value of column 0, as int64, sorted. The cases below assert on the SET of
-    // ids: a lookup that answers with the right NUMBER of wrong rows is the failure a
-    // size() check cannot see.
+    // Sorted ids from column 0; compared as a set so a right-count/wrong-rows bug
+    // can't hide behind size().
     std::vector<int64_t> ids_of(const cursor_t_ptr& cur) {
         std::vector<int64_t> out;
         out.reserve(cur->size());
@@ -69,12 +44,8 @@ namespace {
 
 } // namespace
 
-// The whole predicate set over a plain `CREATE INDEX`, every answer taken from the
-// index's disk agent.
-//
-// The key column carries DUPLICATES on purpose. A duplicate is what separates a
-// complete answer from a plausible one: an index that keeps a single row per key
-// answers `k = 7` with one row and looks entirely healthy doing it.
+// Duplicate keys are deliberate: an index that silently kept one row per key would
+// still answer `k = 7` and look healthy.
 TEST_CASE("integration::cpp::index_ordered_read_through_agent::every_predicate_is_answered_by_the_agent") {
     auto config = test_create_config(integration_fixture_path("test_index_ordered_read_through_agent/predicates"));
     test_clear_directory(config);
@@ -93,10 +64,8 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::every_predicate_i
     // NO `USING` — this is the statement the whole file is about.
     REQUIRE(exec("CREATE INDEX t_k ON orddb.t (k);")->is_success());
 
-    // k: 7,8,7,9,8,7  -> 7 three times, 8 twice, 9 once.
     REQUIRE(exec("INSERT INTO orddb.t (id, k) VALUES (1, 7), (2, 8), (3, 7), (4, 9), (5, 8), (6, 7);")->is_success());
 
-    // `probe` runs one predicate and holds it to all three standards at once.
     auto probe = [&](const std::string& predicate, const std::vector<int64_t>& expected) {
         {
             auto plan = exec("EXPLAIN SELECT id FROM orddb.t WHERE " + predicate + ";");
@@ -123,21 +92,21 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::every_predicate_i
     probe("k <= 8", {1, 2, 3, 5, 6}); // the inclusive bound: `<` and `<=` must differ
     probe("k > 7", {2, 4, 5});
     probe("k >= 7", {1, 2, 3, 4, 5, 6});
-    probe("k > 9", {});   // above every key
-    probe("k < 7", {});   // below every key
+    probe("k > 9", {});
+    probe("k < 7", {});
     probe("k >= 9", {4}); // the inclusive bound at the top end
 }
 
-// The behavioural gate: the rows a default index reports must follow the table
-// through INSERT, UPDATE, DELETE and a restart.
+// The rows a default index reports must follow the table through INSERT, UPDATE,
+// DELETE, and a restart.
 TEST_CASE("integration::cpp::index_ordered_read_through_agent::dml_and_restart_are_reflected") {
     auto config = test_create_config(integration_fixture_path("test_index_ordered_read_through_agent/dml"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
-    // Scoped: the restart round below needs this instance torn down first (one
-    // otterbrix instance per directory).
+    // Scoped: the restart below needs this instance torn down first (one otterbrix
+    // instance per directory).
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
@@ -157,9 +126,8 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::dml_and_restart_a
             CHECK(ids_of(cur) == std::vector<int64_t>{2, 3});
         }
 
-        // UPDATE moves a row from one key to another: it must leave the old key and
-        // arrive under the new one. A stale entry left behind is the classic index bug
-        // and only shows up when BOTH keys are asked.
+        // A stale old-key entry left behind is the classic index bug; only shows up
+        // when both keys are checked.
         REQUIRE(exec("UPDATE dmldb.t SET k = 40 WHERE id = 3;")->is_success());
         {
             auto cur = exec("SELECT id FROM dmldb.t WHERE k = 20;");
@@ -193,8 +161,8 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::dml_and_restart_a
         }
     }
 
-    // Reopen. There is no in-memory copy to rebuild any more: whatever comes back now
-    // was read out of the b+tree on disk.
+    // Reopen: no in-memory copy left, so this can only be answered from the on-disk
+    // tree.
     {
         test_spaces restarted(config);
         auto* rd = restarted.dispatcher();
@@ -221,16 +189,9 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::dml_and_restart_a
     }
 }
 
-// A transaction's own uncommitted writes must be visible to ITSELF through a RANGE
-// predicate, and to nobody else.
-//
-// This is the half of an answer that never reaches disk (per-txn buckets, no
-// write-through), so it can only come from the facade's own merge. What makes the
-// ordered case different from the hashed one is the predicate: a pending row keyed
-// 25 belongs in the answer to `k > 20` and not in the answer to `k = 20`. A merge
-// that could only test equality — the only thing a hash bucket ever needs — would
-// drop it, and the transaction would fail to see its own insert with nothing
-// reporting a problem.
+// A transaction's own uncommitted writes (per-txn buckets, never on disk) must be
+// visible to itself through a RANGE predicate too, not just equality: a pending row
+// keyed 25 must satisfy `k > 20` even though it isn't `k = 20`.
 TEST_CASE("integration::cpp::index_ordered_read_through_agent::own_uncommitted_rows_satisfy_a_range") {
     auto config = test_create_config(integration_fixture_path("test_index_ordered_read_through_agent/visibility"));
     test_clear_directory(config);
@@ -250,8 +211,8 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::own_uncommitted_r
     REQUIRE(exec("CREATE DATABASE visord;")->is_success());
     REQUIRE(exec("CREATE TABLE visord.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX t_k ON visord.t (k);")->is_success());
-    // Two committed rows, one on each side of the probes below, so the range answers
-    // stay non-trivial while an uncommitted row sits beside them.
+    // Two committed rows straddle the probes below so an uncommitted row in between
+    // changes the range answer.
     REQUIRE(exec("INSERT INTO visord.t (id, k) VALUES (1, 10), (2, 30);")->is_success());
 
     REQUIRE(d->execute_sql(writer, "BEGIN;")->is_success());
@@ -290,8 +251,8 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::own_uncommitted_r
         CHECK(ids_of(other) == std::vector<int64_t>{2, 3});
     }
 
-    // The delete side of the same rule, again through a range: an uncommitted DELETE
-    // must drop out of the deleting transaction's own answers and nobody else's.
+    // Delete side of the same rule: an uncommitted DELETE must vanish from the
+    // deleter's own range answers and nobody else's.
     auto deleter = otterbrix::session_id_t();
     REQUIRE(d->execute_sql(deleter, "BEGIN;")->is_success());
     REQUIRE(d->execute_sql(deleter, "DELETE FROM visord.t WHERE k = 25;")->is_success());

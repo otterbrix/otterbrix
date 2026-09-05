@@ -334,15 +334,10 @@ namespace core::b_plus_tree {
         auto new_buffer = static_cast<data_ptr_t>(resource_->allocate(new_size));
         std::memcpy(new_buffer, internal_buffer_, static_cast<size_t>(buffer_ - internal_buffer_));
 
-        // There is ONE metadata entry per ITEM, not per unique index: append() bumps
-        // header_->count_ and does last_metadata_-- on every item, while
-        // unique_indices_count_ only counts distinct keys. restore_block() agrees
-        // (last_metadata_ = end_ - count_). Using unique_indices_count_ here makes a block with
-        // duplicate keys copy and re-base only a fraction of its metadata: an index on a
-        // low-cardinality column (3000 items, 2 distinct keys) loses 2998 entries the moment the
-        // block grows, and the tree then reports an empty root. That stayed latent until
-        // physical_value grew from 16 to 24 bytes and pushed blocks over the resize threshold at
-        // sizes that had fitted before.
+        // One metadata entry per ITEM, not per unique index (append() bumps count_ on every
+        // item; restore_block() agrees: last_metadata_ = end_ - count_). Using
+        // unique_indices_count_ here instead drops every duplicate-key entry on resize -- e.g.
+        // 2998 of 3000 on a 2-distinct-key column, tree reporting an empty root.
         const size_t metadata_count = header_->count_;
         auto* new_end = reinterpret_cast<metadata*>(new_buffer + new_size);
         auto* new_last_metadata = new_end - metadata_count;

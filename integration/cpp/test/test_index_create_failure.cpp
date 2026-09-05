@@ -31,11 +31,8 @@ TEST_CASE("integration::cpp::test_index_create_failure::unopenable_disk_index_is
     REQUIRE(exec("CREATE DATABASE d;")->is_success());
     REQUIRE(exec("CREATE TABLE d.t (id bigint, k bigint);")->is_success());
 
-    // A healthy hash index first: it both proves the path works and reveals the
-    // per-table directory (<disk>/<table_oid>/<indexrelid>) without hardcoding an
-    // oid the test cannot know. The layout is oid-keyed and carries no name, so
-    // the healthy index dir is found by content: only bitcask leaves a CURRENT
-    // marker.
+    // A healthy hash index first: it reveals the per-table directory without hardcoding an
+    // oid, found by content (a CURRENT marker) since the oid-keyed layout carries no name.
     REQUIRE(exec("CREATE INDEX ok_idx ON d.t USING hash (k);")->is_success());
 
     std::filesystem::path ok_index_dir;
@@ -48,9 +45,8 @@ TEST_CASE("integration::cpp::test_index_create_failure::unopenable_disk_index_is
     REQUIRE_FALSE(ok_index_dir.empty());
     const auto oid_dir = ok_index_dir.parent_path();
 
-    // The next CREATE INDEX statement allocates exactly one oid (its indexrelid),
-    // and no other DDL runs in between, so the bad index's directory is
-    // <table_dir>/<ok_oid + 1>. Plant a DIRECTORY at its hash_index.bin path.
+    // The next CREATE INDEX allocates exactly one oid; with no other DDL in between, the bad
+    // index's directory is <table_dir>/<ok_oid + 1>. Plant a DIRECTORY at its hash_index.bin path.
     const auto ok_oid = std::stoull(ok_index_dir.filename().string());
     std::filesystem::create_directories(oid_dir / std::to_string(ok_oid + 1) / "hash_index.bin");
 

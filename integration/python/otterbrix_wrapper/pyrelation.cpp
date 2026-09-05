@@ -20,12 +20,9 @@ using namespace components;
 namespace otterbrix {
 
     namespace {
-        // The chaining input a factory call takes. Spelling the aggregate inline would
-        // copy-construct the schema vector, and a std::pmr::vector's copy constructor does NOT
-        // propagate the source's allocator -- a whole column schema would be rebuilt on the
-        // process-wide default resource on every project/filter/sort/group/join/limit hop, while
-        // the relation it was copied from keeps its arena alive through space_. Naming the source
-        // vector's own resource is what makes the copy stay where the original lives.
+        // Names the source vector's own resource explicitly: std::pmr::vector's copy
+        // constructor doesn't propagate the source allocator, so a plain copy here would
+        // rebuild the schema on the default resource on every chaining hop.
         built_relation_t
         relation_input(const components::logical_plan::node_ptr& node,
                        const std::pmr::vector<components::table::column_definition_t>& schema) {
@@ -69,12 +66,9 @@ namespace otterbrix {
         if (!this->env) {
             throw std::runtime_error("PyRelation created without a connection");
         }
-        // A relation that carries a plan MUST carry the space that plan is allocated out of:
-        // `node_` and `schema_` are pmr-allocated from the engine's arena and are freed in a
-        // destructor, which can neither check nor refuse. Every road above refuses a closed
-        // connection before it gets here, so this is the invariant they maintain rather than
-        // a second opinion -- and it is what a road added later will hit instead of silently
-        // handing back a relation that frees into a dead resource.
+        // `node_`/`schema_` are pmr-allocated from the engine's arena and freed in a
+        // destructor, which can't refuse -- so a relation carrying a plan must carry the
+        // space it came from, checked here rather than relying on callers upstream.
         if (!space_) {
             throw std::runtime_error("relation: the connection is closed");
         }
@@ -347,11 +341,9 @@ namespace otterbrix {
         assert_relation();
         py::list res;
         for (const auto& col : schema_) {
-            // The type handed to Python is a COPY of a schema type, and a copy of a nested
-            // complex_logical_type keeps the SOURCE's allocator -- so a STRUCT / MAP column
-            // hands out a child vector that still lives in this space's pool. The object
-            // therefore has to hold the space, exactly as this relation does; built with no
-            // owner at all, `rel.types` outlived the connection and read a released pool.
+            // A copied complex_logical_type keeps the source allocator, so a STRUCT/MAP
+            // column's child vector still lives in this space's pool -- otterbrix_py_type_t
+            // must hold the space or `rel.types` outlives the connection and reads freed pool.
             res.append(otterbrix_py_type_t(space_, col.type()));
         }
         return res;

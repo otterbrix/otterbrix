@@ -15,25 +15,16 @@
 
 namespace {
 
-    // THE DATA DIRECTORY OF EVERY CASE IN THIS FILE, IN ONE PLACE.
-    // Each case used to spell its own literal "/tmp/otterbrix/production/<leaf>", which is a
-    // path every test binary on the machine shares -- two build directories, a second
-    // checkout, one ctest -j beside another -- and the first thing a case does with it is
-    // test_clear_directory(): remove_all() then create_directories(). One process then
-    // unlinks the segments, WAL and catalog another process has open.
-    //
-    // integration_fixture_path puts the root under a pid, which is what makes the directory
-    // this process's own; the leaf keeps the per-case separation the literals had.
+    // Rooted under this process's pid (integration_fixture_path) so concurrent test
+    // binaries don't clobber each other's fixture directory.
     std::filesystem::path production_fixture(std::string_view leaf) {
         return integration_fixture_path("test_production_scenarios") / leaf;
     }
 
 } // namespace
 
-// The fixture root has to be private to THIS process. Held here rather than in
-// integration_fixture_path.hpp's own suite because this file is where the sharing was
-// measured: with test_otterbrix from two other build directories live, one case in this
-// file failed while it passed 10 runs out of 10 on its own.
+// The fixture root has to be private to THIS process: with test_otterbrix from two other
+// build directories live, one case in this file failed while it passed 10/10 on its own.
 TEST_CASE("integration::cpp::production::the_fixture_root_is_not_shared_between_processes") {
     const auto directory = production_fixture("compaction_cycle").string();
     const auto pid = std::to_string(static_cast<long>(::getpid()));
@@ -52,12 +43,9 @@ TEST_CASE("integration::cpp::production::the_fixture_root_is_not_shared_between_
         REQUIRE(cur->size() == COUNT);                                                                                 \
     } while (false)
 
-// A fixture that could not be built has to come back as a REPORT. The mechanism cannot be
-// staged the way it actually happens (a full disk, a revoked mount, an NFS hiccup), so the
-// stand-in is a directory remove_all() is not allowed to empty: unlinking a child needs write
-// permission on its PARENT, so a parent left at mode 0500 refuses every child. What is under
-// test is the report, not the cause -- before, the same condition escaped test_clear_directory
-// as std::filesystem::filesystem_error into the body of whatever case was running.
+// Real staging (full disk, revoked mount, NFS hiccup) isn't practical, so the stand-in is a
+// parent directory left at mode 0500 -- unlinking a child needs write on the parent. Tests the
+// REPORT, not the cause: this used to escape test_clear_directory as filesystem_error instead.
 TEST_CASE("integration::cpp::production::a_clear_that_cannot_finish_is_reported_not_thrown") {
     const auto root = production_fixture("clear_refusal");
     const auto blocked = root / "blocked";
@@ -101,11 +89,8 @@ TEST_CASE("integration::cpp::production::a_clear_that_cannot_finish_is_reported_
     restore();
     std::filesystem::remove_all(root, ec);
 
-    // The contract is the CHANNEL, not the errno: the report came back as a value and named
-    // its reason. The code differs by implementation -- libc++ answers this stand-in with
-    // ENOTEMPTY ("Directory not empty", one of the two signatures the shared-fixture races
-    // produced verbatim), libstdc++ reports the child's own EACCES -- so pinning one of them
-    // would be pinning the standard library, not the helper.
+    // The contract is the channel, not the errno -- libc++ reports ENOTEMPTY here, libstdc++
+    // reports EACCES; pinning either would pin the standard library, not the helper.
     INFO("refusal: " << refusal.message());
     REQUIRE(refusal);
     REQUIRE_FALSE(refusal.message().empty());
@@ -938,9 +923,8 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
 TEST_CASE("integration::cpp::production::wal_segment_rotation") {
     auto config = test_create_config(production_fixture("wal_rotation"));
     test_clear_directory(config);
-    // Tables are always disk-backed. Restart recovery draws from the
-    // table's .otbx checkpoint plus WAL replay above the checkpoint floor; this
-    // test's point — WAL segment rotation under row-by-row load — is unchanged.
+    // Tables are always disk-backed: restart recovery draws from the .otbx checkpoint
+    // plus WAL replay above the checkpoint floor.
     config.wal.max_segment_size = 4 * 1024; // 4 KB — force small segments
 
     INFO("phase 1: insert 500 rows (one by one to force many WAL records)");
@@ -1132,9 +1116,8 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
 // this must (a) accept every INSERT batch without OOM and (b) complete the large
 // scan with the CORRECT aggregate — prove COMPLETION, not just no-crash.
 //
-// DISK-backed (every table is) so write-through is actually exercised —
-// an in-memory table would pin the whole working set and clean-OOM by design,
-// which cannot validate the write-through bound.
+// Every table is disk-backed, so write-through is actually exercised -- an in-memory
+// table would pin the whole working set and clean-OOM by design instead.
 //
 // Working-set / pool note: there is NO buffer-pool / memory-limit knob in
 // configuration::config — the pool size is hardcoded (4 GiB) inside the disk

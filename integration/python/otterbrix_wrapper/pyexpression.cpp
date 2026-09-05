@@ -28,19 +28,16 @@ namespace otterbrix {
             return std::move(result.value());
         }
     } // namespace
-    // space_ and env_ are taken from `conn`, not borrowed from it: the arena the key/constant
-    // inside `expr` was allocated from is a MEMBER of the space (base_otterbrix_t::resource),
-    // and Python can drop the connection object before this expression. See the members in
-    // pyexpression.hpp for the full record.
+    // space_/env_ own their own copies (not borrowed from `conn`): the space's arena
+    // (base_otterbrix_t::resource) must outlive `expr`, even if Python drops `conn` first.
+    // See the member comments in pyexpression.hpp.
     py_expression_t::py_expression_t(expression_wrapper_t expr, py_connection_t& conn)
         : space_(conn.space_ptr())
         , env_(conn.shared_from_this())
         , expr(std::move(expr)) {
-        // Rule 6. Unreachable from the three static entry points below -- each refuses a closed
-        // connection BEFORE allocating anything -- but a null space here means the expression is
-        // already standing on an arena nobody holds, and that has to be said out loud rather than
-        // stored. Nothing in the initializer list above dereferences the space, so this guard
-        // still stands in front of every use of it.
+        // Unreachable from the static entry points below (each refuses a closed
+        // connection first), but a null space here means the expression stands on an arena
+        // nobody holds, and nothing above dereferences it before this check runs.
         if (!space_) {
             throw std::runtime_error("expression: the connection is closed");
         }
@@ -92,9 +89,8 @@ namespace otterbrix {
         return std::make_shared<py_expression_t>(conn.make_count_expression(), conn);
     }
 
-    // No open check: convert_to_string reads the key, the built node or the parameter map and
-    // touches the space for none of them, so an expression stays printable after its connection
-    // was closed. `space_` is what keeps those bytes alive.
+    // No open check: convert_to_string touches none of the space, so an expression stays
+    // printable after its connection closes (`space_` keeps the bytes alive).
     std::string py_expression_t::to_string() const {
         auto result = factory().convert_to_string(expr);
         if (result.has_error()) {
@@ -125,9 +121,8 @@ namespace otterbrix {
     pyexpr_ptr py_expression_t::abs() { return scalar_unary_expression(expressions::scalar_type::abs, *this); }
 
     pyexpr_ptr py_expression_t::negate() {
-        // Rule 14: the -1 lands in the SPACE's arena, never std::pmr::get_default_resource().
-        // live_env() first, so the resource asked for below belongs to a connection that still
-        // has one -- and so multiply()'s scalar_binary_expression is not the frame that finds out.
+        // Live_env() first, so the -1 below allocates from a connection that still
+        // has a space, rather than surfacing a closed connection inside multiply().
         auto& conn = live_env();
         auto value = py::int_(-1);
         auto val = transform_python_value(conn.space_ptr()->dispatcher()->resource(), value);

@@ -94,12 +94,10 @@ namespace components::table {
             offset += segment.count;
         }
         if (!data_.reinitialize()) {
-            // Unreachable from here -- the loop above has just made the starts contiguous, so a
-            // gap means the tree corrupted itself between the two walks. set_start's whole chain
-            // (move_to_collection -> merge_storage) is void end to end, so the refusal is
-            // reported the way this directory reports channel-less legs, and the stale row_start
-            // map is left as it was: a loud stop is recoverable, a half-rebuilt map misroutes
-            // every later point read (rule 6).
+            // Unreachable in practice -- the loop above just made the starts contiguous, so a
+            // gap here means the tree corrupted itself between the two walks. set_start's whole
+            // chain is void end to end, so this reports on stderr and leaves the stale row_start
+            // map untouched rather than misrouting later point reads.
             std::fprintf(stderr,
                          "components::table::column_data_t::set_start: segment starts are not contiguous after "
                          "re-basing; the row_start map was left untouched\n");
@@ -149,7 +147,7 @@ namespace components::table {
         state.row_index = row_idx;
         if (!state.current) {
             // The seek names a row outside every segment. Reported on scan_error (which the
-            // scan loops and scan_vector below read), never thrown (rules 2/9).
+            // scan loops and scan_vector below read), never thrown.
             state.initialized = false;
             state.scan_error = core::error_t(
                 core::error_code_t::invalid_parameter,
@@ -194,11 +192,9 @@ namespace components::table {
         }
     }
 
-    // There is deliberately no scan_committed_range here. A read through a local
-    // column_scan_state whose scan_error nobody checks, with updates_->fetch_committed_range
-    // layered on top, is a silent result over a failed scan the moment anyone wires it up
-    // (rule 6: no silent leg kept alive on faith). scan_count_with_updates below is the
-    // updates-aware read.
+    // Deliberately no scan_committed_range here: it read through a local scan_state whose
+    // scan_error nobody checked, a silent-failure risk the moment anyone wired it up.
+    // scan_count_with_updates below is the updates-aware read.
 
     uint64_t column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
         if (count == 0) {
@@ -358,18 +354,11 @@ namespace components::table {
                 // segment so we can re-point it to disk. state.current is moved to the new segment below, so the
                 // filled segment is no longer referenced by the append state.
                 const uint64_t filled_index = data_.segment_count(l) - 1;
-                // Release the append state's pin on the just-filled segment BEFORE
-                // transition_segment_to_disk swaps it out: the swap frees the old
-                // column_segment_t and with it the block_handle_t the pin points at
-                // (a raw pointer inside buffer_handle_t), so a pin that outlives the
-                // swap unpins through freed memory when initialize_append below
-                // finally replaces it (the [appendpin] lifetime test; fatal on the
-                // disk-only path — test_collection::insert reaches the freed
-                // handle's destroyed mutex). transition_segment_to_disk releases its
-                // OWN pin before the swap for exactly this reason; it cannot release
-                // ours. The filled segment's block is a managed (non-reloadable)
-                // transient block the pool can never unload, so dropping the pin
-                // before the transition's own pin cannot lose the payload.
+                // Release the append state's pin BEFORE transition_segment_to_disk swaps the
+                // segment out: the swap frees the old block_handle_t the pin points at, so a
+                // pin that outlives it unpins through freed memory (see the [appendpin] test).
+                // The segment's block is managed/non-reloadable, so dropping the pin early
+                // cannot lose the payload.
                 state.handle.reset();
                 auto created =
                     apend_transient_segment(l, state.current->start + static_cast<int64_t>(state.current->count));
@@ -404,10 +393,8 @@ namespace components::table {
             offset += copied_elements;
             append_count -= copied_elements;
         }
-        // Make every re-pointed filled segment's packed block durable before returning
-        // (flush-before-evict). Rule 19, and the durability chain: dropping this answer lets a
-        // failed write left a LIVE segment pointing at a block that never reached the file and
-        // the next scan or eviction read whatever was there before.
+        // Flush-before-evict: dropping this answer would leave a LIVE segment
+        // pointing at a block that never reached the file.
         if (any_transitioned) {
             if (auto flushed = pbm.flush_partial_blocks(); flushed.has_error()) {
                 return flushed; // io_error
@@ -428,9 +415,8 @@ namespace components::table {
         }
         uint64_t segment_index;
         if (!data_.try_segment_index(l, start_row, segment_index)) {
-            // The revert point names a row this column's tree does not bracket: the caller's
-            // bookkeeping and the column disagree, and truncating "somewhere nearby" would
-            // manufacture the very desync revert exists to undo.
+            // Names a row the tree does not bracket: truncating "somewhere nearby" would
+            // manufacture the desync revert exists to undo.
             return core::error_t(
                 core::error_code_t::data_corruption,
                 std::pmr::string("column revert: no segment brackets the revert row", resource_));
@@ -452,7 +438,7 @@ namespace components::table {
                                                                             vector::DEFAULT_VECTOR_CAPACITY);
         state.current = data_.get_segment(state.row_index);
         if (!state.current) {
-            // get_segment answers a miss with null (rules 2/9); the refusal rides the scan
+            // get_segment answers a miss with null; the refusal rides the scan
             // state's channel, which every caller of fetch() already reads.
             state.scan_error = core::error_t(
                 core::error_code_t::invalid_parameter,
@@ -487,10 +473,9 @@ namespace components::table {
         vector::vector_t base_vector(resource_, type_, count_);
         column_scan_state state;
         auto fetch_count = fetch(state, row_ids[0], base_vector);
-        // The pre-image is the row's PRIOR version, handed to update_internal as the version
-        // chain's base. A failed read arrives as an empty string_view with the reason parked in
-        // state.scan_error; left unread, a rollback or an older snapshot would materialise ""
-        // where the stored value is — silently.
+        // Pre-image is the row's prior version for update_internal's version chain. A failed
+        // read comes back empty with the reason in state.scan_error; left unread, a rollback
+        // would silently materialise "" where the value was.
         if (state.has_error()) {
             return state.scan_error;
         }
@@ -552,13 +537,10 @@ namespace components::table {
 
     core::error_t column_data_t::validate_column_type(const types::complex_logical_type& type,
                                                       std::pmr::memory_resource* resource) {
-        // Mirrors create_column's dispatch, one step ahead of it: the same three nested shapes,
-        // asked about the TYPE before any node exists. This is where struct_column_data_t's
-        // constructor precondition lives — a constructor cannot refuse, and a throw inside one
-        // would cross the disk agent's mailbox (rules 2/9).
-        //
-        // The rule: a STRUCT-shaped node must be NAMED, with UNION exempt because create_union
-        // deliberately leaves the alias empty.
+        // Mirrors create_column's dispatch, checking the TYPE before any node exists — a
+        // constructor cannot refuse, and a throw inside one would cross the disk agent's
+        // mailbox. Rule: a STRUCT-shaped node must be NAMED; UNION is exempt
+        // because create_union deliberately leaves the alias empty.
         const auto physical = type.to_physical_type();
         if (physical == types::physical_type::STRUCT) {
             if (type.type() != types::logical_type::UNION && type.is_unnamed()) {
@@ -770,26 +752,14 @@ namespace components::table {
     }
 
     void column_data_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const {
-        // Collect the ids of disk blocks owned by this column's segments so the SOLE caller
-        // (data_table_t::compact's free-list reclaim) can return them to the block manager once the
-        // WHOLE collection these segments belong to is torn down (replaced by the compacted one).
-        // Because the entire owning collection is discarded, EVERY reloadable disk block it
-        // references is freeable, INCLUDING packed/shared partial blocks: a block packed with
-        // several of this collection's segments at distinct offsets is referenced ONLY by this
-        // about-to-drop collection, and the compacted collection allocated FRESH, disjoint ids via
-        // the write-through allocator.
-        //
-        // Packing is the COMMON case (narrow column segments share blocks), so a
-        // dedicated-block-only discriminator (block_offset()==0 && segment_size() > 0.8*block)
-        // would leak nearly every block on each compaction -> unbounded file growth. Emit one entry
-        // per reloadable segment instead; the caller DEDUPES before freeing (multiple packed
-        // segments report the SAME block id).
-        //
-        // A segment's payload is not always confined to its own block: a reloaded STRING segment's
-        // big strings live in separate overflow blocks, recorded in its segment state (rebuilt from
-        // data_pointer_t::overflow_blocks on load) and reported through additional_blocks(). Those
-        // are referenced only by this collection too, so they are freeable on the same terms — and
-        // uncollected they grow the file by the whole big-string payload on every compact round.
+        // Ids of disk blocks owned by this column's segments, for data_table_t::compact's
+        // free-list reclaim once the whole owning collection is torn down: every reloadable
+        // block (including shared partial blocks) is then freeable, since the compacted
+        // collection allocates fresh, disjoint ids. One entry per reloadable segment, not per
+        // dedicated block (packing is the common case; a dedicated-block-only filter would leak
+        // nearly every block) — the caller dedupes. Also includes a STRING segment's overflow
+        // blocks (state->additional_blocks()): big strings live outside the segment's own block
+        // and are freeable on the same terms.
         for (auto& segment : const_cast<segment_tree_t<column_segment_t>&>(data_).segments()) {
             if (segment.block && segment.block->is_reloadable()) {
                 out.push_back(segment.block->block_id());
@@ -819,13 +789,10 @@ namespace components::table {
                                         uint64_t remaining,
                                         scan_vector_type scan_type) {
         if (scan_type == scan_vector_type::SCAN_FLAT_VECTOR && result.get_vector_type() != vector::vector_type::FLAT) {
-            // Callers pick the scan type either through get_vector_scan_type — which answers
-            // SCAN_ENTIRE_VECTOR for exactly this case and so cannot produce the mismatch — or by
-            // naming SCAN_FLAT_VECTOR against a vector they just constructed flat
-            // (column_data_t::fetch's pre-image, the LIST offset vectors). No caller can reach it
-            // today; it stays as the invariant's guard rather than as a comment, and it reports on
-            // the scan state's scan_error like every other refusal here. A throw would unwind into
-            // the disk agent's coroutine, whose unhandled_exception() is empty (rules 2/9).
+            // Unreachable today (callers only ever pass a flat result here), kept as a live
+            // guard rather than a comment. Reports on scan_error rather than throwing: a throw
+            // would unwind into the disk agent's coroutine, whose unhandled_exception() is
+            // empty.
             state.scan_error = core::error_t(
                 core::error_code_t::invalid_parameter,
                 std::pmr::string("column scan: a flat-vector scan was asked for a non-flat result", resource_));
@@ -835,8 +802,7 @@ namespace components::table {
         if (!state.initialized) {
             if (!state.current) {
                 // A failed initialize_scan_with_offset leaves current null with scan_error
-                // set; scanning through it would dereference nothing. Keep the original
-                // refusal (first error wins) and stop.
+                // already set; keep that refusal (first error wins) and stop.
                 if (!state.has_error()) {
                     state.scan_error = core::error_t(
                         core::error_code_t::invalid_parameter,
@@ -926,13 +892,9 @@ namespace components::table {
             return;
         }
         if (!allow_updates) {
-            // table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES asked for a snapshot with no
-            // update overlay, and this column carries one. The caller is
-            // data_table_t::create_index_scan, whose scan state is exactly what row_group_t
-            // aggregates scan_error into, so the refusal reaches it on the channel it already
-            // reads. `state` is threaded in for that: fetch_updates had no way to speak, and a
-            // throw here unwound across the disk agent's mailbox into a coroutine with an empty
-            // unhandled_exception() — a hang, not a refusal (rules 2/9).
+            // A snapshot with no update overlay was requested, but this column carries one
+            // (caller: data_table_t::create_index_scan). `state` lets this report on scan_error
+            // instead of throwing across the disk agent's mailbox.
             state.scan_error = core::error_t(
                 core::error_code_t::index_create_fail,
                 std::pmr::string("index build scan: the column has outstanding updates", resource_));
@@ -1019,20 +981,17 @@ namespace components::table {
         auto l = data_.lock();
         for (uint32_t i = 0; i < persistent_data.data_pointers.size(); i++) {
             const auto& dp = persistent_data.data_pointers[i];
-            // Disk-fed sanity: a corrupt segment_size would otherwise only trip a DEV-mode
-            // assert in the column_segment_t ctor (gone under NDEBUG) and then overrun the
-            // block on the first scan. Loud data_corruption instead.
+            // Disk-fed sanity: an unchecked corrupt segment_size would overrun the block on
+            // the first scan (the ctor's own assert vanishes under NDEBUG).
             if (dp.segment_size > block_manager_.block_size()) {
                 return core::error_t(
                     core::error_code_t::data_corruption,
                     std::pmr::string("column load: segment_size exceeds the block size", resource_));
             }
             auto block_handle = block_manager_.register_block(dp.block_pointer.block_id);
-            // Hand the segment the big-string overflow blocks the checkpoint recorded. The
-            // ctor registers them so a marker in the reloaded dictionary resolves; without this
-            // the STRING branch built a state with an EMPTY overflow map and the first read of a
-            // checkpointed big string aborted the process. Left null for every segment with no
-            // big strings (the overwhelmingly common case), which keeps the ctor's fast path.
+            // Hand the segment its persisted big-string overflow blocks so a marker in the
+            // reloaded dictionary resolves; without this, reading a checkpointed big string
+            // aborted the process. Left null when there are none (the common case).
             std::unique_ptr<column_segment_state> overflow_state;
             if (!dp.overflow_blocks.empty()) {
                 overflow_state = std::make_unique<column_segment_state>();
@@ -1057,12 +1016,10 @@ namespace components::table {
             }
             data_.append_segment(l, std::move(segment));
         }
-        // The persisted count is AUTHORITATIVE (v1 checkpoints always write it; for nested
-        // nodes it is not even derivable from the segment sum). A zero count against segments
-        // that claim rows is two on-disk numbers disagreeing about the same fact — that used
-        // to be silently reconciled by adopting the segment sum, which resurrects rows the
-        // writer said do not exist. Loud data_corruption instead, same class as the
-        // segment_size check above (rule 6).
+        // The persisted count is AUTHORITATIVE. A zero count against segments that claim rows
+        // is two on-disk numbers disagreeing — this used to be silently reconciled by adopting
+        // the segment sum, resurrecting rows the writer said do not exist. Loud data_corruption
+        // instead.
         if (persistent_data.count == 0) {
             uint64_t total = 0;
             for (const auto& dp : persistent_data.data_pointers) {

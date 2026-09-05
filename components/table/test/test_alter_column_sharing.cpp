@@ -1,14 +1,9 @@
 // ALTER structural sharing — the identity gate.
-//
-// row_group_t::add_column / remove_column build the successor's row group by COPYING the parent's
-// column vector, so a table and its ALTER successor hold the SAME column objects. That sharing is
-// load-bearing: it is why ALTER does not duplicate the table's storage, and it is the premise the
-// compact() proof on data_table_t is written against.
-//
-// No scan, count or checksum can gate it. A deep copy of the columns reads back exactly the same
-// rows through every one of them, so "the tests are green" is compatible with the sharing having
-// quietly turned into a copy. Only the OBJECT can tell: its address, and how many row groups own
-// it. That is what these cases assert, through row_group_t's DEV_MODE identity observers.
+// row_group_t::add_column/remove_column copy the parent's column vector, so parent and
+// successor hold the SAME column objects — load-bearing, since that's why ALTER doesn't
+// duplicate the table's storage. No scan/count/checksum can catch a regression to a deep
+// copy (it reads back identically); only object identity and owner counts can, via
+// row_group_t's DEV_MODE identity observers.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/collection.hpp>
@@ -34,10 +29,8 @@ namespace {
     constexpr uint64_t CHUNK_ROWS = 1000;
     constexpr uint64_t CHUNKS = 3;
 
-    // The fixture runs on a real .otbx — there is no file-less block manager any more. The row
-    // counts here span more than one row group, so closing one writes its segments through to
-    // the file: this fixture reaches the disk path for real. Not one assertion below is about
-    // the substrate.
+    // Real .otbx (no file-less block manager exists any more); row counts span multiple row
+    // groups so this reaches the disk path, though no assertion here is about the substrate.
     std::string alter_column_sharing_db_path() {
         static std::string path = "/tmp/test_otterbrix_alter_column_sharing_" + std::to_string(::getpid()) + ".otbx";
         return path;
@@ -120,14 +113,12 @@ TEST_CASE("alter_sharing: ADD COLUMN hands the successor the parent's column OBJ
         auto* child_group = child->row_group(g);
         REQUIRE(parent_group != nullptr);
         REQUIRE(child_group != nullptr);
-        // Distinct row groups, one per collection...
         REQUIRE(parent_group != child_group);
 
         for (uint64_t c = 0; c < COLUMN_COUNT; c++) {
             INFO("row group " << g << ", column " << c);
             const column_data_t* original = parent_group->column_identity(c);
             REQUIRE(original != nullptr);
-            // ...pointing at ONE column object, not at a copy of it.
             REQUIRE(child_group->column_identity(c) == original);
             // Owned by both row groups: neither may free it while the other lives.
             REQUIRE(parent_group->column_owner_count(c) == 2);
@@ -169,8 +160,7 @@ TEST_CASE("alter_sharing: DROP COLUMN hands the successor the surviving column O
         REQUIRE(child_group->column_identity(0) == survivor);
         REQUIRE(parent_group->column_owner_count(1) == 2);
 
-        // The dropped column stays alive in the parent alone, and is not smuggled into the
-        // successor under another index.
+        // Must not reappear in the successor under another index.
         const column_data_t* dropped = parent_group->column_identity(0);
         REQUIRE(dropped != nullptr);
         REQUIRE(dropped != survivor);

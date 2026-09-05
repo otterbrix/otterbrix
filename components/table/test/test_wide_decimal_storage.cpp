@@ -1,24 +1,13 @@
-// A DECIMAL wider than 18 digits is stored as a 128-bit scaled integer
-// (types::decimal_storage_for_width: width <= 18 -> INT64, width <= 38 -> INT128).
-// Every OTHER layer already carries that storage class -- the append switch, the
-// point fetch, update_segment_t's six dispatchers, vector_t::set_value /
-// value_internal / flatten -- but column_segment_t::scan and
-// column_segment_t::scan_partial had their INT128/UINT128 arms COMMENTED OUT since
-// the file was written, so a 128-bit column fell through to the `default:` leg and
-// threw std::logic_error out of the read path.
+// DECIMAL wider than 18 digits is a 128-bit scaled integer (decimal_storage_for_width: width
+// <= 18 -> INT64, <= 38 -> INT128). column_segment_t::scan/scan_partial once lacked INT128/
+// UINT128 arms and fell to `default:`, throwing std::logic_error out of the read path;
+// data_table_t::compact runs this scan before every checkpoint, so the throw crossed an
+// actor-zeta coroutine with an empty unhandled_exception() and aborted the process -- one
+// NUMERIC(38,4) column killed the database on its first checkpoint.
 //
-// That made a third of the legal DECIMAL window (NUMERIC(19..38, s)) declarable,
-// insertable and then UNREADABLE:
-//   * a plain scan of the column threw;
-//   * data_table_t::compact -- which the disk agent runs before EVERY checkpoint,
-//     over EVERY column -- scans the whole table, so the throw crossed an
-//     actor-zeta coroutine whose unhandled_exception() aborts the process. One
-//     NUMERIC(38,4) column killed the database on its first checkpoint.
-//
-// These cases pin the storage class, not the SQL surface: the payloads are exact
-// int128 boundary values (+-(10^width - 1)) that no double literal can spell, and
-// they are checked ELEMENT BY ELEMENT through three readers -- the in-memory scan,
-// the compact rebuild, and a checkpoint + reopen.
+// These cases pin the storage class: exact int128 boundary payloads (+-(10^width - 1)) that no
+// double literal can spell, checked element by element through three readers -- in-memory scan,
+// compact rebuild, and a checkpoint + reopen.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -65,14 +54,9 @@ namespace {
     }
 
     // The scaled-integer payload written into row `row` of a DECIMAL(width, s) column.
-    //
-    // Rows 0..6 are the boundary set: zero, the smallest non-zero magnitude either way,
-    // and +-(10^width - 1) -- the largest magnitude the window admits, which for width 38
-    // needs all 128 bits and is therefore the value a 64-bit read path truncates. The tail
-    // is deliberately HIGH-CARDINALITY so the checkpoint's analysis cannot fold the segment
-    // into CONSTANT / RLE / DICTIONARY: those three scan legs are size-generic memcpy and
-    // work today, so a low-cardinality pattern would checkpoint straight past the gap under
-    // test and only the UNCOMPRESSED leg proves it.
+    // Rows 0..6 are the boundary set: zero, +-1, +-(10^width - 1) -- needs all 128 bits at
+    // width 38. The tail is deliberately high-cardinality: CONSTANT/RLE/DICTIONARY are
+    // size-generic memcpy that already worked, so only the UNCOMPRESSED leg proves the fix.
     components::types::int128_t decimal_payload(uint64_t row, uint8_t width) {
         using components::types::int128_t;
         const int128_t largest = pow10_128(width) - 1;
@@ -189,9 +173,8 @@ namespace {
             // Reader 1 -- a plain scan of the live table.
             verify_decimal_rows(*table, width, "after append");
 
-            // Reader 2 -- the rebuild the disk agent runs before every checkpoint. It scans
-            // every column of every row group into one growing chunk, so it goes through
-            // scan_partial with a non-zero result offset.
+            // Reader 2 -- the compact rebuild before every checkpoint; it grows one chunk
+            // across row groups, so it exercises scan_partial with a non-zero result offset.
             REQUIRE(table->compact(WATERMARK));
             REQUIRE(table->calculate_size() == ROW_COUNT);
             verify_decimal_rows(*table, width, "after compact");

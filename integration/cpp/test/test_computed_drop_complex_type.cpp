@@ -1,21 +1,17 @@
-// ============================================================================
-// DROP COLUMN ON A relkind='g' (COMPUTED) TABLE MUST HIDE THE FIELD — FOR EVERY
-// TYPE THE FIELD CAN CARRY, NOT JUST BUILTIN SCALARS.
+// DROP COLUMN on a relkind='g' (computed) table must hide the field for every type it can
+// carry, not just builtin scalars.
 //
-// The reader's visibility gate groups pg_computed_column rows by the FULL
-// variant key (attname, atttypid, atttypspec) and hides a variant whose
-// max-version row has attrefcount <= 0 (operator_resolve_table). The
-// unregister operator writes that refcount=0 tombstone. A tombstone written
-// WITHOUT the atttypspec of the row it buries lands in a DIFFERENT group —
-// (name, typid, "") instead of (name, typid, spec) — so for a complex-typed
-// field (ARRAY / STRUCT / DECIMAL...; exactly the ones whose registration
-// encodes a non-empty atttypspec) the live variant keeps winning its own group
-// and the column stays in SELECT * while ALTER TABLE reported success.
+// The reader's visibility gate groups pg_computed_column rows by the full variant key
+// (attname, atttypid, atttypspec) and hides a variant whose max-version row has
+// attrefcount <= 0 (operator_resolve_table); the unregister operator writes that tombstone.
+// One written WITHOUT the atttypspec of the row it buries lands in a DIFFERENT group --
+// (name, typid, "") instead of (name, typid, spec) -- so for a complex-typed field (ARRAY /
+// STRUCT / DECIMAL...; anything whose registration encodes a non-empty atttypspec) the live
+// variant keeps winning its own group and the column stays in SELECT * despite the ALTER's
+// reported success.
 //
-// The simple-scalar control case pins the half that already worked (empty
-// atttypspec on both sides — same group by accident of emptiness), so a
-// regression in either direction is caught by name.
-// ============================================================================
+// The simple-scalar control case pins the half that already worked (empty atttypspec on both
+// sides, so it's the same group by accident), catching a regression in either direction.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -118,14 +114,10 @@ TEST_CASE("integration::cpp::computed_drop::complex_typed_field_is_hidden") {
     REQUIRE_FALSE(has_column(*cur, "price"));
 }
 
-// RENAME COLUMN on a computed table is REFUSED, loudly, before any catalog
-// mutation. The storage half cannot be completed on this branch (a relkind='g'
-// column binds to its physical column by the storage TYPE ALIAS, which
-// data_table_t::rename_column does not move), so completing the catalog half
-// alone would unbind the field from its data — it would vanish from SELECT *
-// under BOTH names. Until components/table carries the rename into the alias,
-// the honest answer is this refusal; this case pins that it stays loud and
-// that the field survives untouched under its old name.
+// RENAME COLUMN on a computed table is refused, loudly, before any catalog mutation: a
+// relkind='g' column binds to its physical column by the storage TYPE ALIAS, which
+// data_table_t::rename_column does not move, so completing just the catalog half would
+// unbind the field from its data and vanish it from SELECT * under BOTH names.
 TEST_CASE("integration::cpp::computed_drop::rename_on_computed_table_refused_loudly") {
     auto config = test_create_config(fixture_path("rename"));
     test_clear_directory(config);

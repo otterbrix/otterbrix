@@ -10,16 +10,9 @@
 
 namespace services::index::tests {
 
-    // The fixture root is qualified by process id ON PURPOSE. A shared literal path like
-    // "/tmp/index_disk/<name>" lets two test binaries running at once -- two build directories, or
-    // one ctest -j run against a second checkout -- open, truncate and unlink EACH OTHER'S segment
-    // files. What that produces are real I/O failures ("segment could not be opened for reading", a
-    // record header past the end of the file) attributed to the store under test, and they read as
-    // flakes. Qualifying by pid is what the storage-layer fixtures already do
-    // (components/table/test/*, components/table/storage/temporary_spill_file.cpp).
-    // The pid qualification costs a directory per run, and nothing was reclaiming them.
-    // Both ends are needed: the sweep covers the runs this process cannot clean up after
-    // (an abort or a kill, routine in this directory), the exit hook covers the rest.
+    // pid-qualified root (like components/table/storage/temporary_spill_file.cpp) so
+    // concurrent test binaries don't unlink each other's segment files under a shared path.
+    // Sweep handles roots orphaned by abort/kill; atexit hook handles the normal case.
     inline void reclaim_dead_index_roots(const std::filesystem::path& shared,
                                          const std::filesystem::path& mine) {
         static constexpr std::string_view prefix = "index_disk_";

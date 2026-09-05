@@ -114,11 +114,9 @@ namespace services::disk {
         // std::terminate. Record the error and leave table_/block_manager_ null; the caller checks
         // construction_failed().
         if (auto r = bm->create_new_database(); r.has_error()) {
-            // error_on, not a plain copy: error_t's copy constructor does not carry the message's
-            // resource with it (the note on error_t), so assigning it directly would leave the
-            // latched refusal's text on the default resource while the entry that holds it lives
-            // on `resource` -- the same arena the hand-built refusal in the load ctor below
-            // already names.
+            // error_on, not a plain copy: error_t's copy ctor doesn't carry the message's
+            // resource, so assigning directly would leave this refusal's text on the default
+            // resource while the entry lives on `resource`.
             construction_error_ = core::error_on(resource, r.error());
             return;
         }
@@ -147,13 +145,11 @@ namespace services::disk {
         }
         block_manager_ = std::move(bm);
 
-        // meta_block == INVALID_INDEX past load_existing_database means the file is PROVEN
-        // young — the block manager refused every other file carrying it (a corrupted newest
-        // slot falls back to the initial header, but then the file's size betrays the blocks a
-        // checkpoint laid down). A young file holds no serialized schema, so the catalog's
-        // columns are the only schema there is: construct the table legitimately EMPTY with
-        // them. Feeding INVALID_INDEX to the metadata reader instead produces a sticky
-        // "attempted to read past end of chain" — an accidental refusal of a legal state.
+        // meta_block == INVALID_INDEX past load_existing_database means the file is proven young
+        // (a corrupted newest header slot falls back to the initial one, but the file's size then
+        // betrays checkpointed blocks). A young file has no serialized schema, so the catalog's
+        // columns are the only schema there is -- feeding INVALID_INDEX to the metadata reader
+        // instead would produce a sticky "attempted to read past end of chain" refusal of a legal state.
         if (block_manager_->meta_block() == components::table::storage::INVALID_INDEX) {
             if (catalog_columns.empty() && !allow_schemaless) {
                 construction_error_ = core::error_t(
@@ -192,17 +188,15 @@ namespace services::disk {
     }
 
 #ifdef DEV_MODE
-    // See clean_fingerprint_t. Three numbers, all O(row groups) and none of them a scan:
-    //   * total_rows       — every physical row, dead ones included. Moves on any append and
-    //                        on a reverted one;
-    //   * committed_rows   — total minus the committed-deleted count, so a DELETE that has
-    //                        been committed moves it while total_rows does not;
-    //   * column_count     — the ALTER rebuilds.
-    // What it deliberately does NOT cover is an in-place UPDATE: MVCC updates write into the
-    // row group's update segments and move neither count. That gap is why the flag is set
-    // inside data_table_t::update itself rather than by its callers — there is exactly one
-    // path and it cannot be bypassed — and the net is aimed at the residual risk, a NEW
-    // mutating method added to data_table_t without a mark.
+    // See clean_fingerprint_t. Three numbers, all O(row groups), none a scan:
+    //   * total_rows      -- every physical row, dead included; moves on any append or revert;
+    //   * committed_rows  -- total minus committed-deleted, so a committed DELETE moves it while
+    //                       total_rows does not;
+    //   * column_count    -- what ALTER rebuilds.
+    // Deliberately does NOT cover an in-place UPDATE (MVCC writes into update segments, moving
+    // neither count) -- that's why the modified flag is set inside data_table_t::update itself,
+    // the one path that can't be bypassed. This net is aimed at the residual risk: a new
+    // mutating method added later without a mark.
     void table_storage_t::capture_clean_fingerprint() noexcept {
         if (!table_) {
             clean_fingerprint_ = clean_fingerprint_t{};
@@ -249,8 +243,8 @@ namespace services::disk {
     }
 
     bool table_storage_t::has_pending_update_overlay() {
-        // A failed construction leaves no table; such an entry is dropped by its caller and has
-        // nothing to answer for (same shape as storage_degraded() below).
+        // A failed construction leaves no table; the caller drops such an entry (see
+        // storage_degraded() below).
         if (!table_) {
             return false;
         }
@@ -263,8 +257,8 @@ namespace services::disk {
     }
 
     bool table_storage_t::has_versions_above(uint64_t watermark) const {
-        // A failed construction leaves no table; such an entry is dropped by its caller and has
-        // nothing to answer for (same shape as storage_degraded() below).
+        // A failed construction leaves no table; the caller drops such an entry (see
+        // storage_degraded() below).
         if (!table_) {
             return false;
         }
@@ -281,13 +275,11 @@ namespace services::disk {
     }
 
     core::result_wrapper_t<bool> table_storage_t::checkpoint() {
-        // The block manager latched a failure earlier: a block write or an fsync did not reach
-        // the device, or the free list it allocates from was proven corrupt. write_header would
-        // refuse to commit anyway, but it would refuse AFTER this round had already rewritten
-        // the whole table into freshly extended blocks -- and it would do that again next
-        // round, and the next. Refuse up front and hand the caller the latched error, so a
-        // degraded file stops growing and the failure keeps being reported until the file is
-        // rebuilt (rule 6: loud, and every CHECKPOINT says so, but the table keeps serving).
+        // The block manager latched a failure earlier (a block write/fsync that didn't reach
+        // the device, or a proven-corrupt free list). write_header would refuse anyway, but
+        // only after this round rewrote the whole table into freshly extended blocks -- and
+        // would do so again next round. Refuse up front so a degraded file stops growing, while
+        // still reporting the failure on every CHECKPOINT with the table still serving.
         auto* disk_bm_check =
             static_cast<components::table::storage::single_file_block_manager_t*>(block_manager_.get());
         if (disk_bm_check->has_durability_error()) {
@@ -307,14 +299,13 @@ namespace services::disk {
         // checkpoint BEFORE the header swap so a partial write never becomes the durable state, and
         // surface the error.
         //
-        // Every failure from here down to (but not including) write_header returns before a
-        // single byte of a header slot is written, so the durable root is provably still the one
-        // the round started from and the round's own allocations are named by nothing. Roll them
-        // back rather than leaving them stranded in used_blocks_ — that stranding is what made a
-        // persistent failure cost ~655 KB per round on a 7.8 MB table with degraded() false the
-        // whole time. write_header is EXCLUDED from this rule on purpose: only it can tell
-        // "nothing landed" from "something may have", and it does its own rollback in the branch
-        // where the read-back proves the previous root still stands.
+        // Every failure from here to (not including) write_header returns before any header
+        // slot byte is written, so the durable root is still the round's starting one and this
+        // round's own allocations are named by nothing -- roll them back rather than stranding
+        // them in used_blocks_ (measured: ~655 KB/round leaked on a 7.8 MB table with
+        // degraded() false throughout). write_header is excluded: only it can tell "nothing
+        // landed" from "something may have", and does its own rollback when the read-back
+        // proves the previous root still stands.
         auto cp_r = table_->checkpoint(writer);
         if (cp_r.has_error()) {
             disk_bm_check->roll_back_uncommitted_round();
@@ -331,13 +322,12 @@ namespace services::disk {
         auto* disk_bm = static_cast<components::table::storage::single_file_block_manager_t*>(block_manager_.get());
         // Set meta_block_ so write_header() persists it
         disk_bm->set_meta_block(writer.get_block_pointer().block_pointer);
-        // The deferred half of a DISK-backed drop_column, at the only point in the round where
-        // both halves of its safety hold. The new root's pointer stream is written and
-        // data_table_t::checkpoint has already reclaimed the superseded root against it, so the live set
-        // read below is the set the committing header will describe; and the serialize below
-        // publishes reusable_ ∪ pending_free_, so the ids released here land in the very free
-        // list this round's header names. Earlier would free against a root that does not exist
-        // yet; later would publish a root that still claims blocks nothing reads.
+        // The deferred half of DISK-backed drop_column, at the one point in the round where both
+        // safety conditions hold: the new root's pointer stream is written (so the live set read
+        // below is what the committing header will describe) and the serialize below publishes
+        // reusable_ ∪ pending_free_ (so ids released here land in this round's own free list).
+        // Earlier would free against a root that doesn't exist yet; later would publish a root
+        // still claiming blocks nothing reads.
         release_dropped_column_blocks();
         // Serialize free list to metadata blocks. Its chain is written through the same
         // block writes as everything else, so a failure here means the header would name a
@@ -347,11 +337,10 @@ namespace services::disk {
             disk_bm->roll_back_uncommitted_round();
             return free_list_r.convert_error<bool>();
         }
-        // W-TORN spec: durability of metadata + data blocks BEFORE header swap.
-        // 1st fsync: ensure data/metadata blocks are on disk; without this, a crash after the
-        // header write but before fsync of data could leave a header pointing to non-durable
-        // blocks. This barrier is what gives the header its meaning, so its result is the last
-        // one that may be ignored — it is not.
+        // W-TORN spec: durability of metadata + data blocks BEFORE header swap. Without this
+        // fsync, a crash after the header write but before data is durable could leave a header
+        // pointing to non-durable blocks -- this barrier gives the header its meaning, so its
+        // result may not be ignored.
         if (auto barrier_r = disk_bm->file_sync(); barrier_r.has_error()) {
             disk_bm->roll_back_uncommitted_round();
             return barrier_r;
@@ -359,23 +348,18 @@ namespace services::disk {
         components::table::storage::database_header_t header;
         header.initialize();
         header.free_list = free_list_r.value().block_pointer;
-        // 2nd barrier + the atomic point of the checkpoint, in one call: write_header writes
-        // the slot this iteration owns AND fsyncs it, and reports io_error when either step
-        // fails. Propagating that is what makes a checkpoint's success mean something — the
-        // caller (agent_disk_t::checkpoint_inner) uses this answer to decide whether it may
-        // advance the .wal_id sidecar. Returning true regardless
-        // is how rows between the durable root and the sidecar came to exist in no file.
-        // There is no separate trailing file_sync(): write_header's own fsync IS the commit,
-        // and a second one would only add an unchecked syscall on the write path.
+        // 2nd barrier and the atomic point of the checkpoint in one call: write_header writes
+        // this iteration's slot AND fsyncs it, reporting io_error on either failure --
+        // agent_disk_t::checkpoint_inner uses that answer to decide whether it may advance the
+        // .wal_id sidecar. Returning true regardless is how rows came to exist in no file at
+        // all. No trailing file_sync(): write_header's own fsync IS the commit.
         auto header_r = disk_bm->write_header(header);
         if (header_r.has_error()) {
             return header_r;
         }
-        // And only here. The header naming the new root is on the device, so the table and
-        // the file agree and the next round has nothing to do for this entry until something
-        // changes it. Everything above this line can fail, and every one of those failures must
-        // leave the entry dirty so the round retries it — which is also why
-        // last_checkpoint_failed() needs no separate conjunct in needs_checkpoint().
+        // Only here: the header naming the new root is on the device, so table and file agree.
+        // Every failure above this line must leave the entry dirty so the round retries it --
+        // why last_checkpoint_failed() needs no separate conjunct in needs_checkpoint().
         table_->clear_modified_since_checkpoint();
 #ifdef DEV_MODE
         capture_clean_fingerprint();
@@ -424,23 +408,19 @@ namespace services::disk {
         if (!found) {
             return false;
         }
-        // NAME the outgoing column's disk blocks before the rebuild, and only name them:
-        // the release belongs to the checkpoint round (see the contract on this method).
+        // Names the outgoing column's disk blocks before the rebuild -- only names them, since
+        // the actual release belongs to the checkpoint round (see release_dropped_column_blocks).
+        // Must happen HERE: the rebuild below shares every surviving column with the successor
+        // collection and simply forgets this one, so the dropped column_data_t dies with the
+        // superseded parent in the move-assign below, taking with it the only record of which
+        // segments and overflow blocks it sat on. Nothing downstream can reconstruct that --
+        // reclaim_superseded_root only walks the durable root's own blocks, missing anything the
+        // column acquired since, and compact() enumerates a collection that no longer contains
+        // the column. Measured with the naming removed: 15 blocks (~3.75 MB on a 10k-row table)
+        // orphaned durably, still orphaned after a reopen.
         //
-        // It has to happen HERE and nowhere later. The rebuild below SHARES every surviving
-        // column with the successor collection and simply forgets this one, so the dropped
-        // column_data_t dies with the superseded parent in the move-assign two lines down —
-        // and with it the only record of which segments, validity children and big-string
-        // overflow blocks it sat on. Nothing downstream can reconstruct that:
-        // reclaim_superseded_root walks the DURABLE ROOT's own data blocks, so every block the
-        // column acquired SINCE that root (the write-through at row-group close, the re-pointed
-        // tail segments) is invisible to it, and compact() enumerates the collection that no
-        // longer contains the column. Measured with the naming removed: 15 blocks (~3.75 MB on
-        // a 10k-row table) named by no root, no registry and no free list — orphaned durably,
-        // and still orphaned after a reopen.
-        //
-        // A construction that failed left block_manager_ null (see construction_failed()); such
-        // an entry is dropped by its caller and owns no blocks to charge.
+        // A failed construction leaves block_manager_ null (see construction_failed()); such an
+        // entry is dropped by its caller and owns no blocks to charge.
         if (block_manager_) {
             table_->collect_column_disk_block_ids(idx, pending_released_blocks_);
         }
@@ -455,65 +435,44 @@ namespace services::disk {
     core::result_wrapper_t<bool> table_storage_t::rename_column(const std::string& old_attname,
                                                                 const std::string& new_attname) {
         if (!table_) {
-            // A construction that failed leaves no table (see construction_failed()). The
-            // caller's catalog rename is already committed, so this cannot answer "nothing to
-            // do" — the two halves would disagree with nothing left to reconcile them.
+            // A failed construction leaves no table (see construction_failed()). The caller's
+            // catalog rename is already committed, so this can't answer "nothing to do" -- the
+            // two halves would disagree with nothing left to reconcile them.
             std::pmr::string msg{"table_storage_t::rename_column: no loaded table for column '",
                                  pending_released_blocks_.get_allocator().resource()};
             msg += std::pmr::string{old_attname, pending_released_blocks_.get_allocator().resource()};
             msg += std::pmr::string{"'", pending_released_blocks_.get_allocator().resource()};
             return core::error_t{core::error_code_t::other_error, std::move(msg)};
         }
-        // Nothing to name into pending_released_blocks_ and no successor collection to build:
-        // a rename touches the column DEFINITION only. Every block, segment and row group stays
-        // exactly where it is, which is also why the reconciliation must never mistake this for
-        // a drop — the data is all still there under the new name.
+        // Nothing to name into pending_released_blocks_: a rename touches the column definition
+        // only, and every block, segment and row group stays exactly where it is -- the
+        // reconciliation must never mistake this for a drop.
         return table_->rename_column(old_attname, new_attname);
     }
 
     // The deferred half of a DISK-backed column drop, and the ownership proof that makes it safe.
     //
-    // WHY HERE. Freeing a block something still references is far worse than leaking it: the id
-    // returns from the pool, the next round writes fresh bytes and a valid CRC over it, and the
-    // damage surfaces after a restart as silently wrong data. Two disciplines make the release
-    // safe, and both are properties of THIS point in the round, not of the drop site:
-    //   * the split free pool — mark_as_free files into pending_free_, which drains into reusable_
-    //     only in promote_durable_root, reached once a header naming the new root is on the device.
-    //     So an id released here cannot be handed out until a root that does not name it has
-    //     committed. At the drop site there is no round to attach that to;
-    //   * the ownership proof below is only MEANINGFUL once the drop's superseded collection is
-    //     gone. row_group() hands out counted collection copies BY VALUE, so a holder taken before
-    //     the drop keeps the dropped column's block handles alive for as long as it lives. At the
-    //     drop site every one of the column's blocks still looks live; here, inside the round the
-    //     branch already treats as holder-free (checkpoint_inner gates on an open scan cursor), a
-    //     surviving handle means a real sharer.
+    // Why here, not at the drop site: freeing a block something still references is worse than
+    // leaking it (the id gets reused, then damage surfaces as silently wrong data after a
+    // restart). Two disciplines only hold at this point in the round: mark_as_free's id sits in
+    // pending_free_ until promote_durable_root, so it can't be handed out before a root that
+    // doesn't name it has committed; and the ownership proof below is only meaningful once the
+    // drop's superseded collection is gone (row_group() hands out counted copies BY VALUE, so a
+    // holder taken before the drop keeps the dropped column's blocks looking live).
     //
-    // THE PROOF, per id, and it is a proof of NON-ownership by anyone else — never a guess:
-    //   1. the file's extent. These ids reach us through data_pointer_t::overflow_blocks, read off
-    //      the .otbx as raw uint64s with no check anywhere in between, so an id this file does not
-    //      contain — past total_blocks() as well as past the addressable domain — is disk
-    //      corruption, not a bug here. It is routed straight to mark_as_free, which refuses it and
-    //      LATCHES (that is what stops the next write_header from committing), and the routing
-    //      happens BEFORE the live-set and registry probes below: their `continue`s must not carry
-    //      a corrupt id out of the loop unlatched. unregister_block is skipped for it — an assert
-    //      covers only the domain half, and the by-id erase must not touch a slot a corrupt
-    //      registration may hold. Same file boundary compact() and reclaim_superseded_root screen
-    //      with, measured through the same manager.
-    //   2. the live collection does not name it. Segments of several columns pack into one 256 KiB
-    //      block, so a block the dropped column sat in is routinely still carrying a SURVIVING
-    //      column's segment. Such a block is not leaked by skipping it: the live collection owns it
-    //      and data_table_t::compact's ordinary reclaim frees the whole outgoing collection.
-    //   3. no live block_handle_t. register_block dedupes by id, so every sharer of a packed block
-    //      holds the SAME handle; a live registry entry therefore means somebody — a surviving
-    //      segment, or a stale collection copy still holding the dropped column — is still reading
-    //      it. This is the same subtraction reclaim_superseded_root and roll_back_uncommitted_round
-    //      make, and the one that covers a stale collection copy outliving the round.
-    // An id that fails (2) or (3) is DELIBERATELY LEFT ALONE. For (2) that is not a leak at all;
-    // for (3) — a stale pre-drop collection outliving this round — it is a real leak of that block
-    // until the file is rebuilt, and it is the deliberate choice: a leak is recoverable, a bad free
-    // is not. The list is drained either way: retrying an unproven id next round would be worse,
-    // since by then it may have been promoted, reissued and re-registered to somebody else's data,
-    // and this code would be holding a claim on it.
+    // The proof per id (non-ownership by anyone else, never a guess):
+    //   1. within the file's extent -- an id past total_blocks() is disk corruption (reached
+    //      raw off the .otbx via data_pointer_t::overflow_blocks with no check), routed to
+    //      mark_as_free which refuses and LATCHES before the probes below can carry a corrupt
+    //      id out unlatched;
+    //   2. not named by the live collection -- several columns pack into one 256 KiB block, so
+    //      a block the dropped column sat in may still carry a surviving column's segment; not a
+    //      leak, since the live collection owns it and compact()'s reclaim frees it later;
+    //   3. no live block_handle_t -- register_block dedupes by id, so a live registry entry
+    //      means a surviving segment or a stale collection copy is still reading it.
+    // An id failing (2) is not a leak; failing (3) is a real leak until the file is rebuilt --
+    // deliberate, since a leak is recoverable and a bad free is not. Measured with the naming
+    // removed: 15 blocks (~3.75 MB on a 10k-row table) orphaned durably, even after a reopen.
     void table_storage_t::release_dropped_column_blocks() {
         if (pending_released_blocks_.empty() || !block_manager_ || !table_) {
             return;
@@ -671,12 +630,11 @@ namespace services::disk {
     // processing (see ctor).
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_disk_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        // boost::lockfree::queue::push refuses when it cannot allocate a node (the freelist
-        // grows on the heap, so only under real memory exhaustion). Calling it unchecked and
-        // returning a hardcoded `success` leaks the raw pointer AND loses the message silently
-        // while the sender is told it was delivered — its future never completes and the caller
-        // hangs with no error anywhere. Reclaiming the pointer destroys the message's promise,
-        // which completes the sender's future as abandoned — a readable failure instead.
+        // boost::lockfree::queue::push refuses only under real memory exhaustion (its freelist
+        // node allocation failed). Calling it unchecked and returning a hardcoded `success`
+        // would leak the raw pointer and lose the message while the sender's future never
+        // completes and hangs with no error. Reclaiming the pointer instead destroys the
+        // message's promise, completing the sender's future as abandoned -- a readable failure.
         auto* raw = msg.release();
         if (!inbox_.push(raw)) {
             actor_zeta::mailbox::message_ptr reclaimed{raw};
@@ -849,11 +807,10 @@ namespace services::disk {
         }
     }
 
-    // Receiving half of the horizon GC sweep — a DECLARED maintenance bypass of the rule-3 pipeline
-    // (core/pipeline_bypass.hpp lists it; the declaration itself sits at the only sender in the
-    // tree, manager_dispatcher_t::try_trigger_cleanup_if_horizon_advanced). Do NOT add a second
-    // sender: the horizon this argument carries is the one thing keeping the sweep off files a live
-    // snapshot is still entitled to read.
+    // Receiving half of the horizon GC sweep -- a declared maintenance bypass of the rule-3
+    // pipeline (core/pipeline_bypass.hpp; sole sender is
+    // manager_dispatcher_t::try_trigger_cleanup_if_horizon_advanced). Do not add a second sender:
+    // the horizon argument is the one thing keeping the sweep off files a live snapshot may still read.
     manager_disk_t::unique_future<void> manager_disk_t::on_horizon_advanced(uint64_t new_horizon) {
         trace(log_, "manager_disk::on_horizon_advanced , horizon : {}", new_horizon);
 

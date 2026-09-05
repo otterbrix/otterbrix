@@ -1,37 +1,10 @@
-// ============================================================================
-// A COMMITTED DELETE MAY NOT ERASE THE INDEX ENTRY UNDER AN OLDER READER.
-//
-// The index answer is a SUPERSET and nothing else: manager_index_t says so in as
-// many words, and the point fetch drops the ids the reader's snapshot must not see
-// (test_index_fetch_visibility). That contract has ONE direction that is safe to be
-// wrong in. Too MANY ids costs a fetch the table then discards; too FEW is a
-// silently wrong answer, because a row whose id the index never names is never
-// fetched and never filtered — the visibility check downstream cannot put back what
-// the index dropped.
-//
-// commit_deletes used to send the PHYSICAL erase to the index agents at commit time.
-// A reader whose snapshot is OLDER than that commit must still see the row — its
-// delete_id is above the reader's snapshot horizon, so the table keeps it alive —
-// but the index had already forgotten the id, so storage_fetch was never even asked
-// for it. Two overlapping transactions are the whole reproduction; no checkpoint, no
-// restart, no crash.
-//
-// The two SELECTs below differ ONLY in which column the equality names:
-//   WHERE id = ...   -> INDEXED   -> Index Scan -> storage_fetch (the broken leg)
-//   WHERE val = ...  -> UNINDEXED -> Seq Scan   -> the MVCC-correct control
-// Same session, same snapshot, same row. A disagreement between the two IS the
-// defect; agreement is the fix.
-//
-// THE EXPLAIN ASSERTION IS LOAD-BEARING: without it this file is a full-scan test
-// wearing an index's name — if the planner stops routing `WHERE id = ...` to the
-// index for any reason, every assertion below still passes while the defect is live.
-// It is checked with the SAME query text the assertions use.
-//
-// THE ROW IS PAST 1024 ON PURPOSE, for the reason test_index_fetch_visibility gives:
-// version slots are addressed per row group while the point fetch names
-// collection-ABSOLUTE ids, so a row inside the first row group cannot tell a correct
-// rebase from a missing one.
-// ============================================================================
+// Index answers must be a SUPERSET (same contract as test_index_fetch_visibility): too few
+// ids is silently wrong, since a dropped id is never fetched or filtered downstream.
+// BEFORE: commit_deletes erased the index entry at commit time, so a reader whose snapshot
+// predates the commit lost the row through the index while the table still held it.
+// WHERE id=... (indexed) vs WHERE val=... (unindexed control) must agree; the EXPLAIN
+// assertions below are load-bearing. The row sits past row_group_size (1024) — see
+// test_index_fetch_visibility for why a first-row-group row can't tell a rebase from a miss.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -164,10 +137,8 @@ TEST_CASE("integration::cpp::index_delete_horizon::committed_delete_keeps_the_ol
     {
         auto cur = exec(dispatcher, reader, indexed_query());
         REQUIRE(cur->is_success());
-        // A physical erase at commit time leaves the index naming no id, so
-        // storage_fetch is never asked and the reader loses a row its own snapshot
-        // still owns — while the scan leg above keeps it. A SUBSET answer, which no
-        // downstream filter can undo.
+        // The broken leg: the physical erase already dropped the id, so storage_fetch never
+        // sees it — a SUBSET answer no downstream filter can fix.
         REQUIRE(cur->size() == 1);
     }
 
@@ -188,11 +159,9 @@ TEST_CASE("integration::cpp::index_delete_horizon::committed_delete_keeps_the_ol
     }
 }
 
-// The mirror guard: holding the entry back must not turn the index into a store
-// that never forgets. Once no snapshot can want the row any more, a fresh reader
-// must still get the RIGHT answer through the index — and an UPDATE, which is a
-// delete of the old key plus an insert of the new one, must move the row from one
-// key to the other rather than answer under both.
+// The mirror guard: once no snapshot can want the row, a fresh reader must get the RIGHT
+// answer, and an UPDATE (delete of the old key + insert of the new one) must move the row
+// rather than answer under both keys.
 TEST_CASE("integration::cpp::index_delete_horizon::the_index_still_forgets_once_nobody_is_looking") {
     auto config = test_create_config(integration_fixture_path("test_index_delete_horizon/forgets"));
     test_clear_directory(config);

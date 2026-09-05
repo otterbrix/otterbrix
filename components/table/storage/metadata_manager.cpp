@@ -166,10 +166,8 @@ namespace components::table::storage {
         std::lock_guard lock(lock_);
         for (auto& mb : blocks_) {
             if (mb.dirty) {
-                // The metadata chain IS the root. A dropped write here (which is what this used
-                // to do) leaves header.meta_block pointing at a sub-block chain that was never
-                // laid down, and the next open follows it into whatever the file held before.
-                // The block stays dirty on failure so a retry would try it again.
+                // The metadata chain IS the root: a dropped write here would leave header.meta_block
+                // pointing at a chain never laid down. Stays dirty on failure so a retry can redo it.
                 auto written = block_manager_.write(*mb.block);
                 if (written.has_error()) {
                     if (!error_.contains_error()) {

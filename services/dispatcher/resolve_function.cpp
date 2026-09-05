@@ -93,8 +93,8 @@ namespace services::dispatcher {
             }
         }
 
-        //! `resource` carries nothing but the refusal message create_decimal may build for an
-        //! out-of-window session setting; resolve_function's own arena is threaded down for it.
+        //! `resource` is only for the refusal message create_decimal may build on an
+        //! out-of-window session setting.
         std::optional<complex_logical_type> materialize_family(std::pmr::memory_resource* resource,
                                                                const graph_execution_context& context,
                                                                const complex_logical_type& family,

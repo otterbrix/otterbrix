@@ -14,19 +14,13 @@
 namespace services::wal {
 
 #ifdef DEV_MODE
-    // Fault-injection seam for WAL SEGMENT FILES.
+    // Fault-injection seam for WAL SEGMENT FILES: the .otbx seam
+    // (single_file_block_manager_t::dev_set_file_interposer) covers database files only, and the
+    // WAL opens its own segments via core::filesystem::open_file, so without this no test can
+    // fail a page write or segment open. Process-wide, DEV_MODE-only, read once per open.
     //
-    // The .otbx seam (single_file_block_manager_t::dev_set_file_interposer) wraps the handle
-    // of a database file and covers nothing else; the WAL opens its segments itself through
-    // core::filesystem::open_file, so without this no test can tell the journal "this page
-    // write fails" or "this segment will not open". Plain virtual interface, NOT
-    // std::function (rule 14); process-wide, DEV_MODE-only, read once per open by
-    // wal_page_writer_t and wal_page_reader_t.
-    //
-    // Returning nullptr from wrap() MODELS AN UNOPENABLE SEGMENT, and it is faithful rather
-    // than a shortcut: open_file's own failure answer IS nullptr (local_file_system.cpp
-    // returns it whenever open(2) reports -1), so the interposed path and the real one hand
-    // the caller the identical value.
+    // Returning nullptr from wrap() is faithful, not a shortcut: it's the same value
+    // local_file_system.cpp's open_file returns when open(2) reports -1.
     struct wal_file_interposer_t {
         virtual ~wal_file_interposer_t() = default;
         virtual std::unique_ptr<core::filesystem::file_handle_t>

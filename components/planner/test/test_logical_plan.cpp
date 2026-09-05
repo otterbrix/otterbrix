@@ -338,12 +338,9 @@ TEST_CASE("components::planner::update") {
     }
 }
 
-// Folding only the enrich-stamped OIDs into node_drop_t::hash_impl means that at plan
-// time — when every OID is still INVALID_OID — `DROP TABLE a`, `DROP TABLE b`,
-// `DROP TABLE IF EXISTS a` and `DROP TABLE a RESTRICT` all hash IDENTICALLY. The
-// fields the statement is actually built from (the written names, missing_ok,
-// behavior) must reach the hash, or any node-keyed container folds distinct drops
-// into one bucket entry.
+// At plan time every OID is still INVALID_OID, so node_drop_t::hash_impl must key on the
+// written names/missing_ok/behavior too — hashing only enrich-stamped OIDs would make
+// `DROP TABLE a`, `DROP TABLE b` and `DROP TABLE IF EXISTS a` collide.
 TEST_CASE("components::planner::node_drop_hash_folds_names_and_flags") {
     auto resource = core::pmr::otterbrix_resource();
     auto base = [&]() {
@@ -372,7 +369,7 @@ TEST_CASE("components::planner::node_drop_hash_folds_names_and_flags") {
     }
     SECTION("RESTRICT hashes differently from CASCADE") {
         auto b = base();
-        // The node default IS restrict_ (#638), so the differing side is CASCADE.
+        // The node default is restrict_, so the differing side is CASCADE.
         b->set_behavior(components::catalog::drop_behavior_t::cascade_);
         REQUIRE(a->hash() != b->hash());
     }

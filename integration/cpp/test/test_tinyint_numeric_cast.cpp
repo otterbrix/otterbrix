@@ -3,22 +3,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-// A TINYINT VALUE WRITTEN INTO A NUMERIC COLUMN, THROUGH ORDINARY SQL.
+// cast_as's `<integer> -> DECIMAL` switch listed USMALLINT..DOUBLE; TINYINT/UTINYINT fell into
+// `default:`, an `assert(false)` with no return. Debug: SIGABRT on INSERT. Release (NDEBUG): the
+// assert compiles out and control falls into cast_as's trailing `return NA` -- the row stored as
+// NULL and the statement reported success.
 //
-// components::types::logical_value_t::cast_as routes `<integer> -> DECIMAL` through a switch
-// over the SOURCE logical type, and that switch listed USMALLINT..DOUBLE. TINYINT and
-// UTINYINT are is_numeric(), so they reached the branch like every other integer width and
-// fell into its `default:` -- which, before this change, was an `assert(false)` with NO
-// RETURN behind it. Two different failures, one statement:
-//   * Debug: SIGABRT, the whole process, on an INSERT;
-//   * Release (NDEBUG): the assert is compiled out, control walks off the end of the switch,
-//     out of the else-if chain, and into cast_as's trailing `return NA` -- so the row was
-//     stored as NULL and the statement reported success.
-//
-// The unit coverage for the repair is in components/types/tests/test_types.cpp, on cast_as
-// itself. THIS file is the other half the unit tests cannot give: that the arms are reached
-// by a plain INSERT / SELECT and that the VALUE arrives, because "the statement succeeded"
-// is exactly what the Release half of the bug already reported.
+// Unit coverage for cast_as itself is in components/types/tests/test_types.cpp; this file proves
+// the arm is reached through a plain INSERT/SELECT and the VALUE actually arrives.
 
 using namespace test_helpers;
 

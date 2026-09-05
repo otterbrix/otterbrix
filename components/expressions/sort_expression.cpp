@@ -1,5 +1,5 @@
 #include "sort_expression.hpp"
-#include "compare_expression.hpp" // is_key / as_key
+#include "compare_expression.hpp"
 #include <sstream>
 
 namespace components::expressions {
@@ -7,7 +7,6 @@ namespace components::expressions {
     template<class OStream>
     OStream& operator<<(OStream& stream, const sort_expression_t* sort) {
         // A column is spelled bare here, the way a sort key has always been rendered.
-        // Read through is_key/as_key, so this site does not name std::variant either.
         if (is_key(sort->operand())) {
             stream << as_key(sort->operand());
         } else {
@@ -19,10 +18,7 @@ namespace components::expressions {
 
     namespace {
 
-        // The expression lives on `resource` and is read from long after the caller that handed
-        // over `operand` returns, so a key operand is PLACED on `resource`. A parameter_id_t
-        // operand is a scalar with no arena at all; an expression operand is an intrusive
-        // pointer whose pointee's arena was decided where it was built.
+        // Only the key_t case needs rebinding: parameter_id_t has no arena, and an expression pointer's arena was fixed where it was built.
         param_storage operand_on(std::pmr::memory_resource* resource, const param_storage& operand) {
             if (is_key(operand)) {
                 return param_storage{key_t{as_key(operand), resource}};

@@ -134,9 +134,8 @@ namespace components::operators {
                                                                 table_oid_);
                     auto types_result = co_await std::move(tf);
                     if (types_result.has_error()) {
-                        // The guard chunk carries the table's schema to operators above; a
-                        // refused read cannot supply one, and an empty list would pass a
-                        // 0-column chunk off as this table's shape.
+                        // A refused schema read can't supply the guard chunk's shape; an empty list would
+                        // silently pass a 0-column chunk off as this table's shape.
                         set_error(types_result.error());
                         mark_failed();
                         co_return types_result.convert_error<vector::data_chunk_t>();

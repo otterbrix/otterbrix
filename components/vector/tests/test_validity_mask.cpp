@@ -234,10 +234,9 @@ TEST_CASE("validity_mask_t allocates one entry per 64 rows, not one per row", "[
 // A vector that creates its own data must not build a validity mask first
 // =======================================================================
 //
-// vector_t's constructor must not build validity_mask_t{resource, capacity} in its member-init
-// list when create_data is set: the body then calls validity_.reset(), discarding the buffer just
-// allocated and filled. Every vector on the query path takes that branch, so each one would pay
-// an allocation and a full initialisation for nothing.
+// vector_t's ctor must skip building validity_mask_t{resource, capacity} when create_data is
+// set, since the body then calls validity_.reset() and discards it (see vector.cpp) — every
+// vector on the query path takes that branch.
 TEST_CASE("a data-creating vector_t allocates no validity mask", "[validity-size]") {
     using namespace components::vector;
 

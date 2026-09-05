@@ -1,22 +1,16 @@
-// ============================================================================
-// SET DEFAULT WITH A SPEC LIST SHORTER THAN THE COLUMN LIST IS A REFUSAL, NOT
-// A SET NULL.
+// SET DEFAULT with a spec list shorter than the column list is a refusal, not a SET NULL.
 //
-// operator_fk_cascade_t's ON DELETE SET DEFAULT leg reads
-// child_col_default_specs[ci] for every child_col_schema_indices[ci] — guarded
-// only by `ci < child_col_default_specs.size()`. A spec vector SHORTER than the
-// position vector therefore did not fail: the tail columns silently fell into
-// the SET NULL arm, substituting one referential action for another. The one
-// producer (enrich) fills both vectors in a single loop, so the skew is not
-// reachable through SQL today — this guard is the floor under an fk_info_t
-// that arrives by another road, and this test drives the operator DIRECTLY
-// with the poisoned descriptor.
+// operator_fk_cascade_t's ON DELETE SET DEFAULT leg reads child_col_default_specs[ci] for
+// every child_col_schema_indices[ci], guarded only by `ci < child_col_default_specs.size()`.
+// A spec vector SHORTER than the position vector therefore didn't fail: the tail columns
+// silently fell into the SET NULL arm, substituting one referential action for another. The
+// one producer (enrich) fills both vectors in a single loop, so the skew isn't reachable
+// through SQL today -- this guard is the floor under an fk_info_t arriving by another road,
+// and this test drives the operator directly with the poisoned descriptor.
 //
-// The guard sits BEFORE the first disk send, which is what lets this test run
-// without a disk actor: before the fix the coroutine sailed past the arity
-// check into a send on an empty address (abort); with the guard it refuses
-// cleanly, naming the actual defect.
-// ============================================================================
+// The guard sits BEFORE the first disk send, which is what lets this test run without a disk
+// actor: without it the coroutine would sail past the arity check into a send on an empty
+// address (abort); with it, a clean refusal naming the actual defect.
 
 #include <catch2/catch_test_macros.hpp>
 #include <core/pmr.hpp>

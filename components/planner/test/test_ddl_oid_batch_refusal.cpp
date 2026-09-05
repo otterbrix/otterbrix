@@ -13,19 +13,10 @@
 #include <string>
 #include <vector>
 
-// A DDL REWRITE MUST NEVER STAMP A CATALOG ROW WITH AN OID NOTHING ALLOCATED.
-//
-// The DDL path pre-allocates OIDs in one disk round, then rewrites the statement into pg_class /
-// pg_attribute / pg_depend rows synchronously, taking each identity out of that batch. Two things could
-// hand the rewrite fewer OIDs than it consumes: the allocation round refusing (BOTH of its failures arrive
-// as an EMPTY vector, so what came back has to be compared with the demand computed for it), and
-// compute_oid_demand drifting apart from the rewrite_* functions (different files, counts kept equal by
-// hand).
-//
-// Either way the batch runs out mid-rewrite, and an assert inside oid_batch_t is no guard: it is gone under
-// NDEBUG, leaving a read PAST THE END of the vector whose result is written into a DURABLE catalog. These
-// cases pin the refusal instead — and pin that a demand of zero stays a success, because DROP / ALTER TABLE
-// really do rewrite without an OID.
+// A DDL rewrite must never stamp a catalog row with an OID nothing allocated: if the batch runs out
+// mid-rewrite (a refused allocation round, or compute_oid_demand drifting from the rewrite_* functions),
+// an assert inside oid_batch_t is no guard — it's gone under NDEBUG, leaving a read past the end of the
+// vector written into a durable catalog row. These cases pin the refusal instead.
 
 namespace {
 
@@ -91,10 +82,8 @@ TEST_CASE("components::planner::ddl_oid_batch::a_rewrite_that_consumes_more_than
     auto resource = core::pmr::otterbrix_resource();
     auto node = make_create_table(&resource);
 
-    // The demand and the batch agree, so the size check passes — and the rewrite still needs
-    // one more OID than either of them says. This is the drift case: the batch runs out INSIDE
-    // walk_ddl, where an assert only "guards" in Debug and NDEBUG turns the overrun into an
-    // out-of-bounds read feeding a durable pg_attribute row.
+    // Demand and batch agree, but the rewrite needs one more OID than either says — the drift case,
+    // where the batch runs out INSIDE walk_ddl.
     const std::vector<oid_t> batch{16384, 16385};
     components::planner::planner_t planner;
     auto rewritten = planner.create_plan(&resource, node, batch, batch.size());
@@ -109,9 +98,7 @@ TEST_CASE("components::planner::ddl_oid_batch::a_demand_of_zero_with_an_empty_ba
     auto node = components::logical_plan::make_node_drop(&resource,
                                                         components::logical_plan::drop_target_kind::database);
 
-    // DROP consumes no OID, so its caller runs no allocation round at all and hands the
-    // planner an empty batch. That is the normal shape for DROP / ALTER TABLE / a CREATE
-    // MATERIALIZED VIEW with no inferred columns — it must not be mistaken for a failure.
+    // DROP consumes no OID, so its caller hands the planner an empty batch — normal, not a failure.
     const std::size_t need = components::planner::compute_oid_demand(node.get());
     REQUIRE(need == 0);
 

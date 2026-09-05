@@ -39,9 +39,6 @@ namespace core::filesystem {
     std::unique_ptr<file_handle_t> open_file(virtual_file_system_t&, const path_t& path, file_flags flags);
     bool read(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location);
     int64_t read(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
-    // Declared beside their read twins: virtual_file_system.cpp defines both writes,
-    // forwarding to the default sub-system exactly as the reads above do, and without a
-    // declaration here no translation unit can see them.
     bool write(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location);
     write_result_t write(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
     int64_t file_size(virtual_file_system_t&, file_handle_t& handle);

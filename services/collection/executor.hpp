@@ -61,21 +61,15 @@ namespace services::collection::executor {
     // streaming_pipeline_runs().
     uint64_t dml_flush_count() noexcept;
 
-    // Fault-injection seam for the DDL OID-ALLOCATION ROUND.
+    // Fault-injection seam for the DDL OID-ALLOCATION ROUND: a message round-trip to the disk
+    // actor over an in-memory atomic counter (allocate_oids_batch -> oid_generator), no
+    // file/page/block — neither the .otbx interposer nor the WAL one can reach it, hence a new
+    // seam.
     //
-    // WHY A NEW SEAM. The round is a message round-trip to the disk actor over an
-    // in-memory atomic counter (manager_disk_t::allocate_oids_batch -> oid_generator):
-    // no file, no page, no block. Neither the .otbx interposer
-    // (single_file_block_manager_t::dev_set_file_interposer) nor the WAL one
-    // (services::wal::dev_set_wal_file_interposer) can reach it, and there is no device
-    // to make fail.
-    //
-    // It substitutes the batch the round hands back. An EMPTY batch is not an invented
-    // state: it is EXACTLY the value allocate_oids_inline's own failure branches produce
-    // (a physical plan that would not build, and a drive that returned an error), so a
-    // test driving it drives the real reachable state. Plain virtual interface, NOT
-    // std::function (rule 14); process-wide, DEV_MODE-only, consulted exactly once per
-    // allocation round.
+    // Substitutes the batch the round hands back. An EMPTY batch is not invented: it's exactly
+    // what allocate_oids_inline's own failure branches produce, so a test driving it drives a
+    // real reachable state. Plain virtual interface, not std::function; process-wide,
+    // DEV_MODE-only, consulted exactly once per allocation round.
     struct oid_alloc_interposer_t {
         virtual ~oid_alloc_interposer_t() = default;
         // `allocated` is what the disk round produced for `requested` OIDs. Return it
@@ -237,8 +231,8 @@ namespace services::collection::executor {
         // through the mailbox). The txn lifecycle is owned by the caller.
         // captured_subplans (EXPLAIN ANALYZE main plan): flattened sub-query IRs, moved in from
         // execute_plan_full's loop buffer, hung on the main IR root as InitPlans. Passed BY VALUE
-        // (moved) — a pmr member cannot be defaulted (would re-anchor to get_default_resource(),
-        // Rule 14), so callers with no sub-queries pass an empty vector built on resource().
+        // (moved) — a pmr member cannot be defaulted (would re-anchor to the forbidden
+        // get_default_resource()), so callers with no sub-queries pass an empty vector built on resource().
         unique_future<execute_result_t> execute_plan(components::session::session_id_t session,
                                                      components::logical_plan::execution_plan_t plan,
                                                      services::context_storage_t context_storage,
@@ -264,11 +258,9 @@ namespace services::collection::executor {
                                            std::string name,
                                            std::pmr::vector<components::types::complex_logical_type> inputs);
 
-        // Compensation for a register_udf fan-out whose statement later failed (the
-        // operator's catalog half refused, or a sibling executor did): drop the entry by
-        // the exact uid THIS executor answered, so a refused CREATE FUNCTION leaves no
-        // per-executor residue and a retry meets the catalog's refusal, not the leak's.
-        // Appended LAST in dispatch_traits — message ids are positional.
+        // Compensation for a register_udf fan-out whose statement later failed: drop the entry
+        // by the exact uid THIS executor answered, so a refused CREATE FUNCTION leaves no
+        // per-executor residue. Appended LAST in dispatch_traits — message ids are positional.
         unique_future<bool> unregister_udf_uid(components::session::session_id_t session,
                                                components::compute::function_uid uid);
 
@@ -285,7 +277,7 @@ namespace services::collection::executor {
 
         // Register a host EXPLAIN renderer into this executor's registry at slot `id` (host
         // customization; fanned out from the dispatcher). POD fn-pointers stored per-executor — no
-        // shared mutable state (Rule 10). Registration is rare; per-query selection is a local index.
+        // shared mutable state. Registration is rare; per-query selection is a local index.
         unique_future<bool> set_explain_renderer(uint32_t id, explain_render_fn fn);
 
         // No-op poke target for the dispatcher's lost-wakeup watchdog (see
@@ -338,7 +330,7 @@ namespace services::collection::executor {
         // (execute_pipeline). On return `root` is executed with its output_ set
         // (unless an error occurred). Shared by execute_sub_plan_ (which then reads
         // root->output()) and run_subplan (which copies the chunks out). Returns the
-        // first error encountered (no exceptions — rule 2/9);
+        // first error encountered (no exceptions);
         // core::error_t::no_error() on success. The caller must have already called
         // root->prepare().
         unique_future<core::error_t> drive_subplan_(components::operators::operator_ptr root,
@@ -408,8 +400,8 @@ namespace services::collection::executor {
         // EXPLAIN renderer registry: per-query selectable formatters, indexed by
         // execution_plan_t::explain_render_id. Slot 0 (built-in postgres) is seeded in the ctor
         // body — a container member can't brace-default a keyed slot. Registered via
-        // set_explain_renderer; no shared mutable state (Rule 10), no locks (Rule 12), POD
-        // fn-pointers (Rule 14); pinned to `resource` in the ctor init-list.
+        // set_explain_renderer; no shared mutable state, no locks, POD
+        // fn-pointers; pinned to `resource` in the ctor init-list.
         std::pmr::vector<explain_render_fn> explain_renderers_;
 
         // True when `id` names a real registered renderer (in range and non-null).
@@ -417,11 +409,10 @@ namespace services::collection::executor {
             return id < explain_renderers_.size() && explain_renderers_[id] != nullptr;
         }
 
-        // Resolve the per-query renderer by slot `id`. An unregistered id yields the DEFAULT — slot 0
-        // (built-in postgres unless a host overwrote it) — a default value, not a fallback branch:
-        // render_id is a host-API knob (never SQL), the resolve-to-slot-0 contract is pinned by
-        // test_explain.cpp's out-of-range cases, and render_explain_ logs the mismatch at ERROR
-        // level so an id the host never registered cannot pass silently.
+        // Resolve the per-query renderer by slot `id`. An unregistered id yields the DEFAULT
+        // (slot 0), not a fallback: render_id is a host-API knob (never SQL), the
+        // resolve-to-slot-0 contract is pinned by test_explain.cpp's out-of-range cases, and
+        // render_explain_ logs the mismatch at ERROR level so it cannot pass silently.
         [[nodiscard]] explain_render_fn resolve_explain_renderer_(uint32_t id) const noexcept {
             if (explain_slot_registered_(id)) {
                 return explain_renderers_[id];

@@ -163,16 +163,14 @@ TEST_CASE("services::disk::error::resolve_unknown_function") {
     auto rf = test_probe::probe_function(fx, fx.ctx(), ns_oid, std::string("unknown_fn"));
     REQUIRE_FALSE(rf.found);
 }
-// 17. storage_delete_rows separates "how many marks were set" from "the delete could
-//     not be performed". These were the same value — 0 — until the reply got a wrapper,
-//     and both operators that send it (operator_delete, operator_fk_cascade) simply
-//     dropped the reply because there was nothing in it to read. A cascade could then
-//     mark no child row at all and let its parent row go.
+// 17. storage_delete_rows separates "how many marks were set" from "the delete couldn't be
+//     performed" -- both were 0 until the reply got a wrapper, so operator_delete and
+//     operator_fk_cascade simply dropped it (nothing in it to read); a cascade could then mark
+//     no child row and let its parent row go.
 //
-//     THE TWO ZEROS ARE THE POINT. A repeat of the same delete legitimately reports 0 —
-//     chunk_vector_info::delete_rows skips a row that already carries a stamp, which is
-//     also what duplicate ids in one request do — and that zero must stay a SUCCESS. An
-//     oid no agent has storage for must not produce that same zero.
+//     The two zeros are the point: a repeat delete legitimately reports 0 (chunk_vector_info::
+//     delete_rows skips an already-stamped row, same as duplicate ids in one request) and must
+//     stay a success. An oid no agent has storage for must not produce that same zero.
 TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -255,20 +253,19 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
     }
 }
 
-// 18-22. THE REST OF THE FAMILY case 17 belongs to.
+// 18-23. The rest of the family case 17 belongs to.
 //
 // storage_delete_rows got an error channel because "0 marks set" and "the delete never
-// reached a storage" were the same reply. Every other data leg on this contract still
-// answers a ROUTING REFUSAL with the shape of a LEGITIMATELY EMPTY TABLE: an empty chunk
-// vector (storage_fetch), a zero-length append range (storage_append / storage_update),
-// a drained cursor (storage_fetch_next_batch), an empty schema (storage_types) and a zero
-// row count (storage_total_rows). Each of those shapes is also the correct answer to a
-// real question about a real table, so no caller can tell the two apart — which is the
-// whole defect, restated once per leg.
+// reached a storage" were the same reply. Every other data leg on this contract still answers
+// a routing refusal with the shape of a legitimately empty table: an empty chunk vector
+// (storage_fetch), a zero-length append range (storage_append / storage_update), a drained
+// cursor (storage_fetch_next_batch), an empty schema (storage_types), and a zero row count
+// (storage_total_rows) -- each also the correct answer to a real question about a real table,
+// so no caller can tell the two apart.
 //
-// EVERY CASE BELOW PAIRS THE TWO. The legitimate empty answer must stay a SUCCESS; only
-// "this oid names no storage anywhere" becomes an error. A test that asserted the refusal
-// alone would be satisfied by a leg that refuses everything.
+// Every case below pairs the two: the legitimate empty answer must stay a success, and only
+// "this oid names no storage anywhere" becomes an error. A test asserting the refusal alone
+// would be satisfied by a leg that refuses everything.
 namespace {
     using namespace disk_test_helpers;
 
@@ -581,14 +578,12 @@ TEST_CASE("services::disk::error::total_rows_refusal_is_not_a_zero_count") {
 //     where the visibility can be arranged exactly (the end-to-end half is
 //     integration/cpp/test/test_index_scan_limit_cap.cpp).
 //
-//     THE CAP COUNTS ROWS THE FETCH PRODUCED, NEVER IDS IT WAS HANDED. Under SNAPSHOT the
-//     fetch drops every row the asking transaction may not see, so the two counts differ by
-//     exactly the rows the reader never receives — and a budget deducted from the id count
-//     spends itself on those. That is why the cap cannot live above this call: the index
-//     answers with a superset of ids and only this leg knows which of them became rows.
-//
-//     And it is a TRUNCATION, not a selection: the capped reply is the uncapped reply's
-//     prefix, same rows in the same order.
+//     The cap counts rows the fetch produced, never ids it was handed: under SNAPSHOT the
+//     fetch drops every row the asking transaction may not see, so a budget deducted from the
+//     id count would spend itself on rows the reader never receives -- which is why the cap
+//     can't live above this call, only here where visible rows are known. And it's a
+//     truncation, not a selection: the capped reply is the uncapped reply's prefix, same rows
+//     in the same order.
 TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_ids") {
     fixture fx;
     // The hidden head is LONGER THAN ONE FETCH WINDOW (DEFAULT_VECTOR_CAPACITY == 1024) on
@@ -652,19 +647,18 @@ TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_
     REQUIRE(fetch(0).empty());
 }
 
-// 25. THE ROUTER'S OWN REFUSAL, one floor above the agent's. Every case above reaches the
-//     leg through a real agent that turns out to own no storage for the oid. This one
-//     removes the agent: a manager configured with NO disk agents has nowhere to send
-//     anything, and each leg must not answer that with its own natural empty value — an
-//     empty type list, 0 rows, an empty chunk vector, a zero-length append range, a drained
-//     cursor, an empty fold.
+// 25. The router's own refusal, one floor above the agent's. Every case above reaches the leg
+//     through a real agent that turns out to own no storage for the oid; this one removes the
+//     agent -- a manager configured with no disk agents has nowhere to send anything, and each
+//     leg must not answer that with its own natural empty value (an empty type list, 0 rows, an
+//     empty chunk vector, a zero-length append range, a drained cursor, an empty fold).
 //
-//     THIS TOPOLOGY IS NOT REACHED BY A STATEMENT TODAY, and the case does not pretend
+//     This topology isn't reached by a statement today, and the case doesn't pretend
 //     otherwise: an agentless manager owns no storage at all, so no DML can find a row to
-//     write and no scan a row to read — the same verdict storage_delete_rows' own routing
-//     legs carry. What it pins is that the refusal EXISTS and is
-//     reachable through the public contract, so the day a topology can lose an agent slot
-//     the answer is an error and not an empty table.
+//     write and no scan a row to read, the same verdict storage_delete_rows' own routing legs
+//     carry. What it pins is that the refusal exists and is reachable through the public
+//     contract, so the day a topology can lose an agent slot the answer is an error, not an
+//     empty table.
 TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_answering_empty") {
     // No bootstrap: with zero agents there are no system tables to seed, and seeding is not
     // what is under test.
@@ -731,12 +725,11 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
     std::filesystem::remove_all(cfg.path);
 }
 
-// 24. NOT NULL enforcement (stage 2b of storage_append_inner) is a REFUSAL, not a
-//     zero-length append. (0,0) is the exact value an EMPTY batch legitimately produces, so
-//     the manager's per-chunk loop reads it as "continue" and the statement reports success
-//     with the rows silently dropped. The
-//     refusal sits ABOVE the WAL write and the materialization, so nothing lands anywhere:
-//     the honest answer is an error, same family as cases 17-22.
+// 26. NOT NULL enforcement (stage 2b of storage_append_inner) is a refusal, not a
+//     zero-length append: (0,0) is the exact value an empty batch legitimately produces, so
+//     the manager's per-chunk loop would read it as "continue" and report success with the
+//     rows silently dropped. The refusal sits above the WAL write and the materialization, so
+//     nothing lands anywhere -- same family as cases 17-23.
 TEST_CASE("services::disk::error::a_not_null_violation_is_a_refusal_not_an_empty_append") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -805,12 +798,12 @@ TEST_CASE("services::disk::error::a_not_null_violation_is_a_refusal_not_an_empty
     }
 }
 
-// 25. A publish/revert leg that finds NO storage on the OWNING agent is a flip that did not
-//     happen, and it says so. The manager partitions every range/oid to its owner with
-//     pool_idx_for_oid before forwarding, so a miss never means "somebody else's oid" and the
-//     four inner handlers must not skip it silently as "idempotent for a not-owned OID". The
-//     handlers stay unique_future<void> — their callers can only log — so the channel is an
-//     error line per miss plus this DEV tally.
+// 27. A publish/revert leg that finds no storage on the owning agent is a flip that didn't
+//     happen, and says so. The manager partitions every range/oid to its owner with
+//     pool_idx_for_oid before forwarding, so a miss never means "somebody else's oid," and the
+//     four inner handlers must not skip it silently as "idempotent for a not-owned OID." They
+//     stay unique_future<void> (callers can only log), so the channel is an error line per
+//     miss plus this DEV tally.
 TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says_so") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns_miss");

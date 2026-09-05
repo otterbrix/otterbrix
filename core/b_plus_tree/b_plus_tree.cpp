@@ -328,11 +328,9 @@ namespace core::b_plus_tree {
                                                               min_node_capacity_,
                                                               max_node_capacity_));
             static_cast<leaf_node_t*>(root_)->set_failure_channel(&failures_);
-            // THE LEAF'S ANSWER MUST NOT BE THROWN AWAY. append() reports a leaf that could not
-            // get memory as false rather than leaving through an exception, so discarding it
-            // makes the first item of a fresh index one the tree counts, answers true about, and
-            // does not hold. The leaf itself is real either way -- its file exists and the
-            // metadata list has to name it -- so only the item is in question here.
+            // append() reports a leaf that could not get memory as false rather than throwing;
+            // discarding that answer would make the first item of a fresh index one the tree
+            // counts and answers true about, yet does not hold.
             const bool stored = static_cast<leaf_node_t*>(root_)->append(index, item);
             leaf_nodes_count_++;
             if (stored) {
@@ -544,12 +542,10 @@ namespace core::b_plus_tree {
                     const bool merged = current_node->right_node_->merge(current_node);
                     current_node->right_node_->unlock_exclusive();
                     if (!merged) {
-                        // THE NEIGHBOUR REFUSED TO TAKE IT, and the lines below this branch
-                        // delete `current_node`. A leaf that met a block it could not read cannot
-                        // hand its blocks over, and a destination that cannot grow cannot take
-                        // them -- in both cases the merge moved NOTHING, so going on would remove
-                        // a node whose rows nothing else has. Leave it where it is: an under-full
-                        // node is a shape the tree tolerates, and the reason is on the channel.
+                        // The neighbour refused to take it (a block it couldn't read, or no room to
+                        // grow), so the merge moved NOTHING — deleting `current_node` below would
+                        // remove a node whose rows nothing else has. Leave it under-full instead;
+                        // the reason is on the failure channel.
                         release_locks_(modified_nodes);
                         parent_node->unlock_exclusive();
                         break;
@@ -858,9 +854,9 @@ namespace core::b_plus_tree {
         std::memset(static_cast<void*>(buffer), 0, METADATA_SIZE);
         *buffer = item_count_;
         uint64_t* buffer_writer = reinterpret_cast<uint64_t*>(buffer + 2);
-        // THE END OF THAT BUFFER, which the loop below has to know about: it walks the leaf list
-        // and writes one id per leaf into a region that holds MAX_LEAF_NODES of them, so without
-        // this bound a tree that outgrew the ceiling writes past the allocation on EVERY flush.
+        // End of the buffer: the loop below writes one id per leaf into a region sized for
+        // MAX_LEAF_NODES, so without this bound a tree that outgrew the ceiling writes past the
+        // allocation on every flush.
         const uint64_t* const buffer_end =
             reinterpret_cast<const uint64_t*>(buffer) + (METADATA_SIZE / sizeof(uint64_t));
         const size_t leaf_ceiling = max_leaf_nodes();
@@ -871,13 +867,10 @@ namespace core::b_plus_tree {
         while (node) {
             ok = node->flush() && ok;
             if (written_ids == leaf_ceiling || buffer_writer == buffer_end) {
-                // Loud, and not fatal: the leaves themselves are still being written, so nothing
-                // already on the device is lost or altered. What cannot be written is the LIST, so
-                // this flush is not durable and says so -- a metadata file naming only the first
-                // MAX_LEAF_NODES leaves would silently drop the rest of the tree at the next load.
-                //
-                // TODO: grow the metadata file past one METADATA_SIZE region and lift the ceiling
-                // instead of refusing at it.
+                // Loud, not fatal: leaves are still written, only the LIST can't hold more ids, so
+                // this flush reports not-durable rather than silently naming just the first
+                // MAX_LEAF_NODES leaves and dropping the rest of the tree at the next load.
+                // TODO: grow the metadata file past one METADATA_SIZE region and lift the ceiling.
                 ok = false;
                 node = static_cast<leaf_node_t*>(node->right_node_);
                 continue;
@@ -893,16 +886,11 @@ namespace core::b_plus_tree {
         // the counter itself, and the counter is exactly what a lie here would be believed from.
         *(buffer + 1) = written_ids;
         if (!ok) {
-            // A flush that could not WRITE every leaf, or could not NAME every leaf at the
-            // ceiling, must not replace the metadata. The list built above names leaves
-            // including the one whose flush refused -- for a brand-new leaf that is a file
-            // that was never created, and load() answers a named-but-missing file with the
-            // WHOLE tree empty (io_error on the channel). Writing this list would turn one
-            // refused leaf into the loss of every other leaf at the next open. The last-good
-            // metadata on the device names only files that exist, so the tree stays openable
-            // at its last durable state; the false return says the NEW state is not durable,
-            // and the leaves that stayed dirty are written by the next flush that succeeds --
-            // which then replaces the list as a whole.
+            // A flush that could not write or name every leaf must not replace the metadata: the
+            // list built above may name a leaf whose flush refused (for a brand-new leaf, a file
+            // that was never created), and load() answers a named-but-missing file by emptying
+            // the WHOLE tree. Keeping the last-good metadata leaves the tree openable at its last
+            // durable state; dirty leaves get written by the next flush that succeeds.
             tree_mutex_.unlock();
             resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
             return false;
@@ -960,14 +948,10 @@ namespace core::b_plus_tree {
         item_count_ = *buffer;
         leaf_nodes_count_ = *(buffer + 1);
         if (leaf_nodes_count_ > MAX_LEAF_NODES) {
-            // THE COUNT CAME OFF THE DISK and must not be believed on its own: it sizes the read
-            // that follows (one uint64 per leaf out of a buffer that holds MAX_LEAF_NODES of
-            // them) and the node array allocated for it. A poked or torn counter therefore reads
-            // past the buffer, and a large enough one asks the allocator for terabytes -- which
-            // throws std::bad_alloc out of load(), i.e. the database does not open.
-            //
-            // Refuse the metadata file instead. The tree opens EMPTY rather than not at all, the
-            // leaf files are untouched, and the refusal is on the channel.
+            // This count came off the disk and sizes both the read that follows and the node
+            // array allocated for it, so a torn counter reads past the buffer and a large enough
+            // one throws std::bad_alloc out of load() (database fails to open). Refuse the
+            // metadata file instead: the tree opens EMPTY, leaf files are untouched.
             failures_.report(load_failure_t::data_corruption);
             item_count_ = 0;
             leaf_nodes_count_ = 0;
@@ -999,12 +983,10 @@ namespace core::b_plus_tree {
             std::filesystem::path leaf_file_name = storage_directory_;
             leaf_file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
             if (!file_exists(fs_, leaf_file_name)) {
-                // A leaf the metadata NAMES but the directory does not hold. Returning an
-                // empty tree from this leg would be a silent SUBSET -- every row of every
-                // other leaf vanishes with no way to ask why -- so the refusal goes on the
-                // channel like every other load failure. The tree still opens
-                // (empty), still answers about nothing rather than something else, and
-                // its files can still be deleted, which is all DROP INDEX needs.
+                // A leaf the metadata names but the directory doesn't hold: returning an empty
+                // tree silently here would be a SUBSET (every other leaf's rows vanish with no
+                // way to ask why), so this is reported like any other load failure. The tree
+                // still opens empty, and its files can still be deleted (DROP INDEX).
                 failures_.report(load_failure_t::io_error);
                 for (size_t j = 0; j < i; j++) {
                     delete *(nodes_layer + j);

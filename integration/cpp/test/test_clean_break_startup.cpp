@@ -392,16 +392,12 @@ TEST_CASE("integration::clean_break_startup::hard_fail_on_legacy_catalog_otbx") 
     std::filesystem::remove_all(dir);
 }
 
-// 8b. A REFUSED STARTUP MUST NOT MAKE THE DIRECTORY UNOPENABLE. base_otterbrix_t
-// registers main_path_ in a process-wide set to refuse a second LIVE instance on
-// the same directory, and it inserts that entry BEFORE everything that can throw.
-// The destructor is what erases it — and a constructor that throws never gets one.
-// So without the scope guard that releases the registration on the way out, the
-// operator fixes the real fault (here: removes the legacy catalog.otbx the previous
-// attempt refused on) and the retry in the same process answers "otterbrix instance
-// has to have unique directory": a refusal naming neither the real fault nor
-// anything actionable, for a directory that is in fact free. The registration must
-// therefore survive only a SUCCESSFUL construction.
+// 8b. A refused startup must not make the directory unopenable. base_otterbrix_t registers
+// main_path_ in a process-wide set before anything that can throw, and only the destructor
+// erases it -- a constructor that throws never gets one. Without the scope guard that
+// releases the registration on the way out, fixing the real fault (here, removing the
+// legacy catalog.otbx) and retrying in the same process would answer "otterbrix instance
+// has to have unique directory" for a directory that is actually free.
 TEST_CASE("integration::clean_break_startup::a_refused_startup_releases_the_directory") {
     auto dir = std::filesystem::path(clean_break_dir() + "/refused_release");
     std::filesystem::remove_all(dir);

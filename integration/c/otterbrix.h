@@ -13,12 +13,9 @@ typedef struct string_view_t {
     size_t size;
 } string_view_t;
 
-// ABI NOTE: `disk_on` was removed from this struct, not deprecated in place. Every
-// table is disk-backed now, so the field selected nothing; leaving it would have let a
-// caller pass `disk_on = false` and receive a disk-backed database anyway — a knob that
-// lies. Callers must drop the initializer, and any hand-written binding that mirrors
-// this layout (integration/csharp) has to be updated in lockstep; bindgen-generated
-// ones (integration/rust/otterbrix-sys) follow this header automatically.
+// ABI NOTE: `disk_on` removed, not deprecated -- every table is disk-backed now, so the
+// field lied when false. Hand-written bindings (integration/csharp) must drop it too;
+// bindgen-generated ones (integration/rust/otterbrix-sys) follow this header automatically.
 typedef struct config_t {
     int level;
     string_view_t log_path;

@@ -45,11 +45,7 @@ namespace components::expressions {
         return stream;
     }
 
-    // `key` is the caller's, built on whatever arena the caller used -- the optimizer copies a
-    // key off the node it is rewriting, create_plan copies one off a logical node. This
-    // expression lives on `resource` and is read from long after those callers return, so the
-    // key it keeps is PLACED on `resource` rather than left on the source's arena (which dies
-    // first) or on the process default (which a plain copy would pick).
+    // key_t{key, resource}: outlives the caller's arena, so the key must be rebuilt on `resource`, not copied as-is.
     scalar_expression_t::scalar_expression_t(std::pmr::memory_resource* resource, scalar_type type, const key_t& key)
         : expression_i(expression_group::scalar, key_t{key, resource})
         , type_(type)

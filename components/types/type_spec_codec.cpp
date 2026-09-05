@@ -12,16 +12,9 @@ namespace components::types {
         constexpr uint8_t FLAG_HAS_ALIAS = 0x01;
         constexpr uint8_t FLAG_KNOWN_MASK = FLAG_HAS_ALIAS;
 
-        // Nesting deeper than this cannot come from a legitimate column type; a corrupt
-        // buffer could otherwise drive unbounded recursion (stack overflow instead of an
-        // error). Matches nothing the SQL surface can produce — real types are < 10 deep.
-        //
-        // THE WINDOW IS SHARED. encode_one carries the same `depth` counter and applies
-        // the same predicate, because a writer that accepts more than the reader does
-        // manufactures a file that cannot be opened. Nesting is not hypothetical: every
-        // `CREATE TYPE t_n AS (a t_{n-1})` INLINES t_{n-1} whole, so a chain of CREATE
-        // TYPE statements walks the depth up one level at a time until a checkpoint
-        // succeeds and the next load fails forever.
+        // Bounds recursion against a corrupt buffer (stack overflow otherwise); real types
+        // are < 10 deep. encode_one enforces the identical limit -- a writer more permissive
+        // than the reader would manufacture a file that can never be opened again.
         constexpr uint32_t MAX_SPEC_DEPTH = 64;
 
         // ---- encode helpers -------------------------------------------------------
@@ -124,10 +117,8 @@ namespace components::types {
             }
         }
 
-        // Fetches the extension and verifies it is the kind the logical type implies. A
-        // mismatch (e.g. a DECIMAL whose extension is GENERIC because set_alias ran on a
-        // bare type) is exactly the in-memory corruption this codec exists to prevent on
-        // disk — refuse to persist it.
+        // A mismatch (e.g. a DECIMAL whose extension is GENERIC from set_alias on a bare
+        // type) is in-memory corruption this codec must refuse to persist, not encode.
         const logical_type_extension* checked_extension(const complex_logical_type& t,
                                                         logical_type_extension::extension_type expected) {
             const auto* ext = t.extension();
@@ -141,10 +132,8 @@ namespace components::types {
         encode_one(const complex_logical_type& type, std::pmr::vector<std::byte>& out, uint32_t depth) {
             auto* resource = out.get_allocator().resource();
 
-            // The write side validates EXACTLY the window the read side accepts. Refusing
-            // here costs a failed DDL or a failed checkpoint, both of which leave the
-            // database open; letting the bytes through costs a database that never opens
-            // again. Same predicate, same constant, same depth accounting as decode_one.
+            // Same predicate and constant as decode_one: refusing here costs a failed DDL,
+            // letting it through costs a database that never opens again.
             if (depth > MAX_SPEC_DEPTH) {
                 return encode_error(resource, "type spec encode: nesting exceeds the format depth limit");
             }
@@ -167,11 +156,8 @@ namespace components::types {
                         return encode_error(resource, "type spec encode: DECIMAL without a decimal extension");
                     }
                     const auto* dec = static_cast<const decimal_logical_type_extension*>(ext);
-                    // Mirror of the decode-side window check below, and the reason it can
-                    // never drift: both call is_valid_decimal_spec. create_decimal refuses
-                    // an out-of-window pair outright, so reaching this is already an
-                    // in-memory type nobody could have built through the factory — refuse
-                    // to make it durable rather than write bytes decode_one will reject.
+                    // Unreachable via create_decimal (it refuses out-of-window pairs), but
+                    // mirrors decode_one's check rather than writing bytes it would reject.
                     if (!is_valid_decimal_spec(dec->width(), dec->scale())) {
                         return encode_error(resource, "type spec encode: DECIMAL width/scale out of range");
                     }
@@ -284,8 +270,7 @@ namespace components::types {
                     return true;
                 }
                 default:
-                    // USER / TABLE / FUNCTION / LAMBDA / INVALID and anything future: these
-                    // never describe stored data — refusing beats inventing a byte for them.
+                    // USER/TABLE/FUNCTION/LAMBDA/INVALID never describe stored data.
                     return encode_error(resource, "type spec encode: type cannot be persisted");
             }
         }
@@ -328,9 +313,8 @@ namespace components::types {
                     if (!in.ok) {
                         return corrupt(resource, "type spec decode: truncated DECIMAL payload");
                     }
-                    // Validate BEFORE create_decimal so the failure is reported as what it
-                    // is — corrupt DISK BYTES, not a bad argument. create_decimal refuses
-                    // the same pair; this arm only decides which error code the caller sees.
+                    // Validate before create_decimal so the failure reports as corrupt disk
+                    // bytes, not a bad argument.
                     if (!is_valid_decimal_spec(width, scale)) {
                         return corrupt(resource, "type spec decode: DECIMAL width/scale out of range");
                     }

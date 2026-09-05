@@ -102,9 +102,7 @@ namespace components::expressions {
                                                           std::to_string(input_types_.size()) + " columns",
                                                       resource()});
             }
-            // A variant-select key ('col ::? type') is NOT a cast: its cast_type is the
-            // disambiguation hint find_types already consumed when it resolved path() to
-            // the matching type-variant column, whose physical type IS the requested one.
+            // A variant-select key ('col ::? type') is not a cast: cast_type there is a disambiguation hint, already consumed.
             if (key.has_cast_type() && !key.is_variant_select()) {
                 return core::error_t(
                     core::error_code_t::unimplemented_yet,
@@ -602,10 +600,7 @@ namespace components::expressions {
                      const std::pmr::vector<types::complex_logical_type>& input_types,
                      size_t right_offset) {
         if (graph == nullptr || expression == nullptr) {
-            // The arena comes from `input_types`, not from `graph`: this is the arm where graph
-            // may be the null one, so asking it for a resource is exactly what cannot be done
-            // here. input_types is the caller's own std::pmr::vector and carries the caller's
-            // allocator, which is the same arena build_graph hands the graph anyway.
+            // graph may be null here, so the resource comes from input_types instead.
             return core::error_t(
                 core::error_code_t::invalid_parameter,
                 std::pmr::string{"execution graph builder: nothing to build", input_types.get_allocator().resource()});

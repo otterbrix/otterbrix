@@ -18,11 +18,8 @@ class PYBIND11_EXPORT wrapper_cursor final : public boost::intrusive_ref_counter
 public:
     using pointer = components::cursor::cursor_t_ptr;
 
-    // `space` is not decoration: the result batch is pmr-allocated from the
-    // space's memory resource and `dispatcher` points into the same object, so a
-    // cursor that does not hold the space is only valid while somebody else
-    // happens to. Python releases the locals of a finished frame in no
-    // guaranteed order, so "somebody else" is not a guarantee.
+    // `space` must be held, not borrowed: the result batch is pmr-allocated from its
+    // resource, and `dispatcher` points into the same object.
     wrapper_cursor(pointer cursor, otterbrix::wrapper_dispatcher_t* dispatcher, otterbrix::spaces_ptr space);
 
     void close();

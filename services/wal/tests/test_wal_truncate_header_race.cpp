@@ -25,15 +25,10 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_page.hpp>
 
-// ONE PAGE, ONE READ. Deciding a segment's fate from TWO reads of the same page —
-// verify_page_checksum reads and verifies it, then read_page_header reads it AGAIN and
-// swallows that read's answer, returning a zeroed header on failure — lets a read that
-// succeeds the first time and fails the second (a device on its way out, a truncated file, an
-// interposer — anything between the two reads) produce page_end_lsn == 0, which is <= every
-// checkpoint id, so the branch UNLINKS a segment whose records sit ABOVE the checkpoint.
-//
-// The injection below allows the first read of the last data page and refuses the second —
-// the exact window between the two calls.
+// ONE PAGE, ONE READ: deciding a segment's fate from TWO reads of the same page (verify, then a
+// second read_page_header that swallows its own failure into a zeroed header) lets a read that
+// fails only the second time produce page_end_lsn==0, which unlinks a segment whose records sit
+// ABOVE the checkpoint. The injection below allows the first read and refuses the second.
 
 using namespace services;
 using namespace services::wal;
@@ -181,17 +176,10 @@ namespace {
             manager_.reset();
         }
 
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: this is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
-        // that would report a chunk still alive after the manager is gone. Production hands the manager
-        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
-        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
-        // over: ~wal_env_t stops the scheduler and resets manager_
-        // (destroying the mailbox and any message still holding this batch) inside its own body,
-        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
-        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
-        // the batch is moved into the message and is unobservable after send.
+        // Built on the fixture's own arena (core::pmr::otterbrix_resource, resource_tracer_t under
+        // ASAN), mirroring production (agent_disk_t::storage_append_inner builds off resource()).
+        // resource_ is declared FIRST so it outlives ~wal_env_t's teardown of manager_. Extracted
+        // so a test can assert the ARENA of a REAL payload before it's moved into the message.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -240,15 +228,10 @@ namespace {
 
 } // namespace
 
-// ===========================================================================
-// A HEADER RE-READ THAT FAILS BETWEEN VERIFY AND DECIDE MUST NOT UNLINK THE SEGMENT.
-//
-// checkpoint id 1 sits BELOW every id the closed segment holds, so the only correct outcomes
-// are "read the verified header and keep the file" or "could not read, skip the file". A
-// zeroed header instead answers page_end_lsn == 0 <= 1 and the file is destroyed.
-//
+// A header re-read that fails between verify and decide must not unlink the segment: checkpoint
+// id 1 sits below every id the closed segment holds, so a zeroed header answering
+// page_end_lsn==0<=1 would destroy the file instead of skipping it.
 // BEFORE: segment 000000 was unlinked with every record above the checkpoint in it.
-// ===========================================================================
 TEST_CASE("wal::truncate::a_failed_header_reread_does_not_unlink_a_live_segment") {
     second_read_fault_scope_t fault;
 
@@ -289,12 +272,8 @@ TEST_CASE("wal::truncate::a_failed_header_reread_does_not_unlink_a_live_segment"
     REQUIRE_FALSE(truncate_error.contains_error());
 }
 
-// ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
-// make_insert_batch above. The batch is moved into the message and is unobservable after
-// send, so the assertion is made on the object make_insert_batch produces: the same call, on
-// the same path, that send_insert makes -- not a value handed in by the test.
-// ===========================================================================
+// Insert payload built on the fixture's own arena (see make_insert_batch above); the batch is
+// unobservable after send, so the assertion is made on make_insert_batch's own output.
 TEST_CASE("wal::truncate::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

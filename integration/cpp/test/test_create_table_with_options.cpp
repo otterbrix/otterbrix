@@ -1,20 +1,14 @@
-// ============================================================================
-// `CREATE TABLE ... WITH (...)` MUST NOT SWALLOW AN OPTION IT DOES NOT IMPLEMENT.
+// `CREATE TABLE ... WITH (...)` must not swallow an option it does not implement.
 //
-// The option loop in
-// components/sql/transformer/impl/transform_table.cpp compared each DefElem's
-// name against exactly one string, "storage", and `continue`d past everything
-// else. `storage` was refused because every table is disk-backed and a user
-// writing it believes they are still choosing a storage mode — but that
-// reasoning covers every other option in the list just as well, since NONE of
-// them is implemented either. Any other name fell out of the bottom of the loop
-// and the CREATE TABLE proceeded exactly as if the WITH clause had not been
-// written.
+// The option loop in components/sql/transformer/impl/transform_table.cpp compared each
+// DefElem's name against exactly one string, "storage" (refused because every table is
+// disk-backed), and `continue`d past everything else -- but that reasoning covers every
+// other option just as well, since none of them is implemented either. Any other name fell
+// out of the bottom of the loop and CREATE TABLE proceeded as if the WITH clause were absent.
 //
-// The sharpest shape is a typo of the one name that WAS handled: `storag =
-// 'memory'` reached the same "you have selected a storage mode" belief the
-// `storage` refusal exists to correct, and got no refusal at all.
-// ============================================================================
+// The sharpest shape is a typo of the one handled name: `storag = 'memory'` carries the same
+// "you have selected a storage mode" belief the `storage` refusal exists to correct, and got
+// no refusal at all.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

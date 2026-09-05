@@ -1,29 +1,20 @@
-// A DROPPED TABLE MUST TAKE ITS INDEX AGENTS WITH IT.
+// A dropped table must take its index agents with it. An agent owns an open store (btree_t over
+// its directory, or a segment/txn-log/keydir triplet); only its destructor closes that, and only
+// manager_index_t owns it. Two teardown paths must take the owning pointer, not just routing
+// state: unregister_collection (commit/abort-time; operator_commit_transaction awaits it before
+// telling manager_disk_t to free the table's files) and on_horizon_advanced (once the snapshot
+// floor passes the drop's commit id). Erasing only the routing maps leaks one open agent per
+// index, forever -- there is no later reaper.
 //
-// An index agent OWNS an open store: the ordered family a core::b_plus_tree::btree_t over its
-// directory, the hashed one a segment handle, a txn-log handle and a keydir file. The only thing
-// that closes any of that is the agent's destructor, and the only owner is manager_index_t. Both
-// teardown paths must take the OWNING POINTER, not just the routing state:
+// The teardown may not free the agent while a message it sent is still unanswered (the
+// use-after-free test_index_agent_lifetime.cpp pins), so the reap uses drop_index's shape: take
+// ownership into the handler's frame before the terminal drop is sent, await the reply, then let
+// the frame destroy it.
 //
-//   * unregister_collection is the commit-time (and abort-time) physical teardown:
-//     operator_commit_transaction awaits it for every dropped oid and only then tells
-//     manager_disk_t to free the table's files.
-//   * on_horizon_advanced reclaims the oid once the snapshot floor passes its commit id.
-//
-// Erasing the routing maps and leaving the owner standing leaks one agent per index of every
-// dropped indexed table, each holding files open -- files the disk manager then unlinks underneath
-// it -- for the life of the process. There is no later reaper.
-//
-// What the teardown may NOT do is free the agent while a message it was sent is still unanswered;
-// that is the hole test_index_agent_lifetime.cpp pins, and it is why the reap here has the same
-// shape drop_index uses: take the ownership into the handler's frame BEFORE the terminal drop is
-// sent, await the reply, then let the frame destroy it.
-//
-// The witness is services::index::live_index_agents() -- a DEV_MODE count bumped in each agent's
-// constructor and destructor. It separates "the table was dropped" from "the table was dropped AND
-// its agent was freed"; no assertion about maps, addresses or files can tell those two apart. Both
-// cases drive the manager and the agent by hand (handlers called directly, the agent pumped with
-// cooperative_actor::resume(1)) so the interleaving is chosen rather than raced for.
+// Witnessed by live_index_agents(), a DEV_MODE count bumped in each agent's ctor/dtor -- it's
+// the only way to tell "table dropped" from "table dropped AND its agent freed". Both cases
+// drive the manager and agent by hand (direct handler calls, cooperative_actor::resume(1)) so
+// the interleaving is chosen, not raced for.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -135,10 +126,9 @@ TEST_CASE("services::index::on_horizon_advanced frees the agents of a reclaimed 
     manager->mark_table_dropped_sync(kTableOid, /*dropped_at_commit_id=*/10);
     auto horizon_future = manager->on_horizon_advanced(/*new_horizon=*/11);
 
-    // The sweep sent the terminal drop and is waiting for it. That wait is half the fix:
-    // freeing an agent whose reply is still outstanding is the use-after-free
-    // test_index_agent_lifetime.cpp pins. A sweep that returns immediately here is one
-    // that fired the drop and forgot the agent -- which is exactly what leaked it.
+    // The sweep sent the terminal drop and is waiting for it; freeing the agent before the
+    // reply lands is the use-after-free test_index_agent_lifetime.cpp pins. Returning
+    // immediately here would mean firing the drop and forgetting the agent -- the original leak.
     INFO("the horizon sweep must wait for the terminal drop it sent");
     REQUIRE_FALSE(horizon_future.is_ready());
 
@@ -188,10 +178,9 @@ TEST_CASE("services::index::unregister_collection frees the agents of the table 
     const auto session = session_id_t::generate_uid();
     auto unregister_future = manager->unregister_collection(session, kTableOid);
 
-    // The caller (operator_commit_transaction / operator_abort_transaction) awaits this
-    // BEFORE it tells the disk manager to free the table's files, so the store has to be
-    // closed by the time it returns -- which means this handler has to wait for the drop.
-    // Returning immediately means it erased two maps and walked away from the agent.
+    // The caller (operator_commit_transaction / operator_abort_transaction) awaits this before
+    // telling the disk manager to free the table's files, so the store must be closed by the
+    // time it returns -- returning immediately would mean erasing two maps and walking away.
     INFO("the teardown must wait for the terminal drop it sent");
     REQUIRE_FALSE(unregister_future.is_ready());
 

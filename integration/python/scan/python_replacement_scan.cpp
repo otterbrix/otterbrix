@@ -45,9 +45,8 @@ namespace otterbrix {
             auto factory_dep = std::make_unique<arrow_stream_factory_dependency_t>(arrow_source);
             auto* factory_ptr = factory_dep->get();
 
-            // The pointer value goes on the CALLER's arena, not the process default: this
-            // list is owned by the table_ref_t, which the caller consumes one call later
-            // through fetch_object_data (which is handed the same arena).
+            // Owned by table_ref_t, consumed by fetch_object_data on the caller's arena,
+            // not the process default.
             std::vector<components::types::logical_value_t> children;
             children.emplace_back(resource, static_cast<void*>(factory_ptr));
 

@@ -14,10 +14,8 @@ namespace components::logical_plan {
         // per-kind OID payload) here so the drop variants land in distinct
         // buckets of any node-keyed container despite sharing node_type::drop_t.
         //
-        // The statement's OWN fields fold in too. The OIDs alone are worthless at
-        // plan time — enrich has not stamped them yet, so `DROP TABLE a`,
-        // `DROP TABLE b`, `DROP TABLE IF EXISTS a` and `DROP TABLE a RESTRICT`
-        // would all hash IDENTICALLY (every OID still INVALID_OID).
+        // The statement's OWN fields fold in too: at plan time the OIDs alone are worthless
+        // (enrich hasn't stamped them yet), so `DROP TABLE a` vs `DROP TABLE b` would otherwise hash identically.
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(kind_));
         boost::hash_combine(hash_value, dbname_);

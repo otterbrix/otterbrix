@@ -111,14 +111,11 @@ namespace components::catalog {
             return {target_oid, std::move(chunk)};
         }
 
-        // Every builder in this file addresses system tables by their well-known oids,
-        // and every well-known oid is present in all_system_tables() by construction —
-        // find_system_table over one of them CANNOT miss. Answering the impossible miss
-        // with ROWS instead hands back an empty chunk from the row builders (nothing
-        // checks it — the poisoned chunk travels on) or silently SKIPS a catalog write in
-        // the build_create_*_writes functions. The builder's contract is rows, so the
-        // impossible state is loud — same pattern as oid_generator::allocate
-        // (catalog_oids.hpp).
+        // Every builder here addresses system tables by well-known oids, and every well-known
+        // oid is present in all_system_tables() by construction — find_system_table over one
+        // CANNOT miss. Answering the impossible miss with ROWS instead would hand back an
+        // empty chunk (nothing checks it) or silently SKIP a catalog write, so it's a loud
+        // failure instead — same pattern as oid_generator::allocate (catalog_oids.hpp).
         const system_table_def_t& system_table(oid_t relation_oid) {
             const auto* def = find_system_table(relation_oid);
             if (def == nullptr) [[unlikely]] {
@@ -183,11 +180,10 @@ namespace components::catalog {
                 ++attnum;
                 attr_t a;
                 a.attoid = oid_batch.allocate();
-                // Hand the freshly minted identity back to the column itself. This is
-                // the CREATE TABLE / CREATE MATERIALIZED VIEW / composite-type leg of "every
-                // storage column carries its attoid"; the same list is what plan-gen copies
-                // into operator_create_collection_t / operator_create_matview_t and what
-                // reaches table_storage_t. set_attoid is immutable-after-assignment, and a
+                // Hand the freshly minted identity back to the column itself -- the CREATE TABLE /
+                // CREATE MATERIALIZED VIEW / composite-type leg of "every storage column carries
+                // its attoid", the same list plan-gen copies into operator_create_collection_t /
+                // operator_create_matview_t. set_attoid is immutable-after-assignment and a
                 // column is minted exactly once, so this cannot re-stamp.
                 col.set_attoid(static_cast<std::uint32_t>(a.attoid));
                 a.atttypid = (col.atttypid() != INVALID_OID) ? col.atttypid() : builtin_type_to_oid(col.type().type());
@@ -197,13 +193,10 @@ namespace components::catalog {
                 a.has_default = col.has_default_value();
                 a.typspec = encode_type_spec(col.type());
                 if (col.has_default_value()) {
-                    // Rule 6: a DEFAULT the codec cannot carry is rejected UPSTREAM, on the
-                    // paths that own an error channel — convert_column_defaults (CREATE
-                    // TABLE) and encode_default_spec_ec (ALTER SET DEFAULT / ADD COLUMN).
-                    // This builder returns rows, not errors, so reaching a failure here
-                    // would mean the gate was bypassed. Do not write the two halves of the
-                    // catalog row into disagreement: atthasdefault and attdefspec say the
-                    // same thing or neither does.
+                    // A DEFAULT the codec cannot carry is rejected UPSTREAM
+                    // (convert_column_defaults for CREATE TABLE, encode_default_spec_ec for
+                    // ALTER SET DEFAULT / ADD COLUMN); reaching a failure here would mean that
+                    // gate was bypassed. Don't write atthasdefault and attdefspec into disagreement.
                     auto encoded = encode_default_spec(resource, col.default_value(), a.defspec);
                     assert(!encoded.contains_error() && "ungated DEFAULT reached build_create_table_writes");
                     if (encoded.contains_error()) {
@@ -747,12 +740,11 @@ namespace components::catalog {
                                    char fk_del_action,
                                    char fk_upd_action,
                                    const std::string& check_expr) {
-        // WRITER-SIDE GATE: an INVALID_OID inside either column list means the caller lost
-        // a column identity. Writing the token into the conkey/confkey CSV and silently
-        // SKIPPING that column's pg_depend edge leaves the constraint claiming a column no
-        // dependency walk can see — and ALTER TABLE DROP COLUMN then drops a parent column
-        // out from under a live FK. Refuse the statement instead (rule 6; the refusal costs
-        // one DDL). An EMPTY list stays legal here: its floor is the read side (see
+        // WRITER-SIDE GATE: an INVALID_OID in either column list means the caller lost a column
+        // identity. Writing the token into conkey/confkey and silently SKIPPING that column's
+        // pg_depend edge leaves the constraint claiming a column no dependency walk can see --
+        // and DROP COLUMN then drops a parent column out from under a live FK. Refuse instead
+        //. An EMPTY list stays legal: its floor is the read side (see
         // test_declared_key_conkey_loss.cpp).
         for (const auto* list : {&fk_column_attoids, &ref_column_attoids}) {
             for (std::size_t i = 0; i < list->size(); ++i) {
@@ -811,18 +803,15 @@ namespace components::catalog {
         // constraint→ref_table 'n' + (FK only) per-confkey-column 'n' deps. All in one chunk, in
         // that insertion order, with the confkey block appended last.
         //
-        // WHY confkey gets per-column edges at all, and why 'n' and not 'i'.
-        // operator_alter_column_drop_t discovers what depends on a column by reading pg_depend
-        // keyed on (refclassid = pg_attribute, refobjid = attoid) — a per-column edge is the ONLY
-        // way a column-level dependency is visible to it. Without them `ALTER TABLE parent DROP
-        // COLUMN id` under a live `FOREIGN KEY (pid) REFERENCES parent (id)` reads an empty
-        // dependent set and is accepted, after which every insert into the child dies in the
-        // parent probe with "keyed read: table has no column id" — a table bricked by a column
-        // dropped in a different table. The deptype separates the two halves, exactly as
-        // PostgreSQL does: a constraint's OWN columns are 'i' (internal), so dropping one takes
-        // the constraint with it, while the REFERENCED columns are 'n' (normal) — the constraint
-        // belongs to another table and is not implied by them, so dropping one is refused instead
-        // of silently repealing the constraint. operator_alter_column_drop_t reads that char.
+        // WHY confkey gets per-column edges, and why 'n' not 'i': operator_alter_column_drop_t
+        // discovers dependents by reading pg_depend keyed on (refclassid=pg_attribute,
+        // refobjid=attoid) — a per-column edge is the ONLY way a column dependency is visible
+        // to it. Without them, dropping a referenced column reads an empty dependent set and
+        // succeeds, after which every insert into the child dies with "keyed read: table has
+        // no column id" — a table bricked by a column dropped in a different table. deptype
+        // separates the two halves as PostgreSQL does: a constraint's OWN columns are 'i'
+        // (dropping one takes the constraint with it); the REFERENCED columns are 'n'
+        // (dropping one is refused, not silently repealed).
         {
             const auto& dep_def = system_table(pg_depend_oid);
             // The gate above refused any INVALID_OID entry, so every listed column

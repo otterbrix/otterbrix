@@ -1,17 +1,14 @@
 #pragma once
 
-// ALTER atomic validation: async data-gathering layer.
+// ALTER atomic validation: async data-gathering layer. The pure validators in
+// components/catalog/alter_column_validators.{hpp,cpp} take pre-materialised inputs by const-reference;
+// this file gathers those inputs from manager_disk_t, keeping the pure validators testable without an
+// actor harness.
 //
-// The pure validators in components/catalog/alter_column_validators.{hpp,cpp} take pre-materialised
-// inputs by const-reference; this file provides the async helpers that gather those inputs from
-// manager_disk_t. The split keeps the pure validators testable without an actor harness while still
-// letting ALTER operators short-circuit on validation failure BEFORE any pg_catalog mutation.
-//
-// These helpers are NOT actors: they are coroutine functions invoked from an operator's
-// await_async_and_resume, piggy-backing on its async frame and talking to manager_disk_t only via
-// actor_zeta::send. A scan-side failure is returned as a core::error_t and never as an empty result: the
-// pure validators read an empty gather as "no visible columns" and "no dependents", so degrading a failed
-// read would let a duplicate column through and make a RESTRICT check pass vacuously.
+// These helpers are coroutines invoked from an operator's await_async_and_resume, not actors. A scan-side
+// failure returns a core::error_t rather than an empty result: the pure validators read an empty gather as
+// "no visible columns" / "no dependents", so degrading a failed read would let a duplicate column through
+// or make a RESTRICT check pass vacuously.
 
 #include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -40,15 +37,12 @@ namespace components::operators::alter_validators {
                          components::execution_context_t exec_ctx,
                          components::catalog::oid_t table_oid);
 
-    // Who the relation is, out of the batches a keyed read on pg_class.oid returned: the name a refusal has
-    // to quote ("column x of relation y ..."), and the relkind that decides WHICH true sentence the refusal
-    // is. An empty name means the batches carried no readable pg_class row — a caller on a refusal path
-    // falls back to the oid in its message rather than dropping the refusal — and relkind is then 0, which
-    // matches no kind and so picks the ordinary wording.
+    // Extracts the relation's name (for a refusal message) and relkind (which picks the refusal's wording)
+    // from a keyed pg_class.oid read. An empty name (no readable row) leaves relkind 0, the ordinary-wording
+    // case; a caller falls back to the oid in its message rather than dropping the refusal.
     //
-    // PURE, deliberately: the caller does its own send + co_await on its own frame. An async helper that did
-    // both delivered ALTER refusal messages to the cursor as unreadable bytes. Callers use it on the REFUSAL
-    // path only, so an accepted ALTER pays nothing.
+    // PURE deliberately — the caller does its own send + co_await — so an accepted ALTER pays nothing; only
+    // callers on the refusal path use it.
     struct relation_identity_t {
         std::string relname;
         char relkind{0};
@@ -56,9 +50,8 @@ namespace components::operators::alter_validators {
     relation_identity_t
     relation_identity_of(const std::pmr::vector<components::vector::data_chunk_t>& pg_class_batches);
 
-    // There is deliberately no pg_depend gatherer here. A helper keyed on
-    // (refclassid, refobjid) that drops pg_depend.deptype is useless to every caller —
-    // deptype is the only field that tells a blocking edge from a cascadable one — so
+    // deliberately no pg_depend gatherer here: deptype (dropped by a (refclassid, refobjid)
+    // key alone) is the only field that tells a blocking edge from a cascadable one, so
     // the operator that needs the answer reads pg_depend itself.
 
     // Re-export the pure validators so callsites reach pure + async helpers

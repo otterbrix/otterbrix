@@ -4,29 +4,19 @@
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 
-// Constraints written inside CREATE TABLE.
+// Constraints written inside CREATE TABLE can be lost in two independent places:
+//  * COLUMN-level: get_column_definitions (utils.cpp) only tracks NOT NULL/DEFAULT and
+//    degrades CONSTR_PRIMARY to not_null=true; UNIQUE/CHECK/FOREIGN need
+//    extract_column_constraints to also run over the same list.
+//  * TABLE-level: node_create_collection_t::constraints() holds them, but rewrite_create_table
+//    (planner.cpp) must pass them on to build_create_table_writes; column_definitions() alone
+//    writes nothing to the catalog.
 //
-// They can be lost in two independent places, and both are covered here:
+// Every violation is checked against table CONTENTS, not only statement status.
 //
-//  * COLUMN-level: the transformer's column-constraint switch. Handling only DEFAULT and NOT
-//    NULL degrades CONSTR_PRIMARY to not_null = true and drops the key itself, while
-//    CONSTR_UNIQUE, CONSTR_CHECK and CONSTR_FOREIGN fall through `default: break;` and never
-//    reach the node.
-//  * TABLE-level: those do reach node_create_collection_t and read back through constraints(),
-//    but rewrite_create_table has to hand them to build_create_table_writes — passing only
-//    column_definitions() writes nothing to the catalog.
-//
-// Each case declares a constraint inline and then violates it. Every violation is checked
-// against the table CONTENTS, not only against the statement's status: a constraint that
-// reports an error and writes the row anyway is not enforcement.
-//
-// COST, stated plainly because it is the reason this stayed broken: a table declared with an
-// inline PRIMARY KEY or UNIQUE now loads at the speed of a table that HAS one. UNIQUE and
-// PRIMARY KEY are enforced by a full table pass per 1024-row batch, measured at N^1.96
-// (bulk-loading 400k rows into a table with a primary key cost 5643 ms against 1761 ms
-// without). Dropping the constraint was masking that quadratic, not avoiding it — the declared
-// key simply was not there. Index-backed enforcement is the fix for the cost; a declaration the
-// engine accepts and does not enforce is not.
+// COST: PRIMARY KEY/UNIQUE enforcement is a full table pass per 1024-row batch, measured at
+// N^1.96 (400k-row bulk load: 5643ms with a PK vs. 1761ms without). Index-backed enforcement
+// is the fix for that cost; dropping the constraint only hid it.
 
 namespace {
     struct env_t {
@@ -133,8 +123,7 @@ TEST_CASE("integration::cpp::test_inline_constraints::table_foreign_key", "[inli
     CHECK(count_of("SELECT COUNT(*) FROM i.child WHERE pid = 999;") == 0);
 }
 
-// The referenced column list omitted: `REFERENCES parent` binds to the parent's PRIMARY KEY.
-// This is the same resolution the ALTER path grew; the inline form must reach it too.
+// `REFERENCES parent` with no column list binds to the parent's PRIMARY KEY, same as ALTER.
 TEST_CASE("integration::cpp::test_inline_constraints::column_foreign_key_implicit_pk", "[inlinecons]") {
     MAKE_ENV("col_fk_implicit");
     REQUIRE(exec("CREATE TABLE i.parent (id bigint, PRIMARY KEY (id));")->is_success());
@@ -147,9 +136,8 @@ TEST_CASE("integration::cpp::test_inline_constraints::column_foreign_key_implici
     CHECK(count_of("SELECT COUNT(*) FROM i.child WHERE pid = 999;") == 0);
 }
 
-// A foreign key pointing back at the very table being created. The referenced table does not
-// exist at the moment the constraint is read, and it never will as a separate object — it is
-// the statement's own product.
+// A foreign key referencing the table being created itself -- the referenced table does not
+// exist yet, and never will as a separate object.
 TEST_CASE("integration::cpp::test_inline_constraints::self_referencing_foreign_key", "[inlinecons]") {
     MAKE_ENV("self_fk");
     REQUIRE(exec("CREATE TABLE i.t (id bigint PRIMARY KEY, parent bigint REFERENCES i.t (id));")->is_success());
@@ -163,9 +151,8 @@ TEST_CASE("integration::cpp::test_inline_constraints::self_referencing_foreign_k
     CHECK(count_of("SELECT COUNT(*) FROM i.t;") == 2);
 }
 
-// Rule 6: a constraint that cannot be created is a loud failure on CREATE TABLE, never a
-// silent drop. These are the same refusals the ALTER path already makes; the inline form
-// must go through them rather than around them.
+// An unresolvable constraint is a loud failure on CREATE TABLE, never a silent drop --
+// the same refusals ALTER already makes.
 TEST_CASE("integration::cpp::test_inline_constraints::unresolvable_declarations_are_refused", "[inlinecons]") {
     MAKE_ENV("refusals");
 
@@ -191,8 +178,7 @@ TEST_CASE("integration::cpp::test_inline_constraints::unresolvable_declarations_
     CHECK(count_of("SELECT COUNT(*) FROM i.nokey;") == 0);
 }
 
-// The control: the same constraint added the long way round IS enforced, which is what made the
-// cases above defects rather than an unimplemented feature.
+// Control: the same constraint added via ALTER TABLE IS enforced.
 TEST_CASE("integration::cpp::test_inline_constraints::alter_table_control", "[inlinecons]") {
     MAKE_ENV("alter_control");
     REQUIRE(exec("CREATE TABLE i.t (id bigint, v bigint);")->is_success());

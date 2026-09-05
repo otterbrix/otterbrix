@@ -17,23 +17,17 @@
 #include <string>
 #include <system_error>
 
-// `path` is REQUIRED. It used to default to std::filesystem::current_path(), which no call
-// site in the tree ever used and which no caller could have wanted: config::create_config
-// puts main_path at exactly the path it is handed (configuration.hpp, `main_path(path)`),
-// and the overwhelmingly common next line is test_clear_directory(config) --
-// remove_all(main_path). The default therefore stood for "delete the working directory",
-// i.e. the build tree the test binary was launched from. Not EVERY fixture clears: a reopen
-// fixture deliberately keeps what the first open wrote (test_declared_key_conkey_loss.cpp
-// builds a second config over the same directory and does not clear it). Those are the
-// minority, and they are exactly the ones for which a current_path() default would have been
-// hardest to notice.
+// `path` is REQUIRED: it used to default to std::filesystem::current_path(), which meant
+// "delete the working directory" once the common next line, test_clear_directory(config) ->
+// remove_all(main_path), ran -- no call site ever used the default. A reopen fixture
+// (test_declared_key_conkey_loss.cpp builds a second config over the same directory without
+// clearing it) is exactly the minority case where that default would have been hardest to
+// notice.
 //
-// The path is also REFUSED unless it is qualified -- see
-// integration_fixture_path_is_qualified. That refusal is the structural half of this
-// directory's fixture rule: a new test file that writes "/tmp/test_new_thing" stops on its
-// very first run, in its own case, naming itself -- instead of passing on a quiet machine
-// and corrupting somebody else's data directory on a busy one. Discipline (review, a
-// checklist) had the opposite record here: three new literal roots arrived in one merge.
+// The path is also REFUSED unless qualified (integration_fixture_path_is_qualified): a new
+// test file writing a literal "/tmp/test_new_thing" now stops on its own first run instead of
+// corrupting someone else's data directory on a busy machine -- three such literal roots once
+// arrived in a single merge despite review.
 inline configuration::config test_create_config(const std::filesystem::path& path) {
     if (!integration_fixture_path_is_qualified(path)) {
         FAIL("test_create_config: '" << path.string()
@@ -49,15 +43,11 @@ inline configuration::config test_create_config(const std::filesystem::path& pat
 }
 
 // Make `config.main_path` exist and be empty, and REPORT an I/O failure instead of throwing
-// it. The throwing overloads of remove_all / create_directories put a
-// std::filesystem::filesystem_error into the body of whichever case happened to be running,
-// where it reads as a defect in the engine rather than as a fixture that could not be built:
-// "filesystem error: in remove_all: Directory not empty" and "... No such file or directory"
-// were both observed that way, and neither was about the code under test.
-//
-// std::error_code and not core::error_t: this is the filesystem's own non-throwing channel,
-// and a header-only test helper holds no arena to build core::error_t's pmr::string in
-// (rule 14 rules out get_default_resource / new_delete_resource).
+// it: the throwing overloads put a std::filesystem::filesystem_error into whichever case
+// happened to be running, where it reads as an engine defect rather than a fixture that
+// couldn't be built ("Directory not empty", "No such file or directory" were both observed
+// that way). std::error_code, not core::error_t: a header-only helper holds no arena to build
+// core::error_t's pmr::string in (get_default_resource / new_delete_resource are ruled out).
 [[nodiscard]] inline std::error_code test_try_clear_directory(const configuration::config& config) {
     std::error_code ec;
     std::filesystem::remove_all(config.main_path, ec);

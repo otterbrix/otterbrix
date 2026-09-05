@@ -46,23 +46,18 @@ namespace components::table {
 
     private:
         collection_t* collection_;
-        // ONE row-version manager in TWO representations: version_info_ is a NON-OWNING cache and
-        // the lock-free read path (version_info(), committed_row_count, has_version_above,
-        // move_to_collection), while owned_version_info_ OWNS. The manager is SHARED — add_column /
-        // remove_column give the ALTER successor's row group a second owning reference to the SAME
-        // object, so a table and its successor agree about which rows are deleted, and the last row
-        // group to die frees it (the count lives inside row_version_manager_t, not a control block).
-        //
-        // INVARIANT: version_info_ is either null or names exactly the object owned_version_info_
-        // owns — never a different one, never a freed one. set_version_info is the SOLE writer of
-        // both; see the note there for the publication order and the one transition it is valid for.
+        // ONE row-version manager in TWO representations: version_info_ is a NON-OWNING cache for
+        // the lock-free read path, owned_version_info_ OWNS. SHARED with ALTER successors
+        // (add_column/remove_column give a second owning reference), so the last row group to die
+        // frees it. INVARIANT: version_info_ is either null or names exactly the object
+        // owned_version_info_ owns. set_version_info is the SOLE writer of both (see the note there
+        // for the publication order).
         std::atomic<row_version_manager_t*> version_info_ = nullptr;
         boost::intrusive_ptr<row_version_manager_t> owned_version_info_;
         uint64_t current_version_ = 0;
-        // SHARED with the row groups of this group's ALTER successors: add_column / remove_column
-        // copy this vector into the successor, so both point at the SAME column objects and the
-        // last row group to die frees them. Shared ownership is carried by the count inside
-        // column_data_t (see the note on the class), not by a control block.
+        // SHARED with ALTER successors: add_column/remove_column copy this vector into the
+        // successor, so the last row group to die frees the column objects (count lives inside
+        // column_data_t, not a control block).
         std::vector<boost::intrusive_ptr<column_data_t>> columns_;
 
     public:
@@ -77,7 +72,7 @@ namespace components::table {
         // Returns out_of_memory when the backfill of the new column cannot allocate or
         // append: the successor row group is NOT built on that path. An assert-and-break instead
         // ships a successor whose new column is SHORTER than count, and every scan of it reads
-        // past the column's end (rule 6; the assert itself vanishes under NDEBUG).
+        // past the column's end (and the assert itself vanishes under NDEBUG).
         [[nodiscard]] core::result_wrapper_t<std::unique_ptr<row_group_t>> add_column(collection_t* collection,
                                                 column_definition_t& new_column,
                                                 const std::optional<types::logical_value_t>& default_value,
@@ -104,12 +99,9 @@ namespace components::table {
                        uint64_t result_idx,
                        const std::vector<size_t>& projected_cols);
 
-        // Point-fetch visibility gate — the predicate fetch_row must be asked BEFORE it gathers, and
-        // the only reader of row_version_manager_t::fetch. `row_id` is collection-ABSOLUTE: that
-        // manager keeps the absolute contract for this one method and rebases internally, so nothing
-        // here rebases and nothing here may start. A group with no version manager has recorded no
-        // insert and no delete, so every one of its rows is visible — the same answer indexing_vector
-        // gives a scan over a null chunk_info, and the reason this cannot silently hide rows.
+        // Point-fetch visibility gate, asked BEFORE fetch_row gathers. `row_id` is
+        // collection-ABSOLUTE; row_version_manager_t::fetch rebases internally. No version
+        // manager means no recorded insert/delete, so every row is visible.
         bool is_visible(const transaction_data& txn, int64_t row_id);
 
         void append_version_info(transaction_data txn, uint64_t count);
@@ -162,11 +154,9 @@ namespace components::table {
         // sub-columns) to `out`, so a compacting caller can free them after swapping the collection.
         void collect_disk_block_ids(std::pmr::vector<uint64_t>& out);
 
-        // Same walk, restricted to ONE top-level column (and its sub-columns). The caller is
-        // table_storage_t::drop_column, which must name the outgoing column's blocks BEFORE the
-        // rebuild destroys the column object — after it, nothing can enumerate them again. The ids
-        // are NOT proven exclusive here: the checkpoint packs segments of several columns into one
-        // block, so proving that is the release site's job (see table_storage_t::checkpoint).
+        // Same walk, restricted to ONE top-level column. Caller: table_storage_t::drop_column,
+        // which must name the outgoing column's blocks BEFORE the rebuild destroys the object.
+        // Ids are NOT proven exclusive here; that's the release site's job.
         void collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out);
 
         // The checkpoint chain returns out_of_memory when a column flush pin fails;
@@ -198,22 +188,16 @@ namespace components::table {
         uint64_t calculate_size();
 
 #ifdef DEV_MODE
-        // Test-observable IDENTITY of top-level column `c`: object address plus the number of row
-        // groups owning it. add_column / remove_column must hand the successor's row group the SAME
-        // column objects, and a deep copy is invisible to every scan, count and checksum a test could
-        // take — the address and the reference count are the only things that tell them apart.
+        // Test-observable IDENTITY of top-level column `c`: object address plus owner count. A
+        // deep copy is invisible to any scan/count/checksum a test could take, so address and
+        // ref count are the only way to tell add_column/remove_column shared the real object.
         // Gate: test_alter_column_sharing.cpp.
         const column_data_t* column_identity(uint64_t c) const;
         uint64_t column_owner_count(uint64_t c) const;
 
-        // Test-observable IDENTITY of this row group's row-version manager, in BOTH representations:
-        // the object the group OWNS and the raw pointer the lock-free read path publishes.
-        // add_column / remove_column must hand the successor's row group the SAME manager, and a
-        // fresh one is invisible to every scan and count a test could take (a manager with no deletes
-        // answers "visible" exactly like the shared one), so only the address and the owner count
-        // tell them apart. The third observer covers the owner/published invariant (see
-        // set_version_info), so a conversion that publishes the wrong pointer — or forgets to
-        // publish — cannot pass. Gate: test_alter_version_sharing.cpp.
+        // Same idea for this row group's row-version manager, in BOTH representations (owned
+        // object and the published raw pointer) so a conversion that publishes the wrong pointer
+        // cannot pass. Gate: test_alter_version_sharing.cpp.
         const row_version_manager_t* version_manager_identity() const;
         const row_version_manager_t* version_manager_published() const;
         uint64_t version_manager_owner_count() const;

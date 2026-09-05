@@ -21,11 +21,9 @@ namespace components::logical_plan {
         no_valid = 255
     };
 
-    // pg_index.indtype single-char code (alphabet in catalog_codes.hpp) ↔ index_type.
-    // The encoder returns 0 for no_valid — never a writable value; the decoder returns
-    // no_valid for anything outside the alphabet — callers must reject BOTH loudly
-    // (rule 6: a pg_index row with a missing/unknown indtype is catalog corruption,
-    // not something to default around).
+    // pg_index.indtype single-char code (alphabet in catalog_codes.hpp) <-> index_type;
+    // encoder returns 0 and decoder returns no_valid outside the alphabet, both to be
+    // rejected loudly rather than defaulted around
     char index_type_to_indtype_code(index_type type) noexcept;
     index_type index_type_from_indtype_code(char code) noexcept;
 
@@ -46,14 +44,10 @@ namespace components::logical_plan {
         components::catalog::oid_t index_oid() const noexcept { return index_oid_; }
         void set_index_oid(components::catalog::oid_t oid) noexcept { index_oid_ = oid; }
 
-        // pg_class oid of an EXISTING relation already answering to this index's
-        // NAME — another index, or a table (they share pg_class). Stamped by
-        // enrich from the {db, indexname} resolve the transformer registers; the
-        // planner's rewrite refuses the statement when it is valid. Without this
-        // slot nothing checks relname uniqueness — duplicate detection is by
-        // (keys, type) only — so a second index under a taken name mints a second
-        // pg_class row and DROP INDEX by name answers about WHICHEVER row the
-        // resolve happens to find.
+        // pg_class oid of an existing relation already using this index's name (index
+        // or table, they share pg_class); without it, duplicate detection is by
+        // (keys, type) only, so a same-name index mints a second pg_class row and
+        // DROP INDEX by name resolves to whichever row it happens to find
         components::catalog::oid_t name_conflict_oid() const noexcept { return name_conflict_oid_; }
         void set_name_conflict_oid(components::catalog::oid_t oid) noexcept { name_conflict_oid_ = oid; }
 

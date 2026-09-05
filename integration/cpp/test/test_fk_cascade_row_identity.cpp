@@ -1,25 +1,23 @@
-// ============================================================================
-// WHICH CHILD ROWS AN FK REFERENTIAL ACTION IS ALLOWED TO TOUCH.
+// Which child rows an FK referential action is allowed to touch.
 //
-// The point fetch is a PRODUCER: collection_t::fetch gathers only rows the asking
-// transaction may see and stamps result.row_ids with exactly those, so a reply can
-// be SHORTER than the request. operator_fk_cascade's SET NULL / SET DEFAULT branch
-// had been slicing a flat child-id list positionally against the fetched chunks; one
-// dropped row would have shifted every later id and written the transform into
-// somebody else's child rows. It slices by chunk.row_ids instead.
+// The point fetch is a producer: collection_t::fetch gathers only rows the asking
+// transaction may see and stamps result.row_ids with exactly those, so a reply can be
+// SHORTER than the request. operator_fk_cascade's SET NULL / SET DEFAULT branch used to
+// slice a flat child-id list positionally against the fetched chunks; one dropped row would
+// shift every later id and write the transform into somebody else's child rows. It slices by
+// chunk.row_ids instead.
 //
-// These tests pin the OBSERVABLE half of that contract for every referential action,
-// at the level the defect would show: WHICH ROWS SURVIVED and WHAT THEY HOLD, not
-// how many there are. A count-only assertion cannot tell "deleted the two rows the
-// cascade owned" from "deleted two rows one position over".
+// These tests pin the observable half of that contract for every referential action, at the
+// level the defect would show: which rows survived and what they hold, not how many there
+// are -- a count-only assertion can't tell "deleted the two rows the cascade owned" from
+// "deleted two rows one position over".
 //
-// THE ARRANGEMENT IS THE TEST. In every case below one child of the deleted parent
-// is deleted BY THE SAME TRANSACTION before the cascade runs — the reachable way a
-// child row is invisible to the very statement about to act on it — and the children
-// of an UNTOUCHED parent are INTERLEAVED in insert order with the children of the
-// deleted one. A positional slip of one therefore lands on a row that must not move,
-// and the per-row content assertions see it.
-// ============================================================================
+// The arrangement is the test: in every case below one child of the deleted parent is
+// deleted BY THE SAME TRANSACTION before the cascade runs (the reachable way a child row is
+// invisible to the very statement about to act on it), and the children of an untouched
+// parent are interleaved in insert order with the children of the deleted one. A positional
+// slip of one therefore lands on a row that must not move, and the per-row content
+// assertions see it.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

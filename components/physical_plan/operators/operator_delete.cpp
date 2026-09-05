@@ -158,14 +158,10 @@ namespace components::operators {
     core::error_t operator_delete::consume_join_batch_(pipeline::context_t* pipeline_context,
                                                        const vector::data_chunk_t& chunk_left,
                                                        const chunks_vector_t& right_chunks) {
-        // DELETE ... USING shared core (R6: one implementation, two entry points). Probes ONE LEFT (target)
-        // scan batch against the fully-materialized RIGHT (USING) build chunks: a semi-join (a target row is
-        // deleted once regardless of how many USING rows match). Per matched LEFT row it stages the SAME
-        // bounded state the simple path does — matched ABSOLUTE row-ids in modified_, the matched OLD left rows
-        // + their ids for the index mirror, and (per batch, gathered in lockstep) the projected RETURNING rows
-        // from the matched left+right pair. The RIGHT side is taken PER-CHUNK (chunks_vector_t), never merged
-        // into one data_chunk_t — a USING/build table > DEFAULT_VECTOR_CAPACITY would overflow a single chunk's
-        // capacity assert. push() calls it per LEFT batch; await_async_and_resume drains it all.
+        // DELETE ... USING shared core (R6): probes ONE LEFT scan batch against the fully-materialized RIGHT
+        // (USING) chunks as a semi-join, staging the same bounded state (row-ids, old rows, RETURNING pairs)
+        // as the simple path. RIGHT stays per-chunk (chunks_vector_t) — a build table larger than
+        // DEFAULT_VECTOR_CAPACITY would overflow a single merged chunk.
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk_left.size() == 0) {
@@ -216,12 +212,9 @@ namespace components::operators {
         // matched OLD-row / RETURNING left gathers, in lockstep with batch_ids.
         vector::indexing_vector_t matched_indexing(resource_);
         matched_indexing.reset(chunk_left.size());
-        // The matched RIGHT (USING) rows gathered PER-ROW in lockstep with the matched target rows, so a joined
-        // RETURNING column reads the matched pair. Built row-by-row (NOT via an indexing gather across the small
-        // right chunk): a target batch can match far more rows than the right chunk holds (every left row joins
-        // the same handful of right rows), so an indexing-copy whose source_count exceeds the right chunk size is
-        // invalid — copy the chosen right row into slot `index` directly instead. Bounded by chunk_left.size()
-        // (<=DEFAULT_VECTOR_CAPACITY): the semi-join takes at most one right row per left row.
+        // Matched RIGHT (USING) rows gathered PER-ROW in lockstep with target rows, not via an indexing gather:
+        // a target batch can match more rows than the right chunk holds, so source_count would exceed the
+        // chunk's size. Bounded by chunk_left.size() — the semi-join takes at most one right row per left row.
         data_chunk_t affected_right(resource_, types_right, chunk_left.size());
 
         size_t index = 0;
@@ -395,10 +388,9 @@ namespace components::operators {
         }
 
         // Flush the buffered matched-id slice, if any. The divergent DELETE storage op (WAL-first
-        // physical_delete, then storage_delete_rows, then the index mirror) lives in the NAMED coroutine lambda
-        // `op`, which yields a flush_outcome_t; record_flush() then does the COMMON post-storage bookkeeping
-        // (constraint accumulation when a parent constraint sits above the DML). DELETE writes its OWN WAL
-        // (unlike INSERT, where the disk agent owns it) and appends nothing, so the outcome carries no range.
+        // physical_delete, storage_delete_rows, then index mirror) lives in coroutine `op`; record_flush()
+        // does the common post-storage bookkeeping. DELETE writes its own WAL (unlike INSERT, where the disk
+        // agent owns it) and appends nothing.
         if (modified_ && modified_->size() > 0) {
             // See operator_insert: "an index manager exists" holds for every table, so the real
             // question is whether the TABLE has an index.
@@ -415,11 +407,9 @@ namespace components::operators {
                 auto& ids = modified_->ids();
                 const size_t modified_size = modified_->size();
 
-                // 1. WAL-FIRST: physical_delete BEFORE the storage mark, so a crash between the two replays
-                //    the delete (uncommitted deletes are filtered by replay). The row_ids come from the
-                //    upstream scan, so they are fully known before any storage mutation — unlike INSERT (whose
-                //    final count depends on dedup), DELETE has no post-op dependency, so it adopts the same
-                //    WAL-first ordering the catalog delete uses (delete_pg_catalog_rows_inner).
+                // 1. WAL-FIRST: physical_delete before the storage mark, so a crash between replays the delete.
+                //    row_ids are fully known upfront (unlike INSERT, whose count depends on dedup), so this
+                //    uses the same ordering as delete_pg_catalog_rows_inner.
                 if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
                     std::pmr::vector<int64_t> wal_row_ids(res);
                     wal_row_ids.reserve(modified_size);
@@ -427,7 +417,6 @@ namespace components::operators {
                         wal_row_ids.push_back(static_cast<int64_t>(ids[i]));
                     }
                     auto count = static_cast<uint64_t>(wal_row_ids.size());
-                    // See operator_insert comment on db_oid temporary hardcode.
                     constexpr auto db_oid = components::catalog::well_known_oid::main_database;
                     auto [_w, wf] =
                         actor_zeta::otterbrix::send(ctx->wal_address,
@@ -440,17 +429,12 @@ namespace components::operators {
                                                     db_oid);
                     auto wal_result = co_await std::move(wf);
                     if (wal_result.has_error()) {
-                        // WAL-FIRST: the journal record is what makes the storage mark below
-                        // replayable. A refused record answered as a wal_id anyway would mark
-                        // the rows deleted with nothing in the journal to replay. Fail the
-                        // statement BEFORE the storage mark.
+                        // A refused WAL record answered as a wal_id anyway would mark the rows deleted with
+                        // nothing in the journal to replay — fail before the storage mark.
                         co_return dml_detail::flush_outcome_t{wal_result.error(), false, 0, 0};
                     }
-                    // The wal_id was then handed to manager_disk_t::flush and its future parked
-                    // in ctx. That method traced and returned without flushing anything, so
-                    // neither the send nor the parked future carried durability; both are gone.
-                    // Table durability is checkpoint_all's, driven by the WAL manager's
-                    // checkpoint round.
+                    // manager_disk_t::flush here was a no-op (traced and returned without flushing); table
+                    // durability is checkpoint_all's, driven by the WAL manager's checkpoint round.
                 }
 
                 // 2. storage_delete_rows — mark the rows deleted under this txn (MVCC).
@@ -464,12 +448,9 @@ namespace components::operators {
                                                             table_oid_,
                                                             std::move(row_ids),
                                                             static_cast<uint64_t>(modified_size));
-                // The WAL physical_delete above is already written. If the storage mark is
-                // REFUSED, the two disagree: replay would delete rows the live storage still
-                // shows, and this statement would report them deleted without deleting them.
-                // Fail the flush so the executor's abort cascade unwinds the statement. The
-                // COUNT is not checked — it is legitimately below modified_size when a row
-                // already carries a delete stamp from this same transaction.
+                // WAL physical_delete is already written; a refused storage mark would leave replay deleting
+                // rows the live storage still shows. Count isn't checked — it's legitimately below
+                // modified_size when a row already carries a delete stamp from this same transaction.
                 auto deleted_r = co_await std::move(df);
                 if (deleted_r.has_error()) {
                     co_return dml_detail::flush_outcome_t{deleted_r.error(), false, 0, 0};
@@ -482,12 +463,8 @@ namespace components::operators {
                 //    rows paired with their own ids — never the first-N scan rows — even
                 //    when streaming leaves left_->output() empty.
                 if (mirror_index) {
-                    // Send an OWNED deep copy of the staged old rows across the mailbox. record_flush() (below)
-                    // deep-copies index_old_chunks_ into constraint_input_ when a parent constraint is present,
-                    // so the staged chunks must stay executor-owned — never handed to the manager_index actor by
-                    // move. Deep-copy each (<=DEFAULT_VECTOR_CAPACITY) chunk into fresh FLAT vectors instead.
-                    // index_old_row_ids_ carries no shared buffers, so it is moved; the copied chunks stay
-                    // aligned to it row-for-row.
+                    // Deep copy: record_flush() (below) also deep-copies index_old_chunks_ into
+                    // constraint_input_, so the staged chunks must stay executor-owned rather than moved.
                     chunks_vector_t index_old_copy(res);
                     index_old_copy.reserve(index_old_chunks_.size());
                     for (const auto& c : index_old_chunks_) {
@@ -571,9 +548,8 @@ namespace components::operators {
                                                         table_oid_);
             auto types_r = co_await std::move(tf);
             if (types_r.has_error()) {
-                // affected_rows_ > 0 here, so rows WERE deleted; the count still has to be
-                // shipped in chunks shaped by the table's schema, and an empty type list
-                // would ship it as 0-column chunks.
+                // Rows WERE deleted (affected_rows_ > 0); an empty type list would ship the count as
+                // 0-column chunks instead of shaped by the table's schema.
                 set_error(types_r.error());
                 mark_failed();
                 co_return;

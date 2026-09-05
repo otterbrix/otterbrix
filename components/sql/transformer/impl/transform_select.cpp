@@ -28,10 +28,8 @@ using namespace components::expressions;
 namespace components::sql::transform {
 
     namespace {
-        // The exact int64 an oversize integer literal denotes, for the row-count clauses that
-        // take a plain number rather than a value. False when the text is not an integer at
-        // all, or is one no int64 can hold — both of which the caller reports as the clause's
-        // own "allowed only <integer>" refusal rather than answering with a wrong count.
+        // Parses an oversize integer literal into int64 exactly; false on non-integer text
+        // or a value outside int64 range — caller reports its own "allowed only <integer>" refusal.
         bool exact_int64_literal(Value* value, int64_t& out) {
             types::int128_t wide{0};
             if (parse_exact_integer(strVal(value), wide) != integer_text_t::exact) {
@@ -409,9 +407,8 @@ namespace components::sql::transform {
         if (!with_clause) {
             return core::error_t::no_error();
         }
-        // Names registered by THIS clause, to tell a duplicate inside one WITH list
-        // (PostgreSQL's own error) apart from a collision with another WITH of the
-        // same statement (unimplemented scoping).
+        // Names from THIS clause only, to tell a duplicate within one WITH list apart
+        // from a collision with another WITH of the same statement (unimplemented scoping).
         std::pmr::unordered_set<std::string_view> this_clause{resource_};
         for (const auto& item : with_clause->ctes->lst) {
             auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
@@ -421,14 +418,9 @@ namespace components::sql::transform {
                 return core::error_t(core::error_code_t::unimplemented_yet,
                                      std::pmr::string{"data-modifying WITH (CTE) is not supported", resource_});
             }
-            // Registration is a flat per-statement map, and unordered_map::emplace is a
-            // SILENT NO-OP on a duplicate key: a name written twice keeps the FIRST body
-            // and runs the query against it, reporting success. Both duplicate shapes are
-            // refused — a repeat inside one WITH list gets PostgreSQL's own message, and
-            // a name arriving from another WITH of the same statement (a sub-query's, a
-            // UNION arm's) is refused as unimplemented scoping: with one flat map the
-            // reference would resolve to whichever body registered FIRST, which for a
-            // shadowing inner WITH is exactly the wrong one.
+            // Registration is a flat per-statement map, and unordered_map::emplace is a silent
+            // no-op on a duplicate key — a name written twice would silently keep the first
+            // body. Both duplicate shapes (within this list, or against an outer WITH) are refused.
             if (this_clause.count(cte->ctename) != 0) {
                 std::pmr::string msg{"WITH query name \"", resource_};
                 msg += cte->ctename;
@@ -475,12 +467,9 @@ namespace components::sql::transform {
                             limit_val = intVal(value);
                             break;
                         case T_Float:
-                            // An integer literal past int32 does not fit the scanner's `ival`
-                            // and leaves the lexer as a T_Float holding its digits (scan.l,
-                            // process_integer_literal), so `LIMIT 3000000000` lands HERE and
-                            // not in the arm above. Read the digits exactly — truncating them
-                            // on the way through silently limits the answer to a different
-                            // number of rows.
+                            // An integer literal past int32 doesn't fit the scanner's `ival` and
+                            // lands here as T_Float (scan.l, process_integer_literal); read the
+                            // digits exactly rather than silently truncating the row count.
                             if (!exact_int64_literal(value, limit_val)) {
                                 return core::error_t(
                                     core::error_code_t::sql_parse_error,
@@ -581,16 +570,10 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_select(SelectStmt& node,
                                                                                  logical_plan::execution_plan_t* plan) {
-        // Three SelectStmt fields no code below reads, refused before anything else
-        // runs (rule 6). Unrefused, each is a statement that reports success while
-        // answering a different question:
-        //   - intoClause: SELECT ... INTO runs as a plain SELECT — rows come back,
-        //     no table is created, nothing says the INTO half was dropped;
-        //   - lockingClause: FOR UPDATE / FOR SHARE parses and locks nothing;
-        //   - windowClause: WINDOW w AS (...) parses and defines nothing (an OVER
-        //     that references it is refused at the FuncCall, this is the clause
-        //     itself). The checks run in every recursion, so a UNION arm or a
-        //     sub-select carrying one of these is refused the same way.
+        // Three SelectStmt fields no code below reads; unrefused, each would report
+        // success while silently dropping its half (INTO creates no table, locking
+        // clause locks nothing, WINDOW defines nothing). Checked on every recursion,
+        // so a UNION arm or sub-select carrying one is refused the same way.
         if (node.intoClause) {
             return core::error_t(
                 core::error_code_t::unimplemented_yet,
@@ -960,12 +943,9 @@ namespace components::sql::transform {
                             auto field_name = std::string(col_ref.field.storage().back());
                             std::string alias = res->name ? res->name : field_name;
                             has_non_star = true;
-                            // 'col ::? type' — type-VARIANT selection, not a cast: carry the
-                            // requested type on the key so find_types picks the matching
-                            // multi-type variant column (mirrors the jsonb-chain '::?'
-                            // branch below). A plain cast here leaves the key without its
-                            // variant annotation, and the validator then refuses the name as
-                            // ambiguous on any computed table with several variants.
+                            // 'col ::? type' — type-VARIANT selection, not a cast (mirrors the
+                            // jsonb-chain '::?' branch below); a plain cast here would leave the
+                            // key without its variant annotation and the name would look ambiguous.
                             if (cast->variant_select) {
                                 auto field_key = std::move(col_ref.field);
                                 field_key.set_cast_type(target_type_res);
@@ -1012,12 +992,9 @@ namespace components::sql::transform {
                                 break;
                             }
                         }
-                        // A cast over any other non-literal operand: lower the operand and
-                        // wrap it. Falling through to the T_A_Const arm below hands the whole
-                        // cast to get_value, which can only fold an A_Const — over an A_Expr
-                        // it reads the operator node's `lexpr` POINTER and projects it as the
-                        // answer, the same value on every row. Same shape as the jsonb arm
-                        // above.
+                        // A cast over any other non-literal operand. Falling through to the
+                        // T_A_Const arm below would hand the cast to get_value, which reads an
+                        // A_Expr's `lexpr` pointer as if it were a value — same value every row.
                         if (cast->arg && nodeTag(cast->arg) != T_A_Const && nodeTag(cast->arg) != T_ParamRef) {
                             has_non_star = true;
                             VALUE_OR_RETURN(auto target_type_res, get_type(resource_, cast->typeName));

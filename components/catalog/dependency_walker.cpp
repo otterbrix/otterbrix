@@ -5,14 +5,11 @@
 namespace components::catalog {
 
     namespace {
-        // AN OBJECT IS (classid, objid), AND THAT WHOLE PAIR IS THE MARK KEY. Keying
-        // the marks on the bare oid collapses two objects that share an oid across
-        // two catalogs into one, and the second one is then never emitted at all —
-        // a plan silently short one delete, which is a worse answer than the
-        // duplicate step this walk used to produce. Today every oid in the build
-        // comes from one counter, so the collision cannot occur; the signature
-        // takes and returns (classid, objid) pairs and promises nothing about the
-        // oid alone, so the walk does not lean on that.
+        // An object is (classid, objid), and that whole pair is the mark key: keying on the
+        // bare oid would collapse two objects sharing an oid across catalogs into one, silently
+        // dropping the second from the plan. Today every oid comes from one counter so the
+        // collision cannot occur, but the signature takes/returns (classid, objid) pairs and
+        // the walk does not lean on that invariant holding.
         constexpr std::uint64_t mark_key(oid_t cls, oid_t oid) noexcept {
             return (static_cast<std::uint64_t>(cls) << 32) | static_cast<std::uint64_t>(oid);
         }
@@ -63,16 +60,13 @@ namespace components::catalog {
 
             st.gray.erase(key);
             st.black.insert(key);
-            // EMITTED ON COMPLETION, NOT ONCE PER INCOMING EDGE. Pushing in the loop
-            // above emitted a node once for every edge that reached it, so a diamond
-            // — an FK constraint reachable both from its own table and from the table
-            // it references — came back twice. Two entries for one object is not a
-            // harmless repeat for a caller that judges per-step results: the second
-            // occurrence's own catalog row is already gone, so its delete legitimately
-            // counts 0 and reads as "the object is missing". Emitting here, right
-            // after the node turns black, gives exactly one entry per object and keeps
-            // the dependents-before-parent order (every child finished before we got
-            // here). The seed carries no incoming edge and is the caller's to append.
+            // EMITTED ON COMPLETION, NOT ONCE PER INCOMING EDGE: pushing in the loop above
+            // emitted a node once per edge, so a diamond (an FK constraint reachable both from
+            // its own table and from the table it references) came back twice -- and the second
+            // occurrence's own catalog row is already gone, so its delete counts 0 and reads as
+            // "the object is missing". Emitting here, right after the node turns black, gives
+            // one entry per object and keeps dependents-before-parent order. The seed carries
+            // no incoming edge and is the caller's to append.
             if (via != nullptr) {
                 st.order.push_back(*via);
             }

@@ -8,17 +8,15 @@ using components::types::complex_logical_type;
 using components::types::logical_type;
 
 namespace {
-    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
-    // path, and that message belongs to the caller, so the caller has to name an arena it owns
-    // rather than reach for the process-global one (rule 14).
+    // create_decimal allocates only on its refusal path, whose message belongs to the
+    // caller's own arena, not the process-global one.
     std::pmr::memory_resource* decimal_resource() {
         static core::pmr::otterbrix_resource arena;
         return &arena;
     }
 
-    // create_decimal reports an out-of-window (width, scale) through core::error_t rather
-    // than an assert that vanishes under NDEBUG. Every literal these tests use is inside
-    // the window, so the helper checks the result and hands back the type.
+    // create_decimal reports an out-of-window (width, scale) via core::error_t, not an
+    // assert that vanishes under NDEBUG; every literal here is in-window.
     components::types::complex_logical_type
     make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
         auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));

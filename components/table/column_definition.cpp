@@ -89,20 +89,11 @@ namespace components::table {
     void column_definition_t::set_oid(uint64_t oid) { oid_ = oid; }
 
     void column_definition_t::set_attoid(std::uint32_t v) {
-        // attoid is immutable after first assignment. A re-stamp with a DIFFERENT value means
-        // two identity sources disagree about this column. It is refused — the first stamp stays
-        // authoritative — and the disagreement is SAID rather than swallowed (rule 6: loud, not
-        // fatal).
-        //
-        // AND IT IS THE SAME ANSWER IN EVERY BUILD. An assert here would make the Debug build
-        // abort on an input the release build merely refuses, and this is
-        // INPUT, not a programmer-error precondition: the stamps come off DISK on the catalog
-        // load and bootstrap paths (services/disk/manager_disk_bootstrap.cpp,
-        // services/disk/manager_disk_io.cpp, services/disk/agent_disk.cpp),
-        // so aborting would make a database whose two catalog identity sources disagree
-        // unopenable in the very build a developer would debug it in. That is the difference
-        // from the sibling catalog::table_id::set_oid, which does abort: nothing stamps a
-        // table_id from a disk row while opening the database.
+        // attoid is immutable after first assignment; a re-stamp with a DIFFERENT value is
+        // refused (first stamp stays) and reported, same in every build. Not an assert
+        // like the sibling catalog::table_id::set_oid: these stamps come off DISK on the
+        // bootstrap/load paths, and aborting would make a database with disagreeing identity
+        // sources unopenable in the very build meant to debug it.
         if (attoid_ != 0 && attoid_ != v) {
             std::fprintf(stderr,
                          "components::table::column_definition_t::set_attoid: refusing to re-stamp column "

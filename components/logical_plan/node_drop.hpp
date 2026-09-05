@@ -62,19 +62,14 @@ namespace components::logical_plan {
         components::catalog::oid_t index_oid() const noexcept { return index_oid_; }
         void set_index_oid(components::catalog::oid_t oid) noexcept { index_oid_ = oid; }
 
-        // RESTRICT (written or defaulted — PostgreSQL parity, #638) or a written
-        // CASCADE. The transformer copies DropStmt.behavior through
-        // transform::drop_behavior_of at the single wrap_one choke-point every
-        // DROP arm passes; DROP DATABASE, whose grammar takes no behavior, is
-        // stamped cascade_ by its own transform.
+        // RESTRICT (default or written) or CASCADE, copied from DropStmt.behavior at the
+        // wrap_one choke-point every DROP arm passes; DROP DATABASE has no such clause in
+        // its grammar and is stamped cascade_ by its own transform
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
 
-        // `DROP ... IF EXISTS`. The grammar carries DropStmt.missing_ok; the
-        // planner reads this flag when the target did not resolve: a missing
-        // target refuses the statement UNLESS the user wrote IF EXISTS — the one
-        // form PostgreSQL lets pass. Defaults to false (the loud path), so a
-        // programmatic plan that never sets it gets the refusal.
+        // DROP ... IF EXISTS: a target that fails to resolve refuses the statement unless
+        // this is set. Defaults to false, so a programmatic plan gets the refusal.
         bool missing_ok() const noexcept { return missing_ok_; }
         void set_missing_ok(bool v) noexcept { missing_ok_ = v; }
 

@@ -1114,19 +1114,15 @@ namespace components::vector {
             return output;
         }
 
-        // THE one classification of an operand pair for the four entry points below.
-        // arithmetic_result_type answers NA for every pair it cannot type; the temporal
-        // guard at the top of each entry point has already claimed every pair with a
-        // date/time/interval side, so NA here means "at least one operand is not an
-        // arithmetic numeric" — string, blob, boolean, struct, array.
-        // An NA-TYPED OPERAND IS NOT A MISMATCH: an NA-typed vector is this engine's
-        // untyped-NULL column and SQL says NULL + 1 is NULL, so that pair keeps
-        // answering NA. Everything else refuses.
+        // arithmetic_result_type answers NA for every pair it can't type; by here the temporal
+        // guard has already claimed every date/time/interval pair, so NA means "not an
+        // arithmetic numeric" (string/blob/boolean/struct/array) -- except an NA-TYPED operand
+        // itself, this engine's untyped-NULL column: NULL + 1 is NULL, so that pair still
+        // answers NA instead of refusing.
         bool operand_is_untyped(types::logical_type t) noexcept { return t == types::logical_type::NA; }
 
-        // Wording and error code match logical_value_t's unsupported_operands, the
-        // value-level sibling of this refusal: one shape for "arithmetic has no meaning
-        // for this operand pair", whichever layer noticed.
+        // Wording and error code match logical_value_t's unsupported_operands (components/types/
+        // logical_value.cpp): one shape for "arithmetic has no meaning here", whichever layer noticed.
         core::error_t untypeable_pair(std::pmr::memory_resource* resource,
                                       std::string_view fn,
                                       types::logical_type lhs,
@@ -1339,9 +1335,8 @@ namespace components::vector {
         if (count == 0) {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
         }
-        // This entry point had NO type guard: it dispatched straight into
-        // unary_neg_wrapper, whose non-numeric branch THREW std::logic_error, so
-        // negating a string vector left an exception in a compute path (rule 2).
+        // This entry point had no type guard: it dispatched straight into unary_neg_wrapper,
+        // whose non-numeric branch THREW std::logic_error out of a compute path.
         // An NA-typed operand still answers NA — an untyped-NULL column negates to NULL.
         if (!types::is_arithmetic_numeric(vec.type().type()) && !operand_is_untyped(vec.type().type())) {
             return untypeable_pair(resource, "compute_unary_neg", vec.type().type(), vec.type().type());

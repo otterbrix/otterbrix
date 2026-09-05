@@ -32,12 +32,10 @@ TEST_CASE("integration::cpp::test_catalog_scan_cost::scans_per_statement") {
     REQUIRE(exec("INSERT INTO c.p2 (id) VALUES (1);")->is_success());
     REQUIRE(exec("INSERT INTO c.p3 (id) VALUES (1);")->is_success());
 
-    // FKs are added with ALTER here so the measurement keeps naming its constraints and
-    // reads as one statement per key. The inline form (`FOREIGN KEY (a) REFERENCES ...`
-    // inside CREATE TABLE) reaches the same pg_constraint rows through the same builder
-    // since rewrite_create_table started lowering the create node's constraint children;
-    // what is measured below is the keyed catalog read, which does not care which DDL
-    // wrote the rows.
+    // ALTER here just names the constraints one per statement; the inline form reaches the
+    // same pg_constraint rows through the same builder (rewrite_create_table lowers the
+    // create node's constraint children too) -- what's measured is the keyed catalog read,
+    // which doesn't care which DDL wrote the rows.
     REQUIRE(exec("CREATE TABLE c.child3 (id bigint, a bigint, b bigint, d bigint);")->is_success());
     REQUIRE(exec("ALTER TABLE c.child3 ADD CONSTRAINT fk_a FOREIGN KEY (a) REFERENCES c.p1 (id);")->is_success());
     REQUIRE(exec("ALTER TABLE c.child3 ADD CONSTRAINT fk_b FOREIGN KEY (b) REFERENCES c.p2 (id);")->is_success());

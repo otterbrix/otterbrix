@@ -22,19 +22,15 @@
 #include <thread>
 #include <unistd.h>
 
-// An ABANDONED fetch-next cursor must be releasable.
+// An abandoned fetch-next cursor must be releasable. storage_fetch_next_batch mints a cursor on
+// the owning agent and erases it only along the drain paths, so a source that stops early (an
+// error mid-pump, a satisfied LIMIT, a dropped sub-plan) leaves its active_scans_ entry alive for
+// the life of the process. That entry gates the whole checkpoint round: checkpoint_inner defers
+// any oid with a live cursor, since it holds an absolute row position into the un-swapped
+// collection -- "compacts once the cursor drains" is never, for an abandoned one.
 //
-// storage_fetch_next_batch mints a cursor on the owning agent and erases it only along the
-// DRAIN paths — the source has to keep pulling until the scan runs out. A source that stops
-// early (an error mid-pump, a satisfied LIMIT, a dropped sub-plan) never gets there, so
-// without a release leg its active_scans_ entry lives for the life of the process. That entry
-// gates the whole checkpoint round: checkpoint_inner defers any oid with a live cursor —
-// neither compacting nor checkpointing it — because the cursor holds an absolute row position
-// into the un-swapped collection. The comment there promises the table "compacts and
-// checkpoints once the cursor drains", which for an abandoned cursor is never.
-//
-// storage_close_cursor is the release leg. These cases pin both halves of its contract: an
-// open cursor keeps the gate up, and closing it takes the gate back down.
+// storage_close_cursor is the release leg; these cases pin both halves of its contract: an open
+// cursor keeps the gate up, closing it takes the gate back down.
 
 using namespace services::disk;
 using namespace disk_test_helpers;

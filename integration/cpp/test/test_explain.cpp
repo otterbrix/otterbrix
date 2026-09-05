@@ -572,7 +572,7 @@ TEST_CASE("integration::cpp::test_explain::analyze_recursive_cte_rows") {
 
 TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
     // Round-to-nearest per-loop rows (PostgreSQL rint), computed by render_postgres directly. Uses a
-    // monotonic arena over new_delete_resource — never std::pmr::get_default_resource() (Rule 14).
+    // monotonic arena over new_delete_resource — never std::pmr::get_default_resource().
     std::pmr::monotonic_buffer_resource pool{std::pmr::new_delete_resource()};
     auto* mr = &pool;
 

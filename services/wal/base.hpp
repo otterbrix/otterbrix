@@ -17,15 +17,11 @@ namespace services::wal {
     using size_tt = std::uint32_t;
     using crc32_t = std::uint32_t;
 
-    // THE one classification of a directory name under the WAL root. A database
-    // directory is named std::to_string(oid) AND NOTHING ELSE — the worker's own
-    // constructor is the only writer of these names. from_chars over the whole
-    // name, round-tripped through to_string, accepts exactly what the engine
-    // writes; everything else is foreign content. The manager's startup scan and
-    // wal_reader_t's replay walk MUST agree on this — when they did not, a
-    // foreign-named directory was replayed at startup while nothing managed it
-    // and its wal ids never bounded the id allocator.
-    // Returns false when the name is foreign; on success writes the oid into out.
+    // THE one classification of a directory name under the WAL root (a database directory
+    // is named std::to_string(oid), nothing else). The manager's startup scan and
+    // wal_reader_t's replay walk MUST agree on this — divergence once let a foreign-named
+    // directory get replayed while nothing managed it, so its wal ids never bounded the
+    // id allocator. Returns false when the name is foreign; on success writes the oid into out.
     inline bool parse_database_dir_name(const std::string& name, components::catalog::oid_t& out) {
         unsigned long parsed = 0;
         const char* first = name.data();

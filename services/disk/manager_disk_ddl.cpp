@@ -6,13 +6,12 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    // Catalog DDL routers. The crash-safe WAL write + catalog scan + storage mutation
-    // now run on the owning agent (agent-0 / CATALOG) in append_pg_catalog_row_inner /
-    // delete_pg_catalog_rows_inner / update_pg_attribute_commit_id_field_inner /
-    // compact_relkind_g_storage_inner, so the manager no longer borrows the agent's
-    // slice across the actor boundary. Every catalog OID routes to agents_[0] via
-    // pool_idx_for_oid. Routers mirror storage_append: pool_idx_for_oid → otterbrix::send
-    // → if needs_sched enqueue → co_return co_await.
+    // Catalog DDL routers. The crash-safe WAL write + catalog scan + storage mutation run on
+    // the owning agent (append_pg_catalog_row_inner / delete_pg_catalog_rows_inner /
+    // update_pg_attribute_commit_id_field_inner / compact_relkind_g_storage_inner), so the
+    // manager never borrows the agent's slice across the actor boundary. Every catalog OID
+    // routes to agents_[0] via pool_idx_for_oid; routers mirror storage_append: send -> enqueue
+    // if needed -> await.
 
     // Router to the agent twin. Both routing legs REFUSE rather than answer with an empty
     // range: a manager with no agents, or an agent slot holding nothing, is a catalog write
@@ -48,36 +47,26 @@ namespace services::disk {
                                                                                components::catalog::oid_t table_oid,
                                                                                std::int64_t oid_col_idx,
                                                                                components::catalog::oid_t target_oid) {
-        // Single route to the agent inner body (the same body delete_pg_catalog_rows_many loops, so
-        // both paths emit identical WAL records).
+        // Single route to the agent inner body (delete_pg_catalog_rows_many loops the same body,
+        // so both paths emit identical WAL records).
         //
-        // BLOCKING DEBT — THIS ROUTE HAS NO ERROR CHANNEL, so a refused delete reaches no caller.
-        // The agent inner body refuses to delete what it could not journal, and the append that
-        // follows in two of the three callers then makes it a DUPLICATE ROW:
+        // Blocking debt: this route has no error channel, so a refused delete reaches no
+        // caller. Two of the three callers then append a replacement over the undeleted row,
+        // producing a duplicate: operator_alter_column_rename_t (both old and new pg_attribute
+        // rows live for one attoid), operator_create_index_backfill_t (indisvalid=false AND
+        // =true for one indexrelid); operator_delete's catalog branch appends nothing, so it
+        // only leaves one stale row with success reported over it.
         //
-        //   * operator_alter_column_rename_t::await_async_and_resume deletes the pg_attribute row
-        //     of `attoid`, then appends a replacement carrying the new attname (that append's own
-        //     refusal IS read). A refused delete leaves BOTH rows live for one attoid: the column
-        //     answers to its old name and its new one at the same time.
-        //   * operator_create_index_backfill_t::await_async_and_resume deletes the pg_index row of
-        //     `index_oid_`, then appends the indisvalid=true replacement. A refused delete leaves
-        //     indisvalid=false AND indisvalid=true for one indexrelid.
-        //   * operator_delete::await_async_and_resume's catalog branch appends nothing, so it keeps
-        //     the milder failure: ONE row that should be gone, and a success reported over it.
+        // The likelier root cause is already closed (the delete's scan now carries the
+        // transaction, so it no longer misses the row inside a BEGIN --
+        // integration/cpp/test/test_catalog_delete_refusal.cpp pins it). What remains reachable
+        // is the refusal path itself: an unjournalable delete, or an owning agent with no
+        // storage for the oid.
         //
-        // The likelier cause of the same two-row state is already closed: the delete's scan now
-        // carries the transaction, so inside a BEGIN it no longer misses the row it was told to
-        // remove. Gated by integration/cpp/test/test_catalog_delete_refusal.cpp
-        // (an_in_transaction_rename_leaves_one_attribute_row,
-        // an_in_transaction_create_index_leaves_one_pg_index_row). What remains reachable is the
-        // refusal path itself: a journal that would not take the PHYSICAL_DELETE, or an owning
-        // agent holding no storage for the catalog oid.
-        //
-        // THE FIX is delete_pg_catalog_rows_many's: widen the return to core::result_wrapper_t and
-        // make each caller read it — or route through the batched twin with a one-element spec
-        // list. There is no half-measure: widening the signature alone compiles, because a
-        // discarded co_await is legal, and would leave exactly the silent ignore rule 6 forbids.
-        // Until then the refusal is REPORTED here rather than dropped in silence.
+        // The fix is delete_pg_catalog_rows_many's: widen the return to core::result_wrapper_t
+        // and make each caller read it, or route through the batched twin. No half-measure --
+        // widening alone compiles (a discarded co_await is legal) and would silently ignore it
+        //. Until then the refusal is reported here rather than dropped.
         if (!agents_.empty()) {
             const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[idx];
@@ -105,20 +94,14 @@ namespace services::disk {
         co_return;
     }
 
-    // Loop-route per spec; each spec emits the same WAL + storage records as one singular
-    // delete_pg_catalog_rows call. Serialized (send, await, next send) so the WAL ordering
-    // matches N successive singular calls — which also means there is never more than one
-    // outstanding future here, so the first refusal can end the loop without abandoning a
-    // future whose reply would land on a frame that has already finished.
+    // Loop-route per spec, serialized (send, await, next), so WAL ordering matches N successive
+    // singular calls and there's never more than one outstanding future -- the first refusal can
+    // end the loop without abandoning an already-finished frame's reply.
     //
-    // BOTH ROUTING LEGS REFUSE rather than answer with a short count vector, for the reason
-    // append_pg_catalog_row's routing legs give: a manager with no agents, or an agent slot
-    // holding nothing, is a catalog scrub that did not happen, and "deleted 0 rows" is exactly
-    // what a healthy no-op looks like at every call site.
-    //
-    // AND IT STOPS AT THE FIRST REFUSAL. Continuing would be another mutation taken after the
-    // answer was already known — the ordering rule the callers above follow, applied to the
-    // loop itself.
+    // Both routing legs refuse rather than answer with a short count vector, for the same reason
+    // as append_pg_catalog_row's legs: a manager with no agents is a scrub that didn't happen,
+    // and "deleted 0 rows" looks exactly like a healthy no-op. Stops at the first refusal too --
+    // continuing would be another mutation taken after the answer was already known.
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::uint64_t>>>
     manager_disk_t::delete_pg_catalog_rows_many(execution_context_t ctx,
                                                 std::pmr::vector<pg_catalog_delete_spec_t> specs) {
@@ -169,13 +152,10 @@ namespace services::disk {
         // Serialized (co_await per item) so the per-backfill WAL records are emitted
         // in order.
         //
-        // THE TWO ROUTING LEGS ARE REFUSALS, NOT NO-OPS — the same reading direct_delete_sync's
-        // router rejects one file over. A caller's markers do not evaporate because this manager
-        // has no agents.
-        //
-        // AND THE ONE LEGITIMATE EMPTY IS SPLIT OFF FIRST, the same split direct_append_sync and
-        // storage_delete_rows_inner keep: a batch that names no marker asks for nothing, and
-        // must not be answered with the refusal that belongs to a batch with nowhere to land.
+        // Both routing legs are refusals, not no-ops (same reading direct_delete_sync's router
+        // rejects one file over) -- a caller's markers don't evaporate because this manager has
+        // no agents. The one legitimate empty is split off first, as direct_append_sync and
+        // storage_delete_rows_inner do: a batch naming no marker asks for nothing.
         constexpr auto pg_attr_oid = components::catalog::well_known_oid::pg_attribute_table;
         if (backfills.empty()) {
             co_return core::error_t::no_error();
@@ -196,13 +176,11 @@ namespace services::disk {
                                  "no commit_id stamp was applied",
                                  resource()}};
         }
-        // EVERY MARKER IS ATTEMPTED, and the answer carries the COUNT of refusals with the
-        // FIRST one's text. Stopping at the first would cost the remaining markers a stamp
-        // they could have had, on a path that is already below the durable commit marker and
-        // cannot be retried by aborting — and an answer that names only the first refusal
-        // reads, one level up, as if the WHOLE batch went unstamped: on a mixed batch that is
-        // the old "patched in-place" lie with the sign flipped. The counts make "1 of N" and
-        // "N of N" different answers.
+        // Every marker is attempted; the answer carries the refusal COUNT plus the first one's
+        // text. Stopping early would cost the rest a stamp they could have had (this path is
+        // already below the durable commit marker and can't be retried by aborting), and naming
+        // only the first refusal would read as the whole batch unstamped -- the counts make
+        // "1 of N" and "N of N" different answers.
         core::error_t first_refusal = core::error_t::no_error();
         std::size_t refused_count = 0;
         for (const auto& b : backfills) {
@@ -225,21 +203,16 @@ namespace services::disk {
             }
         }
 
-        // The added_at marker's SECOND half, and the only leg of "every storage column carries its
-        // attoid" that has to travel forward in time.
+        // The added_at marker's second half: ALTER TABLE ADD COLUMN writes a pg_attribute row
+        // and stops, while the storage column is materialised later by storage_append_inner's
+        // schema-growth stage, out of an INSERT chunk carrying only an alias-tagged type -- on
+        // an agent that owns no pg_attribute and can't take a second cross-actor await inside an
+        // append. So identity is parked on the owning agent now, keyed by the future attname,
+        // and stamped onto the column at the moment it's created.
         //
-        // ALTER TABLE ADD COLUMN writes a pg_attribute row and stops; the STORAGE column is
-        // materialised later, by the schema-growth stage of storage_append_inner, out of an INSERT
-        // chunk that carries nothing but an alias-tagged type — and on an agent that owns no
-        // pg_attribute and may not take a second cross-actor await inside an append. So the
-        // identity is parked on the owning agent NOW, keyed by the attname the future chunk will
-        // carry, and stamped onto the column at the moment it is created.
-        //
-        // FIRE-AND-FORGET, deliberately: this handler already co_awaits per backfill above, and the
-        // ordering that matters is not "before this returns" but "before the client's next
-        // statement". The mailbox satisfies both — the note is ENQUEUED on the target agent before
-        // this coroutine returns, the COMMIT's reply is what unblocks the client, and the agent's
-        // mailbox is FIFO, so any later INSERT is processed after it.
+        // Fire-and-forget deliberately: what matters is "before the client's next statement,"
+        // not "before this returns." The mailbox satisfies that -- the note is enqueued before
+        // this coroutine returns, and the agent's FIFO mailbox processes any later INSERT after it.
         //
         // A note that finds no owner no-ops (note_column_identity_inner). That is not a silent
         // degradation: the storage this attoid describes is not loaded, so there is no column to
@@ -336,8 +309,8 @@ namespace services::disk {
             }
         }
         // No agent to route to at all. The caller is a COMMITTED ALTER whose tombstone is
-        // already durable, so answering "done" here would be exactly the silent degradation
-        // rule 6 forbids: the column would be hidden forever and its space never named again.
+        // already durable, so answering "done" here would be exactly the forbidden silent
+        // degradation: the column would be hidden forever and its space never named again.
         std::pmr::string msg{"manager_disk::drop_storage_column: no disk agent owns table oid ", resource()};
         msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
         co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
@@ -376,7 +349,7 @@ namespace services::disk {
         // No agent to route to at all. The caller is a COMMITTED ALTER whose new attname is
         // already durable, so answering "done" here would leave the storage carrying the OLD
         // name against a catalog carrying the new one — precisely the divergence the bootstrap
-        // walk reads as a DROP. Rule 6: refuse loudly instead.
+        // walk reads as a DROP. Refuse loudly instead.
         std::pmr::string msg{"manager_disk::rename_storage_column: no disk agent owns table oid ", resource()};
         msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
         co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});

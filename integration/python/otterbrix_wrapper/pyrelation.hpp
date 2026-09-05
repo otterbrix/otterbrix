@@ -60,25 +60,17 @@ namespace otterbrix {
         void assert_relation();
 
     private:
-        // The connection every chaining op below has to go through, refused unless it is
-        // still open. Chaining does not touch `space_` at all: the new node and schema are
-        // allocated out of relation_factory_t's copy of the space, and the sort/join helpers
-        // reach expression_factory_t's copy -- close() nulls the latter and LEAVES the former
-        // alive on purpose, so the chain kept succeeding and produced relations with no space
-        // of their own. Refusing here, before any of that runs, is also what keeps a closed
-        // connection from creating one more scratch table nobody will ever read.
+        // Refused unless still open. Chaining never touches `space_`: it goes through
+        // relation_factory_t's and expression_factory_t's own copies of the space, and
+        // close() nulls only the latter -- so without this check, a closed connection could
+        // still chain successfully and produce relations with no space of their own.
         py_connection_t& live_env();
 
     private:
-        // The space `node_` and `schema_` were allocated out of, held so the relation owns
-        // its own release path instead of borrowing the connection's. py_result_t holds the
-        // space for the same reason and says so on its own `space` member in pyresult.hpp.
-        // It is not covered by `env` below: `close()` can drop the space while the connection
-        // object lives on, and the freeing happens in a destructor, which is the one place
-        // that can neither check nor refuse. Declared FIRST so reverse-order member
-        // destruction frees it LAST, after both members below have handed their memory back.
-        // Never null while `node_` is set -- the constructor refuses that combination, and
-        // live_env() keeps every chaining road from producing it.
+        // Held, not borrowed from `env`: close() can null the connection's space while `env`
+        // itself lives on, and node_/schema_ free into this arena from a destructor, which
+        // can't refuse (py_result_t::space is held for the same reason). Declared first so
+        // reverse-order destruction frees it last. Never null while `node_` is set.
         boost::intrusive_ptr<otterbrix_t> space_;
 
         // The eagerly-built logical_plan node (nullptr when this py_relation_t was
@@ -88,19 +80,12 @@ namespace otterbrix {
         components::logical_plan::node_ptr node_;
         std::pmr::vector<components::table::column_definition_t> schema_;
         bool executed{false};
-        // The connection every chaining op reaches back into, held rather than borrowed:
-        // a relation is handed out to Python and the connection object that made it can be
-        // dropped first, which left this back-pointer reading freed memory. Nothing here is
-        // reachable from the connection, so there is no cycle to break.
-        //
-        // std::shared_ptr against rule 14, and a PARTIAL RECORD rather than a free choice:
-        // pybind11 owns py_connection_t through a shared_ptr holder
-        // (py::class_<py_connection_t, std::shared_ptr<py_connection_t>>, pyconnection/
-        // initialize.cpp), so shared_ptr IS the connection's lifetime on this boundary --
-        // pyconnection_ptr, enable_shared_from_this and the weak_ptr cursor list all predate
-        // this member. Holding anything else here would either not keep the object alive or
-        // would be a second, competing owner. Replacing it means replacing the holder, which
-        // is the whole Python boundary, not this file.
+        // Held rather than borrowed: a relation outlives the Python connection object that
+        // made it, so a raw back-pointer would read freed memory (no cycle: nothing here is
+        // reachable from the connection). shared_ptr because pybind11 owns py_connection_t
+        // through a shared_ptr holder (pyconnection/initialize.cpp) -- that IS its lifetime
+        // on this boundary; holding anything else wouldn't keep it alive or would compete
+        // with that holder.
         std::shared_ptr<py_connection_t> env;
         std::unique_ptr<py_result_t> result;
         bool optimize_ = false;

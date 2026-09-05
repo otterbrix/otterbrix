@@ -1,13 +1,6 @@
-// pg_proc.prorettype: what encode_prorettype writes is the function's declared
-// return-type contract as it will be read back after restart. A `custom` resolver
-// has no introspectable form — persisting it as "s:0" (same type as argument 0)
-// writes a DIFFERENT contract than the one declared, silently.
-//
-// The answer is a TRUTHFUL TAG, not a refusal: registering a computed(...) output is
-// pinned legal behaviour (integration test_udfs registers
-// computed(same_type_resolver(0))), and the runtime resolver is reconstructed
-// through pg_proc.prouid → compute::function_registry, never by parsing this
-// column — so "c" states what the row actually carries.
+// A custom resolver has no introspectable form, so encode_prorettype tags it "c" rather than
+// lying with "s:0" (same type as argument 0). The runtime resolver is reconstructed via
+// pg_proc.prouid -> compute::function_registry, never by parsing this column.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/system_table_schemas.hpp>

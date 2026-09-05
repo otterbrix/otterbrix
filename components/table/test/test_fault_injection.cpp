@@ -73,12 +73,10 @@ namespace {
         }
     }
 
-    // Same, for the APPEND path. An append made while the device is failing REPORTS io_error —
-    // column_data_t::transition_to_disk forwards partial_block_manager_t::flush_partial_blocks
-    // rather than returning success over a block that never reached the file. The two cases
-    // below stand INSIDE that window on purpose: they assert what the DURABLE HEADER does, not
-    // that an append survives a dead disk. They use this variant so the append's honest failure
-    // is observed rather than aborting the case.
+    // Same, for the APPEND path. An append made while the device is failing REPORTS
+    // io_error (column_data_t::transition_to_disk forwards flush_partial_blocks'
+    // failure). The cases below assert what the DURABLE HEADER does, not whether an
+    // append survives a dead disk, so this variant reports failure instead of asserting.
     bool try_append_rows(data_table_t& table, fault_env_t& env, uint64_t start, uint64_t count) {
         auto types = table.copy_types();
         uint64_t offset = 0;
@@ -112,17 +110,15 @@ namespace {
         bm.set_meta_block(writer.get_block_pointer().block_pointer);
         auto free_ptr = bm.serialize_free_list();
         REQUIRE_FALSE(free_ptr.has_error());
-        // The pre-header barrier can legitimately fail here — that is what these cases inject —
-        // so bind its answer rather than dropping it: a failed barrier means the checkpoint did
-        // not happen, which is exactly this helper's return value.
+        // The pre-header barrier can legitimately fail here (that is what these cases
+        // inject); a failed barrier means the checkpoint did not happen.
         if (auto barrier = bm.file_sync(); barrier.has_error()) {
             return false;
         }
         tstorage::database_header_t header;
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
-        // write_header writes AND fsyncs the header slot and reports both. That result IS
-        // whether the checkpoint happened, so it is this helper's answer.
+        // write_header's result covers both its slot write and its fsync.
         if (bm.write_header(header).has_error()) {
             return false;
         }
@@ -155,11 +151,9 @@ TEST_CASE("fault_injection: write failure after N writes does not advance the du
 
         // Fail every write from here on: the next checkpoint must not advance the header.
         plan.fail_after_writes = plan.writes_seen;
-        // Unobserved on purpose: with every write failing, the write-through leg of this append
-        // correctly reports io_error. What this case is about is the header below.
+        // Return unobserved: this case only asserts the DURABLE header below, not
+        // the append's honest io_error.
         try_append_rows(*table, env, 3000, 100);
-        // Return deliberately unobserved: HEAD reports success even when the writes were
-        // dropped on the floor — the DURABLE check below is the one that matters.
         try_checkpoint(bm, *table);
         tstorage::database_header_t after;
         REQUIRE(otterbrix_test::read_active_durable_header(fault_db_path(), after));
@@ -184,9 +178,8 @@ TEST_CASE("fault_injection: torn header write leaves the previous durable state 
         // Tear the very next write (wherever the second checkpoint round lands first) and
         // fail the rest: a mid-checkpoint power cut.
         plan.torn_at_write = plan.writes_seen + 1;
-        // Unobserved for the same reason as the case above.
+        // Returns unobserved, same reason as the case above.
         try_append_rows(*table, env, 3000, 100);
-        // Return unobserved for the same reason as above.
         try_checkpoint(bm, *table);
     }
     {
@@ -219,17 +212,14 @@ TEST_CASE("fault_injection: crash_revert loses everything after the last fsync, 
         append_rows(*table, env, 0, 2000);
         REQUIRE(try_checkpoint(bm, *table)); // durable state A: 2000 rows
 
-        // More rows and ANOTHER checkpoint, but kill before its final fsync could matter:
-        // crash_revert() rolls the file back to the last successful fsync boundary.
+        // More rows and ANOTHER checkpoint, but kill before its final fsync could matter.
         append_rows(*table, env, 2000, 2000);
         REQUIRE(scope.last() != nullptr);
-        // Sabotage the tail: revert everything written since the last sync, then verify
-        // the on-disk state equals durable state A. (The final fsync of checkpoint A was
-        // the last sync; the write-through of the extra rows is exactly what a kill loses.)
+        // crash_revert() rolls the file back to the last successful fsync (checkpoint
+        // A's), which is exactly what a kill loses: the write-through of the extra rows.
         scope.last()->crash_revert();
 
-        // The killed state is reopened through a filesystem COPY under a fresh
-        // environment — the "открыть как после kill" mechanism, no hand-laid files.
+        // Reopen the killed state via a filesystem copy, not a hand-laid file.
         std::filesystem::copy_file(fault_db_path(), copy_path,
                                    std::filesystem::copy_options::overwrite_existing);
     }

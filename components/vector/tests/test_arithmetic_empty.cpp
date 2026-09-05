@@ -5,21 +5,14 @@
 
 using namespace components;
 
-// Regression: SSB q1-1 on database REOPEN segfaulted in
-// compute_binary_arithmetic while evaluating
-// SUM(lo_extendedprice * lo_discount) over an EMPTY batch chunk (count==0).
+// Regression: SSB q1-1 on database REOPEN segfaulted in compute_binary_arithmetic while
+// evaluating SUM(lo_extendedprice * lo_discount) over an empty batch chunk (count==0): a
+// degenerate 0-row/0-column sub-chunk resolves operand keys via data_chunk_t::at(path) to
+// out-of-bounds vector_t* pointers, and compute_binary_arithmetic dereferenced them
+// (left.type()) before checking the row count, causing EXC_BAD_ACCESS.
 //
-// On reopen a degenerate group sub-chunk has 0 rows AND 0 columns. The
-// arithmetic operand keys resolve via data_chunk_t::at(path) to out-of-bounds
-// vector_t* pointers (the chunk's column array is empty). compute_binary_arithmetic
-// then dereferenced those operand vectors (left.type()) before checking the row
-// count, causing EXC_BAD_ACCESS.
-//
-// This test pins the two guarantees that shape meets, layer by layer:
-// data_chunk_t::at(path) answers nullptr for an ordinal past the chunk's width
-// ("column not found", handled as a clean error by the arithmetic operator), and
-// compute_binary_arithmetic with count==0 touches no operand rows and returns an
-// empty (0-row) result vector of the promoted type.
+// Two guarantees pinned here: data_chunk_t::at(path) answers nullptr past the chunk's width,
+// and compute_binary_arithmetic with count==0 touches no operand rows.
 TEST_CASE("compute_binary_arithmetic: empty chunk operands, count==0 does not deref") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -55,30 +48,20 @@ TEST_CASE("compute_binary_arithmetic: empty chunk operands, count==0 does not de
                                                              right,
                                                              /*count=*/0);
 
-    // A flat numeric result vector of the promoted arithmetic type, carrying no
-    // rows (count==0 was requested). The count==0 guard answers BEFORE the operand
-    // types are read, so it stays a success even though DOUBLE/BIGINT never reaches
-    // the type classification below.
+    // The count==0 guard answers BEFORE the operand types are read, so it stays a success
+    // even though DOUBLE/BIGINT never reaches the type classification below.
     REQUIRE_FALSE(out.has_error());
     REQUIRE(out.value().get_vector_type() == components::vector::vector_type::FLAT);
     REQUIRE(out.value().type().type() == components::types::logical_type::DOUBLE);
 }
 
-// THE arithmetic.cpp COORDINATE — the vector-level twin of the logical_value_t
-// mixed-operand refusal.
+// Vector-level twin of the logical_value_t mixed-operand refusal (arithmetic.cpp).
 //
-// Measured without the type guard: compute_binary_arithmetic on STRING_LITERAL +
-// BIGINT answers a vector of logical_type 0 (== NA) with row0 and row1 both NULL,
-// and BOOLEAN + BOOLEAN answers logical_type 0 as well — a success-shaped NULL for
-// an operation that has no meaning, indistinguishable in the result from real SQL
-// NULLs. compute_unary_neg is worse without one: it dispatches into
-// unary_neg_wrapper, whose non-numeric branch THROWS std::logic_error out of a
-// compute path.
-//
-// The four entry points answer core::result_wrapper_t<vector_t> and refuse an
-// operand pair arithmetic cannot type. An NA-TYPED operand is NOT such a pair:
-// an NA-typed vector is this engine's untyped-NULL column and SQL says NULL + 1
-// is NULL, so that case still answers NA — the one shape deliberately preserved.
+// Measured without the type guard: compute_binary_arithmetic on STRING_LITERAL + BIGINT
+// answered a vector of logical_type 0 (== NA) with every row NULL, indistinguishable from a
+// real SQL NULL; compute_unary_neg dispatched into unary_neg_wrapper, whose non-numeric branch
+// THROWS std::logic_error out of a compute path. An NA-TYPED operand is NOT such a mismatch —
+// SQL says NULL + 1 is NULL, so that case still answers NA, the one shape preserved below.
 TEST_CASE("compute arithmetic: an operand pair arithmetic cannot type is a refusal") {
     auto resource = core::pmr::otterbrix_resource();
     using components::types::complex_logical_type;

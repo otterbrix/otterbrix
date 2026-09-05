@@ -282,16 +282,12 @@ TEST_CASE("wal_binary::data_chunk_binary_with_nulls") {
     }
 }
 
-// The WAL chunk codec's hand-rolled type header had no STRUCT leg: the writer emitted
-// "no extension" and the reader rebuilt a bare STRUCT type; constructing the decoded
-// chunk then walked the missing struct extension's field types through a garbage
-// pointer — a FLAKY SIGSEGV at STARTUP (manager_wal_replicate's read_all_records) for
-// ANY log containing an insert into a table with a struct column. The header now
-// carries the canonical type spec (types::encode_type_spec / decode_type_spec), which
-// round-trips every persistable type exactly — struct fields, decimal width/scale,
-// nested children and aliases — so a new type can never again decode into a
-// crash-shaped half-type. This case gates the TYPE and the null mask on their own; the
-// nested column PAYLOAD has its own cases further down.
+// The WAL chunk codec's hand-rolled type header had no STRUCT leg: the writer emitted "no
+// extension" and the reader rebuilt a bare STRUCT type, so constructing the decoded chunk walked
+// the missing field types through a garbage pointer — a flaky SIGSEGV at startup for any log
+// containing an insert into a table with a struct column. The header now uses the canonical type
+// spec (types::encode_type_spec / decode_type_spec) instead. This case gates the TYPE and null
+// mask; the nested column PAYLOAD has its own cases further down.
 TEST_CASE("wal_binary::data_chunk_binary_struct_type_roundtrip") {
     std::pmr::monotonic_buffer_resource resource(1024 * 64);
 
@@ -347,19 +343,11 @@ TEST_CASE("wal_binary::data_chunk_binary_struct_type_roundtrip") {
     }
 }
 
-// ---------------------------------------------------------------------------
-// NESTED COLUMN PAYLOAD.
-//
-// The codec sized every column through fixed_type_size(), which answers 0 for LIST, STRUCT and
-// ARRAY. Writer and reader agreed on that zero — `data_size = 0`, no bytes written, no bytes
-// read — so a replayed insert rebuilt a correctly-SHAPED nested column in which every element
-// was the zero the constructor left behind. Nothing reported a failure; the type round-tripped,
-// the top-level null mask round-tripped, and only the CONTENT was gone.
-//
-// The payload is now written recursively, in the checkpoint's own child order —
-// [validity, ...children] — so the cases below gate the CELL CONTENTS of each of the three
-// nested shapes, plus the interior validity that rides with them.
-// ---------------------------------------------------------------------------
+// NESTED COLUMN PAYLOAD. fixed_type_size() answers 0 for LIST, STRUCT and ARRAY, and writer and
+// reader agreed on that zero — no bytes written, no bytes read — so a replayed insert rebuilt a
+// correctly-SHAPED nested column where every element was the zero the constructor left behind,
+// with nothing reporting a failure. The payload is now written recursively
+// ([validity, ...children]); the cases below gate the CELL CONTENTS of each nested shape.
 
 TEST_CASE("wal_binary::data_chunk_binary_array_payload_roundtrip") {
     std::pmr::monotonic_buffer_resource resource(1024 * 64);
@@ -696,21 +684,13 @@ TEST_CASE("wal_binary::encode_decode_insert_carries_nested_payload") {
     }
 }
 
-// ===========================================================================
-// ROW-ID LENGTHS THAT ARE NOT WHOLE ROW IDS ARE CORRUPTION, NOT ARITHMETIC.
-//
-// Sizing the row-id vector as payload_size / 8 and then memcpy'ing payload_size BYTES into it
-// writes, for any length that is not a multiple of 8, up to 7 bytes past the heap allocation,
-// silently, on both the PHYSICAL_DELETE payload and the row-id half of PHYSICAL_UPDATE. The
-// UPDATE bounds check `4 + row_ids_bytes > payload_size` additionally wraps in 32-bit
-// arithmetic, so a row_ids_bytes near UINT32_MAX slips past the check and drives a
-// multi-gigabyte resize+memcpy from a 16-byte buffer.
-//
-// The records below are byte-crafted with VALID CRCs: the checksum is precisely the guard
-// that does NOT protect against these lengths, because a legitimately-CRC'd record with a
-// ragged length is exactly what a flipped length byte upstream of the CRC computation — or a
-// crafted journal — produces. A ragged length must come back is_corrupt.
-// ===========================================================================
+// Row-id lengths that are not whole row ids are corruption, not arithmetic: sizing the row-id
+// vector as payload_size/8 and memcpy'ing payload_size bytes overruns the allocation by up to 7
+// bytes for any non-multiple-of-8 length, on both PHYSICAL_DELETE and PHYSICAL_UPDATE. UPDATE's
+// bounds check `4 + row_ids_bytes > payload_size` also wraps in 32-bit arithmetic, letting a
+// row_ids_bytes near UINT32_MAX drive a multi-gigabyte resize+memcpy from a 16-byte buffer.
+// Records below are byte-crafted with VALID CRCs — the checksum does not protect against these
+// lengths, since a ragged length under a valid CRC is exactly what a crafted journal produces.
 
 #include <absl/crc/crc32c.h>
 

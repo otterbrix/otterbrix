@@ -10,10 +10,9 @@ using namespace components::vector;
 
 namespace {
     void register_kernel(std::pmr::memory_resource* resource, auto& fn, auto kernel) {
-        // BOUND, not std::ignore'd: rule 14 bans <tuple>, and add_kernel is [[nodiscard]] for a
-        // reason -- it refuses on exactly two things, a full slot table and an arity that does not
-        // match the function's (function.hpp:172-190). Both are compile-time constants here, so
-        // the assert states an invariant of this file rather than screening runtime input.
+        // Bound, not std::ignore'd (<tuple> is banned): add_kernel only refuses on a full slot
+        // table or an arity mismatch, both compile-time constants here, so the assert states a
+        // file invariant rather than screening runtime input.
         [[maybe_unused]] const auto added = fn->add_kernel(resource, std::move(kernel));
         assert(!added.contains_error() && "aggregate kernel must fit the declared slots and arity");
     }

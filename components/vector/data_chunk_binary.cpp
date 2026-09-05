@@ -104,17 +104,14 @@ namespace components::vector {
             return extension ? extension->size() : 0;
         }
 
-        // Column type header = [spec_size:u32][spec bytes], where the spec is the CANONICAL
-        // type-spec encoding (types::encode_type_spec) — the same codec the table checkpoint
-        // uses. IT MUST NOT GO BACK TO A HAND-ROLLED HEADER that enumerates extensions one by
-        // one: every leg such a header is missing is a STARTUP CRASH — the writer emits "no
-        // extension", replay rebuilds a bare STRUCT, and building the replay chunk walks the
-        // absent struct extension's field types through a garbage pointer (flaky SIGSEGV in
-        // read_all_records). The canonical spec round-trips every persistable type — struct
-        // fields, decimal width/scale, nested children, aliases — recursively, so a new type
-        // cannot decode into a crash-shaped half-type.
-        // A spec_size of 0 marks a type the canonical codec REFUSED to encode; the reader
-        // treats it as corruption (ok=false), never as "assume some type" (rule 6).
+        // Column type header = [spec_size:u32][spec bytes], the CANONICAL type-spec encoding
+        // (types::encode_type_spec) — same codec the table checkpoint uses. Must not go back to
+        // a hand-rolled header enumerating extensions one by one: a leg such a header forgets
+        // replays into a bare STRUCT whose absent field types are walked through a garbage
+        // pointer (a flaky SIGSEGV in read_all_records); the canonical spec round-trips every
+        // persistable type recursively, so a new type can't decode into a crash-shaped half-type.
+        // spec_size 0 marks a type the codec REFUSED to encode; the reader treats it as
+        // corruption (ok=false), never as "assume some type".
         //
         // Encode `column_type`'s spec into `spec` (cleared first). Empty result = refusal.
         void encode_type_spec_or_poison(const types::complex_logical_type& column_type,
@@ -159,31 +156,18 @@ namespace components::vector {
             return data_chunk_t(resource, empty_types, 1);
         }
 
-        // -----------------------------------------------------------------
-        // NESTED COLUMN PAYLOAD — the recursive half of the codec. The per-kind layout table
-        // lives on the declaration in data_chunk_binary.hpp.
+        // NESTED COLUMN PAYLOAD — the recursive half of the codec (layout table on the
+        // declaration in data_chunk_binary.hpp). Must NOT be sized by fixed_type_size(), which
+        // answers 0 for LIST/STRUCT/ARRAY: writer and reader would silently agree on 0 bytes,
+        // and the reader's zero-length memcpy leaves every element at the constructor's zero —
+        // invisible on checkpointed rows (always recursive via .otbx), surfacing only on rows
+        // recovered FROM THE JOURNAL.
         //
-        // A nested column MUST NOT be sized by fixed_type_size(), which answers 0 for LIST,
-        // STRUCT and ARRAY. Writer and reader agree on that zero and lose the data in silence:
-        // the writer emits `data_size = 0` and no bytes, the reader memcpy's 0 bytes into a
-        // correctly-SHAPED nested column, and every element is the zero the constructor left
-        // behind. Nothing fails and nothing is logged. Checkpointed rows are unaffected — they
-        // come back through the .otbx column tree, which has always been recursive — so the
-        // loss shows up only on rows recovered FROM THE JOURNAL, the one path a clean shutdown
-        // never exercises.
-        //
-        // Both directions derive the shape from the column TYPE, which the header ahead of the
-        // payload already carries verbatim through the canonical spec codec. So there is no tag
-        // byte to keep in sync, and a container inside a container is nothing but this function
-        // re-entered — second-level nesting (list of structs, struct holding a list, array of
-        // arrays) needs no case of its own. Child order mirrors the .otbx checkpoint's,
-        // [validity, ...children], so the two durable paths describe a nested column the same
-        // way round.
-        //
-        // The TOP-LEVEL column's own validity is NOT written here: it stays in the chunk's
-        // interleaved null mask, where it already was and where the existing cases pin it. Only
-        // the levels BELOW the column need a mask of their own, and they get one at every level.
-        // -----------------------------------------------------------------
+        // Both directions derive the shape from the column TYPE carried in the header, so a
+        // container inside a container is nothing but this function re-entered — no case of its
+        // own needed for nesting. Child order mirrors the .otbx checkpoint's, [validity,
+        // ...children]. The TOP-LEVEL column's own validity stays in the chunk's interleaved
+        // null mask; only the levels BELOW it get a mask of their own here.
 
         void append_validity_block(const vector_t& vector, uint64_t count, services::wal::buffer_t& buffer) {
             if (count == 0 || vector.validity().all_valid()) {
@@ -242,7 +226,7 @@ namespace components::vector {
         }
 
         // Returns false when the column carries a payload this codec has no rule for. The
-        // caller turns that into a POISONED column the reader refuses outright (rule 6) —
+        // caller turns that into a POISONED column the reader refuses outright —
         // writing a short payload instead would recreate the very defect this exists to close.
         bool append_vector_payload(const vector_t& vector, uint64_t count, services::wal::buffer_t& buffer) {
             const auto physical_type = vector.type().to_physical_type();
@@ -485,7 +469,7 @@ namespace components::vector {
 
             if (!payload_written || spec.empty() || payload_size > std::numeric_limits<uint32_t>::max()) {
                 // POISON the whole column — spec_size 0 — which the reader refuses outright.
-                // Rule 6: a column this codec cannot carry must break the record LOUDLY. The
+                // A column this codec cannot carry must break the record LOUDLY. The
                 // alternative, emitting a short payload, is exactly the defect being closed
                 // here: a decode that reports success and hands replay a column of zeroes.
                 buffer.resize(column_start);
@@ -537,19 +521,12 @@ namespace components::vector {
             pointer += null_mask_size;
         }
 
-        // The buffer INTERLEAVES the columns — [type header][data_size][data] each — and
-        // data_chunk_t wants every column type up front (its ctor takes the whole type
-        // vector; columns cannot be appended afterwards). So the types have to be collected
-        // before the chunk exists, which means walking the buffer once before filling it.
-        //
-        // That first walk already sees where each column's data begins and how long it is,
-        // so it RECORDS both. The fill loop below then addresses each column directly and
-        // never looks at a type header again — decoding one only to throw it away would cost
-        // a pmr-allocated complex_logical_type (children, alias, extension) per column per
-        // chunk, on the WAL replay path.
-        //
-        // Every offset handed to the fill loop is bounds-checked HERE, against `end`, so the
-        // second loop indexes an already-validated range rather than re-validating it.
+        // The buffer INTERLEAVES the columns — [type header][data_size][data] each — but
+        // data_chunk_t's ctor takes the whole column-type vector up front (columns can't be
+        // appended afterwards), so a first walk collects the types before the chunk exists.
+        // That walk also RECORDS each column's data offset/length so the fill loop below can
+        // address columns directly without re-decoding (and reallocating) a type header per
+        // column on the WAL replay path. Offsets are bounds-checked against `end` here, once.
         std::pmr::vector<types::complex_logical_type> column_types(resource);
         column_types.reserve(num_columns);
         std::pmr::vector<uint64_t> column_data_offsets(resource); // from `data`, to the column's DATA

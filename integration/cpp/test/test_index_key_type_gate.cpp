@@ -5,30 +5,16 @@
 #include <set>
 #include <string>
 
-// CREATE INDEX must refuse a key type that the on-disk key encoders cannot represent.
-//
-// The encoders sit far below the statement and have no error channel: services::index::convert()
-// returns a physical_value by value, and the binary key codec runs inside an actor coroutine whose
-// unhandled_exception() is empty. Their only ways to report "I cannot encode this" are an abort or
-// a wrong answer. Before the gate, an INTERVAL / TIMETZ / HUGEINT key produced BOTH, depending on
-// the build: services::index::convert() had a `default: assert(false); return NA;` arm, so a Debug
-// build aborted the process on the first row while an NDEBUG build collapsed every key of that
-// column to the same NA value and served wrong rows from the index.
-//
-// NOTE ON COVERAGE: the NDEBUG-only silent-NA half of that behaviour is NOT observable from this
-// suite, which builds Debug+DEV_MODE — there the same arm aborts. It is recorded here rather than
-// pretended to be covered. What this suite does pin is the gate: the statement is refused before
-// any key ever reaches an encoder, so neither half can be reached from user data at all.
-//
-// The tables are left EMPTY on purpose. CREATE INDEX on a populated table backfills, and the
-// backfill would hit the encoder before the gate's verdict could be observed.
+// CREATE INDEX must refuse a key type the encoders can't represent: convert() has no error
+// channel, so an unencodable key aborts (Debug) or, under NDEBUG, silently returns NA and
+// serves wrong rows -- only the abort half is exercised here (Debug+DEV_MODE). Tables stay
+// EMPTY: a populated CREATE INDEX backfills, reaching the encoder before the gate's verdict.
 
 using namespace test_helpers;
 
 namespace {
 
-    // CREATE INDEX must be refused, and refused as index_create_fail specifically — a generic
-    // parse/schema error would mean the statement died for the wrong reason.
+    // Must fail as index_create_fail specifically, not any parse/schema error.
     void refused(otterbrix::wrapper_dispatcher_t* d, const std::string& sql) {
         auto cur = exec(d, sql);
         INFO(sql);
@@ -45,8 +31,8 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::unrepresentable_key_types
     auto* d = space.dispatcher();
 
     REQUIRE(exec(d, "CREATE DATABASE g;")->is_success());
-    // INTERVAL and TIMETZ are physically STRUCT; HUGEINT/UHUGEINT are 16-byte integers the
-    // binary codec has no case for. None of the four can be encoded as an index key.
+    // INTERVAL/TIMETZ are physically STRUCT; HUGEINT/UHUGEINT are 16-byte ints the codec has
+    // no case for — none of the four can be an index key.
     REQUIRE(exec(d, "CREATE TABLE g.t (id BIGINT, iv INTERVAL, ttz TIMETZ, h HUGEINT, uh UHUGEINT);")->is_success());
 
     refused(d, "CREATE INDEX i_iv ON g.t (iv);");
@@ -62,8 +48,8 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::unrepresentable_key_types
     REQUIRE(exec(d, "CREATE INDEX i_id ON g.t (id);")->is_success());
 }
 
-// The mirror image: every type the encoders DO carry must still be accepted. A gate that
-// over-refuses is as much a defect as one that under-refuses.
+// Mirror case: every representable type must still be accepted — over-refusing is as much
+// a defect as under-refusing.
 TEST_CASE("integration::cpp::test_index_key_type_gate::representable_key_types_are_accepted") {
     auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/accepted"), true);
     test_spaces space(config);
@@ -82,14 +68,9 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::representable_key_types_a
     }
 }
 
-// DATE / TIME / TIMESTAMP / TIMESTAMP_TZ are physically INT32/INT64 and order correctly the moment
-// convert() maps them. This is the end-to-end half of that: rows go in through the index write
-// path and come back out through an indexed lookup. NOTE: the batched write path appends through
-// the binary codec (insert_bulk_unchecked) and never calls convert(), so on this baseline the
-// pre-fix `default:` arm was NOT reached by INSERT — this case pins index/scan answer parity,
-// while the abort half of the defect is pinned where convert() actually runs: the
-// services::index::index_disk unit suite (convert_temporal_preserves_order red-proofs the abort,
-// date_keys / timestamp_keys drive probes and bounds through the tree).
+// End-to-end parity: index answers must match an unindexed scan. Bulk INSERT never calls
+// convert() (goes through insert_bulk_unchecked), so the abort half is pinned separately in
+// services/index/tests/test_index_disk.cpp (convert_temporal_preserves_order, date_keys/timestamp_keys).
 TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_indexes_return_the_right_rows") {
     auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/temporal"), true);
     test_spaces space(config);
@@ -116,9 +97,8 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_indexes_return_t
         }
     }
 
-    // Both tables must give the SAME answer, and that answer must be the absolute one below.
-    // Equality alone would pass on two identically wrong answers; a key that collapsed to NA
-    // would make every predicate match every row, so the counts are what pins the fix.
+    // Comparing the two isn't enough — a key collapsed to NA would match every predicate on
+    // both sides identically. The counts below must also be right in absolute terms.
     auto both = [&](const std::string& pred, size_t expected) {
         auto with_idx = exec(d, "SELECT id FROM g.ti WHERE " + pred + ";");
         auto no_idx = exec(d, "SELECT id FROM g.tp WHERE " + pred + ";");
@@ -138,12 +118,9 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_indexes_return_t
     both("ts < TIMESTAMP '2024-12-31 23:59:00'", 2);
 }
 
-// DECIMAL sits exactly on the seam between the two encoder families, so it gets its own
-// case: the ordered (b+tree) side compares stored keys through physical_value, which has
-// no DECIMAL representation (width/scale would be lost) — refused; the hashed side
-// round-trips DECIMAL through the logical codec (append_decimal_payload) — accepted, and
-// the acceptance is proven with rows, not just a successful CREATE: the INSERTs after it
-// drive every key through the hash index's maintenance encoder.
+// DECIMAL sits on the seam: physical_value (b+tree) has no DECIMAL representation, so it's
+// refused; the hash side round-trips it via append_decimal_payload, proven here with real
+// inserts, not just a successful CREATE.
 TEST_CASE("integration::cpp::test_index_key_type_gate::decimal_is_hash_only") {
     auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/decimal"), true);
     test_spaces space(config);
@@ -172,13 +149,9 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::decimal_is_hash_only") {
     CHECK(with_idx->size() == 2);
 }
 
-// The restart leg: the on-disk b+tree is reopened and every probe is answered straight out
-// of it (services::index::convert encodes the probe, read_logical_value_as_view decodes the
-// stored keys). The tree compares keys as physical_value, which has no temporal tag: a DATE
-// key is stored and compared as its raw INT32 day count and every later DATE probe is
-// encoded into that same domain, so answers must not change across the restart. The NULL row
-// rides along because a NULL key is legitimately absent from the index; collapsing or refusing
-// it on reopen would corrupt this.
+// physical_value carries no temporal tag: a DATE key is compared as its raw INT32 day count, so
+// probes encoded post-restart must land in the same domain as keys written pre-restart. The NULL
+// row rides along because a NULL key is legitimately absent from the index.
 TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_index_survives_restart") {
     auto config = make_test_config(integration_fixture_path("test_index_key_type_gate/restart"), true);
 
@@ -213,8 +186,7 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_index_survives_r
         count("ts > TIMESTAMP '2024-01-01 00:00:00'", 2);
         count("dt IS NULL", 1);
 
-        // The rehydrated index must also take NEW temporal keys (the in-memory key domain
-        // locked by the rehydrate must admit them).
+        // The rehydrated index must also accept NEW temporal keys, not just answer old ones.
         REQUIRE(exec(d,
                      "INSERT INTO g.t (id, dt, ts) VALUES "
                      "(5, DATE '2024-06-01', TIMESTAMP '2024-06-01 06:00:00');")

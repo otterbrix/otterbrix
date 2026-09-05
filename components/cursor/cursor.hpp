@@ -50,9 +50,8 @@ namespace components::cursor {
 
         bool is_success() const noexcept;
         bool is_error() const noexcept;
-        // A reference, not a copy: callers read the error more than once in a single
-        // expression (begin() from one read, end() from another). Handing back a fresh
-        // error_t per call made those two reads land on two unrelated buffers.
+        // Reference, not a copy: callers read it twice in one expression (begin()/end());
+        // fresh copies per call would span two unrelated buffers.
         const core::error_t& get_error() const noexcept;
 
     private:

@@ -25,19 +25,12 @@ PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 using namespace otterbrix;
 
 PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
-    // THE MODULE'S ARENA, CREATED HERE, OWNED BY THE MODULE, PASSED DOWN AS AN ARGUMENT.
-    // The three reasons for this exact shape are written at module_arena_t
-    // (integration/python/module_arena.hpp); what follows is only the mechanics.
-    //
-    // The capsule below is the module's OWNING reference: it holds the pointer this
-    // `detach()` hands over, and its destructor adopts that same reference back
-    // (`add_ref = false`) and lets it go. So `otterbrix.otterbrix.__arena__` -- the extension
-    // module's own attribute, deliberately not one of the names the package's __init__.py
-    // re-exports -- keeps the arena alive for as long as the module dictionary does, and that
-    // is NOT ENOUGH ON ITS OWN: a capsule dies with the module while python objects built out
-    // of the arena can still be alive. That is what the count is for: every such object holds its
-    // own reference (otterbrix_py_type_t::arena_), so the last owner, not the module, is what
-    // decides when the pool is released.
+    // Module's arena; the reasons for this shape are at module_arena_t
+    // (integration/python/module_arena.hpp). The capsule below holds the detach()'d pointer
+    // and readopts it (`add_ref = false`) on destruction, keeping the arena alive with the
+    // module dict -- but that alone isn't enough, since python objects built from the arena
+    // can outlive it; each holds its own reference (otterbrix_py_type_t::arena_), so the last
+    // owner, not the module, decides when the pool is released.
     module_arena_ptr module_arena{new module_arena_t()};
     m.add_object("__arena__",
                  pybind11::capsule(module_arena_ptr(module_arena).detach(), [](void* raw) {
@@ -48,16 +41,13 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
     type_creation::initialize(m, module_arena);
     py_expression_t::initialize(m);
     py_relation_t::initialize(m);
-    // py_result_t is what `OtterBrixPyConnection.execute` hands back: compiling it is not
-    // enough, an unregistered type is one Python cannot hold.
+    // Must be registered: `OtterBrixPyConnection.execute` hands py_result_t back to Python,
+    // which can't hold an unregistered type.
     py_result_t::initialize(m);
     py_connection_t::initialize(m);
 
-    // The lambda CAPTURES the arena by value, so the bound function object is itself an
-    // owner: `connect` cannot outlive the arena its refusals build their message on.
-    // (make_space returns through the error channel, and every one of its refusals returns
-    // BEFORE the engine -- and therefore the space's own arena -- exists, so the message has
-    // to live somewhere else; the module's arena is that somewhere.)
+    // Lambda captures the arena by value: make_space's refusals return before the engine (and
+    // its own arena) exists, so the refusal message needs the module's arena to live on.
     m.def("connect",
           [module_arena](const pybind11::object& database, bool read_only, const pybind11::dict& config) {
               return py_connection_t::connect(module_arena, database, read_only, config);

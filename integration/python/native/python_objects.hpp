@@ -62,9 +62,8 @@ namespace otterbrix {
     struct py_decimal_t {
         struct py_decimal_scale_converter_t {
             template<typename T, typename = std::enable_if<std::numeric_limits<T>::is_integer, T>>
-            // Takes the ALREADY-BUILT decimal type: create_decimal reports an
-            // out-of-window (width, scale) as an error, and this function has no error
-            // channel to report it through, so the caller does the construction.
+            // Takes the already-built decimal type: this function has no error channel to
+            // report an out-of-window (width, scale), so the caller builds it via create_decimal.
             static components::types::logical_value_t Operation(std::pmr::memory_resource* r,
                                                                 bool signed_value,
                                                                 std::vector<uint8_t>& digits,

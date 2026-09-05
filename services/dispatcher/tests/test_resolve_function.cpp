@@ -9,11 +9,8 @@ using components::types::complex_logical_type;
 using components::types::logical_type;
 
 namespace {
-    // The ONE arena this file allocates on -- the DECIMAL refusal messages create_decimal
-    // builds, the cast registry, and the argument vectors alike. create_decimal allocates only
-    // on its refusal path, and that message belongs to the caller, so the caller has to name an
-    // arena it owns rather than reach for the process-global one (rule 14). Everything else here
-    // draws from the same place so the file has one answer to "where does this live", not two.
+    // The ONE arena this file allocates on (no process-global resource) — refusal
+    // messages, cast registry, argument vectors alike.
     std::pmr::memory_resource* test_arena() {
         static core::pmr::otterbrix_resource arena;
         return &arena;

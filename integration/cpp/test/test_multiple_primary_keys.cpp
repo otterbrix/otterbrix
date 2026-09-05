@@ -1,23 +1,14 @@
-// ============================================================================
-// ONE PRIMARY KEY PER TABLE.
+// One primary key per table. Unlike PostgreSQL, this engine's declaration legs (inline CREATE
+// TABLE, ALTER TABLE ADD CONSTRAINT) accept a second 'p' row instead of refusing it, so
+// pg_constraint can end up holding two. What must never follow is silent misenforcement:
+// operator_resolve_constraint used to fold both rows into one flattened pk_columns list — a
+// multi-column "primary key" nobody declared.
 //
-// PostgreSQL refuses the second PRIMARY KEY at declaration ("multiple primary
-// keys for table ... are not allowed"). This engine's declaration legs (inline
-// CREATE TABLE and ALTER TABLE ADD CONSTRAINT) live upstream of the physical
-// plan and today still accept the second 'p' row, so pg_constraint can end up
-// holding two of them. What must NEVER follow from that state is silent
-// misenforcement: operator_resolve_constraint used to fold both rows into one
-// flattened pk_columns list — a multi-column "primary key" nobody declared —
-// and enforce each 'p' row as an unrelated unique group.
-//
-// These cases pin the floor: the moment the doubled key would be USED (a DML
-// that gathers constraints, or an FK binding to "the" primary key), the
-// statement is refused and the refusal names both constraints. They also pin
-// that the state stays REPAIRABLE: ALTER TABLE ... DROP CONSTRAINT gathers
-// names only (no enforcement decode), so the repair statement itself must not
-// trip the refusal — test_alter_drop_constraint.cpp pins that repair end to
-// end; the DROP COLUMN route below stays as the second exit.
-// ============================================================================
+// These cases pin the floor: the moment the doubled key would be USED (a DML gathering
+// constraints, or an FK binding to "the" primary key), the statement is refused, naming both
+// constraints. They also pin that the state stays REPAIRABLE: ALTER TABLE ... DROP CONSTRAINT
+// gathers names only (no enforcement decode), so repair itself must not trip the refusal —
+// test_alter_drop_constraint.cpp pins that end to end.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

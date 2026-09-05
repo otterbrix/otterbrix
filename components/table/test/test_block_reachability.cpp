@@ -1,14 +1,9 @@
-// Block-reachability experiment.
-//
-// Purpose: try to REFUTE the old-root freeing formula
+// Block-reachability experiment: tries to REFUTE the old-root freeing formula
 //     free = {root-N chains} − {new root} − {live registry}
-// by classifying every issued/freed block id into the four bins
-// (durable-chain / registry-live / free-listed / unexplained) after realistic rounds.
-// An unexplained id that is NOT attributable to a previous round's durable state is an
-// accounting hole: the formula would free a block somebody still needs.
-//
-// Each scenario prints its numbers (garbage per round, bin sizes) so a regression is visible
-// as a change in them, not only as a failed CHECK.
+// by classifying every issued/freed block id into the four bins (durable-chain /
+// registry-live / free-listed / unexplained) after realistic rounds. An unexplained id not
+// attributable to a previous round's durable state is an accounting hole. Each scenario
+// prints its bin sizes so a regression shows as a changed number, not only a failed CHECK.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -57,8 +52,8 @@ namespace {
         return std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "walker_table");
     }
 
-    // Strings stay well under DEFAULT_STRING_BLOCK_LIMIT (4096): the big-string path has
-    // known memory-safety defects and is NOT what this experiment probes.
+    // Strings stay well under DEFAULT_STRING_BLOCK_LIMIT (4096): the big-string overflow path
+    // is exercised separately (test_big_strings.cpp) and is out of scope here.
     void append_rows(data_table_t& table, walker_env_t& env, uint64_t start, uint64_t count) {
         auto types = table.copy_types();
         uint64_t offset = 0;
@@ -202,10 +197,9 @@ TEST_CASE("block_reachability: reopen, checkpoint twice without compact") {
         absorb(known_prior, r0);
     }
 
-    // Reopen and checkpoint twice with NO data changes and NO compact (the plan's named
-    // case). Each new checkpoint writes a fresh metadata chain; the previous chain becomes
-    // garbage that nothing frees on HEAD. The experiment must prove that garbage is exactly
-    // attributable to the previous rounds' durable state — and nothing else leaks.
+    // Reopen and checkpoint twice with NO data changes and NO compact: each new checkpoint
+    // writes a fresh metadata chain, and the previous chain becomes garbage nothing frees on
+    // HEAD. That garbage must be exactly attributable to the previous rounds' durable state.
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, walker_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -349,9 +343,9 @@ TEST_CASE("block_reachability: pre-checkpoint write-through blocks live in the r
         REQUIRE(!bm.create_new_database().has_error());
         auto table = make_two_col_table(env, bm);
         // 5000 rows: write-through fires at every closed row group (1024 rows), issuing
-        // blocks OUTSIDE any checkpoint. The durable header is still virgin, so the ONLY
-        // legitimate explanation for these blocks is the live registry — this is the fact
-        // that forces the freeing formula to subtract the live registry.
+        // blocks OUTSIDE any checkpoint. The durable header is still virgin, so the live
+        // registry is the ONLY legitimate explanation for them — the fact that forces the
+        // freeing formula to subtract it.
         append_rows(*table, env, 0, 5000);
 
         tstorage::database_header_t header;

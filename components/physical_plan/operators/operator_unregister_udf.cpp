@@ -56,14 +56,10 @@ namespace components::operators {
             co_return;
         }
 
-        // 2. Purge pg_proc + pg_depend rows. resolve_function_by_name returns every namespace match; drop
-        //    each one.
-        //
-        //    AHEAD OF THE REGISTRY REMOVAL BELOW, and the order is the point. The removal is this
-        //    operator's only mutation, and the pg_proc read here can REFUSE (scan_table answers a
-        //    result_wrapper_t). Doing the removal first means an unreadable pg_proc reports DROP FUNCTION as
-        //    failed while the function is already gone from the process-global registry — every lookup
-        //    missing it, and its pg_proc/pg_depend rows still on the platter claiming it exists.
+        // 2. Purge pg_proc + pg_depend rows for every namespace match, AHEAD of the registry removal below
+        //    (the operator's only mutation): the pg_proc read here can refuse, and refusing after the
+        //    removal would leave the function gone from the registry while its catalog rows still claim
+        //    it exists.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
             auto [_rfbn, rfbnf] = actor_zeta::otterbrix::send(ctx->disk_address,
@@ -86,17 +82,10 @@ namespace components::operators {
             // depends on an intervening read.
             std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource_);
             specs.reserve(matches.size() * 3);
-            // WHICH ZERO IS AN ERROR HERE. The pg_depend rows are optional: a function with no dependency rows
-            // deletes none of them and that is healthy. The pg_proc rows are not — every one of them was just
-            // READ, out of pg_proc, under this same context, which is where m.oid comes from. A pg_proc delete
-            // that matched nothing has not removed the row the read had in hand, and DROP FUNCTION must not go
-            // on to take the overload out of the registry over a catalog that still describes it. "The read had
-            // it in hand" is an argument only because both sides share a snapshot: resolve_function_by_name
-            // scans pg_proc under ctx.txn and so does the delete (agent_disk_t::delete_pg_catalog_rows_inner).
-            //
-            // An EMPTY spec list is the different, legitimate emptiness, and it stays silent: the registry
-            // answered for this signature but pg_proc holds no row for it — a builtin, or a function mirrored
-            // into the process registry without a catalog row. Nothing to scrub and nothing to refuse.
+            // pg_depend rows are optional (zero deleted is healthy); pg_proc rows are not -- each was
+            // just READ under this same snapshot, so a delete matching none left the row in place. An
+            // EMPTY spec list is different and legitimate: a builtin or catalog-less mirror has
+            // nothing to scrub.
             std::pmr::vector<std::size_t> pg_proc_specs(resource_);
             pg_proc_specs.reserve(matches.size());
             for (auto& m : matches) {
@@ -116,10 +105,8 @@ namespace components::operators {
                                                 exec_ctx,
                                                 std::move(specs));
                 auto deleted_r = co_await std::move(df);
-                // STILL AHEAD OF THE REGISTRY REMOVAL, which is the whole point of the order
-                // this operator already keeps: a refused scrub must be known before the only
-                // mutation runs, or the function is gone from every lookup in this process
-                // while its pg_proc row still claims it exists.
+                // Still ahead of the registry removal: a refused scrub must be known before the only
+                // mutation runs.
                 if (deleted_r.has_error()) {
                     set_error(deleted_r.error());
                     mark_failed();
@@ -140,14 +127,9 @@ namespace components::operators {
             }
         }
 
-        // 3. Drop the matching overload from the default registry — the operator's ONLY mutation, and last,
-        //    so it happens with every refusal already known. `reg` is non-null here: `exists` can only be
-        //    set inside the `if (reg)` pre-check, and !exists already refused above.
-        //
-        //    THE ANSWER IS CHECKED. remove_function_by_signature says whether it removed anything, and a
-        //    `false` here means the overload the pre-check matched is no longer in the registry — the
-        //    registry changed between the two looks. Reporting success over an unverified removal would
-        //    paper over exactly the disagreement this ordering exists to surface.
+        // 3. Drop the matching overload from the default registry — the operator's ONLY mutation, done
+        //    last. The answer IS checked: remove_function_by_signature returning false means the registry
+        //    changed between the pre-check and here, and reporting success would paper over that.
         if (reg && !reg->remove_function_by_signature(function_name_, inputs_)) {
             set_error(core::error_t{core::error_code_t::other_error,
                                     std::pmr::string{"unregister_udf: the registry no longer holds the overload of '" +

@@ -6,15 +6,9 @@
 #include <string>
 
 // Matching an index key to its column is a property of the CHUNK, not of the row.
-//
-// The counter moved with the code it counts: the resolution used to run inside
-// index_engine_t, which owned the key sets; it runs in manager_index_t now, which is
-// their sole owner since the registry became one record map.
-//
 // Done per row it happens twice per row — once to check the key column is present, once to read
 // the value — and each check walks the chunk's columns comparing a column alias against a freshly
 // constructed std::string, to answer a question with the same answer for every row of the chunk.
-//
 // A counter test rather than a timing one: the defect is a growth rate. The bound is expressed
 // against the ROW COUNT, so it fails if the work is per-row and passes only if it is per-chunk.
 TEST_CASE("integration::cpp::test_index_key_binding::key_lookup_is_per_chunk_not_per_row") {

@@ -306,10 +306,8 @@ TEST_CASE("components::compute::vector::plain::batch") {
     c1.set_value(0, 1, 7);
     c1.set_cardinality(2);
 
-    // The two chunks are the SAME height on purpose. The fused result carries one column per
-    // input chunk and ONE row count for all of them, so a ragged batch has no honest count and
-    // is refused -- that refusal has its own case, vector::batch_refuses_chunks_of_unequal_height.
-    // This case is about the fuse, so it feeds the shape the fuse is defined for.
+    // Same height on purpose: ragged input is refused, and has its own case,
+    // vector::batch_refuses_chunks_of_unequal_height. This one is about the fuse itself.
     data_chunk_t c2(&resource, {logical_type::INTEGER}, 2);
     c2.set_value(0, 0, 10);
     c2.set_value(0, 1, 11);
@@ -470,11 +468,9 @@ namespace {
         // below would run on the process-global default resource.
         exec_context_t ctx{&resource, &registry};
 
-        // The full builtin set, not register_string_functions alone: the
-        // helpers are ORDERED STAGES of register_default_functions ("substring"
-        // must land on uid 5), and a standalone stage now poisons the registry
-        // for shifting the uid table. Lookups here are by name, so the extra
-        // builtins are invisible to these cases.
+        // The full builtin set, not register_string_functions alone: the registration helpers
+        // are ordered stages of register_default_functions, and calling one alone now poisons
+        // the registry by shifting the uid table ("substring" must land on uid 5).
         string_registry_fixture() { register_default_functions(registry); }
 
         function* get(const std::string& name) const {
@@ -798,9 +794,8 @@ TEST_CASE("components::compute::vector::batch_reports_the_rows_it_carries") {
     REQUIRE(out.size() == 1);
 }
 
-// Fusing per-chunk outputs side by side only describes a chunk when every input chunk is the
-// same height. Unequal inputs have no honest row count, so the call must refuse rather than
-// pick one and mislabel the rest.
+// Fused outputs share one row count, so chunks of unequal height have no honest count and the
+// call must refuse rather than mislabel one.
 TEST_CASE("components::compute::vector::batch_refuses_chunks_of_unequal_height") {
     core::pmr::otterbrix_resource resource;
     exec_context_t ctx(&resource);
@@ -818,11 +813,10 @@ TEST_CASE("components::compute::vector::batch_refuses_chunks_of_unequal_height")
     REQUIRE(res.error().type == core::error_code_t::kernel_error);
 }
 
-// The vector executor collected its per-chunk outputs in a member it never cleared, and each
-// call read results_.front(). execution_dag keeps ONE executor per function node and pushes
-// every chunk through it, so the second chunk was answered with the moved-from remains of the
-// first. Both results are held alive on purpose: that keeps the stale read pointing at live
-// memory, so the case fails on the wrong VALUE instead of on freed bytes.
+// Regression: the vector executor used to stash its per-chunk output in a member it never
+// cleared, so a reused executor (one per function node, driven chunk after chunk) answered the
+// second chunk with the first's moved-from remains. Both results are kept alive here so a
+// regression fails on the wrong VALUE, not on freed bytes.
 TEST_CASE("components::compute::vector::a_reused_executor_answers_the_current_chunk") {
     core::pmr::otterbrix_resource resource;
     exec_context_t ctx(&resource);

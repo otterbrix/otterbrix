@@ -26,7 +26,7 @@ namespace components::pipeline {
     // operators synchronously inside its own coroutine; an operator is NOT an actor
     // (operator_t is a boost::intrusive_ref_counter, not a basic_actor), so calling
     // back into the owning executor through this interface pointer is an intra-actor
-    // call, not cross-actor shared state (rules 10/11/13 are about ACTOR<->ACTOR).
+    // call, not cross-actor shared state; the mailbox-only rule is about ACTOR<->ACTOR.
     //
     // Rule-14 clean: an abstract virtual interface, NOT a std::function. The executor
     // implements it (services/collection/executor.hpp) and publishes itself onto

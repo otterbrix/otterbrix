@@ -60,16 +60,13 @@ namespace components::table::storage {
         [[nodiscard]] virtual core::result_wrapper_t<std::shared_ptr<block_handle_t>>
         register_small_memory(memory_tag tag, uint64_t size);
 
-        // Returns true when the reservation was made, out_of_memory when it could not be. A `void`
-        // here would make "the pool granted `size`" and "eviction freed nothing, so the reservation
-        // never happened" the SAME observation, and the caller would spend memory it had not been
-        // given — the defect class of a `void write()` one layer down. <bool> rather than <void>
-        // because result_wrapper_t forbids void. NVI: the customization point is reserve_memory_impl
-        // (private, below); the neighbours predate the idiom.
+        // Returns true when the reservation was made, out_of_memory when it could not be: a
+        // `void` here would make "granted" and "eviction freed nothing" the same observation, so
+        // the caller would spend memory it was never given. NVI: reserve_memory_impl (private,
+        // below) is the customization point.
         [[nodiscard]] core::result_wrapper_t<bool> reserve_memory(uint64_t size) { return reserve_memory_impl(size); }
-        // Stays void: it releases a reservation this manager already granted, and a decrement
-        // of a counter has nothing to fail at. Call it only after a reserve_memory that
-        // answered true — a refused reservation took nothing to give back.
+        // Stays void: releases a reservation this manager already granted, and a counter
+        // decrement has nothing to fail at. Call only after a reserve_memory that answered true.
         virtual void free_reserved_memory(uint64_t size);
         virtual std::vector<memory_info_t> get_memory_usage_info() const = 0;
         // Returns out_of_memory when eviction can't shrink to the new limit; forwards

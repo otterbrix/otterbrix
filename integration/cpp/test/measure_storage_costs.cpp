@@ -1,30 +1,18 @@
-// Storage-cost measurement harness. NOT a test: it asserts nothing and is not
-// registered with ctest. It prints numbers; judgement is the reader's.
+// Storage-cost measurement harness: not a test (asserts nothing, not registered
+// with ctest) -- prints numbers for the reader to judge. No thresholds: a harness
+// that fails a build on a wall-clock number measures the machine it runs on, not
+// the code.
 //
-// It takes four numbers:
+// Measures: (1) checkpoint cost over 100x100 rows, dirty vs. immediately-empty;
+// (2) RSS/fd footprint at 100 tables vs. baseline; (3) per-row INSERT cost at 1k
+// and 100k rows, with/without an `_id` column; (4) point SELECT via index over
+// 100k rows. Each number prints per run and is summarized min/median/max.
 //
-//   1. checkpoint  — a round over 100 tables x 100 rows, dirty, then the EMPTY
-//                    round straight after it;
-//   2. footprint   — resident set and open file descriptors at 100 tables,
-//                    against the same engine before any table exists (measured
-//                    inside the same run as (1));
-//   3. insert      — per-row cost of one 100-row INSERT into a table carrying a
-//                    column named `_id`, at 1k rows and at 100k rows, plus the
-//                    preload of 100k with and without that column name;
-//   4. index       — 1000 point SELECTs through an index over 100k rows, plus
-//                    the preload, the pre-checkpoint and the CREATE INDEX.
-//
-// Every number is printed per run and summarized as min/median/max across runs.
-// No thresholds: a harness that fails a build on a wall-clock number measures
-// the machine it happens to be on.
-//
-// Config: the untouched `test_create_config` default (log level `trace`, what
-// every integration test runs at; WAL on). Data goes under this process's fixture
-// root -- integration_fixture_path("measure_storage_costs/...") -- never the repository.
-//
-// Build: target `measure_storage_costs` (Debug, for the numbers above to mean
-// anything next to their recorded baseline).
-// Run:   ./measure_storage_costs [all|checkpoint|insert|index] [runs]
+// Uses the untouched `test_create_config` default (trace logging, WAL on);
+// writes under integration_fixture_path("measure_storage_costs/...") -- never
+// the repository. Build target `measure_storage_costs` in Debug (numbers only
+// mean something against a Debug baseline).
+// Run: ./measure_storage_costs [all|checkpoint|insert|index] [runs]
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -67,10 +55,9 @@ namespace {
         return std::chrono::duration<double, std::milli>(clock_t_::now() - t0).count();
     }
 
-    // Resident set of THIS process, MB. mach reports the live resident size;
-    // getrusage's ru_maxrss is a high-water mark, which is why it is only the
-    // fallback — the "at start" sample would otherwise be contaminated by any
-    // peak the process had already been through.
+    // Resident set of THIS process, MB. mach reports live RSS; getrusage's
+    // ru_maxrss is a high-water mark, so it's only the fallback -- the "at
+    // start" sample would otherwise be contaminated by an earlier peak.
     double rss_mb() {
 #if defined(__APPLE__)
         mach_task_basic_info info;
@@ -102,7 +89,7 @@ namespace {
         return n;
     }
 
-    // Rule 2/6: a measurement path must not swallow an error. A failed statement
+    // A measurement path must not swallow an error. A failed statement
     // makes every number after it meaningless, so it stops the harness loudly.
     void must(const components::cursor::cursor_t_ptr& cur, const std::string& what) {
         if (!cur || cur->is_error()) {

@@ -33,15 +33,12 @@ namespace components::operators {
 
     private:
         components::catalog::oid_t table_oid_;
-        // NO namespace_oid_ HERE. The column is resolved by (attrelid=table_oid_,
-        // attname) — a table oid is already unique across namespaces — so a
-        // namespace oid was stored and never read, dead state that a reader has to
-        // rule out before trusting the resolution above.
+        // No namespace_oid_: the column resolves by (attrelid=table_oid_, attname), and table_oid is already
+        // unique across namespaces, so a stored namespace oid would be dead state nobody reads.
         std::string column_name_;
         components::catalog::oid_t attoid_;
         components::catalog::drop_behavior_t behavior_;
-        // `DROP COLUMN IF EXISTS`: the one form in which a column that is not there
-        // is the accepted outcome rather than an error.
+        // DROP COLUMN IF EXISTS: the one form where a missing column is success, not an error.
         bool missing_ok_;
     };
 

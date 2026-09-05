@@ -35,9 +35,8 @@ namespace otterbrix {
     class relation_factory_t {
     public:
         relation_factory_t(const boost::intrusive_ptr<otterbrix_t>& space);
-        // A cursor is a COPY of its connection (py_connection_t::cursor) sharing the same
-        // space. It has created no scratch tables of its own and must inherit none: two
-        // objects dropping the same table would make the second drop a refusal.
+        // A cursor copy (py_connection_t::cursor) shares `space` but must not inherit
+        // scratch_tables_: two objects dropping the same table would refuse the second drop.
         relation_factory_t(const relation_factory_t& other);
         relation_factory_t& operator=(const relation_factory_t&) = delete;
         virtual ~relation_factory_t();
@@ -77,13 +76,10 @@ namespace otterbrix {
 
         boost::intrusive_ptr<otterbrix_t> space;
 
-        // Every scratch table this factory created, in creation order, so the destructor
-        // can take them back out of the database. Declared AFTER `space` so it is destroyed
-        // BEFORE it -- the drops need the engine that owns the tables.
-        //
-        // Plain std::vector, not std::pmr: the only arena in reach is the engine's own,
-        // reached through `space->dispatcher()`, and a member initialiser would make
-        // constructing a factory the first dereference of `space` on the connect road.
+        // Scratch tables created, in order; the destructor's body drops them via
+        // space->dispatcher() before any member is torn down. Plain std::vector, not pmr:
+        // the only arena in reach is space->dispatcher()'s, and a member initializer would
+        // make constructing a factory the first dereference of `space`.
         std::vector<std::string> scratch_tables_;
     };
 

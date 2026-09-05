@@ -74,9 +74,7 @@ namespace components::vector {
         , data_(nullptr)
         // A mask is only built when it will be kept: with create_data the body calls
         // validity_.reset() a few lines down, so building one here would allocate and fill a
-        // buffer that is thrown away — on every vector the query path makes. reset() still runs
-        // and still establishes the post-state (null buffer, count_ = DEFAULT_VECTOR_CAPACITY);
-        // only the allocation nobody ever reads is skipped.
+        // buffer that every vector on the query path immediately throws away.
         , validity_(type_.type() == types::logical_type::NA || create_data ? validity_mask_t{resource, nullptr}
                                                                            : validity_mask_t{resource, capacity}) {
         if (type_.type() == types::logical_type::NA) {
@@ -480,12 +478,10 @@ namespace components::vector {
                     break;
                 }
                 default:
-                    // A path step through a type that has no sub-elements is a planner bug: the
-                    // paths walked here are built from the type tree. A bare assert vanishes
-                    // under NDEBUG and the walk then STAYS on the parent vector, answering a
-                    // WRONG leaf/index as a valid element. An invariant violation must not throw
-                    // through the noexcept executor coroutine either, so it refuses identically
-                    // in both builds.
+                    // A path step through a type with no sub-elements is a planner bug (paths are
+                    // built from the type tree). A bare assert vanishes under NDEBUG and the walk
+                    // stays on the parent vector, answering a WRONG leaf as valid; it must also not
+                    // throw through the noexcept executor coroutine, so it refuses in both builds.
                     assert(false && "resolve_nested_element: path step through a non-container type");
                     std::abort();
             }
@@ -647,10 +643,9 @@ namespace components::vector {
         if (!val.is_null() && val.type() != type_) {
             // A mistyped value here IS a caller bug (validation splices the cast in before any
             // write reaches this point). A bare assert-then-return vanishes under NDEBUG and
-            // makes the write a silent no-op: the row keeps its old payload AND its old validity
-            // while the caller reports success -- a wrong type turned into data corruption. An
-            // invariant must not throw through the noexcept executor coroutine either: refuse
-            // loudly and identically in both builds.
+            // makes the write a silent no-op — old payload, old validity, caller reports success
+            // — turning a wrong type into data corruption; refuse loudly in both builds instead
+            // (must not throw through the noexcept executor coroutine).
             assert(false && "value has to be casted to vector's type before set_value");
             std::abort();
         }
@@ -993,11 +988,9 @@ namespace components::vector {
                         children.back().set_alias(vector->type_.child_name(child_idx));
                     }
                 }
-                // The cell's type is the column's DECLARED type, never a type inferred from the
-                // field values: a NULL field carries logical_type::NA (that is how logical_value_t
-                // spells "no value"), so deriving the struct type from the children would answer
-                // STRUCT<BIGINT, NA> for a declared STRUCT<BIGINT, BIGINT>. The MAP leg above
-                // already passes vector->type_ through for the same reason.
+                // The cell's type is the column's DECLARED type, never inferred from the field
+                // values: a NULL field carries logical_type::NA, so deriving the struct type from
+                // the children would answer STRUCT<BIGINT, NA> for a declared STRUCT<BIGINT, BIGINT>.
                 return types::logical_value_t::create_struct(vector->resource(),
                                                              vector->type_,
                                                              std::move(children));
@@ -1011,8 +1004,7 @@ namespace components::vector {
                 }
                 // Pass the DECLARED list type through, extension included: create_list(child)
                 // would rebuild it with a fresh default list_logical_type_extension and drop the
-                // declared field_id/required. This was the LAST leg that rebuilt the type instead
-                // of passing it through (the MAP and STRUCT legs above already do).
+                // declared field_id/required.
                 return types::logical_value_t::create_list_from_type(vector->resource(),
                                                                      vector->type_,
                                                                      std::move(children));

@@ -76,14 +76,10 @@ namespace services::wal {
                     continue;
                 }
                 auto db_dir_name = entry.path().filename().string();
-                // A DATABASE DIRECTORY IS NAMED std::to_string(oid) AND NOTHING ELSE — the
-                // worker's own constructor is the only writer of these names. std::stoul under
-                // catch (...) both used exceptions as control flow and HALF-PARSED foreign
-                // names: "9zz" answered 9, and a worker was spawned over directory "9" — a
-                // DIFFERENT path from the one the files are in, splitting the journal in two.
-                // parse_database_dir_name (base.hpp) is THE classification, shared with
-                // wal_reader_t's replay walk; everything foreign is skipped LOUDLY
-                // (nothing the engine wrote is ever skipped by this).
+                // std::stoul under catch(...) used to HALF-PARSE foreign names ("9zz" -> 9),
+                // spawning a worker over the wrong directory and splitting the journal in two.
+                // parse_database_dir_name (base.hpp) is now THE classification, shared with
+                // wal_reader_t's replay walk; foreign names are skipped LOUDLY.
                 components::catalog::oid_t db_oid;
                 if (!parse_database_dir_name(db_dir_name, db_oid)) {
                     warn(log_,
@@ -99,11 +95,9 @@ namespace services::wal {
                     if (!seg.is_regular_file()) {
                         continue;
                     }
-                    // SEGMENTS ONLY, by the same prefix wal_worker_t::discover_segments and
-                    // wal_reader_t use. The scan below trusts a verified page header, so an
-                    // unrelated file that happened to checksum-clean would poison the
-                    // allocator; the record decode this replaced could not be poisoned that
-                    // way, so the filter arrives with it.
+                    // SEGMENTS ONLY (same prefix filter as wal_worker_t::discover_segments /
+                    // wal_reader_t): the scan below trusts a verified page header, so an
+                    // unrelated checksum-clean file would otherwise poison the allocator.
                     const auto seg_name = seg.path().filename().string();
                     if (seg_name.size() < 4 || seg_name.compare(0, 4, "wal_") != 0) {
                         continue;
@@ -350,13 +344,9 @@ namespace services::wal {
 
     void manager_wal_replicate_t::unregister_active_build_sync(wal::id_t build_start_wal_position) {
         // Invariant: every unregister matches a prior register; a mismatch is an
-        // operator_create_index lifecycle bug. IT IS REPORTED, NOT EXECUTED: this path is fed
-        // by messages from ANOTHER actor, and aborting here turned a bookkeeping bug into a
-        // process death. The harm an unmatched unregister could actually do — releasing a
-        // clamp some other build still holds — is prevented structurally: exactly ONE entry
-        // is erased (never every entry at the value; the container is a multiset so paired
-        // register/unregister at the same position stay balanced), and an unmatched one
-        // erases nothing at all.
+        // Logged, not aborted: this path is fed by messages from ANOTHER actor, so aborting here
+        // turns a bookkeeping bug into a process death. The multiset erases exactly ONE entry
+        // (never every entry at the value), so an unmatched unregister erases nothing at all.
         auto it = active_build_start_positions_.find(build_start_wal_position);
         if (it == active_build_start_positions_.end()) {
             error(log_,
@@ -509,28 +499,17 @@ namespace services::wal {
             wal_bytes_since_checkpoint_.store(total - base, std::memory_order_relaxed);
         }
 
-        // Auto-checkpoint trigger. needs_auto_checkpoint() compares WAL bytes written SINCE the
-        // last checkpoint (not total WAL size) against the configured
-        // auto_checkpoint_threshold_bytes; auto_checkpoint_in_flight_ dedups, so a burst of
-        // threshold-tripping commits cannot stack concurrent checkpoints. The byte counter is reset
-        // HERE, at trigger time, so commits racing in behind this one accumulate against a fresh
-        // window toward the NEXT checkpoint instead of re-tripping the same one. The self-send is
-        // fire-and-forget because the round (index flush + storage checkpoint + WAL truncate) is
-        // heavy and must NOT extend the committer's commit_txn latency: it lands in inbox_ and the
-        // loop runs run_auto_checkpoint as an independent in-flight entry after this coroutine
-        // returns its wal_id to the caller.
+        // needs_auto_checkpoint() compares WAL bytes SINCE the last checkpoint against the
+        // threshold; auto_checkpoint_in_flight_ dedups concurrent trips. The byte counter resets
+        // HERE, at trigger time, so racing commits accumulate toward the NEXT checkpoint instead of
+        // re-tripping this one. Self-send is fire-and-forget so the heavy round (index flush +
+        // storage checkpoint + WAL truncate) does not extend the committer's commit_txn latency.
         //
-        // BYPASS (3) OF 3, DECLARED — see core/pipeline_bypass.hpp for the rule and the whole list.
-        // It starts a full checkpoint (index flush, storage compaction that RENUMBERS physical row
-        // ids, index clear-and-rebuild, WAL segment unlink) with no logical plan, no planner, no
-        // optimizer and no operator behind it. Unlike the other two it does NOT run where the
-        // pipeline is unusable: the engine is fully up, and the same work has a statement form
-        // (operator_checkpoint, which ~base_otterbrix_t reaches by building a node_checkpoint plan).
-        // So this declaration records a bypass that exists, not one judged unavoidable; settling it
-        // means either routing this trigger through a node_checkpoint plan or accepting the
-        // self-send deliberately. What it already costs: with no statement above the frame there is
-        // no error channel, so run_auto_checkpoint LOGS a refusal and ABANDONS the round where an
-        // operator would fail its statement (see (c2) there).
+        // BYPASS (3 of 3, see core/pipeline_bypass.hpp): starts a full checkpoint with no plan,
+        // planner, optimizer or operator behind it — unlike the other two, this one runs while the
+        // pipeline is perfectly usable (same work has a statement form: operator_checkpoint). Cost:
+        // with no statement above the frame there's no error channel, so run_auto_checkpoint LOGS a
+        // refusal and ABANDONS the round where an operator would fail its statement (see (c2)).
         auto trigger_auto_checkpoint =
             core::maintenance::pipeline_bypass<core::maintenance::bypass_site::wal_auto_checkpoint>([&] {
                 if (needs_auto_checkpoint() && !auto_checkpoint_in_flight_) {
@@ -637,38 +616,26 @@ namespace services::wal {
     // Triggered fire-and-forget from commit_txn when WAL growth since the last
     // checkpoint trips the threshold; auto_checkpoint_in_flight_ dedups.
     //
-    // INTERACTION WITH THE INDEX RECOVER GATE (INVARIANT). Truncation removes only segments whose
-    // records sit AT OR BELOW the checkpoint wal id — rows already durable in the storage
-    // checkpoint, never the txn-id provenance the gate reads. The bitcask index txn-log frames are a
-    // SEPARATE durability channel: consumed eagerly at commit time and gated on the WAL
-    // committed-transaction set during recovery. Truncating here cannot strand an index frame's
-    // commit decision.
-    // -----------------------------------------------------------------------
+    // Truncation removes only segments AT OR BELOW the checkpoint wal id, never the txn-id
+    // provenance the index recover gate reads: bitcask index txn-log frames are a SEPARATE
+    // durability channel, gated on the WAL committed-transaction set during recovery, so
+    // truncating here cannot strand an index frame's commit decision.
 
     // Body of declared bypass (3) — core/pipeline_bypass.hpp lists it; the declaration itself sits
     // at the only trigger in the tree, the threshold test in commit_txn above. Do NOT add a second
     // trigger: a checkpoint that no statement asked for has no error channel to fail into, and its
     // compaction renumbers physical row ids under every index of every table it touches.
     manager_wal_replicate_t::unique_future<void> manager_wal_replicate_t::run_auto_checkpoint(session_id_t session) {
-        // EVERY EXIT BELOW GOES THROUGH end_auto_checkpoint_round(), which rebases the byte
-        // window and clears the in-flight guard so a future threshold trip can launch the next
-        // round. That is not bookkeeping: three of the four exits ABANDON the round, and an
-        // abandoned round is only an acceptable answer here because the next one repeats it.
-        // A new exit that returns without it would suppress every later round forever.
-        // enabled_ is implied: the trigger only fires inside the enabled commit_txn path.
+        // EVERY EXIT BELOW GOES THROUGH end_auto_checkpoint_round(): three of the four exits
+        // ABANDON the round, and abandoning is only safe because it rebases the byte window and
+        // releases the guard so the next trip repeats it. A new exit skipping this call would
+        // suppress every later round forever.
 
-        // (a) Flush the indexes. TWO THINGS HAPPEN IN THIS ONE MESSAGE, and neither is "so a
-        //     post-recovery rebuild starts from a consistent on-disk index state" — there is no
-        //     post-recovery rebuild, that pass was removed from base_spaces as a proven no-op.
-        //       * manager_index_t::flush_all_indexes ARMS the durable "these indexes are about to be
-        //         renumbered and are not yet rebuilt" guard (manager_index_t::rebuild_marker_path_).
-        //         This handler is the first step of both compacting orchestrations and is sent from
-        //         nowhere else, so it is where "a compacting round is starting" can be written down;
-        //         a guard that could not be made durable comes back as the refusal below and ends
-        //         the round BEFORE it renumbers anything;
-        //       * the flush is the only REPORT on the health of the indexes' existing durable state,
-        //         taken before step (c2)'s rebuild clears and re-creates the stores (see
-        //         operator_checkpoint.cpp for the measurement).
+        // (a) Flush the indexes. Two things happen here: flush_all_indexes ARMS the durable
+        //     "about to be renumbered, not yet rebuilt" guard (rebuild_marker_path_) — sent from
+        //     nowhere else, so a guard that can't be made durable refuses below and ends the round
+        //     BEFORE anything is renumbered; and the flush is the only report on the indexes'
+        //     existing durable state, taken before (c2)'s rebuild clears and re-creates the stores.
         if (manager_index_ != actor_zeta::address_t::empty_address()) {
             auto [_fi, fi_fut] = actor_zeta::otterbrix::send(manager_index_,
                                                              &services::index::manager_index_t::flush_all_indexes,
@@ -723,49 +690,28 @@ namespace services::wal {
                                                          compact_watermark);
         const wal::id_t checkpoint_wal_id = co_await std::move(cp_fut);
 
-        // (c2) INDEX REBUILD, without which the round silently invalidates every index of every
-        //      table it compacts: checkpoint_all compacts every entry the MVCC gate lets it
-        //      (agent_disk_t::checkpoint_inner -> data_table_t::compact), and a compact rebuilds the
-        //      table at row id 0, handing every survivor a NEW physical id. An index entry stores
-        //      that id, so once the round commits its header every index of a compacted table is
-        //      wrong -- silently: an id that names no row group is dropped by collection_t::fetch (a
-        //      short answer), an id that now belongs to a different survivor is gathered as the
-        //      match (a wrong answer, observed as `WHERE k = <key of row A>` returning row B).
+        // (c2) INDEX REBUILD. A compact rebuilds a table at row id 0, giving every survivor a NEW
+        //      physical id; skipping this leaves every index of a compacted table silently wrong
+        //      (a stale id is dropped as a short answer, or now names a different survivor —
+        //      `WHERE k = <key of row A>` returning row B). Same driver as the CHECKPOINT
+        //      operator, which also disarms the guard step (a) armed.
         //
-        //      It calls the SAME driver as the CHECKPOINT statement operator, which is also what
-        //      DISARMS the guard step (a) armed: repopulate_table clears a table's marker only after
-        //      that table's agents have published and force_flushed. A round abandoned below leaves
-        //      the guard STANDING, so the next start declines to wire those indexes instead of
-        //      answering from stores that may name pre-compact rows.
+        //      MUST STAY AHEAD OF THE TRUNCATE AT (d): a refused rebuild has to end the round with
+        //      the journal still intact, since truncation is the round's only destructive step
+        //      (pinned by test_checkpoint_rebuild_before_truncate).
         //
-        //      IT MUST STAY AHEAD OF THE TRUNCATE AT (d): truncation is the only step of the round
-        //      that destroys anything, so a refused rebuild has to be able to end the round with the
-        //      journal still intact. Pinned by test_checkpoint_rebuild_before_truncate; the rule also
-        //      lives on the driver's own declaration so a third orchestration inherits it.
+        //      A refusal is LOGGED and ENDS the round here rather than falling through to (d):
+        //      not because truncating would destroy anything recoverable (it only removes segments
+        //      at or below the checkpoint id, and rebuild reads storage, never the WAL), but
+        //      because a refused rebuild leaves index state UNKNOWN — some indexes current, some
+        //      pre-compact, with no way to tell which — and truncation is the point of no return.
         //
-        //      The snapshot is committed_rows_snapshot(): this is not a statement and owns no
-        //      transaction, and an index holds every committed row (the TABLE decides what a reader
-        //      may see, so the index answers a superset and never filters by visibility).
-        //
-        //      A refusal is LOGGED (nothing above this frame is a statement that could carry it) and
-        //      the round ENDS HERE rather than falling through into (d). Not because truncating
-        //      would destroy anything recoverable -- it removes only segments at or below the
-        //      checkpoint id, and the rebuild reads STORAGE, never the journal (index_rebuild_driver.cpp
-        //      pulls rows through storage_fetch_next_batch and never touches the WAL) -- but because a
-        //      refused rebuild leaves the index state UNKNOWN: the driver stops at the first oid it
-        //      could not rebuild, so some indexes of this round are current and others pre-compact
-        //      and the round cannot say which. Truncation is its POINT OF NO RETURN, and a round
-        //      that failed its last recoverable step must not take an irreversible one.
-        //
-        //      Abandoning is only an answer because it REPEATS: end_auto_checkpoint_round() rebases
-        //      the byte window on the journal as it stands (un-truncated, so larger) and releases
-        //      the dedup guard, so the next threshold trip launches a fresh round; the compaction
-        //      this round committed is durable and is not redone. THE PRICE, NAMED: that answers a
-        //      TRANSIENT refusal, which is what the test injects. Under a PERSISTENT one the journal
-        //      grows by the threshold every round and NOTHING trims it — both callers of the driver
-        //      return above truncate_before and there is no third. Deliberate (an unbounded journal
-        //      is recoverable, an unknown index is not), but a real cost; the way out is DROP INDEX
-        //      on the index that cannot be rebuilt. Pinned by test_auto_checkpoint_rebuild_refusal.
+        //      Abandoning repeats safely: end_auto_checkpoint_round() rebases the byte window and
+        //      releases the dedup guard, so the next trip launches a fresh round (the already-
+        //      committed compaction is not redone). Under a PERSISTENT refusal the journal grows
+        //      unbounded with nothing to trim it — deliberate (an unbounded journal is recoverable,
+        //      an unknown index is not) but a real cost; the way out is DROP INDEX on the index
+        //      that cannot be rebuilt (pinned by test_auto_checkpoint_rebuild_refusal).
         if (manager_index_ != actor_zeta::address_t::empty_address()) {
             auto rebuild_error = co_await services::index::repopulate_indexes_after_compaction(
                 resource(),

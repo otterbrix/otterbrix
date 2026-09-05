@@ -9,17 +9,13 @@ using namespace components::catalog;
 using namespace components::types;
 
 namespace {
-    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
-    // path, and that message belongs to the caller, so the caller has to name an arena it owns
-    // rather than reach for the process-global one (rule 14).
+    // This file's one DECIMAL arena; not the process-global one.
     std::pmr::memory_resource* decimal_resource() {
         static core::pmr::otterbrix_resource arena;
         return &arena;
     }
 
-    // create_decimal reports an out-of-window (width, scale) through core::error_t now,
-    // instead of an assert that vanished under NDEBUG. Every literal these tests use is
-    // inside the window, so the helper checks the result and hands back the type.
+    // Every width/scale used in this file is in-window, so the check below never fires.
     components::types::complex_logical_type
     make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
         auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
@@ -29,12 +25,9 @@ namespace {
 } // namespace
 
 namespace {
-    // The same arena the DECIMAL helper above names, for the same reason (rule 14): this file
-    // has one answer to "where does this live", not two.
     auto* g_resource = decimal_resource();
 
-    // decode_type_spec answers through core::result_wrapper_t now; every spec in this
-    // file is well-formed, so the helper unwraps and lets a refusal fail the test.
+    // Every spec in this file is well-formed; unwraps and lets a refusal fail the test.
     components::types::complex_logical_type decode_ok(std::string_view spec) {
         auto decoded = decode_type_spec(g_resource, spec);
         REQUIRE_FALSE(decoded.has_error());
@@ -235,9 +228,8 @@ TEST_CASE("catalog::type_spec::nested_list_of_struct") {
 }
 
 TEST_CASE("catalog::type_spec::decimal_with_old_name_compat") {
-    // The decoder reads both spellings of the decimal head: "numeric" (what the
-    // encoder writes) and "DECIMAL". This pins the second so no writer rename can
-    // silently orphan a spec that spells it this way.
+    // The decoder reads both "numeric" (what the encoder writes) and "DECIMAL"; pins the
+    // second so a writer rename can't silently orphan specs spelled this way.
     auto t = decode_ok("DECIMAL(18,6)");
     REQUIRE(t.type() == logical_type::DECIMAL);
     const auto* ext = static_cast<const decimal_logical_type_extension*>(t.extension());

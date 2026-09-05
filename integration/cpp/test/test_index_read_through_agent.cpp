@@ -1,33 +1,6 @@
-// ============================================================================
-// WHAT A HASHED INDEX LOOKUP IS ALLOWED TO ANSWER.
-//
-// A hashed index is backed by bitcask, which stores one SNAPSHOT RECORD per key holding
-// the whole row-id list. Its in-memory keydir keeps a single entry per key pointing at
-// that record, and the entry's payload field carries only `rows.back()`
-// (bitcask_index_disk.cpp, append_snapshot). So there are two ways to answer "which rows
-// carry this key", and they do not agree:
-//
-//   * through the KEYDIR (disk_hash_table_t::get_all) -- one value_ref per key, whose
-//     `.value` is the LAST row id written; every earlier duplicate is lost. Nothing above
-//     the bitcask store can even ask it that way: no handle to the keydir is published
-//     outside the agent that owns it.
-//   * through the RECORD (bitcask_index_disk_t::find) -- the payload is read back and
-//     unrolled, so all duplicates come out.
-//
-// Only the second is the truth, and a SELECT that loses duplicates is a WRONG answer that
-// no row-count assertion elsewhere notices, because every OTHER path (full scan, btree
-// index) reads its rows from somewhere else entirely.
-//
-// The second case is the other half and is not about duplicates: uncommitted index entries
-// never reach the disk (owner decision 16, per-txn buckets), so a lookup that reads ONLY
-// the disk answers "no such row" to the very transaction that just inserted it. The
-// rows-from-disk half and the own-uncommitted half must BOTH be in the answer, and the
-// second must be scoped to the ASKING transaction — another transaction's uncommitted
-// insert must stay invisible.
-//
-// Both cases go through the SQL front door on purpose: they pin the behaviour a user can
-// observe, not the shape of whatever component currently produces it.
-// ============================================================================
+// A hashed index's keydir keeps only the LAST row id per key (disk_hash_table_t::get_all);
+// only bitcask_index_disk_t::find replays the full row list from the snapshot record. A read
+// through the keydir alone silently drops every earlier duplicate.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -53,9 +26,8 @@ namespace {
         return out;
     }
 
-    // Every value of column 0, as int64. The tests below assert on the SET of ids
-    // returned, not only on their count: a lookup that answers with the right
-    // NUMBER of wrong rows is the failure mode a size() check cannot see.
+    // Column 0 as a sorted set, not a count: a lookup returning the right NUMBER of
+    // wrong rows must still fail.
     std::vector<int64_t> ids_of(const cursor_t_ptr& cur) {
         std::vector<int64_t> out;
         out.reserve(cur->size());
@@ -71,18 +43,15 @@ namespace {
 // A hashed index over a column with REPEATED values. `WHERE k = <repeated>` must
 // return every row carrying that key.
 //
-// EXPLAIN is asserted first, and it is load-bearing rather than decoration: if the
-// planner ever stopped choosing the index for this predicate the statement would go
-// back to a full scan, return all the right rows, and the test would pass while
-// testing nothing at all.
+// EXPLAIN is asserted first: without it, a planner regression to full scan would pass
+// this test while testing nothing.
 TEST_CASE("integration::cpp::index_read_through_agent::hash_lookup_returns_every_duplicate") {
     auto config = test_create_config(integration_fixture_path("test_index_read_through_agent/duplicates"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
-    // Scoped: the restart round below needs this instance torn down first (one
-    // otterbrix instance per directory).
+    // Scoped: the restart round below needs this instance torn down first.
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
@@ -95,8 +64,7 @@ TEST_CASE("integration::cpp::index_read_through_agent::hash_lookup_returns_every
         REQUIRE(exec("CREATE TABLE dupdb.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX t_k ON dupdb.t USING hash (k);")->is_success());
 
-        // k = 7 three times, k = 9 once, k = 8 twice. The singleton is the control: a
-        // reader that keeps only the last row id per key answers it CORRECTLY, so it
+        // k = 9 is a singleton: a last-row-only reader would still get it right, so it
         // separates "the lookup is broken" from "the index is empty".
         REQUIRE(
             exec("INSERT INTO dupdb.t (id, k) VALUES (1, 7), (2, 8), (3, 7), (4, 9), (5, 8), (6, 7);")->is_success());
@@ -128,10 +96,8 @@ TEST_CASE("integration::cpp::index_read_through_agent::hash_lookup_returns_every
             CHECK(ids_of(cur) == std::vector<int64_t>{4});
         }
 
-        // A committed DELETE of ONE of the duplicates must take exactly that row out and
-        // leave its twins. This is the same snapshot record rewritten with a shorter row
-        // list, so it also proves the read is following the record and not a cached
-        // single id.
+        // A committed DELETE of ONE duplicate rewrites the snapshot record with a shorter
+        // row list, proving the read follows the record and not a cached single id.
         REQUIRE(exec("DELETE FROM dupdb.t WHERE id = 3;")->is_success());
         {
             auto cur = exec("SELECT id FROM dupdb.t WHERE k = 7;");
@@ -139,10 +105,8 @@ TEST_CASE("integration::cpp::index_read_through_agent::hash_lookup_returns_every
             CHECK(ids_of(cur) == std::vector<int64_t>{1, 6});
         }
 
-        // CHECKPOINT rebuilds every index from a full table scan, and that feed replays
-        // repeated keys. A rebuild that writes ONE row per key reduces the index to the
-        // last row of each -- no crash, no restart needed, and only a lookup that reads
-        // the whole row list can see it happen.
+        // CHECKPOINT rebuilds the index from a full table scan; a rebuild that keeps only
+        // one row per key would show up here without any crash or restart needed.
         REQUIRE(exec("CHECKPOINT;")->is_success());
         {
             auto cur = exec("SELECT id FROM dupdb.t WHERE k = 7;");
@@ -157,9 +121,7 @@ TEST_CASE("integration::cpp::index_read_through_agent::hash_lookup_returns_every
         }
     }
 
-    // The duplicates must survive a restart: the index is rebuilt at every start,
-    // and a rebuild that re-registers only one row per key would be the same loss
-    // arriving by another road.
+    // Duplicates must survive a restart too, since the index is rebuilt at every start.
     {
         test_spaces restarted(config);
         auto* rd = restarted.dispatcher();
@@ -175,14 +137,9 @@ TEST_CASE("integration::cpp::index_read_through_agent::hash_lookup_returns_every
 }
 
 // A transaction's own uncommitted insert must be visible to ITSELF through the
-// index, and to nobody else.
-//
-// Uncommitted index entries are deliberately never written to disk, so they live
-// only in the index's per-transaction bucket. Any read path that answers from the
-// disk alone loses them; any read path that folds in EVERY transaction's bucket
-// leaks them. Both failures are silent, and neither is visible to a test written
-// over committed data only -- which is precisely why this case exists next to the
-// duplicates one above.
+// index, and to nobody else. Uncommitted entries live only in the index's
+// per-transaction bucket: a disk-only read misses them, a read that folds in
+// every transaction's bucket leaks them to others.
 TEST_CASE("integration::cpp::index_read_through_agent::own_uncommitted_insert_is_visible_only_to_its_txn") {
     auto config = test_create_config(integration_fixture_path("test_index_read_through_agent/visibility"));
     test_clear_directory(config);

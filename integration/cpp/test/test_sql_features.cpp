@@ -3264,14 +3264,12 @@ TEST_CASE("integration::cpp::test_sql_features::fk_set_null_rollback_restores_fk
 
 // A FOREIGN KEY whose two sides share a PHYSICAL type but not a LOGICAL one — child.d
 // DATE (physical INT32, days) referencing parent.id INTEGER (physical INT32) — must be
-// ANSWERED, not aborted. The verify runs fk_hash_semijoin (services/disk/agent_disk.cpp),
-// whose key normalization took the bulk copy leg on PHYSICAL equality alone, while the
-// callee's precondition — vector_ops::copy, components/vector/vector_operations.cpp:1005
-// `assert(source.type() == target.type())` — is LOGICAL equality. The two disagreed
-// exactly on this pair, and the disagreement was build-dependent: a Debug build killed
-// the process on a plain INSERT, an NDEBUG build dropped the assert and raw-copied the
-// day count. No FK type-compatibility check exists at DDL time, so the pair is reachable
-// from ordinary SQL.
+// ANSWERED, not aborted. fk_hash_semijoin (services/disk/agent_disk.cpp) normalized keys on
+// PHYSICAL equality alone, while its callee's precondition (vector_ops::copy,
+// components/vector/vector_operations.cpp: `assert(source.type() == target.type())`) is
+// LOGICAL equality: a Debug build aborted on a plain INSERT, NDEBUG dropped the assert and
+// raw-copied the day count. No FK type-compatibility check exists at DDL time, so the pair is
+// reachable from ordinary SQL.
 //
 // What is pinned here is the OUTCOME BEING DEFINITE, not a particular match rule:
 // parent holds id = 1 only, so the key can only miss, whichever way it normalizes.
@@ -3824,33 +3822,14 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_re_add_after_drop
     }
 }
 
-// Edge case: DROP a column then re-INSERT it on a relkind='g' table while a
-// *different* column stays alive. dynamic_schema_re_add_after_drop covers the
-// all-columns-dropped variant; this case keeps column 'a' across the cycle to
-// verify per-column isolation:
-//
-//   CREATE TABLE foo();
-//   INSERT (a=1, b='x')        -- registers a (BIGINT) + b (STRING)
-//   ALTER TABLE foo DROP COLUMN b
-//   SELECT * FROM foo          -- 1 row, columns {a} only (b hidden)
-//   INSERT (b='y')             -- attempts to re-register b
-//   SELECT * FROM foo          -- 2 rows; column set depends on the
-//                                 operator_computed_field_register_t short-circuit
-//
-// The pinned subtlety (operator_computed_field_register.cpp /
-// operator_computed_field_unregister.cpp): unregister appends a tombstone
-// (refcount=0) REUSING the live attoid and atttypid with attversion = max+1, while
-// register reads ALL pg_computed_column rows for (relid, attname) — NO refcount
-// filter when computing max_version / latest_atttypid — and short-circuits to a
-// no-op when latest_atttypid == new_atttypid (`same_type`). So re-INSERTing the same
-// name with the SAME type does NOT bump the version, does NOT clear the tombstone,
-// and the resolver (which gates on refcount>0) keeps the column hidden. A DIFFERENT
-// type takes the type-evolution path — fresh attoid, bumped attversion, column
-// visible again (dynamic_schema_type_evolution_multistep).
-//
-// Storage side: storage_append for relkind='g' auto-extends the in-memory schema, so
-// once 'b' exists in storage both row 1's 'x' and row 2's 'y' persist on disk
-// regardless of catalog visibility.
+// DROP + re-INSERT on a relkind='g' table, keeping a *different* column ('a') alive
+// throughout (dynamic_schema_re_add_after_drop covers the all-dropped variant). Re-INSERTing
+// 'b' with the SAME type it had before the DROP is a register no-op: unregister leaves a
+// tombstone (refcount=0) on the live attoid/atttypid at attversion = max+1, and register's
+// same_type short-circuit (operator_computed_field_register.cpp) does not bump the version
+// or clear the tombstone when latest_atttypid matches -- so the resolver (refcount>0) keeps
+// 'b' hidden even though storage_append already persisted its new value. A DIFFERENT type
+// takes the version-bump path instead (dynamic_schema_type_evolution_multistep).
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_then_readd_preserves_old_data") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_drop_then_readd"));
     test_clear_directory(config);
@@ -4744,10 +4723,9 @@ TEST_CASE("integration::cpp::test_sql_features::comma_join") {
 
 // CREATE VIEW e2e — verifies SELECT * FROM v expands through the pipeline.
 // Pass 1 stamps view_sql on the resolve_table metadata (from pg_rewrite.ev_action),
-// then the executor re-parses + transforms the body and SPLICES it under the
-// reference node (components/planner/view_expansion.hpp). Composition on top of a
-// view — outer WHERE / narrowed projection / aggregate / join — is covered by
-// test_view_expansion.cpp; this case stays the plain `SELECT * FROM v` smoke test.
+// then the executor re-parses + transforms the body and splices it under the reference
+// node (view_expansion.hpp). Composition on a view (WHERE / projection / aggregate / join)
+// is covered by test_view_expansion.cpp; this stays the plain `SELECT * FROM v` smoke test.
 TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/create_view_e2e"));
     test_clear_directory(config);
@@ -4778,17 +4756,14 @@ TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
 // CREATE MATERIALIZED VIEW e2e — verifies the matview is a real physical
 // table (relkind='m') with pg_class+pg_attribute+pg_rewrite rows, created
 // through the pipeline-canonical path (logical_plan → planner → composite
-// operator_create_matview_t → executor → disk). After CREATE, the matview
-// exists as an empty table; `SELECT * FROM mv` returns 0 rows without view
-// expansion (relkind='m' falls through to the regular scan pipeline via
-// operator_resolve_table else-branch).
+// operator_create_matview_t → executor → disk). After CREATE it's an empty table:
+// `SELECT * FROM mv` returns 0 rows without view expansion (relkind='m' takes the
+// regular scan pipeline, operator_resolve_table else-branch).
 //
-// WITH NO DATA is now WRITTEN OUT. It was implicit here, and the comment claimed
-// PostgreSQL defaults to it — PostgreSQL defaults to WITH DATA. Nothing populates
-// a matview at CREATE time and REFRESH is not lowered, so the implicit form is
-// now refused instead of quietly producing an empty matview (see
-// test_view_expansion::matview_without_no_data_is_refused). The assertions below
-// are unchanged: this case is about the physical table and its catalog rows.
+// WITH NO DATA is now required: PostgreSQL actually defaults to WITH DATA, and nothing
+// populates a matview at CREATE time (REFRESH is not lowered), so the implicit form is
+// refused instead of silently producing an empty matview
+// (test_view_expansion::matview_without_no_data_is_refused).
 TEST_CASE("integration::cpp::test_sql_features::create_matview_e2e") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/create_matview_e2e"));
     test_clear_directory(config);
@@ -4873,15 +4848,11 @@ TEST_CASE("integration::cpp::test_sql_features::create_table_if_not_exists") {
         REQUIRE(cur->is_success());
     }
 
-    // Without IF NOT EXISTS the same statement is refused, and refused BEFORE anything
-    // executes: the create_collection_t arm of the executor's pre-execute pass reads the
-    // resolved dispatcher_idx and answers table_already_exists / "collection already exists"
-    // (services/collection/executor.cpp, the check_collection_exists branch). The idx that
-    // pass reads DOES carry the target relation — target_names_of returns (dbname, relname)
-    // for create_collection_t — which is the input starvation commit 2e69bb4e repaired. The
-    // refusal itself, and that it leaves the first table's shape alone, is pinned in
-    // integration/cpp/test/test_create_table_duplicate.cpp; asserted here too so this note
-    // cannot drift back into describing a storage-layer refusal that does not happen.
+    // Without IF NOT EXISTS, refused BEFORE anything executes: create_collection_t's
+    // pre-execute check reads the resolved dispatcher_idx, which DOES carry the target
+    // relation (target_names_of, since commit 2e69bb4e) and answers table_already_exists.
+    // Pinned fully in test_create_table_duplicate.cpp; asserted here too so this note can't
+    // drift back into describing a storage-layer refusal that never happens.
     INFO("third CREATE TABLE, this time without IF NOT EXISTS, is refused");
     {
         auto session = otterbrix::session_id_t();

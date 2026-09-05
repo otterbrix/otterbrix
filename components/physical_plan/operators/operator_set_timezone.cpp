@@ -31,12 +31,9 @@ namespace components::operators {
             }
         }
 
-        // The pg_settings row is what makes the setting outlive the process; with
-        // no disk actor to write it, SET TIME ZONE has validated a name and
-        // persisted nothing, which a silent mark_executed() would report as done.
-        // No production topology wires an executor without the disk actor
-        // (base_spaces spawns it unconditionally), so the refusal costs nothing
-        // where it cannot fire — same convention as the cast operators.
+        // No disk actor means the pg_settings row can't be written, so mark_executed() here would
+        // silently report success for a setting that won't survive the process. Costs nothing in
+        // practice — no production topology omits the disk actor (base_spaces spawns it unconditionally).
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             set_error(core::error_t{
                 core::error_code_t::physical_plan_error,
@@ -49,9 +46,8 @@ namespace components::operators {
 
         const auto* settings_def =
             components::catalog::find_system_table(components::catalog::well_known_oid::pg_settings_table);
-        // pg_settings is a well-known compiled-in table; a registry that cannot
-        // name it is not a topology, and "succeed without writing" is the same
-        // silent lie the empty-address branch above refuses to tell.
+        // pg_settings is a well-known compiled-in table; a registry that can't name it is the
+        // same silent-success lie the empty-address branch above refuses to tell.
         if (settings_def == nullptr) {
             set_error(core::error_t{
                 core::error_code_t::physical_plan_error,
@@ -77,12 +73,9 @@ namespace components::operators {
                                                     exec_ctx,
                                                     components::catalog::well_known_oid::pg_settings_table,
                                                     std::move(row));
-        // Record the append range so the executor's commit tail publishes (and,
-        // on error, reverts) this pg_settings row through the unified DML path.
-        // append_pg_catalog_row returns count==0 for the direct-write (transaction_id
-        // == 0) case, mirroring operator_insert's catalog-branch recording guard, and an
-        // ERROR when the row could not be written at all — which SET TIME ZONE must not
-        // report as a successful setting change.
+        // append_pg_catalog_row returns count==0 for the direct-write (txn_id==0) case (mirrors
+        // operator_insert's guard) and an ERROR when the row truly failed to write — which must
+        // not be reported as a successful setting change.
         auto rng_r = co_await std::move(uf);
         if (rng_r.has_error()) {
             set_error(rng_r.error());

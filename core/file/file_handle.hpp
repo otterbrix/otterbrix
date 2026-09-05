@@ -23,26 +23,13 @@ namespace core::filesystem {
 
     class local_file_system_t;
 
-    // THE ANSWER OF A SEQUENTIAL WRITE, which an int64_t could not give.
-    //
-    // Packing a byte count and an error code into one integer loses the only fact a caller can
-    // act on: a write that short-counts and THEN refuses has already put bytes on the device and
-    // already moved the descriptor over them. The count accumulated across the loop's iterations
-    // is then thrown away in favour of the failing iteration's own return -- -1, from the POSIX
-    // write(2) loop, which since the Windows arm was removed from local_file_system.cpp is the
-    // only loop there is. So "nothing was written" and "12 of the 25 bytes were written" arrive
-    // as the same answer, and a caller that cannot tell them apart can neither truncate the
-    // stump nor rewind to it.
-    //
-    // Both fields are needed, and neither derives from the other:
-    //   - bytes_written is how much REACHED the file and therefore how far the descriptor moved.
-    //     It is meaningful on refusal, which is the whole point;
-    //   - complete says whether the request finished. It cannot be recomputed as
-    //     `bytes_written == requested` at every call site, because a zero-byte request makes the
-    //     full success and the outright refusal both `bytes_written == 0`.
-    //
-    // core::result_wrapper_t is deliberately NOT the vehicle: it holds a value OR an error
-    // (value() asserts !has_error()), so it cannot express "this much landed AND it failed".
+    // An int64_t return can't answer a sequential write: a write that short-counts and THEN
+    // refuses has already moved the descriptor over the bytes it did write, and packing count
+    // and error into one integer throws that count away in favour of the failing iteration's own
+    // -1. Both fields are needed and neither derives from the other -- complete can't be
+    // recomputed as `bytes_written == requested` since a zero-byte request makes both full
+    // success and outright refusal `bytes_written == 0`. Not core::result_wrapper_t either: it
+    // holds a value OR an error, so it can't express "this much landed AND it failed".
     struct [[nodiscard]] write_result_t {
         uint64_t bytes_written{0};
         bool complete{false};
@@ -82,14 +69,11 @@ namespace core::filesystem {
         virtual write_result_t write(void* buffer, uint64_t nr_bytes);
         virtual bool read(void* buffer, uint64_t nr_bytes, uint64_t location);
         virtual bool write(void* buffer, uint64_t nr_bytes, uint64_t location);
-        // SEEK AND ITS QUERY ARE VIRTUAL FOR THE SAME REASON THE READS AND WRITES ARE.
-        // They were left non-virtual because the two consumers of the interposer at the time
-        // (the .otbx block manager and the WAL) address their files POSITIONALLY and never
-        // move the descriptor. The bitcask index APPENDS: it seeks to the end when it opens
-        // a segment and asks the position back for every record it writes. On a wrapper that
-        // could not override them, both calls ran the free function against the WRAPPER --
-        // whose fd is the garbage the comment above warns about -- so records went to the
-        // wrong offset and the keydir recorded that offset as fact.
+        // Seek and its query are virtual for the same reason reads/writes are: the .otbx block
+        // manager and the WAL address files positionally and never move the descriptor, but the
+        // bitcask index APPENDS (seeks to the end, asks the position back per record). A wrapper
+        // that couldn't override them ran the free function against the WRAPPER's garbage fd, so
+        // records went to the wrong offset and the keydir recorded that as fact.
         virtual bool seek(uint64_t location);
         void reset();
         virtual uint64_t seek_position();
@@ -103,38 +87,26 @@ namespace core::filesystem {
         virtual uint64_t file_size();
         file_type_t type();
 
-        // THE CLOSE THAT CAN BE REPORTED. It used to be `virtual void close() = 0;`, and that
-        // `void` was the whole defect: ::close(2) can fail, and on a write-back filesystem it is
-        // where a deferred write error (EIO) is finally reported, so a refused close is a lost
-        // write and not a cosmetic detail. A void return could only lose it.
+        // Used to be `virtual void close() = 0;`: ::close(2) can fail, and on a write-back
+        // filesystem that's where a deferred write error (EIO) is finally reported, so a refused
+        // close is a lost write, not a cosmetic detail. The five delegating test wrappers
+        // (core/b_plus_tree/tests/test_b_plus_tree.cpp, components/table/test/
+        // fault_injection_file.hpp, services/wal/tests/test_wal_truncate_header_race.cpp,
+        // integration/cpp/test/test_udf_refusal_registry_state.cpp,
+        // integration/cpp/test/test_catalog_read_refusal.cpp) now read
+        // `core::error_t close() override { return inner_->close(); }`, so a refusal travels out
+        // through them -- a separate parallel `close_status()` would let a wrapper's own slot
+        // answer "no error" while the wrapped handle held the refusal.
         //
-        // The five delegating test wrappers -- core/b_plus_tree/tests/test_b_plus_tree.cpp,
-        // components/table/test/fault_injection_file.hpp,
-        // services/wal/tests/test_wal_truncate_header_race.cpp,
-        // integration/cpp/test/test_udf_refusal_registry_state.cpp and
-        // integration/cpp/test/test_catalog_read_refusal.cpp -- now read
-        // `core::error_t close() override { return inner_->close(); }`, so a refusal raised by the
-        // wrapped handle travels OUT through them. That is why the channel is this return value
-        // and not a second, parallel `close_status()` beside a void close(): the wrappers
-        // DELEGATE, so a separate slot of their own would answer "no error" while the wrapped
-        // handle held the refusal -- a new liar in place of an honest gap.
+        // `what` is EMPTY: core::error_t's message is a std::pmr::string needing an arena, this
+        // layer has none, and binding it to the handle's own arena would hand back a string that
+        // dies with the handle. So the refusal is `io_error` with an empty message (built on
+        // std::pmr::null_memory_resource()), and path/errno are printed to stderr instead.
         //
-        // WHAT `what` CARRIES, AND WHY IT IS EMPTY. core::error_t's message is a std::pmr::string
-        // and therefore needs an arena; this layer has none (file_handle_t holds a filesystem
-        // reference and a path, nothing more), rule 14 leaves no process-global to borrow, and
-        // binding the message to an arena the handle owns would hand the caller a string that
-        // dies with the handle. So the refusal is returned as `io_error` with an EMPTY message,
-        // built on std::pmr::null_memory_resource() -- allocation-free by construction, the same
-        // move error_t::no_error() already makes -- and the variable half (path and errno) is
-        // printed to stderr by the implementation that knows it. The value says THAT it failed,
-        // the stderr line says WHICH file and WHY; neither is silent (rule 6).
-        //
-        // THE DESTRUCTOR IS THE ONE CALLER THAT CANNOT ACT ON IT, and that is not a rule-6
-        // violation. See ~unix_file_handle_t in local_file_system.cpp: rule 6 asks a refusal to be
-        // LOUD, not FATAL, and the only upward channel a destructor has is a throw, which crosses
-        // a destructor into std::terminate -- trading a report about one lost write for the loss
-        // of every other handle still to be flushed. It therefore prints and drops, deliberately
-        // and by name.
+        // The destructor is the one caller that can't act on it -- not a rule-6 violation: the
+        // only upward channel a destructor has is a throw into std::terminate, trading one lost
+        // write's report for the loss of every other handle still to be flushed. It prints and
+        // drops instead (see ~unix_file_handle_t in local_file_system.cpp).
         virtual core::error_t close() = 0;
 
         path_t path() const { return path_; }

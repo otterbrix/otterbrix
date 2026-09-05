@@ -160,20 +160,9 @@ namespace components::table {
         filter = table_filter_tree;
     }
 
-    // AN EMPTY LIST IS A LEGAL SCAN, not a caller that forgot to initialize.
-    //
-    // It means "count the visible rows, read no column", and the scan loops below already do
-    // exactly that: every per-column loop runs zero times, and the row-id / cardinality
-    // bookkeeping at the end of templated_scan is column-independent. One caller reaches it
-    // today — a projection that names ONLY columns pg_attribute has and the storage has not
-    // materialized yet (ALTER TABLE ADD COLUMN writes the catalog and stops; the physical
-    // column appears on the first INSERT that carries it). Those columns are answered with
-    // NULLs by table_storage_adapter_t, which needs from here nothing but the row count.
-    //
-    // So NOT `assert(!column_ids_.empty())`: that assert sits on a READ path a plain
-    // `SELECT <added column>` reaches, aborting the host process on Debug and vanishing under
-    // NDEBUG. An abort on the read path is not loudness, it is unrecoverability — the database
-    // cannot be opened past the statement.
+    // An empty list is a legal scan ("count visible rows, read no column"): SELECT of a column
+    // ALTER TABLE ADD COLUMN cataloged but no INSERT has materialized yet reaches it, answered
+    // with NULLs by table_storage_adapter_t. No assert here -- it would abort that read path.
     const std::vector<storage_index_t>& table_scan_state::column_ids() { return column_ids_; }
 
     bool collection_scan_state::scan_committed(vector::data_chunk_t& result, table_scan_type type) {

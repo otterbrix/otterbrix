@@ -16,13 +16,9 @@ namespace components::table {
         assert(type_.to_physical_type() == types::physical_type::STRUCT);
         auto& child_types = type_.child_types();
         assert(!child_types.empty());
-        // The "a table cannot be created from an unnamed struct" precondition is NOT checked
-        // here: a constructor has no return value, the object graph is half built, and a throw
-        // would unwind across the disk agent's mailbox into a coroutine with an empty
-        // unhandled_exception() — a hang, not a refusal (rules 2/9). It lives in
-        // column_data_t::validate_column_type, asked BEFORE any node is built at the one write
-        // gate that already owns an error channel (collection_t::initialize_append). Same rule,
-        // same UNION exemption, one canonical statement of it.
+        // Not checked here: a throw in a constructor would unwind into the disk agent's
+        // coroutine with no unhandled_exception(). Checked instead in
+        // column_data_t::validate_column_type, before any node is built.
         uint64_t sub_column_index = 1;
         for (auto& child_type : child_types) {
             sub_columns.push_back(
@@ -75,9 +71,8 @@ namespace components::table {
                                         column_scan_state& state,
                                         vector::vector_t& result,
                                         uint64_t target_count) {
-        // Validity and every field write at the parent's result base. Without the sync a scan
-        // spanning multiple vectors into one growing chunk folded all NULL bits to offset 0
-        // (see standard_column_data_t::scan).
+        // Children write at the parent's result base; without this a multi-vector scan folded
+        // all NULL bits to offset 0 (see standard_column_data_t::scan).
         state.child_states[0].result_offset = state.result_offset;
         auto scan_count = validity.scan(vector_index, state.child_states[0], result, target_count);
         auto& child_entries = result.entries();
@@ -156,7 +151,7 @@ namespace components::table {
         column_append_state validity_append;
         auto v = validity.initialize_append(validity_append);
         if (v.has_error()) {
-            return v; // out_of_memory (rules 2/9)
+            return v; // out_of_memory: no exceptions across actors
         }
         state.child_appends.push_back(std::move(validity_append));
 
@@ -181,7 +176,7 @@ namespace components::table {
 
         auto v = validity.append(state.child_appends[0], vector, count);
         if (v.has_error()) {
-            return v; // out_of_memory (rules 2/9)
+            return v; // out_of_memory: no exceptions across actors
         }
 
         auto& child_entries = vector.entries();
@@ -196,9 +191,8 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> struct_column_data_t::revert_append(int64_t start_row) {
-        // start_row is COLLECTION-ABSOLUTE (see column_data_t::revert_append). Struct
-        // children are row-aligned with the parent and share its start_, so — unlike the
-        // LIST/ARRAY element-space children — the absolute row passes through unchanged.
+        // start_row is COLLECTION-ABSOLUTE (see column_data_t::revert_append); struct children
+        // are row-aligned with the parent, so it passes through unchanged (unlike LIST/ARRAY).
         auto v = validity.revert_append(start_row);
         if (v.has_error()) {
             return v;
@@ -251,15 +245,9 @@ namespace components::table {
                                                                      uint64_t update_count,
                                                                      uint64_t depth) {
         if (depth >= column_path.size()) {
-            // The path ran out ON a struct node, i.e. the caller asked to overwrite a whole
-            // struct cell through the sub-column update path. There is nothing to write here: a
-            // struct node owns no segments, every byte lives in a field. The path is supplied by
-            // whoever called row_group_t::update_column, so this is a caller error and it belongs
-            // on the result_wrapper_t<bool> this function already returns — the throw would have
-            // crossed the disk agent's mailbox and unwound into a coroutine with an empty
-            // unhandled_exception(), hanging the statement instead of failing it (rules 2/9).
-            // (row_group_t::update_column has no caller today: collection_t::update_column hands
-            // its path to row_group_t::UPDATE instead. Reported, not patched here.)
+            // Nothing to write: a struct cell's bytes all live in fields. Returned as an error,
+            // not thrown: throwing here would hang the coroutine instead of failing
+            // it. row_group_t::update_column, the only caller, is itself uncalled today.
             return core::error_t(
                 core::error_code_t::invalid_parameter,
                 std::pmr::string("struct column update: the column path ends on the struct itself; name a field",
@@ -290,23 +278,19 @@ namespace components::table {
                                          vector::vector_t& result,
                                          uint64_t result_idx) {
         auto& child_entries = result.entries();
-        // state.child(i), NOT a default-constructed column_fetch_state per child. A struct node
-        // owns no segments: every byte of this cell is read on a CHILD's state, so the child is
-        // the one that must know result_outlives_pins (or a big string in a field goes into the
-        // caller's chunk as a view into a pin that dies with `state`) and the child is the one
-        // whose fetch_error nobody above was reading.
+        // Must be state.child(i), not a fresh column_fetch_state: the child needs
+        // result_outlives_pins (else a string field views a pin that dies with `state`) and its
+        // fetch_error must reach the caller.
         auto& validity_state = state.child(0);
         validity.fetch_row(validity_state, row_id, result, result_idx);
         if (state.absorb_error(validity_state)) {
-            // First error aborts, as in row_group_t's gather: the remaining fields would only
-            // add cells nobody may trust to a chunk the caller must discard anyway.
+            // First error aborts: remaining fields would add cells the caller must discard anyway.
             return;
         }
         for (uint64_t i = 0; i < child_entries.size(); i++) {
             auto& field_state = state.child(i + 1);
             sub_columns[i]->fetch_row(field_state, row_id, *child_entries[i], result_idx);
-            // The field absorbed its OWN children before returning, so this one check answers
-            // for every level below it -- a string two structs down included.
+            // The field already absorbed its own children's errors, so this covers every level below it.
             if (state.absorb_error(field_state)) {
                 return;
             }
@@ -327,17 +311,17 @@ namespace components::table {
     core::result_wrapper_t<bool>
     struct_column_data_t::checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
                                               persistent_column_data_t& persistent) {
-        // v1 convention: child_columns[0] is the struct's own validity bitmap (the whole-cell
-        // NULLs), then one child per field — the same order initialize_column consumes.
+        // v1 layout: child_columns[0] is the validity bitmap, then one child per field, in the
+        // order initialize_column expects.
         auto valid = validity.checkpoint(partial_block_manager);
         if (valid.has_error()) {
-            return valid.convert_error<bool>(); // out_of_memory
+            return valid.convert_error<bool>();
         }
         persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(std::move(valid.value())));
         for (auto& sub_column : sub_columns) {
             auto child = sub_column->checkpoint(partial_block_manager);
             if (child.has_error()) {
-                return child.convert_error<bool>(); // out_of_memory
+                return child.convert_error<bool>();
             }
             persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(std::move(child.value())));
         }
@@ -346,10 +330,8 @@ namespace components::table {
 
     core::result_wrapper_t<bool>
     struct_column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
-        // A struct node owns no segments of its own: its row count comes from the persisted
-        // count, its validity is the persisted child_columns[0] bitmap (whole-cell NULLs),
-        // and every field lives in a persisted sub-column after it. A record with the wrong
-        // child count is data_corruption — the shapes are fixed by the checkpoint writer.
+        // A struct node has no segments of its own: row count and validity come from the
+        // persisted record. Wrong child count is data_corruption (shape is fixed by checkpoint_children).
         count_ = persistent_data.count;
         if (persistent_data.child_columns.size() != sub_columns.size() + 1) {
             return core::error_t(
@@ -376,11 +358,8 @@ namespace components::table {
     }
 
     void struct_column_data_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const {
-        // The base walk of the own data_ tree finds nothing (a struct node keeps no segments,
-        // see initialize_column above); it is kept so every node reports through one path.
-        // What a reloaded struct column actually owns is its children: the validity bitmap and
-        // one sub-column per field, each sitting on the blocks initialize_column registered.
-        // Without this override compact leaks all of them.
+        // The base walk finds nothing (a struct node keeps no segments); real ownership is the
+        // validity bitmap and the sub-columns. Without this override, compact leaks their blocks.
         column_data_t::collect_disk_block_ids(out);
         validity.collect_disk_block_ids(out);
         for (const auto& sub_column : sub_columns) {

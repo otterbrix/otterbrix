@@ -121,12 +121,10 @@ namespace components::table {
             }
             return nodes_.back().node.get();
         }
-        // Returns nullptr when no segment brackets `row_number`. Deliberately NOT routed
-        // through segment_index(), whose miss THROWS std::runtime_error: in production that
-        // throw unwinds across the disk agent's mailbox into a coroutine whose
-        // unhandled_exception() is empty, so the statement HANGS instead of failing (rules
-        // 2/9). Every caller reports the miss on its own error channel (scan_error /
-        // fetch_error / result_wrapper_t).
+        // Returns nullptr when no segment brackets `row_number`, never throws: a throw here
+        // would unwind across the disk agent's mailbox into a coroutine whose
+        // unhandled_exception() is empty, hanging the statement instead of failing it (rules
+        // 2/9). Every caller reports the miss on its own error channel.
         T* get_segment(int64_t row_number) {
             auto l = lock();
             return get_segment(l, row_number);
@@ -261,13 +259,8 @@ namespace components::table {
         }
 
         // Rebuilds the row_start map from the segments' own starts. False = a gap between
-        // nodes, i.e. a broken tree invariant somewhere upstream; the map is left UNTOUCHED
-        // then -- a half-rebuilt map would misroute try_segment_index's binary search, and the
-        // sole caller (column_data_t::set_start) has just made the starts contiguous, so the
-        // tripwire firing means corruption, not a recoverable state. A THROW here would be the
-        // same rules-2/9 failure class as the segment_index() one above: it unwinds across the
-        // disk agent's mailbox into a coroutine whose unhandled_exception() is empty, and the
-        // statement hangs instead of failing.
+        // nodes (a broken tree invariant); the map is left UNTOUCHED rather than half-rebuilt,
+        // which would misroute try_segment_index's binary search. Never throws.
         [[nodiscard]] bool reinitialize() {
             if (nodes_.empty()) {
                 return true;

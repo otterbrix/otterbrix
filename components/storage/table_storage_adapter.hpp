@@ -8,31 +8,19 @@
 
 namespace components::storage {
 
-    // COLUMNS THE CATALOG HAS AND THE STORAGE DOES NOT.
-    //
-    // ALTER TABLE ADD COLUMN writes a pg_attribute row and stops; the physical column is
-    // materialized later, by the first INSERT that carries it (agent_disk stage 1b). Between the
-    // two the catalog names a column no row group holds — a legal, durable, and after a restart
-    // re-entered state, pinned by test_alter_rename_column's
+    // Gap between catalog and storage: ALTER TABLE ADD COLUMN publishes a pg_attribute row
+    // immediately; the physical column is materialized later, by the first INSERT that
+    // carries it (agent_disk stage 1b) — see test_alter_rename_column::
     // rename_and_unmaterialized_add_column_are_distinguishable.
-    //
-    // This adapter is the seam where that gap is closed for EVERY reader at once: the storage
-    // scan, the pushed-down filter, the aggregate-pushdown reduce (which reads through
-    // fetch_next_batch) and the row-id gather all take their column count and their column
-    // ordinals from here. The unmaterialized columns are presented as trailing CONSTANT columns —
-    // the column's published DEFAULT in every row, or NULL where the ALTER declared none — that
-    // constant being exactly what row_group_t::add_column will backfill into the rows that predate
-    // the column when the materializing INSERT finally arrives, so the answer does not change
-    // across that boundary. PostgreSQL answers the same window the same way and out of the same
-    // pair of facts (pg_attribute.atttypid + attmissingval); see fill_unmaterialized.
-    //
-    // They are NOT added to columns()/has_schema(): those describe the PHYSICAL schema and drive
-    // the append path's schema-growth and column-expansion stages, which must go on seeing the
-    // column as absent so the next carrying INSERT materializes it.
+    // This adapter closes that gap for every reader by presenting unmaterialized columns as
+    // trailing constant columns (DEFAULT or NULL) — the same constant row_group_t::add_column
+    // later backfills, so the answer doesn't change across materialization.
+    // columns()/has_schema() stay PHYSICAL: the append path's schema-growth stage must still
+    // see the column as absent to materialize it.
     class table_storage_adapter_t final : public storage_t {
     public:
-        // `unmaterialized` is BORROWED and may be null; it is owned by the storage entry, which
-        // outlives every adapter it builds (the adapter is rebuilt on add_column / drop_column).
+        // `unmaterialized` is borrowed (may be null), owned by the storage entry, which
+        // outlives every adapter it builds.
         explicit table_storage_adapter_t(table::data_table_t& table,
                                          std::pmr::memory_resource* resource,
                                          const std::vector<table::column_definition_t>* unmaterialized = nullptr)
@@ -40,10 +28,9 @@ namespace components::storage {
             , resource_(resource)
             , unmaterialized_(unmaterialized) {}
 
-        // The CATALOG's width: the materialized columns at their storage ordinals, then the
-        // columns pg_attribute has published and no INSERT has materialized yet. Every chunk this
-        // adapter fills is built from this list, so a projected ordinal past the physical schema
-        // addresses a real column (all-NULL, or all-DEFAULT) instead of falling off the end.
+        // Catalog width: materialized columns at their storage ordinals, then columns
+        // pg_attribute has published but no INSERT has materialized yet — so a projected
+        // ordinal past the physical schema still addresses a real (DEFAULT/NULL) column.
         std::pmr::vector<types::complex_logical_type> types() const override {
             auto t = table_.copy_types();
             for (const auto& col : unmaterialized_columns()) {
@@ -52,10 +39,8 @@ namespace components::storage {
             return t;
         }
 
-        // PHYSICAL schema, deliberately NOT widened by the unmaterialized columns. These three
-        // drive the append path (schema growth, column expansion, NOT NULL) and the keyed catalog
-        // reads, all of which must go on seeing an unmaterialized column as absent — that is what
-        // makes the next INSERT that carries it materialize it.
+        // PHYSICAL schema — deliberately not widened. The append path's schema-growth/
+        // column-expansion stages must see an unmaterialized column as absent to materialize it.
         const std::vector<table::column_definition_t>& columns() const override { return table_.columns(); }
 
         size_t column_count() const override { return table_.column_count(); }
@@ -245,11 +230,8 @@ namespace components::storage {
             // fetch mapping is positional: a shorter list would compact the chunk and shift every
             // column a consumer addresses by ordinal.
             table_.fetch(output, column_indices, row_ids, count, state, projected_cols, txn, visibility);
-            // The string leg records buffer-pool OOM / data_corruption in
-            // state.fetch_error; surface it as a value so the agent_disk fetch
-            // reply can carry it across the mailbox (same shape as
-            // fetch_next_batch's scan_error above). On error the partially
-            // filled chunk is meaningless — the caller must not ship it.
+            // state.fetch_error carries buffer-pool OOM / data_corruption from the string leg;
+            // on error the partially-filled chunk is meaningless and must not be shipped.
             if (state.fetch_error.contains_error()) {
                 return state.fetch_error;
             }
@@ -260,12 +242,9 @@ namespace components::storage {
         // Returns the start_row on success, or write_conflict / out_of_memory surfaced by the
         // table-layer append chain. The agent_disk append handler reads the wrapper and turns
         // any error into a graceful txn abort.
-        //
-        // THIS IS ALSO THE REPLAY APPEND, and it reports for replay too. "Replay records are
-        // already schema-aligned and single-threaded, so a failure here is a hard bug" does not
-        // justify asserting instead of returning: out_of_memory is not a bug, and under NDEBUG
-        // an assert is not there at all, so the caller would get the start_row of an append
-        // that never happened. The direct-write caller passes transaction_data{0, 0}.
+        // Also the replay append: NDEBUG strips asserts, so treating a replay failure as "a
+        // hard bug" would return a start_row for an append that never happened. The
+        // direct-write caller passes transaction_data{0, 0}.
         [[nodiscard]] core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data,
                                                               table::transaction_data txn) override {
             table::table_append_state append_state(resource_);
@@ -286,29 +265,14 @@ namespace components::storage {
             return start_row;
         }
 
-        // Replay leg — an IN-PLACE update, unlike the MVCC delete+append below it. The
-        // journalled payload was written by the txn update below, which already refused any
-        // value in an unmaterialized column, so the trim here SHOULD only be dropping all-NULL
-        // columns — but it still has to happen: the WAL record carries the CATALOG-wide chunk,
-        // and at replay time the storage is narrower still.
-        //
-        // "SHOULD" IS NOT A CHANNEL. As asserts — absent entirely under NDEBUG — both refusals
-        // would report a replayed committed row this leg declined to write to
-        // agent_disk_t::direct_update_sync as written, and from there to base_spaces' replay
-        // loop as restored. Recovery cannot tell "there was nothing to do" from "I could not do
-        // it" unless this says so.
-        //
-        // AND ON THIS PATH THE ANSWER IS RECOVER-THEN-REPORT, NOT REFUSE-UP-FRONT. A value in
-        // an unmaterialized column at REPLAY time means the column's materialising INSERT was
-        // itself refused earlier in the replay (and logged) — the value has no column to land
-        // in either way. The row's materialized columns are still addressable, and a silent
-        // trim DOES restore them (data_table_t::update builds its column list from its own
-        // column_count() and never reads the chunk's trailing columns), so refusing before
-        // table_.update would restore LESS than saying nothing at all would. The trim is
-        // applied unconditionally, the materialized part is written
-        // IN PLACE, and the answer names the value that could not be restored — the txn
-        // overload below keeps the up-front refusal, because there the statement can still
-        // be refused BEFORE anything is journalled.
+        // Replay leg: rewrites IN PLACE (vs. MVCC delete+append below). The WAL record carries
+        // the CATALOG-wide chunk while storage is narrower, so it's trimmed first.
+        // Recover-then-report, not refuse-up-front: a value in an unmaterialized column at
+        // replay time means that column's materializing INSERT was already refused (and
+        // logged) earlier in the replay, so refusing here too would restore less than the
+        // silent trim does. The materialized part is written unconditionally; the answer names
+        // what could not be restored. Returns error_t, not void, so this can't be swallowed by
+        // an NDEBUG-only assert and reported as "restored".
         [[nodiscard]] core::error_t update(vector::vector_t& row_ids, vector::data_chunk_t& data) override {
             core::error_t lost = trim_unmaterialized_payload_for_replay(data);
             const auto requested = data.size();
@@ -387,11 +351,9 @@ namespace components::storage {
         }
 
         void revert_append(int64_t row_start, uint64_t count) override {
-            // data_table_t::revert_append reports the first column-truncation refusal
-            // (out_of_memory / data_corruption). This virtual's contract is void, so the
-            // refusal cannot travel further up — but it must not be swallowed either
-            // (rule 6; and result_wrapper_t is [[nodiscard]] at the CLASS, so a bare call
-            // is a -Werror break in every TU that includes this header).
+            // Void contract can't propagate the refusal further up, but result_wrapper_t is
+            // [[nodiscard]] at the class, so silently dropping it is a -Werror break — report
+            // to stderr instead.
             auto reverted = table_.revert_append(row_start, count);
             if (reverted.has_error()) {
                 std::fprintf(stderr,
@@ -422,35 +384,16 @@ namespace components::storage {
             return unmaterialized_ != nullptr ? *unmaterialized_ : no_unmaterialized_columns_;
         }
 
-        // WRITE-SIDE MIRROR OF types(). An update payload is shaped by the READ that produced it,
-        // so it arrives at the CATALOG's width — one column per pg_attribute column, including the
-        // ones no row group holds. data_table_t can only write the PHYSICAL schema, so those
-        // trailing columns are dropped here.
-        //
-        // Dropping them is sound only while they carry NOTHING NEW, and that is checked rather
-        // than assumed: a value in one of them is an UPDATE that would first have to materialize
-        // the column, which only the append path's schema-growth stage can do (it owns the
-        // PHYSICAL_ADD_COLUMN WAL record that keeps replay in schema-then-rows order). Writing the
-        // row and silently losing that value is exactly what rule 6 forbids, so the statement is
-        // refused instead. The refusal reaches the agent before any WAL record is written for the
-        // update (operator_update journals only after storage_update succeeds), so a refused
-        // statement leaves nothing behind.
-        //
-        // "NOTHING NEW", not "NOTHING", and the difference is the column's own DEFAULT. Since
-        // fill_unmaterialized answers a published column with its default, the payload an UPDATE
-        // that merely FILTERS on such a column carries back is a column full of that default —
-        // non-null, and written by the READ, not by the statement. Dropping it loses nothing (the
-        // column reads the same constant for every row that predates it, before and after this
-        // write), so refusing there would turn `UPDATE t SET a = 9 WHERE extra IS NOT NULL` into
-        // an error on a table whose only sin is having a DEFAULT. A value that DIFFERS from the
-        // default is still the statement's own and still refused.
-        //
-        // THE REFUSAL IS THE SANCTIONED CONTRACT, not a gap left open by accident:
-        // integration/cpp/test/test_alter_add_column_unmaterialized.cpp pins
-        // `UPDATE ... SET extra = 42` to an error cursor with the rows unchanged and the column
-        // still NULL. Teaching UPDATE the schema growth INSERT's stage 1b does (it owns the
-        // PHYSICAL_ADD_COLUMN record that keeps replay in schema-then-rows order) would flip that
-        // assertion, so it is a decision for the owner of that test and not a bug fix.
+        // Write-side mirror of types(): an update payload is shaped by the read that produced
+        // it, so it arrives at CATALOG width. data_table_t can write only the PHYSICAL schema,
+        // so trailing columns are dropped here — but only once checked to carry NOTHING NEW: a
+        // value that differs from the column's own DEFAULT is the statement's own write and
+        // gets refused (only the append path's schema-growth stage may materialize a column). A
+        // value EQUAL to the DEFAULT is fill_unmaterialized's own fill read back, not a write,
+        // so it's dropped silently — otherwise `UPDATE t SET a=9 WHERE extra IS NOT NULL` would
+        // error on a table whose only sin is having a DEFAULT.
+        // Pinned by integration/cpp/test/test_alter_add_column_unmaterialized.cpp:
+        // `UPDATE ... SET extra = 42` on an unmaterialized column errors with rows unchanged.
         [[nodiscard]] core::error_t trim_unmaterialized_payload(vector::data_chunk_t& data) const {
             const size_t physical = table_.column_count();
             if (data.column_count() <= physical) {
@@ -480,12 +423,10 @@ namespace components::storage {
             return core::error_t::no_error();
         }
 
-        // REPLAY-SIDE MIRROR of the trim above, with the refusal turned into a report: the
-        // trailing columns are dropped UNCONDITIONALLY (recovery goes on to restore the
-        // materialized part of the row), and the answer names any journalled value that had
-        // to be dropped with them, so the replay loop can say what was lost instead of
-        // either losing it silently or refusing the whole row (which restores less than
-        // saying nothing would). See the replay `update` for the full reasoning.
+        // Replay-side mirror of the trim above, refusal turned into a report: trailing columns
+        // are dropped unconditionally so the materialized part of the row still gets restored;
+        // the answer names any journalled value that had to be dropped with them. See the
+        // replay `update` above for the full reasoning.
         [[nodiscard]] core::error_t trim_unmaterialized_payload_for_replay(vector::data_chunk_t& data) const {
             const size_t physical = table_.column_count();
             if (data.column_count() <= physical) {
@@ -501,10 +442,8 @@ namespace components::storage {
                     if (data.is_null(i, row)) {
                         continue;
                     }
-                    // Mirrors the live trim: a cell equal to the column's published DEFAULT is the
-                    // READ's own fill travelling back through the journal, not a value the update
-                    // wrote, so nothing is lost by dropping it and naming it here would be a false
-                    // report of data loss.
+                    // Equal to the published DEFAULT = the read's own fill echoed back, not a
+                    // written value — dropping it silently avoids a false loss report.
                     if (published != nullptr && published->has_value() && data.data[i].value(row) == **published) {
                         continue;
                     }
@@ -512,10 +451,9 @@ namespace components::storage {
                         lost_columns.append(", ");
                     }
                     lost_columns.append("'");
-                    // The payload's own alias is the WAL record's name for the column and is
-                    // always present on a replayed chunk; the declared list only knows columns
-                    // pg_attribute has published to THIS entry, which a failed upstream replay
-                    // may never have done.
+                    // The chunk's own alias is the WAL record's column name and is always
+                    // present; the declared list only knows columns already published to this
+                    // entry, which a failed upstream replay may not have done yet.
                     const size_t declared_idx = i - physical;
                     if (data.data[i].type().has_alias()) {
                         lost_columns.append(data.data[i].type().alias().c_str());
@@ -541,32 +479,23 @@ namespace components::storage {
             return core::error_t{core::error_code_t::unimplemented_yet, std::move(what)};
         }
 
-        // EVERY read entry point starts here, and it does two things that only look unrelated.
-        //
-        // It drops the ordinals no row group can read (storage_indices, below) — which is what
-        // leaves those columns for fill_unmaterialized to answer AFTER the scan. And it hands the
-        // published list to the collection the scan is about to walk, because the pushed-down
-        // filter reads those same columns DURING the scan (row_group_t::evaluate_predicate), one
-        // layer below the fill. Do only the first and the projection answers the DEFAULT while
-        // the predicate answers NULL — the split
-        // integration/cpp/test/test_alter_add_column_unmaterialized.cpp's
-        // default_answers_the_predicate_leg pins.
-        //
-        // Bound per read rather than once here: data_table_t::compact installs a new collection
-        // under this adapter without rebuilding it.
+        // Every read entry point starts here. It drops ordinals no row group can read
+        // (storage_indices, below), leaving those columns for fill_unmaterialized to answer
+        // AFTER the scan; and it publishes the same list to the collection so the pushed-down
+        // filter (row_group_t::evaluate_predicate) can answer them DURING the scan. Skipping the
+        // publish would answer the projection with DEFAULT but the predicate with NULL — the
+        // split default_answers_the_predicate_leg pins.
+        // Published per read, not once: data_table_t::compact installs a new collection under
+        // this adapter without rebuilding it.
         std::vector<table::storage_index_t> begin_read(const std::vector<size_t>* projected_cols) const {
             table_.row_group()->publish_unmaterialized_columns(&unmaterialized_columns());
             return storage_indices(projected_cols);
         }
 
-        // The caller's (catalog) ordinals reduced to the ones a row group can actually read.
-        // `projected_cols == nullptr` means "every materialized column".
-        //
-        // An ordinal at or past the physical schema is DROPPED here on purpose: it names a column
-        // pg_attribute has and no INSERT has materialized, which fill_unmaterialized answers.
-        // The result may legitimately be EMPTY — a projection naming only such columns — and that
-        // is a row-count-only scan, not an error (see table_scan_state::column_ids) — the scan
-        // must not assert on an empty column list.
+        // Catalog ordinals reduced to what a row group can read; nullptr means every
+        // materialized column. An ordinal past the physical schema is dropped on purpose (it
+        // names an unmaterialized column, answered by fill_unmaterialized instead), so the
+        // result may legitimately come back EMPTY — a row-count-only scan, not an error.
         std::vector<table::storage_index_t> storage_indices(const std::vector<size_t>* projected_cols) const {
             std::vector<table::storage_index_t> out;
             const size_t physical = table_.column_count();
@@ -586,14 +515,11 @@ namespace components::storage {
             return out;
         }
 
-        // The PROJECTION leg's half of the answer; the predicate leg's half is
-        // row_group_t::evaluate_predicate, and both write it through fill_published_default. The
-        // constant is the one row_group_t::add_column backfills into these same rows when the
-        // materializing INSERT arrives, so the answer does not move across that boundary — the
-        // same device PostgreSQL 11+ uses (pg_attribute.attmissingval, no heap rewrite).
-        //
-        // A column the projected chunk ctor left as a buffer-less placeholder is skipped: nothing
-        // reads it, and it is dropped at the cursor boundary.
+        // Projection leg's half of the answer (row_group_t::evaluate_predicate is the predicate
+        // leg's); both go through fill_published_default. Same device as PostgreSQL 11+'s
+        // pg_attribute.attmissingval — no heap rewrite, and the constant is exactly what
+        // row_group_t::add_column later backfills, so the answer doesn't move at that boundary.
+        // A buffer-less placeholder column is skipped: nothing reads it.
         void fill_unmaterialized(vector::data_chunk_t& chunk, uint64_t rows) const {
             const auto& declared = unmaterialized_columns();
             if (declared.empty() || rows == 0) {

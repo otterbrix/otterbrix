@@ -1,10 +1,8 @@
-// THE ROUTING DECISIONS manager_index_t makes over its per-oid record map.
-//
-// An index's rows, its search and its per-transaction buffer are all the storage agent's, so what
-// the manager keeps is a record per index (indexrelid, key set, backend, ordering, address); the
-// lookups below are the whole of what it decides with them. They are driven directly, with no actor
-// and no store: match_index / indexed_keys / indexed_descriptions are pure functions over the
-// record vector.
+// The routing decisions manager_index_t makes over its per-oid record map. An index's rows,
+// search and per-transaction buffer are all the storage agent's; the manager keeps only a record
+// per index (indexrelid, key set, backend, ordering, address), and the lookups below are the
+// whole of what it decides with them -- pure functions over the record vector, driven directly
+// with no actor and no store.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -43,25 +41,22 @@ namespace {
 
 } // namespace
 
-// TWO INDEXES OVER ONE COLUMN, and dropping one of them.
+// Two indexes over one column, and dropping one of them. The pair is legal and reachable from
+// SQL: create_index rejects a duplicate only on the pair (keys, type), so `CREATE INDEX i ON t
+// (k)` and `CREATE INDEX j ON t USING hash (k)` both register. Dropping one must leave the other
+// visible in every observable the registry publishes, since production reads all of them and
+// each decides something different:
 //
-// The pair is legal and reachable from SQL: create_index rejects a duplicate only on the PAIR
-// (keys, type), so `CREATE INDEX i ON t (k)` and `CREATE INDEX j ON t USING hash (k)` both
-// register. Dropping ONE of them must leave the OTHER visible in every observable the registry
-// publishes, because production reads all of them and each decides something different:
-//
-//   * the record COUNT   -- the compact gate (manager_index_t::tables_without_indexes) and the
-//                          repopulate driver (all_indexed_oids). Reading 0 over a live index
-//                          lets a compact renumber rows underneath it AND skips the rebuild
-//                          that would have repaired them;
+//   * record COUNT      -- the compact gate (tables_without_indexes) and the repopulate driver
+//                         (all_indexed_oids). Reading 0 over a live index lets a compact renumber
+//                         rows underneath it and skips the rebuild that would have repaired them;
 //   * indexed_keys()     -- what the planner sees (context_storage_t::has_index_on) and what
-//                          stamps DML index mirroring (stamp_table_has_indexes). Reading empty
-//                          makes the surviving index invisible to reads and unfed by writes at
-//                          the same time;
+//                         stamps DML index mirroring (stamp_table_has_indexes). Empty would make
+//                         the surviving index invisible to reads and unfed by writes at once;
 //   * match_index(keys)  -- the untyped read-path lookup.
 //
-// A key-keyed map holding ONE slot per key set breaks all three: the second registration cannot
-// write its slot, and the first drop erases it on the way out.
+// A key-keyed map holding one slot per key set would break all three: the second registration
+// couldn't write its slot, and the first drop would erase it on the way out.
 TEST_CASE("services::index::dropping_one_index_over_a_key_keeps_its_twin") {
     auto resource = core::pmr::otterbrix_resource();
     index_records_t records(&resource);

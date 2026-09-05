@@ -25,12 +25,9 @@ namespace components::table {
         uint64_t txn_id;
     };
 
-    // An index a CREATE INDEX in this txn brought into being, identified by the
-    // owning table oid + the index's pg_index.indexrelid (rule 16: the name never
-    // travels below the planner). Parked until COMMIT publishes it / ABORT
-    // un-marks it (the rollback path drops the still-uncommitted index). Mirrors
-    // dml_delete_range_t's shape — a plain value struct that crosses no mailbox
-    // itself but rides the txn accumulate/drain payloads.
+    // An index a CREATE INDEX in this txn brought into being, identified by table oid +
+    // pg_index.indexrelid (the name never travels below the planner). Parked until
+    // COMMIT publishes it / ABORT un-marks it. Mirrors dml_delete_range_t's shape.
     struct created_index_t {
         components::catalog::oid_t table_oid;
         components::catalog::oid_t index_oid;

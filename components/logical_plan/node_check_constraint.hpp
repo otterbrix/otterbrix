@@ -57,18 +57,14 @@ namespace components::logical_plan {
         std::string relname_;
         std::vector<std::string> not_null_columns_;
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
-        // (name, predicate) as resolved expressions, not the SQL text: the text form
-        // could only be read back by a hand-written recogniser, and everything outside
-        // its shapes compiled to the constant TRUE.
+        // resolved expressions, not SQL text: text would need a hand-written recogniser
+        // and would compile everything outside its shapes to the constant TRUE
         std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;
         parameter_node_ptr check_params_;
         std::vector<std::vector<std::string>> unique_groups_; // UNIQUE / PK column groups
-        // NO column_defaults_ / write_set_named_ HERE. The rows the constraint operators
-        // judge are MATERIALISED - the INSERT's omissions are expanded to their DEFAULT
-        // (or NULL) above the journal, and the UPDATE write-set IS the gathered storage
-        // row - so a plan-side copy of what a column was GOING to become has no reader
-        // left, and deciding an absent column's fate from one is how a CHECK came to
-        // admit a row it judged against a value the write path did not store.
+        // no column_defaults_/write_set_named_: by the time constraint operators run,
+        // INSERT omissions are already filled to DEFAULT/NULL and the UPDATE write-set
+        // is the actual stored row, so there is nothing left to look up by name
         components::catalog::oid_t table_oid_{components::catalog::INVALID_OID};
     };
 

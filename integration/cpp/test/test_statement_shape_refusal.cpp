@@ -8,16 +8,10 @@
 
 #include <string>
 
-// THE SEAM. parser.h's contract is explicit: raw_parser's returned list may be
-// EMPTY — that is success, "the grammar accepted the text and found no statement
-// in it" — and callers must test list_length() before reaching for linitial().
-// Not one caller did. Both execute_sql overloads and the view-body re-parse
-// applied linitial() to the raw result, which on an empty list reads past the
-// end of a std::pmr::list; whatever that read happens to produce is what the
-// user got. And when the list held MORE than one statement, linitial() took the
-// first and dropped the rest on the floor: `INSERT ...; INSERT ...;` executed
-// half of what was written and reported success — the exact silent narrowing
-// this seam exists to refuse.
+// parser.h's contract: raw_parser's list may be EMPTY (grammar accepted the text, found no
+// statement) or hold MULTIPLE statements. No caller checked list_length() before linitial():
+// on an empty list linitial() read past the end of the pmr::list, and on a multi-statement
+// query it silently ran only the first and reported success either way.
 
 using namespace components;
 
@@ -34,15 +28,12 @@ TEST_CASE("integration::cpp::statement_shape::no_statement_is_a_named_refusal") 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    // Every one of these parses successfully into no statement at all
-    // (parser.h: empty input, a lone comment, a bare `;`).
+    // Each of these parses into no statement at all (empty, comment-only, bare `;`).
     for (const char* text : {";", "", "   ", "-- only a comment", "/* only a comment */"}) {
         auto session = otterbrix::session_id_t();
         auto cursor = dispatcher->execute_sql(session, text);
         INFO("query: '" << text << "'");
         REQUIRE_FALSE(cursor->is_success());
-        // BEFORE: "unknown parser error" — the parser did not err; there was
-        // nothing to execute, and the refusal must say so.
         CHECK(error_text(cursor).find("no statement") != std::string::npos);
     }
 
@@ -107,8 +98,7 @@ TEST_CASE("integration::cpp::statement_shape::view_body_reparse_checks_statement
     auto resource = core::pmr::otterbrix_resource();
 
     SECTION("a body with no statement in it is refused by name") {
-        // A stored view body should be one SELECT; a bare `;` re-parses into no
-        // statement at all, which used to walk linitial() off the end of the list.
+        // A bare `;` re-parses into no statement — same linitial() off-end bug as above.
         auto body = planner::expand_view_body(&resource, ";");
         REQUIRE(body.error.type != core::error_code_t::none);
         CHECK(std::string{body.error.what}.find("no statement") != std::string::npos);

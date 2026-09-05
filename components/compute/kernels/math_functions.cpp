@@ -218,10 +218,9 @@ namespace {
         kernel_signature_t sig(function_type_t::vector,
                                std::move(parameters),
                                {output_type::fixed(complex_logical_type{type})});
-        // BOUND, not (void)-cast: rule 14 bans the cast, and add_kernel is [[nodiscard]] because it
-        // refuses on a full slot table or an arity that does not match the function's
-        // (function.hpp:172-190). Both are compile-time constants at these registration sites, so
-        // the assert states an invariant of this file rather than screening runtime input.
+        // Bound, not (void)-cast, which is banned: add_kernel only refuses on a full slot
+        // table or an arity mismatch, both compile-time constants at this registration site, so
+        // the assert states a file invariant rather than screening runtime input.
         [[maybe_unused]] const auto added = fn->add_kernel(resource, vector_kernel(std::move(sig), kernel));
         assert(!added.contains_error() && "vector kernel must fit the declared slots and arity");
 

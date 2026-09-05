@@ -1,6 +1,5 @@
 // ---------------------------------------------------------------------------
 // Eviction guard for MANAGED (non-reloadable) buffer-pool blocks.
-//
 // The defect this codifies:
 //   A MANAGED in-memory block (block_id >= MAXIMUM_BLOCK) has no backing store,
 //   so block_handle_t::load() returns an EMPTY buffer_handle_t for it once it is
@@ -12,7 +11,6 @@
 //   now-null buffer_ -> SIGSEGV. This is the large-table-scan crash: a scan
 //   registers many managed segment blocks, the pool fills, eviction unloads an
 //   earlier (still-referenced) managed block, and re-pinning it crashes.
-//
 // The guard:
 //   * block_handle_t::is_reloadable()  -> block_id_ < MAXIMUM_BLOCK
 //   * block_handle_t::can_unload()     -> false for non-reloadable blocks
@@ -20,7 +18,6 @@
 //   * standard_buffer_manager_t::unpin() skips enqueueing them (optimization)
 //   With the guard the managed block stays resident through the eviction pass, so
 //   the re-pin returns a VALID buffer with the original bytes intact.
-//
 // This test drives the load-bearing half of the guard -- can_unload() -- directly
 // by enqueueing the managed block itself and running an eviction pass against it,
 // so it does not depend on the unpin() optimization to reproduce the crash.
@@ -164,7 +161,6 @@ TEST_CASE("buffer manager: re-pinning an evicted managed block does not crash", 
 // (can_unload() == false for all of them) -- the next registration must surface
 //   result.has_error() == true && result.error().type == out_of_memory
 // and complete normally rather than throwing.
-//
 // Deterministic exhaustion: maximum_memory = N * block_allocation_size(). Each
 // managed register_transient_memory(block_size, block_size) reserves exactly one
 // block_allocation_size(); holding its pin keeps it non-evictable. After N such
@@ -235,15 +231,9 @@ TEST_CASE("buffer manager: pool exhaustion of pinned managed blocks returns out_
     // pins/handles destructors release the blocks at scope end.
 }
 
-// unpin() must release a reader on EVERY buffer type, TINY_BUFFER included. load() increments
-// readers_ on every pin whatever the type, so an unpin() that returns early for TINY_BUFFER
-// before decrementing climbs a small buffer's reader count by one per pin and never brings it
-// back down (see the note on standard_buffer_manager_t::unpin).
-//
-// That stays invisible while can_unload() rejects such blocks anyway: transient, hence
-// non-reloadable, hence never eviction candidates whatever readers_ says. It stops being
-// invisible the moment a block CAN be spilled to a temporary file and made reloadable — a
-// permanently non-zero readers_ would pin it in memory forever and silently defeat the spill.
+// unpin() must decrement readers_ for TINY_BUFFER too (standard_buffer_manager_t::unpin); skipping
+// it leaks the reader count but stays invisible while can_unload() rejects transient blocks
+// anyway. It would matter the moment such a block becomes spillable and reloadable.
 TEST_CASE("buffer manager: unpinning a tiny buffer releases its reader", "[step1]") {
     using namespace components::table::storage;
 

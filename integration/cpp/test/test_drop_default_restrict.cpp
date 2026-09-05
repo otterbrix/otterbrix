@@ -1,16 +1,14 @@
-// ============================================================================
-// THE UNWRITTEN DROP DEFAULTS TO RESTRICT — PostgreSQL parity (queue #209/#638).
+// The unwritten DROP defaults to RESTRICT -- PostgreSQL parity (#638).
 //
-// gram.y's opt_drop_behavior yields DROP_RESTRICT for both the written word and
-// the empty alternative — in PostgreSQL they are the same thing, so the two are
-// deliberately one token. drop_behavior_of reads that token as restrict_, and a
-// bare DROP is refused when a 'n' (normal) pg_depend edge lands on the seed.
+// gram.y's opt_drop_behavior yields DROP_RESTRICT for both the written word and the empty
+// alternative -- in PostgreSQL they are the same thing, so the two are deliberately one
+// token. drop_behavior_of reads that token as restrict_, and a bare DROP is refused when a
+// 'n' (normal) pg_depend edge lands on the seed.
 //
-// The one statement form that stays implicitly CASCADE is DROP DATABASE: its
-// grammar takes no behavior at all ("This is implicitly CASCADE", gram.y
-// ~:11047), so transform_drop_database stamps cascade_ explicitly — the control
-// case below is what fails if that stamp is ever lost.
-// ============================================================================
+// The one statement form that stays implicitly CASCADE is DROP DATABASE: its grammar takes
+// no behavior at all ("This is implicitly CASCADE", gram.y ~:11047), so
+// transform_drop_database stamps cascade_ explicitly -- the control case below is what fails
+// if that stamp is ever lost.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

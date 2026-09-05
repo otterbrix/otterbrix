@@ -1,16 +1,13 @@
-// ============================================================================
-// CHARACTERIZATION: a re-DELETE inside a transaction reports 0, not a stale count.
+// Characterization: a re-DELETE inside a transaction reports 0, not a stale count.
 //
-// Record #219 flags that operator_delete credits affected_rows_ += modified_size
-// (the SCAN-matched count) rather than the count storage actually marked, and
-// notes it is "legal today": the two never diverge through SQL, because the MVCC
-// snapshot hides rows this transaction already deleted, so a re-DELETE matches
-// nothing and modified_size is 0 exactly where a stored row is already stamped.
-// No code change was made — forcing the count to storage's answer would alter a
-// user-visible number with no reachable defect behind it (rule 6 "loud" does not
-// mean "change a correct number"). This test PINS that standing contract so a
-// future change to the count path cannot silently regress it.
-// ============================================================================
+// operator_delete credits affected_rows_ += modified_size (the SCAN-matched count) rather
+// than the count storage actually marked, but the two never diverge through SQL: the MVCC
+// snapshot hides rows this transaction already deleted, so a re-DELETE matches nothing and
+// modified_size is 0 exactly where a stored row is already stamped. No code change was made
+// here -- forcing the count to storage's answer would alter a user-visible number with no
+// reachable defect behind it ("loud" does not mean "change a correct number"). This
+// test pins that standing contract so a future change to the count path cannot silently
+// regress it.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

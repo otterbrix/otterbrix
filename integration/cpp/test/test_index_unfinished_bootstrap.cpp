@@ -8,23 +8,14 @@
 #include <string>
 #include <unistd.h>
 
-// THE TWO REASONS BOOTSTRAP SKIPS AN INDEX ARE DIFFERENT EVENTS AND MUST NOT SHARE A COUNT.
+// bootstrap_indexes_sync used to fold two different skip reasons — unfinished backfill vs.
+// unopenable storage — into one PHASE 4 count, so the log couldn't tell them apart. This stages
+// the reachable half (unopenable storage, test_index_bootstrap_failure's directory-for-file trick).
 //
-// bootstrap_indexes_sync used to fold "the backfill never committed" (re-issue CREATE INDEX)
-// and "the index storage would not open" (may heal on its own — a permission, a bad disk)
-// into ONE aggregate number in the PHASE 4 trace line, so the operator reading the log could
-// not tell which of the two an affected start had. This case stages the reachable half — an
-// index whose on-disk storage is unopenable (the test_index_bootstrap_failure convention: a
-// directory where the storage file belongs) — and reads the reopened engine's log back.
-//
-// The OTHER half, ready_since == 0, is defended by its own loud per-row error in the same
-// function, but the state cannot be staged from inside the current tree: CREATE INDEX is one
-// transaction (metadata + backfill + flip), replay filters whole transactions by their COMMIT
-// marker, and a checkpoint does not flush another transaction's in-flight catalog rows —
-// probed empirically: a CHECKPOINT taken over an open CREATE INDEX transaction leaves the
-// pg_index storage of the crash image EMPTY.
-//
-// BEFORE: the PHASE 4 line read "(1 skipped: unfinished build or unopenable storage)".
+// The other half (ready_since == 0) can't be staged from this tree: CREATE INDEX is one
+// transaction, and a CHECKPOINT taken over an open CREATE INDEX transaction leaves pg_index
+// EMPTY in the crash image (probed empirically) — replay filters whole transactions by their
+// COMMIT marker.
 
 using namespace test_helpers;
 

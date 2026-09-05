@@ -17,16 +17,11 @@ namespace services::wal {
     public:
         /// Open a segment for reading.
         ///
-        /// THE OPEN CAN FAIL AND THE FAILURE IS KEPT. A failed open that only left file_ null
-        /// and file_size_ zero would make an UNREADABLE segment indistinguishable from an
-        /// EMPTY one at every accessor: page_count() answers 0 and read_all_records() answers
-        /// {}. truncate_before reads the first as "safe to delete" and unlinks the file;
-        /// startup replay reads the second as "this segment held nothing" and comes up without
-        /// every committed transaction that lived in it. is_open()/open_error() and the
-        /// wrapper on read_all_records are what separate the two cases.
-        ///
-        /// resource backs the decoded records AND the diagnostic in open_error(); reaching for
-        /// std::pmr::get_default_resource() here is what rule 14 forbids.
+        /// THE OPEN CAN FAIL AND THE FAILURE IS KEPT: a failed open leaving file_ null and
+        /// file_size_ zero would make an UNREADABLE segment indistinguishable from an EMPTY one
+        /// (page_count()==0, read_all_records()=={}) — the former is safe to delete, the latter
+        /// means startup replay loses every committed transaction in it. is_open()/open_error()
+        /// separate the two cases.
         wal_page_reader_t(std::pmr::memory_resource* resource, const std::filesystem::path& segment_path);
 
         /// True when the segment file is open and readable.
@@ -56,12 +51,10 @@ namespace services::wal {
 
         /// What one physical pass over every data page says about this segment.
         ///
-        /// THIS ANSWERS A DIFFERENT QUESTION FROM read_all_records, and conflating the two is
-        /// what let a CRC break move the id allocator BACKWARDS. read_all_records stops at the
-        /// first broken page (STOP-A) because replay must not apply a range with a hole in it;
-        /// but "where may the allocator resume" is a high-water mark over what the FILE
-        /// physically holds, and the pages past the break hold ids just as firmly as the ones
-        /// before it.
+        /// Different question from read_all_records: conflating the two once let a CRC break
+        /// move the id allocator BACKWARDS. read_all_records stops at the first broken page
+        /// (replay must not apply a range with a hole); this is a high-water mark over what the
+        /// FILE physically holds, and pages past the break hold ids just as firmly.
         struct segment_scan_t {
             /// Highest page_end_lsn over the data pages whose checksum VERIFIES — including
             /// pages after a corruption point. A page whose checksum fails is not trusted
@@ -77,12 +70,9 @@ namespace services::wal {
             /// transactions sit past the break that replay will not reach.
             size_t verified_pages_after_break{0};
 
-            // THE TWO FIELDS BELOW ANSWER A THIRD QUESTION: NOT "how far did replay get" and
-            // not "where may the allocator resume", but "WHAT DID THE BREAK HIDE" — where
-            // does the next id the segment can still vouch for sit, so a caller can tell an
-            // interval it merely stopped short of from an interval it SKIPPED OVER. Only
-            // wal_worker_t::load asks that; recover_from_disk, wal_reader_t and
-            // manager_wal_replicate_t's ctor read the fields above and are unaffected.
+            // The two fields below answer a third question — "what did the break hide" — so a
+            // caller can tell an interval it merely stopped short of from one it SKIPPED OVER.
+            // Only wal_worker_t::load asks that; other callers use the fields above.
 
             /// page_lsn of the first data page that verifies AFTER first_broken_page; 0 when
             /// nothing verifies past the break (the ordinary torn tail) or when there is no

@@ -25,21 +25,13 @@
 #include <thread>
 #include <unistd.h>
 
-// ЗАПИСИ #369 и #372 — replay-time classification of the journal tree.
-//
-// #369: manager_wal_replicate_t classifies the directories under the WAL root —
-// a name that does not round-trip through to_string(oid) is FOREIGN content,
-// skipped loudly, and its wal ids never bound the allocator. wal_reader_t::
-// read_committed_records walked EVERY directory: a foreign-named one was
-// replayed at startup while nothing managed it and nothing bounded the ids it
-// carries — next_wal_id() could reissue ids UNDER records the replay had
-// already applied. Both walks must agree on ONE classification.
-//
-// #372: wal_worker_t::parse_segment_index was `catch (...)` around std::stoul —
-// the same half-parsing pattern the manager's directory scan was cured of:
-// stoul("000012.bak" and "12abc") answers 12, so a stray editor backup took
-// part in the max-segment-index arithmetic that decides where the next segment
-// is written.
+// Replay-time classification of the journal tree. manager_wal_replicate_t classifies
+// directories under the WAL root — a name that doesn't round-trip through to_string(oid) is
+// FOREIGN, skipped loudly, and its wal ids never bound the allocator; wal_reader_t's replay must
+// agree, or a foreign-named directory replays while nothing bounds the ids it carries.
+// parse_segment_index had the same half-parsing pattern via `catch (...)` around std::stoul:
+// "000012.bak"/"12abc" answered 12, letting a stray editor backup take part in the
+// max-segment-index arithmetic.
 
 using namespace services::wal;
 using namespace components::session;
@@ -97,19 +89,10 @@ namespace {
             manager_.reset();
         }
 
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: this is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
-        // that would report a chunk still alive after the manager is gone. Production hands the manager
-        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
-        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
-        // over: ~journal_writer_t stops the scheduler and resets manager_
-        // (destroying the mailbox and any message still holding this batch) inside its own body,
-        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
-        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
-        // the batch is moved into the message and is unobservable after send.
-        // to_batch takes the vector's arena from the chunk, so &resource_ carries all the
-        // way through to the batch the message holds.
+        // Built on the fixture's own arena (core::pmr::otterbrix_resource, resource_tracer_t under
+        // ASAN), mirroring production (agent_disk_t::storage_append_inner builds off resource()).
+        // resource_ is declared FIRST so it outlives ~journal_writer_t's teardown of manager_.
+        // to_batch takes the vector's arena from the chunk, so &resource_ carries through.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return to_batch(gen_data_chunk(rows, &resource_));
         }
@@ -146,17 +129,11 @@ namespace {
 
 } // namespace
 
-// ===========================================================================
-// #369 — REPLAY WALKS ONLY THE DIRECTORIES THE MANAGER RECOGNISES AS ITS OWN.
-//
-// The control half reads the journal where the writer put it and REQUIREs
-// records, so the empty answer of the second half can only come from the
-// classification — not from a journal that held nothing.
-//
-// BEFORE: the same segment, sitting in a directory named "backup_9zz", was
-// replayed in full while the manager's startup scan skipped that directory and
-// its ids never constrained next_wal_id().
-// ===========================================================================
+// Replay walks only the directories the manager recognises as its own. Control half reads the
+// journal where the writer put it and REQUIREs records, so the second half's empty answer can
+// only be the classification.
+// BEFORE: the same segment under "backup_9zz" was replayed in full while the manager's startup
+// scan skipped that directory and its ids never constrained next_wal_id().
 TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
     const auto path = base_path() / "foreign_replay";
     std::filesystem::remove_all(path);
@@ -208,13 +185,9 @@ TEST_CASE("wal::classification::replay_skips_a_foreign_named_directory") {
     std::filesystem::remove_all(path);
 }
 
-// ===========================================================================
-// #372 — A SEGMENT INDEX IS THE WHOLE SUFFIX OR NOTHING.
-//
-// BEFORE: std::stoul under catch (...) half-parsed "000012.bak" and "12abc" to
-// 12, so a stray neighbour took part in the max-segment-index arithmetic of
-// recover_from_disk.
-// ===========================================================================
+// A segment index is the whole suffix or nothing.
+// BEFORE: std::stoul under catch(...) half-parsed "000012.bak" and "12abc" to 12, so a stray
+// neighbour took part in recover_from_disk's max-segment-index arithmetic.
 TEST_CASE("wal::classification::segment_index_parses_the_whole_suffix_or_refuses") {
     constexpr auto refused = static_cast<uint32_t>(-1);
 
@@ -235,12 +208,8 @@ TEST_CASE("wal::classification::segment_index_parses_the_whole_suffix_or_refuses
     REQUIRE(wal_worker_t::parse_segment_index("/j/wal_5_99999999999999999999", "5") == refused);
 }
 
-// ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
-// make_insert_batch above. The batch is moved into the message and is unobservable after
-// send, so the assertion is made on the object make_insert_batch produces: the same call, on
-// the same path, that send_insert makes -- not a value handed in by the test.
-// ===========================================================================
+// Insert payload built on the fixture's own arena (see make_insert_batch above); the batch is
+// unobservable after send, so the assertion is made on make_insert_batch's own output.
 TEST_CASE("wal::classification::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

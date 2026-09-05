@@ -104,29 +104,22 @@ namespace components::table {
         undo_buffer_entry_t* entry = nullptr;
         uint64_t position = 0;
 
-        // Returns out_of_memory / data_corruption / io_error when the block cannot be pinned.
-        // It does NOT hand back a reference on that path: undo_buffer_reference::update_info()
-        // reinterpret_casts ptr(), i.e. handle.ptr() + position, so a reference carrying an
-        // empty handle IS a base_info that is not an address. See the definition.
+        // Returns out_of_memory / data_corruption / io_error when the block cannot be pinned;
+        // does NOT hand back a reference on that path -- undo_buffer_reference::update_info()
+        // reinterpret_casts ptr(), so an empty handle would form a fabricated address.
         [[nodiscard]] core::result_wrapper_t<undo_buffer_reference> pin() const;
         bool is_set() const { return entry; }
     };
 
-    // Reports a pin refusal reached from a read path that has no error channel of its own.
-    //
-    // Rule 6 asks for LOUD, not FATAL, and not silent. The one leg of update_segment_t that
-    // DOES own a channel forwards the refusal as a value (update() returns
-    // result_wrapper_t<bool>). The rest --
+    // Reports a pin refusal reached from a read path with no error channel of its own: loud,
+    // not fatal, not silent. update() already forwards refusals as a value; the rest --
     // update_info_t::update_for_transaction, fetch_updates, fetch_committed,
-    // fetch_committed_range, fetch_row -- return void
-    // or bool, and their callers are in components/table/column_data.cpp
-    // (updates_->fetch_committed / fetch_updates in scan_vector, updates_->fetch_row in
-    // fetch_update_row, updates_->fetch_committed_range in scan_count_with_updates), which is
-    // where a channel would have to start. column_scan_state::scan_error is already that
-    // channel for the two scan_vector legs (it carries the outstanding-updates refusal);
-    // fetch_update_row has none: threading one is a signature change across column_data.{hpp,cpp}
-    // and its own callers, so this reports and stops the walk instead of reading through a
-    // fabricated pointer.
+    // fetch_committed_range, fetch_row -- return void/bool, and threading an error channel
+    // through their callers in column_data.cpp (scan_vector, fetch_update_row,
+    // scan_count_with_updates) is a signature change across column_data.{hpp,cpp}.
+    // column_scan_state::scan_error already covers the two scan_vector legs; fetch_update_row
+    // has nothing, so this reports and stops the walk instead of reading through a fabricated
+    // pointer.
     void report_unreachable_update_node(const char* where, const core::error_t& error);
 
     struct undo_buffer_allocator_t {
@@ -212,10 +205,9 @@ namespace components::table {
                                    uint64_t count,
                                    vector::vector_t& result,
                                    uint64_t result_offset_base = 0);
-        // Returns out_of_memory / data_corruption / io_error (the refusals undo_buffer_pointer_t::pin
-        // can raise); true on success. It does NOT return write_conflict and cannot: update_info_t
-        // carries no transaction or commit stamp, so there is no other writer's mark to compare
-        // against. See the note inside update_segment_t::update.
+        // Returns out_of_memory / data_corruption / io_error (undo_buffer_pointer_t::pin's
+        // refusals); never write_conflict -- update_info_t carries no transaction/commit
+        // stamp to compare against. See the note inside update_segment_t::update.
         [[nodiscard]] core::result_wrapper_t<bool> update(uint64_t column_index,
                                                           vector::vector_t& update,
                                                           int64_t* ids,
@@ -334,17 +326,14 @@ namespace components::table {
         }
     };
 
-    // The one place an update_info_t's string bytes are made to belong to the segment. Every
+    // The one place an update_info_t's string bytes are made to belong to the segment: every
     // caller's update vector is a temporary (agent_disk_t::direct_update_sync builds a local
     // data_chunk_t and returns), so an uncopied view is a read of freed memory.
     //
-    // THE COST, STATED: update_segment_t::heap_ is a core::string_buffer_t, i.e. a
-    // std::pmr::monotonic_buffer_resource. It is APPEND-ONLY -- the only release is
-    // string_buffer_t::reset(), and nothing in this tree calls it -- so an insert here is
-    // retained until the owning column_data_t (row group column) is destroyed. Rewriting one
-    // row N times therefore retains ~N * strlen bytes, not strlen: the arena keeps every
-    // superseded copy. See the note over merge_update_loop_internal's pick_new for why the
-    // merge leg now pays this too.
+    // Cost: update_segment_t::heap_ is a core::string_buffer_t (monotonic_buffer_resource),
+    // APPEND-ONLY -- reset() is never called in this tree -- so rewriting one row N times
+    // retains ~N * strlen bytes, not strlen. See the note over merge_update_loop_internal's
+    // pick_new for why the merge leg now pays this too.
     template<>
     inline std::string_view update_select_element_t::operation(update_segment_t* segment, std::string_view element) {
         return {static_cast<char*>(segment->heap().insert(element)), element.size()};
@@ -684,13 +673,11 @@ namespace components::table {
         auto tuple_data = update_info.data<T>();
 
         for (uint64_t i = 0; i < update_info.N; i++) {
-            // The update vector holds exactly the caller's `count` values, addressed by the
-            // indexing vector ALONE. Adding `base_info.vector_index * DEFAULT_VECTOR_CAPACITY`
-            // here confuses row space with vector space: for any row in vector 1+ of a column it
-            // reads `count + 1024`-ish elements out of a `count`-element buffer, and the ROOT
-            // node -- the values every later read merges over the base -- is initialized from
-            // heap garbage. The sibling validity leg (initialize_update_validity) adds no offset
-            // either.
+            // The update vector holds exactly `count` values, addressed by the indexing vector
+            // ALONE: adding `base_info.vector_index * DEFAULT_VECTOR_CAPACITY` here confuses
+            // row space with vector space and reads out of bounds for any row in vector 1+,
+            // initializing the ROOT node from heap garbage. initialize_update_validity's
+            // sibling leg adds no offset either.
             auto idx = indexing.get_index(i);
             tuple_data[i] = update_select_element_t::operation<T>(update_info.segment, update_data[idx]);
         }
@@ -836,25 +823,19 @@ namespace components::table {
         memcpy(update_tuples, result_ids, result_offset * sizeof(uint32_t));
 
         result_offset = 0;
-        // update_select_element_t::operation, NOT the raw extractor result. Its string_view
-        // specialisation copies the bytes into the segment's own heap, and every other route into
-        // an update_info_t goes through it -- initialize_update_data on the first-update leg, and
-        // phase 1's base branch a few lines up. Skip it here and the merged row is left holding a
-        // view into the CALLER's update vector, which is a temporary at every caller
-        // (agent_disk_t::direct_update_sync builds a local data_chunk_t and returns). The row then
-        // reads back as whatever reused that memory -- surfacing not as a crash but as a
-        // pg_attribute row with a garbage attname.
+        // update_select_element_t::operation, NOT the raw extractor result -- its string_view
+        // specialisation copies bytes into the segment's own heap; every other route into an
+        // update_info_t goes through it. Skip it here and the merged row holds a view into the
+        // CALLER's update vector, a temporary at every caller (agent_disk_t::direct_update_sync),
+        // surfacing later as a garbage attname rather than a crash.
         //
-        // GROWTH (declared, because this is a behaviour change on the update hot path): for
-        // T = std::string_view that operation is heap().insert(), and update_segment_t::heap_ is a
-        // core::string_buffer_t -- a monotonic arena whose only release is a wholesale reset(),
-        // which nothing in this tree ever calls. Every merged string update therefore ALLOCATES a
-        // fresh copy and abandons the previous one: updating the same row N times in one vector
-        // retains ~N * strlen bytes (plus the arena's geometric block slack, up to ~2x) until the
-        // owning column_data_t dies with its row group -- a 64-byte value rewritten a million
-        // times is ~64 MB held, not ~64 bytes. The first-update leg (initialize_update_data) has
-        // always paid this; what changed is that the MERGE leg pays it too. That is the deliberate
-        // half of the trade: a bounded leak instead of a read of freed memory.
+        // GROWTH (declared, since this changes the update hot path): for string_view that
+        // operation is heap().insert() into update_segment_t::heap_, a monotonic arena whose
+        // only release (reset()) nothing in this tree calls -- so rewriting the same row N
+        // times retains ~N * strlen bytes (a 64-byte value rewritten a million times is ~64 MB,
+        // not ~64 bytes) until the owning column_data_t dies. initialize_update_data always
+        // paid this; the MERGE leg now pays it too -- a bounded leak instead of a read of freed
+        // memory.
         auto pick_new = [&](uint64_t id, uint64_t aidx) {
             result_values[result_offset] =
                 update_select_element_t::operation<T>(base_info.segment, extractor(update_vector_data, aidx));
@@ -884,15 +865,12 @@ namespace components::table {
                 bidx++;
             }
         }
-        // `count` is the BOUND -- how many row ids came in -- and must not move. Advancing it in
-        // lockstep with aidx never terminates: the loop walks indexing.get_index past the
-        // indexing vector, dereferences ids at whatever that returns, and pushes
-        // result_values/result_ids off their 2048-entry stack arrays and through this frame's own
-        // parameters. Entered whenever an incoming id sorts after every id already in base_info,
-        // i.e. on the second update of a vector at a higher row.
-        //
-        // There is no running output counter here at all: result_offset, which the two lambdas
-        // above own, is the only cursor either tail needs.
+        // `count` is the BOUND -- how many row ids came in -- and must not move. Advancing it
+        // in lockstep with aidx never terminates: the loop would walk indexing.get_index past
+        // the indexing vector and push result_values/result_ids off their 2048-entry stack
+        // arrays. Entered on the second update of a vector at a higher row (an incoming id
+        // sorts after every id already in base_info); result_offset is the only cursor either
+        // tail needs.
         for (; aidx < count; aidx++) {
             auto a_index = indexing.get_index(aidx);
             pick_new(static_cast<uint64_t>(ids[a_index]) - base_id, a_index);

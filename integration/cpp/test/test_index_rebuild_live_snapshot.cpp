@@ -4,17 +4,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 
-// LIVE (no-crash, no-restart) repro of the index-rebuild row_id shift.
-//
-// CHECKPOINT's index rebuild drains storage_fetch_next_batch under the checkpoint
-// statement's snapshot — a REGULAR, visibility-filtered scan that DROPS invisible
-// rows and COMPACTS the survivors' positions. repopulate_table (manager_index.cpp)
-// then numbers the re-inserted entries by POSITION in that stream, while
-// collection_t::fetch resolves index hits PHYSICALLY. Whenever compact() is
-// refused — here: a concurrent session holds an open snapshot, so a committed
-// DELETE's version stamp sits above the compact watermark — the tombstone keeps
-// its physical slot, position != physical row id, and every key after the
-// tombstone points one row low. No crash and no restart needed.
+// LIVE (no-crash, no-restart) counterpart to test_index_rebuild_crash.cpp: the checkpoint
+// rebuild keys entries by physical row id (manager_index.cpp::repopulate_table) precisely so
+// a compact() refusal (concurrent open snapshot) does not shift keys after a mid-table tombstone.
 //
 // Sessions: B opens an explicit txn (the open snapshot), C commits a mid-table
 // DELETE, A runs CHECKPOINT. Lookups by keys AFTER the deleted row must resolve
@@ -52,9 +44,8 @@ TEST_CASE("integration::cpp::index_rebuild_live_snapshot::open_snapshot_checkpoi
         REQUIRE(exec(sql)->is_success());
     }
 
-    // Session B: the open snapshot. BEGIN plus one read pins an active txn whose
-    // begin id is BELOW the upcoming DELETE's commit stamp, so checkpoint_inner's
-    // compact() refuses the rebuild and the tombstone keeps its physical slot.
+    // Session B: BEGIN plus one read pins an active txn below the upcoming DELETE's
+    // commit stamp, so checkpoint_inner's compact() refuses the rebuild.
     auto session_b = otterbrix::session_id_t();
     REQUIRE(d->execute_sql(session_b, "BEGIN;")->is_success());
     {
@@ -67,20 +58,17 @@ TEST_CASE("integration::cpp::index_rebuild_live_snapshot::open_snapshot_checkpoi
     // Session C: the committed mid-table DELETE (auto-commit).
     REQUIRE(exec("DELETE FROM b.t WHERE id = 1000;")->is_success());
 
-    // Session A: CHECKPOINT. compact() is refused (B's snapshot sits below the
-    // DELETE's stamps), but the index rebuild still runs — over a stream that
-    // does not contain the deleted row.
+    // compact() is refused (B's snapshot), but the rebuild still runs over the
+    // post-DELETE stream.
     REQUIRE(exec("CHECKPOINT;")->is_success());
 
-    // The deleted key must be gone.
     {
         auto deleted = exec("SELECT id FROM b.t WHERE k = 10000;");
         REQUIRE(deleted->is_success());
         CHECK(deleted->size() == 0);
     }
 
-    // The LAST row must be findable through the rebuilt index — and must be the
-    // right row. With the positional rebuild the entry points one row early.
+    // The LAST row must resolve to itself, not to a row one off from a shift.
     {
         auto last = exec("SELECT id FROM b.t WHERE k = " + std::to_string(10 * kRows) + ";");
         REQUIRE(last->is_success());
@@ -88,9 +76,7 @@ TEST_CASE("integration::cpp::index_rebuild_live_snapshot::open_snapshot_checkpoi
         CHECK(last->value(0, 0).value<int64_t>() == kRows);
     }
 
-    // The first key after the tombstone: the first shifted victim. Positionally
-    // rebuilt, its entry lands on the tombstone's physical slot — the lookup
-    // either resurrects the deleted row or returns nothing.
+    // The first key after the tombstone: the first candidate to shift into its slot.
     {
         auto shifted = exec("SELECT id FROM b.t WHERE k = 10010;");
         REQUIRE(shifted->is_success());

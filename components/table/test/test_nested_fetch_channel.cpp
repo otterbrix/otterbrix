@@ -1,34 +1,28 @@
-// The nested half of the fetch channel: column_fetch_state carries TWO fields that a nested
-// column MUST hand to the child that actually reads the bytes.
+// The nested half of the fetch channel: column_fetch_state carries TWO fields a nested column
+// must hand to the child that actually reads the bytes.
 //
-// A STRUCT node owns no segments: every byte of a struct cell is read by a child column, on a
-// CHILD column_fetch_state. Build those children with `std::make_unique<column_fetch_state>()`
-// -- a default-constructed state, i.e. result_outlives_pins == false and a fetch_error nobody
-// above reads -- and two silent failures follow. LIST and ARRAY have the same shape, for their
-// validity child and for an element leg taken through a local column_scan_state:
+// A STRUCT node owns no segments -- every byte of a struct cell is read by a child column, on a
+// CHILD column_fetch_state. Building those children with a default-constructed state
+// (result_outlives_pins == false, fetch_error nobody above reads) causes two silent failures.
+// LIST/ARRAY have the same shape, for their validity child and an element leg read through a
+// local column_scan_state:
 //
-//   1. BORROWED VIEWS THAT OUTLIVE THEIR PINS. A caller whose result outlives the state says so
-//      (table_storage_adapter_t::fetch and row_group_t's late-materialisation gather both set
-//      result_outlives_pins = true) and the string leg then COPIES the bytes into the result's
-//      own heap. Let the flag stop at the struct and the field's child state reads false, so
-//      string_fetch_row writes a view BORROWED from the pinned block -- and the pins live in the
-//      child's `handles`, which die with the parent state the moment the fetch returns. The
-//      caller keeps a chunk pointing into a block the pool is free to evict, spill and reload at
-//      another address.
+//   1. BORROWED VIEWS OUTLIVE THEIR PINS. table_storage_adapter_t::fetch and row_group_t's
+//      late-materialisation gather set result_outlives_pins = true so the string leg COPIES bytes
+//      into the result's heap; if the flag stops at the struct, the child reads false and
+//      string_fetch_row instead BORROWS from the pinned block -- whose pin lives in the child's
+//      `handles` and dies with the parent state when the fetch returns. The caller keeps a chunk
+//      pointing into a block the pool is free to evict/reload elsewhere.
 //
-//   2. LOST data_corruption. A big string (>= DEFAULT_STRING_BLOCK_LIMIT = 4096 bytes) lives in
-//      an overflow block, and only the segment's own registry may resolve one: an unregistered
-//      id is a LOUD data_corruption, written into the reading state's fetch_error. In a struct
-//      field that state is the child's, so without a channel out the report dies there and the
-//      statement answers with a silently EMPTY field. test_storage_adapter_fetch.cpp pins the
-//      same thing for a FLAT column; this file covers the nested path.
+//   2. LOST data_corruption. A big string (>= DEFAULT_STRING_BLOCK_LIMIT bytes) lives in an
+//      overflow block resolved only through the segment's own registry; an unregistered id writes
+//      a LOUD data_corruption into the reading state's fetch_error -- the CHILD's state in a
+//      struct field, so without a channel out the statement answers with a silently EMPTY field.
+//      test_storage_adapter_fetch.cpp covers the FLAT-column case; this file covers nested.
 //
-// ISOLATING THE COLUMN VIEW. Partial-block packing puts a nested child's segment in the same
-// block as a flat column's, so a gate that also holds a flat string column can be answered by
-// the flat column BY ACCIDENT and go green on unfixed code. Every table below therefore has
-// exactly ONE column, a nested one, and the gates assert that the nested node owns NO top-level
-// segment of its own (`current == nullptr`), so the only STRING segment in the table is the leaf
-// the case corrupts, reachable only through the nested read path.
+// ISOLATION: partial-block packing can put a nested child's segment in the same block as a flat
+// column's, letting a flat column answer for it BY ACCIDENT. Every table below has exactly ONE
+// column, a nested one, and gates assert it owns no top-level segment (`current == nullptr`).
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -296,8 +290,8 @@ TEST_CASE("nested fetch: a data_corruption raised under a struct reaches the sta
         REQUIRE(leaf_view(out, shape) == big);
     }
 
-    // The exact shape of the original crash report: a transient-domain id the block manager has
-    // never registered.
+    // A transient-domain id the block manager has never registered -- production's actual
+    // overflow-block corruption shape.
     overwrite_only_overflow_marker(env, *built.leaf_segment, tstorage::MAXIMUM_BLOCK + 424242);
 
     auto types = built.table->copy_types();

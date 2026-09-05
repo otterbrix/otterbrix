@@ -16,12 +16,9 @@ namespace components::vector::arrow {
 
     typedef void (*cast_unique_arrow_t)(vector_t& source, vector_t& result, size_t count);
 
-    // Rule 14: the ArrowArray is refcounted intrusively (arrow_wrapper.hpp), not by
-    // std::shared_ptr. The shape is genuinely SHARED — one ArrowArray backs several vectors at
-    // once (three set_auxiliary sites in arrow_conversion.cpp all hand it the same
-    // arrow_array_scan_state::owned_data, and arrow_type.cpp does a fourth for the dictionary)
-    // — so intrusive_ptr, not unique_ptr, is the replacement. This holder keeps the array alive
-    // for as long as the vector buffer points into its data.
+    // Intrusive refcount (arrow_wrapper.hpp), not std::shared_ptr: the ArrowArray is
+    // genuinely SHARED across several vectors at once, so intrusive_ptr, not unique_ptr, is the
+    // replacement. This holder keeps the array alive as long as the vector buffer points into it.
     class arrow_auxiliary_data_t : public vector_auxiliary_data_t {
     public:
         explicit arrow_auxiliary_data_t(arrow_array_wrapper_ptr arrow_array_p)
@@ -32,7 +29,7 @@ namespace components::vector::arrow {
         arrow_array_wrapper_ptr arrow_array;
     };
 
-    // Intrusive refcount (rule 14: no std::shared_ptr): single-owner in practice —
+    // Intrusive refcount (std::shared_ptr is banned): single-owner in practice —
     // arrow_type::extension_data and arrow_type_extension_t::type_extension_ hold it.
     class arrow_type_extension_data_t : public boost::intrusive_ref_counter<arrow_type_extension_data_t> {
     public:
@@ -67,10 +64,9 @@ namespace components::vector::arrow {
         explicit arrow_type(types::complex_logical_type type, std::unique_ptr<arrow_type_info> type_info = nullptr)
             : type_(std::move(type))
             , type_info_(std::move(type_info)) {}
-        // NO error-reporting constructor here: error_message_ / not_implemented_ members that
-        // nothing reads make a type built through them present as a plain INVALID type with no
-        // diagnostic. Refusals travel core::result_wrapper_t through type_from_format /
-        // type_from_schema below.
+        // No error-reporting constructor: unread error_message_/not_implemented_ members would
+        // just present as a plain INVALID type with no diagnostic. Refusals travel through
+        // core::result_wrapper_t via type_from_format / type_from_schema below.
 
         types::complex_logical_type type(bool use_dictionary = false) const;
 

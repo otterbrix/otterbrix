@@ -5,14 +5,14 @@ namespace otterbrix {
     core::result_wrapper_t<std::pmr::vector<std::pmr::string>>
     user_table_names_from_pg_class(std::pmr::memory_resource* resource,
                                    const components::cursor::cursor_t_ptr& cursor) {
-        // A cursor that never arrived means the dispatcher answered nothing at all.
-        // That is an engine fault, not a catalog with no tables in it.
+        // No cursor means the dispatcher answered nothing at all — an engine fault,
+        // not a catalog with no tables in it.
         if (!cursor) {
             return core::error_t{core::error_code_t::physical_plan_error,
                                  std::pmr::string{"listTables: the catalog query returned no cursor", resource}};
         }
-        // Rule 6: hand the engine's own error back untouched. Collapsing it into an
-        // empty list is what made a broken catalog read look like an empty database.
+        // Propagate the engine's own error; collapsing it to an empty list
+        // would hide a broken read as an empty catalog.
         if (cursor->is_error()) {
             return cursor->get_error();
         }
@@ -48,12 +48,10 @@ namespace otterbrix {
             if (oid_cell.is_null() || oid_cell.value<std::uint32_t>() < components::catalog::FIRST_USER_OID) {
                 continue; // system catalog object
             }
-            // relname AND relkind ARE NOT NULL IN THE SCHEMA (system_table_schemas.cpp), so a
-            // NULL — or empty relkind — here is a corrupt catalog row, not a row to filter.
-            // Unchecked, both pass in silence and each the wrong way around: a NULL-relkind
-            // row is ACCEPTED as a regular table (an index with a corrupted kind byte shows up
-            // in the listing) and a NULL-relname row is OMITTED (a table that exists goes
-            // silently missing). Rule 6: a catalog that cannot be trusted refuses.
+            // relname and relkind are NOT NULL in the schema (system_table_schemas.cpp): a
+            // NULL/empty value here is a corrupt row, not one to filter. Unchecked, a NULL
+            // relkind reads as a regular table and a NULL relname silently drops a real one.
+            // A catalog that cannot be trusted refuses.
             const auto oid_value = oid_cell.value<std::uint32_t>();
             auto relkind_cell = cursor->value(static_cast<uint64_t>(relkind_col));
             if (relkind_cell.is_null()) {

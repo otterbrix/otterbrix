@@ -149,11 +149,9 @@ TEST_CASE("integration::cpp::select_rework::cast applied to an arithmetic result
     REQUIRE(cursor->is_success());
     CHECK(cursor->size() == 2);
     CHECK(column_count(cursor) == 1);
-    // The VALUES, not just the shape: folding this projection into a single constant
-    // parameter -- get_value reads a cast's operand as an A_Const, over the `x + 1` A_Expr
-    // that lands on the operator node's lexpr POINTER -- makes both rows come back carrying
-    // the same run-dependent garbage, which the shape checks above never notice.
-    // x is -2 and 3.
+    // The VALUES, not just the shape: get_value used to read the cast's operand as a
+    // constant instead of the `x + 1` expression, so both rows came back identical —
+    // which the shape checks above never notice. x is -2 and 3.
     CHECK(numeric_at(cursor, 0) == Catch::Approx(-1.0));
     CHECK(numeric_at(cursor, 1) == Catch::Approx(4.0));
 }

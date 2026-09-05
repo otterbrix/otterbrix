@@ -30,12 +30,9 @@
 namespace services::wal {
 
 #ifdef DEV_MODE
-    // Test-observable count of auto-checkpoint rounds that have ENDED — every exit path of
-    // run_auto_checkpoint, the abandoned ones included. The round is fire-and-forget off
-    // commit_txn and its truncation is its LAST step, so a case that wants to read the journal
-    // the round left behind has no other way to know the round is over: waiting on a clock
-    // reads a round that has not got there yet, and waiting on a disk-agent counter reads one
-    // that has only just started.
+    // Test-observable count of auto-checkpoint rounds that have ENDED (every exit path,
+    // abandoned included). The round is fire-and-forget off commit_txn, so a test waiting to
+    // read the journal it left behind has no other way to know the round is over.
     uint64_t auto_checkpoint_rounds() noexcept;
     void reset_auto_checkpoint_rounds() noexcept;
 #endif
@@ -176,13 +173,10 @@ namespace services::wal {
             reset_auto_checkpoint_bytes();
         }
 
-        // THE ONE EXIT OF A ROUND, taken by all four of run_auto_checkpoint's returns —
-        // the completed one and the three that abandon. Being one function is what makes an
-        // ABANDONED round exactly as repeatable as a completed one: the byte window is rebased
-        // on what is actually on disk now, and the dedup guard is released, so the next
-        // threshold trip launches a fresh round instead of finding this one still in flight.
-        // An abandoned round that forgot either half would trade a recoverable failure for a
-        // permanent one, which is the whole reason abandoning is allowed to be the answer here.
+        // THE ONE EXIT OF A ROUND, taken by all four of run_auto_checkpoint's returns. Being one
+        // function is what makes an ABANDONED round exactly as repeatable as a completed one: it
+        // rebases the byte window on what's on disk now and releases the dedup guard, so the next
+        // trip launches fresh instead of finding this one still in flight.
         void end_auto_checkpoint_round() noexcept;
 
         // Compute total WAL directory bytes by scanning segment files.
@@ -212,11 +206,10 @@ namespace services::wal {
         // thread via needs_auto_checkpoint(). Plain uintmax_t raced.
         std::atomic<std::uintmax_t> wal_bytes_since_checkpoint_{0};
 
-        // Size of the WAL directory as of the last completed checkpoint. The "since" counter above
-        // is the difference against this, which is what its name and the threshold contract say it
-        // is. Holding the TOTAL directory size in that counter instead makes every commit after
-        // the first threshold trip re-trip it, and every trip copies each table's whole .otbx
-        // file — measured at one checkpoint per commit, 1009 of them for 10k rows.
+        // Size of the WAL directory as of the last completed checkpoint. Holding the TOTAL
+        // directory size in the "since" counter instead makes every commit after the first
+        // threshold trip re-trip it — measured at one checkpoint per commit, 1009 of them for
+        // 10k rows.
         std::atomic<std::uintmax_t> wal_bytes_at_last_checkpoint_{0};
 
         actor_zeta::address_t manager_disk_;
@@ -242,12 +235,10 @@ namespace services::wal {
         // INDEX backfill. truncate_before clamps to min(this set) so concurrent
         // catchup never misses a truncated record. Empty => no clamp.
         //
-        // A MULTISET, and that is load-bearing: register/unregister arrive in PAIRS, one per
-        // build, and two concurrent builds can legitimately start at the SAME wal position. A
-        // deduplicating set collapsed those into one entry — the first unregister released the
-        // clamp while the second build still needed it (truncate could then unlink the very
-        // segments its catchup reads), and the second unregister found nothing to erase and
-        // aborted the process.
+        // A MULTISET, load-bearing: two concurrent builds can legitimately start at the SAME wal
+        // position. A deduplicating set once collapsed those into one entry, so the first
+        // unregister released the clamp the second build still needed, and the second unregister
+        // found nothing to erase and aborted the process.
         std::pmr::multiset<wal::id_t> active_build_start_positions_{resource_};
 
         // Parks the fire-and-forget future of the commit_txn -> run_auto_checkpoint

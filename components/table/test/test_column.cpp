@@ -55,10 +55,8 @@ TEST_CASE("components::table::column") {
         return std::string{"long_string_with_index_" + number};
     };
 
-    // Every block below runs on a real .otbx, re-created fresh for each one, and they DO reach
-    // the disk path: a nested column's child segment holds 1024 values, so a 1024-row append of
-    // a 128-element ARRAY fills (and writes through) 128 of them. Substrate only — no assertion
-    // below is about it.
+    // Fresh .otbx per block: child segments cap at 1024 values, so even a 128-element ARRAY
+    // append writes through to disk.
     const std::string db_path = "/tmp/test_otterbrix_column_" + std::to_string(::getpid()) + ".otbx";
 
     std::pmr::vector<complex_logical_type> fields(&resource);

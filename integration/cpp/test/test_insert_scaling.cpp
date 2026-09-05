@@ -5,29 +5,11 @@
 #include <components/table/data_table.hpp>
 #include <string>
 
-// Insert cost must not depend on table size.
-//
-// agent_disk_t::storage_append_inner used to carry a "dedup" stage inherited from the
-// pre-#460 document store: when the incoming chunk had a column aliased `_id` and the
-// table was non-empty, it materialized the ENTIRE table into one chunk (storage_t::scan
-// with limit -1), built a std::unordered_set<std::string> with one heap string per
-// existing row, and silently DROPPED incoming rows whose `_id` already existed — while
-// the statement still reported success. That made every insert batch O(table rows)
-// (measured 24.2x per-row cost between a 1k-row and a 100k-row table), lost rows
-// without an error (rule 6), and MASKED a declared UNIQUE/PRIMARY KEY on a column
-// named `_id`: the duplicate row was filtered before the append, so
-// operator_unique_constraint_t's existing-row scan found only one match and let the
-// statement succeed where the same statement on any other column name fails loudly.
-//
-// The fix removes the stage. Uniqueness has exactly one implementation —
-// operator_unique_constraint_t over DECLARED constraints — and `_id` is an ordinary
-// column name. These tests pin all four faces of that:
-//   1. work: one insert batch streams a table-size-independent number of rows
-//      (counted via table_scan_rows_streamed, not wall-clock — Debug builds time badly);
-//   2. no constraint: duplicate `_id` values are ordinary duplicates — kept, counted;
-//   3. declared PK on `_id`: the duplicate statement FAILS and the row is not kept;
-//   4. restart: the PK enforcement holds after close+reopen with no in-process state
-//      to rebuild (the operator's existing-row check scans storage, which reloads).
+// Insert cost must not depend on table size. storage_append_inner used to run a "dedup" stage
+// on any `_id` column: it scanned the WHOLE table per insert (measured 24.2x cost, 1k vs 100k
+// rows), silently dropped duplicate `_id`s while reporting success, and masked a
+// declared PRIMARY KEY on `_id` by filtering the duplicate before the constraint operator saw
+// it. The fix removes the stage — operator_unique_constraint_t is the only uniqueness check.
 
 using namespace test_helpers;
 
@@ -62,10 +44,8 @@ namespace {
     }
 } // namespace
 
-// ---------------------------------------------------------------------------
-// (1) Structural criterion: the rows an insert batch READS do not grow with the
-//     rows already stored. Counted work, not wall-clock.
-// ---------------------------------------------------------------------------
+// Rows an insert batch reads must not grow with rows already stored — counted work, not
+// wall-clock (Debug builds time badly).
 TEST_CASE("integration::cpp::test_insert_scaling::insert_scan_cost_does_not_grow_with_table_size") {
     auto config = make_test_config(integration_fixture_path("test_insert_scaling/scan_cost"));
     test_spaces space(config);
@@ -84,16 +64,12 @@ TEST_CASE("integration::cpp::test_insert_scaling::insert_scan_cost_does_not_grow
                                  << small_probe);
     INFO("rows streamed by one " << kProbeRows << "-row INSERT into a ~" << kLargeRows << "-row table: "
                                  << large_probe);
-    // Equal work within one probe batch of slack. The old dedup streamed the whole
-    // table here (small_probe ~ 1k, large_probe ~ 100k); an insert that reads
-    // O(table) rows cannot satisfy this at any constant.
+    // Equal work within one probe batch of slack — the old dedup streamed the whole table
+    // here (small_probe ~1k vs large_probe ~100k), which no O(table) insert could satisfy.
     REQUIRE(large_probe <= small_probe + kProbeRows);
 }
 
-// ---------------------------------------------------------------------------
-// (2) `_id` without a declared constraint is an ordinary column: a duplicate
-//     value is kept, and the caller is told exactly what was inserted.
-// ---------------------------------------------------------------------------
+// `_id` without a declared constraint is an ordinary column: a duplicate value is kept.
 TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_without_constraint_is_kept") {
     auto config = make_test_config(integration_fixture_path("test_insert_scaling/no_constraint"));
     test_spaces space(config);
@@ -120,12 +96,8 @@ TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_without_constrain
     }
 }
 
-// ---------------------------------------------------------------------------
-// (3) A DECLARED PRIMARY KEY on `_id` is enforced the one canonical way: the
-//     duplicate statement fails loudly and the row is not kept. (The old dedup
-//     dropped the row BEFORE the append, so the constraint operator's
-//     existing-row scan saw no duplicate and the statement succeeded.)
-// ---------------------------------------------------------------------------
+// A declared PRIMARY KEY on `_id` must reject the duplicate. (The old dedup dropped the row
+// before the append, so the constraint's existing-row scan never saw a duplicate.)
 TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_with_primary_key_fails_loud") {
     auto config = make_test_config(integration_fixture_path("test_insert_scaling/pk"));
     test_spaces space(config);
@@ -151,11 +123,8 @@ TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_with_primary_key_
     REQUIRE(exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('m', 3);")->is_success());
 }
 
-// ---------------------------------------------------------------------------
-// (4) The PK enforcement survives a restart. There is no in-process id set to
-//     rebuild: the constraint's existing-row check reads the reloaded storage,
-//     so close + reopen must reject the same duplicate it rejected before.
-// ---------------------------------------------------------------------------
+// No in-process id set to rebuild: the constraint's existing-row check reads reloaded
+// storage, so close+reopen must reject the same duplicate.
 TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_rejection_survives_restart") {
     auto config = make_test_config(integration_fixture_path("test_insert_scaling/restart"),
                                    true);

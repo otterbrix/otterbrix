@@ -1,22 +1,3 @@
-// THE PER-TRANSACTION BUFFER, ASKED OF THE AGENT THAT NOW OWNS IT.
-//
-// The buffer sits beside the store it belongs to, so its contracts are asked through the mailbox,
-// of both families:
-//
-//   * a transaction sees its OWN staged insert and no other transaction's;
-//   * a staged delete hides a row from the transaction that staged it;
-//   * an abort erases the bucket; a commit publishes it and clears it;
-//   * a HASHED key is NORMALIZED before it is keyed, so a SMALLINT probe matches a
-//     BIGINT-stored key;
-//   * an ORDERED agent answers all six predicates over its buckets, a hashed one refuses the
-//     five it has no ordering for -- with a value, not a signal.
-//
-// WHAT THE MOVE ADDS, and what could not be asked of the facade at all: the answer that comes back
-// is BOTH halves. The facade had no store to read, so its cases could only ever see the buffer;
-// here a committed row and a staged one arrive in one reply, which is what a statement actually
-// gets. Each agent is driven by hand (cooperative_actor::resume(1)) so no scheduler decides an
-// interleaving behind the test's back.
-
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
 #include <memory>
@@ -60,13 +41,8 @@ using services::index::index_agent_contract;
 
 namespace {
 
-    // THE COMMIT ID A FIXTURE'S TRANSACTION COMMITTED AT, kept far from the txn id it is derived
-    // from because the two are different id spaces. The txn id says WHICH BUCKET to publish; the
-    // commit id is what the hashed family stamps into its durable txn-log frame and what the
-    // recover gate judges the frame by (bitcask_index_disk.cpp). One number serving as both is
-    // exactly the confusion that let a COMMIT marker of an earlier incarnation vouch for a later
-    // one's frame under a recycled txn id. The rebuild feed (txn_id 0) journals nothing and
-    // carries commit id 0.
+    // Kept far from txn_id: reusing one number for both let a COMMIT marker from an earlier
+    // incarnation vouch for a later frame under a recycled txn id (bitcask_index_disk.cpp).
     constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
     constexpr components::catalog::oid_t kTableOid = 17300;
@@ -89,8 +65,8 @@ namespace {
         return values;
     }
 
-    // One message, pumped to completion, its reply taken. Every handler under test is a
-    // straight-line coroutine with no cross-actor await, so ONE resume finishes it.
+    // Every handler under test is a straight-line coroutine with no cross-actor await,
+    // so one resume finishes it.
     template<auto Handler, typename Agent, typename... Args>
     auto ask(Agent& agent, Args&&... args) {
         auto [needs_sched, future] =
@@ -106,9 +82,8 @@ namespace {
         return out;
     }
 
-    // RAII around ONE environment variable, for the store's DEV_MODE seams. It restores the
-    // previous value rather than unsetting blindly, so a case cannot leak an arming into the
-    // rest of the run.
+    // Restores the previous value rather than unsetting blindly, so a case can't leak an
+    // arming into the rest of the run.
     struct env_var_guard_t {
         std::string name;
         bool had_value{false};
@@ -169,8 +144,6 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
             ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 0}}))
                 .contains_error());
         CHECK(read(txn1, compare_type::eq) == std::vector<int64_t>{0});
-        // Another transaction's bucket is not even looked up: there is no stamp to compare
-        // and no visibility predicate to get wrong.
         CHECK(read(txn2, compare_type::eq).empty());
     }
 
@@ -180,8 +153,6 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
                 .contains_error());
         REQUIRE_FALSE(
             ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
-        // The row is no longer in a bucket AND it is still in the answer -- which is the
-        // half the facade could never show, because it had no store to publish into.
         CHECK(read(txn2, compare_type::eq) == std::vector<int64_t>{0});
         CHECK(read(0, compare_type::eq) == std::vector<int64_t>{0});
     }
@@ -240,18 +211,13 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
 
         REQUIRE_FALSE(ask<&index_agent_contract::clear>(agent, session).contains_error());
 
-        // The durable half is gone: the committed row txn1 published is no longer there, so a
-        // clear that wiped only the buckets would leave a rebuilt index reporting phantom rows.
         INFO("the committed row must not survive the clear");
         CHECK(read(txn1, compare_type::eq).empty());
 
-        // But txn2's OWN staged row does survive, and that is the contract, not an oversight.
-        // clear() is the opening step of repopulate_table, which stages and commits under txn
-        // id 0; bucket 0 is therefore the only one this call is a part of. Taking txn2's
-        // bucket too made its later commit_inserts take the empty-journal road and report
-        // success over nothing -- the heap keeping a row the index does not name is a SHORT
-        // answer, the one direction that cannot be corrected downstream. Owner's decision,
-        // 2026-09-05; the defect is pinned per family by test_index_agent_rebuild_clear.cpp.
+        // clear() is scoped to bucket 0 (repopulate_table's own txn). Taking txn2's live bucket
+        // too would let its later commit_inserts report success over an empty journal -- a
+        // short answer, which is worse than the superset a surviving bucket risks. Owner's
+        // decision, 2026-09-05; see test_index_agent_rebuild_clear.cpp.
         INFO("a live writer's staged keys are its own and must outlive a rebuild's clear");
         auto own = read(txn2, compare_type::eq);
         REQUIRE(own.size() == 1);
@@ -261,10 +227,8 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
     std::filesystem::remove_all(path);
 }
 
-// ALL SIX PREDICATES over the buckets, which is what separates the ordered family from
-// the hashed one: a staged row keyed 3 belongs in the answer to `x < 5` and not in the
-// answer to `x = 5`. A merge that only knew equality would silently drop it — a
-// transaction failing to see its own write.
+// Ordered agents answer all six predicates over staged rows, not just equality --
+// a merge that only knew equality would drop a transaction's own write from a range query.
 TEST_CASE("services::index::btree_index_agent_t answers every predicate over staged rows") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -368,11 +332,8 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
         CHECK(read(txn1, val77).empty());
     }
 
-    // A HASHED key is NORMALIZED -- the integer family widened to BIGINT / UBIGINT --
-    // before it is keyed, in the agent's encoder AND in the store's key_bytes_for_hash.
-    // That is what makes the two halves of one answer key alike, so the case checks the
-    // widening across BOTH: the row is committed into the store under a BIGINT key and
-    // probed with a SMALLINT one.
+    // A hashed key is normalized to BIGINT/UBIGINT before keying, in both the agent's encoder
+    // and the store's key_bytes_for_hash -- checked here across both halves.
     SECTION("a SMALLINT probe matches a BIGINT-stored key, in the bucket and in the store") {
         REQUIRE_FALSE(
             ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{4242, 1}}))
@@ -386,16 +347,11 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
         INFO("and so must the committed half, or the two halves would key differently");
         CHECK(read(txn2, probe_small) == std::vector<int64_t>{1});
 
-        // The control: a key nothing carries stays unmatched, so the case cannot pass by
-        // matching everything.
         CHECK(read(txn2, logical_value_t(&resource, int16_t{4243})).empty());
     }
 
-    // A hash bucket has no ordering, so nothing but equality can be asked. It comes back
-    // as a VALUE: an empty range would be indistinguishable from "no row carries this
-    // key", which is a wrong answer dressed as a fast one. This is the last line of
-    // defence — manager_index_t refuses the same predicate a round trip earlier, off the
-    // record's `ordered` flag.
+    // A range refusal must be a VALUE, not an empty result: an empty range is
+    // indistinguishable from "no row carries this key".
     SECTION("a range predicate is refused, loudly") {
         for (auto compare : {compare_type::ne,
                              compare_type::lt,
@@ -416,10 +372,8 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
     std::filesystem::remove_all(path);
 }
 
-// THE STATIC ANSWERS the manager routes on. They replaced two virtual accessors on the
-// dead index_t, and the record manager_index_t keeps per index is a copy of them, so a
-// family that stopped declaring them would take a range predicate all the way down to a
-// store with no ordering to answer it.
+// manager_index_t routes on these statics; a family that stopped declaring them would take
+// a range predicate all the way down to a store with no ordering to answer it.
 TEST_CASE("services::index::each agent family states its backend and its ordering") {
     STATIC_REQUIRE(btree_index_agent_t::index_type_v == components::logical_plan::index_type::single);
     STATIC_REQUIRE(btree_index_agent_t::supports_ordered_probe_v);
@@ -427,11 +381,9 @@ TEST_CASE("services::index::each agent family states its backend and its orderin
     STATIC_REQUIRE_FALSE(bitcask_index_agent_t::supports_ordered_probe_v);
 }
 
-// A NULL key is never staged and never probed for -- ONE rule (index_key_is_null), called
-// by both families. The consequence of losing it is specific and not a missing row: on the
-// ordered side convert() maps a NULL to the NA physical_value, which is what
-// numeric_limits<physical_value>::max() returns, so a stored NULL sorts after every real
-// key and joins EVERY upper-bound and gte answer the tree gives.
+// A NULL key must never be staged: convert() maps NULL to the NA physical_value
+// (numeric_limits<physical_value>::max()), so a stored NULL would sort after every real
+// key and pollute every upper-bound/gte answer.
 TEST_CASE("services::index::a NULL key is neither staged nor matched") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -451,7 +403,6 @@ TEST_CASE("services::index::a NULL key is neither staged nor matched") {
     REQUIRE_FALSE(
         ask<&index_agent_contract::stage_inserts>(agent, session, txn, std::move(with_null)).contains_error());
 
-    // `col <op> NULL` is UNKNOWN for every row, so it selects nothing.
     auto null_probe = ask<&index_agent_contract::read_rows>(agent,
                                                             session,
                                                             compare_type::eq,
@@ -460,8 +411,6 @@ TEST_CASE("services::index::a NULL key is neither staged nor matched") {
     REQUIRE_FALSE(null_probe.has_error());
     CHECK(null_probe.value().empty());
 
-    // The non-null neighbour was staged, so the batch was not dropped whole; and the NULL
-    // does not join the open ray above every real key.
     auto gte_probe = ask<&index_agent_contract::read_rows>(agent,
                                                            session,
                                                            compare_type::gte,
@@ -473,20 +422,10 @@ TEST_CASE("services::index::a NULL key is neither staged nor matched") {
     std::filesystem::remove_all(path);
 }
 
-// ---------------------------------------------------------------------------------------
-//
-// THE STORE'S REFUSAL IS THE HANDLER'S ANSWER, and the buckets go with it either way.
-//
-// index_agent_contract::clear returns a core::error_t and manager_index_t::repopulate_table awaits
-// it and folds it into its first_error. An agent that discarded what the store said and co_returned
-// no_error unconditionally would make that fold a fold over a constant: a CHECKPOINT whose index
-// rebuild refused would report a clean rebuild, and the table and its index would disagree with
-// nothing anywhere saying so.
-//
-// The second half is the ordering risk the same FIFO carries: stage_inserts and commit_inserts are
-// queued right behind this clear, on the same agent, in the same repopulate. If the buckets
-// survived a refused clear, that commit would publish rows into the index this call failed to empty
-// -- so they are dropped even on the refusal.
+// If clear() swallowed the store's error and returned no_error() unconditionally, a
+// CHECKPOINT whose index rebuild refused would report a clean rebuild. Buckets must also
+// be dropped on refusal, or the FIFO-queued commit right behind it would publish rows
+// into an index this call failed to empty.
 TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal to clear") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -510,7 +449,6 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
                       .contains_error());
     REQUIRE_FALSE(
         ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
-    // A bucket left standing across the clear, which is what the second half is about.
     REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 2}}))
                       .contains_error());
 
@@ -520,7 +458,6 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
         INFO("a rebuild the store could not finish has to reach the manager that awaits this");
         REQUIRE(clear_error.contains_error());
 
-        // The bucket went with the store. The staged row cannot come back from it.
         const auto after = ask<&index_agent_contract::read_rows>(agent,
                                                                  session,
                                                                  compare_type::eq,
@@ -529,14 +466,12 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
         INFO("a read over a store whose rebuild refused is a refusal, not an empty answer");
         REQUIRE(after.has_error());
 
-        // And the repopulate's own next two messages do not turn the refusal into a success.
         REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(&resource, {{42, 3}}))
                           .contains_error());
         REQUIRE(ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
     }
 
-    // Disarmed: the agent is repairable in place, which is what keeps "loud" from meaning
-    // "dead" for the index this agent stands for.
+    // Disarmed: the agent is repairable in place.
     REQUIRE_FALSE(ask<&index_agent_contract::clear>(agent, session).contains_error());
     REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(&resource, {{42, 4}}))
                       .contains_error());
@@ -555,11 +490,9 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
     std::filesystem::remove_all(path);
 }
 
-// A directory-listing refusal met by the merge a write handler pays for (pay_merge_debt ->
-// merge_immutable_segments -> collect_segments) must not be PARKED in pending_write_error_ and
-// surfaced on the NEXT force_flush: that reports a failure of this round at a step of a later
-// one, which is where a debugger then goes looking. The refusal comes back from the handler
-// that ran the merge, and nothing is left behind for the next round to trip over.
+// A merge refusal (pay_merge_debt -> merge_immutable_segments -> collect_segments) must
+// surface in the round that met it, not get parked in pending_write_error_ for the next
+// force_flush to report and mis-attribute.
 TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the round that met it") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -582,8 +515,8 @@ TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the
     const uint64_t txn1 = TRANSACTION_ID_START + 61;
     const uint64_t txn2 = TRANSACTION_ID_START + 62;
 
-    // Round 1: enough records to rotate; the merge debt this arms is paid at the end of
-    // the commit, against a directory that is still perfectly listable.
+    // Round 1: enough records to rotate and arm a merge debt, paid while the directory
+    // is still listable.
     REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent,
                                                             session,
                                                             txn1,
@@ -592,9 +525,8 @@ TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the
     REQUIRE_FALSE(
         ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
 
-    // The directory stops being LISTABLE and nothing else: files inside can still be
-    // opened, created and renamed (owner keeps write+execute), so every write of round 2
-    // lands and only the merge's collect_segments can refuse.
+    // Directory becomes unlistable but stays writable/executable, so every round-2 write
+    // still lands and only collect_segments can refuse.
     std::filesystem::permissions(index_dir,
                                  std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec);
     struct restore_perms_t {
@@ -602,8 +534,6 @@ TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the
         ~restore_perms_t() { std::filesystem::permissions(dir, std::filesystem::perms::owner_all); }
     } restore{index_dir};
 
-    // Round 2: the writes rotate again, the handler pays the merge debt, the listing
-    // refuses. The refusal belongs to THIS reply.
     REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent,
                                                             session,
                                                             txn2,
@@ -611,11 +541,8 @@ TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the
                       .contains_error());
     auto commit2 = ask<&index_agent_contract::commit_inserts>(agent, session, txn2, commit_id_of(txn2));
     INFO("the merge met the unlistable directory inside THIS commit; the reply must say so");
-    // What this catches: no_error here, with the refusal surfacing on the NEXT force_flush.
     REQUIRE(commit2.contains_error());
 
-    // The device heals; the next flush must be CLEAN -- nothing may still be parked from
-    // a failure that was already reported.
     std::filesystem::permissions(index_dir, std::filesystem::perms::owner_all);
     auto flush = ask<&index_agent_contract::force_flush>(agent, session);
     INFO("a refusal already delivered must not be re-delivered by a later round");

@@ -18,41 +18,32 @@
 #include <utility>
 #include <vector>
 
-// A DDL STATEMENT MUST NOT READ A CATALOG IT COULD NOT READ AS "THE NAME IS FREE".
+// A DDL statement must not read a catalog it could not read as "the name is free".
 //
-// manager_disk_t::scan_table (manager_disk_resolve.cpp) is the SINGLE funnel every catalog
-// read goes through: namespace resolve, function resolve, cast lookup, namespace enumeration.
-// A scan that comes back with an error must not degrade to an EMPTY batch list there, because
-// an empty batch list is also what "no matching rows" looks like: operator_register_udf reads
-// an empty match set as "no function of this name exists" and mints a pg_proc row, so a read
+// manager_disk_t::scan_table (manager_disk_resolve.cpp) is the single funnel every catalog
+// read goes through. A scan that errors must not degrade to an EMPTY batch list, since an
+// empty list is also what "no matching rows" looks like: operator_register_udf reads an
+// empty match set as "no function of this name exists" and mints a pg_proc row, so a read
 // failure on pg_proc turns the cross-namespace conflict check into a rubber stamp and the
-// statement reports SUCCESS over a DUPLICATE catalog row.
+// statement reports SUCCESS over a DUPLICATE row.
 //
-// THE SECOND FUNCTION IS A DIFFERENT OVERLOAD OF THE SAME NAME, on purpose. Re-registering an
-// IDENTICAL signature never reaches the catalog: manager_dispatcher_t::register_udf fans out
-// to the per-executor registries FIRST and refuses a duplicate signature there with
-// function_registry_error. A new overload of an existing NAME passes that fan-out, and the
-// pg_proc row is then the only thing that knows the name is taken.
+// The second probe function is a DIFFERENT overload of the same name, on purpose: an identical
+// signature never reaches the catalog at all, since manager_dispatcher_t::register_udf refuses
+// a duplicate signature in the per-executor registries first. A new overload of an existing
+// name passes that fan-out, so pg_proc is the only thing that knows the name is taken.
 //
-// THE INJECTION, and why it lands where it does. MEASURED FIRST, because the obvious recipe
-// does not work: poisoning pg_proc's handle AFTER the engine is up reaches nothing at all — a
-// recording interposer over pg_proc's file says a statement-time catalog scan issues ZERO
-// reads, since startup already faulted the whole table in (restore_oid_generator_sync scans
-// column 0 of every non-empty system table, manager_disk_bootstrap.cpp, and this catalog is
-// one shared block wide).
+// The injection point was measured first, because the obvious one doesn't work: poisoning
+// pg_proc's handle AFTER the engine is up reaches nothing, since startup already faults the
+// whole table in (restore_oid_generator_sync, manager_disk_bootstrap.cpp). So the poison is
+// armed BEFORE start, on the one offset startup reads that the later statement-time load does
+// NOT need -- found by recording reads and picking the offset read exactly ONCE (header sectors
+// and the metadata chain are each read TWICE: probe construction + agent reopen,
+// manager_disk_io.cpp). Failing that offset leaves bootstrap intact but the block UNCACHED, so
+// the statement's own scan must hit the platter and fails there.
 //
-// So the poison is armed BEFORE the start, on the one offset that startup reads and the load
-// does NOT need. The discovery open below separates them by COUNT: the three header sectors
-// and the metadata chain are each read TWICE (the manager's probe construction and the agent's
-// reopen, manager_disk_io.cpp), while the DATA block is read exactly ONCE, by
-// restore_oid_generator_sync. Failing that offset leaves the load intact (bootstrap does not
-// refuse), leaves the block UNCACHED (the read that would have cached it failed), so the
-// statement's own scan has to go to the platter and cannot get there — exactly a buffer-pool
-// refill that fails.
-//
-// Arming the WRITES before startup instead — the recipe of test_catalog_write_refusal.cpp —
-// would break the CREATE leg of the bootstrap and stop the start, so the statement under test
-// would never run. That case lives in services/disk/tests/test_system_table_bootstrap.cpp.
+// Arming WRITES before startup instead (test_catalog_write_refusal.cpp's recipe) would break
+// bootstrap's own CREATE leg and stop the start; that case lives in
+// services/disk/tests/test_system_table_bootstrap.cpp.
 
 using namespace components;
 

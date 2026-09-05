@@ -55,15 +55,8 @@ namespace services {
         // via the resolved table_oid stamped on the logical_plan node.
         // Wrapper / parser-window paths fall back to the empty set.
         std::unordered_set<components::catalog::oid_t> known_oids;
-        // Per-table index info fetched by enrich_logical_plan (get_indexed_keys +
-        // get_indexed_descriptions), keyed by resolved table_oid — one entry per
-        // queried table of the statement, read through the oid-taking accessors
-        // below (mirrors table_metadata / table_metadata_for). An oid without an
-        // entry has, definitively, no usable index: a table without indexes, a
-        // statement enriched without an index service, and an unresolved oid all
-        // land there. NEVER flatten this across tables — a multi-table statement
-        // would judge one table's predicate by another table's index set (the
-        // "last table wins" defect: a bogus index_scan silently returns zero rows).
+        // Keyed by table_oid, never flattened: flattening would let one table's
+        // predicate be judged by another table's index set (bogus index_scan).
         struct table_index_info_t {
             std::pmr::vector<components::index::keys_base_storage_t> keys;
             std::pmr::vector<components::index::index_description_t> descriptions;
@@ -118,8 +111,7 @@ namespace services {
             return it != table_indexes.end() ? &it->second : nullptr;
         }
 
-        // The ONE mutation point (enrich_logical_plan + planner tests): the
-        // table_indexes entry for `oid`, created empty on `resource` if absent.
+        // Only mutation point for table_indexes; other code reads via index_info_for.
         table_index_info_t& index_info_slot(components::catalog::oid_t oid) {
             auto it = table_indexes.find(oid);
             if (it == table_indexes.end()) {

@@ -1,29 +1,11 @@
-// Collection ownership — the identity gate.
-//
-// data_table_t owns ONE collection_t and hands out counted copies BY VALUE
-// (data_table_t::row_group()). Two properties ride on that, and neither is visible through the
-// data:
-//
-//   IDENTITY — the collection a caller receives is the SAME object the table owns, not a copy
-//   that merely reads the same. A deep copy answers every scan, count and checksum identically;
-//   only the address tells the two apart. Callers mutate through what they get back
-//   (initialize_scan / initialize_append against the live collection), so a copy would silently
-//   fork the table.
-//
-//   COUNTING — the caller's copy is an OWNING reference. data_table_t::compact() REPLACES
-//   row_groups_ with a compacted rebuild and mark_as_free's + unregister_block's the outgoing
-//   collection's disk blocks while that collection's segments still own block_handle_t objects
-//   for them. A copy taken before the swap must keep the replaced collection alive until the
-//   holder lets go — that late destruction is precisely why
-//   block_manager_t::unregister_block(block_handle_t&) is identity-checked rather than
-//   erase-by-id (test_root_reclaim.cpp and test_block_manager.cpp are the behavioural half).
-//
-// A conversion that copied the POINTER without counting the reference would pass every identity
-// assertion here and every scan in the suite, right up to the use-after-free: the stale holder
-// would name a collection compact() had already destroyed. The owner-count assertions catch that
-// deterministically, BEFORE the swap. No weak reference to a collection exists anywhere in the
-// tree (boost::intrusive_ref_counter has no weak analogue), so "alive" here means exactly "some
-// owner still holds it".
+// data_table_t::row_group() hands out counted copies of the ONE collection_t it owns. A deep copy
+// would answer every scan/count/checksum identically to the real thing, so only address + owner
+// count can catch (a) a copy that isn't the same object, or (b) a copy that isn't ref-counted --
+// the latter would pass every assertion here up to the use-after-free when compact() destroys the
+// outgoing collection while a stale, uncounted holder still names it (block_manager_t::
+// unregister_block(block_handle_t&) is identity-checked rather than erase-by-id for the same
+// reason; test_root_reclaim.cpp and test_block_manager.cpp are the behavioural half). No weak
+// reference to a collection exists anywhere (boost::intrusive_ref_counter has no weak analogue).
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/collection.hpp>
@@ -43,20 +25,13 @@ using namespace components::table;
 
 namespace {
 
-    // Every stamp written below is transaction_data{0,0}, so nothing is above any watermark and
-    // compact()'s MVCC gate always lets the rebuild through.
     constexpr uint64_t WATERMARK = std::numeric_limits<uint64_t>::max();
 
-    // Enough rows to span several row groups, so compact() has real work to do and the rebuilt
-    // collection is not trivially the same shape as a fresh one.
+    // Spans several row groups so compact() has real work to do.
     constexpr uint64_t CHUNK_ROWS = 1000;
     constexpr uint64_t CHUNKS = 3;
     constexpr uint64_t TOTAL_ROWS = CHUNK_ROWS * CHUNKS;
 
-    // The fixture runs on a real .otbx — there is no file-less block manager any more.
-    // TOTAL_ROWS spans several row groups, so closing one writes its segments through to the
-    // file: this fixture reaches the disk path for real. Nothing this file asserts is about the
-    // substrate — the gates are collection IDENTITY and the owner COUNT.
     std::string ownership_db_path() {
         static std::string path = "/tmp/test_otterbrix_collection_ownership_" + std::to_string(::getpid()) + ".otbx";
         return path;
@@ -151,8 +126,7 @@ TEST_CASE("collection_ownership: a collection held across compact stays the OLD 
     auto table = make_table(env);
     fill(*table, env);
 
-    // The holder that agent_disk_t::maybe_cleanup_inner deliberately scopes AWAY from compact,
-    // that the identity-erase cases reproduce on the disk path.
+    // Mirrors the holder agent_disk_t::maybe_cleanup_inner deliberately scopes away from compact.
     auto stale = table->row_group();
     const collection_t* old_collection = stale.get();
     REQUIRE(old_collection != nullptr);
@@ -169,10 +143,8 @@ TEST_CASE("collection_ownership: a collection held across compact stays the OLD 
     REQUIRE(table->collection_owner_count() == 1);
     REQUIRE(table->row_group().get() == new_collection);
 
-    // The holder did NOT move on: it still names the object it was given, and that object is
-    // still alive — compact freed the outgoing collection's BLOCKS, not the collection. The
-    // address could not even be recycled while this reference stands, which is what makes the
-    // inequality above meaningful.
+    // compact freed the outgoing collection's BLOCKS, not the collection itself, so its address
+    // could not be recycled while this reference stands.
     REQUIRE(stale.get() == old_collection);
     REQUIRE(stale->use_count() == 1u);
     REQUIRE(stale->total_rows() == TOTAL_ROWS);
@@ -200,9 +172,8 @@ TEST_CASE("collection_ownership: an ALTER successor owns its OWN collection") {
         column_definition_t added("c", complex_logical_type(logical_type::BIGINT));
         data_table_t successor(*table, added);
 
-        // add_column builds a WHOLE new collection (its row groups share the parent's columns
-        // and version managers — that sharing is gated by test_alter_column_sharing /
-        // test_alter_version_sharing; the COLLECTION itself is not shared).
+        // A whole new collection (row-group column/version-manager sharing is gated separately by
+        // test_alter_column_sharing / test_alter_version_sharing).
         REQUIRE(successor.collection_identity() != nullptr);
         REQUIRE(successor.collection_identity() != parent_collection);
         REQUIRE(successor.collection_owner_count() == 1);

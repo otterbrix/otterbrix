@@ -32,28 +32,19 @@ namespace components::operators {
 
     actor_zeta::unique_future<void>
     operator_computed_field_unregister_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Concurrent INSERT registering the same field while ALTER DROP is in flight. MVCC isolation: each
-        // txn sees its own snapshot of pg_computed_column. Three orderings:
-        //   1. ALTER commits first, INSERT sees the tombstone -> register skips (refcount<=0 is "field
-        //      exists but dead"; the resolver hides it). INSERT data lands in storage column 'x' unexposed.
-        //   2. INSERT commits first, ALTER tombstone applied later -> field hidden post-ALTER.
-        //   3. Both commit independently — resolver max(attversion) determines visibility.
-        // This sometimes produces "ghost data" (storage has values for a column the reader hides). VACUUM
-        // physical-compaction reclaims it; until then it is harmless, being invisible to the user.
+        // A concurrent INSERT registering the same field while this DROP is in flight is resolved by MVCC
+        // snapshot isolation on pg_computed_column (resolver picks max(attversion)), which can leave "ghost
+        // data" — storage values for a now-hidden column — until VACUUM compacts them; harmless meanwhile.
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         constexpr catalog::oid_t pg_computed_column = catalog::well_known_oid::pg_computed_column_table;
 
-        // Routing: the planner creates this operator directly from ALTER's sub-clause without an enrich
-        // pass (planner.cpp rewrite_alter_table), so attoid_ is INVALID by construction and the attname
-        // match below is the PRIMARY, sanctioned path — not a fallback. A caller that does stamp attoid_
-        // narrows the match to that one variant: the stamp is a cross-check, as in the pg_attribute siblings.
+        // attoid_ is INVALID by construction (no enrich pass for this operator — planner.cpp
+        // rewrite_alter_table), so matching by attname below is the primary path, not a fallback.
 
-        // Scan by relid and filter by attoid in-callback: a keyed (relid, attoid)
-        // read won't do because the same column can have multiple version rows
-        // and we need max(attversion).
-        // pg_computed_column layout: 0=relid 1=attoid 2=attname
-        // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
+        // A keyed (relid, attoid) read won't do: the same column can have multiple version rows and we
+        // need max(attversion), so scan by relid and filter attoid in-callback.
+        // pg_computed_column layout: 0=relid 1=attoid 2=attname 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
         std::pmr::vector<std::uint64_t> r_keys(resource_);
         r_keys.emplace_back(catalog::pg_computed_column_col::relid);
         auto [_r, rf] = actor_zeta::otterbrix::send(ctx->disk_address,
@@ -71,14 +62,11 @@ namespace components::operators {
         }
         auto& batches = batches_r.value();
 
-        // Pick, PER TYPED VARIANT, the latest matching row, and keep the variants whose latest row is live
-        // (attrefcount > 0). The reader's visibility gate groups rows by the FULL variant key (attname,
-        // atttypid, atttypspec) — operator_resolve_table — and a computed field can hold several typed
-        // variants at once, so "the field" is that whole set: DROP COLUMN has to bury EVERY live variant,
-        // and each tombstone has to land in the group of the row it buries, which means carrying that row's
-        // atttypspec. A single tombstone written without it falls into the (name, typid, "") group while the
-        // live (name, typid, spec) variant keeps winning its own group — the dropped column stays in SELECT
-        // * while ALTER TABLE reports success. Gate: integration/cpp/test/test_computed_drop_complex_type.cpp.
+        // Pick, PER TYPED VARIANT, the latest row, keeping variants whose latest row is live (attrefcount>0).
+        // The reader groups rows by the full variant key (attname, atttypid, atttypspec) —
+        // operator_resolve_table — so DROP COLUMN must bury EVERY live variant with a tombstone carrying
+        // that row's OWN atttypspec; missing it lands the tombstone in a different group and the drop is
+        // silently incomplete. Gate: test_computed_drop_complex_type.cpp.
         struct variant_t {
             catalog::oid_t attoid{catalog::INVALID_OID};
             catalog::oid_t atttypid{catalog::INVALID_OID};
@@ -100,10 +88,8 @@ namespace components::operators {
             return variants.back();
         };
         for (auto& chunk : batches) {
-            // A chunk narrower than pg_computed_column's 7-column schema is a different answer, not a miss:
-            // the read was issued with an empty projection ("all columns"), so the reply's width is the width
-            // of the storage itself, and skipping the chunk silently skips the very rows this statement was
-            // sent to bury.
+            // A chunk narrower than the 7-column schema is a corrupt answer, not a miss — silently skipping
+            // it would skip rows this statement was sent to bury.
             if (chunk.column_count() < 7) {
                 std::string msg = "computed_field_unregister: pg_computed_column answered with ";
                 msg += std::to_string(chunk.column_count());
@@ -116,8 +102,7 @@ namespace components::operators {
                 if (chunk.is_null(1, i) || chunk.is_null(5, i) || chunk.is_null(6, i))
                     continue;
                 const auto row_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
-                // A stamped attoid narrows the match to its one variant; the
-                // planner route matches by attname (see the routing note above).
+                // A stamped attoid narrows the match to its variant; otherwise match by attname.
                 if (attoid_ != catalog::INVALID_OID) {
                     if (row_attoid != attoid_)
                         continue;
@@ -154,12 +139,9 @@ namespace components::operators {
             }
         }
         if (!found_live) {
-            // No live version row for this field, and that is REFUSED rather than treated as an idempotent
-            // no-op — `ALTER TABLE docs DROP COLUMN nosuchcol` is an error on a document table exactly as it
-            // is on a regular one. It is refused HERE rather than in one operator for both kinds because a
-            // document table's columns live in pg_computed_column, so this is the only catalog that can answer
-            // whether the field exists — which is what keeps the loudness from being a fallback keyed on
-            // relkind: the rule is one ("a column that is not there is an error"), the lookup is two.
+            // Refused, not treated as an idempotent no-op — DROP COLUMN on a missing field is an error on a
+            // document table exactly as on a regular one. Refused HERE, not in a shared operator, because
+            // pg_computed_column is the only catalog that can answer whether the field exists.
             // IF EXISTS is honoured on the same terms as the regular path.
             if (missing_ok_) {
                 mark_executed();
@@ -195,10 +177,8 @@ namespace components::operators {
             co_return;
         }
 
-        // One tombstone PER LIVE VARIANT: version = that variant's max+1, refcount = 0, same attoid so any
-        // pg_depend attrefs stay valid, and the variant's OWN (atttypid, atttypspec) so the tombstone lands
-        // in the group the reader will judge — readers drop the variant via the refcount<=0 gate. The
-        // attname written is the row's own; column_name_ only backs it up.
+        // One tombstone per live variant (version=max+1, refcount=0, same attoid so pg_depend attrefs stay
+        // valid) in that variant's OWN (atttypid, atttypspec) group, so the reader's refcount<=0 gate hides it.
         for (const auto& v : variants) {
             if (v.latest_refcount <= 0) {
                 continue;
@@ -218,9 +198,8 @@ namespace components::operators {
                                                         std::move(cc_row));
             auto rng_r = co_await std::move(wf);
             if (rng_r.has_error()) {
-                // The tombstone IS the unregistration. Without it the variant stays
-                // live and reporting success would hide that from the statement. A
-                // partial set is refused the same way: the statement is one DROP.
+                // The tombstone IS the unregistration; without it the variant stays live despite success
+                // being reported. A partial set is refused the same way — the statement is one DROP.
                 set_error(rng_r.error());
                 mark_failed();
                 co_return;
@@ -230,12 +209,10 @@ namespace components::operators {
             }
         }
 
-        // What these tombstones do and do not do: operator_resolve_table hides a tombstoned variant from
-        // every subsequent read (the refcount<=0 gate on the max-version row of each variant group), so
-        // SELECT * answers without the column from this statement's commit on. The PHYSICAL storage column
-        // keeps its blocks until operator_vacuum_t compacts them — an earlier attempt to drop it here,
-        // mid-pipeline, crashed the re-INSERT path (row_group::append column-count mismatch;
-        // storage::drop_column does not fully reset row_group state), so compaction is deferred to VACUUM.
+        // Tombstones only hide the variant (operator_resolve_table's refcount<=0 gate); physical storage
+        // keeps its blocks until operator_vacuum_t compacts them. An earlier attempt to drop the column
+        // here, mid-pipeline, crashed re-INSERT (row_group::append column-count mismatch), so compaction
+        // is deferred to VACUUM.
         mark_executed();
     }
 

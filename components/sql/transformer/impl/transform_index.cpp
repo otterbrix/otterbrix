@@ -28,13 +28,6 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"incorrect create index arguments", resource_});
         }
-        // FOUR more clauses the grammar fills (gram.y, IndexStmt: `CREATE opt_unique
-        // INDEX ... opt_reloptions OptTableSpace where_clause`). node_create_index
-        // carries a name, a method and a column list — nothing else — so read by none
-        // of them each clause is silently DROPPED on the floor while the statement
-        // reports success. The worst is `unique`: CREATE UNIQUE INDEX then builds an
-        // ordinary index that admits duplicates, a declared constraint that never acts.
-        // Rule 6: refuse and name the clause; no index is created.
         if (node.unique) {
             return core::error_t(core::error_code_t::unimplemented_yet,
                                  std::pmr::string{"CREATE UNIQUE INDEX is not implemented: the index built here "
@@ -89,11 +82,9 @@ namespace components::sql::transform {
         // resolved entry by name and stamps ns_oid + table_oid + columns from there.
         create_index->set_dbname(dbname_for_resolve);
         create_index->set_relname(relname_for_resolve);
-        // TWO demands, exactly as DROP INDEX registers them: the indexed table AND
-        // the index's own name. The second probes pg_class for a relation already
-        // answering to the new name — enrich stamps name_conflict_oid from it and
-        // the planner refuses a taken name. A miss on this demand is the NORMAL
-        // case (the name is free) and refuses nothing.
+        // Two targets, same as DROP INDEX (transform_table.cpp): the table and the new
+        // index name. A miss on the second is the normal case (name free); a hit stamps
+        // name_conflict_oid so the planner refuses the taken name.
         std::vector<std::pair<std::string, std::string>> targets;
         targets.emplace_back(dbname_for_resolve, relname_for_resolve);
         targets.emplace_back(dbname_for_resolve, std::string(node.idxname));

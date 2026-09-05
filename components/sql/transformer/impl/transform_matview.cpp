@@ -21,22 +21,10 @@ namespace components::sql::transform {
                                  std::pmr::string{"CREATE MATERIALIZED VIEW missing target relation", resource_});
         }
 
-        // WITH DATA (the PostgreSQL default, i.e. the form without an explicit
-        // WITH NO DATA) is REFUSED, loudly.
-        //
-        // Nothing in this pipeline populates a matview at CREATE time: the composite
-        // operator_create_matview_t creates the heap and writes the catalog rows and
-        // stops there, and REFRESH MATERIALIZED VIEW is not lowered either (see
-        // planner.cpp, `case node_type::refresh_matview_t` — it returns the node
-        // unchanged). Accepting `CREATE MATERIALIZED VIEW mv AS SELECT ...`
-        // would therefore report SUCCESS and leave `SELECT * FROM mv` answering 0 rows
-        // forever, with nothing said. Rule 6: a form we cannot honour is refused, not
-        // silently downgraded. `WITH NO DATA` — the one form whose meaning IS an empty
-        // matview — keeps working.
-        //
-        // The flag itself comes from the grammar: opt_with_data lands in
-        // IntoClause::skipData (gram.y, CreateMatViewStmt: `$5->skipData = !($8)`), so
-        // skipData is true if and only if the user wrote WITH NO DATA.
+        // WITH DATA (PostgreSQL's default) is refused: nothing here populates a matview at
+        // CREATE time and REFRESH is a no-op (planner.cpp: refresh_matview_t) — accepting it
+        // would silently report success with an empty matview forever. WITH NO DATA (skipData,
+        // gram.y CreateMatViewStmt: `$5->skipData = !($8)`) still works.
         if (!cs.into->skipData) {
             return core::error_t(
                 core::error_code_t::sql_parse_error,
@@ -47,8 +35,8 @@ namespace components::sql::transform {
                                  resource_});
         }
 
-        // 1. Body SQL — stored in pg_rewrite.ev_action verbatim, so it must be what
-        //    the user wrote (see view_body_text.hpp).
+        // 1. Body SQL — stored in pg_rewrite.ev_action verbatim; must match what the user
+        //    wrote (view_body_text.hpp).
         VALUE_OR_RETURN(auto body_sql,
                         view_body_text(resource_,
                                        raw_sql_,

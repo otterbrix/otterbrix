@@ -469,39 +469,33 @@ namespace components::catalog {
         return LT::UNKNOWN;
     }
 
-    // THE DEPTH WINDOW IS SHARED with the binary codec: components/types/
-    // type_spec_codec.cpp refuses nesting beyond MAX_SPEC_DEPTH = 64 on BOTH encode and
-    // decode, and the dispatcher's write gate (gate_persistable_type in
-    // services/dispatcher/validate_logical_plan.cpp) runs that encoder over every
-    // plan-level column/type before this codec's text is written — so a flat spec deeper
-    // than the window is not something this engine wrote. Without the limit the parser
-    // recurses unbounded: a 2^20-deep LIST(...) walks it off the stack. encode_type_nested
-    // carries the same counter, because a writer that accepts more than the reader does
-    // manufactures a catalog row that can never be read back.
+    // THE DEPTH WINDOW IS SHARED with the binary codec: type_spec_codec.cpp refuses nesting
+    // past MAX_SPEC_DEPTH = 64 on both encode and decode, and the dispatcher's write gate
+    // (gate_persistable_type, validate_logical_plan.cpp) runs that encoder over every
+    // plan-level column/type before this codec's text is written, so a flat spec deeper than
+    // the window is not something this engine wrote. Without the limit the parser recurses
+    // unbounded (a 2^20-deep LIST(...) walks it off the stack); encode_type_nested carries the
+    // same counter so a writer that accepts more than the reader does can't manufacture an
+    // unreadable row.
     static constexpr uint32_t MAX_FLAT_SPEC_DEPTH = 64;
 
     // Forward declaration for mutual recursion.
     static std::string encode_type_nested(const types::complex_logical_type& t, uint32_t depth);
 
     // TWO ENCODERS WRITE THE SAME COLUMN TYPE, AND THE WRITE GATE ASKS ONLY THE OTHER ONE.
+    // gate_persistable_type (validate_logical_plan.cpp) runs the BINARY codec
+    // (encode_type_spec) over every plan-level type and refuses the statement when it says no,
+    // but the row actually written to pg_attribute.atttypspec / pg_type.typdefspec comes from
+    // THIS codec, which returns a plain std::string and cannot say no. This file has to keep
+    // the two domains in agreement since it has no channel of its own: wherever the binary
+    // codec REFUSES, this one emits a spec the strict decoder refuses (kFlatUnpersistable,
+    // same shape as encode_type_spec_or_poison in data_chunk_binary.cpp) instead of a
+    // plausible type; wherever it ACCEPTS, this one must have a spelling or a gate-approved
+    // column silently rehydrates as a different type.
     //
-    // gate_persistable_type (services/dispatcher/validate_logical_plan.cpp) runs the BINARY
-    // codec — components::types::encode_type_spec — over every plan-level type and refuses
-    // the statement when it says no. The row that lands in pg_attribute.atttypspec /
-    // pg_type.typdefspec is written by THIS codec, which returns a plain std::string and so
-    // cannot say no at all. The gate is sound only while the two domains coincide, and this
-    // file is the half that has to make them coincide, since it is the half with no channel.
-    //
-    // So every place the binary codec REFUSES, this one emits a spec the strict decoder
-    // refuses (kFlatUnpersistable) instead of a plausible type — the same shape as
-    // encode_type_spec_or_poison in components/vector/data_chunk_binary.cpp. And every
-    // place the binary codec ACCEPTS, this one has to have a spelling, or a column that
-    // passed the gate rehydrates as a DIFFERENT type in silence.
-    //
-    // The marker is deliberately outside the format's language: read_token stops at '(',
-    // the keyword chain in parse_flat_type matches nothing, and the parse fails with
-    // data_corruption. "" cannot serve as the marker — it already means "a builtin scalar
-    // stored with atttypid alone", a legitimate answer.
+    // The marker is deliberately outside the format's language (read_token stops at '(', no
+    // keyword matches) so it fails with data_corruption; "" can't serve as the marker since it
+    // already means "a builtin scalar stored with atttypid alone".
     static constexpr std::string_view kFlatUnpersistable = "!unpersistable";
 
     static std::string flat_unpersistable(types::logical_type lt) {
@@ -521,16 +515,15 @@ namespace components::catalog {
     }
 
     // Plain scalars the binary codec persists (is_plain_scalar in type_spec_codec.cpp) that
-    // have NO pg_type name, so scalar_type_to_name cannot spell them and the empty-spec /
-    // atttypid leg cannot carry them either. Without a spelling they fell through to
-    // "UNKNOWN(<enum number>)" — which decodes back as a NAMED user-type reference, i.e. a
-    // gate-approved column rehydrating as a different type without a word.
+    // have NO pg_type name fell through to "UNKNOWN(<enum number>)" — decoding back as a
+    // NAMED user-type reference, i.e. a gate-approved column rehydrating as a different type
+    // in silence.
     //
-    // They get the one form that cannot be confused with a name: BUILTIN(<logical_type>),
-    // the flat mirror of the binary codec's leading type byte. The list is a WHITELIST on
-    // both sides — decoding BUILTIN(105) back into FUNCTION would reopen the very hole this
-    // closes. catalog::encoder_domains::every_plain_scalar_the_gate_blesses_survives_the_
-    // flat_writer walks is_plain_scalar's full contents and pins the correspondence.
+    // They get the one form that cannot be confused with a name: BUILTIN(<logical_type>), the
+    // flat mirror of the binary codec's leading type byte. WHITELISTED on both sides —
+    // decoding BUILTIN(105) back into FUNCTION would reopen the same hole.
+    // encoder_domains::every_plain_scalar_the_gate_blesses_survives_the_flat_writer pins the
+    // correspondence.
     static bool is_nameless_flat_builtin(types::logical_type lt) {
         using LT = types::logical_type;
         switch (lt) {
@@ -546,13 +539,12 @@ namespace components::catalog {
         }
     }
 
-    // Names written AS IS produce a spec the strict decoder refuses whenever a struct
-    // field, union member, enum name/label or user-type name carries one of the format's
-    // own delimiters ( ) , : = — the DDL goes through and every later resolve fails
-    // per-statement, with no writer gate anywhere. So the encoder escapes those characters
-    // (backslash-prefixed) and the decoder reads the escapes back. A backslash before
-    // anything OUTSIDE this set — including a raw backslash an old build may have written —
-    // is a loud data_corruption refusal, never a silent decode to a DIFFERENT name.
+    // Names written AS IS produce a spec the strict decoder refuses whenever a struct field,
+    // union member, enum name/label or user-type name carries one of the format's own
+    // delimiters ( ) , : = — the DDL goes through and every later resolve fails per-statement.
+    // So the encoder escapes those characters (backslash-prefixed) and the decoder reads them
+    // back; a backslash before anything else is a loud data_corruption refusal, never a
+    // silent rename.
     static bool flat_name_needs_escape(char c) {
         return c == '\\' || c == '(' || c == ')' || c == ',' || c == ':' || c == '=';
     }
@@ -686,16 +678,15 @@ namespace components::catalog {
             return "VARIANT";
         }
         // ENUM is handled by the outer encode_type_spec; reaching here means either a
-        // malformed ENUM or one of USER / TABLE / FUNCTION / LAMBDA / INVALID, which the
-        // binary codec refuses outright ("these never describe stored data"). Writing
-        // "UNKNOWN(<number>)" for them — the previous behaviour — produced the exact shape
-        // of a legitimate named user-type reference, so the one type the gate exists to
-        // stop travelled on as something a resolver would chase by name.
+        // malformed ENUM or one of USER/TABLE/FUNCTION/LAMBDA/INVALID, which the binary codec
+        // refuses outright. Writing "UNKNOWN(<number>)" for them (the previous behaviour)
+        // produced the exact shape of a legitimate named user-type reference, letting the
+        // type the gate exists to stop travel on.
         return flat_unpersistable(t.type());
     }
 
     // Recursive-descent parser for the flat-text format. The parse context owns the
-    // error channel (rule 2 — no exceptions): the FIRST failure wins, every later step
+    // error channel (no exceptions): the FIRST failure wins, every later step
     // short-circuits, and decode_type_spec turns the failure into a core::error_t.
     // Without a channel everything unreadable collapses into logical_type::UNKNOWN, the
     // very value that also means "named user-type reference" — corruption indistinguishable

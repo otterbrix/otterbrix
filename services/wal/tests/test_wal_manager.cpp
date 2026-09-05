@@ -87,11 +87,9 @@ constexpr auto kMainDb = catalog::well_known_oid::main_database;
 constexpr catalog::oid_t kTestTableOidA = 16500;
 constexpr catalog::oid_t kTestTableOidB = 16501;
 
-// PID-QUALIFIED, the same way every other fixture root in this directory already is
-// (test_wal_txn_id_reuse.cpp:66, test_wal_torn_write.cpp:30, test_wal_load_hole.cpp:67, ...).
-// ~test_wal_manager ends in remove_all(path_), so a second run of this binary against a
-// literal shared root deletes the segments the first run is still writing. This tree is
-// built in several directories at once and `ctest -j` is run from more than one of them.
+// PID-QUALIFIED, like every other fixture root in this directory: a literal shared root would
+// let a second concurrent run of this binary delete segments the first run is still writing.
+// This tree builds in several directories at once and `ctest -j` runs from more than one.
 static const std::filesystem::path base_mgr_path =
     "/tmp/otterbrix_test_wal_manager_" + std::to_string(static_cast<long>(::getpid()));
 
@@ -143,13 +141,9 @@ struct test_wal_manager {
 
     actor_zeta::unique_future<core::result_wrapper_t<services::wal::id_t>>
     send_insert(catalog::oid_t table_oid, uint64_t txn_id, size_t row_count, uint64_t row_start = 0) {
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: off THAT singleton the payload never reaches core::pmr::otterbrix_resource --
-        // which under ASAN IS resource_tracer_t, the only thing that would report a chunk
-        // still alive after the manager is gone. resource_ outlives the asynchronous processing
-        // three times over: ~test_wal_manager stops the scheduler and resets manager_,
-        // resource_ is declared BEFORE the manager so it is destroyed AFTER it, and
-        // otterbrix_resource is thread-safe in both builds.
+        // Built on the fixture's own arena, never the process-global singleton (which under ASAN is
+        // resource_tracer_t, the only thing that would report a chunk still alive after the manager
+        // is gone): resource_ is declared BEFORE the manager so it outlives it through teardown.
         auto* arena = &resource_;
         auto chunk = gen_data_chunk(row_count, arena);
         auto [ns, fut] = actor_zeta::otterbrix::send(address(),
@@ -370,13 +364,8 @@ TEST_CASE("wal_manager::disabled") {
 
     // write_physical_insert should return 0 (no-op).
     {
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: off THAT singleton the payload never reaches core::pmr::otterbrix_resource --
-        // which under ASAN IS resource_tracer_t, the only thing that would report a chunk
-        // still alive after the manager is gone. env.resource_ outlives the asynchronous processing
-        // three times over: ~test_wal_manager stops the scheduler and resets manager_,
-        // env.resource_ is declared BEFORE the manager so it is destroyed AFTER it, and
-        // otterbrix_resource is thread-safe in both builds.
+        // Built on the fixture's own arena, never the process-global singleton (same note as above):
+        // env.resource_ is declared BEFORE the manager so it outlives it through teardown.
         auto* arena = &env.resource_;
         auto chunk = gen_data_chunk(5, arena);
         auto [ns, fut] = actor_zeta::otterbrix::send(env.address(),

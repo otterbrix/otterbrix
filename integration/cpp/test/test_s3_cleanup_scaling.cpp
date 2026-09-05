@@ -15,39 +15,10 @@
 #include <string>
 #include <vector>
 
-// Where does a disk-backed table's dead-row reclaim happen, and what does a small commit pay
-// for it?
-//
-// These two cases used to answer a narrower question. agent_disk_t::maybe_cleanup_inner rode the
-// COMMIT fan-out and asked collection_t::committed_row_count() on every commit to decide whether
-// to compact; that call reaches chunk_vector_info::committed_deleted_count, which re-scans all
-// 1024 slots of EVERY vector still carrying a committed tombstone. UPDATE here is
-// tombstone+append, so a table under a long UPDATE workload accumulates them and every later
-// commit, however small, paid for all of them.
-//
-// That walk is no longer on the write path for a DISK-backed table, which is every user table
-// (operator_create_collection_t). Under the split free pool a compact whose header never commits
-// cannot RETURN space, only spend it — measured at +2.9 MB per call — so compaction of a disk
-// table was made one indivisible unit with the checkpoint that commits it, and
-// maybe_cleanup_inner now turns disk entries away. The old probes therefore read a flat zero and
-// their positive controls (`REQUIRE(control > 0)`, `REQUIRE(series.back() > 0)`) failed for the
-// one reason a positive control exists to catch: the instrument was wired to a path deliberately
-// not taken.
-//
-// Retargeted, with the owner's per-test consent, to measure the reclaim where it now happens.
-// Each case asserts BOTH halves, because either alone is satisfiable by a broken engine:
-//
-//   * the commit pays NOTHING — cleanup_slots_visited() stays 0 across the whole workload no
-//     matter how many tombstones earlier statements piled up; it goes red the moment the walk
-//     returns to the write path;
-//   * the reclaim still HAPPENS — after CHECKPOINT the durable root holds exactly the live rows.
-//     Measured with the engine down against a freshly loaded .otbx, the only reading that cannot
-//     be produced by in-memory state, and because a checkpoint whose compact was refused defers
-//     the whole entry, leaving the OLD row count on disk. This is the new positive control: a
-//     number that must move from 200000 to the live count, and that reads wrong rather than zero
-//     if the apparatus comes unwired.
-//
-// Hidden by default ([.]): repeated 200k-row update passes. Run them with [s3cleanup].
+// Disk tables (agent_disk_t::maybe_cleanup_inner) skip the per-commit deleted-row scan: under
+// the split free pool, a compact whose header never commits cannot RETURN space (measured
+// +2.9 MB/call), so compaction is now one unit with the checkpoint.
+// Hidden by default ([.]): repeated 200k-row update passes. Run with [s3cleanup].
 
 namespace {
     constexpr int kRows = 200000;
@@ -69,9 +40,7 @@ namespace {
         }
     }
 
-    // The only user table in these cases: `<main_path>/.../<oid>/table.otbx` with oid past
-    // FIRST_USER_OID. Every system catalog sits below it, so the filter finds the user table
-    // without the test having to learn its oid.
+    // oid > FIRST_USER_OID picks the one user table; every system catalog sits below it.
     std::filesystem::path find_user_table_otbx(const std::filesystem::path& root) {
         std::filesystem::path found;
         if (!std::filesystem::exists(root)) {
@@ -92,11 +61,9 @@ namespace {
         return found;
     }
 
-    // Physical rows the DURABLE root stores, read with the engine shut down against a freshly
-    // loaded .otbx. A compacted checkpoint writes only live rows; a checkpoint whose compact
-    // was refused writes nothing at all and leaves the previous root's count standing. The
-    // counted collection copy is scoped to the read — a holder kept past a reclaim keeps block
-    // handles alive with it.
+    // A checkpoint whose compact is refused writes nothing, leaving the previous root's count
+    // standing. Collection handle is scoped to this read only -- kept longer, it holds block
+    // handles alive past a reclaim.
     uint64_t durable_row_count(const std::filesystem::path& otbx, std::pmr::memory_resource* resource) {
         services::disk::table_storage_t ts(resource, otbx, std::vector<components::table::column_definition_t>{});
         REQUIRE_FALSE(ts.construction_failed());
@@ -127,14 +94,9 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::contiguous_tombstones_recl
         REQUIRE(exec("CREATE TABLE tomb.t (id bigint, v bigint);")->is_success());
         fill(d, "t", kRows);
 
-        // The probe statement must be a DELETE, not an INSERT: the cleanup fan-out is gated on
-        // the commit carrying base deletes (operator_commit_transaction.cpp skips it for an
-        // append-only commit, which produces zero dead rows), so an append-only probe would
-        // read zero for the wrong reason — the fan-out never leaves the operator.
-        //
-        // It deletes one row from the UNTOUCHED tail of the table, so the probe never overlaps
-        // the rows the update passes tombstone: what it would pay for is other statements'
-        // leftovers.
+        // Must be a DELETE: an INSERT probe wouldn't trigger the cleanup fan-out at all
+        // (operator_commit_transaction.cpp skips it for append-only commits). Deletes from the
+        // untouched tail so it never overlaps rows the update passes tombstone.
         int probe_id = kRows - 1;
         auto cleanup_slots_for_one_commit = [&]() {
             components::table::reset_cleanup_slots_visited();
@@ -160,18 +122,13 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::contiguous_tombstones_recl
             INFO("  pass " << (i + 1) << ": " << series[i]);
         }
 
-        // The claim under test, in its strict form: a small commit pays for NO tombstone, not
-        // even its own. Half a million accumulated tombstones later the write path still walks
-        // zero slots, because the decision walk left it entirely.
         for (size_t i = 0; i < series.size(); ++i) {
             INFO("pass " << (i + 1));
             CHECK(series[i] == 0);
         }
 
-        // Contiguous bulk delete: a fully deleted vector collapses into a chunk_constant_info
-        // whose committed_deleted_count is O(1), so this shape could never make the old walk
-        // grow past the one partially-hit boundary vector. It is still the cheapest way to put
-        // a big block of dead rows on the table for the reclaim half below.
+        // A fully deleted vector collapses into a chunk_constant_info (committed_deleted_count
+        // is O(1)) -- cheapest way to put a big block of dead rows on the table.
         REQUIRE(exec("DELETE FROM tomb.t WHERE id >= 100000 AND id < 150000;")->is_success());
         components::table::reset_cleanup_slots_visited();
         REQUIRE(exec("DELETE FROM tomb.t WHERE id = 60000;")->is_success());
@@ -191,8 +148,6 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::contiguous_tombstones_recl
         REQUIRE(exec("CHECKPOINT;")->is_success());
     }
 
-    // Engine down. The durable root must hold the live rows and nothing else — which is the
-    // reclaim the commit-side gate no longer performs, done by the round that can commit it.
     const auto otbx = find_user_table_otbx(config.main_path);
     INFO("user .otbx: " << otbx.string());
     REQUIRE_FALSE(otbx.empty());
@@ -203,17 +158,9 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::contiguous_tombstones_recl
     CHECK(physical == static_cast<uint64_t>(live_rows));
 }
 
-// The case the contiguous one above cannot reach.
-//
-// Deleting a contiguous range takes whole vectors out at once, and a fully deleted vector is
-// recorded as a chunk_constant_info whose committed_deleted_count is O(1) — so the contiguous
-// case leaves just the one partially-hit boundary vector behind.
-//
-// A SCATTERED update leaves every vector partially tombstoned, so every vector keeps a
-// chunk_vector_info with any_deleted set, and the old cleanup re-walked all 1024 slots of each
-// on every later commit — the shape an OLTP workload updating rows by primary key produces,
-// and the worst case the pair was written for. It is also the harder reclaim: no vector can be
-// dropped whole, so the checkpoint's compact has to rebuild every one of them.
+// SCATTERED complement: every vector keeps some live and some tombstoned rows (any_deleted
+// set), so none collapses into the O(1) chunk_constant_info form and none can be dropped
+// whole -- the worst case for this reclaim, and the shape an OLTP update-by-key workload makes.
 TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_reclaimed_at_checkpoint",
           "[.][s3cleanup]") {
     auto config = test_create_config(integration_fixture_path("test_s3/cleanup_scattered"));
@@ -260,8 +207,7 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_recla
             INFO("  pass " << (i + 1) << ": " << series[i]);
         }
 
-        // Same claim, on the shape that used to make it fail: one small commit pays for no
-        // tombstone any other statement left behind.
+        // Same claim, worst-case shape.
         for (size_t i = 0; i < series.size(); ++i) {
             INFO("pass " << (i + 1));
             CHECK(series[i] == 0);
@@ -282,23 +228,16 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_recla
     INFO("user .otbx: " << otbx.string());
     REQUIRE_FALSE(otbx.empty());
 
-    // Five scattered update passes over 200k rows leave a million dead rows behind, none of
-    // them in a vector that can be dropped whole. The durable root must carry none of them.
+    // Five passes leave a million dead rows, none in a droppable-whole vector.
     const auto physical = durable_row_count(otbx, &resource);
     INFO("scattered: physical rows in the durable root: " << physical << ", live rows: " << live_rows);
     CHECK(physical == static_cast<uint64_t>(live_rows));
 }
 
-// The corner that matters most in practice: a table WITH an index.
-//
-// compact() shifts row positions and the index engines hold positional row refs, so
-// operator_commit_transaction filters the compact set through manager_index_t::tables_without_indexes
-// before sending maybe_cleanup_many. An indexed table is therefore dropped from safe_oids twice
-// over — once by that index filter, once by the DISK gate the two cases above describe — so its
-// per-commit cleanup cost is zero for two independent reasons, and this case pins the bound that
-// holds under either. Its reclaim rides the checkpoint round like every other disk table's, and
-// operator_checkpoint_t repopulates the index afterwards precisely because that compact renumbers
-// the rows underneath it.
+// Indexed table: compact() shifts row positions, so operator_commit_transaction filters the
+// compact set through manager_index_t::tables_without_indexes before maybe_cleanup_many --
+// dropped from safe_oids for two independent reasons (index filter + disk gate), hence the
+// bound below must hold under either.
 TEST_CASE("integration::cpp::test_s3_cleanup_scaling::indexed_table_cleanup_cost", "[.][s3cleanup]") {
     auto config = test_create_config(integration_fixture_path("test_s3/cleanup_indexed"));
     test_clear_directory(config);

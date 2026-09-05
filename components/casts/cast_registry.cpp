@@ -512,9 +512,8 @@ namespace components::casts {
                                                      right_decimal->width() - right_decimal->scale());
         uint32_t width = integer_digits + scale;
         if (width <= max_decimal_width) {
-            // width = integer_digits + scale >= scale >= 1 whenever both operands are
-            // in-window decimals, so the deduced pair is in-window too; a refusal here
-            // would mean an operand that create_decimal could never have built.
+            // width >= scale >= 1 for in-window operands, so create_decimal cannot fail here;
+            // the error check below is defensive only.
             auto deduced = types::complex_logical_type::create_decimal(resource_,
                                                                        static_cast<uint8_t>(width),
                                                                        static_cast<uint8_t>(scale));

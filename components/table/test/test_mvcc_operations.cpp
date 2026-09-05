@@ -17,17 +17,12 @@ using namespace components::table;
 
 namespace {
 
-    // The fixture runs on a real .otbx: there is no file-less block manager any more, and the
-    // row counts here span more than one row group, so closing one writes its segments through
-    // to the file — this fixture reaches the disk path for real. The substrate is all that the
-    // file gives it: not one assertion below is about it.
     std::string mvcc_operations_db_path() {
         static std::string path = "/tmp/test_otterbrix_mvcc_operations_" + std::to_string(::getpid()) + ".otbx";
         return path;
     }
 
-    // Removes any leftover from an earlier process that died holding this pid, then names the
-    // file. Called from the member-init list, so the removal precedes the manager's open.
+    // Comma operator: remove stale file before naming it, ahead of the manager's open.
     const std::string& mvcc_operations_fresh_db_path() {
         static const std::string path = (std::remove(mvcc_operations_db_path().c_str()), mvcc_operations_db_path());
         return path;
@@ -906,25 +901,17 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
 }
 
 // ---------------------------------------------------------------------------
-// Mixed addressing in row_version_manager_t::vector_info_.
-//
-// The append path (append_version_info / commit_append / revert_append /
-// cleanup_append and the counters committed_deleted_count / has_version_above)
-// addresses vector_info_ with GROUP-LOCAL vector indices (slot 0 = the group's
-// first vector), while the scan path (collection_scan_state::vector_index),
-// the delete path (version_delete_state::delete_row) and point-fetch
-// (row_version_manager_t::fetch) address it with collection-ABSOLUTE indices
-// (slot N for the group starting at row N*1024). With the default
-// row_group_size == DEFAULT_VECTOR_CAPACITY every row group past the first
-// reads/writes a DIFFERENT slot than the append path wrote. The existing MVCC
-// tests run on 10..100 rows — one row group — and are structurally blind to
-// this. The three tests below drive the same operations past row 1024.
+// row_version_manager_t::vector_info_ has two addressing conventions: the append path
+// (append_version_info/commit_append/revert_append/cleanup_append) uses GROUP-LOCAL vector
+// indices, while scan/delete/fetch (collection_scan_state::vector_index,
+// version_delete_state::delete_row, row_version_manager_t::fetch) use collection-ABSOLUTE ones.
+// Past row group 0 these disagree. Existing MVCC tests run on 10..100 rows (one row group) and
+// are structurally blind to this; the three below drive past row 1024.
 // ---------------------------------------------------------------------------
 
-// txn1 appends 10 rows into the SECOND row group (rows 1024..1033) and does not
-// commit. A concurrent snapshot (txn2) must still count exactly the 1024
-// committed rows: the uncommitted rows' insert stamps must be consulted, not
-// bypassed because the scan asked a vector_info_ slot the append never wrote.
+// txn1 appends 10 uncommitted rows into row group 1; a concurrent snapshot must still see exactly
+// the 1024 committed rows, not miscount because the scan reads a different vector_info_ slot than
+// the append wrote.
 TEST_CASE("components::table::mvcc::uncommitted_rows_invisible_in_second_row_group") {
     test_env env;
     auto table = make_int_table(env);
@@ -947,10 +934,8 @@ TEST_CASE("components::table::mvcc::uncommitted_rows_invisible_in_second_row_gro
     mgr.abort(session1);
 }
 
-// A committed DELETE of a row past 1024 must be reflected by
-// committed_row_count exactly as the scan reflects it. The tombstone lands in
-// the slot the (absolute-addressed) delete path picked; the counter walks the
-// group-local slots and must find it there.
+// committed_row_count (group-local slots) must agree with the scan on a tombstone the
+// (absolute-addressed) delete path wrote past row 1024.
 TEST_CASE("components::table::mvcc::committed_row_count_after_delete_past_1024") {
     test_env env;
     auto table = make_int_table(env);
@@ -980,9 +965,8 @@ TEST_CASE("components::table::mvcc::committed_row_count_after_delete_past_1024")
     REQUIRE(table->row_group()->committed_row_count() == 1033);
 }
 
-// A PENDING (uncommitted) DELETE of a row past 1024 must refuse compact():
-// the pending stamp is above any watermark, and has_version_above must see it
-// in whatever slot the delete path wrote it to.
+// A pending delete past row 1024 must refuse compact(): has_version_above must see the pending
+// stamp in whatever slot the (absolute-addressed) delete path wrote it to.
 TEST_CASE("components::table::mvcc::compact_refused_while_delete_past_1024_pending") {
     test_env env;
     auto table = make_int_table(env);
@@ -1012,11 +996,8 @@ TEST_CASE("components::table::mvcc::compact_refused_while_delete_past_1024_pendi
 
 namespace {
 
-    // Nested-column revert_append coordinate regression. Every logical row `r`
-    // seeded with `base` carries fully determined content, so a stale child tail after a
-    // revert is OBSERVABLE as wrong CONTENT, not just a wrong count:
-    //   LIST  column: length r % 3 (empties included), element j = base + r * 100 + j
-    //   ARRAY column: NESTED_ARRAY_SIZE elements,      element j = base + r * 100 + 50 + j
+    // Every row's content is a function of `base`, so a stale child tail after revert_append is
+    // OBSERVABLE as wrong content, not just a wrong count.
     constexpr uint64_t NESTED_ARRAY_SIZE = 4;
 
     uint64_t nested_list_length(uint64_t row) { return row % 3; }
@@ -1137,14 +1118,10 @@ namespace {
 
 } // anonymous namespace
 
-// row_group_t::revert_append hands every column a COLLECTION-ABSOLUTE row number
-// (this->start + group-local revert point). A LIST column must convert that into its
-// CHILD element space: the stored offsets are cumulative element counts within the row
-// group, and the child column shares the parent's start_. Comparing the RELATIVE
-// surviving count (max_entry()) against the ABSOLUTE start_ leaves the child untruncated
-// for any row group with start_ > 0; the next append then seeds its offsets past the
-// stale child tail, and rows past the revert boundary read stale elements that belonged
-// to the reverted rows.
+// row_group_t::revert_append hands every column a COLLECTION-ABSOLUTE row number, but a LIST
+// child's stored offsets are cumulative element counts sharing the parent's start_. Comparing the
+// RELATIVE surviving count (max_entry()) against the ABSOLUTE start_ leaves the child untruncated
+// for any row group with start_ > 0, so the next append seeds offsets past a stale child tail.
 TEST_CASE("components::table::mvcc::revert_append_list_child_row_group_1") {
     test_env env;
     auto table = make_list_table(env);
@@ -1168,12 +1145,10 @@ TEST_CASE("components::table::mvcc::revert_append_list_child_row_group_1") {
     verify_list_rows(*table, env, 1056, 1044, 1'000'000);
 }
 
-// The same coordinate confusion on the ARRAY leg. The child holds array_size() elements
-// per row and shares the parent's start_, so the child's absolute truncation row is
-// start_ + surviving_rows * array_size. Passing start_row * array_size lands
-// far past the child's end for any row group with start_ > 0 (Debug builds abort on the
-// exact-boundary assert in column_data_t::revert_append; release builds silently keep
-// the stale child tail, and a re-append lands its elements after it).
+// Same coordinate confusion on the ARRAY leg: the correct truncation row is
+// start_ + surviving_rows * array_size, but start_row * array_size lands far past the child's
+// end for start_ > 0 (Debug aborts in column_data_t::revert_append's boundary assert; release
+// silently keeps the stale tail).
 TEST_CASE("components::table::mvcc::revert_append_array_child_row_group_1") {
     test_env env;
     auto table = make_array_table(env);
@@ -1193,28 +1168,20 @@ TEST_CASE("components::table::mvcc::revert_append_array_child_row_group_1") {
 }
 
 // ---------------------------------------------------------------------------
-// VACUUM must not resurrect committed deletes.
+// VACUUM must not resurrect committed deletes. cleanup_append only processes a FULL vector
+// (vcount == DEFAULT_VECTOR_CAPACITY == default row_group_size), which is why every MVCC test
+// above (10..100 rows) never reaches chunk_info::cleanup, and the cases below insist on a full
+// 1024-row vector.
 //
-// row_version_manager_t::cleanup_append processes a vector ONLY when it is FULL
-// (vcount == DEFAULT_VECTOR_CAPACITY), and the default row_group_size is
-// DEFAULT_VECTOR_CAPACITY too — so the vectors that reach chunk_info::cleanup at all
-// are exactly the full row groups of a table. Every MVCC test above runs on 10..100
-// rows and is turned away by that guard before cleanup is ever called, which is why
-// the cases below insist on a FULL 1024-row vector.
-//
-// The hazard cleanup_append carries: `cleanup() == true` INSTALLS `result` into the
-// slot, and `result` may be empty. An empty slot is not "no history left", it is
-// "every row here is visible" — row_version_manager_t::indexing_vector returns
-// max_count and fetch returns true when get_chunk_info gives nullptr. Dropping a
-// committed delete stamp therefore un-deletes the rows for every reader, with no
-// crash and no restart in the way.
+// The hazard: `cleanup() == true` installs `result` even when empty, and an empty slot means
+// "every row visible" (indexing_vector returns max_count, fetch returns true when get_chunk_info
+// is nullptr) -- so dropping a committed delete stamp un-deletes the rows for every reader.
 // ---------------------------------------------------------------------------
 
 namespace {
 
-    // Commits a DELETE of the contiguous row-id range [first_row, first_row+count) the way
-    // the DELETE statement does: delete_rows stamps the pending txn id, commit+publish
-    // allocate the commit id, commit_all_deletes stamps it in.
+    // Mirrors the DELETE statement: stamp pending txn id, commit+publish allocate the commit id,
+    // commit_all_deletes stamps it in.
     void delete_range_committed(data_table_t& table,
                                 test_env& env,
                                 transaction_manager_t& mgr,
@@ -1236,9 +1203,8 @@ namespace {
         table.commit_all_deletes(txn_id, commit_id);
     }
 
-    // Full ordered drain of the visible set. These cases check CONTENTS, not only the
-    // count: a resurrected row is recognisable only by its value, and a count alone
-    // cannot tell "the deleted rows came back" from "different rows survived".
+    // Contents, not just count: a count alone can't distinguish "deleted rows came back" from
+    // "different rows survived".
     std::vector<int64_t> scan_all_values(data_table_t& table, test_env& env) {
         std::vector<storage_index_t> column_ids;
         column_ids.emplace_back(0);
@@ -1271,10 +1237,8 @@ namespace {
 
 } // anonymous namespace
 
-// Leg 1 — PARTIAL deletes in a full vector. ONE cleanup_versions pass is enough to expose
-// the hazard: chunk_vector_info::cleanup falling through its partial-delete branch to
-// `return true` with an empty `result` throws the vector's 500 committed delete stamps
-// away and makes the rows visible again.
+// Leg 1 — PARTIAL deletes in a full vector: chunk_vector_info::cleanup falling through its
+// partial-delete branch to `return true` with an empty `result` would resurrect all 500.
 TEST_CASE("components::table::mvcc::vacuum_keeps_partial_committed_deletes") {
     test_env env;
     auto table = make_int_table(env);
@@ -1289,16 +1253,14 @@ TEST_CASE("components::table::mvcc::vacuum_keeps_partial_committed_deletes") {
     const auto survivors = make_vector_range(500, 1023);
     REQUIRE(scan_all_values(*table, env) == survivors);
 
-    // The count goes first so a resurrection reads as "524 became 1024" rather than as a
-    // 1024-element diff; the contents then say WHICH rows are there.
+    // Size check first: a resurrection then reads as "524 became 1024", not a 1024-element diff.
     auto check_survivors = [&] {
         auto visible = scan_all_values(*table, env);
         REQUIRE(visible.size() == survivors.size());
         REQUIRE(visible == survivors);
     };
 
-    // VACUUM. No other transaction is active, so the horizon is already past the
-    // delete's commit — exactly the state in which cleanup may drop the stamps.
+    // No other transaction active, so the horizon is past the delete's commit.
     table->cleanup_versions(mgr.lowest_active_start_time());
     check_survivors();
 
@@ -1307,11 +1269,10 @@ TEST_CASE("components::table::mvcc::vacuum_keeps_partial_committed_deletes") {
     check_survivors();
 }
 
-// Leg 2 — a FULLY deleted vector. It takes TWO cleanup_versions passes to reach the
-// hazard: the first legitimately collapses the 1024-stamp chunk_vector_info into a
-// chunk_constant_info that keeps the delete_id; only the second reaches
-// chunk_constant_info::cleanup, where returning true on a committed delete_id with an
-// empty `result` brings all 1024 rows back at once.
+// Leg 2 — a FULLY deleted vector takes TWO passes to reach the hazard: pass 1 legitimately
+// collapses chunk_vector_info into a chunk_constant_info keeping delete_id; only pass 2 reaches
+// chunk_constant_info::cleanup, where an empty `result` on a committed delete_id would resurrect
+// all 1024 at once.
 TEST_CASE("components::table::mvcc::vacuum_keeps_fully_deleted_vector_deleted") {
     test_env env;
     auto table = make_int_table(env);
@@ -1336,16 +1297,14 @@ TEST_CASE("components::table::mvcc::vacuum_keeps_fully_deleted_vector_deleted") 
     REQUIRE(scan_all_values(*table, env).size() == 0);
 }
 
-// The other half of the contract, driven straight at chunk_info::cleanup: GC must still
-// RECLAIM what it legitimately may, or tightening it would just be a leak. `true` with an
-// empty `result` drops the slot; `true` with a `result` replaces it; `false` keeps what is
-// there. Insert history visible to every reader is droppable — the fact of a delete is not.
+// The other half of the contract, driven at chunk_info::cleanup directly: `true` + empty `result`
+// drops the slot, `true` + a `result` replaces it, `false` keeps it. Insert history visible to
+// every reader is droppable -- the fact of a delete is not.
 TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history") {
     constexpr uint64_t kLowest = 1000;
     constexpr uint64_t kOldCommit = 10;
 
-    // (a) A full vector with no delete at all: the case cleanup exists for. The 1024
-    // insert stamps are visible to everyone, so the whole slot goes.
+    // (a) No delete at all: 1024 insert stamps visible to everyone, so the whole slot goes.
     {
         chunk_vector_info info(0);
         info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
@@ -1354,8 +1313,7 @@ TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history")
         REQUIRE(result == nullptr);
     }
 
-    // (b) A fully deleted vector still collapses 1024 stamps into one constant — but the
-    // constant must KEEP the delete, so the rows stay invisible to a see-all-committed reader.
+    // (b) Fully deleted: collapses to one constant, but it must KEEP the delete_id.
     {
         chunk_vector_info info(0);
         info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
@@ -1372,9 +1330,8 @@ TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history")
         REQUIRE_FALSE(result->fetch(transaction_data{}, DEFAULT_VECTOR_CAPACITY - 1));
     }
 
-    // (b2) The same vector deleted by TWO transactions. A constant can carry ONE delete
-    // stamp, and neither of the two is right for the rows the other deleted, so the
-    // collapse is off and the per-row stamps stay.
+    // (b2) Deleted by TWO transactions: a constant carries only ONE delete stamp, so the
+    // collapse is off and per-row stamps stay.
     {
         chunk_vector_info info(0);
         info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
@@ -1387,8 +1344,7 @@ TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history")
         REQUIRE(result == nullptr);
     }
 
-    // (c) revert_all_deletes leaves any_deleted set as a conservative hint with not one
-    // surviving stamp. Nothing is being hidden, so the slot is still reclaimable.
+    // (c) revert_all_deletes leaves any_deleted as a conservative hint with no surviving stamp.
     {
         chunk_vector_info info(0);
         info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
@@ -1435,26 +1391,14 @@ TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history")
     }
 }
 
-// SILENT WRONG ANSWER: the index sweep floor inside an out-of-order publish window.
-//
-// Two commits overlap. s_del DELETEs row 0, commits (c_del allocated, the delete is
-// already storage-stamped) and is still mid-pipeline — publish() pending. s_oth
-// commits AND publishes with a LARGER id, so published_horizon_ jumps to c_oth
-// while c_del is still in in_flight_commits_.
-//
-// A reader begun in that window carries c_del in in_flight_snapshot, so it must
-// still see row 0 — and the full scan below proves it does. But the value
-// broadcast by lowest_active_snapshot_horizon() had already reached c_oth >= c_del,
-// and the deferred index-delete sweep in services/index/manager_index.cpp reaps on
-// `entry->commit_id <= new_horizon` (copied verbatim from that predicate; it is the
-// only consumer of this broadcast, reached via services/dispatcher/dispatcher.cpp).
-// So the index entry for row 0 was already cleared for erasure while the table still
-// hands the row back. Index answers a SUBSET of the table, with no error raised.
-//
-// The check is the honest half available from components/table: the full scan
-// establishes what the snapshot is ENTITLED to read, and the broadcast establishes
-// what the index has been PERMITTED to erase. The two must not overlap. The
-// end-to-end form with a real manager_index_t lives in
+// SILENT WRONG ANSWER: s_del commits a DELETE (c_del allocated, storage-stamped) but publish() is
+// still pending when s_oth commits AND publishes with a LARGER id, jumping published_horizon_ to
+// c_oth while c_del sits in in_flight_commits_. A reader begun in that window must still see row 0
+// (in_flight_snapshot has c_del) -- but lowest_active_snapshot_horizon() already broadcasts
+// c_oth >= c_del, and the deferred index-delete sweep in services/index/manager_index.cpp reaps on
+// `entry->commit_id <= new_horizon` (same predicate, checked here verbatim). So the index entry
+// for row 0 is cleared for erasure while the table still hands the row back -- with no error
+// raised. The end-to-end form with a real manager_index_t is
 // services/index/tests/test_index_delete_horizon.cpp.
 TEST_CASE("components::table::mvcc::index_sweep_floor_in_publish_window") {
     test_env env;
@@ -1469,8 +1413,7 @@ TEST_CASE("components::table::mvcc::index_sweep_floor_in_publish_window") {
     mgr.publish(c1);
     table->commit_append(c1, 0, 10);
 
-    // The DELETE commits: c_del is allocated and the tombstone is stamped with it,
-    // but publish() has NOT run (WAL fsync / storage_publish_* still in flight).
+    // c_del allocated and stamped, but publish() has NOT run yet.
     auto s_del = components::session::session_id_t::generate_uid();
     auto& txn_del = mgr.begin_transaction(s_del);
     auto txn_del_id = txn_del.data().transaction_id;
@@ -1478,8 +1421,7 @@ TEST_CASE("components::table::mvcc::index_sweep_floor_in_publish_window") {
     auto c_del = mgr.commit(s_del);
     table->commit_all_deletes(txn_del_id, c_del);
 
-    // An UNRELATED commit finishes its whole pipeline inside that window. Its id is
-    // larger, so publish() drags published_horizon_ PAST the still-in-flight c_del.
+    // Unrelated commit, larger id, finishes its whole pipeline: drags published_horizon_ past c_del.
     auto s_oth = components::session::session_id_t::generate_uid();
     mgr.begin_transaction(s_oth);
     auto c_oth = mgr.commit(s_oth);
@@ -1490,14 +1432,10 @@ TEST_CASE("components::table::mvcc::index_sweep_floor_in_publish_window") {
     auto s_read = components::session::session_id_t::generate_uid();
     auto& reader = mgr.begin_transaction(s_read);
 
-    // WHAT THE SNAPSHOT MAY READ. Row 0 is alive for it: the tombstone's c_del is
-    // in its in_flight_snapshot, so use_inserted_version rejects the delete marker.
+    // What the snapshot may read: row 0 is alive (c_del is in its in_flight_snapshot).
     REQUIRE(scan_values_txn(*table, env, reader.data()) == make_range(0, 9));
 
-    // WHAT THE INDEX HAS BEEN CLEARED TO ERASE. Same predicate as
-    // services/index/manager_index.cpp's deferred-delete sweep: an entry whose
-    // commit_id <= the broadcast horizon is erased. c_del must NOT qualify while a
-    // live snapshot still reads the row.
+    // What the index has been cleared to erase: c_del must NOT qualify while this reads row 0.
     const auto broadcast = mgr.lowest_active_snapshot_horizon();
     REQUIRE_FALSE(c_del <= broadcast);
 
@@ -1511,30 +1449,16 @@ TEST_CASE("components::table::mvcc::index_sweep_floor_in_publish_window") {
     REQUIRE(c_del <= mgr.lowest_active_snapshot_horizon());
 }
 
-// AN ORPHANED commit_id BLOCKS COMPACTION OF A TABLE IT NEVER TOUCHED.
-//
-// The CONSEQUENCE of the pin proved as state in test_transaction_manager.cpp
-// ("orphaned_commit_pins_horizon_forever"), measured where it is actually paid.
-// operator_commit_transaction_t has early exits between the hop that ALLOCATES the commit_id
-// (the dispatcher's drain -> transaction_manager_t::commit()) and the hop that removes it
-// (txn_publish_msg -> publish()); an exit in between leaves the id in in_flight_commits_ with
-// the transaction already gone from active_, so nothing can ever take it out again.
-//
-// compact() is gated on compact_watermark(), whose only floor for a system with no live
-// transactions is min(in_flight_commits_) - 1. One dead COMMIT therefore stops the reclaim of
-// EVERY table in the process from its own id onward — including tables the dead transaction
-// never wrote a row to, which is the case built below.
-//
-// THE ORPHAN WRITES NOTHING HERE, AND THAT IS FAITHFUL, NOT A SHORTCUT: under the operator's
-// ordering rule (no step that can fail may run after the first step that stamps the commit_id)
-// a transaction that dies at an early exit has stamped the id on nothing, and all it leaves
-// behind is the id itself. Rows it wrote to its OWN table would still carry insert_id ==
-// transaction_id and block THAT table's compaction on a separate, pre-existing ground (there is
-// no undo under MVCC), so keeping the two tables apart is what makes this case about the
-// horizon alone.
-//
-// ORDER MATTERS: the real DELETE must commit AFTER the orphan, or its id would sit below the
-// pinned floor and the compact would succeed for the wrong reason.
+// An orphaned commit_id blocks compaction of a table it never touched -- the consequence of the
+// pin proved as state in test_transaction_manager.cpp's "orphaned_commit_pins_horizon_forever",
+// measured here where it's actually paid. operator_commit_transaction_t has early exits between
+// allocating the commit_id and removing it (txn_publish_msg -> publish()); an exit in between
+// leaves the id in in_flight_commits_ forever. compact_watermark()'s only floor with no live
+// transactions is min(in_flight_commits_) - 1, so one dead commit stops reclaim of EVERY table in
+// the process, including ones the dead transaction never touched (the case built below -- the
+// orphan writes nothing here, on purpose, to isolate the horizon effect from ordinary
+// same-table blocking). The real DELETE must commit AFTER the orphan, or its id would sit below
+// the pinned floor and the compact would succeed for the wrong reason.
 TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
     test_env env;
     auto table = make_int_table(env);
@@ -1564,8 +1488,7 @@ TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
     table->commit_all_deletes(txn_del_id, c_del);
     mgr.publish(c_del);
 
-    // NOT VACUOUS: no transaction is left anywhere to release the pin, and the delete
-    // is fully published — every condition for a reclaim is met except the horizon.
+    // Not vacuous: every condition for a reclaim is met except the horizon.
     REQUIRE_FALSE(mgr.has_active_transactions());
 
     // What a fresh snapshot is entitled to read, before anything is reclaimed.
@@ -1575,15 +1498,12 @@ TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
     REQUIRE(scan_values_txn(*table, env, before.data()) == expected);
     mgr.abort(s_before);
 
-    // THE DEFECT. The watermark is stuck one below the orphan, so the DELETE's own
-    // stamp is above it and the rebuild is refused — permanently, for the life of the
-    // process, with nothing left that could ever change the answer.
+    // The defect: watermark stuck one below the orphan, refusing the rebuild permanently.
     REQUIRE(mgr.compact_watermark() == c_lost - 1);
     REQUIRE_FALSE(table->compact(mgr.compact_watermark()));
     REQUIRE(table->row_group()->total_rows() == 10);
 
-    // THE CURE. One erase; published_horizon_ does not move, so nothing is published
-    // by the act of forgetting the orphan.
+    // The cure: one erase; published_horizon_ does not move.
     const auto horizon_before = mgr.published_horizon();
     mgr.discard(c_lost);
     REQUIRE(mgr.published_horizon() == horizon_before);
@@ -1601,44 +1521,39 @@ TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
 }
 
 // =====================================================================================
-// Канал VACUUM: сборка версий едет на lowest_active_start_time, который ИГНОРИРУЕТ
-// множество коммитов в полёте.
-// Коммит без publish() уже покинул active_ (и active_start_times_), так что при живом
-// читателе lowest оказывается ВЫШЕ его commit_id, и cleanup сворачивает слот версий в
-// «видимо всем» — читатель, чей снапшот несёт этот id в in-flight, внезапно видит
-// неопубликованные строки.
-// Без гейта второй scan_count_txn возвращает 1024 вместо 0.
+// cleanup_versions gates on lowest_active_start_time, which IGNORES in-flight commits: a commit
+// without publish() has already left active_, so lowest can exceed its commit_id and collapse the
+// version slot to "visible to all" -- exposing unpublished rows to a reader whose snapshot still
+// carries that id in-flight. Without the gate, the second scan_count_txn below returns 1024, not 0.
 // =====================================================================================
 TEST_CASE("components::table::mvcc::cleanup_must_not_publish_an_in_flight_commit") {
     test_env env;
     auto table = make_int_table(env);
     transaction_manager_t mgr(&env.resource);
 
-    // Писатель: ПОЛНЫЙ вектор (cleanup_append сворачивает только целые вектора),
-    // commit БЕЗ publish — id остаётся в полёте.
+    // FULL vector (cleanup_append only collapses full ones); commit without publish stays in-flight.
     auto sw = components::session::session_id_t::generate_uid();
     auto& wtxn = mgr.begin_transaction(sw);
     append_rows_txn(*table, env, 0, 1024, wtxn.data());
     auto commit_id = mgr.commit(sw);
     table->commit_append(commit_id, 0, 1024);
 
-    // Читатель начинает в окне до publish: его снапшот несёт commit_id в in-flight.
+    // Reader begins before publish: its snapshot carries commit_id in-flight.
     auto sr = components::session::session_id_t::generate_uid();
     auto& rtxn = mgr.begin_transaction(sr);
     REQUIRE(scan_count_txn(*table, env, rtxn.data()) == 0);
 
     table->cleanup_versions(mgr.lowest_active_start_time());
 
-    // Тот же снапшот обязан ПО-ПРЕЖНЕМУ не видеть неопубликованный коммит.
+    // Same snapshot must STILL not see the unpublished commit.
     REQUIRE(scan_count_txn(*table, env, rtxn.data()) == 0);
 
     mgr.publish(commit_id);
     mgr.abort(sr);
 }
 
-// Вторая нога того же разрыва: id опубликован ПОСЛЕ старта читателя. Глобальное множество
-// в полёте уже пусто, но снапшот читателя всё ещё несёт этот id в СВОЁМ in-flight — гейт
-// обязан учитывать и per-txn половину.
+// Second leg: id is published AFTER the reader starts, so the global in-flight set is empty, but
+// the reader's own snapshot still carries it -- the gate must check the per-txn half too.
 TEST_CASE("components::table::mvcc::cleanup_honours_a_readers_in_flight_snapshot") {
     test_env env;
     auto table = make_int_table(env);
@@ -1654,7 +1569,7 @@ TEST_CASE("components::table::mvcc::cleanup_honours_a_readers_in_flight_snapshot
     auto& rtxn = mgr.begin_transaction(sr);
     REQUIRE(scan_count_txn(*table, env, rtxn.data()) == 0);
 
-    // Публикация ПОСЛЕ старта читателя: из глобального in-flight id ушёл, из снапшота — нет.
+    // Published after the reader started: gone from the global in-flight set, not from the snapshot.
     mgr.publish(commit_id);
 
     table->cleanup_versions(mgr.lowest_active_start_time());

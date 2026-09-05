@@ -193,9 +193,6 @@ TEST_CASE("components::sql::view") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
 
     SECTION("CREATE VIEW") {
-        // The statement text is passed in, as every production entry point does.
-        // Omitted, the transformer answers by INVENTING a body ("SELECT *") — and the
-        // stored body is re-parsed on every read of the view.
         const char* sql = "CREATE VIEW db.my_view AS SELECT * FROM db.tbl";
         transform::transformer transformer(&resource, sql);
         auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
@@ -245,8 +242,7 @@ TEST_CASE("components::sql::view") {
     }
 
     SECTION("CREATE VIEW with a column alias list is refused") {
-        // The aliases rename the body's output columns and are carried nowhere, so
-        // the view would promise names its stored body does not produce.
+        // Aliases rename the body's output columns and are carried nowhere.
         const char* sql = "CREATE VIEW db.my_view (x) AS SELECT id FROM db.tbl";
         transform::transformer transformer(&resource, sql);
         auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
@@ -320,24 +316,19 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
         CHECK(stored("CREATE TABLE t (x INTEGER, CHECK(x * -1 > 0))") == "x * -1 > 0");
     }
 
-    // Written ON the column rather than as its own list element, the constraint reaches
-    // extract_column_constraints instead of extract_table_constraints. Both syntaxes feed
-    // ONE list on the create node, and gram.y stamps Constraint::location with the CHECK
-    // keyword for both, so the stored text must come out identical.
+    // Column-level CHECK reaches extract_column_constraints, table-level reaches
+    // extract_table_constraints; both must stamp the same Constraint::location.
     SECTION("a column-level CHECK is stored the same way") {
         CHECK(stored("CREATE TABLE t (x INTEGER CHECK(x > 0))") == "x > 0");
         CHECK(stored("CREATE TABLE t (x INTEGER CONSTRAINT ck CHECK(x > 0 AND x < 100))") == "x > 0 AND x < 100");
     }
 
-    // BETWEEN is not a node kind of its own here — the grammar desugars it into an AND of
-    // two comparisons (gram.y, a_expr BETWEEN) — but the stored text is the SOURCE, so it
-    // comes back spelled the way the user wrote it, not the way the tree holds it.
+    // gram.y desugars BETWEEN into an AND of two comparisons, but the stored text is the source, spelled as written.
     SECTION("BETWEEN keeps its written spelling") {
         CHECK(stored("CREATE TABLE t (x INTEGER, CHECK(x BETWEEN 1 AND 10))") == "x BETWEEN 1 AND 10");
     }
 
-    // A ')' inside a string literal must not close the CHECK, and an operator inside one
-    // must not be read as punctuation: the slice steps over whole lexical regions.
+    // The slice steps over whole lexical regions, not raw characters.
     SECTION("parens and operators inside a string literal are not punctuation") {
         CHECK(stored("CREATE TABLE t (s TEXT, CHECK(s = 'a > b'))") == "s = 'a > b'");
         CHECK(stored("CREATE TABLE t (s TEXT, CHECK(s <> ')'))") == "s <> ')'");
@@ -443,13 +434,8 @@ TEST_CASE("components::sql::if_not_exists") {
     }
 }
 
-// A sequence bound is an int64, but the parse tree does not always keep it in the
-// integer slot. `NumericOnly` builds a T_Float for FCONST, and scan.l's
-// process_integer_literal sends EVERY literal outside int32 out as FCONST carrying
-// the original digits — so `MAXVALUE 9223372036854775807` arrives as a T_Float too.
-// intVal() without a tag check reads the `char*` half of the Value union AS A NUMBER,
-// so the bound persisted into the catalog is the bit pattern of a pointer, different
-// on every run.
+// scan.l's process_integer_literal sends every literal outside int32 out as FCONST/T_Float, so a
+// bare intVal() on e.g. MAXVALUE 9223372036854775807 reads the Value union's char* half as a number.
 TEST_CASE("components::sql::sequence_bounds_are_read_by_node_tag") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);

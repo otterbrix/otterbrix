@@ -660,13 +660,10 @@ namespace services::dispatcher {
                                           const components::casts::cast_registry_t* cast_registry,
                                           const components::graph_execution_context& execution_context,
                                           std::vector<components::table::column_definition_t>& columns) {
-        // Rule 6 gate for CREATE TABLE — and, since 2026-09-05, for ALTER TABLE ADD COLUMN
-        // too: services/collection/executor.cpp calls this same function from its
-        // alter_table_t arm, which is what makes the two spellings agree. It owns an error
-        // channel BEFORE the DDL builder (which returns rows, not errors) runs, so a DEFAULT
-        // the catalog cannot carry has to be refused here — not
-        // written as an empty attdefspec next to atthasdefault=true and read back as
-        // "no default" by everything that follows.
+        // Shared with ALTER TABLE ADD COLUMN (services/collection/executor.cpp's alter_table_t
+        // arm calls this same function). Owns an error channel BEFORE the DDL builder (which
+        // returns rows, not errors) runs, so an uncarryable DEFAULT is refused here — not
+        // written as an empty attdefspec next to atthasdefault=true and read back as "no default".
         const auto gate_persistable = [&](const components::table::column_definition_t& column) {
             std::string encoded;
             return components::catalog::encode_default_spec(resource, column.default_value(), encoded);
@@ -718,11 +715,9 @@ namespace services::dispatcher {
         return core::error_t::no_error();
     }
 
-    // ONE WORDING for "the written column list and the source disagree in width", so the
-    // two places that can say it cannot drift apart: the arity guard in
-    // validate_schema_impl, which sees only the two counts, and the NA-column drop in
-    // validate_types, which is the last place that still knows WHICH column went missing
-    // and appends its name.
+    // ONE WORDING shared by two callers that must not drift apart: the arity guard in
+    // validate_schema_impl (sees only the two counts) and the NA-column drop in validate_types
+    // (the last place that still knows which column went missing, and appends its name).
     std::string insert_arity_disagreement(std::size_t written, std::size_t provided) {
         return "insert_node: INSERT names " + std::to_string(written) + " columns but the source provides " +
                std::to_string(provided);
@@ -924,20 +919,10 @@ namespace services::dispatcher {
                                     }
                                     column = std::move(new_column);
                                 } else {
-                                    // NOT AN ASSERT. An assert is compiled out of every
-                                    // release build, and what follows it here is not
-                                    // undefined behaviour but a DEFINED wrong answer:
-                                    // `column` stays exactly as it arrived — the incoming
-                                    // type, not the target type this loop exists to convert
-                                    // to — and the INSERT carries it to storage under the
-                                    // target column's name. Every sibling branch above
-                                    // refuses through `result`; so does this one.
-                                    //
-                                    // No SQL path reaches it today: the suite runs Debug
-                                    // with DEV_MODE=ON, so a reachable case would already be
-                                    // aborting. That is exactly why it must not be an assert
-                                    // — the day a new type pair reaches it, Debug aborts and
-                                    // release silently mis-stores.
+                                    // NOT AN ASSERT: an assert compiles out under release, and
+                                    // silently leaving `column` at its incoming (not target) type
+                                    // is a DEFINED wrong answer, not UB — the INSERT would carry
+                                    // it to storage under the target column's name.
                                     result = core::error_t(
                                         core::error_code_t::schema_error,
                                         std::pmr::string{"no conversion to column '" + it->alias() +
@@ -952,29 +937,15 @@ namespace services::dispatcher {
                             }
                         }
                     }
-                    // A column still typed NA after reconciliation carries no storable
-                    // type. On a schemaless computing table that is an absent key (every
-                    // row null), not a real column, and handing an all-NA column to
-                    // storage segfaults the append. A declared table never reaches here
-                    // NA — its columns are typed by the schema — so drop such columns
-                    // only for a computing target.
-                    //
-                    // OUTSIDE the per-column loop, not inside it. This erase() used to run
-                    // once per column ON THE VERY CONTAINER that loop ranges over, which
-                    // invalidates the loop's cached end iterator: every iteration after the
-                    // first removal read elements erase() had already destroyed, and the
-                    // branch each of those took was whatever the freed bytes decoded to.
-                    // The answers came out right only because std::remove_if never sees
-                    // past the live prefix.
+                    // A column still typed NA after reconciliation is an absent key on a
+                    // schemaless computing target (handing an all-NA column to storage segfaults
+                    // the append); a declared table never reaches here NA. Erase runs OUTSIDE the
+                    // per-column loop, not inside it — erasing from the very container a loop
+                    // ranges over invalidates its cached end iterator.
                     if (insert_target_relkind == 'g') {
                         auto& cols = chunk.data;
-                        // AND NAME WHAT IS DROPPED. Silently removing the column left the
-                        // statement to die downstream as a bare count disagreement that
-                        // never said WHICH column vanished — and the cause is not a
-                        // miscount at all: a column written NULL in every row has no type
-                        // to create a column from. Names are readable HERE and nowhere
-                        // after, because this erase is what breaks the 1:1 correspondence
-                        // between the written list and the chunk's columns.
+                        // Names are readable HERE and nowhere after: this erase is what breaks
+                        // the 1:1 correspondence between the written list and the chunk's columns.
                         const bool names_readable =
                             written_column_list != nullptr &&
                             written_column_list->key_translation().size() == cols.size();
@@ -1632,23 +1603,13 @@ namespace services::dispatcher {
                                     scalar_expr->params().empty()
                                         ? scalar_expr->key()
                                         : std::get<components::expressions::key_t>(scalar_expr->params().front());
-                                // The condition is a leftover, not a decision: its false arm
-                                // cannot be taken from here, and it is NOT the place where an
-                                // INSERT ... SELECT source loses a column.
-                                //
-                                // Every expression in this container has already been through
-                                // the first pass above (same loop, same node_select->expressions(),
-                                // same dispatch): that pass calls validate_key on any get_field
-                                // whose path is still empty and RETURNS ITS ERROR — an unknown key
-                                // on a schemaless table is refused there by name ("path: 'x' was
-                                // not found"), never carried this far — and then indexes
-                                // incoming_schema[key.path()[0]] with no guard at all. So by the
-                                // time control is here the path is non-empty, and an out-of-range
-                                // front() would already have been an out-of-bounds read one pass
-                                // earlier. Do not "make this loud": the message would be
-                                // unreachable, and the reachable way an INSERT ... SELECT source
-                                // loses a column is a projection typed NA, refused by name at the
-                                // INSERT binding in the insert_t case below.
+                                // Leftover condition, its false arm unreachable from here: the
+                                // first pass above already calls validate_key on any get_field with
+                                // an empty path and RETURNS its error, so by the time control
+                                // reaches here the path is non-empty. Do not "make this loud" — the
+                                // message would be unreachable; the real way a SELECT source loses
+                                // a column is a projection typed NA, refused in the insert_t case
+                                // below.
                                 if (!key.path().empty() && key.path().front() < incoming_schema.size()) {
                                     result_schema.push_back(incoming_schema[key.path().front()]);
                                 }
@@ -1659,7 +1620,7 @@ namespace services::dispatcher {
                             } else {
                                 // Computed projection (CASE / COALESCE / arithmetic /
                                 // unary_minus / constant): resolve the real output type
-                                // against incoming_schema. Rule 6 — never the UNKNOWN
+                                // against incoming_schema. Never the UNKNOWN
                                 // sentinel; an unresolvable type is a bind error.
                                 auto resolve_error = impl::resolve_scalar_output_type(
                                     context,
@@ -2322,38 +2283,19 @@ namespace services::dispatcher {
                                              "are not yet supported on relkind='g' (dynamic-schema) tables",
                                              resource});
                     }
-                    // A SOURCE COLUMN THAT CARRIES NO TYPE IS NAMED HERE — the last place
-                    // that still knows the name. logical_type::NA is "NULL type, used for
-                    // constant NULL": a projection column that is NULL in every row, with
-                    // nothing to create a storage column from.
+                    // A source column typed NA (projection NULL in every row) is named HERE, the
+                    // last place that still knows the name. Unlike VALUES (whose NA columns are
+                    // already erased earlier by validate_types), INSERT ... SELECT has no chunk to
+                    // erase from: left unchecked, bind_computed_rename binds it target_type=NA,
+                    // the register wrap creates the catalog column, and the append then dies in
+                    // column_segment_t with "no segment storage for physical type 127"
+                    // (physical_type::NA) — after a phantom NA column is already in the catalog.
                     //
-                    // The VALUES form of the same thing is answered by the NA-column drop in
-                    // validate_types, which runs BEFORE this walk (executor.cpp calls
-                    // validate_types, then validate_schema) and hands the chunk over with
-                    // those columns already erased — so a VALUES source never reaches this
-                    // loop and keeps its own, arity-shaped sentence. INSERT ... SELECT has
-                    // no chunk to erase from: the NA column stays in the source schema,
-                    // bind_computed_rename below binds it with target_type = NA, the
-                    // computed-register wrap creates the catalog column from that binding,
-                    // and the append dies inside column_segment_t with "no segment storage
-                    // for physical type 127" (physical_type::NA) — a sentence that names no
-                    // column, no statement and no cause, AFTER the register wrap has already
-                    // left a phantom NA column in the target's catalog.
-                    //
-                    // NARROW, and deliberately so — this refuses ONE thing and blurs nothing:
-                    //   * an unknown key on a schemaless table never gets here at all. It is
-                    //     refused earlier and by name in validate_key ("path: 'x' was not
-                    //     found"), which is a different diagnosis of a different mistake;
-                    //   * a plain `SELECT a, NULL FROM g` is untouched: the guard is on the
-                    //     INSERT binding, not on the select list, so NULL stays a legal
-                    //     result column;
-                    //   * a DECLARED (relkind != 'g') target is untouched: it has a column
-                    //     type to store the null under, and `INSERT INTO r (k, v) SELECT a,
-                    //     NULL` keeps working.
-                    //
-                    // No cast is suggested as the way out, because there is none: NULL::bigint
-                    // and CAST(NULL AS BIGINT) both still resolve to NA here, and advertising
-                    // them would send the reader down a road that ends in this same refusal.
+                    // Narrow on purpose: an unknown key on a schemaless table is refused earlier
+                    // by validate_key; a plain `SELECT a, NULL FROM g` is untouched (guard is on
+                    // the INSERT binding, not the select list); a declared (relkind != 'g') target
+                    // is untouched. No cast is suggested as the fix — NULL::bigint and CAST(NULL
+                    // AS BIGINT) both still resolve to NA here.
                     if (is_computed) {
                         const auto& source_columns = incoming_schema.value();
                         // Positional 1:1 with the written list only when the two agree in
@@ -2384,29 +2326,18 @@ namespace services::dispatcher {
                                                  resource});
                         }
                     }
-                    // The WRITTEN COLUMN LIST routes the values into a computing table.
-                    // Skipping set_column_bindings for relkind='g' drops it on the floor:
-                    // `INSERT INTO g (x, y) SELECT a, b` appends AND registers columns a
-                    // and b, and the (x, y) the statement wrote vanishes without a word.
-                    // The bindings are rename-only — target type is the incoming type, no
-                    // cast: the computing table adopts the incoming shape under the written
-                    // names, exactly as the VALUES form names its chunk columns. A list
-                    // whose arity disagrees with the projection is a refusal, not a silent
-                    // partial mapping.
+                    // Skipping set_column_bindings for relkind='g' would drop the written column
+                    // list on the floor: `INSERT INTO g (x, y) SELECT a, b` would register a and
+                    // b, silently losing the written (x, y). Bindings are rename-only (no cast);
+                    // an arity disagreement with the projection is a refusal, not a partial mapping.
                     auto bind_computed_rename = [&]() -> core::error_t {
                         if (insert_node->key_translation().empty()) {
                             return core::error_t::no_error();
                         }
                         if (insert_node->key_translation().size() != incoming_schema.value().size()) {
-                            // Same sentence as the NA-column drop in validate_types, from
-                            // the one place that owns the wording — but without the name:
-                            // by the time the schema reaches here the dropped column is
-                            // simply not in it, so there is nothing left to point at.
-                            // Neither kind of typeless source column survives to here any
-                            // more, and each is named by whichever pass can still see it:
-                            // a VALUES chunk by the NA-column drop in validate_types, an
-                            // INSERT ... SELECT projection by the NA guard a few lines
-                            // above. What reaches this line is a genuine miscount.
+                            // Same wording as the NA-column drop in validate_types, but without a
+                            // name — the dropped column is simply not in the schema anymore.
+                            // Whatever reaches this line is a genuine miscount, not a typeless column.
                             return core::error_t(
                                 core::error_code_t::schema_error,
                                 std::pmr::string{insert_arity_disagreement(insert_node->key_translation().size(),
@@ -2424,14 +2355,9 @@ namespace services::dispatcher {
                                 .cast = {}});
                         }
                         insert_node->set_column_bindings(std::move(bindings));
-                        // The computed-register wrap (executor) registers this table's
-                        // columns from the SELECT child's DECLARED output schema. The
-                        // bindings above change what actually lands — the insert
-                        // operator renames the streamed columns — so the declared
-                        // schema follows the written names too; otherwise the catalog
-                        // would register the projection's names while storage holds
-                        // the written ones: the exact storage/catalog divergence the
-                        // register wrap exists to prevent.
+                        // The register wrap registers columns from the child's DECLARED schema;
+                        // it must follow the written names too, or the catalog would register the
+                        // projection's names while storage holds the renamed ones.
                         auto* source_child = node->children().front().get();
                         if (source_child->has_output_types()) {
                             auto renamed = source_child->output_types();
@@ -2444,19 +2370,11 @@ namespace services::dispatcher {
                         return core::error_t::no_error();
                     };
                     if (table_schema.empty()) {
-                        // A computing table with no columns yet accepts any INSERT: the shape
-                        // IS the schema, and operator_computed_field_register_t registers the
-                        // attoids at execute time.
-                        //
-                        // A REGULAR table with no columns does NOT. The only way a relkind='r'
-                        // table reaches an empty schema is by dropping its last column, so the
-                        // state exists only once ALTER TABLE DROP COLUMN really drops — and
-                        // granting it dynamic-schema semantics here would let a zero-column
-                        // regular table come back computed while relkind still says 'r'
-                        // (test_persistence::zero_column_regular_table_stays_regular guards
-                        // exactly that). The restart leg already refuses (rehydrate skips a
-                        // 0-column oid, so there is no storage to append to); this makes the
-                        // live session agree.
+                        // A computing table with no columns accepts any INSERT (shape IS the
+                        // schema). A REGULAR table with no columns does NOT: the only way relkind='r'
+                        // reaches an empty schema is ALTER TABLE DROP COLUMN dropping the last one,
+                        // and granting dynamic-schema semantics here would let it come back computed
+                        // while relkind still says 'r' (test_persistence::zero_column_regular_table_stays_regular).
                         if (!is_computed) {
                             return core::error_t(
                                 core::error_code_t::schema_error,
@@ -2810,12 +2728,9 @@ namespace services::dispatcher {
                     }
                 }
                 auto& keys = idx_node->keys();
-                // Key-type gate. The key encoders sit far below this statement, inside actor
-                // coroutines with no error channel: a key type they cannot represent is an
-                // abort (Debug) or a silently NA-collapsed key serving wrong rows (NDEBUG).
-                // So the statement is refused HERE, before it executes — no unrepresentable
-                // key can ever reach an encoder from user data, backfill included. The
-                // accepted set lives in ONE place, next to the encoders it mirrors:
+                // Key-type gate: the encoders below have no error channel (an unrepresentable
+                // key type is an abort in Debug, an NA-collapsed key serving wrong rows under
+                // NDEBUG), so it must be refused HERE. Accepted set mirrors
                 // components::index::codec::is_representable_index_key_type.
                 const bool ordered_index =
                     idx_node->type() != components::logical_plan::index_type::hashed;
@@ -3040,22 +2955,15 @@ namespace services::dispatcher {
         return result;
     }
 
-    // Public entry: resolve the node's output column types (data-INDEPENDENT — derived
-    // from the plan + catalog types, never from row data), then STAMP them onto the node
-    // so the physical-plan generator can build correctly-typed results over ZERO input
-    // rows (PostgreSQL TupleDesc model). Interposing at this boundary captures every
-    // return path of validate_schema_impl's switch and every recursive child call.
+    // Public entry: resolve output column types (data-INDEPENDENT, from plan + catalog) and
+    // STAMP them onto the node so the physical-plan generator can type results over ZERO rows.
     //
-    // Error and empty-schema results leave the node UNSTAMPED. Empty is legitimate for
-    // DDL/control nodes (they have no output columns) and LOAD-BEARING for
-    // dynamic-schema (relkind='g') scans, whose columns exist only in data — stamping
-    // an empty vector would make has_output_types() lie. The unstamped state is a
-    // CONTRACT, not a silent degradation: every consumer that REQUIRES a plan-time type
-    // must check has_output_types() and refuse loudly when it is absent (the executor's
-    // boolean-required / ARRAY-equality sub-query guards do exactly that); consumers
-    // that can answer from data (the 'g'-scan pipeline) may. Reading
-    // output_types().front() without the check is how an empty vector reaches .front()
-    // under NDEBUG.
+    // Error and empty-schema results leave the node UNSTAMPED — a CONTRACT, not a degradation:
+    // empty is legitimate for DDL/control nodes and LOAD-BEARING for relkind='g' scans (columns
+    // exist only in data; stamping empty would make has_output_types() lie). Every consumer that
+    // requires a plan-time type must check has_output_types() and refuse when absent (the
+    // executor's boolean-required / ARRAY-equality sub-query guards do); reading
+    // output_types().front() without the check is how an empty vector reaches .front() under NDEBUG.
     core::result_wrapper_t<named_schema> validate_schema(const validation::validation_context_t& context,
                                                          node_t* node,
                                                          const components::logical_plan::storage_parameters& parameters,

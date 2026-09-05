@@ -118,9 +118,8 @@ namespace components::operators {
             }
 
             // Get types to build the filter (await 1). Cached for the no-data empty-guard below.
-            // A refusal here is a schema read that never reached a storage. Answering it as
-            // an empty type list instead would build the filter against a table with no
-            // columns and then shape the 0-row guard chunk with it.
+            // A refusal here never reached storage; answering with an empty type list would build
+            // the filter against a table with no columns and shape the guard chunk wrong.
             auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                         &services::disk::manager_disk_t::storage_types,
                                                         ctx->session,

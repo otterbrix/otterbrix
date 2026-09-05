@@ -307,12 +307,10 @@ namespace core::b_plus_tree {
                             update_metadata_(append_node, metadata);
                         } else {
                             // nothing left but to split this block
-                            // split_append() takes this block APART -- it moves items out of it,
-                            // and may put the new one into it -- before either half can be handed
-                            // anywhere. A refusal afterwards destroys what is already out, so the
-                            // room for both halves is asked for first. Two, because that is the
-                            // most this path can need; one slot short of the ceiling it declines
-                            // an append it might have fitted, which is the safe direction.
+                            // split_append() takes this block apart before either half can be
+                            // handed anywhere, so a refusal afterwards would destroy what's
+                            // already out -- room for both halves (the most this path can need)
+                            // is reserved first.
                             if (!reserve_segments_(2)) {
                                 header_->unique_id_count_ -= !index_exists;
                                 return false;
@@ -441,12 +439,10 @@ namespace core::b_plus_tree {
                 bool last_copy_in_block = remove_node->block->item_count(index) == 1;
                 remove_node->block->remove(index, item);
                 if (last_copy_in_block) {
-                    // unique_id_count_ counts distinct keys across the whole segment tree,
-                    // and one key can straddle several blocks of the range. Decrementing on
-                    // every block-local extinction charged a K-block key K times: deleting a
-                    // low-cardinality key spread over 2 blocks drove the counter 2 -> 0 while
-                    // the other key's items were all still present. Decrement only when the
-                    // key is gone from every candidate block.
+                    // unique_id_count_ counts distinct keys across the whole tree, and one key
+                    // can straddle several blocks: decrementing on every block-local extinction
+                    // charged a K-block key K times. Decrement only once the key is gone from
+                    // every candidate block.
                     bool index_still_present = false;
                     for (block_metadata* probe = range.begin; probe != range.end; probe++) {
                         it node = segments_.begin() + (probe - metadata_begin_);
@@ -600,19 +596,12 @@ namespace core::b_plus_tree {
             it node = segments_.begin() + (metadata - metadata_begin_);
             ensure_loaded_(metadata);
 
-            // THE STAND-IN IS NOT A BLOCK THIS WALK MAY TOUCH. poison_segment_() leaves an EMPTY
-            // one in place of a block whose bytes did not arrive, and the arithmetic below is
-            // built on "a resident block holds something": unique_indices_count() answers 0, the
-            // subtraction under it turns that into SIZE_MAX (an empty block answers max_index()
-            // with numeric_limits<index_t>::max(), which is what a default-constructed
-            // prev_index is), and split_uniques() then reads one metadata entry PAST the end of
-            // the allocation. The other way round -- when prev_index already has a real value --
-            // count stays 0, 0 fits in any budget, and the stand-in is moved WHOLE into a leaf
-            // that never failed to read anything and would flush it over the rows.
-            //
-            // Neither is a case to compute through. Stop: this leaf keeps the segment and its
-            // metadata, so the bytes stay readable from its own file, and it is poisoned, so it
-            // writes nothing over them.
+            // The stand-in poison_segment_() leaves for a block whose bytes did not arrive is not
+            // a block this walk may compute through: unique_indices_count() answers 0, and the
+            // subtraction under it either wraps to SIZE_MAX (reading one metadata entry past the
+            // allocation) or comes out 0, moving the empty stand-in WHOLE into a leaf that would
+            // flush it over real rows. Stop instead: this leaf keeps the segment, still readable
+            // from its own file, and poisoned so nothing writes over it.
             if (!node->block || node->unreadable || node->block->unique_indices_count() == 0) {
                 break;
             }
@@ -643,11 +632,9 @@ namespace core::b_plus_tree {
                 if (split_unique == 0 || split_unique == node->block->unique_indices_count()) {
                     break;
                 }
-                // ASK FOR THE ROOM BEFORE TAKING THE ITEMS OUT. split_uniques() moves them out of
-                // this block and hands them back in a new one, so calling it inside the argument
-                // list of a call that can REFUSE destroys the temporary holding them while this
-                // block has already lost them -- and the refusal is supposed to be the SAFE
-                // outcome.
+                // Room must be reserved BEFORE split_uniques() moves items out: calling it inside
+                // the argument list of a call that can refuse would destroy the temporary holding
+                // them while this block has already lost them.
                 if (!splited_tree->reserve_segments_(1)) {
                     break;
                 }
@@ -788,10 +775,9 @@ namespace core::b_plus_tree {
                     if (count - rebalance_size == 0 || count - rebalance_size == node->block->unique_indices_count()) {
                         break;
                     }
-                    // The room has to be there BEFORE the block is taken apart: the refusal path
-                    // below puts the split-off half back and drops the half it was handing over,
-                    // so a refusal after the split destroys rows rather than declining to move
-                    // them.
+                    // Room must exist BEFORE the block is taken apart: the refusal path below puts
+                    // the split-off half back, so a refusal after the split would destroy rows
+                    // rather than decline to move them.
                     if (!reserve_segments_(1)) {
                         break;
                     }
@@ -824,14 +810,12 @@ namespace core::b_plus_tree {
         assert(header_->item_count_ != 0 && other->header_->item_count_ != 0);
         assert(min_index() > other->max_index() || max_index() < other->min_index());
 
-        // ALL OR NOTHING, and that is not a preference. btree_t DELETES the leaf it merged from:
-        // whatever a partial merge leaves behind is no longer named by anything above, so those
-        // rows are not "still readable from the source file", they are orphaned. Everything that
-        // could stop the move is therefore asked before anything moves.
+        // All or nothing, not a preference: btree_t DELETES the leaf merged from, so whatever a
+        // partial merge leaves behind is orphaned, not "still readable from the source file".
+        // Everything that could stop the move is asked before anything moves.
         if (poisoned() || other->poisoned()) {
-            // One side holds an empty stand-in for a block whose bytes did not arrive. This is
-            // the move that would carry it into a leaf that flushes -- and the move after which
-            // the leaf that still has the real bytes gets deleted.
+            // A stand-in for unread bytes would be carried into a leaf that flushes, right before
+            // the leaf holding the real bytes gets deleted.
             return false;
         }
         if (segments_.size() + other->segments_.size() > max_segments_limit()) {
@@ -1018,14 +1002,10 @@ namespace core::b_plus_tree {
 
     bool segment_tree_t::flush() {
         if (poisoned()) {
-            // A block of this leaf could not be read back, and what stands in its place in memory
-            // is EMPTY. close_gaps_() would relocate it, the writer below would write it, and
-            // either one puts nothing over the rows that are still on the device -- which is how a
-            // single refused read costs a whole block at the next flush. Refuse instead,
-            // touch no bytes, and leave the leaf dirty so nothing counts it as written.
-            //
-            // Loud, not fatal: the tree still opens, the readable leaves still flush, and the
-            // files can still be deleted.
+            // A block of this leaf could not be read back, so its in-memory stand-in is EMPTY;
+            // close_gaps_() or the writer below would put nothing over the rows still on the
+            // device. Refuse instead, touch no bytes, leave the leaf dirty. Loud, not fatal: the
+            // tree still opens, readable leaves still flush, and files can still be deleted.
             return false;
         }
         // A leaf nobody touched is already correct on disk: its blocks, its header and its length
@@ -1129,10 +1109,9 @@ namespace core::b_plus_tree {
     }
 
     bool segment_tree_t::read_header_(filesystem::file_handle_t& file) {
-        // THE HEADER SIZES EVERYTHING ELSE. header_->segments_count_ places metadata_end_, and
-        // every lookup below walks the array between metadata_begin_ and it. Reading it with the
-        // result dropped and its content unexamined leaves the PREVIOUS header in place when the
-        // read does not happen, and a count larger than the region holds then walks off the end of
+        // The header sizes everything else: header_->segments_count_ places metadata_end_, and
+        // every lookup below walks the array up to it, so a read whose result is dropped would
+        // leave the PREVIOUS header in place, and an oversized count would walk off the end of
         // the header allocation on every later find.
         if (file.file_size() == 0) {
             // A leaf file that was created and never written to. Nothing to read, and nothing
@@ -1150,10 +1129,9 @@ namespace core::b_plus_tree {
             report_failure_(load_failure_t::io_error);
             return false;
         }
-        // THE SEAL BEFORE ANY FIELD. Without it a flipped bit anywhere in the
-        // region -- a counter, a block offset, a key boundary -- was BELIEVED whenever the
-        // one structural check below still passed, and the leaf then answered wrong,
-        // silently. A mismatch is a header this codec did not write: the leaf gives up
+        // Checksum before any field: without it a flipped bit anywhere in the region was
+        // believed whenever the one structural check below still passed, answering wrong,
+        // silently. A mismatch means this codec didn't write the header: the leaf gives up
         // whole, stays empty and openable, refuses to flush, and says why.
         if (header_->header_checksum_ != header_region_checksum_()) {
             std::memset(static_cast<void*>(header_), 0, header_size);
@@ -1215,10 +1193,9 @@ namespace core::b_plus_tree {
             segments_.back().block =
                 create_initialize_nothrow(resource_, key_func_, static_cast<uint32_t>(metadata->size));
             if (!segments_.back().block) {
-                // No room for this block. That is not a corruption and, for an integer-keyed
-                // entry, not even an error the caller has to act on: an unloaded segment is
-                // exactly what lazy_load() produces, and the next question about it loads it then.
-                // It IS reported, because a caller that asked for a clean load did not get one.
+                // No room for this block -- not corruption, and for an integer-keyed entry not
+                // even an error to act on (an unloaded segment is what lazy_load() produces
+                // anyway). Still reported: a caller that asked for a clean load did not get one.
                 if (string_keyed) {
                     abandon_leaf_(load_failure_t::out_of_memory);
                     return;
@@ -1298,11 +1275,10 @@ namespace core::b_plus_tree {
             if (metadata->min_index.type() == physical_type::STRING ||
                 metadata->max_index.type() == physical_type::STRING) {
                 load_segment_(metadata);
-                // A block that could not be read is an EMPTY stand-in, and an empty block answers
-                // min_index()/max_index() with the extremes of the index range -- copying those
-                // into the metadata would tell find_range_() that this block covers EVERY key. And
-                // NOT copying them leaves the stale pointer that came off the file. Neither is
-                // usable, which is why the leaf gives up here rather than half-answering.
+                // An unread block's EMPTY stand-in answers min/max_index() with the extremes of
+                // the index range -- copying those into the metadata would tell find_range_() this
+                // block covers EVERY key, and not copying leaves a stale pointer off the file. The
+                // leaf gives up here rather than half-answer.
                 if (!segments_.back().block || segments_.back().unreadable) {
                     abandon_leaf_(last_failure_of_this_leaf_());
                     return;
@@ -1418,30 +1394,22 @@ namespace core::b_plus_tree {
         if (segments_.size() + count <= max_segments_limit()) {
             return true;
         }
-        // THE END OF THE METADATA ARRAY. metadata_end_++ moves a pointer inside the header
-        // allocation and nothing else bounds it: max_segments entries fit, and btree_t bounds a
-        // leaf at max_node_capacity_ unique indices -- which at MAX_NODE_CAPACITY is 8192, one
-        // MORE than fits. Refuse rather than write past the allocation, and give the leaf up so
-        // the state the refusal leaves behind cannot reach the device through a flush.
-        //
-        // Given up as a WHOLE, not counted like an unreadable block: nothing about the leaf will
-        // make room later, so unlike a refused read this is not a condition that can lift by
-        // itself, and only a load that replaces the leaf clears it.
+        // End of the metadata array: nothing else bounds metadata_end_++, and btree_t can bound a
+        // leaf at MAX_NODE_CAPACITY (8192) unique indices, one MORE than max_segments (8191) fits.
+        // Refuse rather than write past the allocation, and give the whole leaf up (not counted
+        // like an unreadable block) since only a load that replaces it can clear this.
         abandoned_.store(true, std::memory_order_release);
         report_failure_(load_failure_t::capacity_exceeded);
         return false;
     }
 
     void segment_tree_t::abandon_leaf_(load_failure_t failure) {
-        // A metadata entry whose min or max index is a STRING does not carry the string: it
-        // carries a POINTER, and the pointer that came off the file belongs to the process that
-        // wrote it. What makes it usable again is reading the block and re-deriving the string
-        // from the block's own bytes -- which is exactly why lazy_load() loads those blocks and
-        // nothing else. If that read did not happen, nothing in this leaf can be compared against:
-        // find_range_() would dereference a stale pointer on the very first lookup.
-        //
-        // So the leaf gives up as a whole rather than half-answering: empty in memory, untouched
-        // on the device, refusing to flush, and saying why.
+        // A metadata entry with a STRING min/max index carries a POINTER, not the string, and that
+        // pointer belongs to the process that wrote the file. Only reading the block and
+        // re-deriving the string from its own bytes makes it usable again -- which is why
+        // lazy_load() loads those blocks and nothing else. If that read didn't happen,
+        // find_range_() would dereference a stale pointer on the very first lookup, so the leaf
+        // gives up as a whole instead: empty in memory, untouched on the device.
         segments_.clear();
         string_storage_.clear();
         std::memset(static_cast<void*>(header_), 0, header_size);
@@ -1545,13 +1513,10 @@ namespace core::b_plus_tree {
                 if (!file->write(segments_[num].block->internal_buffer(),
                                  (metadata_begin_ + num)->size,
                                  (metadata_begin_ + num)->file_offset)) {
-                    // THE WRITE DID NOT LAND, so the two lines below must not run: they let the
-                    // block leave memory marked clean, flush() then skips it, and every row in it
-                    // is gone -- silently, with flush() still answering true. ENOSPC here costs
-                    // half the resident blocks of the leaf.
-                    //
-                    // Keep it resident and keep it modified. The leaf is already dirty (marked at
-                    // the top of this function), so the next flush writes it again.
+                    // The write did not land, so the two lines below must not run: they'd let the
+                    // block leave memory marked clean, and flush() would then skip it and silently
+                    // lose every row in it while still answering true. Keep it resident and
+                    // modified; the leaf is already dirty, so the next flush retries it.
                     report_failure_(load_failure_t::io_error);
                     continue;
                 }
@@ -1641,11 +1606,10 @@ namespace core::b_plus_tree {
             // leaf dirty again on every flush.
             mark_dirty_();
             // Read every block that has to move BEFORE any offset changes, and give up on the
-            // whole pass if one of them will not come. Relocation only rewrites the metadata; the
-            // bytes are moved by flush()'s writer, which skips segments whose block is not
-            // resident -- so a relocated block that could not be read would point its metadata at
-            // an address nothing is ever written to, and an offset already lowered for an earlier
-            // block would leave a half-compacted file. Two passes keep it all or nothing.
+            // whole pass if one won't come: relocation only rewrites the metadata, and flush()'s
+            // writer skips non-resident blocks -- so a relocated block that couldn't be read would
+            // point its metadata at an address nothing is ever written to. Two passes keep it all
+            // or nothing.
             for (block_metadata* it = metadata_begin_; it < metadata_end_; it++, i++) {
                 if (it->file_offset > gaps.front().offset) {
                     ensure_loaded_(it);

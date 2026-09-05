@@ -16,9 +16,8 @@ namespace components::cursor {
         chunks_.emplace_back(empty_chunk(resource));
     }
 
-    // A cursor's data lives on the cursor's resource — the error message included. Neither of
-    // error_t's own paths puts it there (a copy lands on the default resource, a move keeps
-    // the producer's), so the message is rebuilt through the one canonical residency point.
+    // error_t's own copy/move ctors don't move the message onto `resource` (copy keeps the
+    // default resource, move keeps the producer's), so it's rebuilt via error_on().
     cursor_t::cursor_t(std::pmr::memory_resource* resource, const core::error_t& error)
         : chunks_(resource)
         , type_data_(resource)
@@ -27,9 +26,7 @@ namespace components::cursor {
     }
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, core::error_t&& error)
-        // `error` is a named parameter and therefore an lvalue, so this delegates to the
-        // constructor above: a cursor never adopts the producer's buffer, it rebuilds the
-        // message on its own resource.
+        // `error` is a named parameter (lvalue), so this delegates to the &-ctor above.
         : cursor_t(resource, error) {}
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk)

@@ -22,11 +22,9 @@ namespace components::logical_plan {
 
     using insert_column_bindings_t = std::pmr::vector<insert_column_binding_t>;
 
-    // One table column the statement did NOT write. The DEFAULT is expanded ABOVE the
-    // journal: operator_insert materialises these columns into the chunk before the
-    // append, so the row that reaches storage, the WAL record and the constraint
-    // operators is FULL WIDTH and already carries what the catalog says the column
-    // defaults to. There is one source (pg_attribute.attdefspec) and one reader of it.
+    // A column the statement omitted. operator_insert materialises it into the chunk
+    // before the append, so storage, the WAL record and the constraint operators all
+    // see a full-width row from pg_attribute.attdefspec, not an absent column.
     struct insert_fill_column_t {
         std::pmr::string name;            // catalog column name — the append routes by it
         types::complex_logical_type type; // the column's stored type
@@ -92,9 +90,7 @@ namespace components::logical_plan {
         void set_unique_groups(std::vector<std::vector<std::string>> v) { unique_groups_ = std::move(v); }
         const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
 
-        // Columns the statement omitted, with the value each must be filled with
-        // (see insert_fill_column_t). Stamped ONCE by the enrich pass, from the one
-        // source of defaults there is; operator_insert materialises them in push().
+        // stamped by enrich; operator_insert materialises these in push()
         void set_fill_list(insert_fill_list_t v) { fill_list_ = std::move(v); }
         const insert_fill_list_t& fill_list() const { return fill_list_; }
 

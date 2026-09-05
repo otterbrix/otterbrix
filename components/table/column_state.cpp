@@ -111,17 +111,13 @@ namespace components::table {
     bool uncompressed_string_segment_state::register_block(storage::block_manager_t& manager, uint64_t block_id) {
         if (handles_.find(block_id) != handles_.end()) {
             // Already registered: the persisted list named the same block twice. The writer
-            // dedupes (persist_string_overflow), so this is a corrupt pointer stream, and the
-            // caller must SEE it -- it latches the false and column_data_t::initialize_column
-            // reports data_corruption. Not a throw: this runs while a table is being opened,
-            // where an exception would take the host process down (rules 2/6).
+            // dedupes (persist_string_overflow), so this is corruption; column_data_t::
+            // initialize_column reports it. Not a throw: this runs on the table-open path
+            //.
             return false;
         }
-        // register_block() only hands out (or revives) a weak-registry entry for an EXISTING
-        // file block -- it allocates nothing from the free list, so reopening a table with
-        // big strings still allocates ZERO new blocks. The handle is UNLOADED and
-        // is_reloadable() (id < MAXIMUM_BLOCK), so the pool may evict and re-read it exactly
-        // like a packed data/validity block.
+        // Only hands out (or revives) a weak-registry entry for an EXISTING file block; it
+        // allocates nothing from the free list, so reopening allocates ZERO new blocks.
         auto result = manager.register_block(block_id);
         handles_.insert(std::make_pair(block_id, std::move(result)));
         on_disk_blocks.push_back(block_id);

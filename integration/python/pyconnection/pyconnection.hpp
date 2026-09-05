@@ -39,9 +39,8 @@ namespace otterbrix {
         default_connection_holder_t& operator=(default_connection_holder_t&& other) = delete;
 
     public:
-        // `arena` reaches make_space, which builds a refusal message on it when the
-        // default folder cannot be opened; it is the module's arena (main.cpp). Taken by
-        // reference and not stored: nothing this holder keeps is allocated from it.
+        // `arena` (the module's arena, main.cpp) only backs make_space's refusal message;
+        // taken by reference and not stored.
         pyconnection_ptr get(const module_arena_ptr& arena);
         void set(pyconnection_ptr conn);
 
@@ -67,17 +66,12 @@ namespace otterbrix {
     // Main class. py_connection_t IS the engine connection for the Python layer:
     // it inherits the expression / relation factories directly and delegates
     // execution to space->dispatcher() (execute_sql / execute_plan).
-    // BASE ORDER IS LOAD-BEARING, for the same reason relation_factory_t orders its own
-    // members: bases are destroyed in REVERSE declaration order, so the base that still holds
-    // the space must be declared FIRST and die LAST.
-    //
-    // close() nulls expression_factory_t's space and deliberately leaves relation_factory_t's
-    // alive, so after a close the LAST reference to the arena is relation_factory_t's. With
-    // expression_factory_t declared first it was destroyed last, which meant relation_factory_t
-    // had already dropped the arena by the time expression_factory_t::values freed the
-    // pmr strings of its string constants -- EXC_BAD_ACCESS inside memory_resource::deallocate.
-    // Pinned by tests/test_constant_outlives_its_arena.py; the member-order half of the same
-    // defect is documented on expression_factory_t::space.
+    // Base order is load-bearing: bases destroy in reverse declaration order, and close()
+    // nulls expression_factory_t's space while leaving relation_factory_t's alive, so
+    // relation_factory_t (still holding the arena) must be declared first and destroyed
+    // last. Declared the other way once: expression_factory_t::values freed pmr strings
+    // into an arena relation_factory_t had already dropped -- EXC_BAD_ACCESS. Pinned by
+    // tests/test_constant_outlives_its_arena.py (see also expression_factory_t::space).
     class py_connection_t
         : public relation_factory_t
         , public expression_factory_t
@@ -89,16 +83,10 @@ namespace otterbrix {
     public:
         py_connection_t(const boost::intrusive_ptr<otterbrix_t>& space);
         py_connection_t(const py_connection_t& other);
-        // `arena` is the module's arena; it is what a refused open builds its message on
-        // (see connection_environment_t::make_space). Bound in main.cpp's PYBIND11_MODULE
-        // body, which is where the arena is created.
-        //
-        // NOT STORED, and that is the enumeration answer for this class: everything a
-        // connection keeps -- the plan nodes, the schemas, the constants in
-        // expression_factory_t::values -- is allocated from the ENGINE's arena, which is a
-        // member of `space` below and which this object already holds. The module's arena is
-        // read on ONE path here, the refusal, and that message is turned into a Python
-        // exception before this function returns.
+        // `arena` (the module's arena, main.cpp) is not stored: everything a connection
+        // keeps is allocated from the engine's arena (a member of `space` below), which
+        // this object already holds. `arena` only backs a refused open's message
+        // (connection_environment_t::make_space), turned into a Python exception here.
         static pyconnection_ptr connect(const module_arena_ptr& arena,
                                         const py::object& database_p,
                                         bool read_only,
@@ -122,14 +110,9 @@ namespace otterbrix {
         const boost::intrusive_ptr<otterbrix_t>& space_ptr() const noexcept { return space; }
 
     public:
-        // Throws unless this connection still holds its space. Every method below
-        // dereferences `space`, and after close() there is none.
-        //
-        // Public because py_relation_t has to ask the same question: a relation chains
-        // through this connection, and the roads it takes reach a space that close()
-        // has already dropped -- both `space` here and expression_factory_t's copy.
-        // One refusal, so a closed connection says the same thing whichever door is
-        // knocked on.
+        // Throws unless this connection still holds its space (every method below
+        // dereferences it). Public because py_relation_t asks the same question when
+        // chaining, so a closed connection refuses the same way from either door.
         void refuse_if_closed() const;
 
     public:
@@ -151,12 +134,8 @@ namespace otterbrix {
 
         pycursor_ptr cursor();
 
-        // Runs `query` and hands back its rows. Returns py_result_t rather than
-        // the connection: the connection has no way to carry a result set, so
-        // returning it leaves a SELECT with nothing a caller could read.
-        // A statement the engine rejected raises instead of returning -- Python's
-        // only error channel is an exception (same translation point `connect`
-        // and `listTables` use).
+        // Returns py_result_t, not the connection: the connection can't carry a result set.
+        // A rejected statement raises (Python's only error channel), same as connect/listTables.
         std::unique_ptr<py_result_t> execute(const py::object& query);
 
     public:

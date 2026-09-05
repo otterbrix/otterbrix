@@ -1,26 +1,21 @@
-// ============================================================================
-// THE DDL COMMIT MARKER MUST BE WRITTEN AFTER THE DRAIN, NOT BEFORE IT.
+// The DDL commit marker must be written after the drain, not before it.
 //
 // Writing the WAL commit_txn marker (durable, wal_sync_mode::FULL) in
-// operator_commit_transaction_t's DDL prefix — BEFORE the dispatcher drain that
-// allocates the commit_id, and before the index insert-commit, the first of the two
-// steps that may refuse the commit — is unsafe. Replay's first pass keys committed
-// transactions off the MARKER's transaction_id (wal_reader.cpp pass 1), so a refusal
-// anywhere after that prefix leaves a durable marker for a commit the live process
-// rejected and reported as an error, and a RESTART resurrects every physical record of
-// that transaction.
+// operator_commit_transaction_t's DDL prefix -- before the dispatcher drain that
+// allocates the commit_id, and before the index insert-commit that can still refuse it --
+// is unsafe: replay keys committed transactions off the marker's transaction_id
+// (wal_reader.cpp), so a refusal after that prefix leaves a durable marker for a commit the
+// live process rejected, and a restart resurrects every physical record of it.
 //
-// The observable that pins the order is the marker's commit_id: it is allocated by the
-// drain and by nothing else, so a marker carrying it can only have been written after
-// the drain, while a marker emitted above the drain can only stamp 0 ("commit_id isn't
-// allocated yet ... so pass 0"). The failure signature is every DDL statement's commit
-// marker carrying commit_id == 0 while DML markers (always emitted below the drain)
-// carry a real id.
+// The observable that pins the order is the marker's commit_id: only the drain allocates
+// it, so a marker carrying a real id can only have been written after the drain, while one
+// emitted above it can only stamp 0. The failure signature is every DDL statement's commit
+// marker carrying commit_id == 0 while DML markers (always emitted below the drain) carry a
+// real id.
 //
-// The journal is read through the same standalone reader bootstrap replays with, against
-// the live space — the markers are behind FULL fsyncs, so they are on the device before
-// their statements report success.
-// ============================================================================
+// Read through the same standalone reader bootstrap replays with, against the live space --
+// the markers are behind FULL fsyncs, so they're on the device before their statements
+// report success.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

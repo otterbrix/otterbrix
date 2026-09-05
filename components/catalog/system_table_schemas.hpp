@@ -99,8 +99,8 @@ namespace components::catalog {
     // — thread-safe init). Subsequent calls return a zero-cost `std::span` view.
     std::span<const system_table_def_t> all_system_tables();
 
-    // Lookup a system table by its well-known relation OID (rule 16: system tables are
-    // addressed by oid, never by name). Every system table has a fixed OID below
+    // Lookup a system table by its well-known relation OID: system tables are
+    // addressed by oid, never by name. Every system table has a fixed OID below
     // FIRST_USER_OID (catalog_oids.hpp), so a caller holding `well_known_oid::pg_*_table`
     // always gets a definition back; nullptr means the OID is not a system table at all.
     // This is the form production code must use — the schema array is the single place
@@ -115,15 +115,13 @@ namespace components::catalog {
     // as flat-text (e.g. "numeric(18,6)") so readers can reconstruct precision/scale,
     // element types, child fields, enum entries, etc. across restart.
     //
-    // `decode_type_spec` is fail-loud (rule 6): every spec outside the encoder's exact
-    // language — an unrecognised name or keyword, malformed or out-of-window DECIMAL
-    // width/scale, a missing separator, trailing bytes after a complete type, nesting
-    // beyond the depth window shared with the binary codec — is a data_corruption error,
-    // never a guessed type. Two UNKNOWN answers remain LEGITIMATE values, not errors:
-    // the empty spec (builtin scalars store no spec; atttypid alone reconstructs them)
-    // and the explicit "UNKNOWN(name)" form (a named user-type reference the resolver
-    // chases by name). The refusal reaches the reader's statement, where it costs one
-    // resolve; no caller has to read UNKNOWN as a refusal channel.
+    // `decode_type_spec` is fail-loud: every spec outside the encoder's exact
+    // language (unrecognised keyword, malformed/out-of-window DECIMAL width/scale, missing
+    // separator, trailing bytes, over-deep nesting) is a data_corruption error, never a
+    // guessed type. Two UNKNOWN answers remain LEGITIMATE: the empty spec (builtin scalars
+    // need none; atttypid reconstructs them) and explicit "UNKNOWN(name)" (a named user-type
+    // reference the resolver chases). The refusal costs one resolve at the reader's statement;
+    // no caller has to read UNKNOWN as a refusal channel.
     std::string encode_type_spec(const types::complex_logical_type& t);
     [[nodiscard]] core::result_wrapper_t<types::complex_logical_type>
     decode_type_spec(std::pmr::memory_resource* resource, std::string_view spec);
@@ -166,26 +164,24 @@ namespace components::catalog {
 
     // Encode/decode a column DEFAULT value for storage in pg_attribute.attdefspec.
     //
-    // The value is encoded BINARY, by the one binary value codec in the tree
-    // (components/index/logical_value_binary_codec.hpp — the same codec that writes index keys),
-    // then hex-armoured so the column stays printable text like its neighbour atttypspec. The
-    // encoding is type-DIRECTED: the payload SHAPE comes from the column's own type, which sits
-    // one column away in atttypspec, so no width or field layout is stored. That is what makes it
-    // lossless for every type the codec carries, nested types included, rather than only for the
-    // ones somebody remembered to list in a switch. The payload does carry one logical tag byte
-    // per present value, purely as a check: it catches a SAME-WIDTH type divergence, which the
-    // shape alone cannot see.
+    // Encoded BINARY by the one binary value codec in the tree
+    // (components/index/logical_value_binary_codec.hpp, the same codec that writes index
+    // keys), then hex-armoured so the column stays printable text like its neighbour
+    // atttypspec. The encoding is type-DIRECTED: the payload shape comes from the column's
+    // own type in atttypspec, so no width/field layout is stored — lossless for every type the
+    // codec carries, nested types included, not just the ones listed in a switch. One logical
+    // tag byte per present value checks for a SAME-WIDTH type divergence the shape alone can't
+    // see.
     //
-    // Three states, all distinguishable — a flat "type_name:value" form collapses the last two
-    // into "no default" and drops every type outside its switch:
+    // Three distinguishable states (a flat "type_name:value" form would collapse the last two):
     //   ""        no default at all
     //   "N"       an explicit DEFAULT NULL
     //   "V"<hex>  the encoded value
     //
-    // Rule 6: a value whose type the codec cannot carry is an ERROR, surfaced at CREATE TABLE /
-    // ALTER SET DEFAULT, never a silent "no default". Symmetrically, a non-empty spec that does
-    // not decode against `column_type` is catalog corruption and is reported as such — `out` is
-    // set to nullopt ONLY for a genuinely absent default.
+    // A value whose type the codec cannot carry is an ERROR at CREATE TABLE / ALTER
+    // SET DEFAULT, never a silent "no default"; a non-empty spec that doesn't decode against
+    // `column_type` is catalog corruption, reported as such — `out` is nullopt ONLY for a
+    // genuinely absent default.
     [[nodiscard]] core::error_t
     encode_default_spec(std::pmr::memory_resource* resource, const types::logical_value_t& v, std::string& out);
     [[nodiscard]] core::error_t decode_default_spec(std::pmr::memory_resource* resource,

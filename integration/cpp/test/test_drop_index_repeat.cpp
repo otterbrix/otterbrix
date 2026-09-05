@@ -1,33 +1,26 @@
-// ============================================================================
-// A REPEATED `DROP INDEX` MUST GIVE THE SAME ANSWER, NOT A SILENT SUCCESS.
+// A repeated `DROP INDEX` must give the same answer, not a silent success.
 //
-// The shape below is no longer in the tree, and this file is the end-to-end pin
-// that keeps it out. The mechanism was: `rewrite_drop_index` receives index_oid ==
-// INVALID_OID, emits NO catalog delete specification, appends the drop_index_t
-// marker anyway, and operator_drop_index_t — whose `if (!specs.empty())` guard
-// skipped its own no-identity-row-deleted verdict when there were no specs — ran
-// off the end into mark_executed(). The statement removed nothing and said it had.
+// The shape below is no longer in the tree, and this file is the end-to-end pin that keeps
+// it out. The mechanism was: `rewrite_drop_index` receives index_oid == INVALID_OID, emits
+// NO catalog delete specification, appends the drop_index_t marker anyway, and
+// operator_drop_index_t -- whose `if (!specs.empty())` guard skipped its own
+// no-identity-row-deleted verdict when there were no specs -- ran off the end into
+// mark_executed(). The statement removed nothing and said it had.
 //
-// Both halves now refuse:
-//   components/planner/planner.cpp, rewrite_drop_index — an unresolved oid is
-//     index_not_exists, with `DROP INDEX IF EXISTS` the single carve-out (an
-//     honest empty sequence).
-//   components/physical_plan/operators/operator_drop_index.cpp:37-47 — empty specs
-//     (or no disk actor) is a refusal before any work; :115-129 refuses "specs ran,
-//     zero identity rows deleted".
+// Both halves now refuse: components/planner/planner.cpp's rewrite_drop_index treats an
+// unresolved oid as index_not_exists (with `DROP INDEX IF EXISTS` the single carve-out, an
+// honest empty sequence); operator_drop_index.cpp refuses empty specs (or no disk actor)
+// before any work, and separately refuses "specs ran, zero identity rows deleted".
 //
-// There is no planner catalog cache to go stale: planner_t is stateless and
-// catalog_snapshot_t was removed — every statement re-resolves live through
-// operator_resolve_table under its own transaction. So the residual risk is only
-// that the two refusals above regress.
-//
-// The unit-level refusals are pinned already (components/planner/test/
-// test_ddl_unresolved_refusal.cpp, test_maintenance_wiring_refusal.cpp). What is
-// NOT pinned anywhere else is the SEQUENCE — a DROP INDEX that fails, followed by
-// the same DROP INDEX again — at the SQL level. The one repeat-drop site in the
-// suite, test_index.cpp, fires DROP_INDEX five times on an already-dropped index
-// and discards every cursor, so a regression to silent success there is invisible.
-// ============================================================================
+// planner_t is stateless and there's no catalog cache to go stale -- every statement
+// re-resolves live through operator_resolve_table under its own transaction -- so the
+// residual risk is only that the two refusals above regress. Those are pinned at the unit
+// level already (components/planner/test/test_ddl_unresolved_refusal.cpp,
+// test_maintenance_wiring_refusal.cpp); what's NOT pinned anywhere else is the SEQUENCE -- a
+// DROP INDEX that fails, followed by the same DROP INDEX again -- at the SQL level. The one
+// repeat-drop site in the suite, test_index.cpp, fires DROP_INDEX five times on an
+// already-dropped index and discards every cursor, so a regression to silent success there
+// is invisible.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

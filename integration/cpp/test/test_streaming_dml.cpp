@@ -382,7 +382,7 @@ TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
     }
 
     // FK VIOLATION through the streaming path: referencing a missing parent surfaces
-    // as an error cursor (Rule 2/9: never thrown). This is the constraint enforcement
+    // as an error cursor (never thrown). This is the constraint enforcement
     // the migration must preserve through the streaming chain.
     {
         auto cur =
@@ -434,7 +434,7 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
     }
 
     // CHECK VIOLATION through the streaming path: age <= 0 surfaces as an error
-    // cursor (Rule 2/9: never thrown). Enforcement preserved through the chain.
+    // cursor (never thrown). Enforcement preserved through the chain.
     {
         auto cur = exec(dispatcher, "INSERT INTO StreamDb.items (id, age) SELECT id, age FROM StreamDb.src_bad;");
         REQUIRE(cur->is_error());

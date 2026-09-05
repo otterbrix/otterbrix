@@ -4,19 +4,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 
-// Selecting a WHOLE struct cell that has a NULL field killed the process.
-//
-// vector_t::value() rebuilt the cell's type from its field VALUES. A NULL field carries
-// logical_type::NA -- that is how logical_value_t spells "no value" -- so a declared
-// STRUCT<BIGINT, BIGINT> came back typed STRUCT<BIGINT, NA> and tripped the type-identity
-// assert at the bottom of value(). Under NDEBUG the assert is gone and the cell is simply
-// mistyped: written back into a vector of the declared type it is rejected by the
-// cast guard in set_value, which returns without writing and without touching validity --
-// the row silently reads as a struct of zeros.
-//
-// Field projection -- SELECT (p).a, (p).b -- reads the field vectors directly and never
-// built the whole-cell value, which is why the existing nested-NULL tests route around
-// this and it stayed hidden.
+// Selecting a WHOLE struct cell with a NULL field killed the process: vector_t::value() rebuilt
+// the cell's type from field VALUES, so a NULL field (typed NA) turned STRUCT<BIGINT, BIGINT> into
+// STRUCT<BIGINT, NA> and tripped the type-identity assert -- or, under NDEBUG, silently read back
+// as a struct of zeros via set_value's cast guard. Field projection (SELECT (p).a, (p).b) reads
+// field vectors directly and never builds the whole-cell value, which is why existing nested-NULL
+// tests routed around this.
 TEST_CASE("integration::cpp::test_struct_null_field_read::select_whole_struct_cell_with_a_null_field") {
     auto config = test_create_config(integration_fixture_path("test_struct_null_field_read/select"));
     test_clear_directory(config);

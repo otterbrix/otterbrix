@@ -284,17 +284,16 @@ TEST_CASE("pushdown_reduce: manager routes a storage_reduce and replies a well-f
     REQUIRE(rows == 1);
 }
 
-// (e) MISSING/RECORD-ONLY SLICE — THE ROOT OF THE FAMILY case 17 in test_error_handling
-// names. This leg must not REDUCE OVER THE EMPTY INPUT and emit the scalar aggregate's
-// mandatory single row (SUM = NULL) for an oid no agent has a storage for. That row is a FACT
-// ABOUT A TABLE — "your SUM is NULL", "your COUNT is 0" — synthesized from a read that never
-// reached any storage, and it is bit-identical to the row a real, really-empty table produces.
-// Nothing above can tell them apart, so the answer to "how many rows are in that table" would
-// be a routing failure wearing the table's clothes.
+// (e) Missing/record-only slice -- the root of the family case 17 in test_error_handling names.
+// This leg must not reduce over empty input and emit the scalar aggregate's mandatory single
+// row (SUM = NULL) for an oid no agent has storage for: that row is a fact about a table
+// ("your SUM is NULL"), synthesized from a read that never reached any storage, bit-identical
+// to what a real, really-empty table produces. Nothing above can tell them apart, so "how many
+// rows" would be a routing failure wearing the table's clothes.
 //
-// The pairing is the point, and both halves live here: a real table with no visible rows
-// still emits its one scalar row (case (b) above, unchanged), while an oid that names no
-// storage is a REFUSAL. "Empty table" and "no table here" stop sharing a reply.
+// Both halves of the pairing live here: a real table with no visible rows still emits its one
+// scalar row (case (b) above, unchanged), while an oid naming no storage is a refusal. "Empty
+// table" and "no table here" stop sharing a reply.
 TEST_CASE("pushdown_reduce: a reduce over a missing slice is a refusal, not an empty fold") {
     fixture fx;
 
@@ -411,13 +410,12 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
     }
 }
 
-// (g) THE ROUTER'S OWN REFUSAL. Case (e) removes the storage; this one removes the AGENT.
-// A manager configured with no disk agents must not answer a reduce with an empty chunk
-// vector, which the coordinator reads as "this GROUP BY produced no groups" — the routing
-// twin of the empty fold (e) is about. Not reachable behind a statement today (an agentless
-// manager owns no storage, so no plan can resolve a table on it); pinned so the refusal
-// exists and is reachable through the contract. Its six siblings are pinned the same way in
-// services/disk/tests/test_error_handling.cpp.
+// (g) The router's own refusal. Case (e) removes the storage; this removes the agent. A
+// manager with no disk agents must not answer a reduce with an empty chunk vector, which the
+// coordinator reads as "this GROUP BY produced no groups" -- the routing twin of case (e)'s
+// empty fold. Not reachable behind a statement today (an agentless manager owns no storage, so
+// no plan can resolve a table on it); pinned so the refusal exists and is reachable through the
+// contract, as its six siblings are in test_error_handling.cpp.
 TEST_CASE("pushdown_reduce: a manager with no agents refuses instead of folding to nothing") {
     core::pmr::otterbrix_resource resource;
     auto log = initialization_logger("python", "/tmp/docker_logs/");

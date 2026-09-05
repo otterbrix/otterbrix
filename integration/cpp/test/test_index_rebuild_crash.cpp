@@ -5,24 +5,13 @@
 #include <filesystem>
 #include <string>
 
-// What a lookup THROUGH THE INDEX must answer after a crash that left a tombstone in the
-// middle of the table.
+// A crash-recovery lookup through the index must not name a deleted row, must not shift, and
+// must not resurrect an emptied table. (These cases originally caught a rebuild that keyed
+// entries by scan POSITION instead of physical row id; fixed, and the startup rebuild pass that
+// carried it later removed — the cases stay because the SUBJECT is the answer, not the mechanism.)
 //
-// The shift these cases were written against was a numbering one: the startup rebuild scanned
-// with VISIBILITY FILTERING, which compacts POSITIONS while physical row ids keep their gaps,
-// and then keyed each rebuilt entry by its position in the scan, while collection_t::fetch
-// resolves row ids PHYSICALLY — so every row after the tombstone was indexed one row low. The
-// numbering was fixed (entries are keyed by the scan's own chunk.row_ids) and the startup
-// rebuild pass has since been removed: once the last in-memory index went away it cleared and
-// refilled a buffer it then erased, at the cost of a full scan of every table on every start.
-//
-// The cases stay because their SUBJECT is the answer, not the mechanism: a lookup through the
-// index after this crash must not name the deleted row, must not shift, and must not resurrect
-// a table that was emptied.
-//
-// kill -9 is simulated by COPYing the live data directory while the engine is up (the
-// destructor checkpoint then mutates only the ORIGINAL) and reopening the COPY under a fresh
-// engine. No test lays out files by hand.
+// kill -9 is simulated by COPYing the live data directory while the engine is up (the destructor
+// checkpoint then mutates only the ORIGINAL) and reopening the COPY under a fresh engine.
 
 namespace {
 
@@ -68,8 +57,6 @@ TEST_CASE("integration::cpp::index_rebuild_crash::mid_table_delete_shifts_rebuil
         }
         REQUIRE(exec("CHECKPOINT;")->is_success());
 
-        // The mid-table tombstone: rows after id=1000 shift by one in a
-        // visibility-filtered, position-compacted rebuild scan.
         REQUIRE(exec("DELETE FROM b.t WHERE id = 1000;")->is_success());
 
         // kill -9 happens here.
@@ -87,13 +74,11 @@ TEST_CASE("integration::cpp::index_rebuild_crash::mid_table_delete_shifts_rebuil
             return d->execute_sql(session, sql);
         };
 
-        // The deleted key must be gone.
         auto deleted = exec("SELECT id FROM b.t WHERE k = 10000;");
         REQUIRE(deleted->is_success());
         CHECK(deleted->size() == 0);
 
-        // The LAST row must be findable through the rebuilt index — and must be the right
-        // row. With the off-by-one rebuild the entry points one row early (or nowhere).
+        // The LAST row must resolve to itself, not a neighbor off by one.
         auto last = exec("SELECT id FROM b.t WHERE k = " + std::to_string(10 * kRows) + ";");
         REQUIRE(last->is_success());
         REQUIRE(last->size() == 1);
@@ -145,8 +130,6 @@ TEST_CASE("integration::cpp::index_rebuild_crash::delete_all_then_crash_returns_
             return d->execute_sql(session, sql);
         };
 
-        // Every row was deleted before the crash; the rebuilt index (row_count == 0 skips
-        // the rebuild — the second hole) must NOT resurrect them.
         auto by_key = exec("SELECT id FROM b.t WHERE k = 20;");
         REQUIRE(by_key->is_success());
         CHECK(by_key->size() == 0);

@@ -1,16 +1,11 @@
-// ============================================================================
-// ALTER TABLE ... DROP CONSTRAINT (queue #354).
+// ALTER TABLE ... DROP CONSTRAINT, by name: finds the pg_constraint row on the
+// target table and deletes it plus its pg_depend edges through the same
+// dynamic-cascade machinery DROP TABLE uses (seed = (pg_constraint, conoid)).
+// The one sanctioned repair for a table that took two PRIMARY KEYs -- before it
+// existed the only exits were dropping a key COLUMN or the whole table.
 //
-// By constraint name: find the pg_constraint row on the target table, delete it
-// and its pg_depend edges through the same dynamic-cascade machinery DROP TABLE
-// uses (seed = (pg_constraint, conoid)). This is the ONE sanctioned repair for
-// a table that took two PRIMARY KEYs — before it existed the only exits were
-// dropping a key COLUMN or the whole table.
-//
-// IF EXISTS is taken along (PostgreSQL grants it; the grammar already carries
-// missing_ok on the subcommand): a missing name refuses loudly, IF EXISTS on a
-// missing name is the one sanctioned no-op success.
-// ============================================================================
+// IF EXISTS parity with PostgreSQL: a missing name refuses loudly, IF EXISTS on
+// a missing name is the one sanctioned no-op success.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

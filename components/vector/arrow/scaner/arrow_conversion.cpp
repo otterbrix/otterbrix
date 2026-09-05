@@ -1277,9 +1277,8 @@ namespace components::vector::arrow::scaner {
             case types::logical_type::UNION: {
                 auto type_ids = arrow_buffer_data<int8_t>(array, array.n_buffers == 1 ? 0 : 1);
                 assert(type_ids);
-                // By reference: child_types() hands back a reference into the type, and `auto` would
-                // COPY that std::pmr::vector onto the default resource (a pmr container's copy
-                // constructor does not propagate its allocator). Nothing here mutates it.
+                // By reference: `auto` would copy this pmr vector onto the default resource (a pmr
+                // copy ctor doesn't propagate its allocator), and nothing here mutates it.
                 const auto& members = vector.type().child_types();
 
                 auto& validity_mask = vector.validity();

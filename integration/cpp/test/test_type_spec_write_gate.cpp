@@ -5,37 +5,18 @@
 
 #include <string>
 
-// THE WRITE SIDE MUST VALIDATE THE WINDOW THE READ SIDE ACCEPTS.
-//
-// A column type is made durable by components::types::encode_type_spec — the table
-// checkpoint writes it into the .otbx metadata stream and every WAL chunk header carries
-// it. Its decoder refuses a DECIMAL whose width is 0 or above 38 or whose scale exceeds
-// its width, and refuses nesting past the format depth limit, both as data_corruption.
-//
-// The encoder used to refuse NEITHER. So both were CONSTRUCTIBLE FROM PLAIN SQL, and both
-// failed only on the way back in:
-//
-//   CREATE TABLE t (c NUMERIC(0,0));   -- accepted
-//   INSERT INTO t ...;                 -- accepted, WAL record written
-//   <restart>                          -- data_corruption, forever
-//
-// That asymmetry is the whole defect, and it is why these cases RESTART. A case that only
-// asserted "the statement failed" would also pass against a fix that merely moved the
-// failure somewhere else; what has to be true is that a refusal costs one statement and
-// the database still opens, reads and answers afterwards.
-//
-// The mirror matters just as much: a fix that NARROWED the window would be a different bug
-// wearing the same shape. So the legal boundary values are carried through the same
-// checkpoint and restart and required to come back intact.
+// The write side (encode_type_spec) must refuse what the decoder would reject: a DECIMAL
+// outside width 0..38 or with scale > width, or nesting past the format depth limit. The
+// original bug let the encoder accept both, failing only as data_corruption on the NEXT
+// restart — hence these cases restart, and the legal boundary values are round-tripped
+// too, to prove the fix didn't also narrow the window.
 
 using namespace test_helpers;
 
 namespace {
 
-    // "CREATE TYPE t_n AS (a t_{n-1})" inlines t_{n-1} WHOLE, so each statement in the
-    // chain adds exactly one nesting level to the type the next one persists. This is the
-    // only route the SQL surface has to deep nesting at all — no single statement can spell
-    // a 60-deep type by hand.
+    // Each "CREATE TYPE t_n AS (a t_{n-1})" inlines t_{n-1} whole, adding one nesting level
+    // per statement — the only route SQL has to a deeply nested type.
     std::string chained_type_ddl(unsigned n) {
         if (n == 0) {
             return "CREATE TYPE nest0 AS (a bigint);";
@@ -43,16 +24,8 @@ namespace {
         return "CREATE TYPE nest" + std::to_string(n) + " AS (a nest" + std::to_string(n - 1) + ");";
     }
 
-    // The scaled payload the NUMERIC(38,20) rows below must carry, byte for byte:
-    // 123456789 * 10^20, which is 29 digits and so cannot be held by the int64 storage a
-    // narrower DECIMAL would use.
-    //
-    // The literal itself stays inside int32 ON PURPOSE. The scanner's int32 overflow guard
-    // (process_integer_literal in components/sql/parser/scan.l) sits behind an #ifdef
-    // HAVE_LONG_INT_64 that nothing in this project defines, so an integer literal outside
-    // int32 is silently truncated through the scanner's `int ival` — 9223372036854775807
-    // arrives as -1. That is a separate parser defect; a DECIMAL's SCALE is the route to a
-    // 128-bit payload that does not depend on it.
+    // 123456789 * 10^20: 29 digits, past what int64 scaled storage can hold, so this is the
+    // case that needs int128.
     const components::types::int128_t WIDE_SCALED_PAYLOAD = [] {
         components::types::int128_t v{123456789};
         for (int i = 0; i < 20; ++i) {
@@ -129,12 +102,9 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::legal_decimal_boundaries
         auto* d = space.dispatcher();
         REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
 
-        // The far end of the window must still be ACCEPTED — the gate refuses what the
-        // decoder refuses and nothing beyond it. The wide half (width 19..38, stored as a
-        // 128-bit scaled integer) is carried through the SAME checkpoint and restart as the
-        // narrow half: without an int128 arm in column_segment_t::scan and ::scan_partial the
-        // checkpoint's compaction scan throws std::logic_error across an actor coroutine and
-        // kills the process, so leaving the wide half out here would hide exactly that.
+        // Width 19..38 is stored as a 128-bit scaled integer; without an int128 arm in
+        // column_segment_t::scan/scan_partial, the checkpoint's compaction scan throws
+        // std::logic_error and kills the process — so the wide half is round-tripped here too.
         REQUIRE(exec(d,
                      "CREATE TABLE w.widest (id BIGINT, d38 NUMERIC(38,38), d38z NUMERIC(38,0), "
                      "d38s NUMERIC(38,20), d19 NUMERIC(19,0));")
@@ -144,10 +114,8 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::legal_decimal_boundaries
                      "d9 NUMERIC(9,0), d18 NUMERIC(18,18), d18z NUMERIC(18,0));")
                     ->is_success());
         REQUIRE(exec(d, "INSERT INTO w.edges (id, d1, d18z) VALUES (1, 3, 100), (2, 4, 200);")->is_success());
-        // Every wide storage class at once: NUMERIC(38,20) carries a payload no int64 can
-        // hold (the scale multiplies the literal by 10^20), while NUMERIC(38,0) and
-        // NUMERIC(19,0) hold small values whose STORAGE is 128-bit purely because of the
-        // declared width — 19 is the first width past int64.
+        // NUMERIC(38,20)'s scale forces a 128-bit payload; NUMERIC(38,0)/NUMERIC(19,0) hold
+        // small values that are 128-bit storage purely from declared width (19 is past int64).
         REQUIRE(exec(d,
                      "INSERT INTO w.widest (id, d38, d38z, d38s, d19) VALUES "
                      "(1, 0, 2000000000, 123456789, 1234567890), "
@@ -207,10 +175,8 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::nesting_past_the_format_
         auto* d = space.dispatcher();
         REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
 
-        // Walk well past the format's depth limit. Exactly one of two things can happen:
-        // the chain is refused at some depth, or it is not — and "not" is the bug, because
-        // the type is then persisted by a checkpoint that succeeds and refused by a load
-        // that no statement can retry.
+        // Walk well past the format's depth limit; an unrefused chain is the bug, since it
+        // would then be persisted by a checkpoint but refused by a load no statement can retry.
         for (unsigned n = 0; n < 90; ++n) {
             auto cur = exec(d, chained_type_ddl(n));
             if (cur->is_error()) {

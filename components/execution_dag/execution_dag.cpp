@@ -570,10 +570,8 @@ namespace components::execution_dag {
         , capacity_(capacity)
         , slots_(resource)
         , data_storage_(resource)
-        // slot_sizes_ and key_slots_ were the two members with neither an entry here nor a
-        // {resource_} default member initialiser. That is not a neutral omission: a
-        // default-constructed polymorphic_allocator IS std::pmr::get_default_resource(), so both
-        // allocated on the process-global arena while every neighbour used the caller's.
+        // an uninitialised pmr::polymorphic_allocator falls back to get_default_resource(),
+        // not the caller's resource, so every member here must list it explicitly
         , slot_sizes_(resource)
         , output_slots_(resource)
         , key_slots_(resource)

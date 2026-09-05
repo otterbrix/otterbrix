@@ -15,11 +15,9 @@
 namespace otterbrix {
     class scan_t {
     public:
-        //! Try to perform a replacement, returns NULL on error.
-        //! `resource` is the arena the table_ref_t's argument list is built on. It is the
-        //! CALLER's engine arena (py_connection_t hands over space->dispatcher()->resource()),
-        //! which outlives the ref: the ref is consumed by fetch_object_data below, one call
-        //! later, and the connection that owns the arena outlives both.
+        //! Try to perform a replacement, returns NULL on error. `resource` is the caller's
+        //! engine arena (py_connection_t passes space->dispatcher()->resource()), which
+        //! outlives the ref consumed by fetch_object_data below.
         static std::unique_ptr<components::tableref::table_ref_t>
         try_replacement_object(std::pmr::memory_resource* resource, const py::object& entry, const std::string& name);
 

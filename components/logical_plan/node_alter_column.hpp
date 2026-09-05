@@ -60,9 +60,8 @@ namespace components::logical_plan {
         void set_column_name(core::columnname_t name) { column_name_ = std::move(static_cast<std::string&>(name)); }
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
-        // `DROP COLUMN IF EXISTS`: the column not being there is the accepted
-        // outcome, not an error. Carried for BOTH drop routes (pg_attribute and
-        // pg_computed_column) so neither has to guess.
+        // DROP COLUMN IF EXISTS: carried for both drop routes (pg_attribute and
+        // pg_computed_column) so a missing column is a no-op, not an error.
         bool missing_ok() const noexcept { return missing_ok_; }
         void set_missing_ok(bool v) noexcept { missing_ok_ = v; }
 
@@ -92,8 +91,7 @@ namespace components::logical_plan {
         std::string new_name_;
         // drop
         std::string column_name_;
-        // Defaults to restrict_ — the unwritten form IS RESTRICT (PostgreSQL
-        // parity, #638). See node_alter_table.hpp.
+        // unwritten form defaults to RESTRICT (PostgreSQL parity); see node_alter_table.hpp
         components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::restrict_};
         bool missing_ok_{false};
         // rename + drop

@@ -56,12 +56,9 @@ namespace {
         }
     }
 
-    // ---- drop_column-on-DISK helpers (see the test at the bottom of this file) ----
-
-    // 40 UBIGINTs per row: 40 * 8 B * 2048 rows = 640 KiB of child payload per row group,
-    // past partial_block_manager_t's FULL_THRESHOLD, so the child segments take DEDICATED
-    // blocks. Without that, partial_block_manager_t packs every child segment alongside the
-    // flat column's and the drop can provably free nothing.
+    // 40 UBIGINTs/row * 2048 rows = 640 KiB child payload per row group, past
+    // partial_block_manager_t's FULL_THRESHOLD, so the child segments take DEDICATED blocks
+    // instead of packing alongside the flat column (which would make the drop free nothing).
     constexpr uint64_t DROP_LIST_LENGTH = 40;
 
     complex_logical_type drop_list_type() { return complex_logical_type::create_list(logical_type::UBIGINT); }
@@ -344,7 +341,6 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
 // the SURVIVING columns come through it intact. The other half — the dropped column's blocks
 // coming back through a committed header — is gated by drop_column_disk_frees_blocks at the
 // bottom of this file; the two together are the whole primitive.
-//
 // Runs on a file-backed table like everything else; what it asserts is about the rebuild, not
 // the substrate.
 TEST_CASE("services::disk::table_storage::drop_column_keeps_surviving_data") {
@@ -413,9 +409,7 @@ TEST_CASE("services::disk::table_storage::drop_column_keeps_surviving_data") {
 }
 
 // Dropping a column from a DISK-backed table must give its physical blocks back.
-//
 // This case inverts the assertions of the pinned test it replaces, with the owner's per-test consent.
-//
 // The gate is deliberately NOT "the column count dropped". A rebuild that merely forgets the column
 // passes that and is the WORSE outcome: the dropped column's `column_data_t` is destroyed with the
 // superseded collection, so its block_handle_t's die and its registry entries go with them — and a

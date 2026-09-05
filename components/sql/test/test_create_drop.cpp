@@ -255,9 +255,8 @@ TEST_CASE("components::sql::index") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    // CREATE INDEX registers TWO table lookups, like DROP INDEX below: the indexed
-    // table AND the index's own name — the second probes pg_class for a relation
-    // already answering to the new name, so a taken name refuses.
+    // CREATE INDEX registers TWO table lookups, like DROP INDEX below: the indexed table, and the
+    // index's own name (probing pg_class for a relation already using it).
     SECTION("create with uuid") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
@@ -332,10 +331,7 @@ TEST_CASE("components::sql::types") {
     TEST_TRANSFORMER_OK("INSERT INTO table_ (custom_type_name) VALUES (ROW('text', 42))", node_type::insert_t, 0, 1);
 }
 
-// A statement that names several objects must not report success after touching
-// one of them. Reading `objects->lst.front()` and never looking at the rest makes
-// `DROP TABLE a, b` plan a single drop of `a`, execute cleanly, and leave `b`
-// exactly where it was — with nothing in the answer to say so.
+// Reading only objects->lst.front() would plan `DROP TABLE a, b` as a silent no-op drop of `a` alone.
 TEST_CASE("components::sql::drop_names_every_object_or_refuses") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -349,7 +345,6 @@ TEST_CASE("components::sql::drop_names_every_object_or_refuses") {
     };
 
     SECTION("DROP TABLE a, b") {
-        // Unrefused: no error at all, and one drop_t naming only `first_table`.
         const std::string what = refusal_of("DROP TABLE db_name.first_table, db_name.second_table");
         CHECK(what.find("second_table") != std::string::npos);
     }
@@ -375,7 +370,6 @@ TEST_CASE("components::sql::drop_names_every_object_or_refuses") {
         CHECK(what.find("type_b") != std::string::npos);
     }
 
-    // One object per statement stays exactly as it was.
     SECTION("a single object is still planned") {
         auto stmt = raw_parser(&arena_resource, "DROP TABLE db_name.only_one")->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
@@ -384,10 +378,7 @@ TEST_CASE("components::sql::drop_names_every_object_or_refuses") {
     }
 }
 
-// CREATE INDEX ... USING <method> must not collapse every method that is not the
-// literal "hash" into index_type::single: `USING gin`, `USING brin`, `USING spgist`
-// and a plain typo would all build a btree-shaped single index, report success, and
-// write that into the catalog under the name the user asked for.
+// Any method that is not the literal "hash" must not collapse into index_type::single.
 TEST_CASE("components::sql::create_index_access_method") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -399,7 +390,6 @@ TEST_CASE("components::sql::create_index_access_method") {
     };
 
     SECTION("USING gin is refused, and the refusal names gin") {
-        // Uncollapsed the other way: success, with the node carrying index_type::single.
         auto result = plan_of("CREATE INDEX gin_idx ON db.tbl USING gin (field);");
         REQUIRE(result.has_error());
         CHECK(std::string{result.error().what}.find("gin") != std::string::npos);
@@ -439,13 +429,7 @@ TEST_CASE("components::sql::create_index_access_method") {
     }
 }
 
-// A clause the node cannot carry must be refused, not dropped. IndexStmt arrives
-// with `unique`, `whereClause`, `options` and `tableSpace` filled by the grammar
-// (gram.y: `CREATE opt_unique INDEX ... opt_reloptions OptTableSpace where_clause`).
-// Read by none of them, `CREATE UNIQUE INDEX` builds an ordinary index that admits
-// duplicates, a partial-index WHERE builds a full index, and WITH options and
-// TABLESPACE vanish — every one reporting success while doing something other than
-// what was declared.
+// IndexStmt's unique/whereClause/options/tableSpace fields must each be refused if unread, not silently dropped.
 TEST_CASE("components::sql::create_index_declared_clauses_are_not_dropped") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -457,8 +441,6 @@ TEST_CASE("components::sql::create_index_declared_clauses_are_not_dropped") {
     };
 
     SECTION("CREATE UNIQUE INDEX is refused, and the refusal says UNIQUE") {
-        // Dropped instead: success, and a plain (non-unique) index under the name the
-        // user asked for, with the declared uniqueness enforced by nothing.
         auto result = plan_of("CREATE UNIQUE INDEX u_idx ON db.tbl (field);");
         REQUIRE(result.has_error());
         CHECK(std::string{result.error().what}.find("UNIQUE") != std::string::npos);
@@ -483,13 +465,8 @@ TEST_CASE("components::sql::create_index_declared_clauses_are_not_dropped") {
     }
 }
 
-// CREATE FUNCTION is lowered to a macro, and a macro is addressed by ONE name,
-// carries NAMED parameters and expands to its AS body — nothing else. Dropping a
-// piece that cannot be carried costs the NAME itself in the worst case:
-// transform_create_function reads a one-part and a two-part funcname, so with no
-// else a three-part name (`CREATE FUNCTION a.b.c(...)`) leaves BOTH dbname and
-// relname empty — the macro registered under the empty string, the statement
-// reporting success.
+// transform_create_function reads only a one-part and a two-part funcname; a three-part
+// name must be refused, not silently registered under an empty dbname/relname.
 TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -501,14 +478,12 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
     };
 
     SECTION("a three-part name is refused, and the refusal spells the name out") {
-        // Dropped instead: success, and a macro registered under the EMPTY name.
         auto result = plan_of("CREATE FUNCTION cat.sch.fn(x INT) RETURNS INT AS 'x -> x';");
         REQUIRE(result.has_error());
         CHECK(std::string{result.error().what}.find("cat.sch.fn") != std::string::npos);
     }
 
     SECTION("an unnamed parameter is refused: a macro parameter is addressed by name") {
-        // Dropped instead: success, the parameter skipped and the macro's arity lying.
         auto result = plan_of("CREATE FUNCTION db.f(INT) RETURNS INT AS 'x -> x';");
         REQUIRE(result.has_error());
     }
@@ -525,14 +500,12 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
     }
 
     SECTION("RETURNS TABLE is refused: its columns are not input parameters") {
-        // Dropped instead: success — the grammar merges the TABLE columns into
-        // `parameters`, so they become macro parameters and the arity is wrong.
+        // Otherwise the grammar merges the TABLE columns into `parameters`, giving the macro the wrong arity.
         auto result = plan_of("CREATE FUNCTION db.f(x INT) RETURNS TABLE (y INT) AS 'x -> x';");
         REQUIRE(result.has_error());
     }
 
     SECTION("an option other than AS is refused, and the refusal names it") {
-        // Dropped instead: success with an EMPTY body — there is no AS clause at all.
         auto result = plan_of("CREATE FUNCTION db.f(x INT) RETURNS INT LANGUAGE sql;");
         REQUIRE(result.has_error());
         CHECK(std::string{result.error().what}.find("language") != std::string::npos);
@@ -549,8 +522,6 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
     }
 
     SECTION("OR REPLACE is refused, not silently degraded to plain CREATE") {
-        // With the replace flag unread, the statement fails as a duplicate against an
-        // existing function instead of replacing it, and nothing says why.
         auto result = plan_of("CREATE OR REPLACE FUNCTION db.f(x INT) RETURNS INT AS 'x -> x';");
         REQUIRE(result.has_error());
         CHECK(std::string{result.error().what}.find("OR REPLACE") != std::string::npos);
@@ -586,11 +557,7 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
     }
 }
 
-// The grammar sets DropStmt.missing_ok for every `DROP ... IF EXISTS` form and
-// node_drop_t::missing_ok carries it, but only if transform_drop reads it: unread,
-// `DROP INDEX IF EXISTS` reaches the planner with missing_ok=false and the one
-// no-op success PostgreSQL grants that form is unreachable from SQL. CREATE honours
-// IF NOT EXISTS; this pins the other half of the pair.
+// CREATE honours IF NOT EXISTS; this pins the other half of the pair.
 TEST_CASE("components::sql::drop_carries_missing_ok") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -634,12 +601,8 @@ TEST_CASE("components::sql::drop_carries_missing_ok") {
     }
 }
 
-// The word the statement wrote about its dependents.
-//
-// gram.y's opt_drop_behavior has THREE alternatives and TWO values: the empty one yields
-// DROP_RESTRICT, the same token the written word yields — in PostgreSQL the bare form IS
-// RESTRICT, so the two are deliberately one value and both are read as restrict_
-// (GitHub #638, PostgreSQL parity). A written CASCADE is separable and carried.
+// gram.y's opt_drop_behavior has three alternatives but two values: the empty one and a
+// written RESTRICT deliberately collapse to the same restrict_ (PostgreSQL parity).
 TEST_CASE("components::sql::drop_carries_written_behavior") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -663,8 +626,6 @@ TEST_CASE("components::sql::drop_carries_written_behavior") {
         REQUIRE(behavior_of("DROP TABLE db.t;") == drop_behavior_t::restrict_);
     }
     SECTION("DROP TABLE RESTRICT is the same value as the bare form") {
-        // The grammar hands both spellings the same token; in PostgreSQL they are
-        // the same thing.
         REQUIRE(behavior_of("DROP TABLE db.t RESTRICT;") == drop_behavior_t::restrict_);
     }
     SECTION("DROP VIEW CASCADE") {

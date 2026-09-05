@@ -33,9 +33,8 @@ namespace components::operators {
                                                         std::move(row));
             append_futures.push_back(std::move(fut));
         }
-        // Drain all, first error wins. A pg_index row that was refused means CREATE INDEX
-        // built nothing the catalog can find, so the statement must fail rather than leave a
-        // backfill running against metadata that does not exist.
+        // Drain all, first error wins: a refused pg_index row means CREATE INDEX built nothing
+        // the catalog can find, so the statement must fail rather than leave a stray backfill.
         core::error_t append_error = core::error_t::no_error();
         for (auto& fut : append_futures) {
             auto rng_r = co_await std::move(fut);

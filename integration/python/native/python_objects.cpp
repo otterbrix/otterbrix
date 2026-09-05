@@ -125,9 +125,8 @@ namespace otterbrix {
         // LCOV_EXCL_STOP
     }
 
-    // width >= 1: DECIMAL(0, ...) is outside the engine's window (see is_valid_decimal_spec),
-    // and a python Decimal that lands there is routed to DOUBLE like every other width the
-    // engine cannot carry, rather than into a type create_decimal will refuse.
+    // width >= 1: DECIMAL(0, ...) is outside the engine's window (is_valid_decimal_spec), so
+    // it routes to DOUBLE instead of a type create_decimal would refuse.
     static bool width_fits_in_decimal(int32_t width) {
         return width >= 1 && width <= std::numeric_limits<int64_t>::digits10;
     }

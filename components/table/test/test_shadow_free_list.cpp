@@ -1,13 +1,11 @@
 // Shadow paging: a block the DURABLE root still points at must not be handed out again.
 //
-// The two-slot header makes the previous root real: a checkpoint writes only the slot its
-// iteration owns, the header sector is self-validating, and the open path picks the greatest
-// VALID iteration, so a crash mid-checkpoint recovers the PREVIOUS root. That is worth nothing
-// while the blocks that root reads can be reallocated underneath it — and with a single free
-// list they are, by the shortest path in the engine:
+// The two-slot header makes the previous root real: a crash mid-checkpoint recovers the
+// PREVIOUS root. That is worth nothing while the blocks that root reads can be reallocated
+// underneath it -- and with a single free list they are, by the shortest path in the engine:
 //
 //   agent_disk_t::checkpoint_inner  ->  data_table_t::compact(watermark)
-//        compact swaps the collection and mark_as_free's every block of the OUTGOING one —
+//        compact swaps the collection and mark_as_free's every block of the OUTGOING one --
 //        exactly the blocks the CURRENT durable root still references. mark_as_free has no
 //        other production caller, so the free list is empty at every other moment;
 //   ...then, immediately, table_storage_t::checkpoint
@@ -15,18 +13,17 @@
 //        from that free list.
 //
 // Crash before the header write and the file recovers the OLD root, whose data pointers now
-// address a block holding the NEW checkpoint's metadata — rewritten with a freshly valid CRC,
-// so read() succeeds and the rows are silently wrong.
+// address a block holding the NEW checkpoint's metadata -- rewritten with a valid CRC, so
+// read() succeeds and the rows are silently wrong.
 //
 // So the free list is SPLIT: reusable_ (free under the current DURABLE root) and pending_free_
-// (released by the in-flight checkpoint). free_block_id draws only from reusable_;
-// pending_free_ merges in only after write_header's slot write AND its fsync have both
-// succeeded. The gates below are the four halves of that: not reissued before the header, the
-// OLD root still readable after a crash, genuinely reusable after a success, and NOT promoted
-// after a failure.
+// (released by the in-flight checkpoint). free_block_id draws only from reusable_; pending_free_
+// merges in only after write_header's slot write AND its fsync have both succeeded. The gates
+// below are the four halves of that: not reissued before the header, the OLD root still
+// readable after a crash, genuinely reusable after a success, and NOT promoted after a failure.
 //
-// Crash states come only from the fault-injection seam (fault_injection_file.hpp); no test
-// here lays out file bytes by hand.
+// Crash states come only from the fault-injection seam (fault_injection_file.hpp); no test here
+// lays out file bytes by hand.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -468,15 +465,11 @@ TEST_CASE("shadow_free_list: a durable header makes the released blocks reusable
     // Not just bookkeeping — the allocator really hands them back.
     //
     // NOT `released.count(bm.free_block_id()) == 1`: the durable header ALSO promotes the
-    // blocks of the root it superseded — that root's metadata chain, its free-list chain and
-    // its packed data copy — and free_block_id hands out the SMALLEST id in the pool, which can
-    // legitimately be one of those instead. That is the reclaim working, not the promotion
-    // failing. The property
-    // under test is untouched: the released blocks must be genuinely back in the allocator,
-    // not merely recorded as free. Drain the pool and require every one of them to come out of
-    // it — a strictly stronger statement than "the first one did" — and require the file not
-    // to grow while doing it, which is what proves they came from the pool rather than from
-    // the end of the file.
+    // superseded root's own blocks, and free_block_id hands out the SMALLEST id in the pool,
+    // which can legitimately be one of those instead (the reclaim working, not the promotion
+    // failing). So instead: drain the pool and require every released id to come out of it --
+    // stronger than "the first one did" -- and require the file not to grow while doing it,
+    // which proves they came from the pool, not the end of the file.
     const uint64_t before_blocks = bm.total_blocks();
     std::set<uint64_t> drawn;
     for (size_t i = 0, n = reusable.size(); i < n; ++i) {
@@ -504,7 +497,7 @@ TEST_CASE("shadow_free_list: a durable header makes the released blocks reusable
 // --- Gate 4: the failure decision ----------------------------------------------------
 //
 // A checkpoint whose header does not land leaves the OLD root current, so its blocks are still
-// live and promotion would be exactly wrong. The decision recorded at promote_pending_free():
+// live and promotion would be exactly wrong. The decision recorded at promote_durable_root():
 // keep them quarantined — neither promoted nor discarded — until some later header commits.
 TEST_CASE("shadow_free_list: a FAILED header write does not promote the released blocks") {
     const std::string path = free_list_db_path("failed");
@@ -556,20 +549,15 @@ TEST_CASE("shadow_free_list: a FAILED header write does not promote the released
 
 // --- Gate 5: a large free list must not publish a block of its OWN chain -----------------
 //
-// serialize_free_list snapshots the pool AFTER metadata_writer_t's constructor has taken the
-// chain's FIRST block, which is what keeps that one out of the published list. Every FURTHER
-// chain block is allocated mid-write, by metadata_writer_t::ensure_space -> allocate_handle ->
-// free_block_id, i.e. drawn from reusable_ -- which is already inside the published snapshot.
-// With a 256 KiB block one chain block holds ~32,608 ids, so a free list past that size
-// publishes a list naming a block of its own chain.
+// serialize_free_list snapshots the pool AFTER the chain's FIRST block is taken
+// (metadata_writer_t's constructor), keeping that one out of the list. Every FURTHER chain
+// block is allocated mid-write (ensure_space -> allocate_handle -> free_block_id), drawn from
+// reusable_ -- already inside the snapshot. A 256 KiB block holds ~32,608 ids, so a free list
+// past that size names a block of its own chain.
 //
-// The consequence is not cosmetic: a restart runs deserialize_free_list, inserts that id into
-// reusable_, and the next allocation hands out a block the durable root's own free-list chain
-// occupies -- and the round after that reads the chain back through a block someone else has
-// since overwritten with a valid CRC.
-//
-// Reaching it needs a list big enough to span several chain blocks. The ids below are never
-// written to; only the chain's own (small) block ids reach the file.
+// Consequence: a restart's deserialize_free_list puts that id into reusable_, the next
+// allocation hands out a block the durable root's own free-list chain occupies, and the round
+// after reads the chain back through a block since overwritten with a valid CRC.
 TEST_CASE("shadow_free_list: a chain-spanning free list never lists its own chain blocks") {
     const std::string path = free_list_db_path("selfchain");
     remove_file(path);
@@ -581,13 +569,11 @@ TEST_CASE("shadow_free_list: a chain-spanning free list never lists its own chai
     // Comfortably past one chain block's worth of ids (~32.6k at the default 256 KiB block),
     // so the chain needs a second and a third -- the ones allocated MID-WRITE.
     constexpr uint64_t FREE_IDS = 70000;
-    // The pool is built by ALLOCATING the ids and then releasing them, which is both the only
-    // shape mark_as_free accepts and the only shape production produces. Its guard measures
-    // the FILE (max_block_), not just the addressable domain, so an id the file never
-    // contained is refused and latched rather than quarantined -- and a free list is by
-    // definition what a round LEFT BEHIND, never a set of ids conjured out of nothing. Block 0
-    // stays allocated so the pool is exactly 1..FREE_IDS, as before. No block is written: this
-    // gate is about the CHAIN's ids, and the listed ones only ever exist as numbers.
+    // The pool is built by ALLOCATING the ids and then releasing them -- the only shape
+    // mark_as_free accepts (its guard checks against the FILE's max_block_, so a conjured id
+    // the file never contained is refused and latched, not quarantined). Block 0 stays
+    // allocated so the pool is exactly 1..FREE_IDS. No block is written: this gate is about the
+    // CHAIN's ids, which only ever exist as numbers.
     for (uint64_t id = 0; id <= FREE_IDS; ++id) {
         const uint64_t allocated = bm.free_block_id();
         if (allocated != id) {

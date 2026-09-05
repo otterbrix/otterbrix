@@ -117,12 +117,8 @@ namespace components::table {
         state.initialize(types_);
         auto row_group = row_groups_->get_segment(start_row);
         if (!row_group) {
-            // The seek names a row the segment tree does not bracket. Rule 2: no throw
-            // crosses this layer (the caller is a disk agent behind a mailbox); rule 6: it
-            // is not a quiet empty scan either. Both live callers — data_table_t::compact
-            // and data_table_t::fetch_next_batch — already read has_error() before they
-            // trust the batch, and compact refuses the round on it rather than swapping a
-            // truncated collection in.
+            // No row group brackets this start row. Reported via scan_error, not
+            // thrown: data_table_t::compact and fetch_next_batch both check has_error() first.
             state.scan_error =
                 core::error_t{core::error_code_t::data_corruption,
                               std::pmr::string{"collection_t::initialize_scan_with_offset: no row group brackets "
@@ -132,10 +128,8 @@ namespace components::table {
         }
         uint64_t start_vector = static_cast<uint64_t>(start_row - row_group->start) / vector::DEFAULT_VECTOR_CAPACITY;
         if (!row_group->initialize_scan_with_offset(state, start_vector)) {
-            // The resolved group is empty or entirely past the scan ceiling. That is a
-            // legitimate end-of-scan, not a failure: the group's max_row_group_row is left
-            // at the seek position, so the caller's next_batch produces nothing and the
-            // fetch-next loop walks on to the following group / drains.
+            // Empty or past the scan ceiling is a legitimate end-of-scan, not a failure:
+            // next_batch produces nothing and the fetch loop moves to the next group.
             return;
         }
     }
@@ -164,14 +158,12 @@ namespace components::table {
         auto row_ids = row_identifiers.data<int64_t>();
         auto* produced_ids = result.row_ids.data<int64_t>();
         uint64_t count = 0;
-        // Read only by the DEV_MODE pairing guard below; the increment stays unconditional so
-        // the counter cannot drift from the loop it is meant to describe.
+        // Only read by the DEV_MODE guard below; incremented unconditionally so it can't
+        // drift from the loop it describes.
         [[maybe_unused]] uint64_t stamped = 0;
 #ifdef DEV_MODE
-        // The stamps are written into result.row_ids, which the chunk allocated at its own
-        // capacity. A caller asking for more rows than the chunk can hold would overrun it —
-        // and would have overrun the columns too, so this guards the whole call, not just
-        // the new field.
+        // Guards the whole call, not just row_ids: a request bigger than the chunk's capacity
+        // would overrun the columns too.
         assert(fetch_count <= result.capacity() &&
                "collection_t::fetch: the request is larger than the chunk it must fill");
 #endif
@@ -182,16 +174,14 @@ namespace components::table {
                 uint64_t segment_index;
                 auto l = row_groups_->lock();
                 if (!row_groups_->try_segment_index(l, row_id, segment_index)) {
-                    // The id names no row group. It is dropped from the answer rather than
-                    // gathered — and because the stamps below name only gathered rows, the
-                    // drop is REPORTED, not masked by a request-shaped row_ids vector.
+                    // Names no row group: dropped from the answer. Stamps below name only
+                    // gathered rows, so the drop is visible, not masked.
                     continue;
                 }
                 row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
             }
-            // The visibility question, asked BEFORE the gather so an invisible row costs no
-            // column read. `row_id` stays collection-absolute: row_version_manager_t::fetch
-            // keeps the absolute contract for this one method and rebases internally.
+            // Asked BEFORE the gather so an invisible row costs no column read. row_id stays
+            // collection-absolute; row_version_manager_t::fetch rebases internally.
             if (visibility == fetch_visibility_t::SNAPSHOT && !row_group->is_visible(txn, row_id)) {
                 continue;
             }
@@ -205,10 +195,8 @@ namespace components::table {
         }
         result.set_cardinality(count);
 #ifdef DEV_MODE
-        // One stamp per row carried, no more and no fewer. The guard is on the PAIRING: it
-        // is the invariant every consumer of this reply now relies on in place of "the reply
-        // is positionally the request", which it no longer is. An edit that sets the
-        // cardinality from the request — the shape this code had — trips it here.
+        // Guards the pairing: exactly one stamp per gathered row. Consumers rely on this
+        // instead of positional row_ids == request.
         assert(stamped == result.size() && "collection_t::fetch: stamped row_ids disagree with the cardinality");
 #endif
     }
@@ -241,12 +229,9 @@ namespace components::table {
     bool collection_t::is_empty(std::unique_lock<std::mutex>& l) const { return row_groups_->is_empty(l); }
 
     core::result_wrapper_t<bool> collection_t::initialize_append(table_append_state& state) {
-        // Every write reaches a row group's columns through here, and a row group builds them
-        // with column_data_t::create_column — whose constructors cannot refuse a type they
-        // cannot represent. So the type is judged FIRST, on the channel this function already
-        // returns. Before this, an unnamed struct threw inside struct_column_data_t's
-        // constructor, across the disk agent's mailbox and into a coroutine with an empty
-        // unhandled_exception(): the statement hung instead of failing (rules 2/9).
+        // Type validated FIRST: create_column's constructors cannot refuse a type they cannot
+        // represent. Before this, an unnamed struct threw inside struct_column_data_t's ctor
+        // and hung the statement across the disk agent's coroutine instead of failing.
         for (const auto& type : types_) {
             if (auto err = column_data_t::validate_column_type(type, resource_); err.contains_error()) {
                 return err;
@@ -407,10 +392,8 @@ namespace components::table {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(ids[start]);
             if (!row_group) {
-                // get_segment answers a miss with null. This walk has NO error channel (the
-                // return is the deleted-row count read by the caller's reply), so the refusal
-                // is reported and the walk stops: deleting "some nearby rows" instead is worse
-                // than deleting fewer, and the short count is visible to the caller (rule 6).
+                // No error channel here (the return is the deleted-row count); stop and report
+                // on stderr rather than deleting "some nearby rows" instead.
                 std::fprintf(stderr,
                              "components::table::collection_t::delete_rows: row id %lld names no row group; "
                              "stopping after %llu of %llu deletions\n",
@@ -440,8 +423,7 @@ namespace components::table {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(ids[pos]);
             if (!row_group) {
-                // get_segment answers a miss with null; the refusal rides the channel this
-                // function already returns (rules 2/9).
+                // get_segment miss rides the channel this function already returns.
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
                     std::pmr::string("table update: a row id names no row group of this table", resource_));
@@ -494,11 +476,9 @@ namespace components::table {
                     break;
                 }
             }
-            // THE PATH GOES TO update_column, NOT update. row_group_t::update reads its last
-            // argument as a list of TOP-LEVEL column ordinals — one per updates column — so a
-            // column_path of depth 2 makes it treat the child ordinal as a second table column
-            // and index updates.data[1] of a one-column chunk. row_group_t::update_column is the
-            // entry that walks the path INTO the column (depth 1 below the root ordinal).
+            // Deliberately update_column, not update: row_group_t::update treats its last arg
+            // as TOP-LEVEL column ordinals, so a depth-2 column_path would misindex as a second
+            // column. update_column walks the path INTO the column instead.
             auto updated = row_group->update_column(updates, row_ids, column_path, start, pos - start);
             if (updated.has_error()) {
                 return updated;
@@ -529,18 +509,14 @@ namespace components::table {
 
     core::result_wrapper_t<boost::intrusive_ptr<collection_t>>
     collection_t::add_column(column_definition_t& new_column) {
-        // Allocator-extended copy: std::pmr::vector's plain copy constructor asks
-        // select_on_container_copy_construction for the new allocator, which for a
-        // polymorphic_allocator is a DEFAULT-constructed one -- the successor's schema would
-        // land on the process-wide default resource while the collection it is handed to lives
-        // here. Naming the resource is the only way a pmr container inherits one on copy
-        // (data_table_t::adopt_schema already spells it this way).
+        // Named-resource copy: std::pmr::vector's plain copy ctor asks
+        // select_on_container_copy_construction, which for polymorphic_allocator is
+        // DEFAULT-constructed — without this the successor's schema would land on the
+        // process-wide default resource instead of this one.
         std::pmr::vector<types::complex_logical_type> new_types(types_, resource_);
         new_types.push_back(new_column.type());
-        // Plain `new`, never the pmr resource: the reference count lives inside the collection, so
-        // the counter's `delete` is the matching deallocation. Nothing was lost by giving up
-        // make_shared's single object+control-block allocation — no weak_ptr, aliasing pointer,
-        // custom deleter or shared_from_this is ever taken on a collection.
+        // Plain `new`, never the pmr resource: the intrusive ref count lives inside the
+        // object, so `delete` is the matching deallocation (no shared_ptr ever taken here).
         auto result = boost::intrusive_ptr<collection_t>(new collection_t(resource_,
                                                                           block_manager_,
                                                                           std::move(new_types),
@@ -553,8 +529,7 @@ namespace components::table {
             auto new_row_group =
                 current_row_group.add_column(result.get(), new_column, new_column.default_value_opt(), default_vector);
             if (new_row_group.has_error()) {
-                // The partially-built successor dies with `result`; the parent was never
-                // touched, so the refusal leaves the table exactly as it was.
+                // The partially-built successor dies with `result`; the parent is untouched.
                 return new_row_group.convert_error<boost::intrusive_ptr<collection_t>>();
             }
 
@@ -598,11 +573,9 @@ namespace components::table {
             pointers.push_back(std::move(pointer.value()));
         }
 
-        // Rule 19, and the durability chain: THIS is where every column segment of the checkpoint
-        // reaches the file, so its answer must travel. Dropping it still leaves the block
-        // manager's durability latch refusing to commit a header over the hole, but the caller
-        // is told the row-group pointers are good — so the failure surfaces two layers later,
-        // with nothing left to attribute it to.
+        // Every column segment of the checkpoint reaches the file through here, so a
+        // dropped answer would let the failure surface two layers later with nothing to
+        // attribute it to.
         if (auto flushed = partial_block_manager.flush_partial_blocks(); flushed.has_error()) {
             return flushed.convert_error<std::vector<storage::row_group_pointer_t>>(); // io_error
         }

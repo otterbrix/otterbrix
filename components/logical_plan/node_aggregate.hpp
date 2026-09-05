@@ -59,17 +59,10 @@ namespace components::logical_plan {
         void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
         const limit_t& read_cap() const noexcept { return read_cap_; }
 
-        // Stop being a source. After a view body has been spliced in as child[0],
-        // this node is a CONSUMER of that child and no longer names a base relation —
-        // exactly the shape an inlined CTE reference has (see transform_from_element:
-        // make_node_aggregate(resource, {}, {}) + append_child(body)).
-        //
-        // Clearing the names is what TERMINATES the expansion: bind_catalog_data binds
-        // by name, so a node that still said "v" would be re-stamped with the view's
-        // table_oid on the next bind and collect_view_references would find it again.
-        // Clearing the stamped oid/metadata as well is the other half: create_plan_match
-        // hands back a bare full_scan whenever has_table_oid() holds, which would drop
-        // the spliced child on the floor.
+        // must clear identity once the view body is spliced in as child[0]: bind_catalog_data
+        // binds by name and would re-stamp table_oid, letting collect_view_references re-expand
+        // it; a stale table_oid also makes create_plan_match hand back a bare full_scan,
+        // dropping the spliced child
         void clear_source_identity() {
             uid_.t.clear();
             dbname_.t.clear();

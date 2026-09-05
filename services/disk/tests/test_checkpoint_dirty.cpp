@@ -26,34 +26,28 @@
 #include <unistd.h>
 #include <vector>
 
-// ---------------------------------------------------------------------------
-// CHECKPOINT DIRTY FLAG. Without it a round rewrites every table it owns, changed or not:
-// compact() rebuilds the whole collection into freshly allocated blocks and checkpoint() writes
-// them out behind two fsyncs, per table, per round. Measured over 100 tables of 100 rows: a
-// round with everything dirty took 124.4 ms, and an EMPTY round immediately after took
-// 205.7 ms — doing nothing cost MORE than doing everything, because the second round has a full
-// free list to walk and a superseded root to reclaim that the first one had not.
+// Checkpoint dirty flag. Without it a round rewrites every table it owns, changed or not:
+// compact() rebuilds the whole collection into fresh blocks and checkpoint() writes them out
+// behind two fsyncs, per table, per round. Measured over 100 tables of 100 rows: an
+// everything-dirty round took 124.4 ms, and an EMPTY round right after took 205.7 ms -- doing
+// nothing cost more than doing everything, since the second round has a full free list to walk
+// and a superseded root to reclaim that the first one hadn't built up yet.
 //
-// The gate below is CORRECTNESS, not time, and deliberately so: a stopwatch measures the
-// machine. What is asserted is that a round over N tables with ONE of them changed leaves the
-// other N-1 `table.otbx` files BYTE-IDENTICAL and with an untouched mtime.
-//
-// With the gate in place, and with NO threshold attached (Debug, macOS arm64, 100 tables x 100
-// rows, driven straight at manager_disk):
+// The gate below is checked for correctness, not time: what's asserted is that a round over N
+// tables with one changed leaves the other N-1 `table.otbx` files byte-identical with an
+// untouched mtime. With the gate in place (Debug, macOS arm64, 100 tables x 100 rows, no
+// threshold, driven straight at manager_disk):
 //     dirty round        151.5 / 153.6 / 151.9 ms
-//     EMPTY round         15.4 /  15.3 /  12.4 ms
-//     EMPTY round again   13.5 /  13.9 /  12.7 ms
-// The residual is not the tables — no .otbx is opened for writing at all — it is the 114
-// eight-byte `.wal_id` sidecars the round still rewrites through tmp+rename, one per entry.
+//     empty round         15.4 /  15.3 /  12.4 ms
+//     empty round again   13.5 /  13.9 /  12.7 ms
+// The residual isn't the tables (no .otbx is opened for writing) -- it's the 114 eight-byte
+// `.wal_id` sidecars the round still rewrites through tmp+rename, one per entry.
 //
-// WHAT IS STILL DONE FOR AN UNCHANGED TABLE, and why the two are not the same thing: the entry
-// stays in the round. It advances its wal-id chain (prev <- current, current <- the round's wal
-// id), rewrites its 8-byte `.otbx.wal_id` sidecar and feeds prev_checkpoint_wal_id into the
-// round's min() exactly like an entry that was rewritten. Only the physical rebuild is skipped.
-// That is what keeps the WAL sealing invariant intact — see
-// clean_table_still_reports_its_wal_floor below, and the sealing cases in test_wal_seal.cpp,
-// whose floor arithmetic is unaffected by the skip.
-// ---------------------------------------------------------------------------
+// An unchanged table still stays in the round: it advances its wal-id chain (prev <- current,
+// current <- this round's id), rewrites its sidecar, and feeds prev_checkpoint_wal_id into the
+// round's min() exactly like a rewritten entry -- only the physical rebuild is skipped. That's
+// what keeps the WAL sealing invariant intact; see clean_table_still_reports_its_wal_floor below
+// and test_wal_seal.cpp's sealing cases.
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -206,12 +200,10 @@ namespace {
     }
 } // namespace
 
-// 1. THE GATE. N tables, one of them changed between two rounds. The round must rewrite
-//    exactly that one — proven against the files, not against a stopwatch.
-//
-//    Without the dirty flag every unchanged table comes back with a different hash, a
-//    different mtime and (once the free list has something in it) a different size, because
-//    checkpoint_inner compacts and rewrites every entry it owns unconditionally.
+// N tables, one changed between two rounds; the round must rewrite exactly that one, proven
+// against the files rather than a stopwatch. Without the dirty flag every unchanged table would
+// come back with a different hash, mtime, and (once the free list holds something) size, since
+// checkpoint_inner compacts and rewrites every entry it owns unconditionally.
 TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_table") {
     auto dir = dirty_dir() + "/one_changed";
     std::filesystem::remove_all(dir);
@@ -292,23 +284,20 @@ TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_tab
     std::filesystem::remove_all(dir);
 }
 
-// 2. THE TRAP THE DIRTY FLAG LEAVES BEHIND. checkpoint_all's answer is min(prev_checkpoint_wal_id) over
-//    EVERY entry the agents own, and it is handed straight to truncate_before, which DELETES
-//    whole WAL segments. An entry that contributes nothing drops the floor to whatever the
-//    remaining entries report; an entry that contributes a stale prev pins it forever and the
-//    WAL never truncates again. A clean-skipped table must do neither.
+// The trap the dirty flag leaves behind: checkpoint_all's answer is min(prev_checkpoint_wal_id)
+// over every entry the agents own, handed straight to truncate_before, which deletes whole WAL
+// segments. An entry contributing nothing drops the floor to whatever remains; one contributing
+// a stale prev pins it forever. A clean-skipped table must do neither -- and doesn't, because the
+// skip is of the physical rewrite only: the entry still advances prev <- current and current <-
+// this round's wal id, exactly the bookkeeping a rewrite would do, and still feeds prev into the
+// min.
 //
-//    It does neither because the skip is a skip of the physical rewrite ONLY: the entry still
-//    advances prev <- current and current <- this round's wal id, which is exactly the
-//    bookkeeping a rewrite would have performed, and still feeds prev into the min. So the
-//    floor a round reports does not depend on whether its entries were rewritten.
+//   round 1 @ 100 -> every table dirty: written, prev 0,   current 100. floor 0.
+//   round 2 @ 200 -> every table clean: skipped, prev 100, current 200. floor 100.
+//   round 3 @ 300 -> every table clean: skipped, prev 200, current 300. floor 200.
 //
-//      round 1 @ 100 -> every table dirty: written, prev 0,   current 100. floor 0.
-//      round 2 @ 200 -> every table clean: skipped, prev 100, current 200. floor 100.
-//      round 3 @ 300 -> every table clean: skipped, prev 200, current 300. floor 200.
-//
-//    A skip that stopped contributing would report 0 at round 2 (and truncation would never
-//    start); a skip that left prev alone would report 0 at round 3 as well.
+// A skip that stopped contributing would report 0 at round 2 (truncation never starts); one that
+// left prev alone would report 0 at round 3 too.
 TEST_CASE("services::disk::checkpoint_dirty::clean_table_still_reports_its_wal_floor") {
     auto dir = dirty_dir() + "/floor";
     std::filesystem::remove_all(dir);
@@ -337,13 +326,12 @@ TEST_CASE("services::disk::checkpoint_dirty::clean_table_still_reports_its_wal_f
 }
 
 
-// #304 — A ROUND THAT DEFERS EVERYTHING IS VISIBLE. checkpoint_all's return type is the
-// WAL floor alone (the round's contract), and a floor comes back whether the entries were
-// rewritten or every one of them was deferred by the MVCC compact gate — so the auto-round
-// could not tell "all checkpointed" from "all deferred" and the pinned floor was invisible.
-// checkpoint_result_t now carries per-round tallies; the agents' DEV counters below are the
-// test-readable mirror, and checkpoint_all warns when a round rewrites nothing while
-// deferring entries (the state observed live as truncation boundaries 31/55/55/135 with a
+// A round that defers everything is now visible. checkpoint_all's return type is the WAL floor
+// alone, and a floor comes back whether entries were rewritten or every one was deferred by the
+// MVCC compact gate -- so the auto-round couldn't tell "all checkpointed" from "all deferred" and
+// the pinned floor was invisible. checkpoint_result_t now carries per-round tallies; the agents'
+// DEV counters below are the test-readable mirror, and checkpoint_all warns when a round rewrites
+// nothing while deferring entries (observed live as truncation boundaries 31/55/55/135 with a
 // truncation that deleted nothing).
 TEST_CASE("services::disk::checkpoint_dirty::a_round_that_defers_everything_is_counted") {
     const auto root = std::filesystem::path(dirty_dir() + "_deferred");

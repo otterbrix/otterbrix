@@ -53,10 +53,8 @@ namespace otterbrix {
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        // Pool-admin API — mirrors manager_dispatcher_t's typed contract. core::error_t, not
-        // bool: a name collision, an overload nobody holds, an unregistered cast type, a refused
-        // catalog write and an executor that would not drop what it was told to drop are
-        // different failures, and the host has to be able to tell them apart.
+        // core::error_t, not bool: collision, unregistered cast, refused catalog write and a
+        // failed drop are different failures the host must tell apart.
         auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> core::error_t;
         auto unregister_udf(const session_id_t& session,
                             const std::string& function_name,

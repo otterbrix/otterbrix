@@ -7,10 +7,8 @@
 namespace components::sql::transform {
 
     namespace {
-        // func_name (gram.y) is a List of name parts. Every part the grammar can build
-        // is a T_String, but strVal() on anything else reads the integer half of the
-        // Value union AS a char* — so the tag is checked before the read, the same
-        // discipline transform_drop applies to any_name_list.
+        // Every func_name part the grammar builds is T_String; strVal() on anything else
+        // reads the wrong union member. Same tag-check discipline as transform_table's any_name_list.
         core::result_wrapper_t<std::pmr::string> dotted_name_of(std::pmr::memory_resource* resource,
                                                                 const List* name_parts) {
             std::pmr::string dotted{resource};
@@ -28,27 +26,14 @@ namespace components::sql::transform {
         }
     } // namespace
 
-    // CREATE FUNCTION is lowered to a MACRO: one name, a list of NAMED parameters,
-    // and the AS body it expands to. That is everything node_create_macro_t can
-    // carry, so everything else in the statement must either fit that shape or be
-    // refused out loud (rule 6). Dropping an unrepresentable piece without a word
-    // costs the NAME itself in the worst case: a three-part funcname matches neither
-    // the one-part nor the two-part arm, so with no else the macro is registered
-    // under the EMPTY string and the statement reports success.
-    //
-    // Deliberately NOT refused: `RETURNS <type>`. The grammar requires either a
-    // RETURNS clause or none at all, the macro itself is untyped (its result type
-    // is whatever the body produces), and the existing suite declares `RETURNS INT`
-    // on every macro it creates — so the annotation is accepted and recorded
-    // nowhere. It constrains nothing downstream; refusing it would refuse the only
-    // form in use.
+    // CREATE FUNCTION lowers to a MACRO (name + named params + AS body); anything else must
+    // be refused loudly, not silently dropped (a 3-part funcname would otherwise register
+    // under an empty name). Deliberately NOT refused: RETURNS <type> — the macro is untyped
+    // and the test suite declares RETURNS INT on every macro, so refusing it would refuse
+    // the only form in use.
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_function(CreateFunctionStmt& node) {
-        // The replace flag was never read, and nothing downstream can act on it:
-        // node_create_macro_t has no replace field, and build_create_macro_writes
-        // (ddl_metadata_builder.cpp) only ever ADDS the pg_class/pg_depend/pg_rewrite rows for
-        // a new macro — there is no replace-or-update write anywhere on the path, so
-        // `OR REPLACE` would execute as a plain CREATE with nothing saying so. Refuse
-        // the flag itself rather than promise a replacement that cannot happen.
+        // node_create_macro_t has no replace field, and build_create_macro_writes only ever
+        // ADDS rows — refuse rather than promise a replace that can't happen.
         if (node.replace) {
             return core::error_t(core::error_code_t::unimplemented_yet,
                                  std::pmr::string{"CREATE OR REPLACE FUNCTION is not implemented: the function "
@@ -70,20 +55,14 @@ namespace components::sql::transform {
             qn.dbname = strVal(it++->data);
             qn.relname = strVal(it->data);
         } else {
-            // A macro is addressed by (namespace, name); a third part has nowhere to
-            // go, and without this arm both fields stay empty.
             std::pmr::string msg{"CREATE FUNCTION ", resource_};
             msg += dotted;
             msg += ": a function name has at most two parts (namespace.name) — nothing was created";
             return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
         }
 
-        // A macro parameter is addressed BY NAME when the body is expanded, so a
-        // parameter must have one, must be a plain input, and must not carry a
-        // default. Dropping an unrepresentable form instead skips an unnamed parameter
-        // (the macro's arity then lies), turns OUT/TABLE parameters — including the
-        // columns of RETURNS TABLE, which the grammar merges into this list — into
-        // input parameters, and loses DEFAULT expressions.
+        // Addressed by name at expansion time, so each parameter needs one, must be plain
+        // input, and no DEFAULT. RETURNS TABLE columns are merged into this same list by the grammar.
         std::vector<std::string> params;
         if (node.parameters) {
             for (auto data : node.parameters->lst) {
@@ -115,10 +94,7 @@ namespace components::sql::transform {
             }
         }
 
-        // Options: the AS clause is the macro body, and it is the ONLY option that
-        // has a representation. Everything else (LANGUAGE, WINDOW, volatility,
-        // STRICT, COST, ...) would be dropped silently — accepted syntax whose meaning
-        // never reaches the engine.
+        // AS is the only option with a representation; every other option is refused below.
         std::string body_sql;
         if (node.options) {
             for (auto data : node.options->lst) {
@@ -141,9 +117,8 @@ namespace components::sql::transform {
                     msg += ": duplicate AS clause — nothing was created";
                     return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
                 }
-                // func_as (gram.y): one Sconst — the body — or two Sconst, the C-loader
-                // form (object file, link symbol), which has no macro meaning at all.
-                // Taking the front string of the pair drops the symbol.
+                // func_as (gram.y) is 1 Sconst (body) or 2 (C-loader form: object file,
+                // link symbol), which has no macro meaning — refuse rather than drop the symbol.
                 if (def->arg && nodeTag(def->arg) == T_List) {
                     auto list = reinterpret_cast<List*>(def->arg);
                     if (list->lst.size() > 1) {
@@ -163,9 +138,7 @@ namespace components::sql::transform {
             }
         }
         if (body_sql.empty()) {
-            // Reached with no AS clause at all, with `AS ''`, and with a malformed AS
-            // payload alike: there is no body to expand, and a macro that expands to
-            // nothing would be created and report success.
+            // Covers no AS clause, AS '', and a malformed AS payload alike.
             std::pmr::string msg{"CREATE FUNCTION ", resource_};
             msg += dotted;
             msg += " has no AS body to expand — nothing was created";

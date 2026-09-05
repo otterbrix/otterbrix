@@ -1,38 +1,8 @@
-// WHAT THE FK SEMI-JOIN DOES WITH A KEY
-// THAT THE STORED KEY COLUMN CANNOT HOLD.
-//
-// fk_hash_semijoin normalizes each input key column to the STORED column's physical type
-// before hashing, because a raw typed hash does not coerce widths. That normalization is the
-// place where a key value leaves its own domain and enters the parent's, and two things can go
-// wrong there:
-//
-//   * OUT OF RANGE. cast_vector range-checks per element, so an INT64 key 70000 against a
-//     SMALLINT stored column does not truncate to 4464 (which would hash equal to an unrelated
-//     stored key — a FALSE FK MATCH) but answers conversion_failure, which FAILS THE WHOLE
-//     STATEMENT. Strictly honester than the truncation, but still not the answer: a value
-//     outside the stored column's domain cannot equal ANY stored row, so the evaluable answer
-//     is an EMPTY BUCKET. On the parent side (operator_fk_cascade) the difference is not
-//     cosmetic — DELETE of a parent row whose key does not fit the child's narrower FK column
-//     has no children by construction and must succeed, not abort with a conversion error.
-//
-//   * NOT EXACTLY REPRESENTABLE. The range check does NOT cover fractional loss:
-//     cast_value_fits deliberately answers true for
-//     floating -> integral whenever the MAGNITUDE fits, and the cast then truncates the
-//     fraction. So a DOUBLE key 1.5 against a BIGINT stored column normalized to 1 and
-//     hashed equal to a stored 1 — the same FALSE FK MATCH the range check was introduced to
-//     kill, by the other door. cells_equal cannot catch it either: the verify compares the
-//     ALREADY-NORMALIZED key against the stored row, so both sides read 1.
-//
-// ONE rule covers both: a key cell is normalized only if it round-trips EXACTLY through the
-// stored column's type. Anything else is a domain miss — an empty bucket for that key,
-// exactly as a NULL key already yields — and never an error and never a probe of a
-// different value.
-//
-// The third case below draws the boundary that rule must not cross: a pair of TYPES that
-// cannot be compared at all is "cannot be evaluated", not "no match", and stays a refusal.
-//
-// These cases run the free function directly (as its sibling
-// test_fk_scan_by_keys_semijoin.cpp does), so the rule is pinned at the layer that owns it.
+// fk_hash_semijoin normalizes each key cell to the stored column's type before hashing. Rule:
+// a cell is normalized only if it round-trips EXACTLY through that type; otherwise it's a
+// domain miss (empty bucket), never an error and never a probe of a truncated value. A pair of
+// TYPES that cannot be compared at all is the different case: "cannot be evaluated", a refusal
+// (third test below). Runs the free function directly, same as test_fk_scan_by_keys_semijoin.cpp.
 
 #include <catch2/catch_test_macros.hpp>
 #include <core/pmr.hpp>
@@ -80,8 +50,7 @@ namespace {
 
     std::set<int64_t> as_set(const std::pmr::vector<int64_t>& v) { return std::set<int64_t>(v.begin(), v.end()); }
 
-    // pid-qualified so two concurrent runs never share the file (index_fixture_path.hpp
-    // pattern). A fresh file per case: the storage is rebuilt from scratch each time.
+    // pid-qualified so two concurrent runs never share the file.
     std::filesystem::path fresh_otbx(const char* tag) {
         const auto path = std::filesystem::path("/tmp") / ("test_otterbrix_fk_key_domain_" + std::string(tag) + "_" +
                                                            std::to_string(::getpid()) + ".otbx");
@@ -91,12 +60,8 @@ namespace {
 
 } // namespace
 
-// ===========================================================================
-// THE FRACTION. A DOUBLE key 1.5 has no exact BIGINT representation, so it
-// equals no stored row. It must NOT be probed as 1.
-//
+// A DOUBLE key 1.5 has no exact BIGINT representation and must not be probed as 1.
 // BEFORE: res[0] == {0} — key 1.5 matched the row holding 1.
-// ===========================================================================
 TEST_CASE("services::disk::fk_hash_semijoin::a_fractional_key_matches_no_integer_row") {
     core::pmr::otterbrix_resource resource;
 
@@ -142,13 +107,9 @@ TEST_CASE("services::disk::fk_hash_semijoin::a_fractional_key_matches_no_integer
     CHECK(res[2].empty());
 }
 
-// ===========================================================================
-// THE OUT-OF-DOMAIN KEY. A key that the stored column cannot hold is answered
-// "no match", not a failed statement: a core::error_t{conversion_failure,
-// "cast_vector: value at row 0 does not fit the target type (...)"} here aborts
-// the DELETE / the FK check outright and takes the in-domain keys of the same
-// batch down with it.
-// ===========================================================================
+// A key the stored column cannot hold is answered "no match", not a failed statement — a
+// conversion_failure here would abort the DELETE/FK check and take the in-domain keys of the
+// same batch down with it.
 TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead_of_failing") {
     core::pmr::otterbrix_resource resource;
 
@@ -195,23 +156,10 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead
     CHECK(res[2].empty());
 }
 
-// ===========================================================================
-// THE LINE BETWEEN "NO MATCH" AND "CANNOT BE EVALUATED".
-//
-// The two cases above turn a per-VALUE domain miss into an empty bucket. A pair of
-// TYPES that cannot be compared at all is the other thing entirely, and it must stay
-// on the arity guard's side of the line: an empty bucket is the affirmative answer
-// "this table holds no row referencing that key", and ON DELETE CASCADE / RESTRICT
-// read it as "this parent has no children" and let the parent go while its children
-// stay behind referencing nothing. cast_vector reports "string casts are not
-// supported" and "physical type is not castable" through the SAME conversion_failure
-// code it uses for an out-of-range value, so the per-row handling above cannot tell
-// them apart on the error alone — the pair has to be settled once, per column,
-// before any row is judged.
-//
-// WITHOUT THE PER-COLUMN PROBE the call answers 2 empty buckets and no error,
-// i.e. a STRING key against a BIGINT parent silently "matches nothing".
-// ===========================================================================
+// A pair of TYPES that cannot be compared at all must stay a refusal, not an empty bucket:
+// ON DELETE CASCADE/RESTRICT reads an empty bucket as "this parent has no children". Without
+// a per-column probe up front, a STRING key against a BIGINT parent would silently "match
+// nothing" instead of refusing.
 TEST_CASE("services::disk::fk_hash_semijoin::an_uncomparable_type_pair_refuses_instead_of_missing") {
     core::pmr::otterbrix_resource resource;
 

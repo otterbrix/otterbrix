@@ -170,10 +170,9 @@ namespace components::planner::optimizer {
         // This routes a conjunct whose bare column name ALSO exists on the other side
         // (e.g. t1.id when t2 also has id) — the name-based test below cannot, because
         // the name is a subset of BOTH sides' alias sets, so it always fell to residual.
-        // An unvalidated plan (keys carry no path, or left_width unknown) is the OTHER
-        // sanctioned input shape, not a degraded one: it is classified by the
-        // alias-subset test, the only identity such a plan carries. A conjunct that
-        // references BOTH sides (or no column) is unclassified => residual.
+        // An unvalidated plan (no path, or left_width unknown) is a second sanctioned shape, not a degraded
+        // one — it falls to the alias-subset test below. A conjunct referencing both sides (or no column)
+        // is unclassified => residual.
         conj_side classify_conjunct(const expression_ptr& conj,
                                     size_t left_width,
                                     bool left_width_known,
@@ -224,12 +223,10 @@ namespace components::planner::optimizer {
         // for the left prefix ([0, left_width)); a right-side column sits at
         // left_width + local, so pushing it into the right child unchanged leaves an
         // out-of-range column index. Subtract left_width from the leading path element
-        // (deeper elements index nested struct fields and stay put). The new path is built
-        // on THE KEY'S OWN arena — never set_path({...}), which pulls the default resource,
-        // and never some other arena either: set_path move-assigns, and a pmr
-        // move-assignment keeps the TARGET's allocator, so a path built elsewhere is
-        // element-wise copied into the key's arena and the vector it was built in is thrown
-        // away. Built on k.resource() the hand-over is the pointer steal it reads as.
+        // (deeper elements index nested struct fields and stay put). Built on k.resource() — never
+        // set_path({...}) (defaults to the process arena) and never another arena either: set_path
+        // move-assigns, and pmr move-assignment keeps the TARGET's allocator, so a path built elsewhere
+        // would just be element-wise copied in and the original thrown away.
         // The left bucket needs no rewrite (merged == local there) and the
         // residual keeps its merged paths (it evaluates over the join's merged output).
         void relocalize_key_path(key_t& k, size_t left_width) {
@@ -539,14 +536,9 @@ namespace components::planner::optimizer {
         // join's merged coordinate space. nullopt for anything else (non-eq, const
         // operand, nested-field path, same-side).
         //
-        // `resource` is the arena the pair's two key COPIES live on, and it is the rule's
-        // arena — the one that outlives the `pairs` vector these are moved into and every
-        // predicate derived from them. Named, not defaulted: key_t's copy constructor
-        // deliberately keeps standard pmr semantics (an un-placed copy lands on the process
-        // default), so a copy that belongs on a particular arena has to say so through the
-        // allocator-extended constructor. Saying so is what keeps the rule's allocations
-        // countable on the arena the caller handed in instead of leaking into a
-        // process-global one no tracer is watching.
+        // `resource` is the rule's own arena (outlives the `pairs` vector these are moved into). Named, not
+        // defaulted: key_t's copy constructor keeps standard pmr semantics (an un-placed copy lands on the
+        // process default), so a copy must say which arena explicitly to keep the rule's allocations traceable.
         std::optional<equi_pair_t>
         equi_pair_from_conjunct(std::pmr::memory_resource* resource, const expression_ptr& on_conj, size_t left_width) {
             if (!on_conj || on_conj->group() != expression_group::compare) {
@@ -670,30 +662,17 @@ namespace components::planner::optimizer {
                     // Copy the ON partner key (name + side) and stamp its MERGED path so
                     // the existing bucketer routes it and relocalize_keys localizes it
                     // below the partner scan. Reuse the SAME parameter (no value clone).
-                    // PLACED on the rule's arena, not left to key_t's plain copy constructor:
-                    // that one keeps standard pmr semantics on purpose (see key.hpp) and puts an
-                    // un-placed copy on the PROCESS DEFAULT, where no tracer accounts for it.
-                    // `resource` is the arena the caller handed the rule; it outlives this local
-                    // and every expression built from it below, which is what the
-                    // allocator-extended constructor's contract asks the caller to guarantee.
+                    // key_t's plain copy ctor keeps standard pmr semantics and would land an un-placed copy on
+                    // the process default, untracked; the allocator-extended ctor places it on `resource` (the
+                    // arena the caller handed the rule) instead.
                     key_t partner{*partner_on_key, resource};
-                    // Built on partner's arena — which, since the line above places partner, IS
-                    // `resource`. Written as partner.resource() rather than `resource` because
-                    // what the next line needs is the arena of the ASSIGNMENT TARGET: set_path
-                    // move-assigns this vector into partner's path_, and a pmr move-assignment
-                    // keeps the TARGET's allocator (propagate_on_container_move_assignment is
-                    // false). Sourced from any other arena, the "move" degrades to an
-                    // element-wise copy that allocates in partner's arena anyway — this way it
-                    // is the pointer steal it reads as, and it stays one if partner is ever
-                    // placed somewhere else.
+                    // partner.resource() (== resource, now that partner is placed there), not `resource`
+                    // directly: set_path move-assigns into partner's path_, and pmr move-assignment keeps the
+                    // TARGET's allocator, so building on any other arena would degrade to an element-wise copy.
                     //
-                    // Placing partner does NOT put the derived predicate's key on `resource`:
-                    // make_compare_expression below copies it twice more, un-placed, inside
-                    // components/expressions, and relocalize_key_path then builds that key's
-                    // path on whatever arena those copies chose. Counted, with the split, in
-                    // components/planner/test/test_pushdown_key_arena.cpp,
-                    // "derivation_allocates_on_the_named_arena" -- the rule's own share is what
-                    // this file can answer for, and it is now zero.
+                    // Placing partner does not extend to the derived predicate's key: make_compare_expression
+                    // copies it twice more, un-placed. Verified this rule contributes zero extra allocation in
+                    // test_pushdown_key_arena.cpp ("derivation_allocates_on_the_named_arena").
                     std::pmr::vector<size_t> p{partner.resource()};
                     p.push_back(partner_merged);
                     partner.set_path(std::move(p));

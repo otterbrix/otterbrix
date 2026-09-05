@@ -69,16 +69,9 @@ namespace {
 
 } // namespace
 
-// =====================================================================================
-// РАЗРЫВ МАРШРУТИЗАЦИИ update_column.
-// collection_t::update_column отдаёт column_path в row_group_t::update, который читает его
-// как список колонок ВЕРХНЕГО УРОВНЯ: для пути {0, 2} он трактует «2» как вторую колонку
-// таблицы и лезет в updates.data[1], которого нет. row_group_t::update_column (единственный
-// вход в семью column_data_t::update_column) не имеет вызывающих.
-// Без фикса: SIGABRT на assert(col_data.type().type() == update_chunk.data[i].type().type())
-// (STRUCT против BIGINT) — либо чтение updates.data[1] за границей.
-// Ожидаемо: путь спускается в поле структуры; поле b обновлено, поле a нетронуто.
-// =====================================================================================
+// До фикса collection_t::update_column звал row_group_t::update, который читал column_path
+// как список колонок ВЕРХНЕГО уровня: путь {0,2} читался как «колонка 2» и лез в
+// updates.data[1], которого нет. Без фикса: SIGABRT на type mismatch либо чтение за границей.
 TEST_CASE("components::table::wave::update_column_descends_into_a_struct_field") {
     wave_env env("struct_update");
 
@@ -141,14 +134,9 @@ TEST_CASE("components::table::wave::update_column_descends_into_a_struct_field")
     REQUIRE(scanned == NUM_ROWS);
 }
 
-// =====================================================================================
-// segment_tree_t::segment_index бросает std::runtime_error,
-// и это единственный канал отказа точечных чтений. Через data_table_t::update строка с
-// несуществующим row id доходит до get_segment -> throw, который в проде пересекает
-// корутину актора (пустой unhandled_exception -> зависание).
-// Без фикса: непойманный std::runtime_error валит тест ("Could not find node in column
-// segment tree"). Ожидаемо: update возвращает error_t.
-// =====================================================================================
+// Прежде segment_tree_t::segment_index() бросал std::runtime_error на несуществующий row id, и
+// data_table_t::update мог довести этот throw до продовой корутины (пустой unhandled_exception
+// -> зависание вместо ошибки). Без фикса: непойманный runtime_error валит тест.
 TEST_CASE("components::table::wave::an_out_of_range_row_id_is_an_error_not_a_throw") {
     wave_env env("row_out_of_range");
     std::vector<column_definition_t> columns;
@@ -168,10 +156,8 @@ TEST_CASE("components::table::wave::an_out_of_range_row_id_is_an_error_not_a_thr
     REQUIRE(updated.has_error());
 }
 
-// Тот же разрыв через LIST-ногу: fetch_list_offset(row-1) на строке за концом колонки
-// доходит до get_segment -> throw; после фикса отказ едет по result_wrapper каналу
-// gather_child_update -> update -> collection -> data_table (fetch_list_offset получает
-// собственный канал ошибки).
+// Тот же разрыв через LIST-ногу: fetch_list_offset получил собственный канал ошибки вместо
+// throw, отказ едет по result_wrapper через gather_child_update -> update -> collection -> data_table.
 TEST_CASE("components::table::wave::a_list_update_of_a_missing_row_reports_not_throws") {
     wave_env env("list_row_out_of_range");
     auto list_type = complex_logical_type::create_list(logical_type::BIGINT);
@@ -217,13 +203,9 @@ TEST_CASE("components::table::wave::a_list_update_of_a_missing_row_reports_not_t
     REQUIRE(updated.has_error());
 }
 
-// =====================================================================================
-// block_handle_t::load() отвечает ПУСТЫМ buffer_handle_t без ошибки на блок,
-// который загрузить нечем (UNLOADED, без temp-копии, block_id >= MAXIMUM_BLOCK);
-// standard_buffer_manager_t::pin затем разыменовывает нулевой буфер.
-// Без фикса: SIGSEGV внутри pin (get_buffer(lock)->allocation_size() по nullptr).
-// Ожидаемо: pin возвращает error_t.
-// =====================================================================================
+// block_handle_t::load() отвечал ПУСТЫМ buffer_handle_t без ошибки для блока, который
+// загрузить нечем (UNLOADED, без temp-копии, block_id >= MAXIMUM_BLOCK), а
+// standard_buffer_manager_t::pin затем разыменовывал нулевой буфер. Без фикса: SIGSEGV в pin.
 TEST_CASE("components::table::wave::pin_of_an_unloadable_block_reports_an_error") {
     wave_env env("unloadable_pin");
     auto handle = std::make_shared<storage::block_handle_t>(env.block_manager,
@@ -233,12 +215,8 @@ TEST_CASE("components::table::wave::pin_of_an_unloadable_block_reports_an_error"
     REQUIRE(pinned.has_error());
 }
 
-// =====================================================================================
-// unload_and_take_block ассертит инвариант «байты либо на диске, либо в
-// спилле», а под NDEBUG молча выбрасывает буфер, которого больше нигде нет.
-// Без фикса (Debug): SIGABRT на assert(can_unload() || has_temp_copy()).
-// Ожидаемо: отказ — буфер остаётся резидентным, повторный pin отдаёт те же байты.
-// =====================================================================================
+// unload_and_take_block ассертит «байты либо на диске, либо в спилле», а под NDEBUG молча
+// выбрасывает буфер, которого больше нигде нет. Без фикса (Debug): SIGABRT на этом assert.
 TEST_CASE("components::table::wave::unload_of_a_spill_less_transient_refuses") {
     wave_env env("unload_refusal");
     auto allocated = env.buffer_manager.allocate(storage::memory_tag::BASE_TABLE, 4096, false);
@@ -263,12 +241,9 @@ TEST_CASE("components::table::wave::unload_of_a_spill_less_transient_refuses") {
     }
 }
 
-// =====================================================================================
-// initialize_column молча реконструирует счётчик строк из суммы сегментов,
-// когда персистентный счётчик равен 0: два несогласных числа на диске примиряются тихо.
-// Без фикса: initialize_column отвечает успехом и count() == 5 (реконструированное).
-// Ожидаемо: data_corruption.
-// =====================================================================================
+// initialize_column молча реконструировал счётчик строк из суммы сегментов при персистентном
+// count == 0: два несогласных числа на диске примирялись тихо. Без фикса: успех с
+// реконструированным count() == 5 вместо data_corruption.
 TEST_CASE("components::table::wave::a_zero_count_with_rows_on_disk_is_corruption") {
     wave_env env("count_mismatch");
 
@@ -288,9 +263,8 @@ TEST_CASE("components::table::wave::a_zero_count_with_rows_on_disk_is_corruption
         pcd.data_pointers.push_back(std::move(dp));
         return pcd;
     };
-    // Согласованно короткая пара «своя колонка + validity»: единственное противоречие —
-    // count == 0 при сумме сегментов 5. До фикса ОБА узла молча реконструируют 5 и загрузка
-    // отвечает успехом; после — data_corruption.
+    // Обе ноги (своя колонка + validity) намеренно короткие: единственное противоречие —
+    // count == 0 при сумме сегментов 5.
     auto persistent = make_pcd(40);
     persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(make_pcd(64)));
 
@@ -298,12 +272,8 @@ TEST_CASE("components::table::wave::a_zero_count_with_rows_on_disk_is_corruption
     REQUIRE(loaded.has_error());
 }
 
-// =====================================================================================
-// base_statistics_t::update без ноги HUGEINT/UHUGEINT/DECIMAL: широкая
-// DECIMAL-колонка получает только счётчики NULL, без min/max.
-// Без фикса: has_stats() == false после update по HUGEINT/DECIMAL вектору.
-// Ожидаемо: min/max заполнены и переживают serialize/deserialize.
-// =====================================================================================
+// base_statistics_t::update не имел ветки HUGEINT/UHUGEINT/DECIMAL: широкая DECIMAL-колонка
+// получала только счётчики NULL, без min/max (has_stats() == false).
 TEST_CASE("components::table::wave::hugeint_and_decimal_columns_get_minmax_statistics") {
     wave_env env("stats_wide");
 
@@ -367,13 +337,9 @@ TEST_CASE("components::table::wave::hugeint_and_decimal_columns_get_minmax_stati
     }
 }
 
-// =====================================================================================
-// row_group_t::add_column гасит OOM бэкфилла ассертами; под NDEBUG цикл
-// молча рвётся, и наследник возвращается с КОРОТКОЙ колонкой при полном count.
-// Без фикса (Debug): SIGABRT на assert(!init.has_error() && "row_group::add_column:
-// initialize_append OOM"). Ожидаемо: отказ громкий — таблица-наследник отказывает
-// в записи, родитель остаётся корнем и читается.
-// =====================================================================================
+// До фикса add_column гасил OOM бэкфилла ассертами (под NDEBUG наследник тихо получал
+// КОРОТКУЮ колонку при полном count); теперь ошибка едет по каналу (row_group.cpp) и
+// наследник громко отказывает в записи, родитель остаётся корнем.
 TEST_CASE("components::table::wave::a_failed_add_column_backfill_refuses_loudly") {
     wave_env env("addcol_oom");
     std::vector<column_definition_t> columns;

@@ -6,11 +6,6 @@
 
 namespace configuration {
 
-    // The three path structs below each carry exactly ONE initializer for `path` — the
-    // constructor. None of them is an aggregate and none has a second constructor, so a
-    // default member initializer on `path` would be unreachable; see config_disk for what
-    // happened the last time one sat there disagreeing with the constructor.
-
     struct config_log final {
         std::filesystem::path path;
         log_t::level level{log_t::level::trace};
@@ -36,28 +31,18 @@ namespace configuration {
     };
 
     struct config_disk final {
-        // No default member initializer: the constructor below is the only way to build a
-        // config_disk (the struct is not an aggregate, and the constructor's default argument
-        // covers default-construction), so a second initializer here could only ever disagree
-        // with it — an unreachable `<cwd>/disk` beside a constructor saying `<base>/wal`
-        // reads as the layout and is not, which is how call sites start hand-assigning
-        // `<cwd>/disk` back.
+        // No default member initializer: the constructor is the only way to build this (not an
+        // aggregate), so a second initializer here would just silently disagree with it.
         std::filesystem::path path;
         int agent = 2;
         uint64_t bitcask_flush_threshold{1000};
         uint64_t bitcask_segment_record_limit{100};
         uint64_t btree_flush_threshold{1000};
 
-        // `<base>/wal`, not `<base>/disk` — the table tree shares the WAL's directory. It
-        // reads like a copy-paste of config_wal above, but it is the SHIPPED layout: every
-        // database written since 96d5ffaa is under it,
-        // including every one the Python package made, since `Client(path)` goes straight to
-        // `config::create_config`. Renaming the directory would not move those files, it would
-        // strand them — a reopen would find an empty directory, bootstrap a fresh pg_catalog
-        // and report success. The two trees interleave without colliding (WAL scans below
-        // `<base>/wal/<db_oid>` take regular files only, disk scans take numeric directories
-        // only), so there is nothing to gain by splitting them and a database to lose.
-        // Pinned by config_disk_path_layout in services/disk/tests/test_config_layout.cpp.
+        // `<base>/wal`, not `<base>/disk`: the table tree shares the WAL directory on purpose --
+        // the shipped layout since 96d5ffaa. Renaming would not move existing databases, only
+        // strand them (a reopen finds an empty directory and bootstraps fresh). Pinned by
+        // config_disk_path_layout in services/disk/tests/test_config_layout.cpp.
         explicit config_disk(const std::filesystem::path& path = std::filesystem::current_path())
             : path(path / "wal") {}
     };

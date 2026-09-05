@@ -15,11 +15,10 @@ namespace services::index {
     components::table::transaction_data committed_rows_snapshot() noexcept {
         components::table::transaction_data txn;
         txn.transaction_id = 0;
-        // Below every PENDING txn id and at or above every commit id: rule 2 of
-        // transaction_version_operator already refuses anything >= TRANSACTION_ID_START, so
-        // this horizon admits exactly the committed half. start_time is not read by the
-        // visibility filter at all; it is set to the same value so the record cannot be
-        // mistaken for a partially-filled one.
+        // Below every PENDING txn id and at or above every commit id: transaction_version_operator's
+        // own visibility check already refuses anything >= TRANSACTION_ID_START, so this horizon admits
+        // exactly the committed half. start_time isn't read by the visibility filter; set to the
+        // same value so the record can't be mistaken for a partially-filled one.
         constexpr uint64_t all_commit_ids = components::table::TRANSACTION_ID_START - 1;
         txn.start_time = all_commit_ids;
         txn.snapshot_horizon = all_commit_ids;
@@ -33,10 +32,9 @@ namespace services::index {
                                         components::session::session_id_t session,
                                         components::table::transaction_data txn,
                                         core::date::timezone_offset_t session_tz) {
-        // BOTH addresses or nothing. The rebuild reads through the disk manager and writes
-        // through the index manager, so a topology missing either has no rebuild to do --
-        // and a loop that sent scan requests to an empty disk address would be sending them
-        // nowhere while believing it had rebuilt the index (rule 6).
+        // Both addresses or nothing: a topology missing either has no rebuild to do, and a loop
+        // that sent scans to an empty disk address would believe it rebuilt the index while
+        // reaching nowhere.
         if (index_address == actor_zeta::actor::address_t::empty_address() ||
             disk_address == actor_zeta::actor::address_t::empty_address()) {
             co_return core::error_t::no_error();
@@ -68,13 +66,11 @@ namespace services::index {
                 total = total_r.value();
             }
 
-            // total==0 (table emptied by compact) still repopulates: the clear step inside
-            // repopulate_table wipes the stale entries. A drained scan of an empty table
-            // yields an empty vector, which is exactly what repopulate_table expects.
+            // total==0 (table emptied by compact) still repopulates: repopulate_table's clear
+            // step wipes stale entries over the empty vector a drained scan yields.
             //
-            // The streaming leg is the only read contract there is. A cursor left open here
-            // would gate compact() on this oid for every round after it, permanently, so
-            // this loop exits only drained-or-released -- never with the cursor still open.
+            // A cursor left open here would permanently gate compact() on this oid, so the loop
+            // exits only drained-or-released, never with the cursor still open.
             std::pmr::vector<components::vector::data_chunk_t> scan_data{resource};
             {
                 uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
@@ -125,11 +121,9 @@ namespace services::index {
                                                           session_tz);
             auto repopulate_error = co_await std::move(rpf);
             if (repopulate_error.contains_error()) {
-                // A producer defect in the rebuild feed (scan chunks without physical
-                // row_ids) or a store that refused the write. Stop here rather than carry
-                // on rebuilding the rest: the caller has to decide what a half-rebuilt set
-                // of indexes means for it, and it cannot decide that if the failure is
-                // averaged away.
+                // A producer defect (scan chunks without physical row_ids) or a refused write.
+                // Stops rather than rebuilding the rest: the caller must decide what a
+                // half-rebuilt set of indexes means, which requires the failure not be averaged away.
                 co_return repopulate_error;
             }
         }

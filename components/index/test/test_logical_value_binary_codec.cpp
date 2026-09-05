@@ -8,17 +8,15 @@
 #include <limits>
 
 namespace {
-    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
-    // path, and that message belongs to the caller, so the caller has to name an arena it owns
-    // rather than reach for the process-global one (rule 14).
+    // The ONE arena this file builds DECIMALs on: create_decimal allocates only on its refusal
+    // path, and that message must live on a caller-owned arena, not the process-global one.
     std::pmr::memory_resource* decimal_resource() {
         static core::pmr::otterbrix_resource arena;
         return &arena;
     }
 
-    // create_decimal reports an out-of-window (width, scale) through core::error_t. Every
-    // literal these tests use is inside the window, so the helper checks the result and
-    // hands back the type.
+    // create_decimal refuses an out-of-window (width, scale) via core::error_t; every literal
+    // used here is in-window, so REQUIRE_FALSE is safe.
     components::types::complex_logical_type make_decimal(uint8_t width, uint8_t scale) {
         auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale);
         REQUIRE_FALSE(created.has_error());
@@ -186,16 +184,10 @@ TEST_CASE("logical_value_binary_codec: skip_logical_value") {
     }
 }
 
-// -----------------------------------------------------------------------------
-// CORRUPT STORED BYTES MUST NOT KILL THE PROCESS.
-//
-// Every buffer below is what a b+tree leaf or a bitcask segment hands the decoder: a stored key payload.
-// Neither file carries a checksum over that payload, so a single flipped bit reaches these functions
-// verbatim. An assert(false) + std::abort() on such a case takes the test binary down in a Debug build and
-// the HOST PROCESS of the embedded engine down in a Release build, leaving the database unopenable rather
-// than merely wrong. The contract pinned here is the opposite one: a corrupt payload decodes to NA (or a
-// default physical_value), the caller is told through `ok`, and the process stays up so the query can fail
-// and DROP INDEX can still remove the object.
+// Corrupt stored bytes must not kill the process. Every buffer below is a stored key payload
+// (b+tree leaf or bitcask segment) with no checksum, so a flipped bit reaches these functions
+// verbatim; the contract is that it decodes to NA (or a default physical_value) and reports
+// through `ok`, never aborts.
 namespace {
     // A stored key payload, byte for byte, built the way append_logical_value builds it.
     std::pmr::string bytes(std::pmr::memory_resource* resource, std::initializer_list<int> raw) {
@@ -241,8 +233,6 @@ TEST_CASE("logical_value_binary_codec: a corrupt logical tag refuses instead of 
         const auto decoded = read_logical_value(&resource, buffer, pos, &ok);
         CHECK_FALSE(ok);
         CHECK(decoded.type().type() == logical_type::NA);
-        // The same call WITHOUT a flag is what the read path makes today, and it must still
-        // come back rather than take the process with it.
         size_t unflagged_pos = 0;
         CHECK(read_logical_value(&resource, buffer, unflagged_pos).type().type() == logical_type::NA);
     }
@@ -254,8 +244,6 @@ TEST_CASE("logical_value_binary_codec: a corrupt logical tag refuses instead of 
         const auto decoded = read_logical_value(&resource, buffer, pos, &ok);
         CHECK_FALSE(ok);
         CHECK(decoded.type().type() == logical_type::NA);
-        // The same call WITHOUT a flag is what the read path makes today, and it must still
-        // come back rather than take the process with it.
         size_t unflagged_pos = 0;
         CHECK(read_logical_value(&resource, buffer, unflagged_pos).type().type() == logical_type::NA);
     }
@@ -269,8 +257,6 @@ TEST_CASE("logical_value_binary_codec: a corrupt logical tag refuses instead of 
         const auto decoded = read_logical_value(&resource, buffer, pos, &ok);
         CHECK_FALSE(ok);
         CHECK(decoded.type().type() == logical_type::NA);
-        // The same call WITHOUT a flag is what the read path makes today, and it must still
-        // come back rather than take the process with it.
         size_t unflagged_pos = 0;
         CHECK(read_logical_value(&resource, buffer, unflagged_pos).type().type() == logical_type::NA);
     }
@@ -284,8 +270,6 @@ TEST_CASE("logical_value_binary_codec: a corrupt logical tag refuses instead of 
         const auto decoded = read_logical_value(&resource, buffer, pos, &ok);
         CHECK_FALSE(ok);
         CHECK(decoded.type().type() == logical_type::NA);
-        // The same call WITHOUT a flag is what the read path makes today, and it must still
-        // come back rather than take the process with it.
         size_t unflagged_pos = 0;
         CHECK(read_logical_value(&resource, buffer, unflagged_pos).type().type() == logical_type::NA);
     }
@@ -454,12 +438,9 @@ TEST_CASE("logical_value_binary_codec: a truncated payload is a refusal, not a z
     CHECK(decoded.type().type() == logical_type::NA);
 }
 
-// BOTH PRIMITIVES MUST SPELL THE BOUND AS `pos > size || size - pos < sizeof(T)`.
-// The obvious form, `pos + sizeof(T) > in.size()`, is a size_t addition and WRAPS: a `pos` already past the
-// end -- which is exactly what a caller holds after ignoring one refusal, and read_typed_value's nested arms
-// walk `pos` through several values before anyone looks -- then answers "in range" and lets the memcpy read
-// from `in.data() + pos`. With the wrapping form, pos = SIZE_MAX-3 wraps to 4, 4 > 8 is false, and read_le
-// memcpy's eight bytes from an address about 2^64 past the buffer.
+// The bound must be spelled `pos > size || size - pos < sizeof(T)`, not `pos + sizeof(T) > size`:
+// the addition is a size_t and WRAPS. A `pos` already past the end (exactly what a caller holds
+// after ignoring one refusal) would then answer "in range" and memcpy from `in.data() + pos`.
 TEST_CASE("logical_value_binary_codec: read_le cannot be walked past the end by an overflowing bound") {
     using components::index::codec::read_le;
 
@@ -475,7 +456,6 @@ TEST_CASE("logical_value_binary_codec: read_le cannot be walked past the end by 
     CHECK(v == 0);
     CHECK(pos == std::numeric_limits<size_t>::max() - 3);
 
-    // The ordinary short read still refuses, and `pos` still does not move.
     size_t tail = 4;
     bool tail_ok = true;
     CHECK(read_le<uint64_t>(buffer, tail, &tail_ok) == 0);
@@ -483,15 +463,10 @@ TEST_CASE("logical_value_binary_codec: read_le cannot be walked past the end by 
     CHECK(tail == 4);
 }
 
-// THE ENCODER ON THE PATH THAT OPENS A DATABASE MUST NOT KILL THE PROCESS.
-//
-// An abort on encode_disk_hash_key's `default:` arm would be justified by "the encoder is handed a
-// logical_value_t this process built and the CREATE INDEX gate vetted". That sentence is false for its
-// actual caller: bitcask_index_disk_t's rebuild loop deserialize_payload()s a record OFF THE DISK and hands
-// the result to key_bytes_for_hash -> normalize_hash_key -> here (services/index/bitcask_index_disk.cpp,
-// and again on the merge relocation). A key type this build has no hash arm for would take the whole process
-// down -- in release builds too, where the process is the HOST of an embedded engine -- and the database
-// could not be opened at all. It reports through `ok` instead, and bitcask turns that into a refused open.
+// encode_disk_hash_key runs on the path that opens a database: bitcask_index_disk_t's rebuild
+// loop hands it a value decoded OFF THE DISK (services/index/bitcask_index_disk.cpp), so an
+// unhashable key type must be reported through `ok`, not aborted -- an abort there would make
+// the database unopenable rather than just refuse one load.
 TEST_CASE("logical_value_binary_codec: an unhashable key type is reported, not aborted") {
     using components::index::codec::encode_disk_hash_key;
     using components::types::int128_t;
@@ -534,18 +509,10 @@ TEST_CASE("logical_value_binary_codec: append_logical_value reports an unencodab
     CHECK(out.size() == 1);
 }
 
-// THE CLAIM THE HEADER COMMENT MAKES, CHECKED RATHER THAN ASSERTED.
-//
-// Twelve `assert(false)` guards remain on the decode side -- eleven in read_logical_value, one in
-// read_decimal_payload -- and an assert(false) IS an abort in a Debug build, which is the build this binary
-// is. Their justification is that they guard a DERIVATION and not the input: `physical` comes from `logical`
-// through to_physical_type(), and for each of those arms exactly one logical type maps to that width, so no
-// value of the stored tag byte can reach one.
-//
-// This walks ALL 256 tag bytes through all three decode entry points. If any one of them steers into a
-// guard, this test does not fail politely -- the process aborts, which is exactly the failure mode the
-// guards are claimed not to have. It also pins the weaker half of the contract: whatever a tag byte does,
-// the call RETURNS, and a `pos` it moved never leaves the buffer.
+// Checks, not just asserts, the codec header's claim: the twelve remaining `assert(false)`
+// guards fire only if the logical->physical derivation table gains an entry the switch doesn't,
+// so no tag byte value can steer into one. This walks all 256 tag bytes through all three decode
+// entry points -- if any steers into a guard, the process aborts here rather than failing politely.
 TEST_CASE("logical_value_binary_codec: no tag byte steers a decode assert") {
     using components::index::codec::read_logical_value;
     using components::index::codec::read_logical_value_as_view;

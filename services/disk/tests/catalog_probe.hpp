@@ -1,26 +1,12 @@
 #pragma once
 
 // Test-only catalog-read oracle.
-//
-// Production resolves catalog objects via physical-plan operators that call
-// manager_disk_t::read_chunks_by_key. The disk layer carries no resolve_table / resolve_type
-// shortcut of its own — such a method would exist ONLY to give disk tests a convenient
-// single-mailbox-call read oracle. This header IS that oracle: it performs the same lookups, but
-// issues every catalog read through the live read_chunks_by_key path.
-//
-// Each probe_* function mirrors one resolve_*_result_t (plain std fields the tests assert) and
-// applies the same filtering rules:
-//   - probe_table    : pg_class scan by (relnamespace, relname); then pg_attribute columns with the
-//                      same MVCC visibility filter (added_at / dropped_at vs ctx.txn.start_time) +
-//                      attnum sort, OR the pg_computed_column branch (max-version-per-name,
-//                      refcount>0, attoid-ASC order) for relkind='g' tables.
-//   - probe_type     : pg_type scan by (typnamespace, typname); composite fallback via pg_class
-//                      (relkind='c') + pg_attribute fields.
-//   - probe_function : pg_proc scan by (pronamespace, proname).
-//
-// Reads route through the fixture's invoke mechanism (fx.invoke / fx.invoke_async), so this header
-// is fixture-agnostic: both the disk-test `fixture` and the integration `fresh_disk` expose a
-// compatible invoke template.
+// Production resolves catalog objects via physical-plan operators calling
+// manager_disk_t::read_chunks_by_key. The disk layer has no resolve_table/resolve_type shortcut
+// of its own (that would exist only for this oracle), so each probe_* function below reproduces
+// one resolve_*'s filtering over that same read path (see per-function comments).
+// Reads route through the fixture's invoke mechanism, so this header works with both the
+// disk-test `fixture` and the integration `fresh_disk`.
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -44,40 +30,18 @@ namespace services::disk::test_probe {
 
     namespace catalog = components::catalog;
 
-    // A snapshot that really does see every committed column.
-    //
-    // components::table::transaction_data{} -- and the transaction_data{0, 0} most probe fixtures
-    // spell out -- is only HALF a see-all. Its snapshot_horizon defaults to UINT64_MAX, so ROW
-    // visibility sees everything committed; its start_time is 0, and COLUMN visibility
-    // (added_at_commit_id <= start_time) is judged against start_time. A probe built that way reads
-    // as "a snapshot taken before the first commit" and hides every column an ALTER ... ADD COLUMN
-    // ever added, so a probe has to name the snapshot it means on BOTH halves.
-    //
-    // THE SITES THAT STILL BUILD A start_time == 0 CONTEXT are safe only because they never run the
-    // backfill: services/disk/tests/test_error_handling.cpp and test_d4_lazy_load.cpp write columns
-    // through disk_test_helpers::test_add_column, which calls catalog::build_pg_attribute_row with
-    // the DEFAULT added_at_commit_id = 0 and publishes directly, never reaching
-    // operator_commit_transaction_t's STEP 4; test_checkpoint_dirty.cpp's {0, 0} is a
-    // storage_append context and never calls probe_table. Any probe fixture that starts driving
-    // ALTER ... ADD COLUMN through the real commit pipeline has to switch to probe_see_all_txn(),
-    // or it will stop seeing the column.
-    //
-    // AND THE ASYMMETRY THIS EXPOSES, which is NOT a test-only matter. In production the same
-    // pg_attribute rows are filtered by TWO DIFFERENT CLOCKS:
-    //   * components/physical_plan/operators/operator_resolve_table.cpp takes ctx->txn.start_time
-    //     and applies added_at <= start_time;
-    //   * components/physical_plan/operators/alter_validators.cpp takes exec_ctx.txn.snapshot_horizon
-    //     and applies added_at <= horizon;
-    //   * ROW visibility (row_version_manager's use_inserted_version) uses horizon plus
-    //     in_flight_snapshot, i.e. the alter_validators clock.
-    // components/table/transaction_manager.cpp draws start_time and every commit_id from the ONE
-    // current_timestamp_ counter, and published_horizon_ only ever holds an already allocated
-    // commit_id, so start_time > snapshot_horizon ALWAYS: resolve_table is strictly the weaker
-    // filter, and it also ignores in_flight_snapshot entirely. The window that opens: B commits and
-    // is handed commit id C (in_flight, not yet published); A begins with start_time > C and
-    // horizon < C; A's resolve_table admits a column added at C while A's row reads reject every row
-    // B wrote. Only reachable once added_at is a real commit id rather than a permanent 0. Recorded
-    // here; not fixed here.
+    // A snapshot that sees every committed row AND column. transaction_data{0, 0} (what most
+    // probe fixtures pass) sees rows fine (snapshot_horizon defaults to UINT64_MAX) but judges
+    // column visibility against start_time == 0, hiding any column an ALTER ... ADD COLUMN
+    // added later. Sites still building a start_time==0 context are safe only because they
+    // never drive that backfill (test_error_handling.cpp, test_d4_lazy_load.cpp,
+    // test_checkpoint_dirty.cpp); a probe fixture that starts to must switch to this.
+    // The asymmetry is a real production gap, not just a test quirk: operator_resolve_table.cpp
+    // judges column visibility against start_time while alter_validators.cpp/
+    // row_version_manager's use_inserted_version judge row visibility against snapshot_horizon,
+    // and transaction_manager.cpp guarantees start_time > snapshot_horizon always — so
+    // resolve_table can admit a column whose row reads still reject. Only reachable once
+    // added_at is a real commit id rather than a permanent 0; recorded here, not fixed here.
     inline components::table::transaction_data probe_see_all_txn() {
         return components::table::transaction_data{0, std::numeric_limits<std::uint64_t>::max()};
     }
@@ -125,7 +89,6 @@ namespace services::disk::test_probe {
     };
 
     // --- local key-chunk builder (mirrors components::operators::make_key_chunk) ---
-    //
     // Disk tests do not link physical_plan/operators, so the 1-row columnar key
     // carrier for read_chunks_by_key is built here. Column j carries values[j]'s own
     // type so the cell is written without a cast; cardinality is set to 1.
@@ -178,7 +141,6 @@ namespace services::disk::test_probe {
     }
 
     // --- probe_table ---------------------------------------------------------
-    //
     // pg_class layout: oid(0), relname(1), relnamespace(2), relkind(3).
     // pg_attribute layout: attoid(0), attrelid(1), attname(2), atttypid(3),
     //   attnum(4), attnotnull(5), atthasdefault(6), attisdropped(7), atttypspec(8),
@@ -375,7 +337,6 @@ namespace services::disk::test_probe {
     }
 
     // --- probe_type ----------------------------------------------------------
-    //
     // pg_type layout: oid(0), typname(1), typnamespace(2), typdefspec(3).
     // Composite fallback: pg_class (relkind='c') by (relnamespace, relname), then
     // pg_attribute fields by attrelid, encoded as a STRUCT type spec.
@@ -527,7 +488,6 @@ namespace services::disk::test_probe {
     }
 
     // --- probe_function ------------------------------------------------------
-    //
     // pg_proc layout: oid(0), proname(1), pronamespace(2), pronargs(3), prouid(4),
     //   proargmatchers(5), prorettype(6).
     template<typename Fx>

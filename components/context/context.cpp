@@ -4,17 +4,10 @@ namespace components::pipeline {
 
     namespace {
 
-        // THE ONE PLACE THAT ANSWERS "WHICH ARENA DO THE COPIED PARAMETERS LIVE ON".
-        //
-        // storage_parameters is a plain struct around a std::pmr::unordered_map, so every
-        // implicit copy of it — a by-value parameter, an `auto p = ...`, a defaulted member
-        // copy — takes the map's allocator from select_on_container_copy_construction(), which
-        // for polymorphic_allocator is a DEFAULT-constructed one: std::pmr::get_default_resource().
-        // The map then lands on the process-global arena, invisible to resource_tracer_t, and a
-        // move afterwards freezes it there. Rebuilding entry by entry is what keeps it on the
-        // arena the source already stood on: the map is constructed with that resource, and each
-        // value is copied through logical_value_t's resource-carrying copy constructor so the
-        // value's own storage follows the map rather than trailing behind on the default.
+        // A plain copy would take the map's allocator from select_on_container_copy_construction
+        // -- default-constructed for polymorphic_allocator, i.e. the process-global resource,
+        // invisible to resource_tracer_t. Rebuild entry by entry onto the source's own resource
+        // instead, copying each value through logical_value_t's resource-carrying copy ctor.
         logical_plan::storage_parameters
         parameters_on_their_own_arena(const logical_plan::storage_parameters& source) {
             logical_plan::storage_parameters copy{source.resource()};

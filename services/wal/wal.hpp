@@ -32,35 +32,23 @@ namespace services::wal {
 
     using session_id_t = components::session::session_id_t;
 
-    // THE ONE COMMITTED-RECORD FILTER of the journal, shared by BOTH replay readers —
-    // wal_worker_t::load (the CREATE INDEX backfill catchup) and
-    // wal_reader_t::read_database_segments (the bootstrap replay). It lives here for the same
-    // reason parse_database_dir_name lives in base.hpp: two copies of one rule drifted apart once
-    // already, and the two walks must never disagree about what "committed" means.
+    // THE ONE COMMITTED-RECORD FILTER, shared by both replay readers (wal_worker_t::load and
+    // wal_reader_t::read_database_segments) — two independent copies of this rule drifted apart
+    // once already.
     //
-    // THE RULE IS ORDERED BY wal_id. A physical record at wal id r belongs to a committed
-    // transaction only when a COMMIT marker for the SAME txn id sits at a STRICTLY GREATER wal id.
-    // Membership in an unordered set of committed txn ids is not enough, because TXN IDS ARE REUSED
-    // ACROSS RESTARTS: transaction_manager_t::next_transaction_id_ is a plain
-    // {TRANSACTION_ID_START} member that is never seeded from the surviving journal, unlike the
-    // commit clock (restore_commit_clock), while wal ids keep growing because recover_from_disk
-    // re-derives the allocator from the segment files. So an unordered test lets a COMMIT marker
-    // written by the PREVIOUS process vouch for physical records the NEXT one wrote under the
-    // recycled id and never committed:
+    // Rule is ORDERED BY wal_id: a physical record at wal id r is committed only when a COMMIT
+    // marker for the same txn id sits at a STRICTLY GREATER wal id. An unordered set of committed
+    // txn ids is not enough, because TXN IDS ARE REUSED ACROSS RESTARTS while wal ids keep
+    // growing:
     //
     //   session 1:  wal 1 PHYSICAL_INSERT(txn T)   wal 2 COMMIT(txn T)
     //   -- restart, no checkpoint --
     //   session 2:  wal 3 PHYSICAL_INSERT(txn T)   <crash before COMMIT>
     //   replay:     committed = {T}  ->  wal 3 applied AS COMMITTED
     //
-    // The commit marker of a transaction is always written after its physical records (WAL-first:
-    // the append handler awaits the PHYSICAL_* future, and only the later commit pipeline sends
-    // commit_txn), so "strictly greater" never rejects a genuine one.
-    //
-    // Records with transaction_id == 0 are system records and are always kept; COMMIT markers are
-    // kept as they always were. Invalid records are dropped. committed_out, when non-null, receives
-    // the union of the committed txn ids — see wal_reader_t::read_committed_records for its
-    // consumer.
+    // (WAL-first ordering — commit_txn only sends after the PHYSICAL_* future — means "strictly
+    // greater" never rejects a genuine commit.) Records with transaction_id == 0 are system
+    // records, always kept. committed_out, if non-null, receives the union of committed txn ids.
     [[nodiscard]] inline std::vector<record_t> filter_committed_records(std::vector<record_t>&& records,
                                                                         std::set<std::uint64_t>* committed_out) {
         // txn id -> the wal ids of its COMMIT markers, ascending.
@@ -206,12 +194,9 @@ namespace services::wal {
 
         /// Discover existing segment files, recover max wal_id and last CRC.
         ///
-        /// Refuses when a segment cannot be OPENED. That is not a cosmetic report: this scan
-        /// is what sets id_ (and, through the manager, global_id_), so a segment whose records
-        /// are not seen leaves the allocator BELOW ids that already exist on disk, and every
-        /// later write reuses them — breaking both the CRC chain and the page_lsn ordering
-        /// that truncate_before and read_all_records(after_id) compare against. Coming up
-        /// short is recoverable; coming up and overwriting is not.
+        /// Refuses when a segment cannot be OPENED: this scan sets id_ (and global_id_ via the
+        /// manager), so missing a segment's records leaves the allocator BELOW existing disk ids
+        /// and every later write reuses them, breaking the CRC chain and page_lsn ordering.
         [[nodiscard]] core::error_t recover_from_disk();
 
         /// Build a segment file path for the given segment index.

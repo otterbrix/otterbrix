@@ -21,23 +21,16 @@ using components::types::logical_value_t;
 using services::index::bitcask_index_disk_t;
 
 namespace {
-    // bitcask's find answers with a core::result_wrapper_t now: a keydir walk that met a
-    // page it could not read REFUSES instead of handing back the rows it managed to
-    // collect. None of the cases below is about that refusal, so each asserts it did not
-    // happen and goes on with the rows. The btree store's find still answers with the row
-    // list itself, and passes through here unchanged.
+    // bitcask's find() answers with a core::result_wrapper_t (a keydir walk that met an
+    // unreadable page refuses rather than returning partial rows); btree's find() still
+    // answers with the row list directly. None of the cases below test that refusal, so
+    // each just asserts it didn't happen and unwraps.
     template<typename found_t>
     auto rows_of(found_t&& found) {
         if constexpr (core::detail::result_like<std::remove_reference_t<found_t>>) {
-            // AND IT SAYS WHICH REFUSAL. A bare REQUIRE_FALSE prints "!true" and nothing else,
-            // which was the whole diagnosis a reader got for a case that fails intermittently --
-            // while the refusal itself names the segment, the offset and the reason. Dropping them
-            // here is the same silence the store was audited for.
-            //
-            // THE TWO LINES ARE NOT TWO CHECKS OF THE SAME THING. Catch2's FAIL ENDS THE CASE -- it
-            // throws -- so nothing after it runs on the refusing path: that branch IS the assertion
-            // when a find refuses, and the REQUIRE_FALSE underneath is the assertion on every call
-            // that did not reach it.
+            // FAIL prints the refusal's segment/offset/reason instead of a bare "!true" from
+            // REQUIRE_FALSE. Not redundant: Catch2's FAIL throws, so it's the assertion on the
+            // refusing path, and REQUIRE_FALSE is the assertion on every call that doesn't refuse.
             if (found.has_error()) {
                 FAIL("find refused: " << std::string_view{found.error().what});
             }
@@ -69,20 +62,15 @@ namespace {
 
 } // namespace
 
-// A LONG RANDOMIZED RUN AGAINST THE STORE, ON ONE THREAD.
+// A long randomized insert/remove/find run against the store, single-threaded on purpose: the
+// store is a by-value member reached only through its agent's mailbox and carries no lock of its
+// own, so a multi-threaded fixture here would test a data race, not production. Checks that a
+// key's row list never contains a duplicate, and that closing and reopening the store answers
+// exactly what it answered before.
 //
-// ONE THREAD, DELIBERATELY. The store is a by-value member of bitcask_index_agent_t, reached only
-// through that agent's mailbox, which serializes every door it has, and it carries no lock of its
-// own. A multi-threaded fixture over it would not be testing production -- it would be a data race.
-//
-// What is under test is a long randomized insert/remove/find mixture over a small key space, the
-// invariant that a key's row list never contains a duplicate, and -- the durable half -- that
-// closing and re-opening the store answers exactly what it answered before.
-//
-// The CONCURRENT claim is made where it is now true: through the dispatcher, over the agent's
-// mailbox, by integration/cpp/test/test_index_concurrent_merge.cpp. That fixture also drives enough
-// traffic to rotate and merge segments repeatedly, which this one deliberately does not (its
-// segment limit is set high so the mixture, not the merger, is what is under test).
+// The concurrency claim belongs to integration/cpp/test/test_index_concurrent_merge.cpp instead,
+// which also drives enough traffic to rotate/merge segments -- this test's segment limit is set
+// high so the insert/remove/find mixture, not the merger, is what's under test.
 TEST_CASE("services::index::bitcask_index_disk::randomized_insert_remove_find_stress", "[stress][long]") {
     auto resource = core::pmr::otterbrix_resource();
 

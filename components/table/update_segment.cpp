@@ -51,10 +51,9 @@ namespace components::table {
         return pos;
     }
 
-    // NOTE ON WRITE-WRITE CONFLICTS: there is deliberately no check_for_conflicts() here. One
-    // that walked base_info.next would visit zero nodes and could never fire, because that
-    // chain is NEVER BUILT (see the note inside update()). Real update-vs-update conflict
-    // detection needs a real per-transaction chain first.
+    // Deliberately no check_for_conflicts() here: one walking base_info.next would visit zero
+    // nodes and could never fire, since that chain is NEVER BUILT (see the note inside
+    // update()). Real update-vs-update conflict detection needs a real per-transaction chain.
 
     update_info_t* create_empty_update_info(uint64_t type_size, uint64_t, std::unique_ptr<std::byte[]>& data) {
         data = std::make_unique<std::byte[]>(update_info_t::allocation_size(type_size));
@@ -100,10 +99,9 @@ namespace components::table {
                      error.what.c_str());
     }
 
-    // A default-constructed reference names no node, and undo_buffer_pointer_t() is exactly
-    // that. An unguarded `return {*entry, position};` would form a reference to *nullptr for
-    // such a reference. The guard is this type's own contract ("an unset reference has no
-    // pointer"), not a particular caller's, so it stays whether or not one exists today.
+    // A default-constructed reference names no node (undo_buffer_pointer_t() is exactly
+    // that); an unguarded `return {*entry, position};` would dereference it. The guard is
+    // this type's own contract, not a particular caller's, so it stays regardless.
     undo_buffer_pointer_t undo_buffer_reference::buffer_pointer() {
         if (!entry) {
             return undo_buffer_pointer_t();
@@ -111,30 +109,24 @@ namespace components::table {
         return {*entry, position};
     }
 
-    // NO SILENT FAILURE ON THIS PATH (rule 6).
+    // No silent failure on this path: swallowing the refusal in an assert and
+    // returning a reference with an empty handle is not an option -- every consumer's
+    // update_info() does reinterpret_cast<update_info_t*>(handle.ptr() + position), so an
+    // empty handle yields `nullptr + position`, a fabricated address from the one function
+    // whose job is to hand out real ones. The assert's premise ("a resident TRANSACTION
+    // block cannot fail to pin") doesn't hold either: standard_buffer_manager_t::pin only
+    // no-ops while LOADED, and its reload branch can report out_of_memory, data_corruption
+    // or io_error.
     //
-    // Swallowing the refusal in an assert and returning
-    // undo_buffer_reference(*entry, buffer_handle_t{}, position) under NDEBUG is not an option:
-    // every consumer then calls update_info(), which is
-    // reinterpret_cast<update_info_t*>(handle.ptr() + position) -- with an empty handle that is
-    // `nullptr + position`, i.e. literally a base_info that is not an address, produced by the
-    // one function whose job is to hand out addresses. The premise such an assert rests on ("a
-    // resident TRANSACTION block cannot fail to pin") is also not something
-    // this function can check: standard_buffer_manager_t::pin only takes the no-op fast path
-    // while the block is still block_state::LOADED, and the reload branch below it reports
-    // out_of_memory, data_corruption and io_error.
-    //
-    // So the refusal is returned. The one caller that owns an error channel forwards it
-    // (update_segment_t::update); the read paths that do not report it and
-    // stop -- see report_unreachable_update_node above for where the missing channel starts.
+    // So the refusal is returned: update_segment_t::update forwards it; read paths that lack
+    // an error channel just stop (see report_unreachable_update_node above).
     core::result_wrapper_t<undo_buffer_reference> undo_buffer_pointer_t::pin() const {
-        // These two stay asserts, and the distinction is the whole point of the change above:
-        // they are CALLER preconditions (every caller guards with is_set(), and a position
-        // beyond the entry is a bug in whoever built the pointer), not runtime failures the
-        // caller could be told about. What was wrong before was asserting away a RUNTIME
-        // refusal that has an error value and then continuing on a fabricated address.
-        // An error_t here would also need a resource to put its message on, and a pointer has
-        // none -- std::pmr::string with no resource is the forbidden default resource.
+        // These two stay asserts (the distinction is the whole point of the change above):
+        // they are CALLER preconditions (every caller guards with is_set(); a position
+        // beyond the entry is a bug in whoever built the pointer), not a runtime failure to
+        // report. What was wrong before was asserting away a RUNTIME refusal and continuing
+        // on a fabricated address -- and an error_t here would need a resource for its
+        // message, which a pointer doesn't have.
         assert(entry && "undo_buffer_pointer_t::pin: the pointer names no entry");
         assert(entry->capacity >= position);
         auto pinned = entry->buffer_manager.pin(entry->block);
@@ -340,15 +332,14 @@ namespace components::table {
             }
             auto& base_info = root_pin.value().update_info();
 
-            // WHAT THIS LEG REALLY IS, said plainly: an IN-PLACE merge into the vector's one
-            // root node. There is NO per-transaction undo chain here — updates in this tree
-            // publish into the root node immediately, rollback of an update is UNIMPLEMENTED,
-            // and check_for_conflicts therefore walks zero nodes, so no write-write conflict
-            // can fire. A caller that needs either must build a real per-transaction chain.
+            // This leg is an IN-PLACE merge into the vector's one root node: no per-transaction
+            // undo chain, updates publish into base_info immediately, rollback is
+            // UNIMPLEMENTED, and check_for_conflicts walks zero nodes (see the note above
+            // create_empty_update_info).
             //
-            // merge_update still needs a scratch update_info_t: phase 1 of
-            // merge_update_loop_internal composes the superseded values into its arrays before
-            // phase 2 rewrites base_info. The scratch is named for what it is and dropped.
+            // merge_update still needs a scratch update_info_t (phase 1 of
+            // merge_update_loop_internal composes superseded values before phase 2 rewrites
+            // base_info); named for what it is, dropped after.
             std::unique_ptr<std::byte[]> undo_scratch_data;
             update_info_t* undo_scratch = create_empty_update_info(type_size_, count, undo_scratch_data);
             undo_scratch->segment = this;
@@ -372,9 +363,8 @@ namespace components::table {
 
             initialize_update_info(update_info, ids, indexing, count, vector_index, vector_offset);
 
-            // As in the merge leg above, no per-transaction node is published here.
-            // initialize_update still wants one — its second half writes the superseded base
-            // values into the node's arrays — so it stays as a named scratch and dies here.
+            // As above: no per-transaction node published here. initialize_update still wants
+            // a scratch for its second half (writes superseded base values into its arrays).
             std::unique_ptr<std::byte[]> undo_scratch_data;
             update_info_t* undo_scratch = create_empty_update_info(type_size_, count, undo_scratch_data);
 

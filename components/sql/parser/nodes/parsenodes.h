@@ -2921,17 +2921,10 @@ typedef struct ViewStmt {
     bool replace;                    /* replace an existing view? */
     List* options;                   /* options from WITH clause */
     ViewCheckOption withCheckOption; /* WITH CHECK OPTION */
-    /* Byte offset of the first token of `query` in the statement string the
-     * scanner was handed. The view body is persisted verbatim in
-     * pg_rewrite.ev_action and re-parsed on every read, so it must be the text
-     * the user actually wrote, not a guess reconstructed by searching for " AS ".
-     * 0 means "not recorded" (makeNode zeroes the struct); a real body can never
-     * start at offset 0 because CREATE ... VIEW precedes it. */
+    /* Byte offset of `query`'s first token in the source text (0 = not recorded); the body is
+     * persisted verbatim in pg_rewrite.ev_action, so it must be the literal source, not a guess. */
     int query_location;
-    /* Byte offset one past the last token of `query`, i.e. the offset of the
-     * first token of the trailing clause that follows the body (WITH CHECK
-     * OPTION). -1 when there is none, meaning "the body runs to the end of the
-     * statement". Without it the slice would swallow the trailing clause. */
+    /* Byte offset just past `query`'s last token; -1 means the body runs to the statement's end. */
     int query_end_location;
 } ViewStmt;
 
@@ -3111,13 +3104,10 @@ typedef struct CreateTableAsStmt {
     IntoClause* into;    /* destination table */
     ObjectType relkind;  /* OBJECT_TABLE or OBJECT_MATVIEW */
     bool is_select_into; /* it was written as SELECT INTO */
-    /* Byte offset of the first token of `query` in the statement string, same
-     * contract as ViewStmt::query_location — the matview body is persisted in
+    /* Same contract as ViewStmt::query_location; the matview body is persisted in
      * pg_rewrite.ev_action and re-parsed by REFRESH. */
     int query_location;
-    /* Offset of the first token after the body (WITH [NO] DATA / DISTRIBUTED BY),
-     * or -1 when the body runs to the end of the statement. Same contract as
-     * ViewStmt::query_end_location. */
+    /* Same contract as ViewStmt::query_end_location. */
     int query_end_location;
 } CreateTableAsStmt;
 

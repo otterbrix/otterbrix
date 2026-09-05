@@ -23,13 +23,10 @@ namespace components::table::storage {
         // Allocate a sub-block handle, returns meta_block_pointer_t
         meta_block_pointer_t allocate_handle();
 
-        // Pre-allocate BLOCKS until this manager can hand out `sub_blocks` more sub-blocks without
-        // calling block_manager_.free_block_id() again. The one caller is
-        // single_file_block_manager_t::serialize_free_list: the free list it publishes is a snapshot
-        // of the very pool free_block_id draws from, so a chain block allocated MID-WRITE is an id
-        // the published list already calls free, and reserving up front moves every such allocation
-        // to before the snapshot. Reserved-but-unused sub-blocks cost nothing on disk — a block only
-        // becomes dirty when allocate_handle hands one of its sub-blocks out.
+        // Pre-allocate BLOCKS until this manager can hand out `sub_blocks` more without calling
+        // free_block_id() again. Caller: serialize_free_list, whose published list is a snapshot
+        // of the same pool free_block_id draws from — reserving up front moves any mid-write
+        // chain-block allocation to before that snapshot. Unused sub-blocks cost nothing on disk.
         void reserve(uint64_t sub_blocks);
 
         // Pin a sub-block and return a pointer to its data, or nullptr if loading the backing block from
@@ -46,16 +43,11 @@ namespace components::table::storage {
         uint64_t sub_block_size() const { return sub_block_size_; }
 
         // Follow a metadata sub-block chain from `start` and collect the underlying BLOCK ids,
-        // deduplicated: one block backs META_SUB_BLOCKS_PER_BLOCK sub-blocks, so a long chain can
-        // live in a single block and a short one can span several.
-        //
-        // ONE implementation, on purpose: the superseded-root reclaim and the test-side reachability
-        // walker that judges it must not hold two notions of "the chain", free to disagree about the
-        // very thing under test (block_reachability_walker.hpp calls this).
-        //
-        // Every byte followed here came off the disk, so a cycle or an unreadable block is CORRUPT
-        // INPUT, not a violated invariant: data_corruption / io_error rather than an assert, which
-        // vanishes under NDEBUG and turns a corrupt chain into an unbounded loop or a wild read.
+        // deduplicated (one block backs META_SUB_BLOCKS_PER_BLOCK sub-blocks). ONE implementation
+        // on purpose, shared by the superseded-root reclaim and the test-side reachability walker
+        // (block_reachability_walker.hpp), so they can't disagree about what "the chain" is.
+        // Every byte here came off disk, so a cycle or unreadable block is data_corruption /
+        // io_error, not an assert that vanishes under NDEBUG.
         [[nodiscard]] core::result_wrapper_t<bool> chain_blocks(meta_block_pointer_t start,
                                                                 std::pmr::vector<uint64_t>& out);
 

@@ -16,42 +16,19 @@
 
 namespace components::operators {
 
-    // THE REFUSAL AN OPERATOR THAT MINTS EXACTLY ONE CATALOG IDENTITY OWES ITS CALLER.
-    //
-    // Three operators do not take their identity from the planner's DDL allocation round:
-    // operator_register_udf_t (pg_proc), operator_register_cast_t (pg_cast) and
-    // operator_alter_column_add_t (pg_attribute) each run their OWN one-OID round against the disk actor
-    // at execute time. manager_disk_t::allocate_oids_batch carries no error channel — an EMPTY vector is
-    // the only shape a round that did not deliver has.
-    //
-    // oid_batch_t::allocate() on an exhausted batch answers INVALID_OID and latches a STICKY overrun()
-    // flag, so the read is defined but the value is not an identity. Writing it without consulting that
-    // flag puts a DURABLE "this object has no identity" into pg_proc / pg_cast / pg_attribute — rule 16
-    // broken in the loudest available way — and reports SUCCESS to the caller.
-    //
-    // This is planner_t::create_plan's shape (rewrite, then check overrun(), then throw the half-stamped
-    // tree away with an error) reduced to the one-identity case: consume, check the flag, refuse BEFORE
-    // anything is built out of the answer — in one place, because the three call sites are the same site
-    // three times.
-    //
-    // ERROR CODE. io_error, the name components::catalog::oid_batch_t::make() already gives this exact
-    // accident ("the allocation round delivered fewer OIDs than it was asked for").
-    // create_physical_plan_error is the planner's name for a DIFFERENT one — the demand and the rewrite
-    // disagreeing at plan time — and none of already_exists / do_not_exists / invalid_parameter /
-    // unrecognized_function describes a store that could not mint an identity.
-    //
-    // `refusal_prefix` names the statement, so the caller can tell WHICH catalog was spared. Returns
-    // no_error() and writes `out` on success; on refusal `out` is left untouched and the caller must not
-    // build anything.
+    // Shared by operators that mint one OID at execute time outside the planner's DDL allocation round
+    // (register_udf/pg_proc, register_cast/pg_cast, alter_column_add/pg_attribute). allocate_oids_batch has
+    // no error channel — an exhausted batch answers INVALID_OID and only latches overrun() — so this checks
+    // that flag before use. Error code is io_error (oid_batch_t::make()'s name for this exact
+    // shortfall), distinct from create_physical_plan_error (a demand/rewrite mismatch, not an exhausted round).
     [[nodiscard]] inline core::error_t single_oid_from_round(std::pmr::memory_resource* resource,
                                                              std::vector<components::catalog::oid_t> oids,
                                                              const char* refusal_prefix,
                                                              components::catalog::oid_t& out) {
 #ifdef DEV_MODE
-        // The OID-allocation fault seam (services/collection/executor.hpp) is consulted here as well as in
-        // executor_t::allocate_oids_inline: these three rounds never pass through that function, so without
-        // this the seam cannot reach them and no test could put CREATE FUNCTION / CREATE CAST / ALTER TABLE
-        // ADD COLUMN in front of a round that did not deliver. Exactly one consultation per round.
+        // Consults the same fault seam as executor_t::allocate_oids_inline (services/collection/executor.hpp):
+        // these three rounds bypass that function, so without this a test could not simulate a shortfall for
+        // CREATE FUNCTION / CREATE CAST / ALTER TABLE ADD COLUMN.
         if (auto* interposer = services::collection::executor::dev_oid_alloc_interposer(); interposer != nullptr) {
             oids = interposer->substitute(std::size_t{1}, std::move(oids));
         }

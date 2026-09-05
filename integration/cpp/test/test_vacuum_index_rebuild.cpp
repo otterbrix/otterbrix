@@ -14,41 +14,18 @@
 #include <string_view>
 #include <vector>
 
-// WHO IS ALLOWED TO REBUILD AN INDEX, AND ON WHAT FACT.
-//
-// An index entry stores a PHYSICAL row id, and exactly one operation hands a surviving row a
-// NEW one: data_table_t::compact, which rebuilds the table at row id 0. It has ONE call site
-// (agent_disk_t::checkpoint_inner), so a full index rebuild is owed by, and only by, a round
-// that ran that call site. Everything else that rebuilds is paying for a renumbering that did
-// not happen: a full drained scan of the table plus a clear() that unlinks the index directory
-// plus a refill of every entry, per table, per call.
-//
-// THE TWO CASES BELOW ARE THE TWO SIDES OF THAT ONE RULE, deliberately written against the
-// SAME counter so neither can be satisfied by weakening the other:
-//
-//   * VACUUM compacts NOTHING. agent_disk_t::vacuum_inner calls data_table_t::cleanup_versions
-//     and nothing else; that reaches row_version_manager_t::cleanup_append, which swaps
-//     chunk_info objects inside vector_info_ and moves no row. VACUUM therefore owes ZERO
-//     rebuilds, and the first case says so with a number.
-//   * A CHECKPOINT compacts, so it owes one rebuild per indexed table -- the second case is the
-//     guard that stops the first from being "fixed" by deleting the rebuild outright. It fails
-//     TWICE over if the rebuild is removed from operator_checkpoint_t: the counter drops to
-//     zero AND the indexed lookup starts answering with a row that merely moved into the id the
-//     stale entry names.
-//
-// WHY A COUNTER AND NOT A STOPWATCH: the defect is WORK THAT NEED NOT HAPPEN, and a stopwatch
-// measures the machine as much as the code. index_repopulations() counts calls to
-// manager_index_t::repopulate_table, which is the clear+refill itself.
-//
-// A COUNTER ALONE IS NOT ENOUGH, so every case also pins the ANSWER: after the operation the
-// indexed lookup must return exactly what a full scan returns, key by key. Without that half,
-// "0 rebuilds" would also be satisfied by an index that answers nothing.
+// Only data_table_t::compact (reached solely via agent_disk_t::checkpoint_inner) gives a
+// surviving row a new physical id, so only a round that compacts owes an index rebuild
+// (manager_index_t::repopulate_table). VACUUM's vacuum_inner reaches only
+// cleanup_versions/cleanup_append, which swaps chunk_info and moves no row, so it owes zero.
+// The two cases below check that with the same counter, index_repopulations(), plus that the
+// index still agrees with a full scan key by key -- a counter of 0 alone would also be
+// satisfied by an index that answers nothing.
 
 namespace {
 
-    // > row_group_size (1024) by a wide margin: 3000 rows span three row groups, and deleting
-    // the middle third moves every surviving tail row by a full 1000 ids, so a stale index
-    // cannot accidentally still name the right row.
+    // 3000 spans three row groups (> row_group_size 1024); deleting the middle third moves
+    // every surviving tail row by 1000 ids, so a stale index can't accidentally still be right.
     constexpr int64_t kRows = 3000;
     constexpr int64_t kDeleteFrom = 1001; // inclusive
     constexpr int64_t kDeleteTo = 2000;   // inclusive
@@ -78,8 +55,8 @@ namespace {
         }
     }
 
-    // THE FULL SCAN IS THE TRUTH. `SELECT id, k` carries no predicate an index could serve, so
-    // this is the table's own answer about which rows exist and what key each one holds.
+    // `SELECT id, k` carries no predicate an index could serve, so this is the table's own
+    // answer about which rows exist and what key each holds.
     std::map<int64_t, int64_t> full_scan_truth(otterbrix::wrapper_dispatcher_t* d, const std::string& db) {
         auto session = otterbrix::session_id_t();
         auto cur = d->execute_sql(session, "SELECT id, k FROM " + db + ".t;");
@@ -93,10 +70,8 @@ namespace {
         return key_to_id;
     }
 
-    // The index must answer EXACTLY what the full scan above says, key by key -- both for keys
-    // that survive (one row, and it must be the RIGHT row) and for keys that were deleted (no
-    // row at all). The EXPLAIN is load-bearing: without it a planner that stopped routing
-    // `WHERE k = ...` to the index would pass every row assertion here while the index rotted.
+    // The EXPLAIN is load-bearing: without it a planner that stopped routing `WHERE k = ...`
+    // to the index would pass every row assertion here while the index rotted.
     void index_must_agree_with_the_full_scan(otterbrix::wrapper_dispatcher_t* d, const std::string& db) {
         const auto truth = full_scan_truth(d, db);
         REQUIRE(truth.size() == static_cast<std::size_t>(kRows - (kDeleteTo - kDeleteFrom + 1)));
@@ -110,8 +85,7 @@ namespace {
             REQUIRE(text.find("Index Scan") != std::string::npos);
         }
 
-        // A spread of keys across all three row groups, including the ones whose physical id a
-        // compaction would have moved by a full 1000, and the deleted middle that must stay
+        // A spread across all three row groups, plus the deleted middle, which must stay
         // absent through the index just as it is absent from the scan.
         std::vector<int64_t> probes;
         for (int64_t id = 1; id <= kRows; id += 97) {
@@ -138,15 +112,8 @@ namespace {
 
 } // namespace
 
-// VACUUM RENUMBERS NOTHING, SO IT OWES NO REBUILD.
-//
-// operator_vacuum_t once scanned pg_class and called repopulate_table for EVERY relation it
-// found -- a full drained scan of each table plus a clear-and-refill of each of its indexes --
-// on the strength of a comment saying "the compact pass above invalidated row positions".
-// There is no compact pass above: agent_disk_t::vacuum_inner carries its own note
-// saying nothing is compacted there, because under the split free pool a compact whose release
-// no header commits can only spend space. So the counter read one repopulate per relation where
-// the correct number is none.
+// VACUUM's vacuum_inner never compacts (split free pool: a compact with no committed header
+// can only spend space, not free it), so it renumbers nothing and owes no index rebuild.
 TEST_CASE("integration::cpp::vacuum_index_rebuild::vacuum_does_not_rebuild_what_it_never_renumbers") {
     auto config = test_create_config(integration_fixture_path("test_vacuum_index_rebuild/vacuum"));
     test_clear_directory(config);
@@ -189,20 +156,16 @@ TEST_CASE("integration::cpp::vacuum_index_rebuild::vacuum_does_not_rebuild_what_
     INFO("and the answer must be unchanged: the index says exactly what the full scan says");
     index_must_agree_with_the_full_scan(d, "vdb");
 
-    // A second VACUUM over the same unchanged table: still nothing to renumber, still nothing
-    // to rebuild. This is the shape that made the old cost recurring rather than one-off.
+    // A second VACUUM over the same unchanged table: still nothing to renumber or rebuild.
     services::index::reset_index_repopulations();
     REQUIRE(exec("VACUUM;")->is_success());
     CHECK(services::index::index_repopulations() == 0);
     index_must_agree_with_the_full_scan(d, "vdb");
 }
 
-// THE OTHER SIDE OF THE SAME RULE, and the guard that keeps the case above honest.
-//
-// A CHECKPOINT reaches data_table_t::compact through agent_disk_t::checkpoint_inner, so it DOES
-// renumber, so it DOES owe the rebuild. Remove the rebuild from operator_checkpoint_t and this
-// case fails twice: the counter reads 0, and `WHERE k = <key of a tail row>` answers with
-// whichever row moved into the physical id the stale entry still names.
+// A CHECKPOINT reaches data_table_t::compact via checkpoint_inner, so it DOES renumber and owes
+// the rebuild: remove it from operator_checkpoint_t and this fails twice -- the counter reads 0,
+// and a tail-row lookup answers with whichever row moved into the stale id.
 TEST_CASE("integration::cpp::vacuum_index_rebuild::a_compacting_checkpoint_still_owes_the_rebuild") {
     auto config = test_create_config(integration_fixture_path("test_vacuum_index_rebuild/checkpoint"));
     test_clear_directory(config);

@@ -66,9 +66,8 @@ namespace components::table {
         size_t arr_size = array_size();
         // Scan the array-level validity into the result first (mirrors struct/scan_count);
         // without this a row stored as a whole-array NULL reads back as a non-null array.
-        // The validity child writes into the parent result vector, so it targets the parent's
-        // result base — NOT the element offset: a `+= element_count` bookkeeping drifts it by
-        // arr_size per row and folds any multi-vector scan's NULL bits into one chunk.
+        // Targets the parent's result base, not += element_count: that drifts by arr_size per
+        // row and folds a multi-vector scan's NULL bits into one chunk.
         state.child_states[0].result_offset = state.result_offset;
         validity.scan(vector_index, state.child_states[0], result, count);
         size_t remaining_count = arr_size * count;
@@ -127,7 +126,7 @@ namespace components::table {
         column_append_state validity_append;
         auto v = validity.initialize_append(validity_append);
         if (v.has_error()) {
-            return v; // out_of_memory (rules 2/9)
+            return v; // out_of_memory: no exceptions across actors
         }
         state.child_appends.push_back(std::move(validity_append));
 
@@ -150,7 +149,7 @@ namespace components::table {
 
         auto v = validity.append(state.child_appends[0], vector, count);
         if (v.has_error()) {
-            return v; // out_of_memory (rules 2/9)
+            return v; // out_of_memory: no exceptions across actors
         }
         auto& child_vec = vector.entry();
         auto size = array_size();
@@ -168,12 +167,9 @@ namespace components::table {
         if (v.has_error()) {
             return v;
         }
-        // start_row is COLLECTION-ABSOLUTE (see column_data_t::revert_append). The child
-        // column shares this column's start_ but is addressed in ELEMENTS from the row
-        // group base (see initialize_scan_with_offset), so its absolute truncation row is
-        // start_ + surviving_rows * array_size. The old start_row * array_size coincides
-        // only in row group 0 (start_ == 0); for any later group it pointed far past the
-        // child's end and the stale child tail survived the revert.
+        // start_row is COLLECTION-ABSOLUTE; the child is addressed in ELEMENTS from the row
+        // group base, so its truncation row is start_ + surviving_rows * array_size, not
+        // start_row * array_size (that only worked for row group 0, start_ == 0).
         auto size = array_size();
         auto child = child_column->revert_append(start_ + (start_row - start_) * static_cast<int64_t>(size));
         if (child.has_error()) {
@@ -185,22 +181,10 @@ namespace components::table {
     }
 
     uint64_t array_column_data_t::fetch(column_scan_state& state, int64_t, vector::vector_t&) {
-        // POINT FETCH OF A WHOLE ARRAY CELL IS NOT IMPLEMENTED, and this override exists to say
-        // so rather than to be filled in. Deleting it would be worse than leaving it: an ARRAY
-        // node owns NO segments at all (see initialize_column), so the base column_data_t::fetch
-        // would dereference an empty segment tree.
-        //
-        // Nothing calls it. column_data_t::fetch has exactly two call sites: column_data_t::update
-        // (on `this`) and struct_column_data_t::fetch (on a field). ARRAY, LIST and STRUCT all
-        // override BOTH update and update_column, so column_data_t::update is never entered with a
-        // nested node as `this`; struct_column_data_t::fetch therefore has no caller either, and
-        // neither has this. No SQL statement names the path: whole-array reads go through
-        // scan/scan_count, and the in-place ARRAY update rewrites the element column directly.
-        //
-        // The refusal travels on the channel the ONE potential caller already reads:
-        // column_data_t::update checks state.has_error() right after fetch() and returns
-        // state.scan_error. A throw here would unwind into the disk agent's coroutine, whose
-        // unhandled_exception() is empty — a hang, not an error (rules 2/9).
+        // Point fetch of a whole ARRAY cell is not implemented (an ARRAY node owns no segments;
+        // the base column_data_t::fetch would dereference an empty tree). Unreachable in
+        // practice: ARRAY overrides update/update_column, so column_data_t::update never calls
+        // this on `this`. Refusal rides state.scan_error rather than throwing.
         state.scan_error =
             core::error_t(core::error_code_t::unimplemented_yet,
                           std::pmr::string("point fetch of a whole ARRAY cell is not implemented", resource_));
@@ -216,24 +200,17 @@ namespace components::table {
         std::pmr::vector<int64_t> sub_column_ids(resource_);
         sub_column_ids.reserve(total);
 
-        // Element-space ids, REBASED the way every read leg addresses them (fetch_row,
-        // revert_append): element row = start_ + (row - start_) * array_size + i. The
-        // un-rebased `row * array_size + i` coincided only in row group 0 (start_ == 0);
-        // for any later group the overlay landed on rows the reads never visit.
+        // Element ids rebased like fetch_row/revert_append: start_ + (row - start_) * array_size
+        // + i. The old `row * array_size + i` only worked for row group 0 (start_ == 0).
         for (auto it = row_ids; it != row_ids + update_count; ++it) {
             for (int64_t i = 0; i < arr_size; i++) {
                 sub_column_ids.emplace_back(start_ + (*it - start_) * arr_size + i);
             }
         }
 
-        // One child update per element run that stays inside ONE update window, with the
-        // element vector SLICED to the same run: update_segment_t::update addresses its update
-        // vector by POSITION WITHIN THE CALL, so handing it the whole element vector while the
-        // ids came from a later window made it read the wrong slice (that mismatch is what the
-        // deleted `+ vector_index * DEFAULT_VECTOR_CAPACITY` hack in initialize_update_data
-        // compensated for, correctly ONLY when the ids were dense from element zero). Chunking
-        // blindly by 1024 ids had the same alignment assumption; the runs below split on real
-        // window boundaries instead.
+        // Runs are split on real DEFAULT_VECTOR_CAPACITY window boundaries, not blind 1024-id
+        // chunking: update_segment_t::update addresses its vector by position within the call,
+        // so ids must be sliced to the window they belong to.
         auto& child_vector = update_vector.entry();
         const int64_t child_start = child_column->start();
         const int64_t cap = static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY);
@@ -271,8 +248,8 @@ namespace components::table {
             }
         }
 
-        // Same window-run walk as update() above — and ONLY the walk: a whole-range call after
-        // the loop would apply the entire update a SECOND time.
+        // Same window-run walk as update() above; no trailing whole-range call, or the update
+        // would apply twice.
         auto& child_vector = update_vector.entry();
         const int64_t child_start = child_column->start();
         const int64_t cap = static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY);
@@ -320,9 +297,8 @@ namespace components::table {
         child_column->initialize_scan_with_offset(*child_state, child_offset);
         vector::vector_t child_scan(resource_, child_type, size);
         child_column->scan_count(*child_state, child_scan, size);
-        // The elements are read on a SCAN state (the bulk leg owns its strings, so the pins half
-        // of the channel does not apply here) — but its scan_error is still an error of THIS
-        // fetch, and it was the only place a corrupt element was reported.
+        // Elements are read on a SCAN state (no pin channel needed), but scan_error must still
+        // fail this fetch.
         child_state->collect_child_errors();
         if (child_state->has_error()) {
             if (!state.fetch_error.contains_error()) {
@@ -349,9 +325,7 @@ namespace components::table {
     core::result_wrapper_t<bool>
     array_column_data_t::checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
                                              persistent_column_data_t& persistent) {
-        // v1 convention: child_columns[0] is the array's own validity bitmap (whole-cell
-        // NULLs), child_columns[1] the element column (rows * array_size entries, carrying
-        // the element-level validity in its own record).
+        // v1 convention: child_columns[0] = validity bitmap, child_columns[1] = element column.
         auto valid = validity.checkpoint(partial_block_manager);
         if (valid.has_error()) {
             return valid.convert_error<bool>(); // out_of_memory
@@ -367,10 +341,8 @@ namespace components::table {
 
     core::result_wrapper_t<bool>
     array_column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
-        // An array node owns no segments of its own: its row count comes from the persisted
-        // count, its validity is the persisted child_columns[0] bitmap, and the elements
-        // (rows * array_size) live in the persisted child_columns[1]. Any other shape is
-        // data_corruption — never "assume all-valid".
+        // Array node owns no segments: count/validity/elements all come from persisted
+        // child_columns[0..1]. Any other shape is data_corruption, never assume-all-valid.
         count_ = persistent_data.count;
         if (persistent_data.child_columns.size() != 2) {
             return core::error_t(
@@ -390,11 +362,8 @@ namespace components::table {
     }
 
     void array_column_data_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const {
-        // The base walk of the own data_ tree finds nothing (an array node keeps no segments,
-        // see initialize_column above); it is kept so every node reports through one path.
-        // What a reloaded array column actually owns is its children: the validity bitmap and
-        // the element column, each sitting on the blocks initialize_column registered. Without
-        // this override compact leaks all of them.
+        // Own data_ tree is empty (see initialize_column); the actual disk blocks live in
+        // validity + child_column. Without this override, compact leaks them.
         column_data_t::collect_disk_block_ids(out);
         validity.collect_disk_block_ids(out);
         child_column->collect_disk_block_ids(out);

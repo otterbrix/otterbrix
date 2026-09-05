@@ -8,17 +8,11 @@
 #include <string>
 #include <thread>
 
-// One changed row must not rewrite the whole index.
+// One changed row must not rewrite the whole index: force_flush() used to fsync every leaf on
+// every INSERT/UPDATE/DELETE, costing a one-row DELETE 1.6s on a million-row indexed table vs
+// 21ms on 10k rows. This test pins the flush to the leaves that actually changed.
 //
-// A disk B+tree index keeps one file per leaf, and btree_index_disk_t::force_flush() — which every
-// INSERT/UPDATE/DELETE reaches through the index agent's insert_many / remove_many — walks the
-// tree from btree_t::flush(). When a leaf is flushed whether or not it changed, the header write,
-// the truncate and the fsync still run, so a statement touching one row pays one fsync per leaf of
-// the whole index: that is a one-row DELETE costing 1.6 s on a million-row indexed table against
-// 21 ms on a 10k-row one. This test pins the flush to the leaves that actually changed.
-//
-// Hidden by default ([.]) because it builds an index large enough to span many leaves.
-// Run it with [indexflush].
+// Hidden by default ([.], builds a large index) — run with [indexflush].
 
 namespace {
     void fill(otterbrix::wrapper_dispatcher_t* d, const std::string& table, int rows) {
@@ -37,14 +31,11 @@ namespace {
         }
     }
 
-    // A committed DELETE does not touch the tree inside the statement: the erase
-    // is queued until the snapshot floor reaches its commit id (services/index/
-    // manager_index.hpp, deferred_deletes_), so the leaf flushes it causes land in the
-    // horizon sweep instead. index_deferred_deletes() reaching zero is that sweep having
-    // run — the event the counters below are measuring, not a timeout dressed up as one.
-    // The COST under test is unchanged; only the moment it is paid moved. Spun on yield()
-    // rather than slept on, because the elapsed time below is INSIDE this wait and a
-    // millisecond of sleep would swamp the microseconds being reported.
+    // A committed DELETE queues its erase until the snapshot floor reaches the commit id
+    // (manager_index.hpp: deferred_deletes_), so the leaf flush lands in the horizon sweep
+    // instead of the statement; index_deferred_deletes() == 0 marks that sweep done. Spun on
+    // yield(), not slept: the elapsed time below is measured INSIDE this wait, and a
+    // millisecond of sleep would swamp the reported microseconds.
     void await_deferred_index_deletes() {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
         while (services::index::index_deferred_deletes() != 0 && std::chrono::steady_clock::now() < deadline) {
@@ -97,10 +88,7 @@ TEST_CASE("integration::cpp::test_index_flush_scope::one_row_does_not_rewrite_ev
     // constant for the leaf itself plus any structural neighbour a rebalance could touch.
     CHECK(flushes <= 4);
 
-    // `wasted` is REPORTED, not asserted. A leaf can legitimately need a flush without any block
-    // changing — removing the last item from a block rewrites the header, the metadata array and
-    // the file length while leaving no modified block behind. Making "wrote no block" a requirement
-    // would pressure the next reader into skipping those header-only flushes, i.e. straight into
-    // silent data loss.
+    // `wasted` is REPORTED, not asserted: a header-only flush (e.g. removing a block's last
+    // item) is legitimate, and asserting it away would invite skipping it — silent data loss.
     INFO("leaf flushes that wrote no block (reported, not a requirement): " << wasted);
 }

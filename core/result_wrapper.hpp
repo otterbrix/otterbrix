@@ -100,16 +100,10 @@ namespace core {
                    "no error state of error_t can only be created using no_error() constructor");
         }
 
-        // NB (allocator residency): neither assignment decides WHERE the message lives, and
-        // neither can — an error_t carries no resource beyond its string's own allocator, and
-        // the destination may still be a no_error() anchored on null_memory_resource, which is
-        // why both reconstruct instead of assigning. The consequences are therefore fixed:
-        //   - copy  -> std::pmr::string's copy constructor, which does NOT propagate the
-        //              allocator, so the new buffer lands on the DEFAULT resource;
-        //   - move  -> std::pmr::string's move constructor, which keeps the SOURCE allocator,
-        //              so this object starts pointing into an arena it does not own.
-        // An owner that HAS a resource (cursor_t, operator_t) must therefore never assign a
-        // foreign error_t directly: it rebuilds through error_on() below. See its comment.
+        // Reconstruct rather than assign, since the destination's allocator may be
+        // null_memory_resource (no_error()): copy lands the message on the default resource,
+        // move keeps the source's allocator. An owner with its own resource (cursor_t,
+        // operator_t) must rebuild a foreign error_t through error_on() below instead.
         error_t& operator=(const error_t& other) {
             type = other.type;
             reconstruct_string(other.what);
@@ -127,45 +121,27 @@ namespace core {
             return *this;
         }
 
-        // THE SAME TWO CONSEQUENCES AS THE ASSIGNMENTS ABOVE, and they are easy to miss here
-        // because these two lines say nothing: defaulted, they are member-wise, so the copy
-        // constructor lands the message on the DEFAULT resource and the move constructor KEEPS
-        // THE SOURCE'S ALLOCATOR. The move is not a defect by itself -- keeping the source
-        // allocator is what std::pmr::string is specified to do -- but it means a moved error_t
-        // outlives its arena only if that arena outlives it.
-        //
-        // AUDITED 2026-09-05, and no production path violates that today. The whole engine runs
-        // on ONE arena per space (base_otterbrix_t::resource, integration/cpp/base_spaces.hpp) --
-        // there is no per-actor, per-session or per-statement resource for an error to be moved
-        // out of. The only shorter-lived arenas in production are four scope-local
-        // std::pmr::monotonic_buffer_resource parser/scratch arenas
-        // (components/planner/view_expansion.cpp, components/sql/transformer/impl/
-        // transfrom_common.cpp, integration/cpp/wrapper_dispatcher.cpp twice, integration/python/
-        // arrow/arrow_scan_function.cpp), and not one of them hosts an error_t that escapes its
-        // scope: each builds its refusals on the OUTER resource, and the one that does receive an
-        // error built on its own arena consumes the text before the arena dies.
-        //
-        // So this stays defaulted, and the discipline is the guard: an owner that HAS a resource
-        // rebuilds a foreign error through error_on() below -- see view_expansion.cpp's transform
-        // leg for the worked example. What would re-open this is a NEW arena with a lifetime
-        // shorter than its error's reader; the audit above is the list to re-check against.
+        // Defaulted, so member-wise: copy lands on the default resource, move keeps the
+        // source's allocator, same as the assignments above -- a moved error_t outlives its
+        // arena only if the arena outlives it. Safe today: production runs one arena per space
+        // (base_otterbrix_t::resource, integration/cpp/base_spaces.hpp) plus five scope-local
+        // std::pmr::monotonic_buffer_resource arenas (components/planner/view_expansion.cpp,
+        // components/sql/transformer/impl/transfrom_common.cpp,
+        // integration/cpp/wrapper_dispatcher.cpp x2, integration/python/arrow/arrow_scan_function.cpp),
+        // none of which let an error_t escape their scope. Recheck this list before adding any
+        // arena shorter-lived than its error's reader; an owner with its own resource rebuilds
+        // through error_on() below instead of relying on this default.
         error_t(const error_t&) = default;
         error_t(error_t&&) noexcept = default;
 
-        // Allocator-extended copy -- THE copy that inherits a resource. std::pmr::string cannot do
-        // it on its own: its copy constructor asks select_on_container_copy_construction, which
-        // for a polymorphic_allocator answers with a DEFAULT-constructed one, which is why the
-        // plain copy above lands the message on the default resource (see the note on the
-        // assignments). Naming the resource is the only way to say where the message lives, so
-        // every owner that HAS one copies through this -- error_on() below is exactly this call.
-        // The no_error() state is copyable here too: an empty string allocates nothing.
+        // Allocator-extended copy: std::pmr::string's own copy ctor can't inherit a resource
+        // (select_on_container_copy_construction returns a default-constructed allocator for
+        // polymorphic_allocator), so this is the only way to name where the message lands;
+        // error_on() below calls it.
         //
-        // The null check runs from the INITIALIZER (message_resource below) and not from the
-        // body, because the body is not reached in the one case it exists for: a message longer
-        // than the small-string buffer makes `what` call nullptr->allocate() while this
-        // constructor is still initializing. A body-level check therefore fired only for
-        // messages short enough NOT to allocate -- exactly the harmless ones -- and stood aside
-        // for the input it was written for.
+        // The null check runs from the initializer (message_resource), not the body: a message
+        // long enough to allocate does so during member-init, before the body would run, so a
+        // body-level check would miss exactly the input it exists for.
         error_t(const error_t& other, std::pmr::memory_resource* resource)
             : type(other.type)
             , what(other.what, message_resource(resource))
@@ -184,11 +160,9 @@ namespace core {
             // since we are using null_memory_resource, we have to explicitly change allocator on assignments
             , what(std::pmr::null_memory_resource()) {}
 
-        // An INVARIANT, not a refusal: error_t is the bottom of the error channel, so there is
-        // nothing here to report a bad argument to, and the only caller (error_on) screens the
-        // same pointer first. It is therefore an assert -- and, like every assert, it is gone
-        // under NDEBUG, where a null resource is once again a null dereference inside
-        // std::pmr::string. Naming a resource is the caller's half of the contract.
+        // Assert, not a refusal: error_t is the bottom of the error channel with nothing to
+        // report a bad argument to. Gone under NDEBUG, where a null resource becomes a null
+        // dereference inside std::pmr::string instead.
         static std::pmr::memory_resource* message_resource(std::pmr::memory_resource* resource) noexcept {
             assert(resource != nullptr && "an error message needs a resource to live on");
             return resource;
@@ -201,15 +175,9 @@ namespace core {
         }
     };
 
-    // THE one place that decides where an error message lives.
-    //
-    // Every owner that has a resource of its own — a cursor, an operator — funnels a foreign
-    // error_t through here instead of copying or moving it, because neither of error_t's IMPLICIT
-    // paths puts the message on the owner's arena: a copy lands on the default resource, a
-    // move keeps the producer's (see the note on error_t's assignments). Both are a lie in the
-    // same contract, in opposite directions; this is the named door onto the allocator-extended
-    // copy constructor, which rebuilds the string on `resource` so the answer is simply
-    // "the owner's".
+    // The one place that puts a foreign error_t's message on the owner's own arena: a plain
+    // copy lands on the default resource, a plain move keeps the producer's (see error_t's
+    // assignments). Wraps the allocator-extended copy constructor.
     [[nodiscard]] inline error_t error_on(std::pmr::memory_resource* resource, const error_t& error) {
         assert(resource != nullptr && "an error message needs a resource to live on");
         if (!error.contains_error()) {
@@ -231,13 +199,10 @@ namespace core {
             : value_(std::forward<Args>(args)...)
             , error_(error_t::no_error()) {}
 
-        // DEBT (allocator residency): these two cannot call error_on() — a result_wrapper_t
-        // has no resource of its own, only a value and an error, so there is no arena here to
-        // name. The first therefore leaves the message on the DEFAULT resource and the second
-        // keeps the producer's. Both are corrected at the first owner that does have a
-        // resource: cursor_t's error constructors and operator_t::set_error rebuild through
-        // core::error_on. Giving result_wrapper_t a resource of its own is the real fix and is
-        // a separate change — it touches every construction site of every result_wrapper_t.
+        // Can't call error_on() here: result_wrapper_t has no resource of its own, so the copy
+        // lands on the default resource and the move keeps the producer's. Corrected at the
+        // first owner that does have one (cursor_t's error constructors, operator_t::set_error
+        // rebuild through core::error_on).
         result_wrapper_t(const error_t& error)
             : error_(error) {}
         result_wrapper_t(error_t&& error)
@@ -261,11 +226,9 @@ namespace core {
 
         result_wrapper_t& operator=(result_wrapper_t&& other) noexcept requires(std::is_move_assignable_v<T>) {
             value_ = std::move(other.value_);
-            // MOVE the error, do not copy it: `other` is being consumed, and a copy here
-            // reallocates the message onto the default resource, which is neither wrapper's
-            // arena. The NDEBUG branch below is `= default` and therefore moves, so reading
-            // `other.error_` by name here would make Debug and Release disagree on where the
-            // message of a moved-from result lives.
+            // Move, not copy: a copy would reallocate the message onto the default resource,
+            // while the `= default` NDEBUG branch below moves -- copying here would make
+            // Debug and Release disagree on where the message lives.
             error_ = std::move(other.error_);
             error_checked_ = false;
             other.error_checked_ = true;

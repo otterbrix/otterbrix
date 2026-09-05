@@ -70,11 +70,8 @@ namespace components::table {
         for (auto& column : columns()) {
             column->set_start(new_start);
         }
-        // Version slots are group-local, so a move never re-slots them — but the
-        // manager's start_ feeds fetch()'s absolute→local rebase and the chunk_info
-        // start labels, so it must move with the group. (Only merge_storage reaches
-        // this; without the rebase the manager would keep answering point-fetches
-        // for the group's OLD position.)
+        // Version slots are group-local (no re-slotting needed), but the manager's start_ feeds
+        // fetch()'s absolute→local rebase, so it must move with the group.
         if (auto* vinfo = version_info_.load()) {
             vinfo->set_start(new_start);
         }
@@ -198,11 +195,9 @@ namespace components::table {
                 default_value.has_value() ? *default_value
                                           : types::logical_value_t{collection_->resource(), new_column.type()};
             column_append_state state;
-            // DDL ADD COLUMN backfill path (synchronous, not an actor append boundary). The
-            // append chain reports out_of_memory; that answer RIDES this function's own channel.
-            // An assert instead would vanish under NDEBUG and let the loop break in silence: the
-            // successor ships with a new column SHORTER than count, and every scan of it reads
-            // past the column's end (rule 6).
+            // DDL ADD COLUMN backfill: out_of_memory rides this function's channel rather than an
+            // assert, which would vanish under NDEBUG and ship a successor column SHORTER than
+            // count.
             auto init = added_column->initialize_append(state);
             if (init.has_error()) {
                 return init.convert_error<std::unique_ptr<row_group_t>>();
@@ -223,10 +218,8 @@ namespace components::table {
         auto row_group = std::make_unique<row_group_t>(new_collection, start, count);
         row_group->set_version_info(get_or_create_version_info_ptr());
         row_group->current_version_ = current_version_;
-        // Structural sharing, deliberately: the successor's row group points at the SAME column
-        // objects as this one, and the intrusive count in each column keeps them alive until the
-        // last of the two row groups is gone. A deep copy here would double the table's memory and
-        // silently fork the two views of the same rows.
+        // Structural sharing, deliberately: the successor points at the SAME column objects, kept
+        // alive by the intrusive count. A deep copy would double memory and fork the two views.
         row_group->columns_ = columns();
         row_group->columns_.push_back(adopt_column(std::move(added_column)));
 
@@ -271,14 +264,10 @@ namespace components::table {
         // The chunk presents every bound column at its own storage ordinal, so a bound slot resolves
         // to it; the projected ctor allocates buffers ONLY for those, the rest stay placeholders.
         //
-        // A BOUND ORDINAL PAST THE LAST MATERIALIZED COLUMN is not a bug and not out of bounds:
-        // the graph was typed against the CATALOG's column list (storage_types), and pg_attribute
-        // can legally name a column this storage has not materialized yet — ALTER TABLE ADD
-        // COLUMN writes the catalog row and stops, the physical column is created by the first
-        // INSERT that carries it. Such a column reads what the catalog published for it, which is
-        // its DEFAULT where the ALTER declared one — fill_published_default (collection.cpp) is
-        // that answer, and the projection leg fills the same ordinals from the same function.
-        // Calling get_column() on it would abort inside row_group_t::get_column.
+        // A BOUND ORDINAL PAST THE LAST MATERIALIZED COLUMN is not a bug: the graph is typed
+        // against the CATALOG's column list, and ALTER TABLE ADD COLUMN can legally name a
+        // column not yet physically materialized. Such a column reads its catalog DEFAULT via
+        // fill_published_default — calling get_column() on it would abort instead.
         const size_t materialized = get_column_count();
         std::vector<size_t> referenced;
         size_t width = 0;
@@ -306,19 +295,11 @@ namespace components::table {
             }
         }
         vector::data_chunk_t rows{res, chunk_types, referenced, count};
-        // ONE state for the whole function, a CHILD of it per column — the shape
-        // row_group_t::fetch_row already uses, and both halves of it are load-bearing here.
-        //
-        // The child is what stops two bound columns from sharing child_states: a struct
-        // column reads its fields through child(0), so two struct-typed bound columns used
-        // to alias each other's field states. Harmless while handles are keyed by block id
-        // and the flag/error are homogeneous, but an aliasing invariant nobody stated.
-        //
-        // The single OUTER state is what keeps the pins: result_outlives_pins is false here
-        // (this chunk dies inside the call), so a fetched long string is a view into a
-        // pinned block, and `rows` is read by run_graph BELOW this loop. Declaring the state
-        // inside the loop instead would release each column's pins one iteration early —
-        // the same one-line "fix" that looks equivalent and is not.
+        // ONE state for the whole function, a CHILD of it per column (mirrors fetch_row below).
+        // The child stops two struct-typed bound columns from aliasing each other's field states
+        // via child(0). The single OUTER state is what keeps the pins alive until `rows` is read
+        // by run_graph below the loop; declaring it inside the loop would release each column's
+        // pins one iteration early.
         column_fetch_state fetch_state;
         size_t child_slot = 0;
         for (size_t column : referenced) {
@@ -641,13 +622,9 @@ namespace components::table {
                 data[result_idx] = row_id;
             } else {
                 auto& col_data = get_column(column);
-                // Per-column child state (not the ONE shared `state`): parking every
-                // struct-typed top-level column's validity in state.child(0) makes two of them
-                // alias each other's children — harmless only because handles are keyed by block
-                // id and the flag/error are homogeneous, but an aliasing invariant nobody states.
-                // child() re-stamps result_outlives_pins on hand-out and absorb_error lifts the
-                // refusal into the state the callers of THIS function actually read; the first
-                // failing column aborts the row, as in the struct's own field walk.
+                // Per-column child state, not the ONE shared `state`: parking every struct-typed
+                // top-level column's validity in state.child(0) would alias two columns'
+                // children. absorb_error lifts the refusal into the state the caller reads.
                 auto& column_state = state.child(col_idx);
                 col_data.fetch_row(column_state, row_id, result_vector, result_idx);
                 if (state.absorb_error(column_state)) {
@@ -701,10 +678,8 @@ namespace components::table {
         // sized by the row group's (reduced) count then over-reads the stale column tail and writes
         // past the result vector (heap-buffer-overflow in fetch_row).
         //
-        // Best-effort across columns: each column's truncation is independent, so one refusal
-        // must not leave the remaining columns un-truncated (that is the over-read above).
-        // The FIRST refusal is kept and reported after the walk; the count still shrinks —
-        // a stale tail beyond the reduced count is invisible, which is the safe direction.
+        // Best-effort across columns: one refusal must not leave the rest un-truncated. First
+        // refusal is reported after the walk; the count still shrinks either way (safe side).
         core::error_t first_error = core::error_t::no_error();
         for (uint64_t c = 0; c < get_column_count(); c++) {
             auto reverted = get_column(c).revert_append(this->start + static_cast<int64_t>(row_group_start));
@@ -786,7 +761,7 @@ namespace components::table {
 
         // The path arrives from the caller's plan/journal, so an impossible ordinal is a loud
         // refusal on the channel this function already returns, not an assert that vanishes
-        // under NDEBUG and indexes columns_ out of range (rules 2/6).
+        // under NDEBUG and indexes columns_ out of range.
         if (column_path.empty() || column_path[0] >= columns_.size()) {
             return core::error_t(
                 core::error_code_t::invalid_parameter,
@@ -840,10 +815,8 @@ namespace components::table {
     }
 
     void row_group_t::collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out) {
-        // Same materialized-only rule as the whole-row-group walk above: a column this row group
-        // never materialized owns no in-memory segments to read block ids off. An index past the
-        // end is a row group that predates the column (dynamic schema growth appends columns to
-        // LATER row groups only), not an error.
+        // Same materialized-only rule as the walk above. An index past the end is a row group
+        // that predates the column (dynamic schema growth appends to LATER groups only), not an error.
         if (column_index >= columns_.size() || !columns_[column_index]) {
             return;
         }
@@ -955,10 +928,9 @@ namespace components::table {
         // in_flight set is a see-all snapshot covering every committed row.
         transaction_data td(0, 0);
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
-        // indexing_vector takes the scan state's collection-ABSOLUTE vector index;
-        // this group's first vector sits at start / CAPACITY. (The old `index`
-        // argument — the segment ordinal — only coincided with it while every
-        // group held exactly one vector.)
+        // indexing_vector takes a collection-ABSOLUTE vector index; this group's first vector
+        // sits at start / CAPACITY (the old segment-ordinal argument only worked when every
+        // group held exactly one vector).
         return indexing_vector(td,
                                static_cast<uint64_t>(start) / vector::DEFAULT_VECTOR_CAPACITY,
                                temp_indexing,
@@ -973,12 +945,9 @@ namespace components::table {
         if (!vinfo) {
             return max_count;
         }
-        // `vector_idx` arrives collection-ABSOLUTE (the scan state's convention, see
-        // initialize_scan_with_offset); version slots are GROUP-LOCAL. Convert here,
-        // where `start` is authoritative, so the reader consults the same slot the
-        // append path wrote — for any group past the first the absolute index used
-        // to fall off the end of vector_info_ and every row (committed or not)
-        // scanned as visible.
+        // `vector_idx` arrives collection-ABSOLUTE; version slots are GROUP-LOCAL. Without this
+        // rebase, any group past the first fell off the end of vector_info_ and scanned every
+        // row (committed or not) as visible.
         assert(start % static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY) == 0);
         const uint64_t base_vector_idx = static_cast<uint64_t>(start) / vector::DEFAULT_VECTOR_CAPACITY;
         assert(vector_idx >= base_vector_idx);
@@ -987,11 +956,8 @@ namespace components::table {
 
     boost::intrusive_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_internal() {
         if (!owned_version_info_) {
-            // Plain `new`, never the pmr resource: the reference count lives inside the manager,
-            // so the counter's `delete` is the matching deallocation. Nothing was lost by giving
-            // up make_shared's single object+control-block allocation — no weak_ptr, aliasing
-            // pointer, custom deleter or shared_from_this was ever taken on a manager, and the
-            // intrusive count is one allocation too, not two.
+            // Plain `new`, never the pmr resource: the ref count lives inside the manager, so
+            // `delete` is the matching deallocation (no shared_ptr ever taken on a manager).
             auto new_info = boost::intrusive_ptr<row_version_manager_t>(new row_version_manager_t(start));
             set_version_info(std::move(new_info));
         }
@@ -999,10 +965,8 @@ namespace components::table {
     }
 
     row_version_manager_t* row_group_t::version_info() {
-        // Deliberately unconditional: there is NO "load delete info from disk" branch here.
-        // Reviving on-disk delete info means writing a real load, not a stub that DISCARDS this
-        // row group's version state (set_version_info(nullptr)) — its only observable behaviour
-        // would be the silent degradation rule 6 forbids.
+        // Deliberately unconditional: there is no "load delete info from disk" branch here. A
+        // stub that DISCARDS this row group's version state would be a forbidden silent degradation.
         return version_info_;
     }
 
@@ -1010,30 +974,21 @@ namespace components::table {
         // Own FIRST, publish SECOND — the sole writer of the member pair, and what holds their
         // invariant (see row_group.hpp).
         //
-        // Every REACHABLE caller moves this row group from "no manager" to "a manager":
-        // get_or_create_version_info_internal only calls in under `if (!owned_version_info_)`,
-        // and add_column / remove_column call it on a row group they have just constructed, whose
-        // owner is still null and which no other reader can reach yet. So the object is fully
-        // owned and alive before the raw pointer naming it becomes visible, and the seq_cst store
-        // orders the object's construction ahead of the publication for the seq_cst loads on the
-        // read path.
-        //
-        // The order is correct ONLY for that transition. A caller that CLEARED or REPLACED an
-        // existing manager would release the owner on the first line — dropping what may be the
-        // last reference and destroying the object — while version_info_ still named it, so a
-        // reader on the lock-free path could pick up a dangling pointer. Should such a caller
-        // ever be added, the atomic must be stored first. (No clearing caller exists in the
-        // tree today.)
+        // Every reachable caller moves this row group from "no manager" to "a manager" (the
+        // owner is null and unreachable by any other reader beforehand), so the object is fully
+        // owned before the seq_cst store publishes the raw pointer. This order is correct ONLY
+        // for that transition: a caller that CLEARED or REPLACED an existing manager would
+        // destroy the old object on the first line while version_info_ still named it, exposing
+        // a dangling pointer to the lock-free read path. No such caller exists today; if one is
+        // added, the atomic must be stored first.
         owned_version_info_ = std::move(version);
         version_info_ = owned_version_info_.get();
     }
 
     void version_delete_state::delete_row(int64_t row_id) {
         assert(row_id >= base_row);
-        // row_id is collection-ABSOLUTE; row_version_manager_t slots are GROUP-LOCAL
-        // (slot 0 = the group's first vector). Rebase by the group's start (base_row)
-        // before slicing into vectors, so the tombstone lands in the slot the scan
-        // and the committed_deleted_count / has_version_above walks actually read.
+        // row_id is collection-ABSOLUTE; row_version_manager_t slots are GROUP-LOCAL. Rebase by
+        // base_row before slicing into vectors, or the tombstone lands in the wrong slot.
         const uint64_t local_row = static_cast<uint64_t>(row_id - base_row);
         uint64_t vector_idx = local_row / vector::DEFAULT_VECTOR_CAPACITY;
         uint64_t idx_in_vector = local_row - vector_idx * vector::DEFAULT_VECTOR_CAPACITY;

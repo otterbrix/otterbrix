@@ -26,11 +26,9 @@ namespace otterbrix {
         // ---------------------------------------------------------------------
         // Column-schema derivation.
         //
-        // Each chaining op recomputes the output schema eagerly from the source
-        // schema + the op's expressions, and the result is carried in
-        // built_relation_t::columns — no Relation tree is walked. The name/type
-        // rules the callers rely on: count -> UBIGINT, avg(x) -> DOUBLE, field
-        // lookups against the source schema, "#"/UNKNOWN sentinels.
+        // Each chaining op recomputes the output schema eagerly from the source schema + the
+        // op's expressions (no Relation tree walked): count -> UBIGINT, avg(x) -> DOUBLE,
+        // field lookups against the source schema, "#"/UNKNOWN sentinels.
         const std::string error_str = "#";
 
         components::types::complex_logical_type find_type(const std::string& name,
@@ -186,31 +184,19 @@ namespace otterbrix {
         : space(other.space) {}
 
     relation_factory_t::~relation_factory_t() {
-        // THE SCRATCH TABLES GO WHEN THE CONNECTION THAT MADE THEM DOES. Each chaining op
-        // materialises into a tmp.t<pid>_<n> table that is PERSISTED with the database, and
-        // nothing else ever removed one: a directory that gets connected to over and over
-        // accumulated a table per operation, for the life of the directory.
+        // Scratch tables (tmp.t<pid>_<n>) are persisted with the database and nothing else
+        // removes them, so this destructor is the only cleanup, run once no relation built on
+        // them can still be reading (a relation keeps its connection, hence this, alive via
+        // py_relation_t::env). A drop refusal is logged, not thrown (destructors can't raise);
+        // the surviving name is pid-qualified so the retry loop in make_aggregate_node steps
+        // over it later. `space` survives close() on purpose -- unlike py_connection_t::space
+        // and expression_factory_t::space, which close() nulls -- so the engine is still here
+        // to drop these tables; relation_factory_t::set_null_space() exists but must not be
+        // wired into close(), or this collection silently stops.
         //
-        // Here and not sooner, because a scratch table is still read for as long as any
-        // relation built on it is alive, and a relation holds its connection alive
-        // (py_relation_t::env) -- so by the time this runs no relation is left to read them.
-        //
-        // A destructor cannot raise and this is housekeeping, not a statement the caller
-        // asked for, so a refusal is LOGGED with the name that stayed behind and the rest of
-        // the list is still taken out. A name that survives is not lost work: it is pid-
-        // qualified, and make_aggregate_node's retry loop steps over a taken name.
-        // This factory's own `space` is what survives close(): py_connection_t::close nulls
-        // py_connection_t::space and expression_factory_t::space and leaves this one, so the
-        // engine that owns the tables is still here to take them back. relation_factory_t::
-        // set_null_space() exists but nothing calls it -- wiring it into close() would stop
-        // the collection below, silently.
-        //
-        // WHAT THIS DOES NOT COVER: a destructor does not run when the process is killed or
-        // crashes, so the scratch tables of a session that died that way stay in `tmp`
-        // forever -- their pid is gone and no later process walks that name sequence again.
-        // Sweeping them would mean deciding which pids are dead, which is a guess this layer
-        // cannot make safely (a recycled pid belongs to a live session), so the sweep belongs
-        // at bootstrap where the whole `tmp` database can be reasoned about, not here.
+        // Not covered: a killed/crashed process skips this destructor entirely, leaving its
+        // scratch tables in `tmp` forever (deciding which pids are dead is unsafe here since a
+        // recycled pid may be live; that sweep belongs at bootstrap, not here).
         if (!space) {
             return;
         }
@@ -239,46 +225,33 @@ namespace otterbrix {
                                                      node_sort_ptr sort,
                                                      node_select_ptr select,
                                                      node_limit_ptr limit) {
-        // The scratch table this aggregate materialises into.
-        //
-        // THE NAME HAS TO BE UNUSED IN THE DATABASE, NOT MERELY UNUSED IN THIS PROCESS.
-        // The counter is process-wide and starts at zero in every new process, while the
-        // tmp.* tables it names are persisted with the database — so the second process to
-        // open a database that a first one built relations against asks for a name that is
-        // already there. Measured: running
+        // The scratch table this aggregate materialises into. The name must be unused in the
+        // DATABASE, not just this process: the counter restarts at zero per process, but
+        // tmp.* tables persist with the database, so a second process against the same
+        // directory collides. Measured: running
         // integration/python/tests/fast/dataframe/test_dataframe_limit.py twice against the
-        // same `default` directory turned "4 passed" into "4 failed", every one of them
-        // `RuntimeError: relation: creating the scratch table tmp.t2 failed: collection
-        // already exists`.
-        //
-        // Two mechanisms, and both are needed. The name carries the PID, so two processes
-        // sharing a database do not walk the same sequence at all; and a name that IS taken
-        // (a recycled pid, or the same process re-opening its own leftovers) advances to the
-        // next one instead of failing the user's operation. Taken-ness is not an error of the
-        // statement the user asked for — it is one step of allocating a unique name, so it is
-        // retried and nothing else is: any other refusal, a missing cursor, or an exhausted
-        // search is still LOUD (rule 6).
+        // same `default` directory turned "4 passed" into "4 failed" (collection already
+        // exists). Fixed by two mechanisms: the pid in the name keeps processes apart, and a
+        // taken name (recycled pid, or reopened leftovers) advances to the next one instead
+        // of failing the statement -- any other refusal stays loud.
         static std::atomic<std::uint64_t> indx{0};
         const auto pid = static_cast<std::uint64_t>(::getpid());
-        // Bounded so a database whose `tmp` is somehow saturated cannot spin forever; the
-        // pid prefix makes even one collision unlikely, let alone this many.
+        // Bounded so a saturated `tmp` can't spin forever; the pid prefix makes even one
+        // collision unlikely.
         constexpr int max_name_attempts = 64;
         std::string name;
         for (int attempt = 0;; attempt++) {
             name = "t" + std::to_string(pid) + "_" + std::to_string(indx.fetch_add(1, std::memory_order_relaxed));
             // A fresh session per attempt: the previous one carries a refused statement.
             auto session = otterbrix::session_id_t();
-            // Rule 6: this cursor must not go on the floor. A scratch table that was not
-            // created cannot hold the aggregate's output, and saying nothing only moves
-            // the failure to a later, less obvious statement.
+            // Must check this cursor, or a failed create surfaces later as a
+            // confusing error on the aggregate itself.
             auto create = space->dispatcher()->execute_sql(session, "CREATE TABLE tmp." + name + "();");
             if (!create) {
                 throw std::runtime_error("relation: creating the scratch table tmp." + name + " returned no cursor");
             }
             if (!create->is_error()) {
-                // Recorded only now that the table is really there: a name that was refused
-                // is a name this factory does not own and must not drop (lesson: state is
-                // cleaned up, and taken on, only AFTER the success it stands for).
+                // Recorded only after success: a refused name is not owned by this factory.
                 scratch_tables_.push_back(name);
                 break;
             }

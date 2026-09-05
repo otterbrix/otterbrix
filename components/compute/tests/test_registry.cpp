@@ -50,9 +50,8 @@ TEST_CASE("components::compute::registry::basic") {
 
     SECTION("non-existent function") { REQUIRE(reg->get_function(invalid_function_uid) == nullptr); }
 }
-// add_function() built the refusal for a null payload but never returned it, so the null landed
-// in functions_ and the caller was handed a uid. Two independent claims — what the call REPORTS
-// and what the registry HOLDS — so two cases, each able to go red on its own.
+// Regression: add_function() built the refusal for a null payload but never returned it, so the
+// null landed in functions_ anyway. Split in two so REPORTS and HOLDS can go red independently.
 TEST_CASE("components::compute::registry::add_function_refuses_a_null_payload") {
     core::pmr::otterbrix_resource resource;
     function_registry_t registry(&resource);
@@ -69,19 +68,14 @@ TEST_CASE("components::compute::registry::a_refused_null_payload_never_enters_th
     auto added = registry.add_function(nullptr);
     INFO("add_function reported " << (added.has_error() ? "a refusal" : "a uid"));
 
-    // A fresh registry hands out uid 0 first, so that is where a wrongly-accepted null lands.
-    // Probed through remove_function() and not through get_functions(): get_functions()
-    // dereferences every stored pointer, so on the broken build it takes the whole test binary
-    // down instead of failing this assertion.
+    // Probed via remove_function(), not get_functions(): get_functions() dereferences every
+    // stored pointer, so on the broken build it crashes the test binary instead of failing here.
     REQUIRE_FALSE(registry.remove_function(0));
     REQUIRE(registry.get_functions().empty());
 }
 
-// uids are REGISTRATION ORDER: one stray registration in front of the builtins
-// shifts the WHOLE table, and every later lookup by DEFAULT_FUNCTIONS uid runs
-// the WRONG function (sum's uid answers with the stray, min's uid answers with
-// sum, ...). The registry must never SERVE such a table: every DEFAULT_FUNCTIONS
-// row resolves either to the function bearing its name or to nothing at all.
+// A stray registration ahead of the builtins shifts the whole uid table, so every later
+// DEFAULT_FUNCTIONS lookup must resolve to its own name's function or to nothing at all.
 TEST_CASE("components::compute::registry::shifted_builtin_table_never_serves") {
     core::pmr::otterbrix_resource resource;
     function_registry_t registry(&resource);
@@ -101,9 +95,8 @@ TEST_CASE("components::compute::registry::shifted_builtin_table_never_serves") {
     }
 }
 
-// The refusal channel of builtin registration: a failure poisons the registry —
-// the error is recorded, nothing is served, and further adds refuse. (The dirty
-// registry above triggers it via the very first uid mismatch.)
+// A failure poisons the registry: nothing is served and further adds refuse. Same setup as
+// above triggers it via the first uid mismatch.
 TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_and_refuses") {
     core::pmr::otterbrix_resource resource;
     function_registry_t registry(&resource);

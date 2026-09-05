@@ -124,19 +124,12 @@ namespace components::storage {
         // contract fetch_next_batch already uses. Columns outside the set keep their ordinal slot in
         // the output chunk and are left as buffer-less stubs, so a consumer indexes the result the
         // same way whether or not it asked for a projection.
-        // Returns the buffer-pool OOM / data_corruption the point-fetch left in
-        // column_fetch_state::fetch_error (same value-shape as fetch_next_batch's
-        // scan_error above), else true. An error nobody reads is as silent as the abort
-        // this channel replaced — every caller must check.
-        //
-        // VISIBILITY IS PART OF THE CALL, and neither parameter has a default:
-        //   SNAPSHOT — the row must be visible to `txn`. Rows that are not are DROPPED, so
-        //              the reply is SHORTER than the request and cannot be paired with it by
-        //              position; `output.row_ids` names the rows actually carried, in order.
-        //   RAW      — no visibility question at all. The only legitimate user is the CREATE
-        //              INDEX backfill, which reads deleted rows to recover old key columns.
-        // An empty `txn` is NOT the raw mode: it means "see every COMMITTED row", so a
-        // committed delete still hides the row from it.
+        // Error, if any, is in output's column_fetch_state::fetch_error — `true` alone does
+        // not mean no error, callers must check it.
+        // SNAPSHOT: rows invisible to `txn` are dropped, so the reply is SHORTER than the
+        // request; `output.row_ids` names what actually came back. RAW: no visibility check,
+        // used only by CREATE INDEX backfill to recover deleted rows' key columns. An empty
+        // `txn` is NOT raw — it means "every committed row", so a committed delete still hides.
         [[nodiscard]] virtual core::result_wrapper_t<bool> fetch(vector::data_chunk_t& output,
                                                                  const vector::vector_t& row_ids,
                                                                  uint64_t count,
@@ -144,39 +137,23 @@ namespace components::storage {
                                                                  const table::transaction_data& txn,
                                                                  table::fetch_visibility_t visibility) = 0;
 
-        // THE REPLAY APPEND IS THE TXN APPEND WITH transaction_data{0, 0}, AND NOTHING ELSE.
-        // A separate argument-less `append(data)` that asserted its results instead of
-        // returning them would be compiled away under NDEBUG, and its one caller -- the
-        // direct-write leg of agent_disk_t::storage_append_inner -- would read a start_row out
-        // of an append state whose append had failed, and answer with it. So there is no such
-        // overload: the direct-write leg passes transaction_data{0, 0} explicitly.
-        //
-        // Returns write_conflict / out_of_memory surfaced by the table-layer append chain; the
-        // start_row on success.
+        // No default `append(data)` overload: an assert-based fallback compiles away under
+        // NDEBUG, silently reusing a failed append's start_row. The replay path passes
+        // transaction_data{0, 0} explicitly instead. Returns write_conflict / out_of_memory
+        // from the table-layer append chain; start_row on success.
         [[nodiscard]] virtual core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data,
                                                                       table::transaction_data txn) = 0;
 
-        // THE REPLAY UPDATE, and NOT a duplicate of the txn one below it: this writes the rows
-        // IN PLACE (update_segment_t), where the txn overload does an MVCC delete + append.
-        // It answers rather than returning `void`: with `void`,
-        // agent_disk_t::direct_update_sync -- the WAL-replay update router -- can only end in
-        // `return no_error()`, and every refusal underneath (a payload naming a column the
-        // storage has not materialised, out_of_memory, write_conflict) is an assert that
-        // vanishes under NDEBUG, so a committed row recovery declined to restore is reported to
-        // base_spaces' replay loop as restored.
-        //
-        // CONTRACT: recover-then-report. The materialized part of the payload is applied in
-        // place; the answer is no_error only when the WHOLE payload landed -- a journalled
-        // value dropped with an unmaterialized column, or a row id the storage cannot hold
-        // (fewer rows applied than named), comes back as an error NAMING the loss, after the
-        // restorable part is already written. The txn overload keeps refusing up front
-        // instead: there the statement can still be declined before anything is journalled.
+        // Replay update: rewrites rows IN PLACE (vs. the txn overload's MVCC delete+append
+        // below). Returns error_t, not void, so a refusal (unmaterialised column, out_of_memory,
+        // write_conflict) can't be swallowed by an NDEBUG-only assert and reported as restored.
+        // Recover-then-report: the materialized part of the payload is written even on
+        // failure; no_error means the WHOLE payload landed. The txn overload instead refuses
+        // up front, before anything is journalled.
         [[nodiscard]] virtual core::error_t update(vector::vector_t& row_ids, vector::data_chunk_t& data) = 0;
         // Returns write_conflict / out_of_memory from the table-layer update; on success
-        // {start_row, affected-row count}. PURE, like the txn append above it: a default body
-        // forwarding to the replay overload could only answer a constant {0, 0} for the count,
-        // and a fallback whose only consumer is a test double is one the double should override
-        // itself (rule 6).
+        // {start_row, affected-row count}. No default body: forwarding to the replay overload
+        // could only fake a {0, 0} count.
         [[nodiscard]] virtual core::result_wrapper_t<std::pair<int64_t, uint64_t>>
         update(vector::vector_t& row_ids, vector::data_chunk_t& data, table::transaction_data txn) = 0;
 

@@ -28,25 +28,14 @@
 #include <services/wal/wal_page_reader.hpp>
 #include <services/wal/wal_reader.hpp>
 
-// A CRC BREAK MUST NOT MAKE THE ALLOCATOR FORGET WHAT IS ON THE DISK.
+// A CRC break must not make the allocator forget what is on disk: recover_from_disk() used to
+// take "where the id allocator resumes" from the same replay scan that answers "what replay may
+// apply" (stopping at the first break, STOP-A), putting the allocator BELOW ids still on disk
+// and reissuing them. The tests below assert on the ids the engine actually hands out and the
+// ids the segment files actually contain, never on a status.
 //
-// recover_from_disk() logged "truncating at corruption point" and then `break`ed out of the
-// segment loop WITHOUT TRUNCATING ANYTHING. Two different answers were being taken from one
-// scan:
-//
-//   - WHAT REPLAY MAY APPLY. That legitimately stops at the first CRC break (STOP-A): the
-//     prefix before the break is complete, and replaying past a break would apply a range
-//     with a HOLE in it. wal_reader_t is where that decision belongs and it is unchanged.
-//   - WHERE THE ID ALLOCATOR MUST RESUME. That is a high-water mark over what the FILES
-//     physically hold, and it has nothing to do with how far replay got. Taking it from the
-//     replay scan put it BELOW ids that are still on disk, so the next write reissued them.
-//
-// The tests below assert on the ids the engine actually hands out and on the ids the segment
-// files actually contain — never on a status.
-//
-// The corruption is done by the filesystem (one flipped byte inside a data page), which is
-// what a bad sector does; dev_set_wal_file_interposer is the seam for failures of the OPEN
-// and of the WRITE, and neither of those is the input here.
+// Corruption here is a flipped byte inside a data page (a bad sector); dev_set_wal_file_interposer
+// covers OPEN/WRITE failures, neither of which is the input under test.
 
 using namespace services;
 using namespace services::wal;
@@ -124,17 +113,11 @@ namespace {
             manager_.reset();
         }
 
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: this is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
-        // that would report a chunk still alive after the manager is gone. Production hands the manager
-        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
-        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
-        // over: ~wal_env_t stops the scheduler and resets manager_
-        // (destroying the mailbox and any message still holding this batch) inside its own body,
-        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
-        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
-        // the batch is moved into the message and is unobservable after send.
+        // Built on the fixture's own arena (core::pmr::otterbrix_resource, resource_tracer_t
+        // under ASAN), mirroring production (agent_disk_t::storage_append_inner builds off
+        // resource()). resource_ is declared FIRST so it outlives ~wal_env_t's teardown of
+        // manager_. Extracted so a test can assert the ARENA of a REAL payload before it's moved
+        // into the message and becomes unobservable.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -316,16 +299,10 @@ namespace {
 } // namespace
 
 // ===========================================================================
-// THE FIRST ID AFTER A RESTART MUST NOT BE ONE THE JOURNAL ALREADY HOLDS.
-//
-// One segment, an interior data page corrupted, live pages after it. The manager's startup
-// scan derived global_id_ from read_all_records(), which stops at the break, so it came up
-// with a maximum that ignored every page beyond it.
-//
-// BEFORE: on_disk_max was 24 and the very next write was issued id 9 — an id that four other
-// still-verifiable pages already carry. Restarting again issued 9 a SECOND time, to a third
-// record, because nothing the previous run wrote was visible to the scan either.
-// ===========================================================================
+// The first id after a restart must not be one the journal already holds: the startup scan used
+// to derive global_id_ from read_all_records(), which stops at the break. BEFORE: on_disk_max
+// was 24 and the next write was issued id 9, already carried by four still-verifiable pages;
+// restarting again issued 9 a SECOND time, to a third record.
 TEST_CASE("wal::reissue::the_first_id_after_a_crc_break_is_not_one_the_journal_already_holds") {
     const auto path = base_path() / "reissue_interior_page";
     std::filesystem::remove_all(path);
@@ -383,14 +360,10 @@ TEST_CASE("wal::reissue::the_first_id_after_a_crc_break_is_not_one_the_journal_a
 }
 
 // ===========================================================================
-// A RECORD THE JOURNAL ACCEPTED MUST BE READABLE FROM IT.
-//
-// The same `break` left current_segment_index_ at the CORRUPTED segment, so ensure_writer()
-// reopened it and appended after its last page — behind the corruption point. Every reader in
-// the tree stops at that point, so the record was written, reported durable, and unreadable.
-//
-// BEFORE: the id returned by the write was in no segment read_all_records could reach.
-// ===========================================================================
+// A record the journal accepted must be readable from it: the same `break` left
+// current_segment_index_ at the CORRUPTED segment, so ensure_writer() appended behind the
+// corruption point, where no reader reaches. BEFORE: the id returned by the write was in no
+// segment read_all_records could reach.
 TEST_CASE("wal::reissue::a_record_written_after_a_crc_break_is_reachable_in_the_journal") {
     const auto path = base_path() / "write_behind_break";
     std::filesystem::remove_all(path);
@@ -423,15 +396,10 @@ TEST_CASE("wal::reissue::a_record_written_after_a_crc_break_is_reachable_in_the_
 }
 
 // ===========================================================================
-// current_wal_id MUST NOT UNDERSTATE THE JOURNAL BECAUSE OF AN EARLY BREAK.
-//
-// This is the literal shape named in recover_from_disk(): discover_segments() sorts ascending
-// and the loop `break`s, so a break in segment 000000 meant segments 000001+ were never
-// looked at. current_wal_id (the max of the workers' id_) is what operator_checkpoint pins
-// the checkpoint boundary to and what operator_create_index_backfill starts a backfill from.
-//
+// current_wal_id must not understate the journal because of an early break: a break in segment
+// 000000 meant discover_segments's ascending loop never looked at 000001+. current_wal_id feeds
+// operator_checkpoint's boundary and operator_create_index_backfill's start point.
 // BEFORE: three segments on disk carrying ids up to 24, and current_wal_id answered 4.
-// ===========================================================================
 TEST_CASE("wal::reissue::current_wal_id_counts_the_segments_after_a_broken_one") {
     const auto path = base_path() / "later_segments_ignored";
     std::filesystem::remove_all(path);
@@ -476,24 +444,15 @@ TEST_CASE("wal::reissue::current_wal_id_counts_the_segments_after_a_broken_one")
 }
 
 // ===========================================================================
-// TRUNCATION MUST NOT DELETE A SEGMENT ON THE STRENGTH OF A HEADER FIELD
-// THE CHECKSUM NEVER VOUCHED FOR.
+// Truncation must not delete a segment on the strength of a header field the checksum never
+// vouched for: reading page_end_lsn straight from the last data page's header and unlinking on
+// <= checkpoint trusts a field the CRC covers — forge it low and the branch deletes a segment
+// full of records ABOVE the checkpoint.
 //
-// Reading page_end_lsn straight out of the LAST data page's header and unlinking the file when
-// it comes out <= the checkpoint trusts a field inside the region the page CRC covers, and a
-// corrupt page's header is exactly what the CRC failed to vouch for: forge it low and the branch
-// deletes a segment full of records ABOVE the checkpoint. Same family as the refusal already in
-// this function for a segment that will not OPEN — "unreadable is not empty" — one field down.
-//
-// THE SETUP DAMAGES TWO SEGMENTS AND THAT IS NOT PADDING. truncate_before never touches the
-// segment the writer is using, so the segment under test must not be the writer's: with only
-// 000001 forged, a recovery that parks the writer on the FIRST broken segment would make 000001
-// the writer's segment and skip it for an unrelated reason, hiding the defect. Breaking 000000 is
-// what moves the writer off 000001, the segment under test.
-//
+// Setup damages TWO segments deliberately: truncate_before never touches the writer's own
+// segment, so breaking 000000 too is what moves the writer off 000001, the segment under test.
 // BEFORE: segment 000001 was unlinked and the records between the checkpoint and its real
 // page_end_lsn went with it.
-// ===========================================================================
 TEST_CASE("wal::reissue::truncation_keeps_a_segment_whose_last_header_is_corrupt") {
     const auto path = base_path() / "truncate_forged_header";
     std::filesystem::remove_all(path);
@@ -542,11 +501,8 @@ TEST_CASE("wal::reissue::truncation_keeps_a_segment_whose_last_header_is_corrupt
 }
 
 // ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
-// make_insert_batch above. The batch is moved into the message and is unobservable after
-// send, so the assertion is made on the object make_insert_batch produces: the same call, on
-// the same path, that send_insert makes -- not a value handed in by the test.
-// ===========================================================================
+// Insert payload built on the fixture's own arena (see make_insert_batch above). The batch is
+// unobservable after send, so the assertion is made on make_insert_batch's own output.
 TEST_CASE("wal::reissue::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

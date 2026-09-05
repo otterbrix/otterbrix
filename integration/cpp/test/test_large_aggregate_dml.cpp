@@ -1,5 +1,5 @@
 // ============================================================================
-// RED reproducers for the 4 oversized-chunk / aliasing crashes (rule 18:
+// RED reproducers for the 4 oversized-chunk / aliasing crashes (
 // red-first). Each TEST_CASE drives MORE than DEFAULT_VECTOR_CAPACITY (1024)
 // rows/groups through an aggregate or a DML-with-secondary-source path, which
 // is where the bug trips: a single materialized chunk grows past the 1024-row

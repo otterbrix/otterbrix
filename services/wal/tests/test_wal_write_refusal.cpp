@@ -26,30 +26,18 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_reader.hpp>
 
-// THE JOURNAL MUST NOT REPORT WORK IT DID NOT DO.
+// Four failures of one family, pinned here: without an error channel, each looks like success —
+// (1) a write handler dropping wal_page_writer_t::append's answer returns a wal_id for a record
+// not in the journal; (2) commit_txn dropping flush_and_sync() lets FULL mode report a durable
+// commit over an unsynced page; (3) a reader leaving file_/file_size_ zero on open failure makes
+// truncate_before read page_count()==0 as "safe to remove" and unlink an unreadable segment; (4)
+// read_all_records answering empty for the same segment brings startup up silently missing every
+// committed transaction it held.
 //
-// Four failures of one family are pinned here. Without an error channel on the write path and on
-// the segment-read path, all four come back looking like success:
-//
-//   1. A wal_worker_t write handler that drops wal_page_writer_t::append's answer — the one
-//      documented "false on write error (e.g. disk full)" — and returns the wal_id anyway hands
-//      the caller the number of a record that is not in the journal.
-//   2. commit_txn dropping flush_and_sync()'s answer means that under wal_sync_mode::FULL a FAILED
-//      fsync still returns a wal_id: a transaction reporting a durable commit over a page that
-//      never reached the device.
-//   3. A wal_page_reader_t that leaves file_ null and file_size_ zero when the open fails answers
-//      page_count() == 0 — and truncate_before reads that as "empty, safe to remove" and UNLINKS
-//      the one segment nobody could read.
-//   4. read_all_records answering an empty vector for the same unopened segment brings startup
-//      replay up silently missing every committed transaction it held.
-//
-// THE INJECTION. These files are opened by the WAL itself through core::filesystem::open_file, not
-// by single_file_block_manager_t, so the .otbx seam cannot reach them. The WAL carries the same
-// shape of seam (services::wal::dev_set_wal_file_interposer, DEV_MODE only), driven two ways:
-// returning nullptr models a segment that WILL NOT OPEN (faithful, not a stand-in:
-// local_file_system.cpp's open_file answers nullptr for exactly this), and wrapping with
-// otterbrix_test::faulty_file_handle_t models a device refusing writes or fsyncs, driven by the
-// same fault_plan_t the .otbx tests use.
+// Injected via services::wal::dev_set_wal_file_interposer (DEV_MODE only, since these files are
+// opened by the WAL itself, not single_file_block_manager_t): nullptr models an unopenable
+// segment (faithful — the same value local_file_system.cpp's open_file returns for it), and
+// otterbrix_test::faulty_file_handle_t models a device refusing writes/fsyncs.
 
 using namespace services;
 using namespace services::wal;
@@ -153,17 +141,11 @@ namespace {
             manager_.reset();
         }
 
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: this is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
-        // that would report a chunk still alive after the manager is gone. Production hands the manager
-        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
-        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
-        // over: ~wal_env_t stops the scheduler and resets manager_
-        // (destroying the mailbox and any message still holding this batch) inside its own body,
-        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
-        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
-        // the batch is moved into the message and is unobservable after send.
+        // Built on the fixture's own arena (core::pmr::otterbrix_resource, resource_tracer_t
+        // under ASAN), mirroring production (agent_disk_t::storage_append_inner builds off
+        // resource()). resource_ is declared FIRST so it outlives ~wal_env_t's teardown of
+        // manager_. Extracted so a test can assert the ARENA of a REAL payload before it's moved
+        // into the message and becomes unobservable.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -217,16 +199,10 @@ namespace {
 
 } // namespace
 
-// ===========================================================================
-// A REFUSED PAGE WRITE MUST NOT COME BACK AS A WAL ID.
-//
-// The record below is 500 rows wide, which is more than PAGE_DATA_SIZE, so append() has to
-// flush a full page in the middle of the record rather than only buffering it — the exact
-// call whose bool answer was discarded. The fault plan lets ONE write through (the segment
-// file header, written when the worker opens the segment) and refuses every write after it.
-//
-// BEFORE: write_physical_insert returned the freshly allocated wal_id, with nothing on disk.
-// ===========================================================================
+// A refused page write must not come back as a wal_id. The record below is 500 rows wide (over
+// PAGE_DATA_SIZE), so append() must flush mid-record — the exact call whose bool answer was
+// discarded. BEFORE: write_physical_insert returned the freshly allocated wal_id, with nothing
+// on disk.
 TEST_CASE("wal::refusal::a_refused_page_write_is_not_reported_as_a_written_record") {
     wal_fault_scope_t fault;
     fault.faulty_marker = "wal_";
@@ -246,15 +222,9 @@ TEST_CASE("wal::refusal::a_refused_page_write_is_not_reported_as_a_written_recor
     REQUIRE(fault.plan.writes_seen > 1);
 }
 
-// ===========================================================================
-// A FAILED fsync UNDER FULL MUST REFUSE THE COMMIT.
-//
-// wal_sync_mode::FULL is the mode whose whole meaning is "this marker is on the device". The
-// plan lets every write through and fails the first sync(), which is the one flush_and_sync
-// issues for this commit.
-//
-// BEFORE: commit_txn returned the wal_id, i.e. reported a durable commit over an unsynced page.
-// ===========================================================================
+// A failed fsync under FULL must refuse the commit — FULL's whole meaning is "this marker is on
+// the device". BEFORE: commit_txn returned the wal_id, reporting a durable commit over an
+// unsynced page.
 TEST_CASE("wal::refusal::a_failed_fsync_under_full_sync_refuses_the_commit") {
     wal_fault_scope_t fault;
     fault.faulty_marker = "wal_";
@@ -275,16 +245,10 @@ TEST_CASE("wal::refusal::a_failed_fsync_under_full_sync_refuses_the_commit") {
     REQUIRE(fault.plan.syncs_seen >= 1);
 }
 
-// ===========================================================================
-// TRUNCATION MUST REFUSE A SEGMENT IT CANNOT READ, NOT DELETE IT.
-//
-// "unreadable" and "empty" both arrived at truncate_before as page_count() == 0, and the
-// branch for "empty" unlinks the file. So the ONE segment whose contents nobody could account
-// for was the one that got destroyed. The assertion below is on the FILESYSTEM, not on the
-// status: the file must still be there afterwards.
-//
+// Truncation must refuse a segment it cannot read, not delete it: "unreadable" and "empty" both
+// arrived at truncate_before as page_count()==0, so the "empty" branch unlinked the one segment
+// nobody could account for. Assertion is on the FILESYSTEM, not the status.
 // BEFORE: the segment was removed and truncate_before reported nothing.
-// ===========================================================================
 TEST_CASE("wal::refusal::truncation_keeps_a_segment_it_cannot_read") {
     wal_fault_scope_t fault; // installed, but armed only after the segments exist
 
@@ -330,16 +294,11 @@ TEST_CASE("wal::refusal::truncation_keeps_a_segment_it_cannot_read") {
     REQUIRE(truncate_error.type == core::error_code_t::io_error);
 }
 
-// ===========================================================================
-// STARTUP REPLAY MUST REFUSE AN UNOPENABLE SEGMENT.
-//
-// The first half of the test reads the same directory with no fault and REQUIREs records, so
-// the empty answer in the second half can only be caused by the refusal — not by a journal
-// that happened to hold nothing.
-//
-// BEFORE: read_committed_records returned an empty vector and no error, and base_spaces
-// carried on and brought the engine up without every transaction the segment held.
-// ===========================================================================
+// Startup replay must refuse an unopenable segment. The first half of the test reads the same
+// directory with no fault and REQUIREs records, so the empty answer in the second half can only
+// be the refusal, not a journal that happened to hold nothing.
+// BEFORE: read_committed_records returned an empty vector and no error, and base_spaces brought
+// the engine up missing every transaction the segment held.
 TEST_CASE("wal::refusal::startup_replay_refuses_a_segment_that_will_not_open") {
     const auto path = base_path() / "replay_refusal";
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -377,12 +336,8 @@ TEST_CASE("wal::refusal::startup_replay_refuses_a_segment_that_will_not_open") {
     }
 }
 
-// ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
-// make_insert_batch above. The batch is moved into the message and is unobservable after
-// send, so the assertion is made on the object make_insert_batch produces: the same call, on
-// the same path, that send_insert makes -- not a value handed in by the test.
-// ===========================================================================
+// Insert payload built on the fixture's own arena (see make_insert_batch above). The batch is
+// unobservable after send, so the assertion is made on make_insert_batch's own output.
 TEST_CASE("wal::refusal::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

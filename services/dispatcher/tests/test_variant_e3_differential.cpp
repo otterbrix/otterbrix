@@ -62,16 +62,10 @@ namespace {
                 return c;
             }())
             , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_))
-            // A REAL index manager, not empty_address(). This slot used to hold
-            // empty_address() and the CREATE INDEX case below still REQUIREd success,
-            // which pinned a quiet no-op in operator_create_index_backfill: with no
-            // index actor wired it marked itself executed and reported success without
-            // registering, creating, backfilling, or flipping indisvalid. Every
-            // production topology spawns the index manager UNCONDITIONALLY
-            // (integration/cpp/base_spaces.cpp), so an empty slot was a harness
-            // artefact pinning behaviour no deployment can reach — and the operator
-            // now refuses on it. Same construction as base_spaces: the disk path and
-            // the same three thresholds.
+            // A REAL index manager, not empty_address(): with no index actor wired,
+            // operator_create_index_backfill used to mark itself executed and report success
+            // without registering/creating/backfilling — now refused. Every production topology
+            // spawns it unconditionally (integration/cpp/base_spaces.cpp).
             , manager_index_(actor_zeta::spawn<services::index::manager_index_t>(resource,
                                                                                  scheduler_,
                                                                                  log_,
@@ -663,15 +657,10 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
     }
 }
 
-// CREATE TABLE → CREATE MATERIALIZED VIEW mv AS SELECT ... FROM table. Unlike a
-// view, a matview lands a real physical heap plus a pg_class relkind='m' row and
-// a pg_rewrite ev_action row. WITH NO DATA is written out: nothing populates a
-// matview at CREATE time, so the implicit (PostgreSQL default WITH DATA) form is
-// refused rather than silently producing an empty matview — see
-// integration/cpp/test/test_view_expansion.cpp. The proxy below is unchanged.
-// operator_create_matview_t lowers to a composite sequence that aborts
-// the whole CREATE if any step fails. Proxy: cursor success + resolve_table(mv)
-// relkind=='m' + parent still resolvable.
+// Unlike a view, a matview lands a real physical heap plus pg_class relkind='m' and
+// pg_rewrite rows. Implicit WITH DATA is refused rather than silently producing an
+// empty matview (see integration/cpp/test/test_view_expansion.cpp). Proxy: cursor
+// success + resolve_table(mv) relkind=='m' + parent still resolvable.
 TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_matview");

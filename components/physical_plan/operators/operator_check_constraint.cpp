@@ -18,10 +18,8 @@ namespace components::operators {
 
     namespace {
 
-        // NOTHING HERE BUILDS A CONSTANT PREDICATE, and nothing here derives a value for a
-        // column. A CHECK over a name the write-set does not carry is a constraint enforced
-        // by nothing, so bind_to_write_set_ refuses it rather than substituting a constant
-        // that leaves the predicate UNKNOWN — and UNKNOWN permits the row.
+        // A CHECK over a name the write-set doesn't carry is enforced by nothing, so bind_to_write_set_
+        // refuses it rather than substitute a constant that would leave the predicate UNKNOWN (and permit the row).
         std::optional<size_t> find_col_index(const vector::data_chunk_t& chunk, std::string_view name) {
             for (uint64_t c = 0; c < chunk.column_count(); ++c) {
                 if (chunk.data[c].type().alias() == name) {
@@ -73,12 +71,9 @@ namespace components::operators {
                                      "\" carries no predicate to evaluate",
                                  resource_}};
         }
-        // A column reference is a position in the write-set, and nothing else. The write-set IS the
-        // materialised row — the INSERT's omissions were expanded above the journal, the UPDATE's
-        // write-set is the gathered storage row — so every column of the table is in it, and a name
-        // that is not names no column this operator can read. Substituting a constant for it (the
-        // column's DEFAULT, or NULL) is how a declared CHECK comes to judge nothing at all: NULL
-        // leaves the predicate UNKNOWN, and UNKNOWN PERMITS the row.
+        // A column reference is only a write-set position — every table column is fully materialised there
+        // (INSERT omissions expanded, UPDATE's row gathered), so a name not found is unresolvable.
+        // Substituting DEFAULT/NULL instead would leave the predicate UNKNOWN, which permits the row.
         std::string missing_column;
         const auto rebind = [&](expressions::param_storage& operand, auto&& recurse) -> void {
             if (expressions::is_expr(operand)) {
@@ -209,10 +204,9 @@ namespace components::operators {
                 continue;
             }
 
-            // NOT NULL checks over the MATERIALISED row. An INSERT that omitted the column had it expanded
-            // before the append — to its DEFAULT, or to NULL when there is none — so the validity bit answers
-            // the question directly, for the value that was actually stored. (An INSERT omitting a PRIMARY KEY
-            // column, which pg_attribute never marks attnotnull, therefore fails here on the NULL written.)
+            // NOT NULL over the MATERIALISED row: an INSERT omitting the column already expanded it (to
+            // DEFAULT or NULL) before the append, so the validity bit answers directly — including an
+            // omitted PRIMARY KEY column, which pg_attribute never marks attnotnull.
             for (const auto& col_name : not_null_columns_) {
                 bool found = false;
                 for (uint64_t col = 0; col < chunk.column_count(); ++col) {
@@ -236,11 +230,9 @@ namespace components::operators {
                 }
             }
 
-            // Fixed-ARRAY element checks. A value shorter than the column's declared size is reconciled to it by
-            // padding NULL (casts::array_cast), and this validates the rows the DML has ALREADY written — so the
-            // pad has happened and the short value is no longer short. What survives it is a NULL element, which
-            // a NOT NULL column cannot hold, so that is what is tested. The length is still compared for a
-            // write-set that reaches here unreconciled. Validated per column: one bad element fails the operation.
+            // Fixed-ARRAY checks run AFTER padding (casts::array_cast pads short values to the declared size
+            // with NULL), so what's tested is the padded NULL element; length is still compared for a
+            // write-set that reaches here unreconciled.
             for (const auto& [col_name, required_size] : array_size_reqs_) {
                 for (uint64_t col = 0; col < chunk.column_count(); ++col) {
                     if (chunk.data[col].type().alias() != col_name)

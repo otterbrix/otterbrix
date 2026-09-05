@@ -28,27 +28,15 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
-// ONE READER OF THIS JOURNAL STOPPED AT A BREAK, THE OTHER READ STRAIGHT THROUGH IT.
+// wal_reader_t (startup replay) stops at the first CRC break; wal_worker_t::load needs the same
+// check, or it concatenates the STOP-A prefix of segment k with the WHOLE of segment k+1 and
+// hands the CREATE INDEX catchup a range missing everything between them. The catchup's question
+// is a THIRD one, distinct from replay's "what may I APPLY" (prefix, stop at break) and the id
+// allocator's "where do I RESUME" (high-water over files): "is the window (after, high_water]
+// WHOLE?" — binary, because a catchup that applies a subset publishes a silently incomplete index.
 //
-// wal_reader_t (startup replay) stops at the first CRC break and says why: a range with a HOLE in
-// it is worse than a short prefix, because the rows behind the hole get their later updates
-// applied over a version that was never restored. wal_worker_t::load needs the same check —
-// without it, it concatenates the STOP-A prefix of segment k with the WHOLE of segment k+1 and
-// hands the caller a range missing everything between them.
-//
-// Its only production caller is the CREATE INDEX catchup (operator_create_index_backfill), and it
-// asks a THIRD question, different from the two the other readers answer:
-//
-//   * replay           -- "what may I APPLY?"                            -> prefix, stop at break;
-//   * the id allocator -- "where do I RESUME?"                           -> high-water over FILES;
-//   * the catchup      -- "is the window (after, high_water] WHOLE?"     -> yes, or refuse.
-//
-// The third is BINARY: a catchup that applies a subset publishes an index that answers with a
-// subset, and a silently incomplete index is the one failure this layer must never produce.
-//
-// The tests assert on the SET OF IDS the catchup is handed, never on a status, and the corruption
-// is done by the filesystem (one flipped byte inside a data page) because that is what a bad
-// sector does.
+// Tests assert on the SET OF IDS the catchup is handed, never on a status; corruption is a
+// flipped byte inside a data page (a bad sector).
 
 using namespace services;
 using namespace services::wal;
@@ -127,17 +115,10 @@ namespace {
             manager_.reset();
         }
 
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: this is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
-        // that would report a chunk still alive after the manager is gone. Production hands the manager
-        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
-        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
-        // over: ~wal_env_t stops the scheduler and resets manager_
-        // (destroying the mailbox and any message still holding this batch) inside its own body,
-        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
-        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
-        // the batch is moved into the message and is unobservable after send.
+        // Built on the fixture's own arena (core::pmr::otterbrix_resource, resource_tracer_t under
+        // ASAN), mirroring production (agent_disk_t::storage_append_inner builds off resource()).
+        // resource_ is declared FIRST so it outlives ~wal_env_t's teardown of manager_. Extracted
+        // so a test can assert the ARENA of a REAL payload before it's moved into the message.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -320,18 +301,11 @@ namespace {
 
 } // namespace
 
-// ===========================================================================
-// THE CATCHUP MUST NEVER BE HANDED A RANGE WITH A HOLE IN IT.
-//
-// Segment 000000 has an INTERIOR page corrupted and live pages behind it; segments 000001+
-// are perfect. read_all_records stops at the break (STOP-A), so segment 000000 contributes
-// only its prefix -- and load must not append the WHOLE of the later segments on top of it.
-//
-// BEFORE: load(0) answered successfully with ids running up to the end of the journal while
-// every id between the break and the next segment was missing. The catchup applied that,
-// found nothing left on the next iteration, called it convergence and flipped the index to
-// indisvalid.
-// ===========================================================================
+// The catchup must never be handed a range with a hole in it: segment 000000 has an interior
+// page corrupted with live pages behind it, and load must not append the WHOLE of the later,
+// perfect segments on top of its STOP-A prefix.
+// BEFORE: load(0) answered successfully with a range missing every id between the break and the
+// next segment; the catchup applied it, found nothing left, and flipped the index to indisvalid.
 TEST_CASE("wal::load_hole::an_interior_break_must_not_be_answered_with_the_segments_behind_it") {
     const auto path = base_path() / "interior_break";
     std::filesystem::remove_all(path);
@@ -377,16 +351,11 @@ TEST_CASE("wal::load_hole::an_interior_break_must_not_be_answered_with_the_segme
     REQUIRE((answer.has_error() || max_of(answered) <= prefix_max));
 }
 
-// ===========================================================================
-// A BREAK THAT IS ENTIRELY BELOW THE WATERMARK HIDES NOTHING, AND MUST NOT REFUSE.
-//
-// This is the anti-(a) case: copying wal_reader_t's unconditional "chain broken -> stop
-// reading segments" into load would fail it. The catchup asks about (after, high_water], and
-// here `after` is the on-disk high-water of the broken segment itself, so not one id the
-// break swallowed is inside the window. Refusing would ban CREATE INDEX on a database whose
-// damage is old, already below every future build_start -- and after ANY restart the
-// allocator resumes above the whole file, so that is the COMMON shape, not the exotic one.
-// ===========================================================================
+// A break entirely below the watermark hides nothing and must not refuse: copying
+// wal_reader_t's unconditional "chain broken -> stop" into load would fail this case, but
+// `after` here is already the broken segment's own high-water, so no id the break swallowed is
+// inside the window — and after ANY restart the allocator resumes above the whole file, making
+// this the common shape, not the exotic one.
 TEST_CASE("wal::load_hole::a_break_below_the_watermark_is_read_straight_through") {
     const auto path = base_path() / "break_below_watermark";
     std::filesystem::remove_all(path);
@@ -435,14 +404,8 @@ TEST_CASE("wal::load_hole::a_break_below_the_watermark_is_read_straight_through"
     }
 }
 
-// ===========================================================================
-// A TORN TAIL IS NOT A HOLE, AND MUST NOT BAN CREATE INDEX FOREVER.
-//
-// The break is on the LAST page of the LAST segment: nothing verifies after it, so nothing
-// is hidden between two things the reply contains. An ordinary crash leaves exactly this
-// shape, and a refusal here would be a failure on a path that cannot be repaired from
-// inside -- LOUD IS NOT THE SAME AS FATAL.
-// ===========================================================================
+// A torn tail is not a hole and must not ban CREATE INDEX forever: the break is on the last
+// page of the last segment, so nothing is hidden — an ordinary crash leaves exactly this shape.
 TEST_CASE("wal::load_hole::a_torn_tail_is_not_a_hole_and_is_not_refused") {
     const auto path = base_path() / "torn_tail";
     std::filesystem::remove_all(path);
@@ -469,14 +432,10 @@ TEST_CASE("wal::load_hole::a_torn_tail_is_not_a_hole_and_is_not_refused") {
     REQUIRE_FALSE(answer.value().empty());
 }
 
-// ===========================================================================
-// THE HOLE CAN OPEN AT A SEGMENT BOUNDARY, WHERE NOTHING INSIDE THE SEGMENT SHOWS IT.
-//
-// The break is on the LAST page of segment 000000, so within that segment it looks exactly
-// like case C: nothing verifies after it. What makes it a hole is the segment that FOLLOWS
-// -- load reads it in full, so the reply jumps straight over the ids the broken page held.
-// A per-segment test cannot see this; only carrying the open hole into the next segment can.
-// ===========================================================================
+// The hole can open at a segment boundary, invisible from inside the segment: the break is on
+// segment 000000's last page (looks like the torn-tail case alone), but the FOLLOWING segment
+// reads in full, so the reply jumps straight over the broken page's ids. Only carrying the open
+// hole into the next segment catches this.
 TEST_CASE("wal::load_hole::a_break_at_a_segment_boundary_is_still_a_hole") {
     const auto path = base_path() / "boundary_break";
     std::filesystem::remove_all(path);
@@ -509,12 +468,8 @@ TEST_CASE("wal::load_hole::a_break_at_a_segment_boundary_is_still_a_hole") {
     REQUIRE((answer.has_error() || max_of(answered) <= prefix_max));
 }
 
-// ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
-// make_insert_batch above. The batch is moved into the message and is unobservable after
-// send, so the assertion is made on the object make_insert_batch produces: the same call, on
-// the same path, that send_insert makes -- not a value handed in by the test.
-// ===========================================================================
+// Insert payload built on the fixture's own arena (see make_insert_batch above); the batch is
+// unobservable after send, so the assertion is made on make_insert_batch's own output.
 TEST_CASE("wal::load_hole::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

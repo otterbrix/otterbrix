@@ -28,24 +28,16 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
-// THE CHAIN AND THE BUFFER MUST DESCRIBE THE JOURNAL, NOT THE INTENTION.
+// The chain and the buffer must describe the journal, not the intention. Three failures on the
+// write path: (1) last_crc_ advancing at ENCODE time, before anything is written, so a then-
+// refused write leaves the chain pointing at a record not in the journal; (2) a refused page
+// flush mid-append() leaving the partially copied record IN the buffered page, so the next
+// record is appended behind it and swallowed into a span that never completes; (3) the same
+// refusal after one page already flushed, leaving a continuation-only page still flagged
+// PARTIAL_CONT that the next record would land on and be read as continuation bytes.
 //
-// Three failures of one family on the write path:
-//
-//   1. last_crc_ advancing when the record is ENCODED, before anything is written. A write
-//      that is then refused (an unopenable rotation target, a refused device write) leaves the
-//      chain pointing at a record that is not in the journal, and the next successful record
-//      is stamped with that phantom link.
-//   2. A refused page flush in the middle of append() leaving the partially copied record IN
-//      the buffered page (flags included). The next record is appended BEHIND those bytes, and
-//      every reader parses the page from the front — so the next record is swallowed into a
-//      span that never completes.
-//   3. The same refusal after at least one page of the spanning record has already been
-//      flushed leaving a continuation-only page in the buffer; the next record lands on a page
-//      still flagged PARTIAL_CONT and is read as continuation bytes, not as a record.
-//
-// The assertions below read the segment files back with wal_page_reader_t and assert on the
-// DECODED records: which ids are present, and whose crc each record's last_crc32 names.
+// Assertions read the segment files back with wal_page_reader_t and check the DECODED records:
+// which ids are present, and whose crc each record's last_crc32 names.
 
 using namespace services;
 using namespace services::wal;
@@ -153,17 +145,10 @@ namespace {
             manager_.reset();
         }
 
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: this is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
-        // that would report a chunk still alive after the manager is gone. Production hands the manager
-        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
-        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
-        // over: ~wal_env_t stops the scheduler and resets manager_
-        // (destroying the mailbox and any message still holding this batch) inside its own body,
-        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
-        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
-        // the batch is moved into the message and is unobservable after send.
+        // Built on the fixture's own arena (core::pmr::otterbrix_resource, resource_tracer_t under
+        // ASAN), mirroring production (agent_disk_t::storage_append_inner builds off resource()).
+        // resource_ is declared FIRST so it outlives ~wal_env_t's teardown of manager_. Extracted
+        // so a test can assert the ARENA of a REAL payload before it's moved into the message.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -258,16 +243,10 @@ namespace {
 
 } // namespace
 
-// ===========================================================================
-// A REFUSED WRITE MUST NOT ADVANCE THE CHAIN.
-//
-// The write that meets the refusal here never touches the device at all: the rotation target
-// will not OPEN (the one refusal a buffered small write can actually meet). The record was
-// only ENCODED, and encoding must not be the moment the chain moves.
-//
-// BEFORE: the first record of the new segment carried last_crc32 = crc of the refused record,
-// a link into a record that is not in the journal.
-// ===========================================================================
+// A refused write must not advance the chain: the write here never touches the device (the
+// rotation target will not OPEN), so the record was only ENCODED.
+// BEFORE: the first record of the new segment carried last_crc32 = crc of the refused record, a
+// link into a record that is not in the journal.
 TEST_CASE("wal::chain::a_refused_write_does_not_advance_the_crc_chain") {
     wal_fault_scope_t fault;
 
@@ -323,16 +302,10 @@ TEST_CASE("wal::chain::a_refused_write_does_not_advance_the_crc_chain") {
     REQUIRE(next->last_crc32 == commit1->crc32);
 }
 
-// ===========================================================================
-// A RECORD WHOSE FIRST PAGE FLUSH WAS REFUSED MUST LEAVE THE BUFFERED PAGE AS IT WAS.
-//
-// The spanning record's first chunk is copied into the page that already holds record A, and
-// the flush of that page is refused. The record was reported refused — so record A and every
-// record written AFTER the refusal must still be readable.
-//
-// BEFORE: the refused record's prefix stayed in the buffered page (PARTIAL_CONT included), the
-// next record landed behind it, and the reader swallowed it into a span that never completes.
-// ===========================================================================
+// A record whose first page flush was refused must leave the buffered page as it was: record A
+// and everything written AFTER the refusal must still be readable.
+// BEFORE: the refused record's prefix stayed in the buffered page, the next record landed
+// behind it, and the reader swallowed it into a span that never completes.
 TEST_CASE("wal::chain::a_refused_first_page_flush_rolls_the_record_out_of_the_buffer") {
     wal_fault_scope_t fault;
     fault.faulty_marker = "wal_";
@@ -383,17 +356,11 @@ TEST_CASE("wal::chain::a_refused_first_page_flush_rolls_the_record_out_of_the_bu
     REQUIRE(find_id(records, 3)->last_crc32 == find_id(records, 1)->crc32);
 }
 
-// ===========================================================================
-// THE SAME REFUSAL AFTER A PAGE OF THE RECORD ALREADY LANDED.
-//
-// The first page of the spanning record reaches the disk, the second is refused. The pages
-// already flushed are ORPHAN continuation pages — the reader abandons the span when the next
-// page does not continue it — but the BUFFERED page still holds continuation bytes and the
-// CONT flag, and the next record must not be appended into it.
-//
+// The same refusal after a page of the record already landed: the flushed page is an ORPHAN
+// continuation the reader abandons, but the BUFFERED page still holds continuation bytes and
+// must not receive the next record.
 // BEFORE: the record written after the refusal was read as continuation bytes of the refused
 // record and never came back.
-// ===========================================================================
 TEST_CASE("wal::chain::a_refused_mid_record_flush_discards_the_continuation_buffer") {
     wal_fault_scope_t fault;
     fault.faulty_marker = "wal_";
@@ -442,12 +409,8 @@ TEST_CASE("wal::chain::a_refused_mid_record_flush_discards_the_continuation_buff
     REQUIRE(find_id(records, 3) != nullptr);
 }
 
-// ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
-// make_insert_batch above. The batch is moved into the message and is unobservable after
-// send, so the assertion is made on the object make_insert_batch produces: the same call, on
-// the same path, that send_insert makes -- not a value handed in by the test.
-// ===========================================================================
+// Insert payload built on the fixture's own arena (see make_insert_batch above); the batch is
+// unobservable after send, so the assertion is made on make_insert_batch's own output.
 TEST_CASE("wal::chain::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

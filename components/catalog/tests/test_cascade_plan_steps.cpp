@@ -1,17 +1,6 @@
-// ============================================================================
-// WHAT A DROP PLAN OWES ITS CALLER: ONE STEP PER OBJECT, AND THE SEED AMONG THEM.
-//
-// plan_drop is the only thing standing between a DROP statement and the catalog
-// rows it is supposed to delete: operator_dynamic_cascade_delete_t walks
-// plan.steps and issues a per-classid delete template for each one. A plan that
-// comes back with no step for the seed is therefore not "a drop that dropped
-// only the children" — it is a statement that deletes NOTHING and answers
-// success, because the operator has nothing to iterate and runs straight to
-// mark_executed().
-//
-// These are unit tests over the planner alone: fetch_deps is a plain lambda over
-// a fixed edge table, so nothing here depends on disk, actors or timing.
-// ============================================================================
+// operator_dynamic_cascade_delete_t walks plan.steps and deletes one classid template per
+// step; a plan missing a step for the seed silently drops nothing and reports success.
+// Unit tests over the planner alone: fetch_deps is a plain lambda, no disk/actors/timing.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -35,9 +24,8 @@ namespace {
         dependency_t dep;
     };
 
-    // fetch_deps over a fixed edge table: every row whose (refclassid, refobjid)
-    // matches the query, in insertion order — the shape manager_disk_t's
-    // collect_dependents closure produces.
+    // Mirrors the shape of manager_disk_t::collect_dependents: rows matching
+    // (refclassid, refobjid), in insertion order.
     fetch_deps_fn make_fetch(const std::vector<edge_t>& edges) {
         return [&edges](std::pmr::memory_resource* mr, oid_t cls, oid_t oid) {
             std::pmr::vector<dependency_t> out{mr};
@@ -71,9 +59,7 @@ namespace {
 
 } // namespace
 
-// ---------------------------------------------------------------------------
 // The allow-path of RESTRICT must still be a DROP.
-// ---------------------------------------------------------------------------
 TEST_CASE("catalog::cascade_plan::restrict_with_no_dependencies_still_drops_the_seed") {
     core::pmr::otterbrix_resource resource;
     const std::vector<edge_t> edges{}; // nothing depends on the seed
@@ -89,10 +75,7 @@ TEST_CASE("catalog::cascade_plan::restrict_with_no_dependencies_still_drops_the_
     CHECK(plan.steps.back().objid == oid_t{16400});
 }
 
-// ---------------------------------------------------------------------------
-// The auto/internal children the allow-path's own comment says it is allowing
-// have to be in the plan too, seed last.
-// ---------------------------------------------------------------------------
+// The auto/internal children RESTRICT allows must be in the plan too, seed last.
 TEST_CASE("catalog::cascade_plan::restrict_drops_the_auto_children_it_allows") {
     core::pmr::otterbrix_resource resource;
     const std::vector<edge_t> edges{
@@ -109,9 +92,6 @@ TEST_CASE("catalog::cascade_plan::restrict_drops_the_auto_children_it_allows") {
     CHECK(plan.steps.back().objid == oid_t{16400});
 }
 
-// ---------------------------------------------------------------------------
-// Control: the refusing half of RESTRICT is correct today and stays correct.
-// ---------------------------------------------------------------------------
 TEST_CASE("catalog::cascade_plan::restrict_still_refuses_on_a_normal_dependency") {
     core::pmr::otterbrix_resource resource;
     const std::vector<edge_t> edges{
@@ -126,14 +106,11 @@ TEST_CASE("catalog::cascade_plan::restrict_still_refuses_on_a_normal_dependency"
     CHECK(plan.steps.empty());
 }
 
-// ---------------------------------------------------------------------------
-// The walker owes a SET, not a multiset: an object reachable through two edges
-// is one object and must be planned once.
-// ---------------------------------------------------------------------------
+// An object reachable through two edges is one object, planned once (SET not multiset).
 TEST_CASE("catalog::cascade_plan::a_diamond_dependent_is_planned_once") {
     core::pmr::otterbrix_resource resource;
-    // seed 16400 -> {16401, 16402}; both -> 16403 (the FK-diamond shape: a
-    // constraint reachable from its own table AND from the table it references).
+    // seed 16400 -> {16401, 16402}; both -> 16403 (diamond: a constraint reachable
+    // from its own table AND from the table it references).
     const std::vector<edge_t> edges{
         {kClass, oid_t{16400}, {kClass, oid_t{16401}, deptype::auto_dep}},
         {kClass, oid_t{16400}, {kClass, oid_t{16402}, deptype::auto_dep}},
@@ -150,9 +127,6 @@ TEST_CASE("catalog::cascade_plan::a_diamond_dependent_is_planned_once") {
     CHECK(plan.steps.back().objid == oid_t{16400});
 }
 
-// ---------------------------------------------------------------------------
-// Control: a cycle is still surfaced, not walked forever.
-// ---------------------------------------------------------------------------
 TEST_CASE("catalog::cascade_plan::a_back_edge_is_reported_as_a_cycle") {
     core::pmr::otterbrix_resource resource;
     const std::vector<edge_t> edges{
@@ -167,13 +141,8 @@ TEST_CASE("catalog::cascade_plan::a_back_edge_is_reported_as_a_cycle") {
     CHECK(plan.steps.empty());
 }
 
-// ---------------------------------------------------------------------------
-// THE UNWRITTEN FORM IS RESTRICT. Owner decision (2026-09-05, GitHub #638,
-// queue #209): a statement that wrote neither word means RESTRICT, exactly as
-// in PostgreSQL — drop_behavior_of maps the grammar's shared DROP_RESTRICT
-// token straight to restrict_, and no third enum value exists. This case was
-// the pin on the previous decision (bare = CASCADE) and flipped with it.
-// ---------------------------------------------------------------------------
+// DROP with neither word written means RESTRICT (matches PostgreSQL, was CASCADE before):
+// drop_behavior_of maps the grammar's shared DROP_RESTRICT token to restrict_ directly.
 TEST_CASE("catalog::cascade_plan::the_unwritten_form_means_restrict") {
     core::pmr::otterbrix_resource resource;
     // A NORMAL dependency: the one thing RESTRICT refuses.
@@ -196,29 +165,15 @@ TEST_CASE("catalog::cascade_plan::the_unwritten_form_means_restrict") {
 }
 
 TEST_CASE("catalog::cascade_plan::only_a_written_restrict_refuses") {
-    // refuses_on_dependency is the ONE place behavior collapses into the two
-    // things a planner can do; pin it directly so a future edit that adds a
-    // third form has to come through here.
+    // Pins the one place behavior collapses to a bool, so a future third form must touch here.
     CHECK(refuses_on_dependency(drop_behavior_t::restrict_));
     CHECK_FALSE(refuses_on_dependency(drop_behavior_t::cascade_));
 }
 
-// ---------------------------------------------------------------------------
-// AN OBJECT IS (classid, objid), AND THE WALK HAS TO REMEMBER IT AS ONE.
-//
-// The visited marks used to be keyed by the bare oid, so two objects that share
-// an oid across two catalogs collapsed into one mark. That is not the same
-// failure the diamond had: a duplicated step was a step too MANY and the
-// executor's own-row judgement caught it, while a collapsed mark silently drops
-// the second object out of the plan entirely — a DROP CASCADE that answers
-// success having left one of its dependents' catalog rows in place.
-//
-// This build allocates oids from one counter, so the state is unreachable
-// today. The walk is keyed on the whole identity anyway: the caller hands it
-// (classid, objid) pairs and gets (classid, objid) steps back, so nothing in
-// its signature promises the oid alone is unique, and a future per-catalog
-// counter must not turn that unwritten assumption into missing deletes.
-// ---------------------------------------------------------------------------
+// Visited marks are keyed on (classid, objid), not the bare oid: a mark keyed on oid alone
+// would collapse two objects sharing an oid across catalogs into one, silently dropping the
+// second from the plan. Unreachable today (oids come from one global counter) but the walk
+// makes no promise the oid alone is unique, so a future per-catalog counter must not regress this.
 TEST_CASE("catalog::cascade_plan::two_objects_sharing_an_oid_are_two_steps") {
     core::pmr::otterbrix_resource resource;
     // Same oid 16401 in two different catalogs: two distinct objects.

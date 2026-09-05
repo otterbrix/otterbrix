@@ -35,14 +35,11 @@ namespace components::table::storage {
         // writer just built is then NOT on disk and get_block_pointer() names nothing.
         [[nodiscard]] core::result_wrapper_t<bool> flush();
 
-        // How many sub-blocks a payload of `payload_bytes` occupies in a chain of sub-blocks of
-        // `sub_block_size`, counting the 12-byte chain header each carries. Exact, not an estimate:
-        // write_data fills each sub-block to the byte and lets a value straddle the boundary. Exists
-        // so a caller can pre-allocate a whole chain BEFORE writing — see
-        // single_file_block_manager_t::serialize_free_list, where an allocation made mid-write would
-        // come out of the very free list being published. Returns 0 for a sub_block_size too small to
-        // hold its own header, which no caller may read as "zero sub-blocks needed": it means the
-        // block geometry is unusable.
+        // How many sub-blocks a payload of `payload_bytes` occupies, counting each sub-block's
+        // 12-byte chain header. Exact, not an estimate (write_data fills to the byte and lets a
+        // value straddle the boundary): lets serialize_free_list pre-allocate a whole chain before
+        // writing, so no allocation comes out of the very free list being published. Returns 0 for
+        // a sub_block_size too small to hold its own header, meaning the geometry is unusable.
         static constexpr uint64_t sub_blocks_for(uint64_t payload_bytes, uint64_t sub_block_size) {
             if (sub_block_size <= SUB_BLOCK_HEADER_SIZE) {
                 return 0;

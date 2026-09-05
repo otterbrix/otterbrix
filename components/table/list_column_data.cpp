@@ -104,10 +104,8 @@ namespace components::table {
         vector::vector_t offset_vector(result.resource(), types::logical_type::UBIGINT, count);
         uint64_t scan_count = scan_vector(state, offset_vector, count, scan_vector_type::SCAN_FLAT_VECTOR);
         assert(scan_count > 0);
-        // The validity child writes into `result` (not the local offset_vector), so it targets
-        // the REAL result base — the offset saved above, not the temporary 0. Without the sync
-        // a scan spanning multiple vectors into one growing chunk folded whole-list NULL bits
-        // to offset 0 (see standard_column_data_t::scan).
+        // Targets the REAL result base, not the temporary 0: without this a scan spanning
+        // multiple vectors folded whole-list NULL bits to offset 0.
         state.child_states[0].result_offset = prev_state_result_offset;
         validity.scan_count(state.child_states[0], result, count);
         state.result_offset = prev_state_result_offset;
@@ -137,21 +135,14 @@ namespace components::table {
                 child_entry.type().to_physical_type() != types::physical_type::ARRAY &&
                 static_cast<uint64_t>(state.child_states[1].row_index) + child_scan_count >
                     static_cast<uint64_t>(child_column->start()) + child_column->max_entry()) {
-                // The cumulative offsets read above come off THIS column's own segments, i.e.
-                // off disk, so a run that reaches past the element column's end is a corrupt
-                // offset stream — not a program error. It reports on the SAME channel every
-                // other read failure in this layer uses: the scan state's scan_error, which
-                // row_group_t aggregates into collection_scan_state::scan_error and every scan
-                // loop bails on. The throw that stood here unwound into the disk agent's
-                // coroutine, whose unhandled_exception() is empty, so the statement HUNG
-                // instead of failing (rules 2/9).
+                // A run reaching past the element column's end is a corrupt offset stream (these
+                // offsets come off disk), not a program error; reports on scan_error rather than
+                // the throw that used to hang the statement here.
                 state.scan_error = core::error_t(
                     core::error_code_t::data_corruption,
                     std::pmr::string("list column scan: a stored list offset runs past the end of the element column",
                                      resource_));
-                // Nothing here may be trusted: the entries written into `result` above were
-                // derived from the very offsets this guard rejects.
-                return 0;
+                return 0; // entries written into `result` above were derived from the rejected offsets
             }
             state.child_states[1].result_offset = prev_size;
             result.reserve(prev_size + child_scan_count);
@@ -194,7 +185,7 @@ namespace components::table {
     core::result_wrapper_t<bool> list_column_data_t::initialize_append(column_append_state& state) {
         auto base = column_data_t::initialize_append(state);
         if (base.has_error()) {
-            return base; // out_of_memory (rules 2/9)
+            return base; // out_of_memory: no exceptions across actors
         }
 
         column_append_state validity_append_state;
@@ -266,7 +257,7 @@ namespace components::table {
         if (child_count > 0) {
             auto child = child_column->append(state.child_appends[1], child_vector, child_count);
             if (child.has_error()) {
-                return child; // out_of_memory (rules 2/9)
+                return child; // out_of_memory: no exceptions across actors
             }
         }
         auto base = column_data_t::append_data(state, uvf, count);
@@ -286,20 +277,16 @@ namespace components::table {
         if (v.has_error()) {
             return v;
         }
-        // start_row is COLLECTION-ABSOLUTE (see column_data_t::revert_append). The stored
-        // offsets are cumulative ELEMENT counts within this row group (append seeds them
-        // from child_column->max_entry()), and the child column shares this column's
-        // start_, so the child's absolute truncation row is start_ + <end offset of the
-        // last surviving entry> — 0 elements survive when the whole group is reverted.
-        // The old guard compared the RELATIVE surviving count against the ABSOLUTE start_,
-        // so for any row group with start_ > 0 (and for a full revert in group 0) the
-        // child was never truncated and the next append's offsets desynced from its data.
+        // start_row is COLLECTION-ABSOLUTE; stored offsets are cumulative ELEMENT counts within
+        // this row group, so the child's truncation row is start_ + <last surviving entry's end
+        // offset>. The old guard compared the RELATIVE surviving count against ABSOLUTE start_,
+        // so any row group with start_ > 0 left the child untruncated and desynced.
         uint64_t child_offset = 0;
         if (start_row > start_) {
             auto fetched = fetch_list_offset(start_row - 1);
             if (fetched.has_error()) {
                 // Truncating the child to a GUESSED offset is the desync this function
-                // exists to prevent; report instead (rule 6).
+                // exists to prevent; report instead.
                 return fetched.convert_error<bool>();
             }
             child_offset = fetched.value();
@@ -308,24 +295,11 @@ namespace components::table {
     }
 
     uint64_t list_column_data_t::fetch(column_scan_state& state, int64_t, vector::vector_t&) {
-        // POINT FETCH OF A WHOLE LIST CELL IS NOT IMPLEMENTED, and this override exists to say so
-        // rather than to be filled in. Deleting it would be worse than leaving it: the base
-        // column_data_t::fetch would scan this node's OWN segments, which hold the cumulative
-        // ELEMENT OFFSETS, into a LIST-typed result — silently answering with offsets where the
-        // caller asked for lists.
-        //
-        // Nothing calls it. column_data_t::fetch has exactly two call sites: column_data_t::update
-        // (on `this`) and struct_column_data_t::fetch (on a field). LIST, ARRAY and STRUCT all
-        // override BOTH update and update_column, so column_data_t::update is never entered with a
-        // nested node as `this`; struct_column_data_t::fetch therefore has no caller either, and
-        // neither has this. No SQL statement names the path: whole-list reads go through
-        // scan_count, and the in-place LIST update builds its pre-image per element in
-        // gather_child_update.
-        //
-        // The refusal travels on the channel the ONE potential caller already reads:
-        // column_data_t::update checks state.has_error() right after fetch() and returns
-        // state.scan_error. A throw here would unwind into the disk agent's coroutine, whose
-        // unhandled_exception() is empty — a hang, not an error (rules 2/9).
+        // Point fetch of a whole LIST cell is not implemented (base column_data_t::fetch would
+        // scan this node's own segments -- cumulative ELEMENT OFFSETS -- into a LIST-typed
+        // result). Unreachable in practice: whole-list reads go through scan_count, and the
+        // in-place LIST update builds its pre-image per element in gather_child_update. Refusal
+        // rides state.scan_error rather than throwing.
         state.scan_error =
             core::error_t(core::error_code_t::unimplemented_yet,
                           std::pmr::string("point fetch of a whole LIST cell is not implemented", resource_));
@@ -360,16 +334,11 @@ namespace components::table {
             const auto stored_length = eo.value() - start_offset;
             const auto new_length = update_validity.row_is_valid(r) ? update_entries[r].length : 0;
             if (new_length != stored_length) {
-                // In-place update writes each element over the element the row already owns, so
-                // it cannot move the row's neighbours to make room. A length change is a real
-                // statement-level refusal, not an internal impossibility: this path is the WAL
-                // REPLAY leg of an update (table_storage_adapter_t::update(row_ids, data)), so
-                // the offending length arrives from a journal on disk. It rides the
-                // result_wrapper_t<bool> both callers below already return, up through
-                // row_group_t::update -> collection_t::update -> data_table_t::update. The throw
-                // that stood here crossed the disk agent's mailbox boundary and unwound into a
-                // coroutine with an empty unhandled_exception() — a hang, not a refusal
-                // (rules 2/9).
+                // In-place update writes each element over the one the row already owns, so it
+                // cannot move neighbours to make room. A length change is a real statement-level
+                // refusal (this path is WAL REPLAY, so the length comes from a journal on disk),
+                // reported via result_wrapper_t<bool> rather than the throw that used to hang the
+                // statement here.
                 return core::error_t(core::error_code_t::unimplemented_yet,
                                      std::pmr::string("in-place LIST update cannot change a row's list length",
                                                       resource_));
@@ -516,9 +485,8 @@ namespace components::table {
                        child_column->max_entry());
             // scan_count (validity-aware) so NULL list elements survive a point fetch too.
             child_column->scan_count(*child_state, child_scan, child_scan_count);
-            // The elements are read on a SCAN state (the bulk leg owns its strings, so the
-            // pins half of the channel does not apply here) — but its scan_error is still an
-            // error of THIS fetch, and it was the only place a corrupt element was reported.
+            // Elements are read on a SCAN state (no pin channel needed), but scan_error must
+            // still fail this fetch.
             child_state->collect_child_errors();
             if (child_state->has_error()) {
                 if (!state.fetch_error.contains_error()) {
@@ -544,9 +512,7 @@ namespace components::table {
     core::result_wrapper_t<bool>
     list_column_data_t::checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
                                             persistent_column_data_t& persistent) {
-        // v1 convention: child_columns[0] is the list's own validity bitmap (whole-cell
-        // NULLs), child_columns[1] the element column (whose own record carries the
-        // element-level validity in turn).
+        // v1 convention: child_columns[0] = validity bitmap, child_columns[1] = element column.
         auto valid = validity.checkpoint(partial_block_manager);
         if (valid.has_error()) {
             return valid.convert_error<bool>(); // out_of_memory
@@ -562,9 +528,8 @@ namespace components::table {
 
     core::result_wrapper_t<bool>
     list_column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
-        // Own segments hold the per-row cumulative child offsets; the validity bitmap is the
-        // persisted child_columns[0], the element column child_columns[1]. Any other shape is
-        // data_corruption — never "assume all-valid".
+        // Own segments hold per-row cumulative offsets; validity/element live in
+        // child_columns[0..1]. Any other shape is data_corruption, never assume-all-valid.
         auto own = column_data_t::initialize_column(persistent_data);
         if (own.has_error()) {
             return own;
@@ -587,11 +552,8 @@ namespace components::table {
     }
 
     void list_column_data_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const {
-        // The base walk covers the own offsets segments; a reloaded list column additionally
-        // owns its validity bitmap and its element column, each sitting on the blocks
-        // initialize_column registered. Without this override compact leaks both children
-        // (only offset blocks — and whatever the partial-block packer happened to co-locate
-        // with them — get reclaimed).
+        // Base walk covers only the own offsets segments; without this override, compact
+        // leaks the validity bitmap and element column's blocks.
         column_data_t::collect_disk_block_ids(out);
         validity.collect_disk_block_ids(out);
         child_column->collect_disk_block_ids(out);

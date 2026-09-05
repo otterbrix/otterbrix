@@ -203,22 +203,9 @@ TEST_CASE("cells_equal resolves dictionary indirection like the hash does", "[un
     REQUIRE_FALSE(vector::cells_equal(dict, 0, flat, 1));
 }
 
-// ---------------------------------------------------------------------------
-// A GROUP THIS WRITE-SET CANNOT ANSWER IS A REFUSAL, NOT A SKIP.
-//
-// The group column names arrive already resolved from LIVE pg_attribute rows of
-// this very table (operator_resolve_constraint refuses a group it cannot resolve
-// rather than dropping it), and the DML materialises every column of the row it
-// writes. So a name with no column in the write-set means the write-set and the
-// catalog disagree about the table's shape — and there is no reading of an absent
-// column that is a uniqueness check.
-//
-// This used to `continue` on that condition, which is this operator's SUCCESS
-// path: the declared key was enforced against nothing and the rows the DML had
-// ALREADY written stayed in the table. Same defect, same shape and same cure as
-// operator_fk_check_t's "referencing column has no position in the written row",
-// which was made loud earlier; this is the UNIQUE / PRIMARY KEY half of it.
-// ---------------------------------------------------------------------------
+// A key column absent from the write-set used to `continue` — this operator's SUCCESS path,
+// silently enforcing nothing while the DML's already-written rows stayed. Same defect/cure as
+// operator_fk_check_t's "referencing column has no position in the written row".
 TEST_CASE("unique constraint operator: a key column absent from the write-set is refused, not skipped",
           "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
@@ -241,9 +228,8 @@ TEST_CASE("unique constraint operator: a key column absent from the write-set is
 TEST_CASE("unique constraint operator: a key column list that is empty is refused, not skipped",
           "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
-    // An empty column list enforces nothing at all: every row has the same
-    // (zero-column) key, so the constraint is either meaningless or lost. Mirrors
-    // operator_fk_check_t's `indices.empty()` refusal.
+    // An empty column list gives every row the same (zero-column) key, enforcing nothing.
+    // Mirrors operator_fk_check_t's `indices.empty()` refusal.
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("a");
@@ -257,21 +243,9 @@ TEST_CASE("unique constraint operator: a key column list that is empty is refuse
     INFO("error: " << err);
 }
 
-// ---------------------------------------------------------------------------
-// EVERY CHUNK IS READ BY THE FIRST CHUNK'S POSITIONS, SO EVERY CHUNK MUST HAVE
-// THE FIRST CHUNK'S LAYOUT.
-//
-// The operator resolves each key column's position ONCE, against the FRONT
-// chunk, and then indexes chunk.data[position] in EVERY chunk of the write-set.
-// The "one DML — one schema" invariant makes that legal today; a chunk with a
-// different layout would be read at the first chunk's positions anyway — a
-// NARROWER chunk as memory PAST ITS COLUMNS (out of bounds, silently), a
-// REORDERED chunk as THE WRONG COLUMN (below: the duplicate key 1 in the second
-// chunk sits at position 1, the operator reads position 0 = 999, and the
-// declared UNIQUE key admits the duplicate in silence). There is no reading of
-// the wrong column that is a uniqueness check, so a chunk that disagrees with
-// the front chunk's layout is refused, not read.
-// ---------------------------------------------------------------------------
+// Key column positions are resolved ONCE against the front chunk, then reused for every
+// chunk. A reordered chunk would be read at the wrong position and silently admit a
+// duplicate (a narrower one reads past its columns) — so a layout mismatch is refused, not read.
 TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the first chunk is refused",
           "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
@@ -320,30 +294,11 @@ TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the f
     REQUIRE(err.find("\"k\"") != std::string::npos);
 }
 
-// ---------------------------------------------------------------------------
-// LAYER 2 IS NOT SWITCHED OFF BY AN UNRESOLVED TABLE NAME.
-//
-// Skipping the existing-row layer on
-//
-//     ctx->disk_address == empty_address() || table_oid_ == INVALID_OID
-//
-// takes this operator's SUCCESS path: the rows are ALREADY written when a
-// constraint sink runs, so skipping the scan leaves a duplicate of a STORED row in
-// the table and reports success. The two halves of that condition are not the same
-// kind of fact: an empty disk address is TOPOLOGY (no disk actor to ask, which is
-// how the unit tests above run), while INVALID_OID is an UNRESOLVED TABLE NAME — a
-// disk actor is right there and the operator declines to use it. Same "success path
-// a declared key must not have" the empty-group and absent-column guards above
-// close, closed the same way.
-//
-// PATH NOT NAMED. No live SQL statement reaches it: both splice sites (planner.cpp
-// rewrite_insert / rewrite_update) take the oid from the very node whose
-// unique_groups came from catalog_resolves_t::constraints_for(table_oid), and that
-// function returns nullptr for INVALID_OID — a non-empty group list implies a
-// resolved oid. So this is a SENTINEL, and its sensitivity is proven by injection:
-// with `|| table_oid_ == catalog::INVALID_OID` added back to the LAYER-2 skip it
-// goes red on the REQUIRE below.
-// ---------------------------------------------------------------------------
+// `table_oid_ == INVALID_OID` used to also skip the existing-row scan (LAYER 2), silently
+// admitting a duplicate of an already-stored row — unlike an empty disk address, which is
+// topology, not an unresolved name. No live SQL path hits INVALID_OID here
+// (catalog_resolves_t::constraints_for returns nullptr for it); this is a sentinel, verified
+// by adding the condition back and confirming the REQUIRE below goes red.
 TEST_CASE("unique constraint operator: an unresolved table oid does not disable the existing-row layer",
           "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();
@@ -362,10 +317,8 @@ TEST_CASE("unique constraint operator: an unresolved table oid does not disable 
     op->set_children(make_child(&resource, std::move(chunk)));
 
     pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
-    // A disk actor IS wired up. address_t::operator== compares the pointee, so
-    // any non-null pointer is "not the empty address" as far as the operator's
-    // topology check goes; nothing is ever enqueued on it, because the refusal
-    // lands before the first send.
+    // Any non-null pointer reads as "not the empty address" for the topology check; nothing
+    // is enqueued on it since the refusal lands before the first send.
     int disk_actor_stand_in = 0;
     ctx.disk_address = actor_zeta::address_t{&resource, &disk_actor_stand_in};
 

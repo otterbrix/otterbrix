@@ -22,22 +22,14 @@ namespace components::logical_plan {
         alter_table_kind kind{alter_table_kind::drop_column};
         std::string column_name;
         std::string new_column_name; // rename_column only
-        // drop_constraint only: the written constraint name, and the pg_constraint
-        // oid enrich resolves it to (INVALID_OID until then; stays INVALID_OID for
-        // a missing name under IF EXISTS — the planner skips the clause).
+        // drop_constraint only: enrich resolves constraint_name to constraint_oid;
+        // stays INVALID_OID for a missing name under IF EXISTS (planner skips the clause)
         std::string constraint_name;
         components::catalog::oid_t constraint_oid{components::catalog::INVALID_OID};
-        // drop_column only: `DROP COLUMN IF EXISTS`. The grammar carries it (gram.y
-        // sets AlterTableCmd::missing_ok) and the transformer must not discard it:
-        // a missing column is an error, and IF EXISTS is the ONE form PostgreSQL
-        // lets pass, so without this flag the loud path would refuse it too.
+        // drop_column only: IF EXISTS is the one form where a missing column is not an error
         bool missing_ok{false};
-        // drop_column only: RESTRICT (written or defaulted — PostgreSQL parity,
-        // #638) or a written CASCADE. gram.y fills AlterTableCmd::behavior; the
-        // transformer copies it through transform::drop_behavior_of, the planner
-        // forwards it onto the alter_column primitive, and
-        // operator_alter_column_drop_t refuses a dependent-blocked drop under
-        // restrict_.
+        // drop_column only: RESTRICT (default or written) or CASCADE; see
+        // operator_alter_column_drop_t, which refuses a dependent-blocked drop under restrict_
         components::catalog::drop_behavior_t behavior{components::catalog::drop_behavior_t::restrict_};
         components::table::column_definition_t column;
         alter_table_subcommand_t()

@@ -21,15 +21,11 @@ namespace components::vector::arrow {
         ~arrow_schema_wrapper_t();
     };
 
-    // Intrusive refcount (rule 14: no std::shared_ptr). Ownership here really is SHARED, so
-    // boost::intrusive_ptr — not unique_ptr — is the replacement: one ArrowArray backs an
-    // arrow_array_scan_state, every child scan state it spawns (arrow_type.cpp
-    // arrow_array_scan_state::get_child copies owned_data), and one arrow_auxiliary_data_t per
-    // vector buffer that reads it (three sites in scaner/arrow_conversion.cpp plus the
-    // dictionary site in scaner/arrow_type.cpp). arrow_array_scan_state::reset() drops the scan
-    // state's own reference while those buffer-held references are still live, so the last
-    // owner out must be the one that releases the ArrowArray.
-    // The counter is boost's default thread_safe_counter, matching the shared_ptr it replaces.
+    // Intrusive refcount (shared_ptr is banned); intrusive_ptr, not unique_ptr, because
+    // ownership is genuinely shared -- the scan state, every child scan state it spawns, and
+    // one arrow_auxiliary_data_t per reading vector buffer (arrow_conversion.cpp x3, plus
+    // arrow_type.cpp's dictionary site) all hold a reference, and reset() drops the scan
+    // state's own while buffer-held ones may still be live.
     class arrow_array_wrapper_t : public boost::intrusive_ref_counter<arrow_array_wrapper_t> {
     public:
         ArrowArray arrow_array;
@@ -48,10 +44,8 @@ namespace components::vector::arrow {
 
     using arrow_array_wrapper_ptr = boost::intrusive_ptr<arrow_array_wrapper_t>;
 
-    // Rule-14 regression guard: every owner below (arrow_wrapper.cpp, arrow_converter.cpp,
-    // scaner/arrow_type.hpp's two members, and integration/python/arrow/arrow_scan_function.cpp)
-    // routes through this alias, so reintroducing std::shared_ptr here breaks the build loudly
-    // instead of quietly re-adding a forbidden control block.
+    // Regression guard: every owner routes through this alias, so a reintroduced
+    // std::shared_ptr here breaks the build instead of quietly coming back.
     static_assert(std::is_base_of_v<boost::intrusive_ref_counter<arrow_array_wrapper_t>, arrow_array_wrapper_t>,
                   "arrow_array_wrapper_t must carry its own intrusive counter");
     static_assert(!std::is_same_v<arrow_array_wrapper_ptr, std::shared_ptr<arrow_array_wrapper_t>>,

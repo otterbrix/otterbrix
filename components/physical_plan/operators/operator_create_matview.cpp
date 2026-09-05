@@ -24,11 +24,8 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_create_matview_t::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
 
-        // Create physical heap storage: always disk-backed (plan-gen guarantees
-        // non-empty inferred columns for a matview — create_plan_create_matview
-        // refuses an empty set). A matview is relkind='m', NEVER computed — passed
-        // explicitly so even a degenerate zero-column matview cannot come up as a
-        // dynamic-schema table.
+        // Always disk-backed (plan-gen guarantees non-empty inferred columns). is_computed
+        // explicitly false — a matview is relkind='m', never a dynamic-schema table.
         {
             auto [_, f] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                       &services::disk::manager_disk_t::create_storage_disk,
@@ -91,9 +88,8 @@ namespace components::operators {
             co_return;
         }
 
-        // Created empty. This operator only ever implements WITH NO DATA — the
-        // transformer refuses the form that would need populating — so there is
-        // nothing left to do here. See operator_create_matview.hpp.
+        // Created empty: this operator only ever implements WITH NO DATA (the transformer
+        // refuses the form that would need populating), so there is nothing left to do.
         mark_executed();
     }
 

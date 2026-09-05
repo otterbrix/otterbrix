@@ -85,12 +85,8 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 data_ = reinterpret_cast<uint64_t>(heap_new<std::string>());
                 break;
-            // UNION AND VARIANT ARE VECTOR-BACKED LIKE THE REST, and must stay on this arm:
-            // create_union below builds its member slots with exactly this constructor
-            // (`union_values->emplace_back(r, types[i])`), so a union whose member type is
-            // itself a UNION or VARIANT comes through here. Leaving them out gives an object
-            // with type UNION and data_ == 0, which children() then dereferences (it guards
-            // is_null(), and a UNION is not NA).
+            // UNION/VARIANT must stay vector-backed: create_union builds member slots through
+            // this same constructor, so a member that is itself UNION/VARIANT passes through here.
             case logical_type::TIME_TZ:
             case logical_type::INTERVAL:
             case logical_type::LIST:
@@ -372,11 +368,8 @@ namespace components::types {
         if (type_ == type) {
             return logical_value_t(*this);
         }
-        // ONE SHAPE FOR "THIS CAST HAS NO READING", used by every arm below. A bare assert(false)
-        // will not do here: it is a SIGABRT in Debug, and under NDEBUG control walks off the end
-        // of the switch, out of the else-if chain and into this function's trailing `return NA`,
-        // so the same call answers a silent NULL in the build users ship. A caller can act on
-        // neither answer, and the two builds disagreeing is worse than either.
+        // A bare assert(false) would SIGABRT in Debug and silently fall through to NA under
+        // NDEBUG; this shape refuses identically in both builds.
         auto conversion_failure = [this, &type]() {
             std::string message = "cannot cast logical_type " + std::to_string(static_cast<int>(type_.type())) +
                                   " to logical_type " + std::to_string(static_cast<int>(type.type()));
@@ -411,12 +404,9 @@ namespace components::types {
         } else if (type.type() == logical_type::DECIMAL && is_numeric(type_.type())) {
             const auto* decimal_extension = reinterpret_cast<const decimal_logical_type_extension*>(type.extension());
             auto create_decimal = [&]<typename T>() -> core::result_wrapper_t<logical_value_t> {
-                // to_decimal reports "does not fit" with the decimal_limits SENTINELS --
-                // Int128Max / Int128Min for width overflow, Int128Min+1 for a NaN source. A
-                // legitimate payload is bounded by 10^38 - 1 < Int128Max, so the sentinels are
-                // unambiguous and MUST NOT be passed on as a payload: that turns
-                // CAST(10000 AS NUMERIC(3,1)) into a "decimal" whose stored value is Int128Max.
-                // PostgreSQL refuses (`numeric field overflow`), and so do we.
+                // to_decimal signals overflow via the Int128Max/Min/NaN sentinels; passing one
+                // on as a payload would silently store a wrong value instead of refusing, as
+                // PostgreSQL does (`numeric field overflow`).
                 const auto payload =
                     to_decimal<int128_t>(value<T>(), decimal_extension->width(), decimal_extension->scale());
                 if (payload == decimal_limits::pos_inf<int128_t>() || payload == decimal_limits::neg_inf<int128_t>() ||
@@ -432,9 +422,8 @@ namespace components::types {
                 return logical_value_t::create_decimal(resource_, type, payload);
             };
             switch (type_.type()) {
-                // TINYINT and UTINYINT are is_numeric(), so they arrive here like every other
-                // integer width and need their own arms; without them CAST(<tinyint> AS
-                // NUMERIC(p,s)) falls to the refusal below instead of converting.
+                // is_numeric() includes TINYINT/UTINYINT; without their own arms they fell
+                // through to the refusal below instead of converting.
                 case logical_type::TINYINT:
                     return create_decimal.operator()<int8_t>();
                 case logical_type::UTINYINT:
@@ -460,9 +449,8 @@ namespace components::types {
                 case logical_type::DOUBLE:
                     return create_decimal.operator()<double>();
                 default:
-                    // BOOLEAN is the one type left: is_numeric() calls it a number, but there
-                    // is no scaled payload a boolean means (PostgreSQL refuses boolean::numeric
-                    // too). REFUSE, identically in both builds.
+                    // BOOLEAN is is_numeric() but has no scaled payload; PostgreSQL refuses
+                    // boolean::numeric too.
                     return conversion_failure();
             }
         } else if (type_.type() == logical_type::DECIMAL && is_numeric(type.type())) {
@@ -478,10 +466,8 @@ namespace components::types {
                     if (val.has_value()) {
                         return logical_value_t{resource_, val.value()};
                     }
-                    // The REVERSE of the int->DECIMAL overflow refusal: a descaled value that
-                    // does not fit the integer target must not come back as a silent NA — a
-                    // success-shaped NULL for a value that exists. Same conversion_failure
-                    // shape as the forward direction.
+                    // Reverse of the overflow refusal above: a descaled value that doesn't fit
+                    // the integer target must refuse, not come back as a silent NA.
                     return conversion_failure();
                 }
             };
@@ -496,9 +482,8 @@ namespace components::types {
                     case physical_type::INT128:
                         return create_numeric_inner.operator()<int128_t, To>();
                     default:
-                        // INVARIANT, not input: a DECIMAL type's storage is one of these four
-                        // by construction (create_decimal vets the width). Loud in Debug, and
-                        // the SAME refusal — never a silent NULL — under NDEBUG.
+                        // A DECIMAL's storage is one of these four widths by construction
+                        // (create_decimal vets it); loud in Debug, same refusal under NDEBUG.
                         assert(false && "decimal source has no integer storage width");
                         return conversion_failure();
                 }
@@ -529,26 +514,22 @@ namespace components::types {
                 case logical_type::DOUBLE:
                     return create_numeric.operator()<double>();
                 default:
-                    // Every is_numeric() target except BOOLEAN is listed above, and a DECIMAL
-                    // source bound for BOOLEAN never reaches this branch (decimal_source_descale
-                    // routes it to the raw cast). So this arm is unreachable today — but it is a
-                    // cast, not a load-bearing invariant, and refusing costs nothing.
+                    // Unreachable today (decimal_source_descale routes BOOLEAN to the raw
+                    // cast instead), but refusing costs nothing.
                     return conversion_failure();
             }
         } else if (type_.type() == logical_type::STRUCT && type.type() == logical_type::STRUCT) {
             if (type_.child_types().size() != type.child_types().size()) {
-                // A SHAPE THE CALLER GOT WRONG IS A FAILED CAST, not a broken invariant of this
-                // class: nothing stops a query asking for row(1,2)::<one-field struct>.
+                // A field-count mismatch is a failed cast, not a broken invariant: callers can
+                // legally ask for row(1,2)::<one-field struct>.
                 return conversion_failure();
             }
 
             std::vector<logical_value_t> fields;
             fields.reserve(children().size());
             for (size_t i = 0; i < children().size(); i++) {
-                // A NULL field (logical_type NA) stays a NULL slot, exactly as the ARRAY and
-                // LIST arms below already do it. Without this guard one NULL field makes the
-                // scalar cast's NA guard refuse the WHOLE row value — and a NULL is not a
-                // failed conversion, it is a value the target type can hold.
+                // A NULL field (type NA) stays NULL, like ARRAY/LIST below -- otherwise one
+                // NULL field would refuse the whole row cast.
                 if (children()[i].type().type() == logical_type::NA) {
                     fields.emplace_back(children()[i]);
                     continue;
@@ -619,9 +600,8 @@ namespace components::types {
                         return result;
                     }
                 }
-                // A string that names no entry must not answer NA -- the tree's NULL -- which
-                // travels on as a normal value: UNKNOWN in a predicate, a silent NULL on the
-                // INSERT coercion path. PostgreSQL refuses (`invalid input value for enum`).
+                // An unmatched string must refuse, not answer NA, which travels on as an
+                // ordinary NULL value. PostgreSQL refuses too (`invalid input value for enum`).
                 std::pmr::string message{resource_};
                 message.append("invalid input value for enum ");
                 message.append(enum_extension->type_name());
@@ -641,8 +621,8 @@ namespace components::types {
                         return result;
                     }
                 }
-                // Same contract as the string leg above: an ordinal that names no entry is a
-                // refusal, not an NA that travels on as a normal NULL.
+                // Same contract as the string leg above: an unmatched ordinal is a refusal,
+                // not a silent NULL.
                 std::pmr::string message{resource_};
                 message.append("invalid ordinal value for enum ");
                 message.append(enum_extension->type_name());
@@ -719,11 +699,8 @@ namespace components::types {
                     break;
             }
         }
-        // NO ARM MATCHED, AND THAT IS DELIBERATELY A NULL RATHER THAN A REFUSAL. The branches
-        // above fall through here on purpose — ENUM from a source that is neither string nor
-        // numeric, a duration pair with no conversion (DATE -> TIME), a nested-to-scalar pair —
-        // and the comparison paths that call cast_as read NA as "these do not compare", not as
-        // an error.
+        // Deliberate fallthrough to NA, not a refusal: callers of cast_as (comparison paths)
+        // read NA here as "these do not compare", not as an error.
         return logical_value_t{resource_, complex_logical_type{logical_type::NA}};
     }
 
@@ -782,14 +759,9 @@ namespace components::types {
                 return le.type_ == re.type_ && le == re;
             });
         }
-        // LOUD, THEN SAFE. The switch below dispatches on the LEFT operand's type and then
-        // reads the RIGHT operand's payload as if it had that same type -- so under NDEBUG,
-        // where this assert is not compiled, a STRING_LITERAL compared against an INTEGER would
-        // run `*rhs.str_ptr()`, i.e. reinterpret the integer as a std::string* and dereference
-        // it. The assert stays because a mismatch IS a caller bug; the guard behind it is what
-        // keeps the shipped build from following a wild pointer. Two values of different types
-        // are structurally unequal, which is the same answer the ARRAY/LIST arm above already
-        // gives for a per-element type mismatch.
+        // assert alone is not enough: under NDEBUG a type mismatch would dispatch on the left
+        // operand's type and read the right payload through it (e.g. dereference an int as a
+        // std::string*). The guard below is what keeps the shipped build from a wild pointer.
         assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
         if (!(type_ == rhs.type_)) {
             return false;
@@ -874,15 +846,9 @@ namespace components::types {
             const auto& rv = *rhs.vec_ptr();
             return std::lexicographical_compare(lv.begin(), lv.end(), rv.begin(), rv.end());
         }
-        // LOUD, THEN SAFE -- and here the release-build cost is worse than one wild read.
-        // The switch dispatches on the LEFT type and reads the RIGHT payload through it, so a
-        // mismatch could dereference a foreign pointer; and an unhandled left type falls to
-        // `default: return false`, which makes cross-type values MUTUALLY equivalent while
-        // same-type values stay ordered. That is a non-transitive equivalence, i.e. undefined
-        // behaviour for every std::sort, std::map and tree keyed on this comparator.
-        //
-        // Ordering by the logical type tag when the types differ is total, deterministic and
-        // consistent in both directions, so strict weak ordering survives a mismatch.
+        // Falling to `return false` on a mismatch (as equality does) would make cross-type
+        // values MUTUALLY equivalent while same-type values stay ordered -- non-transitive, UB
+        // for std::sort/std::map. Order by type tag instead: total and consistent both ways.
         assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
         if (!(type_ == rhs.type_)) {
             return type_.type() < rhs.type_.type();
@@ -1060,12 +1026,9 @@ namespace components::types {
             case logical_type::POINTER:
                 return logical_value_t(r, reinterpret_cast<void*>(value));
             default:
-                // Every caller hands create_numeric a numeric type by construction (the one
-                // external caller is vector_t::value_internal's SEQUENCE arm, and sequence vectors
-                // are numeric), so a non-numeric type here is a true invariant violation -- and an
-                // invariant must not throw through the noexcept executor coroutine.
-                // Channeling it instead would force result_wrapper_t onto the public vector_t::value
-                // surface, a separate change out of scale with a cannot-happen arm.
+                // Invariant violation, not user input (the only caller, vector_t::value_internal's
+                // SEQUENCE arm, is always numeric); must not throw through the noexcept executor
+                // coroutine, so assert then abort rather than a channeled error.
                 assert(false && "logical_value_t::create_numeric: Numeric requires numeric type");
                 std::abort();
         }
@@ -1231,13 +1194,9 @@ namespace components::types {
     constexpr auto place_holder_time_zone = core::date::timezone_offset_t{};
 
     namespace {
-        // THE ONE REFUSAL SHAPE FOR THE SIXTEEN ARITHMETIC AND BIT ENTRY POINTS. These run on
-        // every constant-folding SQL statement in a build that turns exceptions off, so the
-        // unsupported-pair arm has to be an error value, never a throw.
-        //
-        // The message NAMES BOTH OPERAND TYPES, because ordinary typing questions land here --
-        // `2.0 ^ 3.0`, `5.5 % 2`, `bit_and` on a DOUBLE, every (unimplemented) HUGEINT arm --
-        // and a refusal that does not say which types is unreadable in a log.
+        // Shared refusal shape for the arithmetic/bit entry points below: must be an error
+        // value, never a throw (constant folding runs with exceptions off), and must name
+        // both operand types or the refusal is unreadable in a log.
         core::error_t unsupported_operands(std::string_view what,
                                            const logical_value_t& value1,
                                            const logical_value_t& value2) {
@@ -1252,13 +1211,9 @@ namespace components::types {
             return core::error_t{core::error_code_t::arithmetics_failure, message};
         }
 
-        // Mixed-type numeric operands of sum/subtract/mult/divide/modulus are promoted
-        // to one common type before the per-type dispatch. Both casts are
-        // numeric-to-numeric (see promote_type), so a failure is a promote_type/cast_as
-        // drift rather than user input -- but ASSERT-THEN-value() IS NOT A GUARD:
-        // result_wrapper_t::value() is itself only assert-protected, so under NDEBUG a failed
-        // promotion hands the arithmetic below a MOVED-FROM value. The refusal travels instead;
-        // the five callers all have a channel for it.
+        // assert-then-value() is not a guard: result_wrapper_t::value() is itself only
+        // assert-protected, so under NDEBUG a failed promotion would hand the arithmetic below
+        // a moved-from value. Channel the refusal instead.
         struct promoted_operands_t {
             logical_value_t lhs;
             logical_value_t rhs;
@@ -1301,12 +1256,9 @@ namespace components::types {
             return sum(lhs, rhs);
         }
 
-        // The switch below reads BOTH operands with the getter of `type`, so it must never be
-        // entered with two DIFFERENT types: that reads the right operand's payload with the
-        // left's getter — STRING+BIGINT throws value<T>-not-implemented out of an error-channel
-        // function, and BIGINT+STRING answers the string's HEAP POINTER as an int64. A mixed
-        // pair that numeric promotion did not unify goes to the explicit temporal combinations
-        // below, and failing those, to unsupported_operands.
+        // Must never dispatch on the left type when the right differs: BIGINT+STRING would read
+        // the string's heap pointer as an int64. A mismatch falls to the temporal combinations
+        // below, then to unsupported_operands.
         const auto type =
             value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
@@ -1336,9 +1288,8 @@ namespace components::types {
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<float>);
             case logical_type::DOUBLE:
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<double>);
-            // NO STRING_LITERAL ARM, DELIBERATELY: SQL spells concatenation ||, and
-            // text + text is a refusal in PostgreSQL and here. One would also have to
-            // dispatch through &value<std::string>, a specialization that does not exist.
+            // No STRING_LITERAL arm: SQL spells concatenation ||; text+text refuses here as
+            // in PostgreSQL, and &value<std::string> has no specialization to dispatch through.
             default:
                 break;
         }

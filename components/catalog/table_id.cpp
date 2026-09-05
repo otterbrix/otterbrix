@@ -26,11 +26,11 @@ namespace components::catalog {
     const std::pmr::string& table_id::table_name() const { return name_; }
 
     void table_id::set_oid(oid_t oid) {
-        // OID is immutable after first assignment. Re-stamping the SAME value is an
-        // idempotent no-op; a DIFFERENT value is a programmer error and dies loudly in
-        // EVERY build (same pattern as oid_generator::allocate). An assert in debug that
-        // silently keeps the first value under NDEBUG would let two identities of one
-        // table diverge unseen, and there is no exception to throw either (rule 2).
+        // OID is immutable after first assignment: re-stamping the SAME value is an
+        // idempotent no-op; a DIFFERENT value is a programmer error and dies loudly in EVERY
+        // build (same pattern as oid_generator::allocate) -- an assert that vanishes under
+        // NDEBUG would let two identities of one table diverge unseen, and there is no
+        // exception to throw.
         if (oid_ != INVALID_OID && oid_ != oid) [[unlikely]] {
             assert(false && "table_id::set_oid: OID is immutable after assignment");
             std::abort();

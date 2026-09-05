@@ -13,11 +13,8 @@ namespace services::planner::impl {
         auto* resource = context.has_table_oid(node->table_oid()) ? context.resource : node->resource();
         auto log = context.has_table_oid(node->table_oid()) ? context.log.clone() : log_t{};
 
-        // This vector is MOVED into the operator below, which lives on `resource` and reads its
-        // args during execution — after the logical plan, and node->resource() with it, is gone.
-        // So the vector and every key inside it are placed on `resource`. A parameter_id_t arg
-        // is a scalar with no arena; an expression arg is an intrusive pointer whose pointee
-        // still lives on the node's arena (a separate question, untouched here).
+        // Moved into the operator (lives on `resource`) after the logical plan's own arena is gone,
+        // so every key must be placed on `resource` too.
         std::pmr::vector<components::expressions::param_storage> args(resource);
         args.reserve(function_node->args().size());
         for (const auto& arg : function_node->args()) {

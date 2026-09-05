@@ -137,9 +137,8 @@ namespace otterbrix {
     otterbrix_py_type_t::otterbrix_py_type_t(module_arena_ptr arena, complex_logical_type value)
         : arena_(std::move(arena))
         , type_(std::move(value)) {
-        // Rule 6: the owner is a PRECONDITION, not a hint. `type_` may already hold pmr bytes
-        // out of it, and a null reference here means the object is standing on an arena
-        // nobody holds -- say it now, at construction, not much later inside a read.
+        // A null arena here means type_'s pmr bytes have no owner; fail at
+        // construction, not later inside a read.
         if (!arena_) {
             throw std::runtime_error("OtterBrixPyType: the module's arena is missing");
         }
@@ -154,9 +153,8 @@ namespace otterbrix {
         }
     }
 
-    // A derived type stands on the SAME arena as the one it was derived from -- a child of a
-    // STRUCT is a copy that keeps the parent's allocator -- so it inherits BOTH owner slots
-    // verbatim and exactly one of them is set, as in the parent.
+    // Copies BOTH owner slots verbatim: a STRUCT/MAP child's copy keeps the parent's
+    // allocator, so the derived type stands on the same arena and exactly one slot stays set.
     std::shared_ptr<otterbrix_py_type_t> otterbrix_py_type_t::derive(complex_logical_type value) const {
         return arena_ ? std::make_shared<otterbrix_py_type_t>(arena_, std::move(value))
                       : std::make_shared<otterbrix_py_type_t>(space_, std::move(value));
@@ -418,12 +416,10 @@ namespace otterbrix {
 
     static core::result_wrapper_t<complex_logical_type> from_dictionary(const py::object& obj,
                                                                         std::pmr::memory_resource* resource) {
-        // BORROW, never steal: `obj` is the caller's, handed in by const reference. A steal
-        // claims ownership WITHOUT an incref, so the temporary below decrefs a reference this
-        // function never took, and `OtterBrixPyType({...})` leaves the caller's dict one
-        // reference short -- freed underneath a variable that still names it. That was a
-        // segfault at interpreter shutdown in 10 runs out of 10; see
-        // tests/test_module_arena.py::test_type_from_dict_does_not_steal_the_caller_s_reference.
+        // BORROW, never steal: stealing `obj` (no incref) leaves the caller's dict one
+        // reference short once the temporary decrefs -- segfault at interpreter shutdown,
+        // reproduced 10/10 by
+        // integration/python/tests/test_module_arena.py::test_type_from_dict_does_not_steal_the_caller_s_reference.
         auto dict = py::reinterpret_borrow<py::dict>(obj);
         std::pmr::vector<complex_logical_type> children(resource);
         if (dict.size() == 0) {
@@ -476,13 +472,8 @@ namespace otterbrix {
     }
 
     void otterbrix_py_type_t::initialize(py::handle& m, const module_arena_ptr& arena) {
-        // The arena arrives as an ARGUMENT now, and as a COUNTED one. It used to be a
-        // file-local module_arena() returning std::pmr::get_default_resource(), with a note
-        // saying the exit was a module-owned arena passed in here. This is that exit.
-        //
-        // A THROW AND NOT AN assert: NDEBUG deletes an assert, and what is left in the build
-        // that ships is `&arena->resource` inside every lambda below -- a null dereference on
-        // the first call from Python instead of a refused import. Rule 6.
+        // A throw, not an assert -- NDEBUG deletes an assert, leaving a null
+        // dereference in every lambda below on the first call from Python.
         if (!arena) {
             throw std::runtime_error("otterbrix_py_type_t::initialize needs the module's arena");
         }
@@ -495,8 +486,8 @@ namespace otterbrix {
         type_module.def("__eq__", &otterbrix_py_type_t::equals, "Compare two types for equality", py::arg("other"));
         type_module.def_property_readonly("id", &otterbrix_py_type_t::get_id);
         type_module.def_property_readonly("children", &otterbrix_py_type_t::children);
-        // Each lambda CAPTURES the arena by value, so the bound factory is itself an owner:
-        // the entry point cannot outlive the arena the type it builds is allocated from.
+        // Captures arena by value: the bound factory is itself an owner, so it can't
+        // outlive the arena its type is built on.
         type_module.def(py::init<>([arena](const std::string& type_str) {
             auto ltype = from_string(type_str, &arena->resource);
             if (ltype.has_error()) {

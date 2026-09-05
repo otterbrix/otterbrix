@@ -12,31 +12,15 @@ namespace components::operators {
 
     // Operator implementation of manager_dispatcher_t::register_udf.
     //
-    // The executor fan-out is NOT performed here. The dispatcher (which owns the executor addresses +
-    // scheduler and is the only place that can honour needs_sched on a send) issues the per-executor
-    // register_udf sends itself, co_awaits each unique_future, collects the resulting function_uid values,
-    // and hands them to this operator as a plain, pre-collected vector. That keeps every callable /
-    // type-erased indirection (std::function) and every shared owner (std::shared_ptr) out of the operator.
+    // Executor fan-out is done by the DISPATCHER (owns the executor addresses/scheduler), which co_awaits
+    // each register_udf send and hands this operator a plain pre-collected uid vector — keeping
+    // std::function/std::shared_ptr out of the operator.
     //
-    // Steps performed by the operator. EVERY STEP THAT CAN REFUSE COMES BEFORE THE ONE STEP THAT MUTATES,
-    // so a refusal leaves the process exactly as it found it:
-    //   1. resolve_function_by_name across all namespaces (cross-namespace conflict detection — refuse with
-    //      already_exists on any match, and with the read's own error if the catalog could not be read).
-    //   2. validate the pre-collected per-executor uids: every executor must have agreed on a single,
-    //      non-invalid uid. The dispatcher drops any executor that returned an error before building the
-    //      vector — an empty vector means "no executors / nothing to mirror by uid".
-    //   3. allocate the ONE OID the pg_proc row will carry, and refuse the statement if the round did not
-    //      deliver it.
-    //   4. resolve the target namespace (list_namespaces + resolve_namespace) and write the pg_proc +
-    //      pg_depend rows — the function's durable identity, which every later catalog lookup keys on.
-    //   5. mirror the function into function_registry_t::get_default() so validate_logical_plan lookups can
-    //      find it, reusing the agreed LOCAL uid so the global counter and the per-executor counters never
-    //      diverge.
-    //
-    // Step 5 is the operator's ONLY mutation and it is LAST on purpose. Ahead of the namespace resolution in
-    // step 4 it would run before a catalog read that can refuse (scan_table answers a result_wrapper_t), so
-    // an unreadable pg_namespace would leave the process-global registry answering for a function the catalog
-    // has no row for.
+    // Every step that can refuse comes before the one step that mutates (5), so a refusal leaves the
+    // process untouched: 1) resolve_function_by_name (cross-namespace conflict). 2) validate the
+    // pre-collected per-executor uids agree. 3) allocate the pg_proc OID. 4) write pg_proc + pg_depend.
+    // 5) mirror into function_registry_t::get_default() — LAST because step 4's catalog read can still
+    // refuse, and mirroring first would answer for a function the catalog has no row for.
     //
     // The function payload is owned here as the canonical function_ptr (unique): the operator deep-copies it
     // via get_copy() for the default-registry mirror and reads name()/get_signatures() for the pg_proc

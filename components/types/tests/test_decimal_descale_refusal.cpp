@@ -1,12 +1,6 @@
-// The REVERSE direction of the DECIMAL overflow refusal.
-//
-// int -> DECIMAL was closed first: to_decimal reports "does not fit" with the decimal_limits
-// sentinels, and logical_value_t::cast_as turns those into a conversion_failure reading
-// "numeric field overflow" (components/types/logical_value.cpp, the create_decimal lambda).
-// DECIMAL -> int is the same question asked backwards: decimal_to_numeric descales and hands
-// back std::nullopt when the result does not fit the integer target, and that nullopt must not
-// become a SILENT NA -- a success-shaped NULL standing in for a value that exists and simply
-// does not fit.
+// DECIMAL -> int is the reverse of the int -> DECIMAL overflow refusal in
+// logical_value.cpp's create_decimal lambda: a descaled value that doesn't fit the integer
+// target must refuse, not come back as a silent NA.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
@@ -16,9 +10,8 @@
 using namespace components::types;
 
 namespace {
-    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
-    // path, and that message belongs to the caller, so the caller has to name an arena it owns
-    // rather than reach for the process-global one (rule 14).
+    // Not the process-global resource: create_decimal's refusal message needs a
+    // caller-owned arena.
     std::pmr::memory_resource* decimal_resource() {
         static core::pmr::otterbrix_resource arena;
         return &arena;
@@ -57,9 +50,7 @@ TEST_CASE("components::types::logical_value::a_descaled_decimal_that_does_not_fi
         const auto too_big = logical_value_t::create_decimal(&resource, dec, int64_t{1234567}); // 12345.67
         auto casted = too_big.cast_as(complex_logical_type{logical_type::INTEGER}, {});
         REQUIRE_FALSE(casted.has_error());
-        // ROUNDED, not truncated, and that is the PostgreSQL answer for numeric::integer
-        // (12345.67 -> 12346). Pinned here because the refusal above is a range decision made
-        // on the DESCALED value, so which value that is has to be stated.
+        // Rounded, not truncated: PostgreSQL's numeric::integer answer for 12345.67 is 12346.
         CHECK(casted.value().value<int32_t>() == 12346);
     }
 

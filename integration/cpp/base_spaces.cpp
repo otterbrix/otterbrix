@@ -49,13 +49,9 @@ namespace otterbrix {
             }
         }
 
-        // THE REGISTRATION MUST NOT SURVIVE A REFUSAL. Every startup refusal below leaves this
-        // constructor by throwing, so ~base_otterbrix_t never runs and its paths_.erase never
-        // happens. A leaked entry makes the SAME directory unopenable for the rest of the
-        // process — the next attempt fails with "otterbrix instance has to have unique
-        // directory", naming neither the real fault nor anything the operator can act on, which
-        // turns an addressable refusal into an unrecoverable one. Unwinding runs this guard;
-        // the last statement of the constructor disarms it.
+        // Every refusal below throws out of the constructor, so ~base_otterbrix_t never runs to
+        // erase the path — without this guard a leaked entry makes the directory permanently
+        // unopenable. Disarmed at the end once construction succeeds.
         struct path_registration_guard_t {
             std::filesystem::path path;
             bool armed{true};
@@ -77,35 +73,18 @@ namespace otterbrix {
             }
         }
 
-        // Read WAL records via wal_reader_t. Capture the union of committed txn
-        // ids alongside the records: the bitcask index txn-log recover gate
-        // needs it to discard frames belonging to transactions whose WAL
-        // commit marker never landed (index txn-log frames are durable BEFORE the
-        // WAL commit marker, so an uncommitted txn's index entries could otherwise
-        // survive a crash). Threaded by VALUE through the single-threaded
-        // pre-scheduler bootstrap window down to each bitcask agent.
+        // committed_txn_ids feeds the bitcask index recover gate: index txn-log frames are
+        // durable BEFORE the WAL commit marker, so an uncommitted txn's index entries must be
+        // discarded using this set.
         std::set<std::uint64_t> committed_txn_ids;
         services::wal::wal_reader_t wal_reader(&resource, config.wal, log_);
         auto wal_records_result = wal_reader.read_committed_records(last_wal_id, &committed_txn_ids);
 
-        // A SEGMENT THAT WOULD NOT OPEN STOPS STARTUP, and the choice between the three
-        // available answers is settled by what each one leaves behind.
-        //
-        //   - Coming up anyway is the one that is NOT recoverable. The scan that recovers the
-        //     id allocator is the same read: manager_wal_replicate_t's constructor derives
-        //     global_id_ from it and wal_worker_t::recover_from_disk derives id_ and last_crc_.
-        //     Records it could not see leave both BELOW ids that are already on disk, so the
-        //     very first write after startup reuses them — and then page_lsn ordering, the CRC
-        //     chain and read_all_records(after_id) are all comparing against duplicated ids.
-        //   - Failing the first statement instead would let the engine open, and opening is
-        //     exactly what allocates and writes.
-        //   - Refusing to start writes nothing, deletes nothing (truncate_before now refuses on
-        //     the same segment rather than unlinking it), and leaves the journal as it was.
-        //     Whatever made the open fail is addressable, and the next start replays the segment
-        //     in full.
-        //
-        // This is a refusal, not an abort: the same std::runtime_error the two startup refusals
-        // above use, so the embedder catches it and the process survives.
+        // Refuse to start rather than come up with a gap: the id allocator (global_id_,
+        // last_crc_) is derived from this same read, so records it could not see would leave
+        // it BELOW ids already on disk and the first post-start write would reuse them. Refusal
+        // writes/deletes nothing (truncate_before also refuses on this segment rather than
+        // unlinking it), so the next start can retry the replay in full.
         if (wal_records_result.has_error()) {
             error(log_,
                   "spaces::startup REFUSED , the WAL could not be replayed in full: {}",
@@ -199,7 +178,6 @@ namespace otterbrix {
             // for each well_known system oid, load the existing .otbx if present, else
             // create a fresh storage. No external existence probe needed — the disk
             // actor owns the per-table decision.
-            //
             // User storages are NOT pre-loaded. WAL replay calls
             // load_storage_for_wal_replay_sync on demand; resolve_table lazy-loads
             // anything still missing. Startup is O(system-tables).
@@ -209,33 +187,22 @@ namespace otterbrix {
             // so the WAL-replay filter below can correctly skip
             // already-checkpointed records for user tables.
             disk_ptr->load_user_table_storages_sync();
-            // Every user table is disk-backed, so an alive pg_class row
-            // whose .otbx is missing means the file was lost (the directory
-            // entry of a freshly created .otbx is not fsynced, so a crash can
-            // durably keep the catalog row while losing the file). Recreate the
-            // missing .otbx from the pg_attribute columns so catalog and storage
-            // agree again. Without this, a reopened session's CREATE TABLE IF
-            // NOT EXISTS finds the table "exists" and skips creating storage,
-            // resolve_table returns a schema, but every INSERT silently no-ops
-            // (storage_append returns 0,0) and scans see nothing. Runs after
-            // load_user_table_storages_sync so on-disk tables (already loaded)
-            // are skipped, and before WAL replay so replayed INSERTs land in the
-            // recreated storage.
+            // A .otbx can be lost after crash even though its pg_class row survived (the
+            // directory entry of a freshly created .otbx is not fsynced). Recreate the missing
+            // storage from pg_attribute so catalog and storage agree; without this a reopened
+            // CREATE TABLE IF NOT EXISTS finds the table "exists" and every INSERT silently
+            // no-ops. Must run after load_user_table_storages_sync and before WAL replay.
             auto rehydrated = disk_ptr->rehydrate_missing_user_storages_sync();
             if (rehydrated.has_error()) {
-                // THE WALK COULD NOT RUN. Distinct from the count below and reported
-                // separately: folded into that count, a walk that examined no table at all
-                // would answer 0 — which is what a start with nothing wrong answers — so the
-                // one condition this branch exists to notice would be invisible.
+                // Reported separately from the count below: folded in, a walk that never ran
+                // would read as 0 divergences, indistinguishable from nothing wrong.
                 error(log_,
                       "spaces::open: the rehydrate walk did not run, so no catalog/storage divergence was "
                       "examined: {}",
                       rehydrated.error().what);
             } else if (rehydrated.value() > 0) {
-                // Non-fatal by design: none of these can be repaired from inside this process,
-                // and refusing the start would repeat on every start over the same catalog. The
-                // count is the one place a start that came up with tables it cannot serve says
-                // so — each one is already named individually by the walk.
+                // Non-fatal: none of these can be repaired here, and refusing would repeat every
+                // boot over the same catalog. Each table is already named by the walk.
                 error(log_,
                       "spaces::open: {} alive catalog table(s) came up with no storage behind them",
                       rehydrated.value());
@@ -253,17 +220,13 @@ namespace otterbrix {
         // by oid: system-table (oid < FIRST_USER_OID) records are replayed first
         // (sequential — small volume, mutates the catalog the rest of restore depends on);
         // user-table records run in parallel.
-        //
         // WAL records carry table_oid directly — no cfn-resolve roundtrip.
         if (disk_ptr && !wal_records.empty()) {
             std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>> system_by_oid;
             std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>> user_by_oid;
-            // The namespace oid that names a table's on-disk directory. It is
-            // `pg_class.relnamespace` — what create_storage_disk was given — and the catalog is
-            // final here (system records replay first and sequentially). NOT
-            // well_known_oid::main_database (4): that is a DATABASE oid, not a namespace one,
-            // and no user table can carry it — CREATE DATABASE allocates its namespace from
-            // FIRST_USER_OID upward. Cached per oid: each resolve is a pg_class scan.
+            // Namespace oid = pg_class.relnamespace, NOT well_known_oid::main_database (that is
+            // a DATABASE oid, never a namespace one). Cached per oid: each resolve is a pg_class
+            // scan.
             std::unordered_map<components::catalog::oid_t, components::catalog::oid_t> ns_cache;
             auto ns_for = [&](components::catalog::oid_t oid) {
                 auto [it, inserted] = ns_cache.try_emplace(oid);
@@ -276,25 +239,12 @@ namespace otterbrix {
                 }
                 return it->second;
             };
-            // .otbx + sidecar are authoritative for *all* checkpointed tables (system and user
-            // alike): records at or before sidecar.wal_id are already absorbed into the loaded
-            // storage and replaying them would duplicate catalog rows, while tables without a
-            // sidecar (cp_id == 0, never checkpointed) still replay unconditionally. The
-            // per-table sidecar wal_id is cached to avoid one fs read per record, and the cache is
-            // CLEARED between the two replay phases: this classification pass runs BEFORE system
-            // records replay, so a crash image whose pg_class rows are still only in the WAL
-            // answers "unknown" here and would otherwise poison the answer the user phase needs.
-            // "Unknown" is harmless for the sidecar probe it feeds
-            // (peek_checkpoint_wal_id_from_disk reads the loaded entry first, and a table with no
-            // loaded entry has no sidecar to find either).
-            //
-            // A THIRD ANSWER, AND IT IS NOT A NUMBER. The probe reports when a table's checkpoint
-            // floor cannot be read at all (a sidecar that exists and does not hold a wal id).
-            // Reported as 0 it would read here as "never checkpointed, replay everything" — the
-            // one response guaranteed to re-apply records the checkpointed .otbx already absorbed.
-            // A floor nobody can read is not a floor of zero: drop the table's records instead,
-            // loudly and once. The table is refused by the loader for the same reason, so there is
-            // nowhere to replay into either way.
+            // cp_id==0 means never checkpointed (replay all); >0 skips records already absorbed
+            // by the checkpointed .otbx. Cache is cleared between the system/user replay phases
+            // (below) because this classification pass runs before system replay, when pg_class
+            // is still partial. A checkpoint floor that fails to read is NOT treated as 0 — 0
+            // would mean "replay everything" and re-apply rows already in the checkpointed file
+            // — its records are dropped instead.
             std::unordered_map<components::catalog::oid_t, services::wal::id_t> cp_cache;
             std::unordered_set<components::catalog::oid_t> cp_unreadable;
             auto cp_for = [&](components::catalog::oid_t oid) -> services::wal::id_t {
@@ -303,18 +253,9 @@ namespace otterbrix {
                 }
                 auto [it, inserted] = cp_cache.try_emplace(oid);
                 if (inserted) {
-                    // THE ONE "NO ANSWER" THAT IS STILL AN HONEST ZERO IS DECIDED HERE. The
-                    // probe cannot locate a sidecar for a table whose namespace the catalog
-                    // does not name, and it says so rather than answering 0. This caller is
-                    // the one that knows why that happens: this pass runs BEFORE the system
-                    // records replay, so a table created since the last checkpoint has its
-                    // pg_class row only in the WAL. checkpoint_all writes pg_class in the same
-                    // round it writes the table, so such a table has no committed checkpoint
-                    // and therefore no sidecar — every record it has must be replayed. The
-                    // loaded-entry probe still gets first refusal (a user .otbx on disk was
-                    // already loaded by load_user_table_storages_sync, and its floor is
-                    // authoritative), so this only covers a table with no storage and no
-                    // catalog row.
+                    // No namespace + no storage means the table was created since the last
+                    // checkpoint (pg_class row still WAL-only) — checkpoint_all writes pg_class
+                    // and the table together, so there is no checkpoint and 0 is correct here.
                     const auto ns_oid = ns_for(oid);
                     if (ns_oid == components::catalog::INVALID_OID && !disk_ptr->has_storage(oid)) {
                         it->second = services::wal::id_t{0};
@@ -356,25 +297,14 @@ namespace otterbrix {
                 }
             }
 
-            // BYPASS (1) OF 3, DECLARED — see core/pipeline_bypass.hpp for the rule and the whole
-            // list. This callable reaches storage with no plan behind it: where a table's .otbx is
-            // gone it SYNTHESISES one from the journalled chunk's own column types, then applies
-            // the records straight to storage (direct_append / delete / update / add_column).
-            //
-            // WHY IT IS LEGAL HERE, AND ONLY HERE: it runs inside base_otterbrix_t's constructor,
-            // before scheduler_, scheduler_disk_ and scheduler_dispatcher_ are started. There is no
-            // planner, no optimizer, no executor and no transaction to route it through — the
-            // pipeline it would "bypass" does not exist yet. Rule 11 names base_spaces as the one
-            // place allowed direct synchronous calls.
-            //
-            // WHAT BREAKS IF IT IS EVER CALLED FROM A RUNNING ENGINE: (a) the writes are stamped
-            // transaction_data{0, 0} — committed-for-everyone — so they would appear inside
-            // snapshots older than any commit that could have produced them; (b) nothing journals
-            // them, so the next crash loses exactly the rows this path was asked to restore; (c) no
-            // index is maintained, so an indexed table would keep answering from an index that
-            // never heard of the rows; (d) storage synthesis mutates manager_disk_t::storages_, an
-            // unordered_map guarded by nothing but the single-threadedness of this window — the
-            // parallel variant of the replay below was already caught racing on it by TSan.
+            // Declared bypass — see core/pipeline_bypass.hpp. Legal only here: runs inside
+            // base_otterbrix_t's constructor before any scheduler starts, so there is no
+            // planner/executor/transaction pipeline to bypass yet. Writes are stamped
+            // transaction_data{0,0} (committed-for-everyone) and journal nothing, so calling this
+            // from a running engine would corrupt snapshots and lose data on crash. Storage
+            // synthesis also mutates manager_disk_t::storages_ with no lock but the
+            // single-threadedness of this window — the parallel variant of the replay below was
+            // TSan-confirmed racing on it.
             auto replay_one = core::maintenance::pipeline_bypass<
                 core::maintenance::bypass_site::wal_replay_storage_synthesis>(
                 [disk_ptr, &log = log_](components::catalog::oid_t table_oid,
@@ -385,18 +315,10 @@ namespace otterbrix {
                             case services::wal::wal_record_type::PHYSICAL_INSERT:
                                 if (!r->physical_data.empty()) {
                                     if (!disk_ptr->has_storage(table_oid)) {
-                                        // Try lazy-load from .otbx; if the file is absent
-                                        // (lost with its unfsynced directory entry, or the
-                                        // record predates this table's .otbx) synthesise a
-                                        // DISK storage from the WAL chunk's column types at
-                                        // the standard path — every table is disk-backed,
-                                        // replay synthesis included.
-                                        // A FILE THAT DID NOT LOAD IS NOT A FILE THAT IS NOT
-                                        // THERE: creating a storage at the same path would
-                                        // write over an .otbx that exists and holds the
-                                        // table's committed rows. The loader reports the
-                                        // difference; a table whose file refused to open
-                                        // keeps it.
+                                        // A file that failed to load is not a file that is
+                                        // absent: creating a storage at the same path would
+                                        // overwrite an .otbx that holds committed rows, so the
+                                        // loader's error is checked before synthesising.
                                         if (auto load_err =
                                                 disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
                                             load_err.contains_error()) {
@@ -410,12 +332,8 @@ namespace otterbrix {
                                         }
                                         if (!disk_ptr->has_storage(table_oid)) {
                                             if (ns_oid == components::catalog::INVALID_OID) {
-                                                // Rule 6: the namespace names the directory the
-                                                // file belongs in, and nothing in the record
-                                                // implies it. Synthesising under a guessed one
-                                                // writes a file the table's own resolve will
-                                                // never open. Report and drop this table's
-                                                // records rather than manufacture that.
+                                                // No namespace, no directory: a guessed one would
+                                                // write a file the table's own resolve never opens.
                                                 error(log,
                                                       "spaces::replay: table oid={} has no pg_class.relnamespace; "
                                                       "cannot place its .otbx and refusing to guess — records for "
@@ -434,18 +352,10 @@ namespace otterbrix {
                                                         std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
                                             std::filesystem::create_directories(otbx.parent_path());
                                             // The synthesised storage must keep the computed
-                                            // (relkind='g') flag — its columns come from the WAL
-                                            // chunk, so they are NON-empty even for a computed
-                                            // table and the flag cannot be inferred from them.
-                                            // A RELKIND THAT COULD NOT BE READ IS NOT 'r':
-                                            // synthesising a DOCUMENT table as a regular one
-                                            // gives it a fixed schema it never had, and no later
-                                            // pass re-derives that. pg_class is final here
-                                            // (system records replay FIRST and sequentially, user
-                                            // replay is sequential too, so the single-threaded
-                                            // relkind scan is safe), so an unreadable relkind
-                                            // cannot happen — and must say so rather than be
-                                            // guessed through.
+                                            // (relkind='g') flag — WAL chunk columns are non-empty
+                                            // even for a computed table, so the flag can't be
+                                            // inferred from them. An unreadable relkind is refused
+                                            // rather than defaulted to 'r'.
                                             auto relkind_r = disk_ptr->relkind_for_oid_sync(table_oid);
                                             if (relkind_r.has_error()) {
                                                 error(log,
@@ -474,10 +384,9 @@ namespace otterbrix {
                                         }
                                     }
                                     for (auto& chunk : r->physical_data) {
-                                        // COMMITTED ROWS THAT LAND NOWHERE MUST LEAVE A TRACE,
-                                        // and the appended row's start index cannot carry it:
-                                        // 0 for a refusal and 0 for the first row of a fresh
-                                        // table alike. Only the error channel separates them.
+                                        // The appended row's start index is 0 both on a refusal
+                                        // and for a fresh table's first row; only the error
+                                        // channel tells them apart.
                                         if (auto append_r = disk_ptr->direct_append_sync(table_oid, chunk);
                                             append_r.has_error()) {
                                             error(log,
@@ -497,12 +406,8 @@ namespace otterbrix {
                                 // it from the schema chunk's column types.
                                 if (!r->physical_data.empty()) {
                                     if (!disk_ptr->has_storage(table_oid)) {
-                                        // A FILE THAT DID NOT LOAD IS NOT A FILE THAT IS NOT
-                                        // THERE: creating a storage at the same path would
-                                        // write over an .otbx that exists and holds the
-                                        // table's committed rows. The loader reports the
-                                        // difference; a table whose file refused to open
-                                        // keeps it.
+                                        // A file that failed to load is not absent; don't
+                                        // overwrite an .otbx holding committed rows.
                                         if (auto load_err =
                                                 disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
                                             load_err.contains_error()) {
@@ -516,8 +421,7 @@ namespace otterbrix {
                                         }
                                         if (!disk_ptr->has_storage(table_oid)) {
                                             if (ns_oid == components::catalog::INVALID_OID) {
-                                                // Same refusal as the PHYSICAL_INSERT branch: no
-                                                // namespace, no directory, no guessing (rule 6).
+                                                // Same refusal as the PHYSICAL_INSERT branch above.
                                                 error(log,
                                                       "spaces::replay: table oid={} has no pg_class.relnamespace; "
                                                       "cannot place its .otbx and refusing to guess — records for "
@@ -531,9 +435,7 @@ namespace otterbrix {
                                             for (const auto& t : types) {
                                                 cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
                                             }
-                                            // Synthesise DISK storage (standard path),
-                                            // mirroring the PHYSICAL_INSERT branch above —
-                                            // relkind-derived computed flag included.
+                                            // Mirrors the PHYSICAL_INSERT branch above.
                                             auto otbx = disk_ptr->path_db() /
                                                         std::to_string(static_cast<unsigned>(ns_oid)) /
                                                         std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
@@ -577,14 +479,11 @@ namespace otterbrix {
                                 }
                                 break;
                             case services::wal::wal_record_type::PHYSICAL_DELETE: {
-                                // THE STORAGE HAS TO EXIST FIRST, exactly as the INSERT branch
-                                // makes it exist. A DELETE record names row ids and nothing
-                                // else, so there is no chunk to synthesise a table from — the
-                                // most this leg can do is load the .otbx the catalog says is
-                                // there. If that still leaves no storage, the journalled
-                                // delete cannot be applied and SAYING SO is the whole point:
-                                // silence here leaves rows the WAL says are deleted alive
-                                // after recovery, with nothing anywhere to notice.
+                                // A DELETE record carries only row ids, so there is no chunk to
+                                // synthesise a table from — the most this can do is load an
+                                // existing .otbx. If that still leaves no storage the delete
+                                // cannot be applied, and that must be logged: silence here would
+                                // leave rows the WAL says are deleted alive after recovery.
                                 if (!disk_ptr->has_storage(table_oid)) {
                                     if (auto load_err =
                                             disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
@@ -611,19 +510,11 @@ namespace otterbrix {
                                         }
                                     }
                                     // physical_row_ids is flat across the batch; slice it per
-                                    // chunk in vector order to match each chunk's rows.
-                                    //
-                                    // A RECORD CAN NAME FEWER IDS THAN IT CARRIES ROWS — a torn
-                                    // or damaged record, exactly what recovery meets — and a
-                                    // per-element bound absorbs that silently: a fully-short
-                                    // slice hands an empty id list to the legitimate-no-op door
-                                    // (the committed update vanishes with a success report), and
-                                    // a partial one hands MISMATCHED sizes to
-                                    // data_table_t::update, which reads ids by the CHUNK's row
-                                    // count — past the end of the ids. So the rows that HAVE ids
-                                    // are restored, the chunk is truncated to keep the 1:1
-                                    // pairing the router refuses to go without, and the rows
-                                    // beyond the ids are reported LOUDLY as not replayed.
+                                    // chunk in vector order. A torn/damaged record can name fewer
+                                    // ids than rows — data_table_t::update reads ids by the
+                                    // chunk's row count, so a short id list is truncated onto the
+                                    // chunk (rows with ids restored, the rest reported as lost)
+                                    // rather than silently under- or over-reading.
                                     std::size_t id_base = 0;
                                     for (auto& chunk : r->physical_data) {
                                         const std::size_t n = chunk.size();
@@ -718,37 +609,21 @@ namespace otterbrix {
             }
         }
 
-        // Post-replay walk: the pre-replay walk DEFERS any never-checkpointed .otbx
-        // whose catalog rows still sat in the WAL (a table created, never checkpointed,
-        // crashed — its schema exists only as replayed pg_attribute rows). Now that replay
-        // has repopulated the catalog, walk the user-table directories again: already-loaded
-        // oids are skipped (has_storage), deferred young files open as legitimately empty
-        // DISK tables with their catalog schema. Without this second walk such a table would
-        // answer queries through the storage-less record branch — empty by accident, and any
-        // later CHECKPOINT would never reach its .otbx.
+        // Second walk: the pre-replay walk deferred any never-checkpointed table whose catalog
+        // row still sat only in the WAL. Now that replay has repopulated pg_class, re-walk user
+        // directories to open those files against their catalog schema (already-loaded oids are
+        // skipped via has_storage).
         if (disk_ptr) {
             disk_ptr->load_user_table_storages_sync();
         }
 
-        // Re-derive any column drop whose physical release a crash discarded. The commit path
-        // names the dropped column's blocks in memory and the checkpoint releases them; a crash
-        // in between loses that set while the disk keeps BOTH durable facts — the pg_attribute
-        // tombstone and the still-present column — so the table reloads with the column back and
-        // nothing else can ever re-derive the drop.
-        //
-        // Placement is the argument, and both halves of the comparison land exactly here:
-        // STORAGE, because every user .otbx is open (the pre-replay walk plus the post-replay one
-        // immediately above, which picks up the deferred young files); and CATALOG, because
-        // pg_attribute is final only now — the tombstone reaches the .otbx only at a catalog
-        // checkpoint, and in the crash this exists for it is typically still WAL-only, so it
-        // becomes visible in the system-table replay above. Earlier would INVERT the comparison,
-        // not merely weaken it: an ALTER ADD COLUMN whose pg_attribute row is still unreplayed
-        // would look like a drop of a surviving column, and the replayed PHYSICAL_INSERT chunks
-        // still carry the pre-drop column count and need a table that still has it. Later would
-        // be after bootstrap_indexes_sync, which OPENS every index store against the schema as it
-        // then stands -- a layout no post-start scan would ever see.
-        // Single-threaded, pre-scheduler-start; the release itself happens at the next
-        // checkpoint, exactly as on the live path.
+        // Re-derive any column drop whose physical release a crash discarded: the commit path
+        // marks blocks for release and the checkpoint frees them, so a crash in between leaves
+        // both the pg_attribute tombstone AND the still-present column on disk, and nothing else
+        // re-derives that. Must run here: every user .otbx is now open (storage side final) and
+        // pg_attribute has just been replayed (catalog side final) — earlier would see an
+        // ALTER ADD COLUMN whose row isn't replayed yet as a false drop; later (after
+        // bootstrap_indexes_sync) opens index stores against a schema this pass would still change.
         if (disk_ptr) {
             disk_ptr->rearm_dropped_column_blocks_sync();
         }
@@ -774,22 +649,11 @@ namespace otterbrix {
         // they are never mis-judged invisible. Mirror restore_oid_generator_sync:
         // single-threaded bootstrap (schedulers not started), a one-time direct
         // call, not ongoing cross-actor sharing.
-        //
-        // THE MAX OVER *REPLAYED* MARKERS IS THE RIGHT BOUND, AND THE PARALLEL WITH THE ID
-        // ALLOCATOR IS FALSE. The wal-id allocator had to be re-derived from the FILES (page
-        // headers past a CRC break) because ids past a break are durable and reachable —
-        // reissuing one collides with a record still on disk. A commit id past a break is
-        // OBSERVABLE NOWHERE in the reopened state, whose commit ids live in exactly three
-        // places: pg_attribute added_at/dropped_at, scanned directly from the checkpointed
-        // catalog by max_persisted_commit_id_sync() and so break-independent; rows re-applied
-        // by replay, stamped transaction_data{0,0} (committed-for-everyone) and carrying NO
-        // commit id; and checkpointed .otbx rows, whose row-group version info is not persisted
-        // (a loaded row group starts with null version_info, visible-to-all). Records past a
-        // break are applied nowhere (STOP-A) and their txn ids are equally absent from
-        // committed_txn_ids, so the index recover gate agrees. Raising the clock over ids that
-        // exist in no observable row would also mean decoding past the break, which no reader
-        // does. If the segment is later repaired, THAT start replays the markers and raises the
-        // clock then.
+        // Unlike the wal-id allocator, this bound is taken only over REPLAYED commit markers,
+        // not re-derived from files past a CRC break: a commit id past a break is observable in
+        // no reopened state (replayed rows carry no commit id, checkpointed rows carry no
+        // version info), so raising the clock over it would be decoding data no reader ever
+        // sees. A later repair of the segment replays those markers and raises the clock then.
         if (disk_ptr) {
             uint64_t reopen_frontier = disk_ptr->max_persisted_commit_id_sync();
             for (const auto& r : wal_records) {
@@ -813,14 +677,9 @@ namespace otterbrix {
             if (!dropped_oids.empty()) {
                 const auto db_root = disk_ptr->path_db();
                 for (const auto& row : dropped_oids) {
-                    // Mirrors create_storage_disk's layout:
-                    //   ${db_root}/${relnamespace}/${tbl_oid}/table.otbx
-                    // with sidecar `table.otbx.wal_id`
-                    // — same files drop_storage removes on the live path. The namespace oid
-                    // comes off the tombstoned pg_class row (scan_dropped_oids_sync reads it
-                    // there because an ordinary catalog read omits deleted rows); anything
-                    // else names a directory no user table is ever in, and the .otbx of a
-                    // crash-interrupted DROP would survive the sweep.
+                    // Mirrors create_storage_disk's layout: ${db_root}/${relnamespace}/${tbl_oid}
+                    // /table.otbx + table.otbx.wal_id. namespace_oid comes off the tombstoned
+                    // pg_class row (an ordinary catalog read omits deleted rows).
                     auto base = db_root / std::to_string(static_cast<unsigned>(row.namespace_oid)) /
                                 std::to_string(static_cast<unsigned>(row.oid));
                     auto otbx = base / "table.otbx";
@@ -868,7 +727,6 @@ namespace otterbrix {
 
         // NOT NULL overlays are recorded in pg_attribute (attnotnull) and applied
         // lazily by resolve_table when the storage is first loaded.
-        //
         // No index re-creation here: on-disk indexes were re-attached from their
         // pg_index rows by bootstrap_indexes_sync above.
 
@@ -889,10 +747,8 @@ namespace otterbrix {
             try {
                 auto session = components::session::session_id_t();
                 auto checkpoint_node = components::logical_plan::make_node_checkpoint(&resource);
-                // THE CURSOR IS THE STATEMENT'S ERROR CHANNEL and must not be dropped on the
-                // floor: a failed final checkpoint is the difference between "the next start
-                // replays a journal" and "the next start replays nothing". A destructor has
-                // no caller to answer, so the error log is the loudest honest channel it has.
+                // A failed final checkpoint means the next start replays the journal instead of
+                // nothing; a destructor has no caller to answer, so log it instead.
                 auto cursor = wrapper_dispatcher_->execute_plan(
                     session,
                     components::logical_plan::execution_plan_t{&resource, checkpoint_node, nullptr});
@@ -922,11 +778,8 @@ namespace otterbrix {
         paths_.erase(main_path_);
     }
 
-    // The table pass must precede the pg_index pass: bootstrap_index_sync attaches to a
-    // table the index manager already knows about and does not register one on the fly.
-    // Errors propagate as VALUES — scan helpers return empty on internal failure,
-    // bootstrap_index_sync returns the reason a row could not be brought up and this loop
-    // logs it and moves on; no throw escapes.
+    // The table pass must precede the pg_index pass: bootstrap_index_sync attaches to a table
+    // the index manager already knows about, it does not register one on the fly.
     void base_otterbrix_t::bootstrap_indexes_sync(const std::set<std::uint64_t>& committed_txn_ids) {
         auto live_tables = manager_disk_->scan_live_table_oids_sync();
         for (auto oid : live_tables) {
@@ -938,12 +791,9 @@ namespace otterbrix {
         std::size_t indexes_skipped_unopenable = 0;
         std::size_t indexes_skipped_unrebuilt = 0;
 
-        // THE PREVIOUS PROCESS'S UNFINISHED COMPACTION, READ BACK. A compacting round arms
-        // this note before it renumbers anything and clears it per table only once that
-        // table's rebuild has force_flushed; anything still in it names an index whose store
-        // holds PRE-COMPACT physical row ids over a table that was renumbered underneath it.
-        // See manager_index_t::rebuild_marker_path_ for the whole argument, including why no
-        // ordering of the round's steps can replace the note.
+        // A compacting round arms this marker before renumbering and clears it per table only
+        // once that table's rebuild has force_flushed; anything left in it names an index whose
+        // store still holds pre-compact row ids. See manager_index_t::rebuild_marker_path_.
         const auto pending_rebuilds = manager_index_->pending_index_rebuilds_sync();
         const auto rebuild_is_owed = [&pending_rebuilds](components::catalog::oid_t table_oid,
                                                          components::catalog::oid_t index_oid) {
@@ -958,18 +808,10 @@ namespace otterbrix {
         auto index_rows = manager_disk_->scan_alive_pg_index_sync();
         for (auto& row : index_rows) {
             if (rebuild_is_owed(row.table_oid, row.oid)) {
-                // NOT WIRED, and the decision is the same one the unfinished-backfill branch
-                // below takes, for a closely related reason: an index nobody rebuilt after a
-                // compaction is not merely out of date, it NAMES ROWS THAT MOVED. Wiring it
-                // would answer queries -- the registry, not pg_index.indisvalid, is what
-                // create_plan_match consults -- with whichever row slid into the physical id
-                // the stale entry holds, or with nothing at all where the id now maps to no
-                // row group. Both are silent. Declining costs full scans and says so.
-                //
-                // NO REBUILD IS ATTEMPTED HERE. This window runs before the schedulers start,
-                // and a rebuild is a clear plus a refill through the agents' mailboxes.
-                // Re-creating the index is what fixes it, and a fresh CREATE INDEX mints a
-                // new indexrelid that this note cannot name.
+                // Not wired: this store names PRE-COMPACT physical row ids over a table that was
+                // renumbered — wiring it would silently answer with whatever row slid into the
+                // stale id. No rebuild is attempted here (this runs before schedulers start); a
+                // fresh CREATE INDEX is the fix.
                 error(log_,
                       "bootstrap_indexes_sync: pg_index row (indexrelid={}, indrelid={}) was left naming "
                       "PRE-COMPACT row ids by a checkpoint that did not finish its index rebuild — the index is "
@@ -982,10 +824,7 @@ namespace otterbrix {
             }
             if (row.ready_since == 0) {
                 // pg_index row exists but the backfill never committed — no fallback, the
-                // operator must re-issue CREATE INDEX. Reported at error level and named
-                // individually: a table that quietly answers every query by full scan must
-                // not be indistinguishable from a start with nothing wrong, so say WHICH
-                // index, WHOSE table, and WHAT to do.
+                // operator must re-issue CREATE INDEX.
                 error(log_,
                       "bootstrap_indexes_sync: pg_index row (indexrelid={}, indrelid={}) has an uncommitted "
                       "backfill (indisvalid=false) — the index is NOT wired, queries on the table fall back "
@@ -996,19 +835,11 @@ namespace otterbrix {
                 continue;
             }
 
-            // NO AGENT IS SPAWNED AT THIS SITE. There are two agent classes, one per storage
-            // family, so "pick a class from pg_index.indtype" is real code — and a second
-            // copy of it here would be a second place to keep in step with the catalog. The
-            // index manager owns that decision (manager_index_t::spawn_disk_agent) and raises
-            // the agent inside bootstrap_index_sync, from ITS OWN configured thresholds,
-            // which is what makes a bootstrapped index and a runtime-created one the same
-            // object. The failure comes back as the returned core::error_t, so this loop
-            // cannot proceed without having looked at it.
-            //
-            // committed_txn_ids: the WAL committed-txn set, used by the hashed family's
-            // txn-log recover gate. Materialised here as a pmr::set on this instance's
-            // resource (the resource the agent and its index store use). A copy per index —
-            // legal value transfer during the single-threaded bootstrap window.
+            // No agent is spawned here: manager_index_t::spawn_disk_agent owns picking the agent
+            // class from pg_index.indtype, so a bootstrapped index and a runtime-created one stay
+            // the same object.
+            // committed_txn_ids: the WAL committed-txn set for the hashed family's txn-log
+            // recover gate, copied per index (legal value transfer, single-threaded bootstrap).
             std::pmr::set<std::uint64_t> committed_for_agent(committed_txn_ids.begin(),
                                                              committed_txn_ids.end(),
                                                              &resource);
@@ -1019,10 +850,8 @@ namespace otterbrix {
                                                                    std::move(row.keys),
                                                                    std::move(committed_for_agent));
             if (wire_error.contains_error()) {
-                // Skip the WHOLE index: an index whose storage will not open costs a full
-                // scan, whereas aborting costs the whole engine its start. Nothing was
-                // registered, no address published, nothing scheduled — and the table stays
-                // readable.
+                // Skip the whole index rather than abort: a full scan costs less than the
+                // engine failing to start, and the table stays readable.
                 error(log_,
                       "bootstrap_indexes_sync: index_oid={} left unregistered: {}",
                       static_cast<unsigned>(row.oid),
@@ -1040,14 +869,8 @@ namespace otterbrix {
             manager_index_->bootstrap_dropped_sync(row.oid, row.delete_id);
         }
 
-        // NO INDEX IS REBUILT ON RESTART. A stale store is declined above rather than
-        // repaired: repairing belongs to the runtime path (manager_index_t::repopulate_table)
-        // or to a fresh CREATE INDEX, and a rebuild is a mailbox round trip the schedulers are
-        // not running for in this window.
-
-        // The three skip reasons are DIFFERENT EVENTS (an unfinished build the operator must
-        // re-issue; a storage that would not open and may heal; a store left naming
-        // pre-compact rows) and do not share a count.
+        // No index is rebuilt on restart: a stale store is declined above rather than repaired,
+        // since repair needs a mailbox round trip the schedulers aren't running for yet.
         trace(log_,
               "spaces::PHASE 4 bootstrap_indexes_sync: {} engines, {} indexes wired "
               "({} skipped: unfinished build; {} skipped: unopenable storage; {} skipped: rebuild owed after a "

@@ -30,36 +30,30 @@
 
 // THREE OPERATORS MINT THEIR OWN CATALOG IDENTITY AND MUST CHECK THAT THE ROUND DELIVERED ONE.
 //
-// CREATE TABLE and its DDL siblings take their OIDs from the planner's allocation round, which is
-// checked twice (oid_batch_t::make against compute_oid_demand, then overrun() after the rewrite).
+// CREATE TABLE and its DDL siblings take OIDs from the planner's allocation round (checked
+// twice: oid_batch_t::make against compute_oid_demand, then overrun() after the rewrite).
 // operator_register_udf_t (pg_proc), operator_register_cast_t (pg_cast) and
-// operator_alter_column_add_t (pg_attribute) do NOT: each runs its own one-OID round against the
-// disk actor at execute time —
-//     batch.oids = co_await allocate_oids_batch(1); const oid_t id = batch.allocate();
-// manager_disk_t::allocate_oids_batch has no error channel, so a round that did not deliver comes
-// back as an EMPTY vector; allocate() on an exhausted batch answers INVALID_OID and latches a
-// sticky overrun() flag. Spending that unchecked REPORTS SUCCESS and leaves a durable row stamped
-// with INVALID_OID (= 0) — rule 16 ("a catalog object always carries an OID") broken durably and
-// announced as success:
-//   * pg_proc      — a function whose identity is what pg_depend and every later lookup key on;
-//   * pg_cast      — worse than useless: find_cast_oid reads that 0 back as "there is no such
-//                    cast", so the row is unreachable AND undeletable by DROP CAST;
-//   * pg_attribute — a column whose attoid is what the ADD COLUMN backfill hands to the storage
-//                    that will materialise it, and what a later DROP COLUMN tombstones on.
+// operator_alter_column_add_t (pg_attribute) do NOT — each runs its own one-OID round at execute
+// time (`batch.oids = co_await allocate_oids_batch(1); id = batch.allocate();`).
+// allocate_oids_batch has no error channel: a failed round comes back as an EMPTY vector, and
+// allocate() on an exhausted batch answers INVALID_OID (0) and latches overrun(). Spending that
+// unchecked REPORTS SUCCESS with a durable row stamped 0 — an invalid oid announced as
+// success:
+//   * pg_proc — the identity pg_depend and every lookup key on;
+//   * pg_cast — worse than useless: find_cast_oid reads 0 as "no such cast", so the row is
+//     unreachable AND undeletable by DROP CAST;
+//   * pg_attribute — the attoid the ADD COLUMN backfill hands to storage, and what DROP COLUMN
+//     tombstones on.
 //
-// THE INJECTION. The round is a message round-trip to the disk actor over an in-memory counter: no
-// file, no page, so neither the .otbx interposer nor the WAL one can reach it and there is no
-// device to fail. It has its own narrow DEV_MODE seam
-// (services::collection::executor::dev_set_oid_alloc_interposer), and an EMPTY batch is not an
-// invented state — it is the exact value the round's real failure branches answer with.
-// executor_t::allocate_oids_inline consults that seam and these three rounds never pass through
-// it, so components/physical_plan/operators/single_oid_round.hpp consults the SAME seam object for
-// them, once per round.
+// THE INJECTION: the round is an in-memory message round-trip (no file/page), so neither the
+// .otbx nor the WAL interposer can reach it. Its own DEV_MODE seam
+// (dev_set_oid_alloc_interposer) answers an EMPTY batch — the same value a real failure
+// produces — consulted once per round by single_oid_round.hpp (these three never go through
+// executor_t::allocate_oids_inline).
 //
-// SENSITIVITY IS PROVEN INSIDE EACH TEST: the same seam object is installed for the CONTROL
-// statement (pass-through — it must succeed and write a real identity) and for the faulted one,
-// and each test asserts on the seam's own counters that the round was seen both times and
-// substituted exactly once. Every test asserts the CATALOG'S CONTENT, not only the status.
+// SENSITIVITY IS PROVEN PER TEST: the same seam is installed for a CONTROL statement (must
+// succeed, real identity) and the faulted one; each test checks the seam's own counters (round
+// seen both times, substituted once) and asserts the CATALOG'S CONTENT, not just the status.
 
 using namespace services;
 using namespace services::dispatcher;
@@ -90,7 +84,7 @@ namespace {
 
     // The OID-allocation fault seam, armed per statement. Identical in shape to the one
     // integration/cpp/test/test_oid_alloc_refusal.cpp installs for the planner's round: a plain
-    // virtual (rule 14 — not std::function), process-wide, DEV_MODE-only.
+    // virtual (not std::function, which is banned), process-wide, DEV_MODE-only.
     class oid_alloc_fault_scope_t final : public services::collection::executor::oid_alloc_interposer_t {
     public:
         oid_alloc_fault_scope_t() { services::collection::executor::dev_set_oid_alloc_interposer(this); }

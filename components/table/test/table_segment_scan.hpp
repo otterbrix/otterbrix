@@ -1,16 +1,10 @@
 #pragma once
 
-// Test-side whole-table drain (the old data_table_t::scan_table_segment).
-//
-// The production disk-read contract is exactly two legs — streaming-by-predicate
-// (storage_fetch_next_batch) and point-by-row-id (storage_fetch); storage_scan_segment, this
-// method's only production consumer, is gone. The shadow-paging tests keep it as the canonical
-// "read the whole table back" idiom, so the body lives here VERBATIM
-// (rebuilt on the public API: columns(), row_group()->initialize_scan_with_offset(),
-// table_scan_state::initialize(), scan_committed()); it must stay observationally identical
-// because the tests assert on the exact rows it yields.
-//
-// The callback is a template parameter, not std::function (rule 14).
+// Test-side whole-table drain (the old data_table_t::scan_table_segment, whose only
+// production consumer, storage_scan_segment, is gone — production now reads via
+// storage_fetch_next_batch / storage_fetch). Kept here, rebuilt on the public API, as the
+// canonical "read the whole table back" idiom the shadow-paging tests assert exact rows against.
+// The callback is a template parameter, not std::function.
 
 #include <algorithm>
 #include <cassert>
@@ -57,9 +51,8 @@ namespace otterbrix_test {
                                                 column_ids,
                                                 row_start,
                                                 row_start + static_cast<int64_t>(count));
-        // vector_index is stamped in collection-absolute space by initialize_scan_with_offset, so
-        // vector_index*CAP is already the vector-aligned absolute start row (do NOT re-add row_group
-        // start — that would double-count the group origin).
+        // vector_index is stamped in collection-absolute space, so vector_index*CAP is already
+        // the absolute start row — do NOT re-add row_group start (double-counts the group origin).
         auto row_start_aligned = static_cast<int64_t>(state.table_state.vector_index *
                                                       components::vector::DEFAULT_VECTOR_CAPACITY);
 

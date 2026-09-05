@@ -16,37 +16,35 @@
 #include <string>
 #include <thread>
 
-// A DROP CASCADE MUST NOT REPORT SUCCESS OVER A PLANNED OBJECT THE CATALOG DOES NOT HOLD.
+// A DROP CASCADE must not report success over a planned object the catalog does not hold.
 //
-// operator_dynamic_cascade_delete_t plans its steps from pg_depend edges and then executes a
+// operator_dynamic_cascade_delete_t plans its steps from pg_depend edges and executes a
 // per-classid template of catalog-row deletes per step. The template is deliberately
-// over-generated (it re-issues e.g. the pg_sequence and pg_rewrite deletes for a plain table),
-// so most zero counts carry no information — but ONE spec of every template is the step's OWN
-// row ({classid, col 0, objid}). A zero there means the catalog never held (or no longer
-// holds) the object the plan named: proceeding takes the storage/index drop marks over a
-// catalog inconsistency — the half-applied DROP the operator's own comments promise to avoid.
+// over-generated (it re-issues e.g. the pg_sequence and pg_rewrite deletes for a plain
+// table), so most zero counts carry no information -- but ONE spec of every template is the
+// step's OWN row ({classid, col 0, objid}). A zero there means the catalog never held (or no
+// longer holds) the object the plan named, so proceeding would take the storage/index drop
+// marks over a catalog inconsistency -- the half-applied DROP the operator promises to avoid.
 //
 // The first case builds exactly that inconsistency: a pg_depend edge is forged through the
-// disk manager's own funnel, claiming a constraint that has NO pg_constraint row — the state
-// any half-applied earlier scrub leaves behind. (Forging the edge, rather than deleting a real
-// constraint's row, keeps the fixture honest: a td{0,0} funnel delete leaves a ghost the DROP's
-// statement-time scan still marks, and the failure then comes from the commit drain's replay —
-// a different, later channel.) The cascade walks the edge, plans the constraint step, and its
-// own-row delete counts 0. The statement must refuse — and the refused DROP must leave the
-// parent table intact (the autocommit abort puts the already-deleted rows back).
+// disk manager's own funnel, claiming a constraint with no pg_constraint row -- the state any
+// half-applied earlier scrub leaves behind. (Forged rather than deleted from a real row, to
+// keep the fixture honest: a td{0,0} funnel delete leaves a ghost the DROP's statement-time
+// scan still marks, and the failure would then come from the commit drain's replay instead --
+// a different, later channel.) The cascade walks the edge, plans the constraint step, its
+// own-row delete counts 0, and the statement must refuse -- leaving the parent table intact
+// (the autocommit abort puts the already-deleted rows back).
 //
-// The second case pins the reason a blanket zero-refusal was NOT the fix, and is now the pin on
-// the fix that was: the dependency walker USED TO push a dependent once per edge that reached it,
-// so an FK constraint reachable from BOTH its table and its referenced table appeared TWICE in
-// the plan, and the second occurrence's own-row delete legitimately counted 0. The walker now
-// emits an object when it FINISHES it, so one object is one step
-// (components/catalog/dependency_walker.{hpp,cpp} — "A SET, NOT A MULTISET").
-//
-// THE DEDUP THIS CASE ONCE DESCRIBED IS GONE ON PURPOSE, AND MUST NOT COME BACK. It was a second
-// enforcement of the walker's own invariant, sitting in the consumer: with it in place the walker
-// could start emitting duplicates again and nothing would turn red, because the caller quietly
-// repaired them. One invariant, one keeper. This case now guards the walker from the far end —
-// the diamond must judge its dependent exactly once and this DROP DATABASE must keep succeeding.
+// The second case pins the reason a blanket zero-refusal was NOT the fix: the dependency
+// walker used to push a dependent once per edge that reached it, so an FK constraint
+// reachable from BOTH its table and its referenced table appeared TWICE in the plan, and the
+// second occurrence's own-row delete legitimately counted 0. The walker now emits an object
+// only when it FINISHES it, so one object is one step (components/catalog/dependency_walker.
+// {hpp,cpp} -- "A SET, NOT A MULTISET"). The dedup this case once described in the consumer is
+// gone on purpose and must not come back -- it was a second enforcement of the walker's own
+// invariant, and with it in place the walker could start emitting duplicates again with
+// nothing turning red, since the caller quietly repaired them. One invariant, one keeper: this
+// case now guards the walker from the far end, requiring the diamond to be judged exactly once.
 
 using namespace test_helpers;
 

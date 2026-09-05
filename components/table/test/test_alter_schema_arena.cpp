@@ -1,15 +1,7 @@
-// ALTER's successor must build its schema ON THE TABLE'S ARENA.
-//
-// collection_t::add_column / remove_column build the successor's type vector by copying the
-// parent's. A std::pmr::vector's COPY constructor does not propagate the allocator --
-// select_on_container_copy_construction returns a DEFAULT-constructed polymorphic_allocator --
-// so `auto new_types = types_;` silently lands the copy on the process-wide default resource,
-// and the collection built from it then reports an arena it does not live on. The rows are
-// untouched by that, which is exactly why no scan, count or checksum can gate it: only the
-// allocator the vector reports, and the address of its buffer, can tell.
-//
-// Both ALTER roads are driven through data_table_t's real ALTER constructors -- the ones the
-// DDL site and WAL replay use -- over a table that spans several row groups.
+// collection_t::add_column/remove_column copy the parent's type vector; pmr::vector's copy ctor
+// does not propagate the allocator (select_on_container_copy_construction is default-constructed),
+// so a naive copy silently escapes to the default resource. Row content is unaffected, so only
+// allocator identity + buffer address can catch it.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/collection.hpp>
@@ -35,9 +27,8 @@ namespace {
     constexpr uint64_t CHUNK_ROWS = 1000;
     constexpr uint64_t CHUNKS = 3;
 
-    // A memory_resource that remembers the blocks it currently has handed out, so a pointer can
-    // be asked whether it lives on THIS arena. Everything is forwarded to `upstream`, so the
-    // probe changes where the answer comes from for nobody.
+    // Forwards allocation to `upstream`; tracks live blocks so owns() can answer "is this pointer
+    // on this arena".
     class arena_probe_t final : public std::pmr::memory_resource {
     public:
         explicit arena_probe_t(std::pmr::memory_resource* upstream)
@@ -95,8 +86,7 @@ namespace {
         return path;
     }
 
-    // The buffer pool and the block manager keep the plain arena; only the TABLE is handed the
-    // probe, so every block the probe records was allocated by the table (and its collections).
+    // Only the table is handed the probe, so every recorded block was allocated by the table.
     struct arena_env_t {
         core::pmr::otterbrix_resource upstream;
         core::filesystem::local_file_system_t fs;
@@ -146,8 +136,6 @@ namespace {
         }
     }
 
-    // The two questions that separate "the schema is correct" from "the schema lives where it
-    // says it does". Asked of a successor collection, they are the whole gate.
     void require_schema_on_arena(const collection_t& successor, arena_probe_t& arena, size_t expected_columns) {
         const auto& types = successor.types();
         REQUIRE(types.size() == expected_columns);

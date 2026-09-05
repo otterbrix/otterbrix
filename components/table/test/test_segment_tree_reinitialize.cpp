@@ -2,11 +2,9 @@
 
 #include <components/table/segment_tree.hpp>
 
-// reinitialize() rebuilds the row_start map after set_start() re-based the segments. Its gap
-// tripwire must ANSWER, not throw (rules 2/9: a throw here unwinds across the disk agent's
-// mailbox into a coroutine whose unhandled_exception() is empty, so the statement HANGS instead
-// of failing). The tripwire itself must stay: a gap means the tree invariant is broken
-// somewhere else.
+// The gap tripwire in reinitialize() must ANSWER false, not throw: a throw here would unwind
+// into a coroutine with no unhandled_exception(), hanging the statement instead of failing it
+//.
 
 namespace {
     struct dummy_segment_t : components::table::segment_base_t<dummy_segment_t> {
@@ -34,7 +32,6 @@ TEST_CASE("components::table::segment_tree::reinitialize_rebuilds_contiguous_row
 
     REQUIRE(tree.reinitialize());
 
-    // The map answers point lookups again at the re-based positions.
     auto l = tree.lock();
     uint64_t index = 0;
     REQUIRE(tree.try_segment_index(l, 100, index));

@@ -12,44 +12,14 @@
 
 using namespace components;
 
-// ===========================================================================
-// AN UNRESOLVED TABLE OID DOES NOT REPEAL THE TABLE'S CONSTRAINTS.
-//
-// operator_resolve_constraint_t opened its per-entry loop with
-//
-//     if (!target_md.has_value() || target_md->table_oid == INVALID_OID) {
-//         continue;
-//     }
-//
-// and the two halves of that condition are not the same fact.
-//
-//   * NO table_md is "the table was not found". operator_resolve_table_t stamps
-//     the field only when pg_class answered, and documents the empty optional as
-//     exactly that signal; a gather for a table that is not there has nothing to
-//     gather, and the missing table is reported by the layer that looked for it.
-//
-//   * A table_md that IS there with table_oid == INVALID_OID is a table whose
-//     NAME resolved and whose identity did not. Skipping it leaves the entry's
-//     fks / check_exprs / unique_constraints / pk_columns EMPTY, and empty is
-//     indistinguishable from "this table declares no constraints": enrich stamps
-//     nothing on the DML node, the planner splices no constraint operator, and
-//     every declared key, foreign key and CHECK on that table stops existing
-//     while the statement reports success. That is WIDER than the layer-2 skip in
-//     operator_unique_constraint_t, which the same predicate used to switch off
-//     and which is now a refusal there — this one repeals ALL of the table's
-//     constraints, not one check inside one of them.
-//
-// PATH NOT NAMED FROM SQL, deliberately: table_md is stamped only from a pg_class
-// row whose oid column was read non-null, so a zero there is a catalog that says
-// a relation exists with no identity. Sensitivity proven by injection — restore
-// `|| target_md->table_oid == INVALID_OID` to the skip and the REQUIRE below goes
-// red, the operator reporting success over a constraint set it never read.
-// ===========================================================================
+// table_md present but table_oid == INVALID_OID means the NAME resolved but not the identity --
+// distinct from "table not found" (no table_md, already handled by operator_resolve_table_t).
+// Skipping it used to report success while silently dropping all of the table's constraints.
+// Proven by injection: reinstating that skip turns the REQUIRE below red.
 
 namespace {
 
-    // The constraint-resolve pair: a tables node carrying ONE entry (the table
-    // the constraint entry targets) and a constraint node targeting it.
+    // tables node holds ONE entry: the table the constraint entry targets.
     struct resolve_pair_t {
         logical_plan::node_catalog_resolve_ptr tables;
         logical_plan::node_catalog_resolve_ptr constraints;
@@ -82,10 +52,8 @@ namespace {
         return pair;
     }
 
-    // Drive the operator to completion over `pair`. A disk actor IS wired up
-    // (address_t compares the pointee, so any non-null pointer is "not the empty
-    // address"); nothing is ever enqueued on it, because every case below is
-    // decided before the first send.
+    // A disk actor is wired up only so address_t sees a non-empty address; nothing
+    // is ever enqueued on it, since every case below is decided before the first send.
     bool run_resolve(std::pmr::memory_resource* resource, resolve_pair_t& pair, std::string* err_out = nullptr) {
         operators::operator_ptr op(
             new operators::operator_resolve_constraint_t(resource, log_t{}, pair.constraints.get(), pair.tables.get()));
@@ -119,10 +87,8 @@ TEST_CASE("resolve constraint: a table whose oid did not resolve is refused, not
 }
 
 TEST_CASE("resolve constraint: a table that was not found is not an error", "[resolve_constraint]") {
-    // The other half of the old condition, kept as it was and pinned here so the
-    // refusal above cannot spread onto it: an absent table_md is how
-    // operator_resolve_table_t says "no such relation", and the statement that
-    // named it is refused by the layer that looked for it, not by this one.
+    // The other half of the old condition: absent table_md means operator_resolve_table_t
+    // already refused the statement for "no such relation" -- this layer must not error too.
     auto resource = core::pmr::otterbrix_resource();
     auto pair = make_pair(&resource, /*stamp_table_md=*/false, catalog::INVALID_OID);
 
@@ -132,32 +98,9 @@ TEST_CASE("resolve constraint: a table that was not found is not an error", "[re
     REQUIRE_FALSE(errored);
 }
 
-// ===========================================================================
-// AND A TARGET THAT IS NOT AN INDEX AT ALL IS THE SAME DEFECT ONE STEP EARLIER.
-//
-// `entry.target >= tables_node_->entries().size()` shared a `continue` with the two
-// TOPOLOGY facts on the same line — an empty disk address and a null tables node — and it
-// is not one of them: those are shapes of the world this operator runs in, while an index
-// outside the tables node is a CORRUPT PLAN.
-//
-// resolve_entry_t::no_target (size_t(-1)) is the DEFAULT, so an entry nobody filled in
-// lands here. It is never a legitimate marker on a constraint entry:
-//
-//   * every constraint entry in this engine is created in one place,
-//     register_catalog_resolve_table (components/sql/transformer/utils.cpp), which sets
-//     target from the value node_catalog_resolve_t::add just returned for the TABLE entry
-//     — by construction < entries().size();
-//   * entries() only ever grows (add() push_backs; no erase / clear / resize exists
-//     anywhere), so a valid index cannot go stale;
-//   * merge_catalog_resolves copies constraint entries without rebasing target, but no
-//     view body can carry one: constraint entries come only from INSERT / UPDATE / DELETE
-//     / CREATE TABLE / ALTER TABLE, never from a SELECT;
-//   * resolve_entry_t is never serialized, so nothing reconstructs a target.
-//
-// The consequence of the skip is the WIDEST in this operator: fks, check_exprs,
-// unique_constraints and pk_columns all left empty at once, which is exactly what "this
-// table declares no constraints" looks like.
-// ===========================================================================
+// entry.target >= entries().size() is a CORRUPT PLAN, not a topology fact: every real entry
+// gets a valid index from register_catalog_resolve_table (sql/transformer/utils.cpp), and
+// entries() only grows. no_target (size_t(-1)) reaching here means something never filled it in.
 
 TEST_CASE("resolve constraint: an entry whose target is not an index is refused", "[resolve_constraint]") {
     auto resource = core::pmr::otterbrix_resource();

@@ -20,13 +20,12 @@
 #include <thread>
 #include <unistd.h>
 
-// The write path routes an incoming column onto an existing storage column
-// BY NAME (plus the bare logical_type ENUM on a computed table), so DECIMAL(12,4) data
-// landed inside a column whose storage is DECIMAL(10,2). The first tripwire was the
-// statistics merge (logical_value_t comparison across two decimal parameterizations —
-// SIGABRT in a debug build); under NDEBUG the same append went through silently, storing
-// scale-4 raw integers into a scale-2 column — every later scan misread them ×100.
-// The append must REFUSE the parameterization drift before WAL and materialization.
+// The write path routes an incoming column onto an existing storage column by name (plus the
+// bare logical_type enum on a computed table), so DECIMAL(12,4) data could land in a column
+// whose storage is DECIMAL(10,2). First tripwire: the statistics merge's cross-parameterization
+// comparison SIGABRTs in debug; under NDEBUG the same append went through silently, storing
+// scale-4 raw integers into a scale-2 column, misreading every later scan by ×100. The append
+// must refuse the parameterization drift before WAL and materialization.
 
 using namespace services::disk;
 namespace catalog = components::catalog;
@@ -85,7 +84,7 @@ namespace {
 
     // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
     // path, and that message belongs to the caller, so the caller has to name an arena it owns
-    // rather than reach for the process-global one (rule 14).
+    // rather than reach for the process-global one.
     std::pmr::memory_resource* decimal_resource() {
         static core::pmr::otterbrix_resource arena;
         return &arena;

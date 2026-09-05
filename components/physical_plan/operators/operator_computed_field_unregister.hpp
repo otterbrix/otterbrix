@@ -36,11 +36,8 @@ namespace components::operators {
         components::catalog::oid_t table_oid_;
         components::catalog::oid_t attoid_;
         std::string column_name_;
-        // `DROP COLUMN IF EXISTS`, carried from the same node field the regular
-        // (pg_attribute) drop operator reads. A field that is not there is an error
-        // on a document table exactly as it is on a regular one; only IF EXISTS
-        // makes the miss acceptable, and that is the statement's decision, not the
-        // table kind's.
+        // `DROP COLUMN IF EXISTS`, from the same node field the regular pg_attribute drop reads:
+        // only IF EXISTS makes a missing column acceptable, regardless of table kind.
         bool missing_ok_;
     };
 

@@ -8,17 +8,12 @@
 
 namespace components::table::storage {
 
-    // Block manager for TRANSIENT buffers — the ones the buffer manager hands out for temporary
-    // payloads that never belong to a file (standard_buffer_manager_t's `temp_block_manager_`). It
-    // owns geometry and block_handle_t construction, nothing else. It is NOT a storage mode: the
-    // name survives an "in-memory table" mode that no longer exists.
-    //
-    // Every file-facing virtual therefore has no answer to give, and no channel to give it through:
-    // twelve of the sixteen overridden below return `std::unique_ptr` / `uint64_t` / `bool` / `void`.
-    // Reaching any of them is a CALLER BUG — a transient block manager handed to something that
-    // wanted a file — so each names itself and aborts. The four that COULD report deliberately do
-    // not: block_handle_t::load only calls read() for a real disk id (block_id < MAXIMUM_BLOCK), so
-    // the value would go nowhere and the caller would see an empty buffer instead of a failure.
+    // Block manager for TRANSIENT buffers — temporary payloads that never belong to a file
+    // (standard_buffer_manager_t's `temp_block_manager_`). Owns geometry and block_handle_t
+    // construction, nothing else. Every file-facing virtual is a CALLER BUG if reached (a
+    // transient manager handed to something that wanted a file), so each aborts. The four that
+    // return result_wrapper_t<bool> abort too rather than reporting: block_handle_t::load only
+    // calls read() for a real disk id, so the value would go nowhere anyway.
     class transient_block_manager_t : public block_manager_t {
     public:
         using block_manager_t::block_manager_t;

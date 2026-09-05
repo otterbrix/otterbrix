@@ -47,11 +47,8 @@ namespace components::sql::transform {
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string dbname = qn.dbname;
 
-        // Both syntaxes land in ONE list. A constraint written on a column
-        // (`code bigint UNIQUE`) and one written as its own element (`UNIQUE (code)`)
-        // differ only in where the constrained column name is spelled; everything
-        // downstream — the node, the enrich guards, the pg_constraint row — is the same.
-        // Column-level first, in declaration order, then the table-level ones.
+        // Column-level (`code bigint UNIQUE`) and table-level (`UNIQUE (code)`) constraints
+        // land in ONE list, column-level first in declaration order; downstream treats them identically.
         VALUE_OR_RETURN(auto constraints, extract_column_constraints(resource_, *coldefs, raw_sql_));
         {
             VALUE_OR_RETURN(auto table_level, extract_table_constraints(resource_, *coldefs, raw_sql_));
@@ -60,21 +57,9 @@ namespace components::sql::transform {
                                std::make_move_iterator(table_level.end()));
         }
 
-        // WITH (...) — NOT ONE OPTION IN THIS LIST IS IMPLEMENTED, so every one of them is
-        // refused.
-        //
-        // Every table is disk-backed, so `storage` is gone and keeps its own sentence. But looking
-        // only at `storage` lets every other name — `fillfactor`, `autovacuum_enabled`, a typo of
-        // `storage`, anything the user invented — fall out of the bottom, and the CREATE TABLE
-        // proceeds as if the clause had not been written: the user wrote a directive, the
-        // statement was acknowledged, and the directive had no effect anywhere. A misspelt
-        // `storag = 'memory'` is the worst shape of it — the user believes they selected a storage
-        // mode AND gets no refusal. An option with no defname cannot be named back to the user,
-        // but it is still an option this engine does not implement, so it is refused too.
-        //
-        // `storage` is looked for across the WHOLE list before anything else is refused, so the
-        // specific sentence wins wherever the user wrote it: `WITH (fillfactor = 1, storage =
-        // 'memory')` must still explain storage rather than stop at the first name it meets.
+        // No WITH (...) option is implemented; refuse all of them rather than silently no-op
+        // an unrecognized/misspelt name. `storage` is checked across the whole list first so
+        // it gets its own explanatory error regardless of option order.
         if (node.options) {
             for (auto data : node.options->lst) {
                 auto def = pg_ptr_cast<DefElem>(data.data);
@@ -101,19 +86,13 @@ namespace components::sql::transform {
                                                                                    std::move(col_defs),
                                                                                    std::move(constraints),
                                                                                    node.if_not_exists);
-        // Every declared constraint becomes the SAME node ALTER TABLE ADD CONSTRAINT
-        // produces — hung off the create node as a child, because the table it
-        // constrains is this statement's own product and has no catalog identity yet.
-        // enrich runs the guards through the parent (which owns the declared column
-        // list); rewrite_create_table mints the attoids and writes the pg_constraint
-        // rows into the same catalog-write sequence as pg_class / pg_attribute.
+        // Each declared constraint becomes the same node ALTER TABLE ADD CONSTRAINT produces,
+        // hung off the create node as a child since the table has no catalog identity yet.
         auto* cn = static_cast<logical_plan::node_create_collection_t*>(created.get());
         {
             for (const auto& tc : cn->constraints()) {
                 const auto kind = constraint_kind_of(tc.type);
-                // Rule 6: a CHECK whose expression did not survive deparsing would be a
-                // constraint that enforces nothing. Refuse the CREATE TABLE instead —
-                // the same refusal ALTER TABLE ADD CONSTRAINT makes.
+                // A CHECK whose expression did not survive deparsing would enforce nothing.
                 if (kind == logical_plan::constraint_kind::check && tc.check_expression.empty()) {
                     return core::error_t(
                         core::error_code_t::sql_parse_error,
@@ -140,18 +119,16 @@ namespace components::sql::transform {
                     cstr->set_match_type(tc.fk_matchtype);
                     cstr->set_del_action(tc.fk_del_action);
                     cstr->set_upd_action(tc.fk_upd_action);
-                    // A key pointing back at the table being created has nothing to look
-                    // up: both column lists are in this declaration, and both oids are
-                    // minted by the same rewrite. Registering a lookup for it would
-                    // resolve to nothing and read as "referenced relation does not exist".
+                    // A key pointing back at the table being created has nothing to look up
+                    // yet (both oids are minted by the same rewrite) — a lookup would read
+                    // as "referenced relation does not exist".
                     const bool self_ref = !tc.ref_collection.empty() && tc.ref_collection == qn.relname &&
                                           ref_db == dbname;
                     cstr->set_self_reference(self_ref);
                     if (!self_ref && !tc.ref_collection.empty()) {
                         register_catalog_resolve_table(resource_, &catalog_resolves_, ref_db, tc.ref_collection);
-                        // `REFERENCES parent` with the column list omitted binds to the
-                        // parent's PRIMARY KEY, which lives in that table's pg_constraint
-                        // rows — ask for its constraint gather, exactly as the ALTER path does.
+                        // Omitted column list binds to the parent's PRIMARY KEY (its
+                        // pg_constraint rows) — same constraint gather as the ALTER path.
                         if (tc.ref_columns.empty()) {
                             register_catalog_resolve_table(resource_,
                                                            &catalog_resolves_,
@@ -187,27 +164,16 @@ namespace components::sql::transform {
     }
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_drop(DropStmt& node) {
-        // Every arm below reads `node.objects->lst.front()` and never looks at the rest,
-        // so `DROP TABLE a, b, c` would plan one drop of `a`, execute cleanly and report
-        // SUCCESS while leaving `b` and `c` exactly where they were, with nothing in the
-        // answer to say so. `any_name_list` (gram.y) accepts the comma list for every
-        // drop_type, so this reaches all six arms.
-        //
-        // One node_drop_t names one object, and execution_plan_t::sub_queries is a
-        // sub-query chain feeding parameters into a single consumer — not a statement
-        // list — so there is no channel here that could carry N independent drops.
-        // Rule 6: refuse, and name the objects that would have been skipped.
+        // Every arm below reads only `node.objects->lst.front()`; `DROP TABLE a, b, c`
+        // would otherwise silently drop just `a` and report success. One node_drop_t
+        // names one object — there's no channel here for N independent drops — so refuse
+        // and name the objects that would have been skipped.
         if (!node.objects || node.objects->lst.empty()) {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"DROP names no object", resource_});
         }
-        // `any_name_list` is a List of `any_name`, and every `any_name` is itself a
-        // non-empty List of T_String cells (gram.y: any_name / attrs both build through
-        // makeString). Checked once, here, for EVERY object and EVERY name part —
-        // because the six arms below reinterpret_cast the front cell to List* and then
-        // strVal() its parts, and strVal on a node that is not a T_String reads the
-        // integer half of the Value union AS A char*. This guard therefore covers the
-        // widest read in the function, not just its own.
+        // Checked once here for every object/part: the six arms below strVal() these
+        // cells, and strVal on a non-T_String node reads the wrong union member.
         for (const auto& object : node.objects->lst) {
             if (!object.data || nodeTag(object.data) != T_List || pg_ptr_cast<List>(object.data)->lst.empty()) {
                 return core::error_t(core::error_code_t::sql_parse_error,
@@ -246,12 +212,8 @@ namespace components::sql::transform {
             auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
             drop->set_dbname(db);
             drop->set_relname(rel);
-            // `IF EXISTS`. Discarding DropStmt.missing_ok here leaves node_drop_t at its
-            // loud default, which makes the one no-op success PostgreSQL grants the
-            // IF EXISTS form unreachable from SQL.
             drop->set_missing_ok(node.missing_ok);
-            // RESTRICT/CASCADE. One drop_behavior_of choke-point for all six DROP
-            // arms (bare = restrict_, PostgreSQL parity).
+            // One drop_behavior_of choke-point for all six DROP arms (bare = restrict_, PostgreSQL parity).
             drop->set_behavior(drop_behavior_of(node.behavior));
             register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
             return n;
@@ -274,8 +236,7 @@ namespace components::sql::transform {
                         return wrap_one(database, collection, std::move(n));
                     }
                     case database_schema_table: {
-                        // The schema part is not modelled; SKIP the cell rather than
-                        // materialise a std::string only to (void)-cast it (rule 14).
+                        // Schema part isn't modelled; skip the cell rather than bind then discard it.
                         auto it = drop_name.begin();
                         std::string database = strVal(it++->data);
                         ++it; // schema
@@ -312,14 +273,11 @@ namespace components::sql::transform {
                     drop->set_dbname(db);
                     drop->set_relname(rel);
                     drop->set_index_name(index_name);
-                    // `IF EXISTS` — same wiring as wrap_one; rewrite_drop_index already
-                    // reads this flag when the index name does not resolve.
+                    // Same wiring as wrap_one; rewrite_drop_index reads this when the index name
+                    // doesn't resolve.
                     drop->set_missing_ok(node.missing_ok);
-                    // Same wiring as wrap_one. Nothing reads it on this arm yet —
-                    // rewrite_drop_index builds its own catalog-delete sequence instead of
-                    // routing through the dynamic cascade — but the arm that DISCARDS a
-                    // word the user wrote is the arm that gets it wrong the day a reader
-                    // appears, and there is no second place this could be set.
+                    // Not read yet (rewrite_drop_index builds its own delete sequence, not the
+                    // dynamic cascade), but this is the only place it could be set.
                     drop->set_behavior(drop_behavior_of(node.behavior));
                     std::vector<std::pair<std::string, std::string>> targets;
                     targets.emplace_back(db, rel);
@@ -338,8 +296,7 @@ namespace components::sql::transform {
                         return wrap_index(database, collection, name, std::move(n));
                     }
                     case database_schema_table: {
-                        // Unmodelled name parts are SKIPPED, not bound to a variable that
-                        // then needs a (void)-cast to stay quiet (rule 14).
+                        // Unmodelled name parts are skipped rather than bound then discarded.
                         auto it = drop_name.begin();
                         std::string database = strVal(it++->data);
                         ++it; // schema
@@ -376,12 +333,10 @@ namespace components::sql::transform {
                 // resolved type entry and stamps type_oid from there.
                 n->set_dbname("public");
                 n->set_relname(type_name);
-                // `IF EXISTS` — the one arm that does not build through wrap_one.
+                // The one arm that does not build through wrap_one.
                 n->set_missing_ok(node.missing_ok);
-                // RESTRICT/CASCADE/neither, for the same reason: this arm DOES reach the
-                // dynamic cascade (planner rewrite_drop routes drop_target_kind::type
-                // there), so a written CASCADE dropped here would be a word the plan never
-                // hears.
+                // Unlike DROP INDEX, this arm DOES reach the dynamic cascade
+                // (planner's rewrite_drop routes drop_target_kind::type there).
                 n->set_behavior(drop_behavior_of(node.behavior));
                 register_catalog_resolve_namespace(resource_, &catalog_resolves_, "public");
                 register_catalog_resolve_types(resource_, &catalog_resolves_, {type_name});

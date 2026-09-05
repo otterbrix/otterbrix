@@ -28,10 +28,8 @@ namespace otterbrix {
     class py_expression_t {
     public:
         py_expression_t(expression_wrapper_t expr, py_connection_t& conn);
-        //! Chaining ctor: a derived expression stands on the SAME space and the SAME connection
-        //! as the expression it was derived from. It takes the source expression rather than a
-        //! bare `expression_factory_t*` because the factory pointer alone carries no lifetime --
-        //! that is the hole this class had, see the members at the bottom of the class.
+        //! Chaining ctor: takes the source expression, not a bare `expression_factory_t*`,
+        //! since a factory pointer alone carries no lifetime (see the members below).
         py_expression_t(expression_wrapper_t expr, const py_expression_t& source);
 
         ~py_expression_t();
@@ -115,47 +113,31 @@ namespace otterbrix {
         static pyexpr_ptr sort_expression(components::expressions::sort_order type, const py_expression_t& expr);
 
     private:
-        //! The connection, refused unless it is still open. Every road below that BUILDS a new
-        //! expression reaches expression_factory_t::space -- the copy close() nulls -- and
-        //! `boost::intrusive_ptr::operator->` on a null space is an assert that NDEBUG deletes,
-        //! leaving a plain null dereference in the build that ships. One refusal, the same one
-        //! py_connection_t and py_relation_t::live_env() give.
+        //! Refuses unless still open: building a new expression dereferences the (possibly
+        //! null, after close()) space, which under NDEBUG is a plain null dereference, not an
+        //! assert. Same refusal as py_connection_t/py_relation_t::live_env().
         py_connection_t& live_env() const;
 
-        //! The factory WITHOUT the open check: reading an expression back (to_string) touches
-        //! only the key / built node / parameter map, never the space, so a closed connection
-        //! must still be able to print the expressions it made. Refusing here would break that.
+        //! Without the open check: to_string() never touches the space, so a closed
+        //! connection must still be able to print the expressions it made.
         expression_factory_t& factory() const;
 
     private:
-        //! The space `expr` was allocated out of, held so the expression owns its own release
-        //! path instead of borrowing the connection's -- py_relation_t::space_ and
-        //! py_result_t::space are held for exactly this reason and say so.
-        //!
-        //! This was a raw borrow and a reachable use-after-free: the key/constant inside `expr`
-        //! is pmr-allocated from the space's arena (base_otterbrix_t::resource is a MEMBER of the
-        //! space), the expression is handed to Python, and the connection object that made it can
-        //! be dropped first -- Python releases the locals of a finished frame in no guaranteed
-        //! order. Reading the expression then read freed memory and ~py_expression_t handed the
-        //! bytes back to a destroyed pool.
-        //!
-        //! Declared FIRST so reverse-order member destruction frees it LAST: `expr` deallocates
-        //! into this arena, and `env_`'s destructor drops the connection's scratch tables through
-        //! the engine. No cycle: neither py_connection_t nor otterbrix_t knows this class exists.
+        //! The space `expr` was allocated out of, held instead of borrowed (same reason as
+        //! py_relation_t::space_ / py_result_t::space): `expr`'s pmr data lives on the space's
+        //! arena, and Python can drop the connection before this expression -- a reachable
+        //! use-after-free when it was a raw borrow. Declared first so reverse-order member
+        //! destruction frees it last, after `expr` has deallocated into it. No ref cycle:
+        //! neither py_connection_t nor otterbrix_t knows this class exists.
         boost::intrusive_ptr<otterbrix_t> space_;
 
-        //! The connection every op reaches back into, held rather than borrowed for the same
-        //! reason, and NOT covered by `space_`: a CONSTANT expression is a parameter id, and the
-        //! value it names lives in `expression_factory_t::values` -- a member of this OBJECT, not
-        //! of the arena. Hold only the space and the 64 constants of
-        //! tests/test_expression_lifetime.py come back as IndexError while the 64 columns read
-        //! fine; that is the measurement, not a guess.
-        //!
-        //! std::shared_ptr against rule 14, and a PARTIAL RECORD rather than a free choice:
-        //! pybind11 owns py_connection_t through a shared_ptr holder (py::class_<py_connection_t,
-        //! std::shared_ptr<py_connection_t>>, pyconnection/initialize.cpp), so shared_ptr IS the
-        //! connection's lifetime on this boundary. py_relation_t::env holds it the same way and
-        //! carries the same record.
+        //! Held rather than borrowed, and not covered by `space_`: a CONSTANT expression is a
+        //! parameter id whose value lives in `expression_factory_t::values`, a member of the
+        //! connection object, not the arena. Measured: holding only the space made
+        //! tests/test_expression_lifetime.py's 64 constants come back as IndexError while its
+        //! 64 columns read fine. std::shared_ptr because pybind11 owns py_connection_t through
+        //! a shared_ptr holder (pyconnection/initialize.cpp) -- that IS its lifetime here;
+        //! py_relation_t::env holds it the same way.
         std::shared_ptr<py_connection_t> env_;
 
         expression_wrapper_t expr;

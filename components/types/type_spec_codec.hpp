@@ -11,11 +11,9 @@
 
 namespace components::types {
 
-    // Binary codec for a FULL complex_logical_type spec — the persistent form of a column
-    // type. Round-trips everything a bare one-byte logical_type tag loses: DECIMAL
-    // width/scale, LIST/ARRAY/MAP/STRUCT/UNION child types, ENUM entries, and every alias
-    // (recursively). Lives in components::types so components::table can persist column
-    // types without linking otterbrix::catalog (that link would be a dependency cycle).
+    // Binary codec for a FULL complex_logical_type spec (persistent column type), round-tripping
+    // DECIMAL width/scale, nested child types, ENUM entries and aliases. Lives here rather than
+    // in catalog so components::table can persist column types without a table->catalog link cycle.
     //
     // Byte layout (native-endian like the rest of the metadata stream, recursive):
     //   spec := u8  logical_type            // types::logical_type numeric value
@@ -36,21 +34,13 @@ namespace components::types {
     //     VARIANT : (none — the fixed internal struct is rebuilt by create_variant)
     //     scalars : (none)
     //
-    // Decoding is fail-loud (rule 6): an unrecognized logical_type byte, unknown flag
-    // bits, a truncated buffer, an invalid DECIMAL width/scale, over-deep nesting or
-    // trailing bytes are data_corruption errors — never a guessed type.
+    // Decoding is fail-loud: any malformed byte is a data_corruption error, never
+    // a guessed type.
 
-    // Appends the spec for `type` to `out`. Fails (schema_error) for types that cannot be
-    // persisted — FUNCTION/LAMBDA/TABLE/USER/INVALID, or a composite type whose extension
-    // is missing/mismatched; `out` is left in an unspecified state on error.
-    //
-    // THE WRITER VALIDATES THE READER'S WINDOW. Every value-range refusal decode_type_spec
-    // makes has its mirror here — the DECIMAL width/scale window (is_valid_decimal_spec)
-    // and the nesting depth limit — because a refusal on the way IN costs a failed
-    // statement or a failed checkpoint, while bytes that only the reader refuses cost a
-    // database that never opens again. The remaining decode refusals are structural
-    // (truncation, lying counts, trailing bytes, unknown flag bits): a stream this encoder
-    // produced cannot exhibit them, so they need no mirror.
+    // schema_error for types that cannot be persisted (FUNCTION/LAMBDA/TABLE/USER/INVALID, or a
+    // mismatched extension); `out` is left unspecified on error. Mirrors decode_type_spec's
+    // value-range refusals (DECIMAL window, nesting depth) so a bad write fails the statement
+    // instead of writing a checkpoint that can never be read back.
     [[nodiscard]] core::result_wrapper_t<bool> encode_type_spec(const complex_logical_type& type,
                                                                 std::pmr::vector<std::byte>& out);
 

@@ -1,17 +1,6 @@
-// ============================================================================
-// context_t MUST SURVIVE A MOVE WHOLE.
-//
-// The hand-written move constructor moved SIX of context_t's ~25 members —
-// session, sender, parameters, disk/index addresses, address_ — and silently
-// DROPPED the rest: txn, the DML append/delete range lists, the created/
-// dropped-oid back-channels, committed_id, the flush flags, the runner seam.
-// Those are exactly the members the executor's commit/abort back-channels ride
-// on, so a moved context did not carry a smaller context — it carried a context
-// that would publish nothing and revert nothing. No caller move-constructs a
-// populated context today (which is how the half-copy survived), but a
-// constructor that exists is a constructor that will be called; it must not be
-// a trap. The fix defaults it so every member — present and future — moves.
-// ============================================================================
+// The hand-written move ctor moved 6 of context_t's ~25 members and silently dropped the rest —
+// including txn and the DML append/delete/oid back-channels the executor's commit/abort rides on
+// — so a moved context published and reverted nothing. Defaulted now: every member moves.
 
 #include <catch2/catch_test_macros.hpp>
 #include <core/pmr.hpp>

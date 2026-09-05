@@ -307,13 +307,10 @@ namespace components::table {
             // must too. Without packing every re-pointed segment sits at offset 0 and the bug stays latent.
             auto* segment_data = data + segment.block_offset();
 
-            // A STRING segment whose dictionary holds big-string markers is NOT self-contained.
-            // Copying its block verbatim persists markers whose payload lives in a TRANSIENT block
-            // that dies with the process, so the reloaded segment could not resolve them at all
-            // (the read path aborted). Take a writable copy, move each payload into a real file
-            // block through the SAME partial_block_manager that packs everything else, and rewrite
-            // the markers in the copy to name those blocks. dp.overflow_blocks records them so the
-            // reload can register them and compact can reclaim them.
+            // A STRING segment with big-string markers is not self-contained: the payload can
+            // live in a TRANSIENT block that dies with the process. Copy the segment, move each
+            // payload into a real file block via partial_block_manager, and rewrite the markers;
+            // dp.overflow_blocks records them for reload/compact.
             if (segment.references_string_overflow(segment_data, segment_size, tuple_count)) {
                 std::pmr::vector<std::byte> rewritten(segment_size, std::byte{0}, column_data_.resource());
                 std::memcpy(rewritten.data(), segment_data, segment_size);

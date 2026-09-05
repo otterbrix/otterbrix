@@ -1,8 +1,6 @@
-// build_create_constraint_writes refuses (invalid_constraint) a constraint column
-// whose attoid is INVALID_OID. Written INTO the conkey/confkey CSV while its
-// per-column pg_depend edge is silently OMITTED, such a column leaves the constraint
-// claiming something no dependency walk can see — and ALTER TABLE DROP COLUMN then
-// drops a parent column out from under a live FK.
+// build_create_constraint_writes refuses (invalid_constraint) a conkey/confkey column
+// whose attoid is INVALID_OID: written into the CSV without a pg_depend edge, it would let
+// ALTER TABLE DROP COLUMN drop a parent column out from under a live FK undetected.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/catalog_codes.hpp>
@@ -96,18 +94,15 @@ TEST_CASE("catalog::constraint_writes::every_conkey_column_carries_a_dependency_
 }
 
 TEST_CASE("catalog::constraint_writes::an_empty_list_stays_legal") {
-    // The conkey-loss floor lives on the READ side (test_declared_key_conkey_loss.cpp):
-    // an empty list must still produce a row so those sentinels keep their subject.
+    // Read-side counterpart: integration/cpp/test/test_declared_key_conkey_loss.cpp.
     auto writes = build_unique({});
     REQUIRE_FALSE(writes.has_error());
     REQUIRE(conkey_of(writes.value()).empty());
     REQUIRE(count_attribute_edges(writes.value()) == 0);
 }
 
-// The SAME class for CREATE INDEX: writing every attoid into the indkey CSV while
-// skipping the per-column 'i' pg_depend edge for an INVALID_OID member leaves the index
-// claiming a column no dependency walk can see — the same DROP COLUMN blindness the
-// conkey gate above closes. build_create_index_writes refuses it.
+// Same class for CREATE INDEX: build_create_index_writes refuses an indkey column with
+// an INVALID_OID attoid, for the same DROP COLUMN blindness reason as above.
 TEST_CASE("catalog::index_writes::an_unstamped_indkey_column_is_refused") {
     auto writes = build_create_index_writes(g_resource,
                                             "users_by_name",
@@ -143,9 +138,8 @@ TEST_CASE("catalog::index_writes::every_indkey_column_carries_a_dependency_edge"
 }
 
 TEST_CASE("catalog::row_builders::pg_attribute_row_is_always_full_width") {
-    // A "missing system-table definition" arm answering with an EMPTY chunk would go
-    // unchecked by every caller. Well-known oids are always in the schema array, so the
-    // arm cannot be reached; the full-width row is the pin.
+    // Well-known oids are always in the schema array, so the "missing definition" arm
+    // (which would answer with an empty, unchecked chunk) is unreachable; pins full width.
     auto row = build_pg_attribute_row(g_resource,
                                       /*attoid=*/oid_t{20001},
                                       /*table_oid=*/oid_t{20000},

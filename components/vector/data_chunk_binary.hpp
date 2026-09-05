@@ -36,7 +36,7 @@ namespace components::vector {
     ///
     /// A column whose payload this codec has no rule for is POISONED (spec_size 0) rather than
     /// written short, so the reader refuses the record instead of handing replay a column of
-    /// zeroes (rule 6).
+    /// zeroes.
     void serialize_binary(const data_chunk_t& chunk, services::wal::buffer_t& buffer);
 
     /// Deserialize a data_chunk_t that was previously written by serialize_binary.

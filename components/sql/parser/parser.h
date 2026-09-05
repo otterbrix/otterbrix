@@ -15,14 +15,9 @@ namespace components::sql::parser {
  * extension.hpp); pass the registry owned by the database instance, or a
  * standalone one when using the parser as a component.
  *
- * Contract — the returned list and the exception mean DIFFERENT things:
- *   - a returned list may be EMPTY. That is success: the grammar accepted the
- *     text and found no statement in it (empty input, a lone comment, a bare
- *     `;`). It is never a report of failure;
- *   - failure is a thrown parser_exception_t, always.
- * The returned list is never a null pointer — an empty one is the shared NIL
- * node, which is a real List with no cells — so `if (!tree)` proves nothing.
- * Test list_length(tree) before reaching for linitial(tree). */
+ * An empty returned list is SUCCESS (no statement found), never failure — failure is always a
+ * thrown parser_exception_t. The list itself is never null (empty is the shared NIL sentinel),
+ * so check list_length(tree), not `if (!tree)`. */
 extern List* raw_parser(std::pmr::memory_resource* resource, const char* str);
 extern List* raw_parser(std::pmr::memory_resource* resource,
                         const char* str,

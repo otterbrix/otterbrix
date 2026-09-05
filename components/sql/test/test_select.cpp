@@ -317,15 +317,8 @@ TEST_CASE("components::sql::select_with_subquery") {
         R"_($aggregate: {$match: {"col1": {$any: #0}}})_",
         vec({v(&resource, nullptr)}));
 }
-// The DISTINCT flag of an aggregate call must survive every arm that builds one, not only
-// the select list (transform_select reads func->agg_distinct). Dropped in
-// resolve_having_operand or transform_a_expr_func it costs:
-//   * a HAVING aggregate not present in SELECT minted WITHOUT distinct, so
-//     `HAVING count(DISTINCT x)` silently computes count(x);
-//   * HAVING-to-projection matching that ignores distinct, so `HAVING count(DISTINCT x)`
-//     binds to a projected count(x) (and vice versa) instead of minting its own
-//     aggregate;
-//   * an aggregate nested as a function argument losing the flag.
+// DISTINCT on an aggregate call must survive every arm that builds one — transform_select,
+// resolve_having_operand, transform_a_expr_func — not just the select list.
 TEST_CASE("components::sql::aggregate_distinct_survives_having_and_nesting") {
     using components::expressions::aggregate_expression_t;
     using components::expressions::expression_group;
@@ -344,7 +337,6 @@ TEST_CASE("components::sql::aggregate_distinct_survives_having_and_nesting") {
         bool distinct;
     };
 
-    // Collect every named call (function or aggregate) in the tree, depth-first.
     struct collector_t {
         std::vector<call_t>* out;
         void walk(const expression_i* expr) const {
@@ -385,9 +377,7 @@ TEST_CASE("components::sql::aggregate_distinct_survives_having_and_nesting") {
         }
     };
 
-    // Transform QUERY and return every named call found in the aggregate sub-tree
-    // (the group node absorbs the select-list expressions, so one walk over the
-    // aggregate's children sees projection and HAVING aggregates alike).
+    // The group node absorbs the select-list expressions, so walking its children alone sees both projection and HAVING aggregates.
     auto calls_of = [&](const char* query) {
         auto stmt = linitial(raw_parser(&arena_resource, query));
         auto wrap = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();

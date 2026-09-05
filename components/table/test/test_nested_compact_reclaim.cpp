@@ -1,39 +1,25 @@
 // compact must reclaim the disk blocks of NESTED columns' children.
-//
-// collect_disk_block_ids is data_table_t::compact's ONLY source of "what the outgoing collection
-// owned". standard_column_data_t overrides it to add its validity child; without their own
-// overrides STRUCT/LIST/ARRAY fall through to the base implementation, which walks only the node's
-// OWN data_ tree — a tree STRUCT and ARRAY do not even populate. Since the checkpoint_children
-// hooks make every child column (validity is children[0], nested payloads follow) a real persisted
-// column, a RELOADED nested column's children sit on real .otbx blocks — and when compact tears
-// the collection down those blocks are returned to nobody.
-//
-// Two things conspire to hide the leak, and this file is shaped to defeat both:
-//
-//   * PARTIAL-BLOCK PACKING. A block shared by a child segment and any TOP-LEVEL-owned segment (a
-//     flat column's data, a LIST's offsets) is reported through the top-level walk by accident,
-//     and freeing a packed block once frees all of it, so a nested column sitting NEXT TO a flat
-//     column can leak nothing at all. The gates below isolate each kind: STRUCT-only and
-//     ARRAY-only tables own NO top-level segments (without the overrides compact collects
-//     NOTHING), and the LIST table's elements are fat enough (> 0.8 * block, the
-//     partial_block_manager_t::FULL_THRESHOLD) that its child segments take DEDICATED blocks no
-//     offsets segment can share.
-//
-//   * THE ROOT FORMULA — and only a judged REOPENED file tells the truth about it. Children own
-//     disk blocks only after a LOAD (write-through never descends into nested children), and
-//     compact straight after the load is still covered by the formula: the loaded blocks are
-//     durable_root_data_, and reclaim_superseded_root sweeps them once the collection is dead. One
-//     checkpoint BEFORE the compact moves the durable root past the load root (the children's
-//     blocks survive that reclaim only through their registry entries) — the compact then destroys
-//     the registry entries, and after the NEXT checkpoint the load-time child blocks are named by
-//     no root, no free list and no registry: orphaned durably.
-//
-// Gates, each judged per nested kind:
-//   1. (unit-shaped) on a freshly loaded table, collect_disk_block_ids must cover every block the
-//      loader registered — the loader's registry IS the collection's ownership;
-//   2. (walker) checkpoint -> delete -> compact -> checkpoint leaves ZERO unexplained blocks in
-//      the durable file;
-//   3. (closed cycle) reopen/checkpoint/compact/checkpoint rounds do not grow the file.
+// data_table_t::compact's only source of "what the outgoing collection owned" is
+// collect_disk_block_ids. Before struct/list/array_column_data_t got their own overrides,
+// it fell through to the base impl, which walks only the node's own data_ tree -- a tree
+// STRUCT/ARRAY don't even populate -- so a reloaded nested column's children (real .otbx
+// blocks via checkpoint_children) were returned to nobody when compact tore the
+// collection down.
+// Two things hide the leak, so this file defeats both:
+//   * Partial-block packing: a block a child shares with a top-level segment gets covered
+//     by accident. Gates use STRUCT/ARRAY-only tables (no top-level segments at all) and
+//     force LIST elements past partial_block_manager_t::FULL_THRESHOLD so their segments
+//     take dedicated, unshared blocks.
+//   * The root formula: children only own disk blocks after a LOAD (write-through never
+//     descends into them), and a compact right after the load is still covered by
+//     reclaim_superseded_root. Only reload -> checkpoint -> delete -> compact -> checkpoint
+//     moves durable_root_data_ past the load root and lets compact destroy the registry
+//     entries that were keeping the load-time blocks alive -- only then are they orphaned.
+// Gates, per nested kind:
+//   1. Freshly loaded table: collect_disk_block_ids must cover every block the loader
+//      registered.
+//   2. checkpoint -> delete -> compact -> checkpoint: zero unexplained blocks.
+//   3. Repeated reopen/checkpoint/compact/checkpoint rounds do not grow the file.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -119,9 +105,8 @@ namespace {
         return complex_logical_type::create_struct("pair", fields);
     }
 
-    // ONE column of ONE nested kind, no flat column: for STRUCT and ARRAY the top-level node
-    // owns no segments at all, so the base-walk reclaim source is provably EMPTY, and no
-    // packing accident can hand a child block to compact through someone else's walk.
+    // ONE column of ONE nested kind, no flat column: STRUCT/ARRAY top-level nodes own no
+    // segments, so no packing accident can hand a child block to compact via a flat column's walk.
     std::unique_ptr<data_table_t>
     make_nested_table(nested_env_t& env, tstorage::single_file_block_manager_t& bm, nested_kind_t kind) {
         std::vector<column_definition_t> columns;
@@ -219,9 +204,8 @@ namespace {
         return std::move(loaded.value());
     }
 
-    // Content-addressed verification: each row is identified by its FIRST payload value (the
-    // row number is recoverable from it), so the check survives compact rewriting row
-    // positions AND proves that a freed-and-reissued block never held data anyone needed.
+    // Content-addressed: each row is identified by its FIRST payload value, so the check
+    // survives compact rewriting row positions and proves a reissued block held no needed data.
     uint64_t scan_and_verify(data_table_t& table, nested_env_t& env, nested_kind_t kind) {
         std::vector<storage_index_t> column_ids{storage_index_t(0)};
         table_scan_state state(&env.resource);
@@ -323,11 +307,10 @@ namespace {
         REQUIRE(!bm.load_existing_database().has_error());
         auto table = reload_table(env, bm);
 
-        // GATE 1. The loader registered one block_handle_t per loaded segment plus the
-        // big-string overflow blocks — for EVERY node of every column tree, children
-        // included. That registry is precisely what this fresh collection owns, so compact's
-        // reclaim source must cover all of it. (Scoped so the counted copy dies before
-        // compact — a held copy would keep the outgoing collection alive.)
+        // GATE 1: the loader's registry (one block_handle_t per loaded segment, every node
+        // of every column tree) is precisely what this fresh collection owns, so compact's
+        // reclaim source must cover all of it. Scoped: a held copy would keep the outgoing
+        // collection alive past compact.
         {
             std::pmr::vector<uint64_t> collected{&env.resource};
             table->row_group()->collect_disk_block_ids(collected);
@@ -343,9 +326,8 @@ namespace {
             CHECK(missing.empty());
         }
 
-        // Move the durable root past the load root while the live tree still points at the
-        // load-time blocks. Under root N+1 those blocks survive reclaim only through their
-        // registry entries — which the compact below destroys.
+        // Moves the durable root past the load root; the load-time blocks now survive
+        // reclaim only via registry entries, which the compact below destroys.
         checkpoint_production(bm, *table);
 
         // A real compacting round: drop half the table, rebuild, commit root N+2.
@@ -353,8 +335,8 @@ namespace {
         REQUIRE(table->compact(WATERMARK));
         checkpoint_production(bm, *table);
 
-        // GATE 2. Every block of the file must be explained by the durable root, the free
-        // list, or the live registry. On HEAD the children's load-time blocks are in none.
+        // GATE 2: every block must be explained by the durable root, the free list, or the
+        // live registry.
         auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
         REQUIRE(report.ok);
         INFO(kind_name(kind) << ": unexplained (leaked) blocks: " << id_set_to_string(report.unexplained));
@@ -381,13 +363,10 @@ namespace {
 } // namespace
 
 // ---------------------------------------------------------------------------------------
-// GATES 1 + 2 — ownership coverage on a loaded table, and a fully explained durable
-// file after a compacting round, per nested kind.
-//
-// The defect: gate 1 reports every child block (validity, STRUCT fields, LIST/ARRAY
-// elements) as registered-but-uncollected — for STRUCT and ARRAY the collected set is
-// EMPTY; gate 2 reports the same blocks as UNEXPLAINED — named by no root, no free list,
-// no registry — i.e. leaked durably, invisible until a reopened file is judged.
+// GATE 1: ownership coverage on a loaded table. GATE 2: a fully explained durable file
+// after a compacting round. Per nested kind. Regression guard: without per-kind
+// collect_disk_block_ids overrides, GATE 1's collected set is EMPTY for STRUCT/ARRAY, and
+// GATE 2 reports those same blocks as unexplained (leaked durably).
 // ---------------------------------------------------------------------------------------
 TEST_CASE("nested_compact_reclaim: STRUCT children blocks are collected and the walk stays explained", "[f6]") {
     run_walker_gates(nested_kind_t::STRUCT);
@@ -402,12 +381,9 @@ TEST_CASE("nested_compact_reclaim: ARRAY children blocks are collected and the w
 }
 
 // ---------------------------------------------------------------------------------------
-// GATE 3 — the closed-cycle property, restated for nested columns across process
-// lifetimes: reopen / checkpoint / compact / checkpoint must not grow the file once warm.
-// STRUCT-only shape: the whole table is child payload, so pre-fix compact reclaims zero.
-//
-// The defect: every cycle orphans the child blocks the load created, so the pool comes
-// up short by that amount each cycle and the file grows without bound.
+// GATE 3: reopen / checkpoint / compact / checkpoint must not grow the file once warm.
+// STRUCT-only shape (whole table is child payload): pre-fix, compact reclaims zero,
+// orphaning the load-time child blocks every cycle -- unbounded file growth.
 // ---------------------------------------------------------------------------------------
 TEST_CASE("nested_compact_reclaim: reopen+compact rounds do not grow the file", "[f6]") {
     const auto path = nested_db_path("steady");
@@ -433,9 +409,8 @@ TEST_CASE("nested_compact_reclaim: reopen+compact rounds do not grow the file", 
         blocks_out = bm.total_blocks();
     };
 
-    // Warm-up: the first compacting cycles legitimately raise the high-water mark (double
-    // occupancy until the superseding root is durable, then the first spend of the
-    // reclaimed space). From there on the file must be a closed cycle.
+    // Warm-up: the first cycles legitimately raise the high-water mark (double occupancy
+    // until the superseding root is durable). From there on the file must be a closed cycle.
     uint64_t steady_blocks = 0;
     for (int warmup = 0; warmup < 3; ++warmup) {
         run_cycle(steady_blocks);

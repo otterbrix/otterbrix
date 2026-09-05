@@ -1,16 +1,12 @@
-// A DEFAULT MEMBER INITIALISER THAT NAMES THE PROCESS DEFAULT IS THE DEFECT, NOT THE FIX.
+// record_t used to pin both pmr vectors with `{std::pmr::get_default_resource()}` default
+// member initialisers. decode_record() then default-constructed a record_t and ASSIGNED the
+// decoded payload in — but pmr move-assignment does NOT take the source's allocator
+// (propagate_on_container_move_assignment is false), so every replayed WAL record was allocated
+// on the process-global arena regardless of the resource the caller handed decode_record.
 //
-// record_t pinned BOTH of its pmr vectors with `{std::pmr::get_default_resource()}` default
-// member initialisers — rule 14's forbidden construct, spelled out. decode_record() then
-// default-constructed a record_t and ASSIGNED the decoded payload into those members. A pmr
-// move-assignment does NOT take the source's allocator (propagate_on_container_move_assignment
-// is false), so every byte of every replayed WAL record was allocated by the TARGET's allocator
-// — the process-global arena — no matter which resource the caller handed decode_record. Replay
-// is the one path where the arena matters most, and it was the one path that never used it.
-//
-// Two probes, because one alone can lie. get_allocator().resource() names the arena the vectors
-// report; the counting resource installed AS the process default counts what decoding actually
-// took from the global arena. A correct decode answers "&arena" and "0".
+// Two probes, because one alone can lie: get_allocator().resource() names the arena the vectors
+// report, while a counting resource installed AS the process default counts what decoding
+// actually took from the global arena. A correct decode answers "&arena" and "0".
 
 #include <catch2/catch_test_macros.hpp>
 

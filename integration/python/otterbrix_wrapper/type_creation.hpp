@@ -22,14 +22,10 @@ namespace otterbrix { namespace type_creation {
     core::result_wrapper_t<components::types::logical_type> string_to_logical_type(const std::string& type_str,
                                                                                    std::pmr::memory_resource* resource);
 
-    // EVERY factory below takes the module's arena, and takes it as a COUNTED reference.
-    // Two of them ALLOCATE OUT OF IT for the object's whole life -- map_type and struct_type
-    // build the child list the extension then keeps (struct_logical_type_extension copies
-    // with fields.get_allocator()); two only allocate a REFUSAL MESSAGE on it (decimal_type,
-    // type); the rest allocate nothing at all. They all still take it, because the
-    // otterbrix_py_type_t they return has to carry the reference: that object is handed to
-    // the interpreter, which may hold it after the module itself is gone, and the reference
-    // is what keeps the arena from being released underneath it. See module_arena.hpp.
+    // Every factory takes the module's arena as a counted reference, even ones that allocate
+    // nothing from it (map_type/struct_type keep a child list on it; decimal_type/type only
+    // allocate a refusal message): the returned otterbrix_py_type_t must carry the reference
+    // so the arena isn't released while the interpreter still holds the object. See module_arena.hpp.
     std::shared_ptr<otterbrix_py_type_t> map_type(const module_arena_ptr& arena,
                                                   const std::shared_ptr<otterbrix_py_type_t>& key_type,
                                                   const std::shared_ptr<otterbrix_py_type_t>& value_type);

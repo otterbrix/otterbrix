@@ -7,40 +7,20 @@
 #include <fstream>
 #include <string>
 
-// A CONFIGURED INDEX THRESHOLD MUST HOLD FOR EVERY INDEX, NOT ONLY FOR THE ONES THAT
-// EXISTED AT STARTUP.
+// A configured index threshold (config.disk.bitcask_segment_record_limit) must hold for an
+// index created at runtime, not only one restored at bootstrap -- the two paths used to source
+// the limit differently (config vs. bitcask_index_disk_t::default_segment_record_limit_ = 10000).
 //
-// configuration::config_disk carries three index-storage knobs -- bitcask_flush_threshold,
-// bitcask_segment_record_limit, btree_flush_threshold. They reached manager_index_t's
-// constructor, which stored them in three fields... that nothing ever read. Bootstrap spawned
-// its agents from config.disk.* directly (in base_spaces), while manager_index_t::create_index
-// built its agent from bitcask_index_disk_t::default_* / btree_index_disk_t::default_* -- the
-// backends' own static defaults. The result is one database holding two differently laid-out
-// copies of the same kind of index, decided by nothing more than WHEN it was created:
-//
-//     CREATE INDEX ... USING hash    -> segment_record_limit 10000 (the static default)
-//     restart, same index            -> segment_record_limit whatever was configured
-//
-// This is observable because bitcask ROTATES its active data segment every
-// segment_record_limit records, and the segment it is writing to is named in the CURRENT file
-// in the index directory (a decimal id; regular segments start at 2 and the merger only ever
-// reuses the reserved ids 0-1 below them). With the limit configured down to a handful of
-// records, a dozen committed inserts must move CURRENT well past its starting id; with the
-// 10000-record static default in force it cannot move at all.
-//
-// THE READS HAPPEN WHILE THE ENGINE IS STILL UP, and that is not incidental: shutdown runs a
-// CHECKPOINT, which repopulates every index -- clear() and then one txn_id==0 BULK load, and a
-// bulk load deliberately suppresses rotation (bitcask_index_disk_t::set_bulk_mode). A
-// post-shutdown directory therefore always holds exactly one segment whatever the limit is.
-//
-// Both roads are exercised in one case, because the claim is that they AGREE: the index a
-// statement creates and the same index after a restart must be laid out the same way.
+// Observed via bitcask's CURRENT file, which names the active segment (regular ids start at 2,
+// growing once per rotation). Reads must happen while the engine is still up: a shutdown
+// CHECKPOINT bulk-reloads every index and bulk mode suppresses rotation
+// (bitcask_index_disk_t::set_bulk_mode), so a post-shutdown directory always shows exactly one
+// segment regardless of the configured limit.
 
 namespace {
 
-    // The one index directory below the disk root: the directory that holds a bitcask
-    // CURRENT marker. Found by content, not by name -- the on-disk layout is oid-keyed and
-    // carries no index name.
+    // Found by content (a CURRENT marker), not by name -- the on-disk layout is oid-keyed
+    // and carries no index name.
     std::filesystem::path find_bitcask_index_dir(const std::filesystem::path& disk_root) {
         for (const auto& e : std::filesystem::recursive_directory_iterator(disk_root)) {
             if (e.is_directory() && std::filesystem::exists(e.path() / "CURRENT")) {
@@ -50,8 +30,6 @@ namespace {
         return {};
     }
 
-    // The active segment id bitcask recorded. It starts at 2 on a fresh directory and only
-    // ever grows, once per rotation.
     uint64_t current_segment_id(const std::filesystem::path& index_dir) {
         std::ifstream input(index_dir / "CURRENT");
         uint64_t id = 0;
@@ -62,9 +40,7 @@ namespace {
     constexpr uint64_t kFirstRegularSegmentId = 2;
     constexpr uint64_t kSegmentRecordLimit = 2;
     constexpr unsigned kRows = 12;
-    // Every committed insert appends one snapshot record, so kRows records at
-    // kSegmentRecordLimit per segment must rotate this many times. One is subtracted to
-    // stay clear of where the boundary falls relative to the run that preceded it.
+    // -1 to stay clear of where the boundary falls relative to the preceding run.
     constexpr uint64_t kMinRotations = kRows / kSegmentRecordLimit - 1;
 
 } // namespace
@@ -89,7 +65,7 @@ TEST_CASE("integration::cpp::test_index_threshold_config::every_road_honours_the
         };
         REQUIRE(exec("CREATE DATABASE b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.t (id bigint, k bigint);")->is_success());
-        // Created AT RUNTIME -- this is the road that ignored the configuration.
+        // Runtime CREATE INDEX road.
         REQUIRE(exec("CREATE INDEX k_idx ON b.t USING hash (k);")->is_success());
         for (unsigned i = 0; i < kRows; ++i) {
             REQUIRE(exec("INSERT INTO b.t (id, k) VALUES (" + std::to_string(i) + ", " + std::to_string(i) + ");")
@@ -109,9 +85,8 @@ TEST_CASE("integration::cpp::test_index_threshold_config::every_road_honours_the
     }
 
     {
-        // The same index, now brought up by the BOOTSTRAP road -- the one that always read
-        // the configuration. The shutdown checkpoint above bulk-reloaded the store, so this
-        // run starts from whatever segment that left behind and counts from there.
+        // Bootstrap road. The prior shutdown checkpoint bulk-reloaded the store, so count
+        // rotations from whatever segment that left behind, not from kFirstRegularSegmentId.
         test_spaces space(config);
         auto* d = space.dispatcher();
         auto exec = [&](const std::string& sql) {

@@ -1,23 +1,18 @@
-// ============================================================================
-// AN INSERT THAT DOES NOT NAME THE FOREIGN KEY COLUMN IS STILL BOUND BY IT.
+// An INSERT that does not name the foreign key column is still bound by it.
 //
-// operator_fk_check addresses the referencing columns BY POSITION in the chunk
-// the DML just wrote (fk_info_t::child_col_indices). Those positions are
-// resolved in enrich, and the INSERT branch resolved them against the
-// statement's own column list only. A column the statement did not name is not
-// in that list — it is DEFAULT-expanded by operator_insert::push() and appended
-// to the chunk AFTER the named ones — so its position came back "absent".
+// operator_fk_check addresses the referencing columns BY POSITION in the chunk the DML just
+// wrote (fk_info_t::child_col_indices). Those positions are resolved in enrich, and the
+// INSERT branch resolved them against the statement's own column list only. A column the
+// statement did not name is not in that list -- it's DEFAULT-expanded by
+// operator_insert::push() and appended to the chunk AFTER the named ones -- so its position
+// came back "absent".
 //
-// An absent position then took the operator's quietest path: the row qualified
-// for no parent lookup, every row was skipped, the qualifying count stayed 0 —
-// and 0 is the operator's SUCCESS path. So `pid bigint DEFAULT 42` with no
-// parent row 42 was inserted without a word, leaving a child row referencing a
-// parent that does not exist. The check has to see the row that was actually
-// stored, whichever half of the statement produced the value.
-//
-// The same statement declared inline in CREATE TABLE takes the same path, so
-// both declaration forms are covered.
-// ============================================================================
+// An absent position then took the operator's quietest path: the row qualified for no parent
+// lookup, every row was skipped, the qualifying count stayed 0 -- the operator's SUCCESS
+// path. So `pid bigint DEFAULT 42` with no parent row 42 was inserted without a word, leaving
+// a child row referencing a parent that does not exist. The check has to see the row that was
+// actually stored, whichever half of the statement produced the value -- and the same
+// statement declared inline in CREATE TABLE takes the same path, so both forms are covered.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

@@ -16,12 +16,8 @@ using namespace components::expressions;
 
 namespace {
 
-    // The refusal every unconvertible (source, target) pair below shares. These pairs are
-    // outside the promotion oracle's contract — reaching one means promote_type answered a
-    // type this ladder cannot climb to. An assert(false) followed by a return of the
-    // UNWIDENED VALUE is not enough: under NDEBUG the assert vanishes and a value of the
-    // wrong logical type goes into the promoted column vector — the exact silent wrong
-    // answer this file exists to keep out.
+    // Replaces assert(false)+return-val: under NDEBUG the assert vanishes and a
+    // wrongly-typed value would silently enter the promoted column vector.
     core::error_t no_numeric_conversion(std::pmr::memory_resource* resource,
                                         components::types::logical_type source,
                                         components::types::logical_type target) {
@@ -132,13 +128,9 @@ namespace {
                     return no_numeric_conversion(resource, val.type().type(), target);
             }
         } else if (target == LT::HUGEINT) {
-            // The 128-bit rung of the same ladder. It exists because an integer literal past
-            // int64 reaches VALUES as a HUGEINT (numeric_literal_value in
-            // components/sql/transformer/utils.cpp): mixing one with a narrower row —
-            // VALUES (12345678901234567890123456789), (1) — promotes the whole column here.
-            // Without this arm promote_type would answer HUGEINT and the switch below would
-            // fall to its default, hand back the UNWIDENED value, and trip set_value's type
-            // assert on the way into the vector.
+            // Needed because an integer literal past int64 reaches VALUES as HUGEINT
+            // (numeric_literal_value in utils.cpp); without this arm the switch would
+            // fall to default and trip set_value's type assert.
             using components::types::int128_t;
             switch (val.type().type()) {
                 case LT::BOOLEAN:
@@ -167,10 +159,9 @@ namespace {
                     return no_numeric_conversion(resource, val.type().type(), target);
             }
         } else {
-            // Signed integer target. A HUGEINT source is deliberately absent: every caller
-            // passes a target from promote_type, which is never NARROWER than the source, so
-            // reaching here with 128 bits in hand would mean the promotion oracle lied — and
-            // quietly cutting the value down is the silent wrong answer this file keeps out.
+            // Signed integer target. HUGEINT source deliberately absent: promote_type never
+            // picks a target narrower than the source, so reaching here with 128 bits would
+            // mean the oracle lied.
             int64_t ival;
             switch (val.type().type()) {
                 case LT::BOOLEAN:
@@ -524,11 +515,9 @@ namespace components::sql::transform {
                         } else {
                             auto col_type = it->type().type();
                             auto val_type = value.type().type();
-                            // DECIMAL sits outside the widening ladder (is_arithmetic_numeric
-                            // excludes it), so a DECIMAL value meeting a column of any other
-                            // type — or another DECIMAL of a different (width, scale) — has
-                            // no promotion path; the unchecked set_value below would store a
-                            // wrongly-typed cell. Refuse the row instead.
+                            // DECIMAL is outside the widening ladder (is_arithmetic_numeric excludes
+                            // it); a mismatched pair has no promotion path — refuse rather than store
+                            // a wrongly-typed cell.
                             if (!value.is_null() &&
                                 (col_type == types::logical_type::DECIMAL ||
                                  val_type == types::logical_type::DECIMAL) &&

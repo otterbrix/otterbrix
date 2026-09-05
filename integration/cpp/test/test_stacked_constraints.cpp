@@ -249,11 +249,9 @@ TEST_CASE("integration::cpp::test_stacked_constraints::two_cascade_children") {
 // ---------------------------------------------------------------------------
 // CHECK (col IS NOT NULL) vs a DEFAULT-backed column.
 //
-// The check validates the MATERIALISED row: a column omitted from the INSERT column
-// list is expanded to its table DEFAULT by the insert operator, above the journal, so
-// the row the check reads is the row that is stored. `CHECK (col IS NOT NULL)` must
-// therefore PASS for an omitted column with a non-NULL DEFAULT and still FAIL for an
-// explicit NULL or an omitted column with NO default (which really stores NULL).
+// The check validates the MATERIALISED row: an omitted INSERT column is expanded to its table
+// DEFAULT before the check runs, so it must PASS for a non-NULL DEFAULT and still FAIL for an
+// explicit NULL or an omitted column with no default (which stores NULL).
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_stacked_constraints::check_is_not_null_with_default") {
     auto config = make_test_config(integration_fixture_path("test_stacked_constraints/check_is_not_null_default"));

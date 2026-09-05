@@ -23,22 +23,15 @@ namespace services::wal {
     };
 
     struct record_t final {
-        // THE RESOURCE ARRIVES AT CONSTRUCTION, AND THERE IS NO WAY TO SKIP IT.
+        // THE RESOURCE ARRIVES AT CONSTRUCTION, no way to skip it: physical_data /
+        // physical_row_ids used to default-init from get_default_resource(), and since pmr
+        // move-assignment doesn't adopt the source's allocator, decode_record's assignment kept
+        // allocating every replayed WAL payload on the process-global arena regardless of the
+        // caller's resource. Assigning a correctly-placed payload in afterward could not fix it —
+        // only constructing on the right resource can.
         //
-        // physical_data / physical_row_ids used to carry default member initialisers naming
-        // std::pmr::get_default_resource() — rule 14's forbidden resource, written out. That was
-        // not merely a spelling problem: a pmr move-assignment does NOT adopt the source's
-        // allocator (propagate_on_container_move_assignment is false), so decode_record's
-        // `rec.physical_data = deserialize_chunk_batch(..., resource, ...)` allocated with the
-        // TARGET's allocator and put every replayed WAL payload on the process-global arena, no
-        // matter which resource the caller named. Assigning a correctly-placed payload in could
-        // not repair it; only constructing the record on the right resource can, which is why
-        // the default constructor is gone rather than merely discouraged.
-        //
-        // The header scalars are zeroed here for a second reason: decode_record fills last_crc32
-        // and id only AFTER the CRC check, so a record refused for a bad CRC left them
-        // INDETERMINATE, and every reader that logs or compares a corrupt record's id read
-        // uninitialised memory. Zero is the value a corrupt record reports.
+        // Header scalars are zeroed here too: decode_record fills last_crc32 and id only AFTER
+        // the CRC check, so a record refused for bad CRC left them reporting uninitialised memory.
         explicit record_t(std::pmr::memory_resource* resource)
             : physical_data(resource)
             , physical_row_ids(resource) {}

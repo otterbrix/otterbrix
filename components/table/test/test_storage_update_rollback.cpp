@@ -1,19 +1,11 @@
-// WHAT THIS FILE MEASURES: the IN-PLACE storage update -- data_table_t::update ->
-// row_group_t::update -> column_data_t::update_internal -> update_segment_t::update --
-// has no transaction identity, no version chain, and no undo.
+// Measures the IN-PLACE storage update (data_table_t::update -> ... -> update_segment_t::update):
+// no transaction identity, no version chain, no undo. This is NOT the SQL UPDATE path — a user
+// UPDATE goes through table_storage_adapter.hpp's three-argument update(row_ids, data, txn),
+// which is delete-stamp + append. The two-argument overload here is reached only from
+// services/disk/agent_disk.cpp (direct_update_sync: WAL replay, pg_attribute patches).
 //
-// It is NOT the path a SQL UPDATE takes. A user UPDATE reaches
-// components/storage/table_storage_adapter.hpp's THREE-argument update(row_ids, data, txn),
-// which is delete-stamp + append (see the comment there and
-// integration/cpp/test/test_sql_features.cpp, where BEGIN/UPDATE/ROLLBACK restores the
-// old value). The two-argument overload measured here is reached from
-// services/disk/agent_disk.cpp (direct_update_sync: WAL replay and the pg_attribute
-// patches) only.
-//
-// The two cases below assert what a version-chained update WOULD do and are tagged
-// [!shouldfail]: they are expected to fail today, and the suite goes RED the moment somebody
-// implements the chain -- which is the signal to drop the tag, not to weaken the assertion.
-// Nothing here encodes the broken behaviour as correct.
+// The two [!shouldfail] cases assert what a version-chained update WOULD do; they must go RED
+// the moment someone implements the chain — that is the signal to drop the tag, not weaken it.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -79,8 +71,7 @@ namespace {
         table.finalize_append(state, transaction_data{0, 0});
     }
 
-    // The in-place overlay write. Note what the signature CANNOT carry: a transaction id.
-    // That is the whole of the write-write story -- there is nothing to compare a conflicting
+    // The signature carries no transaction id -- there is nothing to compare a conflicting
     // writer against (components/table/data_table.hpp).
     core::result_wrapper_t<std::pair<int64_t, uint64_t>>
     update_in_place(data_table_t& table, update_env& env, int64_t row_id, int64_t new_value) {
@@ -109,9 +100,8 @@ namespace {
 
 } // anonymous namespace
 
-// A reader whose snapshot predates the write must not see it. update_info_t carries no
-// transaction or commit stamp (components/table/update_segment.hpp), so the overlay
-// is published to every reader the instant update() returns.
+// update_info_t carries no transaction or commit stamp (components/table/update_segment.hpp),
+// so the overlay is published to every reader the instant update() returns.
 TEST_CASE("components::table::update_segment::snapshot_predating_an_in_place_update_still_reads_the_old_value",
           "[!shouldfail]") {
     update_env env;
@@ -132,10 +122,8 @@ TEST_CASE("components::table::update_segment::snapshot_predating_an_in_place_upd
     REQUIRE(seen == 1);
 }
 
-// There is no revert leg for the overlay. data_table_t offers revert_append (physical rows)
-// and revert_all_deletes (delete stamps); neither touches update_segment_t, and
-// update_segment_t itself exposes no undo. An abandoned statement therefore leaves its
-// overlay published.
+// data_table_t offers revert_append (physical rows) and revert_all_deletes (delete stamps);
+// neither touches update_segment_t, which exposes no undo of its own.
 TEST_CASE("components::table::update_segment::an_abandoned_in_place_update_leaves_the_row_at_its_old_value",
           "[!shouldfail]") {
     update_env env;
@@ -146,7 +134,6 @@ TEST_CASE("components::table::update_segment::an_abandoned_in_place_update_leave
     auto updated = update_in_place(*table, env, /*row_id=*/0, /*new_value=*/99);
     REQUIRE_FALSE(updated.has_error());
 
-    // Everything the table offers a rolling-back statement. None of it names the overlay.
     table->revert_all_deletes(txn_id);
     REQUIRE_FALSE(table->revert_append(1, 0).has_error());
 
@@ -155,11 +142,9 @@ TEST_CASE("components::table::update_segment::an_abandoned_in_place_update_leave
     REQUIRE(seen == 1);
 }
 
-// The ONE conflict this path can actually see: not writer-vs-writer (nothing on it carries a
-// transaction id) but writer-vs-DDL. append_lock refuses on a table an ALTER has superseded
-// (data_table.cpp) and update_column refuses on the same predicate (data_table.cpp);
-// update() did neither, so an in-place update of a superseded table wrote into a collection
-// no reader would ever open again -- a lost write, reported as success.
+// The one conflict this path can see is writer-vs-DDL: append_lock and update_column both
+// already refuse on a table an ALTER superseded (data_table.cpp); update() did neither, so an
+// in-place update of a superseded table silently wrote into a collection no reader reopens.
 TEST_CASE("components::table::update_segment::updating_a_superseded_table_is_refused") {
     update_env env;
     auto table = make_one_column_table(env);
@@ -175,9 +160,8 @@ TEST_CASE("components::table::update_segment::updating_a_superseded_table_is_ref
     REQUIRE(updated.error().type == core::error_code_t::write_conflict);
 }
 
-// NOT [!shouldfail]: this one passes and is here to pin the measurement the two cases above
-// rest on -- the overlay IS applied by the scan, so their failures are "no MVCC", not "the
-// update never landed".
+// NOT [!shouldfail]: pins that the overlay IS applied by the scan, so the two cases above fail
+// on "no MVCC", not on "the update never landed".
 TEST_CASE("components::table::update_segment::an_in_place_update_is_published_to_the_next_reader") {
     update_env env;
     auto table = make_one_column_table(env);

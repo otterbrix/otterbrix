@@ -159,15 +159,10 @@ TEST_CASE("integration::cpp::test_connectors") {
         }
     }
 }
-// ===========================================================================
-// EXECUTE AFTER CLOSE IS A REFUSAL, NOT A NULL DEREFERENCE.
-//
-// close() nulls the instance pointer that execute() then guards with a bare assert — an
-// abort in Debug and a straight null dereference in Release. A use-after-close is an
-// embedder bug, and the loud, catchable answer at this API boundary is an exception (the
-// same channel base_spaces uses for its startup refusals), never undefined behaviour.
-//
-// BEFORE: this test died on the assert (Debug) / crashed on nullptr (Release).
+// Execute after close is a refusal, not a null dereference: close() nulls the instance
+// pointer, and a bare assert() there would abort in Debug / read null in Release. A
+// use-after-close is an embedder bug, so execute() throws instead -- the same exception
+// channel base_spaces uses for its startup refusals.
 // ===========================================================================
 TEST_CASE("integration::cpp::connection::execute_after_close_refuses_loudly") {
     auto config = test_create_config(integration_fixture_path("test_connection_after_close") /

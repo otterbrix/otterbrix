@@ -29,7 +29,7 @@ namespace components::table {
     //
     // use_deleted_version is the inverse: a delete-marker id "survives" (i.e. row
     // remains alive) when use_inserted_version says it's NOT visible. NOT_DELETED_ID
-    // is huge (>> TRANSACTION_ID_START) so rule 2 implicitly handles it.
+    // is huge (>> TRANSACTION_ID_START) so case 2 above implicitly handles it.
     struct transaction_version_operator {
         static bool use_inserted_version(const transaction_data& txn, uint64_t id) {
             if (txn.transaction_id != 0 && id == txn.transaction_id)
@@ -112,19 +112,12 @@ namespace components::table {
         if (insert_id > lowest_transaction) {
             return false;
         }
-        // ANY delete stamp pins this slot, committed or not. GC may drop version HISTORY —
-        // the record of which older transactions could still see a row — but never the FACT
-        // of a deletion. "The delete is visible to every active transaction" is not the same
-        // claim as "the rows are visible to every active transaction": a committed delete
-        // means the rows are visible to NOBODY, and this stamp is the only thing left saying
-        // so. Answering true here would leave `result` empty, and cleanup_append installs
-        // that empty result into the slot — where a null chunk_info means "all rows visible"
-        // (row_version_manager_t::indexing_vector returns max_count, fetch returns true).
-        // All DEFAULT_VECTOR_CAPACITY rows would come back for every reader.
+        // ANY delete stamp pins this slot, committed or not: GC may drop version HISTORY but
+        // never the FACT of a deletion. Answering true here would let cleanup_append install a
+        // null chunk_info, which means "all rows visible" — resurrecting every deleted row.
         if (delete_id != NOT_DELETED_ID) {
             return false;
         }
-        // Delete-free and old enough: nothing here is hiding anything, so the slot goes.
         return true;
     }
 
@@ -303,21 +296,13 @@ namespace components::table {
                 }
                 any_delete_stamp = true;
             }
-            // All deletes are committed and old enough. Every one of them still has to
-            // SURVIVE this call: the caller (cleanup_append) replaces the slot with
-            // `result` whenever we answer true, and a null slot means "all rows visible",
-            // not "no history left". Dropping a committed delete stamp un-deletes the rows.
+            // Every committed delete stamp must SURVIVE this call: cleanup_append replaces the
+            // slot with `result` on true, and a null slot means "all rows visible" — dropping a
+            // stamp would un-delete the rows.
             if (all_deleted && same_delete_id) {
-                // The one real reclaim available here: DEFAULT_VECTOR_CAPACITY insert and
-                // delete stamps collapse into two ids. The delete is CARRIED OVER, so the
-                // rows stay gone.
-                //
-                // Only ONE delete id may collapse this way. Two transactions can between
-                // them delete the whole vector, and a constant can carry a single stamp:
-                // picking either of theirs rewrites the other rows' delete time, and BOTH
-                // directions are wrong for some snapshot — an earlier stamp hides rows a
-                // still-running older snapshot is entitled to see, a later one reveals rows
-                // a newer snapshot must not. So mixed ids keep the per-row vector.
+                // Collapses to two ids (insert + delete), the delete CARRIED OVER so rows stay
+                // gone. Only safe when every row shares ONE delete id: mixed ids would rewrite
+                // some rows' delete time, hiding or revealing rows a given snapshot must not.
                 auto constant = std::make_unique<chunk_constant_info>(start);
                 constant->insert_id = same_inserted_id ? insert_id : inserted[0];
                 constant->delete_id = first_delete_id;
@@ -325,18 +310,13 @@ namespace components::table {
                 return true;
             }
             if (any_delete_stamp) {
-                // Partial deletes, or a whole vector deleted under mixed commit ids. The
-                // per-row stamps are the ONLY record of which rows went and when — no
-                // coarser slot can hold "rows 0..499 deleted, the rest alive" — so the
-                // vector stays exactly as it is. Nothing about it is reclaimable, and
-                // saying otherwise resurrects the deleted rows. The physical reclaim of
-                // these rows is data_table_t::compact's job, which rebuilds the row group
-                // without them and drops this whole manager with it.
+                // Partial or mixed-id deletes: per-row stamps are the ONLY record of which rows
+                // went and when, so nothing here is reclaimable. Physical reclaim is
+                // data_table_t::compact's job, which rebuilds the row group without them.
                 return false;
             }
-            // any_deleted survived revert_all_deletes as a conservative hint: the flag is
-            // set but not one stamp is left, so nothing is being hidden and the slot is
-            // reclaimable on the insert-only terms below.
+            // any_deleted survived revert_all_deletes as a conservative hint with no stamps
+            // left, so the slot is reclaimable on the insert-only terms below.
         }
         return true;
     }
@@ -448,10 +428,8 @@ namespace components::table {
     }
 
     bool row_version_manager_t::fetch(const transaction_data& transaction, uint64_t row) {
-        // `row` is collection-ABSOLUTE — the point-fetch convention (the disk agent
-        // hands out absolute row ids). vector_info_ slots are GROUP-LOCAL, so rebase
-        // by start_ at entry; start_ moves with the group via
-        // row_group_t::move_to_collection → set_start.
+        // `row` is collection-ABSOLUTE; vector_info_ slots are GROUP-LOCAL, so rebase by start_
+        // (which moves with the group via row_group_t::move_to_collection).
         assert(row >= static_cast<uint64_t>(start_));
         const uint64_t local_row = row - static_cast<uint64_t>(start_);
         uint64_t vector_index = local_row / vector::DEFAULT_VECTOR_CAPACITY;

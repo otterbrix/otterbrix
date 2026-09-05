@@ -32,20 +32,10 @@ namespace components::operators {
 
     actor_zeta::unique_future<void>
     operator_computed_field_register_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Concurrent INSERTs registering the same field can produce duplicate (relid, attname) rows in
-        // pg_computed_column: MVCC isolation hides uncommitted writes from other sessions, so each session
-        // sees the field as unregistered and proceeds to allocate a fresh attoid + append a register row.
-        // After both commit, two rows share (relid, attname) with different attoids.
-        //
-        // Tolerance path (current):
-        //   - the resolver picks max(attversion), ties broken by lowest attoid;
-        //   - VACUUM aggressive eventually GCs stale (refcount=0) versions, so duplicates are short-lived;
-        //   - storage-side add_column (schema-extension) is idempotent: the second concurrent INSERT either
-        //     no-ops (column already extended) or fails benignly — the caller path is unaffected.
-        //
-        // TODO Strict-serialization path (deferred until a benchmark proves the race causes user-visible
-        // problems): a per-table_oid lock via a disk-actor message pair, held across the
-        // read/classify/allocate/append/depend sequence below.
+        // Concurrent INSERTs registering the same field can produce duplicate (relid, attname) rows (MVCC
+        // hides uncommitted writes across sessions). Tolerated: the resolver picks max(attversion), VACUUM
+        // GCs stale versions, and storage-side add_column is idempotent. TODO: a per-table_oid lock is the
+        // strict-serialization fix, deferred until a benchmark shows the race matters.
 
         // Propagate the INSERT's output up. The bottom-up async-finalize drive runs
         // left_ (insert).await FIRST, so left_->output() (the affected-row count chunk)
@@ -149,17 +139,11 @@ namespace components::operators {
                 }
             }
 
-            // Encode complex types into atttypspec so resolve_table for relkind='g' can reconstruct
-            // ARRAY/STRUCT/UNION/DECIMAL etc. exactly. Builtin scalars leave atttypspec empty — atttypid alone
-            // reconstructs them via oid_to_builtin_type.
-            //
-            // THE WRITER VALIDATES THE READER'S WINDOW. Plan-level DDL runs every column type through the binary
-            // codec (gate_persistable_type) before anything durable is written, but this registration is fed by an
-            // INSERT into a computing table and encodes the flat atttypspec PAST that gate — while its reader,
-            // decode_type_spec in resolve_table, refuses nesting beyond the depth window shared with the binary
-            // codec (data_corruption, permanently). Probing the binary codec here — the real encoder, not a copy of
-            // its rules — keeps the two windows the same window: a type it refuses would register a spec that
-            // unresolves the whole table one statement after a successful INSERT.
+            // Complex types encode into atttypspec (builtins leave it empty, reconstructed via atttypid
+            // alone). This path is fed by INSERT, not DDL, so it bypasses gate_persistable_type — probing
+            // the real binary encoder here keeps it in sync with decode_type_spec's depth window in
+            // resolve_table; a type it would refuse must not be registered, or the table unresolves
+            // permanently on the next read.
             std::string atttypspec;
             if (atttypid == catalog::INVALID_OID && col.type().type() != types::logical_type::UNKNOWN) {
                 std::pmr::vector<std::byte> persist_probe(resource_);
@@ -213,11 +197,8 @@ namespace components::operators {
             // dynamic_schema_re_add_after_drop pins this.
             const std::int64_t new_version = (max_version < 0) ? std::int64_t{0} : (max_version + 1);
 
-            // Two-phase within this column: the pg_computed_column row append and the (optional) pg_type +
-            // pg_class pg_depend appends are mutually independent (no append consumes another's await result),
-            // so send them all first then await in order. All three target disk_address; FIFO on that single
-            // mailbox preserves their relative order, so awaiting is completion-sync only. The next loop
-            // iteration's allocate/append chain depends on its own reads, so the batch stays per-column.
+            // The three appends are independent, so fire all now and await after: FIFO on the single
+            // disk_address mailbox preserves their relative order, so awaiting is completion-sync only.
             auto cc_row = catalog::build_pg_computed_column_row(resource_,
                                                                 table_oid_,
                                                                 attoid,
@@ -237,28 +218,14 @@ namespace components::operators {
                 append_futures.push_back(std::move(wf));
             }
 
-            // Emit pg_depend rows so the dynamic computed-column mirrors the static ALTER ADD COLUMN dependency
-            // graph:
-            //   1) (pg_computed_column, attoid) → (pg_type, atttypid) 'n' lets DROP TYPE refuse to drop a type
-            //      still used by a dynamic column (relkind='g'). 'n' matches what a DECLARED column gets:
-            //      build_create_table_writes writes (pg_attribute, attoid) → (pg_type, atttypid) "n"
-            //      (components/catalog/ddl_metadata_builder.cpp, the per-column dep chunk).
-            //   2) (pg_computed_column, attoid) → (pg_class, table_oid) 'a' lets DROP TABLE cascade sweep
-            //      dynamic-column rows alongside the parent — operator_dynamic_cascade_delete already discovers
-            //      these via the pg_depend reverse index, so no extra cascade wiring is needed here.
-            //
-            // WHY 'a' AND NOT 'n' ON EDGE 2. This edge points AT the table, so it makes the table's own columns
-            // read as dependents OF the table — and catalog::deptype::blocks_restrict is exactly `dt == 'n'`
-            // (components/catalog/dependency_walker.hpp), so with 'n' a computing table was refused a
-            // `DROP TABLE ... RESTRICT` by its own columns and could not be dropped under RESTRICT at all. 'a'
-            // is the deptype this tree already uses for "owned by the parent, torn down with it": the
-            // index→table edge in ddl_metadata_builder.cpp's build_create_index_writes writes 'a' for exactly
-            // that relationship. CASCADE is unaffected — cascade_planner does not filter on deptype, so an 'a'
-            // edge is walked and dropped just as an 'n' one was.
-            //
-            // The unregister side intentionally does NOT remove these rows: the parent DROP TABLE cascade or
-            // namespace VACUUM sweeps them later, and a stale pg_depend row to a still-live oid is harmless
-            // (refcount=0 columns simply remain undiscoverable via attname).
+            // pg_depend rows mirror the static ALTER ADD COLUMN dependency graph: edge 1 (attoid ->
+            // atttypid, deptype 'n') lets DROP TYPE refuse a type still in use, matching a declared column's
+            // dep row. Edge 2 (attoid -> table_oid) uses 'a', NOT 'n': 'n' is exactly what blocks_restrict
+            // checks (dependency_walker.hpp), so 'n' here would make a computing table's own columns block
+            // its own `DROP TABLE ... RESTRICT`. 'a' matches the index->table edge's convention ("owned by
+            // the parent, torn down with it"); CASCADE is unaffected since cascade_planner doesn't filter on
+            // deptype. Unregister does NOT remove these rows — the parent DROP TABLE or VACUUM sweeps them
+            // later.
             if (atttypid != catalog::INVALID_OID) {
                 auto dep_row =
                     catalog::build_pg_depend_row(resource_,

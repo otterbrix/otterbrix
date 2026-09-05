@@ -24,12 +24,9 @@ namespace services::disk {
                 }
             }
         }
-        // TWO ZEROES THAT MUST NOT BE ONE. A chunk with no rows asks for nothing and is the
-        // single legitimate no-op on this path — the same one direct_delete_sync keeps for a
-        // record that names no row ids. NO STORAGE FOR THE OID is the opposite: a record of
-        // COMMITTED rows that recovery has nowhere to put, which is what the other three replay
-        // routers refuse. A successful append of the first row of a fresh table answers 0 too,
-        // so on a bare count the caller could not tell any of the three apart.
+        // An empty chunk is the one legit no-op (same as direct_delete_sync's no-ids case); a
+        // missing storage is a refusal — recovery has committed rows with nowhere to land, and
+        // 0 also means "first row of a fresh table", so the two must not share a value.
         if (data.size() == 0) {
             return uint64_t{0};
         }
@@ -74,10 +71,9 @@ namespace services::disk {
             local.data = std::move(expanded_data);
         }
 
-        // WAL-replay only (txn{0,0}), single-threaded. A write_conflict / out_of_memory here
-        // is a hard recovery fault: no rows materialized, and the record is a committed change
-        // recovery declined to restore. It travels the wrapper, because 0 is indistinguishable
-        // from the first row of a fresh table.
+        // WAL-replay only, single-threaded: a write_conflict/out_of_memory here is a hard
+        // recovery fault, reported via the wrapper (0 is indistinguishable from a fresh
+        // table's first row).
         auto append_r = s->append(local, txn);
         if (append_r.has_error()) {
             error(log_,
@@ -89,9 +85,8 @@ namespace services::disk {
         return append_r.value();
     }
 
-    // THE THREE REPLAY ROUTERS. Each names the owning agent with pool_idx_for_oid and
-    // forwards; a manager with no agents, or an empty agent slot, is a journalled change with
-    // nowhere to land and is reported rather than dropped. See agent_disk_t's declarations.
+    // Each replay router below names the owning agent via pool_idx_for_oid; a missing agent or
+    // slot is a journalled change with nowhere to land, reported rather than dropped.
     core::error_t manager_disk_t::direct_delete_sync(catalog::oid_t table_oid,
                                                      const std::pmr::vector<int64_t>& row_ids,
                                                      uint64_t count) {
@@ -238,16 +233,10 @@ namespace services::disk {
 
     // --- Storage queries ---
 
-    // EVERY DATA ROUTER BELOW SHARES ONE RULE, and it is the rule the three replay routers at
-    // the top of this file and storage_delete_rows state: a manager with no agents, or an empty
-    // agent slot, is a request with NOWHERE TO LAND. Answering that with the leg's own natural
-    // empty value — an empty type list, 0 rows, an empty chunk vector, a zero-length append
-    // range, a drained cursor, an empty fold — is a refusal wearing the shape of a legitimately
-    // empty table, because every one of those is also the correct answer to a real question
-    // about a real table.
-    //   storage_close_cursor is the ONE exemption and stays a no-op: releasing a cursor has no
-    // result to report and no failure mode, because an unreachable cursor is already the state
-    // the call is asking for.
+    // Every router below treats "no agents / empty slot" as a request with NOWHERE TO LAND and
+    // reports it as an error — the leg's natural empty value (0 rows, empty types, etc.) would
+    // read as a legitimately empty table. storage_close_cursor is the one exception: releasing
+    // an unreachable cursor is already the state being asked for.
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>>
     manager_disk_t::storage_types(session_id_t /*session*/, catalog::oid_t table_oid) {
         if (agents_.empty()) {
@@ -391,8 +380,7 @@ namespace services::disk {
                                   components::table::transaction_data txn,
                                   components::table::fetch_visibility_t visibility,
                                   int64_t limit) {
-        // Nothing asked, nothing fetched — an empty request has an empty answer and needs no
-        // route, exactly as on storage_delete_rows.
+        // Nothing asked, nothing fetched — same as storage_delete_rows: an empty request needs no route.
         if (count == 0) {
             co_return std::pmr::vector<components::vector::data_chunk_t>(resource());
         }
@@ -433,8 +421,7 @@ namespace services::disk {
         // so the per-chunk segments stay contiguous and coalesce into one [range_start, total)
         // range. The agent reply wraps a write_conflict / out_of_memory; the first error aborts
         // the batch (the wrapper is forwarded unchanged so operator_insert surfaces it).
-        // An append with no rows in it needs no route: a zero-length range is the honest
-        // answer and the loop below would send nothing anyway.
+        // An append with no rows needs no route: a zero-length range is the honest answer.
         bool has_rows = false;
         for (const auto& chunk : data) {
             if (chunk.size() != 0) {
@@ -549,11 +536,8 @@ namespace services::disk {
         co_return std::pair<int64_t, uint64_t>{range_start, total_count};
     }
 
-    // Router to the agent twin. The reply wraps the count: a route that does not exist is a
-    // delete that did not happen, and reporting it as 0 rows deleted is indistinguishable from a
-    // healthy delete whose rows were already stamped — the reading that lets an ON DELETE
-    // CASCADE drop nothing and still report success. Same rule, same shape as scan_by_keys'
-    // routing legs.
+    // The reply wraps the count: a route that does not exist is a delete that DID NOT HAPPEN,
+    // and reporting 0 would let an ON DELETE CASCADE drop nothing and still report success.
     manager_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
     manager_disk_t::storage_delete_rows(execution_context_t ctx,
                                         catalog::oid_t table_oid,
@@ -587,11 +571,9 @@ namespace services::disk {
     manager_disk_t::storage_publish_commits(execution_context_t /*ctx*/,
                                             uint64_t commit_id,
                                             std::vector<components::pg_catalog_append_range_t> ranges) {
-        // Fanout: ranges may mix catalog and user OIDs; each is partitioned to its OWNING agent
-        // by pool_idx_for_oid below, so nothing here is over-routed — which is why the agent's
-        // miss is NOT "idempotent for a not-owned OID": an oid the routed agent has no storage
-        // for means the OWNER has no storage, and the agent reports it as a flip that DID NOT
-        // HAPPEN. See report_publish_revert_miss in agent_disk.cpp.
+        // Ranges may mix catalog/user OIDs; each is partitioned to its OWNING agent by
+        // pool_idx_for_oid, so a miss there means the OWNER has no storage — a flip that DID
+        // NOT HAPPEN, not an over-route. See report_publish_revert_miss in agent_disk.cpp.
         if (!agents_.empty()) {
             // emplace_back() yields vector(alloc): libc++ uses-allocator construction
             // appends per_agent's allocator as a trailing arg to the inner vector's ctor.

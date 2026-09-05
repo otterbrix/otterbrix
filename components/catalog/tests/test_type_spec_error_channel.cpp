@@ -1,18 +1,8 @@
-// The flat-text type codec (pg_attribute.atttypspec / pg_type.typdefspec) refuses
-// what it cannot read, through core::result_wrapper_t — never by shrugging the
-// input into a plausible type.
-//
-// Without that channel:
-//   * 2^20 nested LIST(...)  → SIGSEGV, the parser having no depth limit at all while
-//     the binary codec next door (components/types/type_spec_codec.cpp) refuses
-//     beyond MAX_SPEC_DEPTH = 64 on both encode and decode;
-//   * "numeric(10,2)garbage" → a CLEAN DECIMAL(10,2), trailing bytes silently dropped;
-//   * "FROBNICATE(int4,7)"   → the argument list consumed to the matching ')' and an
-//     answer of UNKNOWN named "FROBNICATE" — indistinguishable from a legitimate
-//     named user-type reference (UNKNOWN(name));
-//   * everything else unreadable — malformed or out-of-window DECIMAL, broken ENUM
-//     entries, missing separators — collapsed into UNKNOWN, with a catch(...) arm
-//     swallowing even bad_alloc.
+// The flat-text type codec (pg_attribute.atttypspec/pg_type.typdefspec) must refuse what
+// it cannot read through core::result_wrapper_t, not shrug it into a plausible type:
+// without this, unbounded LIST nesting SIGSEGVs (the binary codec next door caps depth at
+// MAX_SPEC_DEPTH=64), trailing garbage silently drops, and an unreadable keyword decodes
+// as an UNKNOWN named after itself — indistinguishable from a real named type reference.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/system_table_schemas.hpp>

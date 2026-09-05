@@ -1,24 +1,12 @@
-// The point fetch by row_id and MVCC visibility, at the table layer.
+// Point fetch by row_id + MVCC visibility, via row_version_manager_t::fetch (the predicate
+// storage_t::fetch consults on the "index -> fetch by row_id" route): an uncommitted delete
+// hides the row from its own author only; RAW bypasses visibility entirely (what CREATE INDEX
+// backfill needs, to recover a deleted row's old key columns); and the result's row_ids name
+// exactly the rows it carries.
 //
-// storage_t::fetch is the leaf of the "index -> fetch by row_id" route, and the only place that
-// route asks the visibility question at all — row_version_manager_t::fetch is the predicate
-// written for exactly this. These cases pin the predicate to the route, in both directions:
-//
-//   * a row a transaction has deleted (its own uncommitted delete, or a committed one below the
-//     reader's snapshot) must NOT come back under SNAPSHOT;
-//   * a row deleted by SOMEONE ELSE'S still-open transaction must STILL come back — an
-//     uncommitted delete hides nothing from anyone but its own author;
-//   * RAW ignores all of it, which is what the CREATE INDEX backfill needs: it reads deleted
-//     rows on purpose to recover their old key columns.
-//
-// EVERY ROW UNDER TEST IS PAST 1024. Version slots are addressed GROUP-LOCALLY while the point
-// fetch names collection-ABSOLUTE row ids, and row_version_manager_t::fetch keeps the absolute
-// contract and rebases inside itself. A row in the first row group has start == 0 and cannot
-// tell a correct rebase from a missing one, so the whole class of bug is invisible below 1024.
-//
-// The fetch result is also the ONLY report of which rows came back: the produced chunk's row_ids
-// name exactly the rows it carries, in order, so a skipped row is visible to the caller instead
-// of masked by a request-shaped stamp.
+// EVERY ROW UNDER TEST IS PAST 1024: fetch rebases group-local version slots against a
+// collection-absolute row id, and row group 0 (start == 0) can't tell a correct rebase from a
+// missing one.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -149,9 +137,7 @@ namespace {
 
 } // namespace
 
-// The author of an UNCOMMITTED delete must not read the row back through the point
-// fetch, and nobody else may lose it. Both halves ride the same call, differing only
-// in the transaction_data handed to it.
+// Both directions ride the same fetch_rows call, differing only in the transaction_data.
 TEST_CASE("components::table::fetch_visibility::uncommitted_delete_hides_only_from_its_author") {
     fetch_env_t env;
     auto table = make_table(env);
@@ -177,8 +163,8 @@ TEST_CASE("components::table::fetch_visibility::uncommitted_delete_hides_only_fr
 
     INFO("the author of the uncommitted delete must NOT read its own deleted row back");
     {
-        // Without the visibility check: storage_fetch never asked row_version_manager_t::fetch, so the
-        // deleted row came back with its payload intact (`1 == 0`).
+        // Pre-fix this returned rows==1 (payload intact): fetch never consulted
+        // row_version_manager_t::fetch.
         auto got = fetch_rows(storage, env, *table, one, deleter, fetch_visibility_t::SNAPSHOT);
         REQUIRE(got.rows == 0);
     }
@@ -192,9 +178,8 @@ TEST_CASE("components::table::fetch_visibility::uncommitted_delete_hides_only_fr
     }
 }
 
-// A COMMITTED delete hides the row from a default (see-everything-committed)
-// transaction_data — which is exactly why an empty transaction_data cannot double as
-// "raw": it is a snapshot, not a bypass. RAW is the bypass, and the backfill needs it.
+// An empty transaction_data is a snapshot (sees all committed), not a RAW bypass — the
+// distinction this test pins.
 TEST_CASE("components::table::fetch_visibility::raw_still_reads_committed_deleted_rows") {
     fetch_env_t env;
     auto table = make_table(env);
@@ -216,9 +201,7 @@ TEST_CASE("components::table::fetch_visibility::raw_still_reads_committed_delete
 
     INFO("SNAPSHOT with an EMPTY transaction_data still honours the committed delete");
     {
-        // Without the visibility check: the committed tombstone was never consulted, so the row came
-        // back (`1 == 0`). An empty transaction_data means "see all COMMITTED rows", and
-        // this delete IS committed.
+        // Pre-fix this returned rows==1: the committed tombstone was never consulted.
         auto got = fetch_rows(storage, env, *table, one, transaction_data{}, fetch_visibility_t::SNAPSHOT);
         REQUIRE(got.rows == 0);
     }
@@ -232,10 +215,8 @@ TEST_CASE("components::table::fetch_visibility::raw_still_reads_committed_delete
     }
 }
 
-// The produced chunk must REPORT which rows it carries. A skipped row (invisible, or
-// naming no row group at all) shortens the answer, and the row_ids stamped on it name
-// the surviving rows in order — instead of the request, which was the assumption the
-// old code stamped in place of the fact.
+// row_ids on the result must name the SURVIVING rows, not a copy of the request (the old
+// assumption).
 TEST_CASE("components::table::fetch_visibility::the_answer_names_the_rows_it_carries") {
     fetch_env_t env;
     auto table = make_table(env);
@@ -260,8 +241,8 @@ TEST_CASE("components::table::fetch_visibility::the_answer_names_the_rows_it_car
     request.push_back(static_cast<int64_t>(kRows) + 10);
 
     auto got = fetch_rows(storage, env, *table, request, transaction_data{}, fetch_visibility_t::SNAPSHOT);
-    // Without the visibility check: cardinality was 3 (the tombstoned row survived) and the row_ids
-    // were memcpy'd from the REQUEST, so slot 1 named a row the chunk did not carry.
+    // Pre-fix: cardinality 3 (tombstoned row survived) with row_ids memcpy'd from the request,
+    // so slot 1 named a row the chunk did not actually carry.
     REQUIRE(got.rows == 2);
     REQUIRE(got.row_ids.size() == 2);
     REQUIRE(got.row_ids[0] == kProbe - 1);

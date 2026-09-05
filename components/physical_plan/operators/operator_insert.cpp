@@ -63,17 +63,11 @@ namespace components::operators {
                 }
                 input.data[i] = std::move(casted);
             }
-            // DEFAULT expansion, ABOVE the journal. Every table column the statement omitted is appended here
-            // carrying the value the catalog says it defaults to (or a typed NULL when it has none). Downstream —
-            // storage_append, the PHYSICAL_INSERT record, and the constraint operators reading the written-row
-            // snapshot — all see one full-width row, so nothing has to re-derive what an absent column "would
-            // have" become and nothing can disagree about it.
-            //
-            // EXPLICITLY RELEASED, as PostgreSQL releases CREATE TABLE AS, matviews and catalog inserts from its
-            // rewriter: a catalog-table insert is a ready-made pg_catalog tuple from ddl_metadata_builder and skips
-            // the whole user preprocess (see await_async_and_resume). operator_create_matview and operator_vacuum
-            // never reach this operator at all; their fill list is empty anyway, and the guard states the decision
-            // rather than leaving it to that.
+            // DEFAULT expansion, ABOVE the journal: every omitted column gets its catalog default (or
+            // typed NULL) here, so storage_append, the WAL record and the constraint operators all see
+            // one full-width row. Skipped for catalog-table inserts (like PostgreSQL skips its rewriter
+            // for CREATE TABLE AS / matviews / catalog inserts): those rows are ready-made pg_catalog
+            // tuples from ddl_metadata_builder with no fill list.
             if (!fill_list_.empty() && !components::catalog::is_catalog_table(table_oid_)) {
                 const uint64_t rows = input.size();
                 const uint64_t capacity = input.capacity();
@@ -81,10 +75,8 @@ namespace components::operators {
                 for (const auto& column : fill_list_) {
                     auto column_type = column.type;
                     column_type.set_alias(std::string{column.name.c_str()});
-                    // RULE 1. ONE logical_value_t per column per chunk: build the vector
-                    // as a CONSTANT over the plan-node value and let flatten() broadcast
-                    // it typed, rather than set_value(row, default) once PER ROW — a
-                    // logical_value_t round trip on the row path.
+                    // RULE 1: one logical_value_t per column per chunk — build a CONSTANT vector over the
+                    // plan-node value and let flatten() broadcast it, rather than set_value(row, default) per row.
                     if (column.value.is_null()) {
                         vector::vector_t filled(resource_, column_type, capacity);
                         filled.validity().set_all_invalid(rows);
@@ -105,25 +97,19 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_insert::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
 
-        // INCREMENTAL drive: the executor calls this once per "buffer full" during the pump
-        // (dml_flush_is_final==false) and once at finalize (==true). Each call flushes the currently-buffered
-        // slice (if any) and ONLY the final call materializes the accumulated result into output_. With
-        // threshold==0 the executor makes a single is_final==true call, so this collapses to one flush + finalize.
+        // INCREMENTAL drive: called once per buffer-full during the pump and once at finalize; only the
+        // finalize call materializes output_. With threshold==0 there's a single finalize call, so this
+        // collapses to one flush + finalize.
         const bool is_final = ctx->dml_flush_is_final;
         components::execution_context_t exec_ctx{ctx->session,
                                                  ctx->txn,
                                                  ctx->execution_context.timezone_offset,
                                                  table_oid_};
 
-        // Catalog-table insert (DDL pg_catalog row): delegate to the WAL-first append_pg_catalog_row instead of
-        // the user append-first path. The row is a ready-made pg_catalog tuple built by ddl_metadata_builder
-        // (atttypid / attoid already allocated), so the user preprocess — NOT-NULL checks, the DEFAULT fill in
-        // push(), type promotion, RETURNING readback — is skipped; append_pg_catalog_row runs the lighter catalog
-        // preprocess on the agent. The returned range MUST land in ctx->pg_catalog_appends (NOT dml_*):
-        // operator_commit_transaction publishes catalog rows via storage_publish_commits keyed off that vector,
-        // and pushing to dml_* would silently leave the row unpublished. build_*_writes emits 1-row chunks (one
-        // node per row), so each chunk is sent as a single catalog row. buffered_rows() returns 0 for catalog
-        // tables, so the mid-pump flush gate never fires here: this branch only runs on the final drive.
+        // Catalog-table insert: delegate to WAL-first append_pg_catalog_row (the row already carries
+        // allocated atttypid/attoid from ddl_metadata_builder, so NOT-NULL/DEFAULT/RETURNING preprocess
+        // is skipped). MUST land in ctx->pg_catalog_appends, not dml_* -- operator_commit_transaction
+        // publishes catalog rows keyed off that vector specifically.
         if (components::catalog::is_catalog_table(table_oid_)) {
             if (output_ && output_->size() > 0) {
                 for (auto& out_chunk : output_->chunks()) {
@@ -157,17 +143,13 @@ namespace components::operators {
             co_return;
         }
 
-        // "An index manager exists" is true for every table — register_collection creates an
-        // engine per table regardless of whether an index was ever declared — so that test
-        // alone made every INSERT copy its chunk a second time and ship it to a manager that
-        // then walked the rows against an empty index list. The real question is whether the
-        // TABLE has an index, which enrich stamps on the plan node.
+        // register_collection creates an index engine per table regardless of whether one was declared, so
+        // "an index manager exists" is always true; the real question — whether the TABLE has an index —
+        // is what enrich stamps on the plan node.
         const bool mirror_index = table_has_indexes_ && ctx->index_address != actor_zeta::address_t::empty_address();
 
-        // ONE flush of the currently-buffered slice. Wrapped in a NAMED coroutine lambda so the DIVERGENT
-        // storage op (append + optional index mirror + optional RETURNING readback) is co_awaited in one place
-        // and hands a normalized flush_outcome_t to record_flush() for the COMMON bookkeeping. `op` is a named
-        // local awaited immediately, so its closure (captures by reference) outlives the awaited coroutine.
+        // One flush of the buffered slice, as a named coroutine lambda so the divergent storage op (append +
+        // index mirror + RETURNING) hands one normalized flush_outcome_t to record_flush().
         if (output_ && output_->size() > 0) {
             auto op = [&]([[maybe_unused]] std::pmr::memory_resource* res)
                 -> actor_zeta::unique_future<dml_detail::flush_outcome_t> {
@@ -177,11 +159,9 @@ namespace components::operators {
                     return dst;
                 };
 
-                // Build the whole slice up front: storage_append consumes its copy (schema adoption / column
-                // expansion mutate it), while index needs the submitted rows intact. WAL is written WAL-FIRST by
-                // the disk agent inside storage_append (preprocess, allocate start_row, write PHYSICAL_INSERT,
-                // materialize — mailbox-atomic), so the operator issues no WAL record. Chunks append sequentially,
-                // so the per-chunk segments coalesce into one [start, start + count) range.
+                // Copy the whole slice up front: storage_append consumes its copy (schema adoption mutates
+                // it) while index needs the submitted rows intact. WAL is written WAL-FIRST inside
+                // storage_append itself, so the operator issues no WAL record of its own.
                 chunks_vector_t append_data(resource_);
                 chunks_vector_t idx_chunks(resource_);
                 for (auto& out_chunk : output_->chunks()) {
@@ -237,15 +217,8 @@ namespace components::operators {
                     // are built once on the final drive.
                     affected_rows_ += count;
                 } else if (count > 0) {
-                    // RETURNING: read the just-appended range back from storage so anything the storage layer
-                    // itself derives is present in the projected rows. (DEFAULTs no longer need this — push()
-                    // expands them into the submitted chunk — but generated columns will.) The read returns
-                    // <=DEFAULT_VECTOR_CAPACITY chunks; project each into the cross-flush accumulator.
-                    //
-                    // This is a POINT read by row id, not a positional window. Appends within one txn are
-                    // contiguous, so storage_append's reply range [start_row, start_row + count) IS the set of ids
-                    // just written — name them explicitly instead of asking for whatever currently sits at those
-                    // positions.
+                    // RETURNING: read the just-appended range back from storage (generated columns need
+                    // this; DEFAULTs don't). A POINT read by row id -- the reply range IS the ids just written.
                     vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
                     auto* ids = row_ids.data<int64_t>();
                     for (uint64_t i = 0; i < count; i++) {
@@ -269,10 +242,9 @@ namespace components::operators {
                                                                 /*limit=*/int64_t{-1});
                     auto segments_r = co_await std::move(sf);
                     if (segments_r.has_error()) {
-                        // A failed re-read (buffer-pool OOM / corrupt overflow block) must fail the statement
-                        // — RETURNING built from silently empty cells is the data loss this channel exists to
-                        // stop. The rows ARE already appended (WAL-first): carry the range with the error so
-                        // record_flush registers it and the failed-statement abort tail can revert the append.
+                        // A failed re-read must fail the statement — RETURNING built from silently empty cells
+                        // is the data loss this exists to stop. The rows are already appended (WAL-first), so
+                        // the range travels WITH the error for record_flush / the failed-statement abort tail.
                         co_return dml_detail::flush_outcome_t{segments_r.error(),
                                                               true,
                                                               static_cast<int64_t>(start_row),

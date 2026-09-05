@@ -2,15 +2,9 @@
 
 #include <stdexcept>
 
-// NIL is postgres' empty-list sentinel: one process-wide object that every list operation
-// compares against and NONE of them writes to. Every mutator in this file forks a fresh PGList
-// on the caller's resource the moment it sees NIL (lappend, lcons, list_copy_tail), list_concat
-// and list_truncate return early, and no other translation unit touches PGList::lst except to
-// read it. So the allocator here is not "the arena NIL uses", it is "the arena NIL must never
-// use" -- which is what null_memory_resource() says, and rule 14 rules out the process default
-// anyway. An empty std::list keeps its sentinel inside the object on both libstdc++ and libc++,
-// so constructing this allocates nothing; a future mutator that forgets the NIL check fails
-// here and loudly instead of quietly growing a shared global list.
+// NIL is a process-wide sentinel that no mutator is ever supposed to write to (each one forks a
+// fresh PGList on the caller's resource on seeing NIL instead). null_memory_resource() makes a
+// forgotten NIL check fail loudly instead of quietly growing a shared global list.
 std::unique_ptr<List> NIL_ = std::make_unique<List>(std::pmr::null_memory_resource());
 
 PGList* lappend(std::pmr::memory_resource* resource, PGList* list, void* datum) {

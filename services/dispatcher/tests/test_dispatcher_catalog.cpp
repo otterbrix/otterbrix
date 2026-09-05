@@ -325,26 +325,19 @@ TEST_CASE("services::dispatcher::computed_operations") {
 // A conkey THAT IS NOT WHAT encode_oid_csv WROTE MUST STOP THE STATEMENT.
 //
 // pg_constraint.conkey is a CSV of column attoids, read POSITIONALLY and enforced as an ordered
-// tuple. parse_oid_csv answers the decoded list plus an `ok` channel, because the list alone
-// cannot carry the loss: every guard downstream compares the resolved column NAMES against the
-// very attoid list they were resolved from, so a list that lost a token — or gained a wrong one
-// — agrees with itself and passes.
+// tuple; parse_oid_csv answers an `ok` channel because the decoded list alone can't carry a
+// loss — every downstream guard compares names against the very attoid list they came from, so
+// a list that lost or gained a token agrees with itself and passes.
 //
 // Two shapes must never come back with `ok == true`:
+//   * TRUNCATED AT A COMMA ("7,11," for "7,11,13"): stopping at the last separator without
+//     checking the token behind it reads a 3-column key as 2-column, enforcing a NARROWER key;
+//   * A TOKEN TOO LARGE FOR AN OID ("4294967297"): read as 64-bit then cast to 32 bits, 2^32+N
+//     reads as N — the key silently binds to the NEIGHBOURING column.
 //
-//   * TRUNCATED AT A COMMA ("7,11," for "7,11,13"): a loop that stops at the last separator
-//     without looking at the token behind it reads a three-column key back as a two-column one,
-//     and the engine then enforces a NARROWER key than the one declared;
-//   * A TOKEN TOO LARGE FOR AN OID ("4294967297"): read through a 64-bit integer and
-//     static_cast down to 32 bits, 2^32 + N reads as N — THE KEY BINDS TO THE NEIGHBOURING
-//     COLUMN, one token in and one token out, with nothing for the length guard to notice.
-//
-// HOW THE ROW IS PRODUCED. The pg_constraint row is built by the engine's own
-// build_create_constraint_writes for the constraint being declared and written through the
-// engine's own append_pg_catalog_row — the same call operator_insert makes for every DDL row.
-// Exactly ONE cell is then different: conkey carries the text a truncated or mis-serialized
-// write leaves behind, which is the only way this population is reachable at all (encode_oid_csv,
-// the writer, emits neither shape).
+// Both rows are built via the engine's own build_create_constraint_writes/append_pg_catalog_row
+// (same path operator_insert uses), with exactly ONE cell then hand-corrupted to conkey text
+// encode_oid_csv itself never emits — the only way this shape is reachable.
 // ===========================================================================
 
 namespace {
@@ -539,28 +532,20 @@ TEST_CASE("services::dispatcher::conkey_csv::a_constraint_row_of_unknown_kind_is
 }
 
 // ===========================================================================
-// A SOURCE COLUMN WITH NO TYPE MUST BE NAMED BY THE STATEMENT THAT NAMED IT,
-// NOT BY THE STORAGE SEGMENT THAT CHOKED ON IT.
+// A SOURCE COLUMN WITH NO TYPE MUST BE NAMED BY THE STATEMENT THAT NAMED IT, NOT BY THE
+// STORAGE SEGMENT THAT CHOKED ON IT.
 //
-// The VALUES form of this already answers by name: validate_types drops an
-// all-NULL column from the chunk (a schemaless table cannot create a column
-// from a value that has no type) and says WHICH column went and why. The
-// INSERT ... SELECT form never reaches that erase — the projection column is
-// typed logical_type::NA (0) and stays in the source schema, bind_computed_rename
-// binds it with target_type = NA, the computed-register wrap creates the catalog
-// column from it, and the append dies down in column_segment_t with
+// The VALUES form already answers by name: validate_types drops an all-NULL column and says
+// WHICH one and why. INSERT ... SELECT never reaches that check — the projection column stays
+// typed NA, bind_computed_rename binds it with target_type=NA, the computed-register wrap
+// creates the catalog column from it, and the append then dies in column_segment_t with
+// "no segment storage for physical type 127" (127 = physical_type::NA) — a message naming no
+// column, no statement, no cause, arriving AFTER a phantom NA column is already in the catalog:
+// the table reports columns it holds no rows for.
 //
-//     "column_segment_t::append: no segment storage for physical type 127"
-//
-// (127 is physical_type::NA). That sentence names no column, no statement and no
-// cause, and it arrives AFTER the register wrap has already put a phantom NA
-// column into the target's catalog: the table then reports columns it holds no
-// rows for. State survives a failure it should not have survived.
-//
-// The refusal has to be NARROW, and it is: an unknown key on a schemaless table
-// is a different diagnosis with a different message, produced far earlier by
-// validate_key, and a plain projection of NULL is not affected at all — the guard
-// lives on the INSERT binding, not on the select list.
+// The refusal must stay NARROW: an unknown key on a schemaless table keeps its own, earlier
+// diagnosis (validate_key), and a plain projection of NULL is unaffected — the guard lives on
+// the INSERT binding, not the select list.
 // ===========================================================================
 TEST_CASE("services::dispatcher::null_source_column::insert_select_names_the_typeless_column") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();

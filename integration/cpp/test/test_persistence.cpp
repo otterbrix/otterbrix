@@ -553,27 +553,18 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 100;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 200;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 300;", 1);
-        // The PHYSICAL_INSERT carries the default-expanded chunk, so the unsupplied 'tag'
-        // column (DEFAULT 'untagged') is durable across restart too.
+        // DEFAULT-filled 'tag' persists too: PHYSICAL_INSERT carries the default-expanded chunk.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE tag = 'untagged';", 3);
     }
 }
 
-// Dynamic-schema (relkind='g' computed) tables grow their column set per-INSERT
-// (stage 1b in agent_disk::storage_append_inner). Every table is disk-backed and the
-// computed flag is itself durable, so growth still works after restart.
-// The growth is made durable by emitting a PHYSICAL_ADD_COLUMN WAL record (the new
-// columns as a 0-row alias-tagged chunk) BEFORE the dependent PHYSICAL_INSERT, and
-// replaying it on restart (base_spaces replay loop -> direct_add_column_sync) so the
-// grown schema is reconstructed ahead of the rows that reference it.
-//
+// Growth durability: PHYSICAL_ADD_COLUMN is written BEFORE the dependent PHYSICAL_INSERT
+// (agent_disk::storage_append_inner) and replayed via base_spaces -> direct_add_column_sync,
+// so restart reconstructs the grown schema ahead of the rows that reference it.
 // Scenario: a computing table is created with WAL ON, a first INSERT introduces (id,
 // name), a second INSERT introduces an ADDITIONAL new column (value) — triggering stage-1b
 // growth and a PHYSICAL_ADD_COLUMN record — then the engine is restarted and ALL columns +
 // rows must survive.
-//
-// Computed tables have a file behind them: a disk-backed .otbx whose computed flag is
-// restored from pg_class.relkind on load.
 TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recovery") {
     auto config = test_create_config(integration_fixture_path("test_persistence/computed_schema_growth_wal"));
     test_clear_directory(config);
@@ -588,7 +579,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
-        // CREATE TABLE with no columns => relkind='g' (computed, dynamic schema).
+        // No columns => relkind='g' (computed).
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection ();");
@@ -654,14 +645,8 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
     }
 }
 
-// End-to-end gate, clean-restart leg: the computed (relkind='g') flag must
-// survive a restart, proven by the one behavior only the flag enables — merging a
-// NEW type variant of an existing field name into its OWN physical column. A table
-// that lost is_computed on reload would match the post-restart {a:bool} chunk by
-// name alone and glue the boolean vector into the bigint 'a' column.
-//
-// {a:int}, {a:string}, restart, {a:bool}: SELECT * must return all three rows with
-// each variant in its own column.
+// A table that lost is_computed on reload would match the post-restart {a:bool} chunk by
+// name and glue the boolean vector into the bigint 'a' column instead of a new variant column.
 TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_restart") {
     auto config = test_create_config(integration_fixture_path("test_persistence/computed_variants_restart"));
     test_clear_directory(config);
@@ -701,9 +686,8 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             REQUIRE(cur->size() == 2);
             REQUIRE(cur->column_count() == 3); // id, a:bigint, a:string
         }
-        // In-session '::?type' variant selection (a plain column ref, not a jsonb
-        // chain) — the transformer must mark the key variant_select, not lower it
-        // to a cast, or validation refuses the multi-type name as ambiguous.
+        // '::?type' must be tagged variant_select, not lowered to a cast, or the
+        // multi-type name gets refused as ambiguous.
         {
             auto s2 = otterbrix::session_id_t();
             auto c2 = dispatcher->execute_sql(s2, "SELECT id, a::?bigint FROM TestDatabase.TestCollection ORDER BY id;");
@@ -712,7 +696,6 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             REQUIRE(c2->value(1, 0).value<int64_t>() == 10);
             REQUIRE(c2->value(1, 1).is_null());
         }
-        // Pushed-down WHERE on the multi-type table (in-session baseline).
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE id = 1;", 1);
     }
 
@@ -721,11 +704,8 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // Both pre-restart variants replayed.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
 
-        // Pushed-down WHERE and the '::?' selector still work on the reloaded
-        // multi-type table BEFORE any new write.
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE id = 1;", 1);
         {
             auto s2 = otterbrix::session_id_t();
@@ -735,8 +715,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             REQUIRE(c2->value(0, 0).value<int64_t>() == 10);
         }
 
-        // The variant added AFTER the restart is the proof the flag survived:
-        // stage-1b growth must key on (name, type), which only runs computed.
+        // Growth after restart must key on (name, type) — only runs if the table is still computed.
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -751,7 +730,6 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
         REQUIRE(cur->size() == 3);
         REQUIRE(cur->column_count() == 4); // id + three 'a' variants
 
-        // Locate the three 'a' variants by physical type — each in its OWN column.
         const auto& chunk = cur->chunks().front();
         int a_bigint = -1, a_string = -1, a_bool = -1;
         for (size_t c = 0; c < chunk.column_count(); ++c) {
@@ -776,21 +754,16 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
         REQUIRE(a_string >= 0);
         REQUIRE(a_bool >= 0);
 
-        // bigint variant: only row id=1.
         REQUIRE(chunk.get_value<int64_t>(static_cast<size_t>(a_bigint), 0) == 10);
         REQUIRE(chunk.value(static_cast<size_t>(a_bigint), 1).is_null());
         REQUIRE(chunk.value(static_cast<size_t>(a_bigint), 2).is_null());
-        // string variant: only row id=2.
         REQUIRE(chunk.value(static_cast<size_t>(a_string), 0).is_null());
         REQUIRE(chunk.get_value<std::string_view>(static_cast<size_t>(a_string), 1) == "str");
         REQUIRE(chunk.value(static_cast<size_t>(a_string), 2).is_null());
-        // bool variant: only row id=3 (the post-restart insert).
         REQUIRE(chunk.value(static_cast<size_t>(a_bool), 0).is_null());
         REQUIRE(chunk.value(static_cast<size_t>(a_bool), 1).is_null());
         REQUIRE(chunk.get_value<bool>(static_cast<size_t>(a_bool), 2) == true);
 
-        // The ::?type variant selector agrees.
-        // Each '::?type' selector picks its own variant after the growth.
         {
             auto s2 = otterbrix::session_id_t();
             auto c2 = dispatcher->execute_sql(s2, "SELECT a::?bigint FROM TestDatabase.TestCollection WHERE id = 1;");
@@ -811,11 +784,9 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             REQUIRE(c2->is_success());
             REQUIRE(c2->size() == 3);
         }
-        // Pushed-down WHERE still matches AFTER the post-restart growth. This pinned
-        // the reopened-oid-generator defect: the (a, bool) registration re-minted an
-        // attoid already taken by a persisted computed column, the duplicate broke
-        // resolve_table's attoid order against the storage order, and every pushed
-        // filter on the table matched zero rows.
+        // Pins the reopened-oid-generator defect: a re-minted (a, bool) attoid reused one
+        // already taken by a persisted computed column, breaking resolve_table's attoid
+        // order and zeroing every pushed filter.
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE id = 3;", 1);
         {
             auto s2 = otterbrix::session_id_t();
@@ -827,16 +798,11 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
     }
 }
 
-// End-to-end gate, crash leg: the computed flag must survive WAL replay
-// SYNTHESIS, not only a clean reload of the .otbx. Crash model (same kill -9
-// simulation as test_persistence_gaps::create_then_kill_before_checkpoint): copy
-// the LIVE data directory, then delete the user table's storage directory from the
-// COPY — a freshly created .otbx's directory entry is not fsynced, so a real crash
-// durably keeps the pg_class row and the WAL while losing the file (the exact
-// scenario base_spaces' replay-synthesis branch exists for). On reopen the storage
-// is synthesised from the WAL chunks' column types; the synthesised entry must
-// still be computed (from pg_class.relkind), or the post-recovery {a:bool} insert
-// would be glued into the bigint 'a' column instead of a new variant column.
+// Computed flag must survive WAL replay SYNTHESIS, not just a clean .otbx reload. Crash model:
+// same as test_persistence_gaps::create_then_kill_before_checkpoint -- a freshly created
+// .otbx's directory entry is not fsynced, so a crash can keep pg_class+WAL while losing the
+// file. The synthesised entry must stay computed (from pg_class.relkind), or the post-recovery
+// {a:bool} insert glues into the bigint 'a' column instead of opening a new variant column.
 TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_crash_replay_synthesis") {
     auto config = test_create_config(integration_fixture_path("test_persistence/computed_variants_crash_src"));
     test_clear_directory(config);
@@ -877,9 +843,8 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
         std::filesystem::copy(config.main_path, crash_dir, std::filesystem::copy_options::recursive);
     }
 
-    // Model the lost directory entry: drop every USER table's storage directory from
-    // the crash image (oid >= FIRST_USER_OID; system tables keep theirs). The WAL —
-    // which carries the PHYSICAL_INSERT / PHYSICAL_ADD_COLUMN records — survives.
+    // Drops every USER table's storage directory from the crash image (oid >= FIRST_USER_OID;
+    // system tables keep theirs). The WAL survives.
     {
         std::vector<std::filesystem::path> user_table_dirs;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(crash_dir)) {
@@ -904,11 +869,10 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
         test_spaces space(crash_config);
         auto* dispatcher = space.dispatcher();
 
-        // Both pre-crash rows come back through the synthesised storage.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
 
-        // Third type variant AFTER the crash recovery: only a synthesised entry that
-        // kept is_computed grows a NEW (a, bool) column instead of gluing by name.
+        // Only a synthesised entry that kept is_computed grows a NEW (a, bool) column here
+        // instead of gluing by name.
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -957,8 +921,6 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
         REQUIRE(chunk.value(static_cast<size_t>(a_bool), 1).is_null());
         REQUIRE(chunk.get_value<bool>(static_cast<size_t>(a_bool), 2) == true);
 
-        // Pushed-down WHERE and the '::?' selector across replay synthesis + growth
-        // (same attoid-frontier and variant-column pins as the clean-restart test).
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE id = 3;", 1);
         {
             auto s2 = otterbrix::session_id_t();
@@ -970,37 +932,17 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
     }
 }
 
-// WAL-replay synthesis must put the recreated `.otbx` where the table's own
-// resolve will look for it — under its pg_class.relnamespace.
-//
-// A table's file lives at ${disk_root}/${relnamespace}/${table_oid}/table.otbx: that is what
-// manager_disk_t::create_storage_disk builds from the namespace oid the planner resolved
-// (create_plan_sequence passes node_create_collection_t::namespace_oid as the create's
-// "database_oid"). Every recovery path that has to REBUILD that path — replay synthesis here,
-// the deferred-DROP GC sweep, the rehydrate of a lost file — used to substitute
-// well_known_oid::main_database == 4 instead. 4 is a pg_database oid, not a namespace oid, and
-// no user table can carry it: CREATE DATABASE allocates its namespace from FIRST_USER_OID
-// upward. So the synthesised file landed in a directory nothing ever opens for this table.
-//
-// It is not merely a misplaced file. The next restart's directory walk (which accepts any
-// numeric directory) loads THAT file for the oid, so a table can come back with the rows a
-// stale synthesis left under 4 rather than the ones its real file holds — and the GC sweep,
-// aimed at the same wrong directory, never removes a dropped table's .otbx at all.
-//
-// Crash model is the one the synthesis branch exists for and is copied from
-// computed_type_variants_survive_crash_replay_synthesis: copy the LIVE directory, then delete
-// the user table's storage directory from the COPY (a freshly created .otbx's directory entry
-// is not fsynced, so a real crash keeps the pg_class row and the WAL while losing the file).
-// The table is computed (relkind='g') on purpose: rehydrate_missing_user_storages_sync skips
-// 'g' at the source, so the ONLY thing that can rebuild this file is replay synthesis.
+// A table's file lives at ${disk_root}/${relnamespace}/${table_oid}/table.otbx — not under
+// well_known_oid::main_database (4), which no user table can carry. Recovery paths that rebuild
+// this path (replay synthesis here, the deferred-DROP GC sweep, lost-file rehydrate) used to
+// substitute 4, landing the file where nothing opens it. relkind='g' on purpose:
+// rehydrate_missing_user_storages_sync skips 'g' at the source, so only replay synthesis rebuilds it.
 TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_under_its_namespace") {
     auto config = test_create_config(integration_fixture_path("test_persistence/replay_ns_src"));
     test_clear_directory(config);
 
     const std::filesystem::path crash_dir = integration_fixture_path("test_persistence/replay_ns_copy");
 
-    // Returns every ${ns}/${oid} pair under the disk root that holds a table.otbx and whose
-    // BOTH components are user oids.
     auto user_table_dirs = [](const std::filesystem::path& root) {
         std::vector<std::pair<unsigned long, unsigned long>> found;
         if (!std::filesystem::exists(root)) {
@@ -1051,8 +993,8 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
         }
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
 
-        // The live layout is the ANSWER the recovery has to reproduce: one user table, under a
-        // user namespace oid. Read it off the disk rather than assuming a value.
+        // Read the live layout off disk rather than assuming a value -- it is the answer
+        // recovery has to reproduce.
         const auto live = user_table_dirs(config.disk.path);
         INFO("the live directory must hold exactly the one user table");
         REQUIRE(live.size() == 1);
@@ -1064,8 +1006,7 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
         std::filesystem::copy(config.main_path, crash_dir, std::filesystem::copy_options::recursive);
     }
 
-    // Model the lost directory entry: remove the table's storage directory from the copy. The
-    // WAL, which carries the pg_class row and the PHYSICAL_INSERTs, survives.
+    // Removes the table's storage directory from the copy; the WAL survives.
     {
         auto crash_config = test_create_config(crash_dir);
         auto victim = crash_config.disk.path / std::to_string(live_ns) / std::to_string(live_tbl);
@@ -1083,12 +1024,10 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
             CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
         }
 
-        // Structural gate, and the one a hardwired namespace oid fails: the recreated
-        // file sits under the table's own namespace...
+        // A hardwired namespace oid fails this: the recreated file must sit under the
+        // table's own namespace, not under the main-database oid (4).
         REQUIRE(std::filesystem::exists(crash_config.disk.path / std::to_string(live_ns) /
                                         std::to_string(live_tbl) / "table.otbx"));
-        // ...and nothing was manufactured under the main-database oid (4), which is where the
-        // hardwired path put it.
         REQUIRE_FALSE(std::filesystem::exists(
             crash_config.disk.path /
             std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::main_database)) /
@@ -1103,12 +1042,9 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
     std::filesystem::remove_all(crash_dir);
 }
 
-// A ZERO-COLUMN REGULAR table (relkind='r' whose only column was
-// dropped) must NOT come back computed after a restart. Its pg_attribute schema is
-// empty — exactly the shape the load path once used as the computed heuristic — so
-// only the relkind check keeps it regular. Regular vs computed is observable
-// through INSERT: a computed table adopts arbitrary per-document columns, a regular
-// zero-column table refuses them.
+// A zero-column REGULAR table (relkind='r', only column dropped) must not come back computed:
+// its empty pg_attribute schema is exactly the shape the load path once used as its computed
+// heuristic. Observable via INSERT: computed adopts arbitrary columns, regular refuses them.
 TEST_CASE("integration::cpp::test_persistence::zero_column_regular_table_stays_regular") {
     auto config = test_create_config(integration_fixture_path("test_persistence/zero_col_regular"));
     test_clear_directory(config);
@@ -1512,9 +1448,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'dave';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'eve';", 1);
 
-        // A restart must not turn the DEFAULT off. Reading the rows written BEFORE the
-        // restart says nothing about that (their tag was materialised in the creating
-        // session); only a NEW partial INSERT does.
+        // Only a NEW partial INSERT proves the DEFAULT survived restart; pre-restart rows'
+        // tags were already materialised in the creating session.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
@@ -1601,9 +1536,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'charlie';", 1);
 
-        // The NOT NULL DEFAULT column must still be filled for a NEW partial INSERT.
-        // Re-reading pre-restart rows cannot show this: their status was materialised
-        // in the creating session.
+        // A NEW partial INSERT proves the NOT NULL DEFAULT still fills; pre-restart rows'
+        // status was already materialised in the creating session.
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -1617,13 +1551,10 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
     }
 }
 
-// SOURCE CONVERGENCE (1/2). What a diverged DEFAULT breaks is not the value but
-// the CONSTRAINT. `CHECK (c IS NOT NULL)` on a column with a DEFAULT is compiled against
-// the PLAN's copy of the default (pg_attribute.attdefspec, which survives a restart) and
-// therefore PASSES an INSERT that omits `c` — "the stored row will carry 5". The value
-// actually written came from the storage-layer column list, which after a restart has no
-// defaults, so NULL was stored. The constraint admitted exactly what it exists to reject.
-// This test requires the check's verdict and the stored value to agree.
+// CHECK (c IS NOT NULL) on a column with a DEFAULT compiles against the PLAN's copy of the
+// default (pg_attribute.attdefspec, survives restart) and passes an INSERT omitting c; the
+// value actually written comes from the storage-layer column list, which after a restart has
+// no defaults, so NULL gets stored despite the CHECK admitting it.
 TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_after_restart") {
     auto config = test_create_config(integration_fixture_path("test_persistence/default_check_agrees"));
     test_clear_directory(config);
@@ -1690,17 +1621,14 @@ TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_a
             INFO("CHECK (c IS NOT NULL) admitted the row, so the stored c must satisfy it");
             CHECK_FALSE(cur->value(0, 0).is_null());
         }
-        // Stated as the constraint itself: no row in the table may violate the CHECK the
-        // engine claims to enforce.
+        // No row may violate the CHECK the engine claims to enforce.
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE c IS NULL;", 0);
     }
 }
 
-// SOURCE CONVERGENCE (2/2). Uniqueness diverges symmetrically: an omitted key
-// column is compared as its DEFAULT (from the catalog, which survives) while NULL is what
-// lands on disk. Before the fix two inserts omitting the column both succeed after a
-// restart — the duplicate-key decision was made about 5 and NULL was stored twice. The
-// decision must be about what is really written.
+// Uniqueness diverges the same way: an omitted key column is compared as its catalog DEFAULT
+// while NULL is what lands on disk after a restart -- the duplicate-key decision must be about
+// what is really written, not the catalog default.
 TEST_CASE("integration::cpp::test_persistence::default_unique_constraint_agrees_after_restart") {
     auto config = test_create_config(integration_fixture_path("test_persistence/default_unique_agrees"));
     test_clear_directory(config);
@@ -1753,8 +1681,7 @@ TEST_CASE("integration::cpp::test_persistence::default_unique_constraint_agrees_
             INFO("a second row omitting the UNIQUE column takes the same DEFAULT key as row 1");
             CHECK(ins->is_error());
         }
-        // Whatever the verdict, the table must not end up holding two rows that share the
-        // key the constraint compared them by.
+        // Whatever the verdict, no two rows may end up sharing the compared key.
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE code = 5;", 1);
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE code IS NULL;", 0);
     }
@@ -2402,34 +2329,12 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
     }
 }
 
-// REGRESSION — MVCC commit-clock restore on reopen (the durable WAL-COMMIT-marker
-// frontier → published_horizon_ + current_timestamp_). What the restore guards:
-//
-//   * Committed DML stamps each row version with a real commit-id (insert_id for an
-//     INSERT, delete_id for a DELETE), drawn from the prior session's commit clock.
-//     CHECKPOINT folds those stamps into the .otbx.
-//   * On reopen the transaction_manager restarts at {current_timestamp_=1,
-//     published_horizon_=0}, and nothing on the recovery path calls publish() (it runs
-//     only in the live commit pipeline). So WITHOUT the restore a fresh post-reopen
-//     reader snapshots published_horizon_=0 and the MVCC filter (row_version_manager:
-//     id > snapshot_horizon ⇒ not visible) judges every committed DELETE as "deleted
-//     after my snapshot" — the deleted rows REAPPEAR, and the phase-2 count comes back
-//     100 instead of 50.
-//   * The restore raises published_horizon_ to the durable frontier (max of persisted
-//     pg_attribute commit-ids and the max WAL COMMIT-marker commit-id).
-//
-// Sibling tests test_wal_pool::insert_delete_checkpoint_restart and
-// test_persistence::wal_recovery_dml_full_cycle give equivalent coverage; this case
-// states the intent explicitly so the regression is unmistakable.
-//
-// (The restore's OTHER input is manager_disk_t::max_persisted_commit_id_sync, the max
-// over pg_attribute added_at_commit_id / dropped_at_commit_id. That branch USED to be
-// dead through real DDL, because ALTER ADD COLUMN left added_at at the placeholder 0:
-// the commit backfill, agent_disk_t::update_pg_attribute_commit_id_field_inner, scanned
-// with a transaction that could not see the row it was asked to patch. It is live now,
-// so a reopened engine can raise its frontier off pg_attribute alone. This case still
-// exercises the WAL-frontier half; the added_at half is pinned in
-// test_catalog_delete_refusal.cpp — an_added_columns_commit_id_survives_a_restart.)
+// MVCC commit-clock restore on reopen: without it a fresh post-restart reader snapshots
+// published_horizon_=0 and every committed DELETE reads as "after my snapshot" -- deleted rows
+// REAPPEAR (phase-2 count 100 instead of 50). Restore raises published_horizon_ to the durable
+// frontier (max persisted pg_attribute commit-id, max WAL COMMIT-marker commit-id). Sibling
+// coverage: test_wal_pool::insert_delete_checkpoint_restart; added-column frontier: see
+// test_catalog_delete_refusal.cpp::an_added_columns_commit_id_survives_a_restart.
 TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_invisible") {
     auto config = test_create_config(integration_fixture_path("test_persistence/reopen_keeps_committed_deletes"));
     test_clear_directory(config);
@@ -2755,11 +2660,8 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // Structural witness: the disk agent's b+tree dir at
-        // ${disk.path}/${users_oid}/${indexrelid} exists, proving bootstrap
-        // respawned it. The layout is oid-keyed and carries no index name, so the
-        // dir is found by content: the ordered b+tree backend owns a `metadata`
-        // file in its directory (bitcask would own CURRENT instead).
+        // Layout is oid-keyed with no index name, so the dir is found by content: the
+        // ordered b+tree backend owns a `metadata` file (bitcask would own CURRENT instead).
         bool found = false;
         if (std::filesystem::exists(config.disk.path)) {
             for (const auto& d : std::filesystem::recursive_directory_iterator(config.disk.path)) {
@@ -2959,20 +2861,11 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
     }
 }
 
-// Regression guard for the SSB-reopen bug: with disk AND wal OFF (the SSB
-// benchmark configuration), pg_class is still persisted unconditionally.
-// User tables are ALWAYS disk-backed, so the phase-1 rows are durable across the
-// reopen (the shutdown checkpoint seals the .otbx) and phase 2 sees the union of old
-// + re-inserted rows (200); a file-less table would lose its rows and see only the
-// re-inserted 100. The load-bearing core: after a reopen the storage must exist
-// again, the re-run CREATE TABLE IF NOT EXISTS must be a clean no-op, and the
-// re-INSERT must land and be visible (the SSB "4ms / 0 rows" regression, where
-// storage_append silently no-opped against a catalog-only table).
+// Regression guard for the SSB "4ms / 0 rows" bug: with disk+wal OFF, pg_class still
+// persists unconditionally and user tables stay disk-backed, so phase-1 rows survive the
+// reopen. Guards against storage_append silently no-opping against a catalog-only table.
 TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
     auto config = test_create_config(integration_fixture_path("test_persistence/reopen_in_memory_reinsert"));
-    // SSB benchmark config: WAL persistence OFF. Tables are disk-backed
-    // regardless; durability across a clean shutdown comes from the shutdown
-    // checkpoint.
     config.wal.on = false;
     test_clear_directory(config);
 
@@ -3011,9 +2904,8 @@ TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // Mirror the benchmark runner, which re-runs CREATE TABLE IF NOT EXISTS and
-        // re-INSERTs on every reopen. The catalog still knows the table, so this is
-        // a no-op DDL — but the storage shell must exist for the inserts to land.
+        // Mirrors the benchmark runner: catalog already knows the table (no-op DDL), but
+        // the storage shell must exist for the inserts to land.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
@@ -3034,26 +2926,17 @@ TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
             REQUIRE(cur->size() == 100);
         }
 
-        // Decisive gate: a REGULAR snapshot scan must see the re-inserted rows.
-        // With the bug this returns 100 (only the durable phase-1 rows; the SSB
-        // "4ms / 0 rows" symptom shape). Phase-1 rows survive the reopen,
-        // so the union is 200 and each count value now matches two rows (row_N
-        // and reopen_N).
+        // With the bug this returns 100 (only phase-1 rows survive); union of both phases
+        // is 200, each count value now matching two rows (row_N and reopen_N).
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 200);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 2);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 2);
     }
 }
 
-// ---------------------------------------------------------------------------
-// Disk is the ONLY storage mode.
-//   1. A plain CREATE TABLE (no WITH clause) produces a .otbx under
-//      ${db_oid}/${table_oid}/ — no opt-in required.
-//   2. Its pg_class row carries relstoragemode == 'd' (the column stays,
-//      write-only, always 'd').
-//   3. create → insert → restart → read back round-trips end to end through
-//      SQL with no storage clause anywhere.
-// ---------------------------------------------------------------------------
+// Disk is the ONLY storage mode: a plain CREATE TABLE (no WITH clause, no opt-in) produces a
+// .otbx under ${db_oid}/${table_oid}/ with relstoragemode == 'd', and create -> insert ->
+// restart -> read back round-trips end to end through SQL.
 TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
     auto config = test_create_config(integration_fixture_path("test_persistence/b1a_disk_default"));
     test_clear_directory(config);
@@ -3077,29 +2960,15 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
             REQUIRE(cur->is_success());
         }
 
-        // Gate 1: the table's .otbx exists at ${namespace_oid}/${table_oid}/
-        // under the disk root — both components are user oids (>= FIRST_USER_OID).
-        // (The relstoragemode == 'd' half of the gate is asserted at the write
-        // site — catalog::ddl::create_table_writes tests — because SQL cannot
-        // project pg_class columns today: bare `SELECT oid FROM pg_class` fails
-        // with "path: 'oid' was not found".
-        //
-        // THAT SYMPTOM HAS TWO INDEPENDENT CAUSES, MEASURED — fixing either one
-        // alone leaves the message unchanged, so do not read this note as one
-        // bug:
-        //   1. pg_catalog does not describe its OWN relations. Nothing seeds a
-        //      pg_class row (or pg_attribute rows) for pg_class / pg_attribute /
-        //      pg_type / ..., and operator_resolve_table_t knows exactly one way
-        //      to resolve a FROM target — scan pg_class by relname — so a system
-        //      table is indistinguishable from a typo. This is what makes the
-        //      QUALIFIED spelling fail too: `SELECT oid FROM pg_catalog.pg_class`
-        //      answers "collection does not exist".
-        //   2. An UNQUALIFIED name loses its table schema at validation. This is
-        //      NOT pg_class-specific: with a plain user table it reproduces
-        //      identically — `SELECT id FROM Alpha;` answers "path: 'id' was not
-        //      found" while `SELECT id FROM TestDatabase.Alpha;` succeeds — so a
-        //      queryable pg_catalog would still not make the BARE spelling above,
-        //      nor kListTablesQuery, resolve a single column.)
+        // Gate 1: .otbx exists at ${namespace_oid}/${table_oid}/, both user oids
+        // (>= FIRST_USER_OID). relstoragemode=='d' is asserted separately at the write site
+        // (catalog::ddl::create_table_writes_relstoragemode_disk_always) because
+        // `SELECT oid FROM pg_class` fails with "path: 'oid' was not found" -- MEASURED two
+        // independent causes: (1) nothing seeds pg_class/pg_attribute rows describing
+        // pg_class/pg_attribute/pg_type themselves, so operator_resolve_table_t's
+        // scan-by-relname can't tell a system table from a typo (qualified
+        // pg_catalog.pg_class fails too); (2) an UNQUALIFIED name loses its table schema at
+        // validation regardless of table (reproduces on a plain user table too).
         {
             auto numeric_oid = [](const std::filesystem::path& dir) -> unsigned long {
                 const auto name = dir.filename().string();
@@ -3147,25 +3016,12 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
     }
 }
 
-// WAL SEALING, end to end. A checkpoint truncates the WAL by DELETING whole segment
-// files at or below the floor checkpoint_all reports, and the restart that follows replays
-// what is left on top of the checkpointed files. Two ways for that to be wrong, and this
-// test fails on either:
-//   * the floor reached too far and a segment still holding un-checkpointed rows was
-//     deleted  -> the restart comes back with FEWER rows;
-//   * a segment describing rows already folded into table.otbx survived and was replayed
-//     on top of them -> the restart comes back with MORE rows.
-// Both are "!= exactly what was inserted", so the row counts below are the whole assertion.
-//
-// Truncation only happens on the SECOND checkpoint: the floor is min(prev_checkpoint_wal_id)
-// and prev is 0 for every table until a round supersedes a root. Segments are also never
-// deleted while the writer is still on them, hence the deliberately small max_segment_size —
-// without it the whole test fits in one live segment and nothing is retired.
-//
-// Between the two checkpoints only TruncCollection is written to, so it is the only table
-// the second round rewrites; every system table is unchanged and merely advances its
-// wal-id chain to the same prev. min(prev) therefore still lands the floor on checkpoint
-// #1's wal id, and the segments below it still go.
+// A checkpoint truncates the WAL by deleting segments at/below the floor checkpoint_all
+// reports; the restart replays what's left. Two failure directions, both wrong row counts:
+// floor too far deletes un-checkpointed rows (FEWER); a segment already folded into table.otbx
+// survives and replays again (MORE). Truncation only happens on the SECOND checkpoint (floor =
+// min(prev_checkpoint_wal_id), 0 until a round supersedes a root); max_segment_size is
+// deliberately small so segments actually retire.
 TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_replay") {
     auto config = test_create_config(integration_fixture_path("test_persistence/wal_truncate_no_double_replay"));
     test_clear_directory(config);
@@ -3226,9 +3082,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_re
 
         insert_range(0, kBeforeCheckpoint);
 
-        // Checkpoint #1: every table's prev_checkpoint_wal_id is still 0, so the reported
-        // floor is 0 and nothing is truncated. This is the round that gives the tables a
-        // superseded root for the next one to seal against.
+        // Checkpoint #1: prev_checkpoint_wal_id is still 0, floor is 0, nothing truncated.
         {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
@@ -3239,8 +3093,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_re
         segments_before_truncate = count_wal_segments();
         REQUIRE(segments_before_truncate > 1);
 
-        // Checkpoint #2: the floor is now the wal id checkpoint #1 was taken at, and the
-        // segments lying entirely below it are removed.
+        // Checkpoint #2: floor is now checkpoint #1's wal id; segments below it are removed.
         {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());

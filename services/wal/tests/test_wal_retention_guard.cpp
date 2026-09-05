@@ -24,22 +24,14 @@
 #include <core/pmr.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
-// THREE GUARDS OF THE MANAGER'S OWN BOOKKEEPING.
-//
-//   1. The CREATE INDEX retention set must not be a std::pmr::set — a DEDUPLICATING container
-//      fed by register/unregister PAIRS. Two builds registering the same start position
-//      collapse into one entry; the first unregister empties the set while the second build is
-//      still running, so truncate_before stops clamping and can unlink the very segments the
-//      live catchup still needs. The second unregister then finds nothing to erase and ABORTS
-//      THE PROCESS — on a path fed by messages from another actor.
-//
-//   2. Startup classification of <wal>/<db> directories must not use std::stoul under
-//      catch (...): a directory named "9zz" parses as database oid 9, spawning a worker over a
-//      directory ("9") that is NOT the one the files are in, while genuinely foreign names are
-//      silently skipped as "legacy" — a backward-compatibility branch on a startup path.
-//
-//   3. total_wal_bytes() must sum only wal_* segments, not EVERY regular file directly under
-//      <wal>/<db>/: any foreign neighbour otherwise inflates the auto-checkpoint window.
+// Three guards of the manager's own bookkeeping: (1) the CREATE INDEX retention set must be a
+// multiset, not a deduplicating one — two builds registering the same start position would
+// collapse into one entry, so the first unregister empties the clamp while the second build
+// still needs it, and the second unregister then finds nothing to erase and ABORTS THE PROCESS;
+// (2) startup classification of <wal>/<db> directories must not use std::stoul under catch(...),
+// which half-parses "9zz" as database oid 9 and spawns a worker over the wrong directory; (3)
+// total_wal_bytes() must sum only wal_* segments, not every file under <wal>/<db>/, or a foreign
+// neighbour inflates the auto-checkpoint window.
 
 using namespace services;
 using namespace services::wal;
@@ -114,17 +106,10 @@ namespace {
             manager_.reset();
         }
 
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: this is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
-        // that would report a chunk still alive after the manager is gone. Production hands the manager
-        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
-        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
-        // over: ~wal_env_t stops the scheduler and resets manager_
-        // (destroying the mailbox and any message still holding this batch) inside its own body,
-        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
-        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
-        // the batch is moved into the message and is unobservable after send.
+        // Built on the fixture's own arena (core::pmr::otterbrix_resource, resource_tracer_t under
+        // ASAN), mirroring production (agent_disk_t::storage_append_inner builds off resource()).
+        // resource_ is declared FIRST so it outlives ~wal_env_t's teardown of manager_. Extracted
+        // so a test can assert the ARENA of a REAL payload before it's moved into the message.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -194,15 +179,10 @@ namespace {
 
 } // namespace
 
-// ===========================================================================
-// TWO BUILDS AT THE SAME START POSITION ARE TWO REGISTRATIONS.
-//
-// register(1) twice, unregister(1) once: one build is still running, so truncate_before must
-// still clamp to 1 and keep every segment.
-//
-// BEFORE: the set deduplicated the two registrations, the single unregister emptied it, the
-// clamp disappeared, and the segments the live catchup still needs were unlinked.
-// ===========================================================================
+// Two builds at the same start position are two registrations: register(1) twice,
+// unregister(1) once, and truncate_before must still clamp to 1.
+// BEFORE: the set deduplicated the two registrations, the single unregister emptied it, and the
+// segments the live catchup still needs were unlinked.
 TEST_CASE("wal::retention::two_builds_at_the_same_start_position_hold_the_clamp") {
     wal_env_t env(base_path() / "dedup_clamp", /*max_segment_size=*/8192);
     fill_two_segments(env);
@@ -230,14 +210,9 @@ TEST_CASE("wal::retention::two_builds_at_the_same_start_position_hold_the_clamp"
     env.manager_->unregister_active_build_sync(1);
 }
 
-// ===========================================================================
-// AN UNMATCHED UNREGISTER IS A BUG REPORT, NOT A PROCESS EXIT.
-//
-// The path is fed by messages from another actor (operator_create_index_backfill), and the
-// set it erases from deduplicates — so this input is REACHABLE, not hypothetical.
-//
+// An unmatched unregister is a bug report, not a process exit: this path is fed by messages
+// from another actor, so the input is reachable, not hypothetical.
 // BEFORE: assert in Debug, explicit std::abort() in Release — the process died.
-// ===========================================================================
 TEST_CASE("wal::retention::an_unmatched_unregister_does_not_abort_the_process") {
     wal_env_t env(base_path() / "unmatched_unregister");
 
@@ -250,15 +225,9 @@ TEST_CASE("wal::retention::an_unmatched_unregister_does_not_abort_the_process") 
     REQUIRE_FALSE(r.has_error());
 }
 
-// ===========================================================================
-// A DIRECTORY THAT IS NOT A DATABASE OID IS SKIPPED LOUDLY, NOT HALF-PARSED.
-//
-// std::stoul("9zz") answers 9, so half-parsing a foreign directory spawns a worker for
-// database oid 9 whose own directory ("9") is a DIFFERENT path — the journal split across two
-// directories, one of which nothing recovers from.
-//
+// A directory that is not a database oid is skipped loudly, not half-parsed: std::stoul("9zz")
+// answers 9, spawning a worker for the WRONG directory and splitting the journal in two.
 // BEFORE: <wal>/9 appeared next to <wal>/9zz.
-// ===========================================================================
 TEST_CASE("wal::classification::a_non_oid_directory_does_not_spawn_a_worker") {
     const auto path = base_path() / "foreign_dir";
     std::filesystem::remove_all(path);
@@ -272,14 +241,8 @@ TEST_CASE("wal::classification::a_non_oid_directory_does_not_spawn_a_worker") {
     REQUIRE_FALSE(std::filesystem::exists(path / "wal" / "9"));
 }
 
-// ===========================================================================
-// THE AUTO-CHECKPOINT WINDOW COUNTS THE JOURNAL, NOT THE NEIGHBOURS.
-//
-// The journal and the table tree share their root on purpose, so a future neighbour file
-// under <wal>/<db>/ must not count toward the auto-checkpoint threshold.
-//
+// The auto-checkpoint window counts the journal, not neighbours sharing its root.
 // BEFORE: any regular file directly under the database directory inflated the sum.
-// ===========================================================================
 TEST_CASE("wal::classification::total_wal_bytes_counts_only_wal_segments") {
     wal_env_t env(base_path() / "total_bytes");
 
@@ -309,12 +272,8 @@ TEST_CASE("wal::classification::total_wal_bytes_counts_only_wal_segments") {
     REQUIRE(env.manager_->total_wal_bytes() == before);
 }
 
-// ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
-// make_insert_batch above. The batch is moved into the message and is unobservable after
-// send, so the assertion is made on the object make_insert_batch produces: the same call, on
-// the same path, that send_insert makes -- not a value handed in by the test.
-// ===========================================================================
+// Insert payload built on the fixture's own arena (see make_insert_batch above); the batch is
+// unobservable after send, so the assertion is made on make_insert_batch's own output.
 TEST_CASE("wal::retention::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

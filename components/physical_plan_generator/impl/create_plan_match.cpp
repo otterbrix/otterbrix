@@ -24,9 +24,8 @@ namespace services::planner::impl {
                    type == expr::compare_type::gt || type == expr::compare_type::gte;
         }
 
-        // Check if this compare expression can use an index scan on `table_oid`'s
-        // table. Index info is per-oid (context_storage_t::table_indexes): the scan
-        // target's OWN indexes decide, never another table's from the same statement.
+        // Can this compare use an index scan on `table_oid`'s table? Index info is per-oid — the
+        // scan target's OWN indexes decide, never another table's from the same statement.
         [[maybe_unused]] bool can_use_index(const context_storage_t& context,
                                             components::catalog::oid_t table_oid,
                                             const expr::compare_expression_t& comp,

@@ -13,36 +13,28 @@
 #include <string>
 #include <utility>
 
-// A DDL STATEMENT MUST NOT REPORT SUCCESS OVER A CATALOG ROW IT DID NOT WRITE.
+// A DDL statement must not report success over a catalog row it did not write.
 //
 // A pg_catalog_append_range_t carries no error channel of its own, so an
 // agent_disk_t::append_pg_catalog_row_inner that answered with it alone could only leave
-// start_row/count at 0 and log — and a zero-count range is exactly what a legitimate no-op
-// append looks like, which makes every caller read the two cases the same way. CREATE TABLE
-// writes pg_class, pg_attribute and pg_depend rows through that door: one of them failing
-// leaves the statement reporting success over a catalog that does not describe the table it
-// just claimed to create.
+// start_row/count at 0 -- indistinguishable from a legitimate no-op append. CREATE TABLE writes
+// pg_class, pg_attribute and pg_depend through that door: one of them failing would leave the
+// statement reporting success over a catalog that doesn't describe the table it just created.
 //
-// THE INJECTION, and why it lands where it does. The fault seam (fault_injection_file.hpp)
-// wraps the file handle a single_file_block_manager_t opens; the interposer below narrows it
-// to ONE table's directory by path, and the plan is armed BEFORE the engine starts. The header
-// write that create_new_database issues for pg_depend's .otbx therefore fails and the storage
-// is never emplaced.
+// The fault seam (fault_injection_file.hpp) wraps the file handle single_file_block_manager_t
+// opens; the interposer below narrows it to ONE table's directory by path and is armed BEFORE
+// the engine starts, so create_new_database's header write for pg_depend's .otbx fails and the
+// storage is never emplaced.
 //
-// WHY THIS CASE ASSERTS ON THE BOOTSTRAP AND NOT ON THE STATEMENT. Letting the engine come up
-// over that missing pg_depend and asserting the CREATE TABLE failure instead needs exactly the
-// start the bootstrap refusal forbids: an engine holding an incomplete pg_catalog over live
-// storage mints fresh oids on top of it at the next DDL. Catching the injection one floor
-// EARLIER is strictly stronger — the write it guards cannot be attempted at all — while the
-// guarantee that append_pg_catalog_row refuses instead of answering with a zero-count range is
-// carried by its own error channel.
+// Asserted on the bootstrap refusal, not the CREATE TABLE statement: letting the engine come up
+// over a missing pg_depend and asserting the statement's failure instead needs exactly the
+// start this refusal forbids -- an engine holding an incomplete pg_catalog over live storage
+// mints fresh oids on top of it at the next DDL. Catching it one floor earlier is strictly
+// stronger, since the write it guards is then never attempted at all.
 //
-// The recoverability half is asserted too, because a refusal that cannot be undone would be a
-// worse defect than the one it replaces: with the fault removed the same directory opens and
-// the same CREATE TABLE succeeds.
-//
-// pg_depend rather than pg_class on purpose: it is the table CREATE TABLE only ever WRITES, so
-// nothing else in the statement path could be blamed for the outcome.
+// Recoverability is asserted too: a refusal that can't be undone would be worse than the defect
+// it replaces. pg_depend rather than pg_class, since it's the one table CREATE TABLE only ever
+// writes -- nothing else in the statement path could be blamed for the outcome.
 
 namespace {
 

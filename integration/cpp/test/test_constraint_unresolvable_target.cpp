@@ -1,43 +1,34 @@
-// ============================================================================
-// A CONSTRAINT THAT NAMES SOMETHING THAT IS NOT THERE MUST BE REFUSED, NOT
-// ACCEPTED AND THEN QUIETLY NOT ENFORCED.
+// A constraint naming something that is not there must be refused, not accepted and then
+// quietly unenforced -- same class as `REFERENCES parent` with the column list omitted (see
+// test_fk_omitted_ref_columns.cpp). Four ways to reach it, all through plain SQL:
 //
-// Same class as `REFERENCES parent` with the column list omitted (see
-// test_fk_omitted_ref_columns.cpp): the user declares integrity, the engine
-// answers "ok", and nothing is guarded. Four ways to reach it, all through
-// plain SQL:
+//   (1) `REFERENCES nosuchtable` -- the referenced table never resolved, so enrich skipped
+//       the whole FK branch and the planner still wrote a pg_constraint row with an invalid
+//       confrelid and an empty confkey. operator_resolve_constraint needs BOTH name lists, so
+//       it drops that row: orphans go in, ON DELETE RESTRICT lets the parent go.
 //
-//   (1) `REFERENCES nosuchtable` — the referenced table never resolved, so
-//       enrich skipped the WHOLE FK branch and the planner still wrote a
-//       pg_constraint row with an INVALID confrelid and an EMPTY confkey.
-//       operator_resolve_constraint needs BOTH name lists, so it drops that
-//       row: orphans go in, ON DELETE RESTRICT lets the parent go.
-//
-//   (2) `FOREIGN KEY (nosuchcol)` / `REFERENCES parent (nosuchcol)` — the
-//       column-name → attoid loops in enrich appended nothing for a name that
-//       matched nothing, leaving conkey / confkey SHORTER than declared. At
-//       length 0 the constraint enforces nothing; shorter than declared it
-//       enforces a DIFFERENT constraint, because both lists are read
+//   (2) `FOREIGN KEY (nosuchcol)` / `REFERENCES parent (nosuchcol)` -- the column-name ->
+//       attoid loops in enrich appended nothing for a name that matched nothing, leaving
+//       conkey / confkey shorter than declared. At length 0 the constraint enforces nothing;
+//       shorter than declared it enforces a DIFFERENT constraint, since both lists are read
 //       positionally from there on.
 //
-//   (3) `UNIQUE (nosuchcol)` / `PRIMARY KEY (nosuchcol)` — the same enrich loop,
-//       the same silence: an empty conkey is never even decoded by
-//       operator_resolve_constraint (it skips empty groups).
+//   (3) `UNIQUE (nosuchcol)` / `PRIMARY KEY (nosuchcol)` -- same enrich loop, same silence: an
+//       empty conkey is never even decoded by operator_resolve_constraint (it skips empty
+//       groups).
 //
-//   (4) UNIQUE / PRIMARY KEY on a dynamic-schema (relkind='g') table: resolves at
-//       DDL time and dies at DML time. A schemaless table has NO pg_attribute
-//       rows — its columns live in pg_computed_column, with attoids from a
-//       different sequence — so conkey holds attoids the resolve step's
-//       pg_attribute read can never match. The group was dropped from the
-//       constraint set without a word, and duplicates went straight in under a
-//       declared UNIQUE. FOREIGN KEY and CHECK are already refused on such tables
-//       for exactly this reason (stable attoids); the key constraints were not.
+//   (4) UNIQUE / PRIMARY KEY on a dynamic-schema (relkind='g') table: resolves at DDL time and
+//       dies at DML time. A schemaless table has no pg_attribute rows (its columns live in
+//       pg_computed_column, with attoids from a different sequence), so conkey holds attoids
+//       the resolve step's pg_attribute read can never match -- the group was dropped from
+//       the constraint set in silence, and duplicates went straight in under a declared
+//       UNIQUE. FOREIGN KEY and CHECK are already refused on such tables for exactly this
+//       reason (stable attoids); the key constraints were not.
 //
-// The last case is also the one reachable route into the UNIQUE/PK group-drop in
-// operator_resolve_constraint. With it refused at DDL that drop becomes a last
-// line of defence for a catalog already holding such a row — so the loud guard
-// there is watched by the success-path sentinel at the bottom of this file.
-// ============================================================================
+// Case (4) is also the one reachable route into the UNIQUE/PK group-drop in
+// operator_resolve_constraint. With it refused at DDL, that drop becomes a last line of
+// defence for a catalog already holding such a row, watched by the success-path sentinel at
+// the bottom of this file.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

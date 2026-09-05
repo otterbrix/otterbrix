@@ -1,28 +1,8 @@
-// ============================================================================
-// THE AGENT OPENS ITS OWN HASH STORAGE.
-//
-// The keydir file <disk>/<table_oid>/<indexrelid>/hash_index.bin is opened BY THE AGENT
-// ITSELF. Opening it outside the actor -- in manager_index_t::create_index at runtime, in
-// base_spaces::bootstrap_indexes_sync at startup -- and handing it both to the bitcask store
-// and to the index facade makes it a cross-actor handle (rule 10), and buys nothing: the
-// agent derives the very same path from the very same two oids.
-//
-// Neither half of that is visible to a grep, nor to a test that only counts rows on a live
-// instance: the in-memory pending buckets answer a freshly-inserted key with or without any
-// storage at all. Both gates below therefore RESTART, so the only thing that can answer is
-// what the agent found on disk when it opened the file for itself.
-//
-//   (1) an EXISTING hash index survives the restart and answers a lookup, and the answer
-//       provably comes out of the agent (index_agent_reads moves);
-//   (2) a hash index over a key LONGER THAN 64 BYTES does the same — the guard on the trap.
-//       disk_hash_table_t stores only a 32-byte PREFIX of an encoded key longer than
-//       inline_key_limit = 64, plus the (segment, offset) of the record holding the whole
-//       key, and resolves such an entry through the full-key hook. Removing that hook while
-//       removing the sharing -- the obvious reading of "no cross-actor callbacks" -- makes
-//       keys_equal() answer false for EVERY long key, so the lookup returns nothing and says
-//       nothing. A 64-byte-or-shorter key never touches that path, which is why case (1)
-//       cannot catch it.
-// ============================================================================
+// The index agent opens its own hash-storage file rather than having manager_index_t or
+// base_spaces::bootstrap_indexes_sync hand it one — either would share a store handle across
+// actors; both derive the identical path from the same two oids anyway.
+// Both cases below restart the instance: in-memory pending buckets would otherwise answer a
+// freshly-inserted key without ever touching the store the agent opened.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"

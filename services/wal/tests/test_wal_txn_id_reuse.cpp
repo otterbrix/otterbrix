@@ -25,32 +25,21 @@
 #include <thread>
 #include <unistd.h>
 
-// TXN IDS ARE REUSED ACROSS RESTARTS AND THE REPLAY FILTER IS NOT ORDERED BY wal_id.
-//
-// transaction_manager_t::next_transaction_id_ is a plain `{TRANSACTION_ID_START}` member: unlike
-// the commit clock (restore_commit_clock, seeded at reopen from the durable frontier) it is NEVER
-// seeded from the surviving journal, so every process start hands out the SAME first txn id. The
-// wal id allocator, by contrast, IS re-derived from the segment files
-// (wal_worker_t::recover_from_disk), so wal ids keep growing across restarts.
-//
-// The replay filter of both readers — wal_reader_t::read_database_segments and wal_worker_t::load
-// — collected committed txn ids into an UNORDERED std::set and then kept every record whose txn id
-// is a member. A COMMIT marker written by the PREVIOUS process therefore vouched for physical
-// records written by the NEXT one under the recycled id:
+// Txn ids are reused across restarts (transaction_manager_t::next_transaction_id_ is never
+// seeded from the surviving journal, unlike the commit clock), while wal ids keep growing
+// (re-derived from segment files). Both replay filters used to collect committed txn ids into an
+// UNORDERED set, so a COMMIT marker from the PREVIOUS process could vouch for physical records
+// the NEXT one wrote under the recycled id:
 //
 //   session 1:  wal 1 PHYSICAL_INSERT(txn T)   wal 2 COMMIT(txn T)
 //   -- restart, no checkpoint; txn ids restart, wal ids do not --
 //   session 2:  wal 3 PHYSICAL_INSERT(txn T)   <crash before COMMIT>
 //   replay:     committed = {T}  ->  wal 3 is replayed as committed
 //
-// The rule the ordering restores: a physical record at wal id r belongs to a committed transaction
-// only if a COMMIT marker for the SAME txn id sits at a wal id STRICTLY GREATER than r. That is
-// the one relation reuse cannot forge, because the wal id space is monotone across restarts and
-// the txn id space is not.
-//
-// Sensitivity is proved by the control halves: the very same journal shape with a COMMIT marker
-// appended for the second incarnation replays BOTH inserts, so an assertion satisfiable by a
-// reader that simply drops everything would fail there.
+// Fixed rule: a physical record at wal id r belongs to a committed transaction only if a COMMIT
+// marker for the SAME txn id sits STRICTLY GREATER than r — the one relation reuse cannot forge.
+// Sensitivity is proved by the control halves: appending the missing COMMIT for the second
+// incarnation replays BOTH inserts, so a reader that simply dropped everything would fail there.
 
 using namespace services::wal;
 using namespace components::session;
@@ -110,20 +99,11 @@ namespace {
             manager_.reset();
         }
 
-        // Returns the wal id the record landed on.
-        // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton: this is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
-        // that would report a chunk still alive after the manager is gone. Production hands the manager
-        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
-        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
-        // over: ~journal_session_t stops the scheduler and resets manager_
-        // (destroying the mailbox and any message still holding this batch) inside its own body,
-        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
-        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
-        // the batch is moved into the message and is unobservable after send.
-        // to_batch takes the vector's arena from the chunk, so &resource_ carries all the
-        // way through to the batch the message holds.
+        // Returns the wal id the record landed on. Built on the fixture's own arena
+        // (core::pmr::otterbrix_resource, resource_tracer_t under ASAN), mirroring production
+        // (agent_disk_t::storage_append_inner builds off resource()); resource_ is declared FIRST
+        // so it outlives ~journal_session_t's teardown of manager_. to_batch takes the vector's
+        // arena from the chunk, so &resource_ carries through to the batch the message holds.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return to_batch(gen_data_chunk(rows, &resource_));
         }
@@ -194,14 +174,9 @@ namespace {
 
 } // namespace
 
-// ===========================================================================
-// #363-A — wal_reader_t (the bootstrap replay in base_spaces.cpp).
-//
-// BEFORE THE FIX: read_committed_records answers 3 records — INSERT(1),
-// COMMIT(2) and the UNCOMMITTED INSERT(3) — because {T} is looked up without
-// regard to where the marker sits. The second insert is applied to the table at
-// startup as if it had committed.
-// ===========================================================================
+// wal_reader_t (the bootstrap replay in base_spaces.cpp).
+// BEFORE: read_committed_records answered 3 records — INSERT(1), COMMIT(2) and the UNCOMMITTED
+// INSERT(3) — because {T} was looked up without regard to where the marker sits.
 TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn") {
     const auto path = base_path() / "reader";
     std::filesystem::remove_all(path);
@@ -268,12 +243,8 @@ TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn
     std::filesystem::remove_all(path);
 }
 
-// ===========================================================================
-// #363-B — wal_worker_t::load (the CREATE INDEX backfill catchup).
-//
-// Same filter, second copy, same defect: the backfill would index rows of a
-// transaction that never committed.
-// ===========================================================================
+// wal_worker_t::load (the CREATE INDEX backfill catchup): same filter, second copy, same
+// defect — the backfill would index rows of a transaction that never committed.
 TEST_CASE("wal::txn_reuse::catchup_load_rejects_the_recycled_uncommitted_txn") {
     const auto path = base_path() / "load";
     std::filesystem::remove_all(path);
@@ -311,12 +282,8 @@ TEST_CASE("wal::txn_reuse::catchup_load_rejects_the_recycled_uncommitted_txn") {
     std::filesystem::remove_all(path);
 }
 
-// ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
-// make_insert_batch above. The batch is moved into the message and is unobservable after
-// send, so the assertion is made on the object make_insert_batch produces: the same call, on
-// the same path, that send_insert makes -- not a value handed in by the test.
-// ===========================================================================
+// Insert payload built on the fixture's own arena (see make_insert_batch above); the batch is
+// unobservable after send, so the assertion is made on make_insert_batch's own output.
 TEST_CASE("wal::txn_reuse::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

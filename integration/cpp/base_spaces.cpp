@@ -399,6 +399,29 @@ namespace otterbrix {
             disk_ptr->load_user_table_storages_sync();
         }
 
+        // B3c2: re-derive any column drop whose physical release a crash discarded. B3c1's
+        // commit path names the dropped column's blocks in memory and B3c's checkpoint releases
+        // them; a crash in between loses that set while the disk keeps BOTH durable facts — the
+        // pg_attribute tombstone and the still-present column — so the table reloads with the
+        // column back and nothing else can ever re-derive the drop.
+        //
+        // Placement is the argument, and both halves of the comparison land exactly here:
+        //   * STORAGE — every user .otbx is open: the pre-replay walk plus the post-replay one
+        //     immediately above, which is what picks up the deferred young files;
+        //   * CATALOG — pg_attribute is final only now. The tombstone reaches the .otbx only at
+        //     a catalog checkpoint, and in the crash this exists for it is typically still
+        //     WAL-only, so it becomes visible in the system-table replay above.
+        // Earlier would INVERT the comparison, not merely weaken it: an ALTER ADD COLUMN whose
+        // pg_attribute row is still unreplayed would look like a drop of a surviving column,
+        // and the replayed PHYSICAL_INSERT chunks still carry the pre-drop column count and
+        // need a table that still has it. Later would be after bootstrap_indexes_sync, whose
+        // rebuild scan would then feed the index a layout no post-start scan ever sees.
+        // Single-threaded, pre-scheduler-start; the release itself happens at the next
+        // checkpoint, exactly as on the live path.
+        if (disk_ptr) {
+            disk_ptr->rearm_dropped_column_blocks_sync();
+        }
+
         // Reseed after WAL replay so any OIDs minted in post-checkpoint WAL records
         // are included. Idempotent: seed() never lowers the counter.
         if (disk_ptr) {

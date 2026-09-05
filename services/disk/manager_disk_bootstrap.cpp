@@ -651,6 +651,200 @@ namespace services::disk {
         }
     }
 
+    // B3c2 — re-arm a DISK-backed column drop whose release a crash discarded.
+    //
+    // THE WINDOW. B3c1's commit path drops the column from the live data_table_t and NAMES its
+    // blocks into table_storage_t::pending_released_blocks_; B3c's checkpoint drains that set.
+    // The set is IN MEMORY. A crash between the two loses it, and the disk is left holding two
+    // durable facts that disagree: the pg_attribute tombstone (attisdropped = true, durable
+    // through the WAL commit marker even when no checkpoint ran) and the column itself, still
+    // physically there because the durable root was never rewritten. The table reloads WITH the
+    // column, the catalog hides it, every query is correct — and the space is leaked FOREVER,
+    // because nothing downstream re-derives the drop. compact() will not: after the reload the
+    // column is genuinely part of the collection, so its blocks are live by every test compact
+    // applies. This walk is the only thing that can notice, so it must not be skipped quietly.
+    //
+    // WHY BOOTSTRAP AND NOT THE CHECKPOINT ROUND. The comparison needs the catalog, and the
+    // disk agent holds none: doing it at checkpoint means a cross-actor read from inside the
+    // per-entry loop. Here the catalog is a synchronous read of agent 0's own slice on the
+    // single-threaded pre-scheduler-start thread — no message, no await, no shared state.
+    //
+    // WHY THIS POINT IN BOOTSTRAP, and the ordering is the whole argument. The comparison needs
+    // BOTH halves to be final:
+    //   * the STORAGE half — the loaded collection's actual columns. Both user-table walks must
+    //     have run (the pre-replay one and the post-replay one that picks up deferred young
+    //     files), or a table not yet open is silently skipped;
+    //   * the CATALOG half — pg_attribute including the tombstone. The tombstone reaches the
+    //     .otbx only at a catalog checkpoint; in the crash this exists for, it is typically
+    //     still WAL-only. So it is final only AFTER WAL replay.
+    // Running this BEFORE replay is not merely incomplete, it INVERTS: a column ADDED by an
+    // ALTER whose pg_attribute row is still unreplayed would be missing from the live set while
+    // present in the storage, and this walk would physically drop a SURVIVING column. The same
+    // ordering also protects replay itself — the replayed PHYSICAL_INSERT chunks carry the
+    // pre-drop column count, and they must land in a table that still has it.
+    // Downstream it must precede bootstrap_indexes_sync, whose scan_storage_for_rebuild_sync
+    // feeds whole chunks into the index rebuild: dropping first means the rebuild sees the same
+    // layout every post-start scan will.
+    //
+    // RE-ARMING ALONE IS A NO-OP, not a shortcut — this is the load-bearing decision, and it was
+    // MEASURED rather than argued. release_dropped_column_blocks() proves NON-ownership per id,
+    // and its second subtraction is "the live collection does not name it" (B2 packs several
+    // columns into one 256 KiB block, so a candidate id routinely still carries a survivor). Leave
+    // the column in the collection and collect_disk_block_ids reports EVERY one of its blocks as
+    // live, so every armed id is skipped and the set is drained having freed nothing. Run with the
+    // rebuild removed and the ids armed on their own, the gate reports the durable root naming the
+    // same 4 data blocks after the restart as before it — byte for byte the do-nothing outcome —
+    // with no free-list overlap and no unexplained block, i.e. the guard held and the leak stayed.
+    // The opposite risk — arming ids the collection still references, which would be a BAD FREE —
+    // is exactly what that subtraction exists to make impossible, and it is why the order is
+    // fixed: the column must leave the collection FIRST. So the drop is performed with the very
+    // primitive the commit path uses, table_storage_t::drop_column, which does both halves in the
+    // one order that is safe: name the ids, then rebuild.
+    //
+    // That rebuild is NOT a physical rewrite of the table. data_table_t(parent, removed_column)
+    // SHARES every surviving column with the successor collection and simply forgets the
+    // dropped one — zero blocks allocated, no segment rewritten, nothing written to the file.
+    // The bytes only move at the next checkpoint, which is exactly where B3c put them.
+    //
+    // relkind='g' (computed) tables are excluded AT THE SOURCE: scan_live_table_oids_sync
+    // yields only 'r' and 'm'. That matters — a computed table's schema lives in
+    // pg_computed_column, not pg_attribute, so its live set here would be EMPTY and this walk
+    // would read it as "every column dropped". rehydrate_missing_user_storages_sync skips 'g'
+    // for the mirror-image reason, and this filter is the same one, from the same scan.
+    //
+    // Rule 6: a catalog read that fails must be loud, never a quiet skip. Bootstrap has no
+    // statement to fail, so the shape is scan_storage_for_rebuild_sync's — log at error and
+    // change NOTHING. Which way to fail is not symmetric: leaving a leak is recoverable (the
+    // next start re-derives it from the same two durable facts), physically dropping a column
+    // the catalog does describe is not. So every ambiguous reading refuses.
+    //
+    // WHAT THIS WALK IS COUPLED TO, and it is a real hazard for a future change: the comparison
+    // is BY NAME, so it reads "in the storage, not in the live catalog" as "dropped". That is
+    // sound only while nothing can rename a column in pg_attribute without renaming it in the
+    // storage. Today nothing can — ALTER TABLE RENAME COLUMN is itself a no-op (the sibling of
+    // the defect B3c1 fixed; the note is at integration/cpp/test/test_multi_database_isolation
+    // .cpp:444) — so a storage-only name has exactly one cause. Whoever makes RENAME write the
+    // catalog must make it rename the storage column in the same commit, or this walk will read
+    // the old name as a drop and physically remove a SURVIVING column on the next start. The
+    // rename cannot be told apart from an ALTER ADD COLUMN not yet materialized in storage (that
+    // one is legal and common, and is why extra CATALOG-only names are ignored here), so there
+    // is no guard to add on this side; the invariant has to hold on the writing side.
+    void manager_disk_t::rearm_dropped_column_blocks_sync() {
+        if (agents_.empty() || agents_[0] == nullptr) {
+            return;
+        }
+        // relkind 'r'/'m' only — see the note above on 'g'.
+        auto live_oids = scan_live_table_oids_sync();
+        std::unordered_set<catalog::oid_t> wanted;
+        std::pmr::vector<catalog::oid_t> ordered{resource()};
+        for (auto oid : live_oids) {
+            // No loaded storage means no physical columns to compare against. Not an error:
+            // rehydrate already recreated everything the catalog describes and whose file was
+            // lost, and a record-only marker owns nothing to release.
+            if (!has_storage(oid)) {
+                continue;
+            }
+            if (wanted.insert(oid).second) {
+                ordered.push_back(oid);
+            }
+        }
+        if (ordered.empty()) {
+            return;
+        }
+
+        auto cols_by_relid = collect_catalog_columns_sync(wanted);
+        if (cols_by_relid.empty()) {
+            // pg_attribute is unreadable / empty while user tables are loaded and describable.
+            // Reading that as "every column of every table was dropped" is the one mistake this
+            // walk must never make, so it stops here, loudly, having touched nothing.
+            error(log_,
+                  "manager_disk_t::rearm_dropped_column_blocks_sync: pg_attribute resolved NO columns for "
+                  "{} loaded user table(s) — refusing to treat that as a drop; blocks released by a "
+                  "pre-crash ALTER stay leaked until the catalog reads again",
+                  ordered.size());
+            return;
+        }
+
+        for (auto oid : ordered) {
+            const std::size_t pool_idx = pool_idx_for_oid(oid, agents_.size());
+            if (pool_idx >= agents_.size() || agents_[pool_idx] == nullptr) {
+                continue;
+            }
+            // Same borrow the sibling bootstrap walks take: agent-owned entry, read
+            // synchronously on the pre-scheduler-start thread (see storage_entry_sync).
+            const collection_storage_entry_t* entry = agents_[pool_idx]->storage_entry_sync(oid);
+            if (entry == nullptr || entry->storage == nullptr) {
+                continue;
+            }
+            auto* owned = const_cast<collection_storage_entry_t*>(entry);
+            if (owned->table_storage.construction_failed()) {
+                continue; // the load already refused this file loudly
+            }
+
+            auto it = cols_by_relid.find(oid);
+            if (it == cols_by_relid.end() || it->second.empty()) {
+                // The catalog knows the table (pg_class listed it as 'r'/'m') but describes no
+                // live column for it. "Every column was dropped" and "this table's
+                // pg_attribute rows are missing" are indistinguishable from here, and one of
+                // them ends in an emptied table, so neither is acted on.
+                error(log_,
+                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} is a live 'r'/'m' table with "
+                      "{} storage column(s) but NO live pg_attribute column — refusing to read that as a "
+                      "drop; nothing was released",
+                      static_cast<unsigned>(oid),
+                      owned->table_storage.table().column_count());
+                continue;
+            }
+
+            std::set<std::string> live_names;
+            for (const auto& def : it->second) {
+                live_names.insert(def.name());
+            }
+            // The storage's own columns come from the file's serialized schema (load_from_disk
+            // reads each name back), so this is the durable root's answer, not the catalog's.
+            std::vector<std::string> to_drop;
+            for (const auto& column : owned->table_storage.table().columns()) {
+                if (live_names.find(column.name()) == live_names.end()) {
+                    to_drop.push_back(column.name());
+                }
+            }
+            if (to_drop.empty()) {
+                continue;
+            }
+            if (to_drop.size() >= owned->table_storage.table().column_count()) {
+                // Not one name in common. That is a schema mismatch between the file and the
+                // catalog, not a DROP COLUMN — acting on it would empty the table.
+                error(log_,
+                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} shares NO column name with "
+                      "its {} live pg_attribute column(s) — refusing to drop all {} storage columns",
+                      static_cast<unsigned>(oid),
+                      it->second.size(),
+                      to_drop.size());
+                continue;
+            }
+
+            for (const auto& attname : to_drop) {
+                // The commit path's primitive, unchanged: NAME the outgoing column's blocks
+                // into pending_released_blocks_, then rebuild the collection without it. The
+                // release itself belongs to the next checkpoint round, which is now reachable
+                // again — that is the whole repair.
+                if (!owned->drop_column(attname, resource())) {
+                    error(log_,
+                          "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} column '{}' is in the "
+                          "storage schema but drop_column refused it — its blocks stay leaked",
+                          static_cast<unsigned>(oid),
+                          attname);
+                    continue;
+                }
+                trace(log_,
+                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} re-armed the release of "
+                      "column '{}' dropped before the crash",
+                      static_cast<unsigned>(oid),
+                      attname);
+            }
+        }
+    }
+
     std::unordered_map<components::catalog::oid_t, std::vector<components::table::column_definition_t>>
     manager_disk_t::collect_catalog_columns_sync(const std::unordered_set<components::catalog::oid_t>& wanted) const {
         // One scan of pg_attribute (agents_[0] owns every pg_* table; bootstrap thread,

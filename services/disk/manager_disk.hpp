@@ -450,6 +450,41 @@ namespace services::disk {
         // replay synthesis, their schema is not in pg_attribute) and any oid
         // already loaded.
         void rehydrate_missing_user_storages_sync();
+        // B3c2 — re-derive a column drop whose physical release a crash discarded.
+        //
+        // B3c1's commit path drops the column from the live table and NAMES its blocks into
+        // table_storage_t::pending_released_blocks_; B3c's checkpoint releases them. That set
+        // lives only in memory, so a crash in between loses it while the disk keeps the
+        // pg_attribute tombstone (durable through the WAL commit marker) AND the physically
+        // present column. The table then reloads with the column back in its collection and
+        // nothing downstream can ever re-derive the drop — compact() least of all, since after
+        // the reload the column is genuinely part of the collection. The space leaks forever.
+        //
+        // This is the one place that can notice: it compares each loaded user table's own
+        // (checkpointed) column names against the LIVE pg_attribute set and hands every
+        // storage-only column to table_storage_t::drop_column — the same primitive the commit
+        // path calls, which names the blocks and rebuilds the collection without the column.
+        // The rebuild allocates nothing (every surviving column is SHARED with the successor);
+        // the bytes move at the next checkpoint, exactly as on the live path. Re-arming WITHOUT
+        // dropping would be a no-op: the release proves non-ownership by asking whether the
+        // live collection still names the id, and a column left in place answers yes to all of
+        // them. See the long note at the definition.
+        //
+        // ORDERING (base_spaces): after BOTH user-table walks — the storage half must be
+        // loaded — and after WAL replay — the catalog half is not final until the tombstone is
+        // replayed; running it earlier would read an un-replayed ADD COLUMN as a drop and
+        // physically remove a surviving column. Before bootstrap_indexes_sync, so the index
+        // rebuild scans the same layout every later scan will. Pre-scheduler-start,
+        // single-threaded (same window as the walks above); no cross-actor message is needed,
+        // which is why the comparison lives here and not in the checkpoint round, where the
+        // disk agent holds no catalog.
+        //
+        // Computed (relkind='g') tables are excluded at the source (scan_live_table_oids_sync
+        // yields only 'r'/'m'): their schema is in pg_computed_column, so an empty
+        // pg_attribute set for them would read as "every column dropped". Rule 6: an
+        // unreadable or contradictory catalog is reported at error level and NOTHING is
+        // dropped — a leak is recoverable on the next start, an emptied table is not.
+        void rearm_dropped_column_blocks_sync();
         // Synchronous scan of pg_class.oid column, returning the set
         // of user-table OIDs (oid >= FIRST_USER_OID) currently alive in the
         // catalog. Called by base_spaces between system-record replay and

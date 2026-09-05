@@ -6,6 +6,7 @@
 #include <components/table/column_definition.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/test/block_reachability_walker.hpp>
+#include <components/table/test/fault_injection_file.hpp>
 #include <core/pmr.hpp>
 #include <services/disk/manager_disk.hpp>
 
@@ -258,6 +259,172 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_re
             }
         }
         // Round over round the file must not grow: anything left un-released keeps costing.
+        run_sql(dispatcher, "CHECKPOINT;");
+        run_sql(dispatcher, "CHECKPOINT;");
+    }
+
+    auto settled = walk_offline(otbx, &resource);
+    REQUIRE(settled.report.ok);
+    REQUIRE(settled.columns.size() == 1);
+    INFO("settled unexplained=" << dump_ids(settled.report.unexplained));
+    CHECK(settled.report.reachable_free_overlap.empty());
+    CHECK(settled.report.unexplained.empty());
+    CHECK(settled.report.block_count <= after.report.block_count);
+    CHECK(settled.file_size <= after.file_size);
+}
+
+// B3c2 — a crash between the ALTER's commit and the table's next checkpoint must not leak the
+// dropped column's space FOREVER.
+//
+// B3c1 closed the live path: the commit names the outgoing column's blocks into
+// table_storage_t::pending_released_blocks_ and the next checkpoint releases them. That set is
+// IN MEMORY. Kill the process in between and it is gone, while the disk keeps two durable
+// facts that disagree: the pg_attribute tombstone (attisdropped = true, durable through the WAL
+// commit marker) and the column itself, still physically present because the durable root was
+// never rewritten. The table reloads with the column BACK in its collection, the catalog hides
+// it, every query looks right — and nothing can ever re-derive the drop. compact() will not:
+// after the reload the column is genuinely part of the collection, so its blocks are live.
+//
+// THE CRASH. `test_spaces`' destructor issues a CHECKPOINT, so a clean scope exit would perform
+// exactly the release this test needs to be missing. The fault-injection seam is what makes the
+// kill real: arming fail_writes_from AFTER the ALTER makes every later .otbx write fail, so no
+// header commits for any table and the durable files stay byte-identical — the conservative
+// crash semantics. The WAL is a different file and does NOT go through the block manager's
+// interposer, so the ALTER's commit marker survives, which is the whole point: the tombstone
+// must be durable while the physical drop is not.
+//
+// The shape is the sibling test's, for the same reasons: bigint[40] so b's segments take
+// DEDICATED blocks past FULL_THRESHOLD (B2 packing would otherwise hand b's ids to a's walk and
+// hide the question), rows added in two rounds around the checkpoint, and every measurement
+// taken with the engine DOWN against a freshly loaded .otbx.
+TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::crash_before_checkpoint_rearms_the_release") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_alter_drop_column_reclaim/crash_rearm");
+    test_clear_directory(config);
+    config.disk.on = true;
+    config.wal.on = true;
+    config.log.level = log_t::level::off;
+
+    core::pmr::otterbrix_resource resource;
+
+    INFO("phase 1: filled and checkpointed, so the durable root names both columns' blocks");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        run_sql(dispatcher, "CREATE DATABASE TestDatabase;");
+        run_sql(dispatcher, "CREATE TABLE TestDatabase.wide (a bigint, b bigint[40]);");
+        insert_rows(dispatcher, 0, FIRST_ROWS);
+        run_sql(dispatcher, "CHECKPOINT;");
+    }
+
+    const auto otbx = find_user_table_otbx(config.main_path);
+    INFO("user .otbx: " << otbx.string());
+    REQUIRE_FALSE(otbx.empty());
+
+    auto before = walk_offline(otbx, &resource);
+    REQUIRE(before.report.ok);
+    REQUIRE(before.columns.size() == 2);
+    REQUIRE(before.columns[1] == "b");
+    REQUIRE_FALSE(before.report.root_data.empty());
+    CHECK(before.report.reachable_free_overlap.empty());
+
+    INFO("phase 2: more rows, ALTER TABLE DROP COLUMN, then KILL before any checkpoint commits");
+    {
+        // Declared before the engine so the interposer is installed when the block managers
+        // open their files (wrap() runs once per open) and is still installed while the engine
+        // tears down. Every knob is off until the kill is armed, so phase 2 runs normally.
+        otterbrix_test::fault_plan_t plan;
+        otterbrix_test::fault_injection_scope_t fault(plan);
+
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        insert_rows(dispatcher, FIRST_ROWS, SECOND_ROWS);
+        run_sql(dispatcher, "ALTER TABLE TestDatabase.wide DROP COLUMN b;");
+
+        // KILL. fail_writes_from is compared with >=, so 1 fails every write from here on
+        // without the test having to count them. The engine is idle between statements, so
+        // this write to the shared plan cannot race an in-flight one.
+        plan.fail_writes_from = 1;
+    } // ← the destructor's CHECKPOINT runs here and can commit nothing.
+
+    // What the crash left: the durable root is untouched, so the DROPPED COLUMN IS BACK. This
+    // is the state the fix has to recognise, and it is asserted rather than assumed — if the
+    // kill silently failed to land, the phase-3 claims below would pass for the wrong reason.
+    auto crashed = walk_offline(otbx, &resource);
+    REQUIRE(crashed.report.ok);
+    REQUIRE(crashed.columns.size() == 2);
+    REQUIRE(crashed.columns[1] == "b");
+    CHECK(crashed.report.root_data == before.report.root_data);
+    CHECK(crashed.report.reachable_free_overlap.empty());
+
+    INFO("phase 3: restart — bootstrap must re-derive the drop — then CHECKPOINT");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // The catalog kept the tombstone across the crash (WAL commit marker + replay), so the
+        // column is invisible to SQL even on the unfixed build. That is exactly why this cannot
+        // be the gate.
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.wide;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == TOTAL_ROWS);
+        CHECK(cur->column_count() == 1);
+
+        run_sql(dispatcher, "CHECKPOINT;");
+    }
+
+    auto after = walk_offline(otbx, &resource);
+    REQUIRE(after.report.ok);
+
+    // GATE 1 — the reopened file's OWN schema. On the unfixed build the restart puts b back in
+    // the collection and the checkpoint writes it out again, so this is 2.
+    INFO("columns after the restart+checkpoint: " << after.columns.size());
+    CHECK(after.columns.size() == 1);
+    CHECK(after.columns.front() == "a");
+
+    // GATE 2 — the space actually came back. The table now holds MORE rows than `before` did,
+    // yet its durable root must name FEWER data blocks, because b (40 * 8 B per row against
+    // a's 8 B) is no longer part of it. On the unfixed build the root grows instead.
+    INFO("root data blocks before=" << before.report.root_data.size() << " after="
+                                    << after.report.root_data.size());
+    CHECK(after.report.root_data.size() < before.report.root_data.size());
+
+    // GATE 3 — nothing was orphaned on the way. Every block the crashed root named that the new
+    // root does not must be back in the free list, still held by a surviving column sharing the
+    // block (B2 packing), or already re-issued as this round's metadata chain.
+    std::set<uint64_t> gone;
+    for (auto id : crashed.report.root_data) {
+        if (after.report.root_data.count(id) == 0) {
+            gone.insert(id);
+        }
+    }
+    INFO("left the root=" << dump_ids(gone) << " unexplained=" << dump_ids(after.report.unexplained));
+    REQUIRE_FALSE(gone.empty());
+    for (auto id : gone) {
+        INFO("block " << id << " left the durable root across the restart");
+        CHECK((after.report.free_list_content.count(id) != 0 || after.report.registry_live.count(id) != 0 ||
+               after.report.chain_blocks.count(id) != 0));
+    }
+    CHECK(after.report.reachable_free_overlap.empty());
+    CHECK(after.report.unexplained.empty());
+
+    INFO("phase 4: the surviving column is complete across the reopen and the file settles");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT a FROM TestDatabase.wide ORDER BY a;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == TOTAL_ROWS);
+            for (std::size_t i = 0; i < TOTAL_ROWS; ++i) {
+                INFO("row " << i);
+                REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i));
+            }
+        }
         run_sql(dispatcher, "CHECKPOINT;");
         run_sql(dispatcher, "CHECKPOINT;");
     }

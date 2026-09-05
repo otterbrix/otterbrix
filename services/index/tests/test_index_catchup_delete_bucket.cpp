@@ -61,6 +61,8 @@
 #include <utility>
 #include <vector>
 
+#include "index_fixture_path.hpp"
+
 using components::expressions::compare_type;
 using components::session::session_id_t;
 using components::table::TRANSACTION_ID_START;
@@ -137,7 +139,7 @@ namespace {
     }
 
     std::filesystem::path fresh_index_root(const char* name) {
-        const std::filesystem::path path{std::filesystem::path{"/tmp"} / name};
+        const std::filesystem::path path{services::index::tests::index_fixture_path(name)};
         std::filesystem::remove_all(path);
         std::filesystem::create_directories(path / std::to_string(static_cast<unsigned>(kTableOid)) /
                                             std::to_string(static_cast<unsigned>(kIndexOid)));

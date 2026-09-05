@@ -1,4 +1,9 @@
 #include "segment_tree.hpp"
+
+#include "absl/crc/crc32c.h"
+
+#include <core/file/local_file_system.hpp>
+
 #include <algorithm>
 #include <cstring>
 
@@ -131,6 +136,21 @@ namespace core::b_plus_tree {
         : resource_(resource)
         , key_func_(func)
         , file_(std::move(file)) {
+        initialize_header_region_();
+    }
+
+    segment_tree_t::segment_tree_t(std::pmr::memory_resource* resource,
+                                   index_t (*func)(const item_data&),
+                                   filesystem::local_file_system_t& fs,
+                                   filesystem::path_t file_path)
+        : resource_(resource)
+        , key_func_(func)
+        , fs_(&fs)
+        , file_path_(std::move(file_path)) {
+        initialize_header_region_();
+    }
+
+    void segment_tree_t::initialize_header_region_() {
         header_ = static_cast<header_t*>(resource_->allocate(header_size, alignof(size_t)));
         // flush() writes this whole region to disk, but only the counters and the metadata entries
         // actually in use are ever assigned. Without zeroing, everything past metadata_end_ is
@@ -147,6 +167,30 @@ namespace core::b_plus_tree {
     segment_tree_t::~segment_tree_t() {
         file_.reset();
         resource_->deallocate(header_, header_size, alignof(size_t));
+    }
+
+    segment_tree_t::file_lease_t segment_tree_t::lease_file_() const {
+        if (file_) {
+            return file_lease_t{file_.get(), nullptr};
+        }
+        // FILE_CREATE, deliberately: a leaf that was built and never flushed has no file
+        // yet, and its first flush is what brings one into being -- the same moment the
+        // pinned mode used to create it (at open_file in the caller).
+        auto opened = filesystem::open_file(*fs_,
+                                            file_path_,
+                                            filesystem::file_flags::READ | filesystem::file_flags::WRITE |
+                                                filesystem::file_flags::FILE_CREATE);
+        if (!opened) {
+            return file_lease_t{};
+        }
+        return file_lease_t{opened.get(), std::move(opened)};
+    }
+
+    size_t segment_tree_t::header_region_checksum_() const {
+        const auto* region = reinterpret_cast<const char*>(header_) + sizeof(header_->header_checksum_);
+        const size_t region_size = header_size - sizeof(header_->header_checksum_);
+        return static_cast<size_t>(
+            static_cast<uint32_t>(absl::ComputeCrc32c(absl::string_view(region, region_size))));
     }
 
     bool segment_tree_t::append(data_ptr_t data, uint32_t size) { return append(item_data{data, size}); }
@@ -536,12 +580,21 @@ namespace core::b_plus_tree {
 
     [[nodiscard]] std::unique_ptr<segment_tree_t>
     segment_tree_t::split(std::unique_ptr<filesystem::file_handle_t> file) {
+        return split_into_(std::make_unique<segment_tree_t>(resource_, key_func_, std::move(file)));
+    }
+
+    [[nodiscard]] std::unique_ptr<segment_tree_t> segment_tree_t::split(filesystem::path_t new_file_path) {
+        // Only a lazy-mode leaf can hand out a lazy sibling: the fs it opens through is
+        // this leaf's own.
+        assert(fs_ != nullptr && "segment_tree_t::split(path) requires a lazy-mode leaf");
+        return split_into_(std::make_unique<segment_tree_t>(resource_, key_func_, *fs_, std::move(new_file_path)));
+    }
+
+    [[nodiscard]] std::unique_ptr<segment_tree_t>
+    segment_tree_t::split_into_(std::unique_ptr<segment_tree_t> splited_tree) {
         // make no sense to split tree with 0 blocks
         assert(metadata_begin_ != metadata_end_);
         assert(header_->unique_id_count_ > 1);
-
-        std::unique_ptr<segment_tree_t> splited_tree =
-            std::make_unique<segment_tree_t>(resource_, key_func_, std::move(file));
 
         size_t split_size = header_->unique_id_count_ / 2;
         index_t prev_index{};
@@ -1022,6 +1075,12 @@ namespace core::b_plus_tree {
 #ifdef DEV_MODE
         bool wrote_any_block = false;
 #endif
+        auto file = lease_file_();
+        if (!file) {
+            // No handle, no flush: the same refusal shape as a failed header write below.
+            mark_dirty_();
+            return false;
+        }
         close_gaps_();
         // close_gaps_() has to READ a block before it can relocate it, and that read can be the
         // one that fails -- so a leaf can become poisoned INSIDE the flush, after the check at the
@@ -1038,7 +1097,10 @@ namespace core::b_plus_tree {
         bool ok = true;
 
         /*  header_  */
-        if (!file_->write(static_cast<void*>(header_), header_size, 0)) {
+        // The seal goes on as the region goes out (wave #325): whatever this write puts
+        // on the device is exactly what read_header_ will be able to verify.
+        header_->header_checksum_ = header_region_checksum_();
+        if (!file->write(static_cast<void*>(header_), header_size, 0)) {
             ok = false;
         }
 
@@ -1063,7 +1125,7 @@ namespace core::b_plus_tree {
                     wrote_any_block = true;
 #endif
                     segment->block->recalculate_checksum();
-                    if (file_->write(segment->block->internal_buffer(), metadata->size, metadata->file_offset)) {
+                    if (file->write(segment->block->internal_buffer(), metadata->size, metadata->file_offset)) {
                         segment->modified = false;
                     } else {
                         ok = false;
@@ -1071,10 +1133,10 @@ namespace core::b_plus_tree {
                 }
             }
         }
-        if (!file_->truncate(static_cast<int64_t>(gap_tracker_.empty_spaces().front().offset))) {
+        if (!file->truncate(static_cast<int64_t>(gap_tracker_.empty_spaces().front().offset))) {
             ok = false;
         }
-        if (!file_->sync()) {
+        if (!file->sync()) {
             ok = false;
         }
         if (!ok) {
@@ -1090,13 +1152,13 @@ namespace core::b_plus_tree {
         return ok;
     }
 
-    bool segment_tree_t::read_header_() {
+    bool segment_tree_t::read_header_(filesystem::file_handle_t& file) {
         // THE HEADER SIZES EVERYTHING ELSE. header_->segments_count_ places metadata_end_, and
         // every lookup below walks the array between metadata_begin_ and it. It used to be read
         // with the result dropped and its content unexamined: a read that did not happen left the
         // PREVIOUS header in place, and a count larger than the region holds walked off the end of
         // the header allocation on every later find.
-        if (file_->file_size() == 0) {
+        if (file.file_size() == 0) {
             // A leaf file that was created and never written to. Nothing to read, and nothing
             // wrong: the leaf is empty and the flush that has not happened yet will write it. The
             // read below would report EOF for this, and calling that a failure would refuse to
@@ -1105,11 +1167,23 @@ namespace core::b_plus_tree {
             metadata_end_ = metadata_begin_;
             return true;
         }
-        if (!file_->read(static_cast<void*>(header_), header_size, 0)) {
+        if (!file.read(static_cast<void*>(header_), header_size, 0)) {
             std::memset(static_cast<void*>(header_), 0, header_size);
             metadata_end_ = metadata_begin_;
             abandoned_.store(true, std::memory_order_release);
             report_failure_(load_failure_t::io_error);
+            return false;
+        }
+        // THE SEAL BEFORE ANY FIELD (wave #325). Without it a flipped bit anywhere in the
+        // region -- a counter, a block offset, a key boundary -- was BELIEVED whenever the
+        // one structural check below still passed, and the leaf then answered wrong,
+        // silently. A mismatch is a header this codec did not write: the leaf gives up
+        // whole, stays empty and openable, refuses to flush, and says why.
+        if (header_->header_checksum_ != header_region_checksum_()) {
+            std::memset(static_cast<void*>(header_), 0, header_size);
+            metadata_end_ = metadata_begin_;
+            abandoned_.store(true, std::memory_order_release);
+            report_failure_(load_failure_t::data_corruption);
             return false;
         }
         if (header_->segments_count_ > max_segments) {
@@ -1131,13 +1205,25 @@ namespace core::b_plus_tree {
         // longer what this leaf holds. Anything the load below meets is set again.
         unreadable_segments_.store(0, std::memory_order_release);
         abandoned_.store(false, std::memory_order_release);
-        if (!read_header_()) {
-            // The leaf is empty and openable, and flush() will not write that emptiness anywhere.
-            gap_tracker_.init(file_->file_size(), INVALID_SIZE);
+        auto file = lease_file_();
+        if (!file) {
+            // No handle is the read that never happened: same shape as read_header_'s
+            // failed read -- empty, openable, refusing to flush, reason on the channel.
+            std::memset(static_cast<void*>(header_), 0, header_size);
+            metadata_end_ = metadata_begin_;
+            abandoned_.store(true, std::memory_order_release);
+            report_failure_(load_failure_t::io_error);
+            gap_tracker_.init(header_size, INVALID_SIZE);
             dirty_.store(false, std::memory_order_release);
             return;
         }
-        gap_tracker_.init(file_->file_size(), INVALID_SIZE);
+        if (!read_header_(*file)) {
+            // The leaf is empty and openable, and flush() will not write that emptiness anywhere.
+            gap_tracker_.init(file->file_size(), INVALID_SIZE);
+            dirty_.store(false, std::memory_order_release);
+            return;
+        }
+        gap_tracker_.init(file->file_size(), INVALID_SIZE);
 
         segments_.reserve(header_->segments_count_);
         string_storage_.reserve(header_->segments_count_);
@@ -1164,7 +1250,7 @@ namespace core::b_plus_tree {
                 report_failure_(load_failure_t::out_of_memory);
                 continue;
             }
-            if (!file_->read(segments_.back().block->internal_buffer(), metadata->size, metadata->file_offset)) {
+            if (!file->read(segments_.back().block->internal_buffer(), metadata->size, metadata->file_offset)) {
                 if (string_keyed) {
                     abandon_leaf_(load_failure_t::io_error);
                     return;
@@ -1209,12 +1295,22 @@ namespace core::b_plus_tree {
         string_storage_.clear();
         unreadable_segments_.store(0, std::memory_order_release);
         abandoned_.store(false, std::memory_order_release);
-        if (!read_header_()) {
-            gap_tracker_.init(file_->file_size(), std::numeric_limits<size_t>::max());
+        auto file = lease_file_();
+        if (!file) {
+            std::memset(static_cast<void*>(header_), 0, header_size);
+            metadata_end_ = metadata_begin_;
+            abandoned_.store(true, std::memory_order_release);
+            report_failure_(load_failure_t::io_error);
+            gap_tracker_.init(header_size, std::numeric_limits<size_t>::max());
             dirty_.store(false, std::memory_order_release);
             return;
         }
-        gap_tracker_.init(file_->file_size(), std::numeric_limits<size_t>::max());
+        if (!read_header_(*file)) {
+            gap_tracker_.init(file->file_size(), std::numeric_limits<size_t>::max());
+            dirty_.store(false, std::memory_order_release);
+            return;
+        }
+        gap_tracker_.init(file->file_size(), std::numeric_limits<size_t>::max());
 
         segments_.reserve(header_->segments_count_);
         string_storage_.reserve(header_->segments_count_);
@@ -1399,7 +1495,14 @@ namespace core::b_plus_tree {
             return;
         }
 
-        if (!file_->read(node->block->internal_buffer(), metadata->size, metadata->file_offset)) {
+        auto file = lease_file_();
+        if (!file) {
+            // No handle is the read that never happened: poison the stand-in exactly as a
+            // refused read would, so a later attempt can still heal it.
+            poison_segment_(node, load_failure_t::io_error);
+            return;
+        }
+        if (!file->read(node->block->internal_buffer(), metadata->size, metadata->file_offset)) {
             // The bytes never arrived. The buffer holds whatever create_initialize() put there,
             // and restoring a block out of that is how a refused read used to become an empty
             // block that the next flush wrote over the real one.
@@ -1444,6 +1547,13 @@ namespace core::b_plus_tree {
         std::sort(blocks_to_unload.begin(), blocks_to_unload.end(), [](const auto& lhs, const auto& rhs) {
             return lhs.first < rhs.first;
         });
+        auto file = lease_file_();
+        if (!file) {
+            // Nothing can be written out, so nothing may leave memory: the same rule as
+            // the refused write below, applied to the whole pass.
+            report_failure_(load_failure_t::io_error);
+            return;
+        }
         size_t half_size = blocks_to_unload.size() / 2;
         for (size_t i = 0; i < half_size; i++) {
             size_t num = blocks_to_unload[i].second;
@@ -1456,9 +1566,9 @@ namespace core::b_plus_tree {
             assert(segments_[num].block->count() && "block stored on disk should not be empty");
             if (segments_[num].modified) {
                 segments_[num].block->recalculate_checksum();
-                if (!file_->write(segments_[num].block->internal_buffer(),
-                                  (metadata_begin_ + num)->size,
-                                  (metadata_begin_ + num)->file_offset)) {
+                if (!file->write(segments_[num].block->internal_buffer(),
+                                 (metadata_begin_ + num)->size,
+                                 (metadata_begin_ + num)->file_offset)) {
                     // THE WRITE DID NOT LAND, and the two lines below used to run anyway: the
                     // block left memory and was marked clean, so flush() skipped it and every row
                     // in it was gone -- silently, with flush() still answering true. ENOSPC here

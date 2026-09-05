@@ -4,6 +4,7 @@
 #include <components/index/logical_value_binary_codec.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cerrno>
 #include <charconv>
@@ -28,7 +29,15 @@ namespace services::index {
 #ifdef DEV_MODE
     namespace {
         bitcask_file_interposer_t* dev_bitcask_file_interposer_ = nullptr;
+        std::atomic<uint64_t> g_bitcask_rotated_segment_opens{0};
     } // namespace
+
+    uint64_t bitcask_rotated_segment_opens() noexcept {
+        return g_bitcask_rotated_segment_opens.load(std::memory_order_relaxed);
+    }
+    void reset_bitcask_rotated_segment_opens() noexcept {
+        g_bitcask_rotated_segment_opens.store(0, std::memory_order_relaxed);
+    }
 
     void dev_set_bitcask_file_interposer(bitcask_file_interposer_t* interposer) {
         dev_bitcask_file_interposer_ = interposer;
@@ -871,7 +880,23 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
+    void bitcask_index_disk_t::drop_cached_rotated_segment_(uint64_t segment_id) const noexcept {
+        for (auto it = rotated_read_cache_.begin(); it != rotated_read_cache_.end(); ++it) {
+            if (it->segment_id == segment_id) {
+                rotated_read_cache_.erase(it);
+                return;
+            }
+        }
+    }
+
     core::error_t bitcask_index_disk_t::load_from_disk() {
+        // EVERY LOAD RE-DERIVES, so state derived by the previous one dies here: the
+        // rotated-read handles (the files behind them may be about to change or go), and
+        // crc_failure_ (wave #332) -- the flag outliving its load made the state live
+        // longer than its cause, and a later reload's verdict would have been polluted by
+        // the previous one's.
+        invalidate_rotated_read_cache_();
+        crc_failure_ = false;
         const bool prev_rehash_suppressed = hash_index_->set_auto_rehash_suppressed(true);
         struct restore_rehash_state_t {
             disk_hash_table_t* table{nullptr};
@@ -1274,17 +1299,14 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    void bitcask_index_disk_t::merge_pending_segments() {
+    core::error_t bitcask_index_disk_t::merge_pending_segments() {
         if (!merge_pending_) {
-            return;
+            return core::error_t::no_error();
         }
         // Cleared FIRST: the merge below either compacts what the rotations left or finds
         // nothing to compact, and either way the debt is settled. Clearing it afterwards
         // would re-run the whole scan on the next call for every early return inside.
         merge_pending_ = false;
-        // merge_pending_segments is void and the agent calls it at the end of a write
-        // handler it is already inside; a merge that could not finish rides out on
-        // force_flush like every other write failure this store cannot report in place.
         auto merge_error = merge_immutable_segments();
         if (merge_error.contains_error()) {
             // THE DEBT IS STILL OWED, and it is owed whichever kind of refusal this was.
@@ -1304,7 +1326,11 @@ namespace services::index {
             // not a spin.
             merge_pending_ = true;
         }
-        note_write_error(std::move(merge_error));
+        // RETURNED, not parked (wave #305): note_write_error used to hold this for the
+        // NEXT force_flush, which mis-attributed the refusal to a later round's flush.
+        // The agent's pay_merge_debt folds it into the reply of the handler that ran the
+        // merge, which is the round the failure belongs to.
+        return merge_error;
     }
 
     core::error_t bitcask_index_disk_t::rotate_active_segment_if_needed() {
@@ -1346,17 +1372,46 @@ namespace services::index {
         //
         // ROTATED segments are still opened per read: nothing keeps them open, and there can
         // be arbitrarily many of them. This closes the hot path, not the whole class.
-        std::unique_ptr<core::filesystem::file_handle_t> opened_segment;
         core::filesystem::file_handle_t* f = nullptr;
         if (file_ && static_cast<uint64_t>(segment_id) == active_segment_id_) {
             f = file_.get();
         } else {
-            opened_segment = open_bitcask_file(fs_, segment_path, file_flags::READ, file_lock_type::NO_LOCK);
-            if (!opened_segment) {
-                return io_failure("bitcask: segment " + segment_path.string() +
-                                  " could not be opened for reading: " + open_refusal_reason());
+            // ROTATED segments read through the held-descriptor LRU (wave #327): a
+            // rotated file never changes, so a held handle answers the same bytes a fresh
+            // open would -- minus the syscall pair and minus the failure mode of a
+            // process-wide descriptor table exhausted by a neighbour.
+            for (auto& lease : rotated_read_cache_) {
+                if (lease.segment_id == segment_id) {
+                    lease.last_used = ++rotated_read_tick_;
+                    f = lease.handle.get();
+                    break;
+                }
             }
-            f = opened_segment.get();
+            if (f == nullptr) {
+                auto opened_segment =
+                    open_bitcask_file(fs_, segment_path, file_flags::READ, file_lock_type::NO_LOCK);
+                if (!opened_segment) {
+                    return io_failure("bitcask: segment " + segment_path.string() +
+                                      " could not be opened for reading: " + open_refusal_reason());
+                }
+#ifdef DEV_MODE
+                g_bitcask_rotated_segment_opens.fetch_add(1, std::memory_order_relaxed);
+#endif
+                f = opened_segment.get();
+                if (rotated_read_cache_.size() >= rotated_read_cache_capacity_) {
+                    auto victim = rotated_read_cache_.begin();
+                    for (auto it = rotated_read_cache_.begin(); it != rotated_read_cache_.end(); ++it) {
+                        if (it->last_used < victim->last_used) {
+                            victim = it;
+                        }
+                    }
+                    rotated_read_cache_.erase(victim);
+                }
+                rotated_read_cache_.push_back(
+                    rotated_segment_lease_t{static_cast<uint64_t>(segment_id),
+                                            std::move(opened_segment),
+                                            ++rotated_read_tick_});
+            }
         }
         record_header_t header{};
         std::pmr::string payload(resource());
@@ -1367,6 +1422,7 @@ namespace services::index {
         }
         const auto header_offset = value_offset - sizeof(record_header_t);
         if (!f->read(&header, sizeof(header), header_offset)) {
+            drop_cached_rotated_segment_(static_cast<uint64_t>(segment_id));
             return io_failure("bitcask: record header at " + std::to_string(header_offset) + " of " +
                               segment_path.string() + " could not be read");
         }
@@ -1385,6 +1441,7 @@ namespace services::index {
         }
         payload.resize(static_cast<size_t>(header.payload_size));
         if (header.payload_size != 0 && !f->read(payload.data(), header.payload_size, value_offset)) {
+            drop_cached_rotated_segment_(static_cast<uint64_t>(segment_id));
             return io_failure("bitcask: record payload at " + std::to_string(value_offset) + " of " +
                               segment_path.string() + " could not be read");
         }
@@ -2184,6 +2241,10 @@ namespace services::index {
     // is the only place that can answer with core::error_t instead of a signal.
 
     core::error_t bitcask_index_disk_t::merge_immutable_segments() {
+        // The merge unlinks its sources and republishes the directory; a held rotated
+        // handle would keep an unlinked inode alive and, worse, could answer a segment id
+        // the directory has re-derived. Dropped up front, before anything changes shape.
+        invalidate_rotated_read_cache_();
         std::vector<segment_info_t> immutable_segments;
         std::vector<uint64_t> removed_segment_ids;
         std::vector<disk_hash_table_t::value_ref_t> refs;
@@ -2601,7 +2662,9 @@ namespace services::index {
         // ended up as a live store with an empty keydir over full segments.
         VALUE_OR_RETURN(auto segments, collect_segments());
 
-        // Close every open handle before unlinking so stale inodes are not held.
+        // Close every open handle before unlinking so stale inodes are not held --
+        // including the rotated-read leases, whose files are about to go.
+        invalidate_rotated_read_cache_();
         file_.reset();
         txn_log_file_.reset();
 
@@ -2720,6 +2783,7 @@ namespace services::index {
         // No drain here either, for the reason clear() states: a merge only ever runs
         // inside one of the owner's handlers, and this is one of them.
         merge_pending_ = false;
+        invalidate_rotated_read_cache_();
         if (is_dirty() && file_) {
             // The files are unlinked below, so nothing here can be acted on and nothing
             // downstream will ever look for it -- but the answers are still read rather than

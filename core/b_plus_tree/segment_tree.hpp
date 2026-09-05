@@ -145,6 +145,16 @@ namespace core::b_plus_tree {
     // TODO: move memory overflow checks to b_plus_tree
     class segment_tree_t {
         struct header_t {
+            // THE SEAL OF THE WHOLE HEADER REGION (wave #325). Everything a range lookup
+            // stands on -- the three counters AND the block_metadata array behind them,
+            // min_index/max_index boundaries included -- lives in this region, and until
+            // this field existed none of it was covered by any checksum: a flipped bit in
+            // a key boundary passed the single segments-count bound check and mis-routed
+            // every later lookup, silently. CRC32C over the region past this field,
+            // computed by flush() as the region is written and verified by read_header_()
+            // before one byte of it is believed. First field, so the coverage arithmetic
+            // is simply "everything after it".
+            size_t header_checksum_;
             size_t segments_count_;
             size_t item_count_;
             size_t unique_id_count_;
@@ -376,9 +386,25 @@ namespace core::b_plus_tree {
         friend class iterator;
         friend class r_iterator;
 
+        // PINNED-HANDLE MODE: this leaf holds the handle it is given for its whole
+        // life. It is the FAULT-INJECTION SEAM of the unit tests (faulty_leaf_file_t
+        // wraps a handle and refuses chosen block reads/writes), and nothing in
+        // production uses it any more -- see the lazy ctor below.
         segment_tree_t(std::pmr::memory_resource* resource,
                        index_t (*func)(const item_data&),
                        std::unique_ptr<filesystem::file_handle_t> file);
+        // LAZY MODE (wave #326): the leaf remembers WHERE its file is and holds NO
+        // descriptor at rest. One segment_tree_t is one B+tree leaf, and the pinned mode
+        // above made that one permanently open descriptor per leaf -- a tree of N leaves
+        // held N descriptors for the life of the process, and under a parallel test run
+        // the process descriptor table was exhausted by neighbours and surfaced as
+        // "file could not be opened" inside unrelated stores. Every operation that
+        // touches the file takes a lease (open, use, close); block loads are 256 KB
+        // reads, so the open beside them is noise.
+        segment_tree_t(std::pmr::memory_resource* resource,
+                       index_t (*func)(const item_data&),
+                       filesystem::local_file_system_t& fs,
+                       filesystem::path_t file_path);
         ~segment_tree_t();
 
         // will try to maintain default block size if possible
@@ -390,6 +416,9 @@ namespace core::b_plus_tree {
         bool remove(const index_t& index, item_data item);
         bool remove_index(const index_t& index);
         [[nodiscard]] std::unique_ptr<segment_tree_t> split(std::unique_ptr<filesystem::file_handle_t> file);
+        // The lazy-mode twin: the split-off half is built over a PATH and opens its file
+        // only when an operation needs it. Only a lazy-mode leaf can hand out one.
+        [[nodiscard]] std::unique_ptr<segment_tree_t> split(filesystem::path_t new_file_path);
         // requires other->count() > this->count()
         void balance_with(std::unique_ptr<segment_tree_t>& other);
         // False = NOTHING was moved: one side holds a block it could not read, or the destination
@@ -490,10 +519,30 @@ namespace core::b_plus_tree {
         // emptiness anywhere. Used when a block that could NOT be read is the only thing that
         // could have made this leaf's metadata usable -- see the STRING note at its definition.
         void abandon_leaf_(load_failure_t failure);
-        // Read the leaf header off the file and check that the segment count it names fits the
-        // region that holds the metadata array. False = nothing was loaded and the failure is on
-        // the channel; the leaf is left empty and openable.
-        [[nodiscard]] bool read_header_();
+        // Read the leaf header off the file, verify its seal (wave #325), and check that
+        // the segment count it names fits the region that holds the metadata array.
+        // False = nothing was loaded and the failure is on the channel; the leaf is left
+        // empty and openable.
+        [[nodiscard]] bool read_header_(filesystem::file_handle_t& file);
+
+        // ONE OPERATION'S CLAIM ON THE LEAF'S FILE (wave #326). In pinned mode it points
+        // at the handle the leaf owns; in lazy mode it OWNS a handle opened for this
+        // operation and closes it when the operation's frame ends. A lease that could not
+        // open answers false and the operation refuses the way it refuses a failed read.
+        struct file_lease_t {
+            filesystem::file_handle_t* handle = nullptr;
+            std::unique_ptr<filesystem::file_handle_t> opened;
+            explicit operator bool() const noexcept { return handle != nullptr; }
+            filesystem::file_handle_t* operator->() const noexcept { return handle; }
+            filesystem::file_handle_t& operator*() const noexcept { return *handle; }
+        };
+        [[nodiscard]] file_lease_t lease_file_() const;
+        // The shared tail of both constructors: allocate and zero the header region.
+        void initialize_header_region_();
+        // The tail every split shares once its destination exists.
+        [[nodiscard]] std::unique_ptr<segment_tree_t> split_into_(std::unique_ptr<segment_tree_t> splited_tree);
+        // CRC32C over the header region past the checksum field itself.
+        [[nodiscard]] size_t header_region_checksum_() const;
 
         metadata_range find_range_(const index_t& index) const;
         void remove_range_(metadata_range range);
@@ -554,7 +603,12 @@ namespace core::b_plus_tree {
         // keep track of gaps in block record and try to fill them when creating new blocks
         gap_tracker_t gap_tracker_{header_size, INVALID_SIZE};
 
+        // Pinned mode: the handle lives here. Lazy mode: this stays null and fs_ +
+        // file_path_ below are how a lease opens one. Exactly one of the two shapes per
+        // instance, chosen by the constructor.
         std::unique_ptr<filesystem::file_handle_t> file_;
+        filesystem::local_file_system_t* fs_ = nullptr;
+        filesystem::path_t file_path_;
         std::vector<std::pair<std::unique_ptr<std::pmr::string>, std::unique_ptr<std::pmr::string>>> string_storage_;
     };
 

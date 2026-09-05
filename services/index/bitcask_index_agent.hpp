@@ -189,7 +189,9 @@ namespace services::index {
         // thread, at the end of the write handler that caused them -- and only when that
         // write succeeded. The whole reasoning, including why this is not a message this
         // agent sends to itself, is at the definition in bitcask_index_agent.cpp.
-        void pay_merge_debt(const core::error_t& write_error);
+        // Folds the merge's own refusal into the write round that paid the debt (wave
+        // #305): answers the write_error when there is one, the merge's answer otherwise.
+        [[nodiscard]] core::error_t pay_merge_debt(core::error_t write_error);
 
         log_t log_;
         components::catalog::oid_t table_oid_;

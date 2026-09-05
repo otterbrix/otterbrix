@@ -55,6 +55,8 @@
 #include <utility>
 #include <vector>
 
+#include "index_fixture_path.hpp"
+
 using components::session::session_id_t;
 using components::types::logical_value_t;
 using services::index::bitcask_index_agent_t;
@@ -67,7 +69,7 @@ namespace {
     constexpr components::catalog::oid_t kIndexOid = 17201;
 
     std::filesystem::path fresh_index_root(const char* name) {
-        const std::filesystem::path path{std::filesystem::path{"/tmp"} / name};
+        const std::filesystem::path path{services::index::tests::index_fixture_path(name)};
         std::filesystem::remove_all(path);
         std::filesystem::create_directories(path / std::to_string(static_cast<unsigned>(kTableOid)) /
                                             std::to_string(static_cast<unsigned>(kIndexOid)));

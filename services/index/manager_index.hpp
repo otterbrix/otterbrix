@@ -557,6 +557,21 @@ namespace services::index {
         // a table/index teardown filter), and entries arrive in commit order.
         std::pmr::vector<deferred_delete_t> deferred_deletes_;
 
+        // CREATE INDEX CATCHUP REFUSALS, KEYED BY THE BUILD'S TRANSACTION (wave #122/#123).
+        //
+        // apply_wal_record_for_index's contract returns void -- the operator that drives
+        // it cannot be handed an error -- so a catchup record the registry could not place
+        // (#122) or a staging an agent refused (#123) used to be logged and DROPPED, and
+        // the build then published an index missing those rows. The refusal is recorded
+        // here instead and surfaces at the one door the build must pass to publish:
+        // commit_inserts refuses the whole commit of a transaction with an entry here,
+        // BEFORE any agent is told to publish. The entry is NOT consumed by that refusal
+        // (a retried commit refuses again); it leaves only through the abort mirrors,
+        // revert_insert / revert_delete, which is the path a failed statement takes.
+        // First failure wins per transaction -- the reason worth reporting is the one that
+        // broke the build first.
+        std::pmr::unordered_map<uint64_t, core::error_t> catchup_failures_;
+
         // Drop the held-back erases of a whole table / of one index, WITHOUT publishing
         // them. Called wherever the thing they were owed to is being taken away: the agent
         // is about to be destroyed, its buckets with it, so there is nothing left to

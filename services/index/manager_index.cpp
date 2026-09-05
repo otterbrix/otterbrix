@@ -273,6 +273,7 @@ namespace services::index {
         , indexes_per_oid_(resource)
         , dropped_table_agents_(resource)
         , deferred_deletes_(resource)
+        , catchup_failures_(resource)
         , bitcask_agents_owned_(resource)
         , btree_agents_owned_(resource)
         , pending_void_(resource) {
@@ -626,6 +627,29 @@ namespace services::index {
                                  std::pmr::string{"index bootstrap: the index is already registered", resource_}};
         }
 
+        // AND THE (keys, type) PAIR, exactly as create_index refuses it (wave #229). A
+        // catalog carrying two identical rows -- a bug on the catalog side, where the real
+        // fix belongs -- used to raise two full agents over two stores here, and the table
+        // then maintained both on every DML. The refusal costs the duplicate its
+        // registration and nothing else: base_spaces logs it and moves on, the FIRST
+        // registration keeps answering.
+        if (match_index(it->second, keys, type) != nullptr) {
+            return core::error_t{
+                core::error_code_t::index_create_fail,
+                std::pmr::string{"index bootstrap: an index over the same keys and type is already registered",
+                                 resource_}};
+        }
+
+        // ONE KEY, REFUSED AT THE GATE OTHERWISE (wave #121) -- see create_index for the
+        // whole argument; the two doors must refuse the same statements.
+        if (keys.size() != 1) {
+            return core::error_t{
+                core::error_code_t::index_create_fail,
+                std::pmr::string{"index bootstrap: multi-column indexes are not supported by any backend; the "
+                                 "index would silently store only its first key's column",
+                                 resource_}};
+        }
+
         if (type != components::logical_plan::index_type::single &&
             type != components::logical_plan::index_type::hashed) {
             return core::error_t{core::error_code_t::index_create_fail,
@@ -947,6 +971,20 @@ namespace services::index {
                                     std::pmr::string{"unsupported index type", resource_}};
         }
 
+        // ONE KEY (wave #121). A multi-column CREATE INDEX used to be accepted end to end
+        // while resolve_key_column returned only the FIRST key's column: the index then
+        // stored and probed one column while its registered key set claimed several, and
+        // search() carries a single probe value anyway -- no backend below can answer a
+        // composite key. Until one can, the honest answer to the statement is a refusal
+        // at the statement (rule 6), not an index that silently narrows the key set.
+        if (keys.size() != 1) {
+            co_return core::error_t{
+                core::error_code_t::index_create_fail,
+                std::pmr::string{"index create: multi-column indexes are not supported by any backend; the "
+                                 "index would silently store only its first key's column",
+                                 resource_}};
+        }
+
         // NO CATALOG DIRECTORY, NO INDEX. Every index this manager can build keeps its
         // committed rows in a store its own agent opens under path_db_, and every read of
         // those rows is a message to that agent. With no path there is no store, no agent
@@ -1248,6 +1286,17 @@ namespace services::index {
         auto session = ctx.session;
         auto txn_id = ctx.txn.transaction_id;
 
+        // A BUILD WHOSE CATCHUP FAILED MAY NOT PUBLISH (wave #122/#123). The refusal was
+        // recorded by apply_wal_record_for_index -- whose contract returns void and could
+        // not hand it to anyone -- and this is the door every CREATE INDEX build must pass
+        // to publish, so it is where the refusal surfaces: BEFORE any agent is told to
+        // commit, leaving the staged buckets for the abort's revert to clear. The entry is
+        // deliberately NOT consumed here -- a retried commit must refuse again -- and
+        // leaves through revert_insert / revert_delete.
+        if (auto failed = catchup_failures_.find(txn_id); failed != catchup_failures_.end()) {
+            co_return failed->second;
+        }
+
         // Two-phase fan-out across the WHOLE batch: send every oid's commit with no
         // intervening co_await, then await them all. Tables with no registry entry are
         // skipped silently — the table is not indexed, so there is nothing to publish.
@@ -1393,6 +1442,10 @@ namespace services::index {
     manager_index_t::unique_future<void> manager_index_t::revert_insert(execution_context_t ctx,
                                                                         components::catalog::oid_t table_oid) {
         auto txn_id = ctx.txn.transaction_id;
+        // The abort is where a recorded catchup refusal (wave #122/#123) is finally spent:
+        // the transaction it poisoned is being unwound, so a NEW transaction under the
+        // same id can never exist to be haunted by it.
+        catchup_failures_.erase(txn_id);
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end())
             co_return;
@@ -1424,6 +1477,9 @@ namespace services::index {
     manager_index_t::unique_future<void> manager_index_t::revert_delete(execution_context_t ctx,
                                                                         components::catalog::oid_t table_oid) {
         auto txn_id = ctx.txn.transaction_id;
+        // The abort mirror of revert_insert clears the catchup record too -- whichever
+        // half of the unwind arrives first spends it.
+        catchup_failures_.erase(txn_id);
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end())
             co_return;
@@ -1869,6 +1925,11 @@ namespace services::index {
         // and this sweep is simply not found, and its entry leaves the queue with the erase
         // undone -- which is correct: the index it belonged to no longer exists.
         std::pmr::vector<unique_future<core::error_t>> delete_futures(resource_);
+        // THE ENTRY TRAVELS BESIDE ITS FUTURE (wave #167): an erase the agent refuses is
+        // still OWED, and the only thing that can pay it is this queue -- so a refused
+        // entry is put BACK below, after the await, instead of leaving with the sweep.
+        // State leaves the queue on success only.
+        std::pmr::vector<deferred_delete_t> swept_entries(resource_);
         const auto queued_before_sweep = deferred_deletes_.size();
         for (auto entry = deferred_deletes_.begin(); entry != deferred_deletes_.end();) {
             if (entry->commit_id > new_horizon) {
@@ -1885,6 +1946,7 @@ namespace services::index {
                                                                                        entry->txn_id);
                 schedule_agent(record->address, needs_sched);
                 delete_futures.emplace_back(std::move(f));
+                swept_entries.emplace_back(*entry);
             }
             entry = deferred_deletes_.erase(entry);
         }
@@ -1902,6 +1964,7 @@ namespace services::index {
         // thing that can ever publish a held-back erase. Reading the queues at this point
         // is exact -- nothing has suspended since they were drained, so no neighbouring
         // handler can have refilled either behind us.
+        bool subscriber_acked = false;
         if (dropped_table_agents_.empty() && deferred_deletes_.empty() &&
             manager_dispatcher_ != actor_zeta::address_t::empty_address()) {
             // Ack so the dispatcher stops broadcasting on_horizon_advanced until
@@ -1918,18 +1981,43 @@ namespace services::index {
                                            &services::dispatcher::manager_dispatcher_t::on_subscriber_empty,
                                            INDEX_KIND)
                               .second));
+            subscriber_acked = true;
         }
 
-        for (auto& f : delete_futures) {
+        size_t requeued = 0;
+        for (size_t i = 0; i < delete_futures.size(); ++i) {
             // There is no statement left to fail: the transaction that asked for this
             // delete committed long ago and the caller of this handler is a fire-and-forget
-            // broadcast. So a refusal is RECORDED, loudly — and the future is awaited, never
-            // dropped. What it leaves behind is an index that still names a deleted row: a
-            // SUPERSET, which the fetch filters, and which is the safe direction to fail in.
-            auto err = co_await std::move(f);
+            // broadcast. A refusal is reported loudly AND the entry goes back into the
+            // queue (wave #167): the entry used to be erased before the await, so a refused
+            // erase was never retried and the index named the deleted rows until a
+            // repopulate happened to rebuild it. Until the retry lands the index is a
+            // SUPERSET, which the fetch filters -- the safe direction. The future is
+            // awaited, never dropped.
+            auto err = co_await std::move(delete_futures[i]);
             if (err.contains_error()) {
-                error(log_, "manager_index_t::on_horizon_advanced: deferred index delete failed: {}", err.what);
+                error(log_,
+                      "manager_index_t::on_horizon_advanced: deferred index delete failed and is re-queued "
+                      "for the next horizon: {}",
+                      err.what);
+                deferred_deletes_.emplace_back(swept_entries[i]);
+                ++requeued;
             }
+        }
+#ifdef DEV_MODE
+        g_index_deferred_deletes.fetch_add(requeued, std::memory_order_relaxed);
+#endif
+        if (requeued != 0 && subscriber_acked) {
+            // The ack above already told the dispatcher this subscriber holds nothing --
+            // that was exact when it was read, and the awaits since then put entries back.
+            // Re-arm the broadcast the way commit_deletes does, or no horizon would ever
+            // publish the re-queued erases.
+            constexpr uint8_t INDEX_KIND = 2;
+            pending_void_.emplace_back(
+                std::move(actor_zeta::send(manager_dispatcher_,
+                                           &services::dispatcher::manager_dispatcher_t::on_drop_resource_marked,
+                                           INDEX_KIND)
+                              .second));
         }
         for (auto& f : drop_futures) {
             co_await std::move(f);
@@ -1963,15 +2051,23 @@ namespace services::index {
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end()) {
             // The entry should exist from the operator's earlier register_collection /
-            // create_index; a miss is a bookkeeping bug. Log and skip (no exceptions
-            // across the actor boundary).
-            trace(log_,
+            // create_index; a miss is a bookkeeping bug -- and one that used to be traced
+            // and then swallowed, publishing a build missing this record (wave #122). The
+            // contract's return type is void, so the refusal is RECORDED against the
+            // build's transaction and refuses its commit_inserts; first failure wins.
+            error(log_,
                   "manager_index_t::apply_wal_record_for_index: no registry entry for "
-                  "table_oid={} (index_oid={} wal_id={} type={}), skipping",
+                  "table_oid={} (index_oid={} wal_id={} type={}); the build's commit will refuse",
                   static_cast<unsigned>(table_oid),
                   static_cast<unsigned>(index_oid),
                   wal_record_id,
                   static_cast<unsigned>(record_type));
+            catchup_failures_.try_emplace(
+                txn_id,
+                core::error_t{core::error_code_t::index_create_fail,
+                              std::pmr::string{"CREATE INDEX catchup could not place a WAL record: the table has "
+                                               "no registry entry; the build is missing rows and may not publish",
+                                               resource_}});
             co_return;
         }
 
@@ -2088,9 +2184,10 @@ namespace services::index {
         }
 
         for (auto& f : futures) {
-            // Catchup has no statement to fail — the operator's convergence guard is what
-            // notices a build that never caught up — so a refusal is RECORDED. The future
-            // is still awaited, never dropped.
+            // The contract gives this handler no error channel of its own, so a staging
+            // the agent refused is RECORDED against the build's transaction (wave #123)
+            // and refuses its commit_inserts -- a build that never took these rows may
+            // not publish as if it had. The future is still awaited, never dropped.
             auto err = co_await std::move(f);
             if (err.contains_error()) {
                 error(log_,
@@ -2099,6 +2196,7 @@ namespace services::index {
                       static_cast<unsigned>(index_oid),
                       wal_record_id,
                       err.what);
+                catchup_failures_.try_emplace(txn_id, std::move(err));
             }
         }
         trace(log_,

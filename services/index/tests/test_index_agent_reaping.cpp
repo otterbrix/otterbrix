@@ -57,6 +57,8 @@
 #include <filesystem>
 #include <set>
 
+#include "index_fixture_path.hpp"
+
 using components::session::session_id_t;
 using services::index::live_index_agents;
 using services::index::manager_index_t;
@@ -94,7 +96,7 @@ namespace {
     }
 
     std::filesystem::path fresh_index_root(const char* name) {
-        const std::filesystem::path path{std::filesystem::path{"/tmp"} / name};
+        const std::filesystem::path path{services::index::tests::index_fixture_path(name)};
         std::filesystem::remove_all(path);
         std::filesystem::create_directories(path / std::to_string(static_cast<unsigned>(kTableOid)) /
                                             std::to_string(static_cast<unsigned>(kIndexOid)));

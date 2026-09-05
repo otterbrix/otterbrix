@@ -1211,3 +1211,268 @@ TEST_CASE("services::index::disk_hash_table::split_refuses_when_a_source_page_ca
         REQUIRE(rows.front().value == static_cast<int64_t>(i));
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// THE OPEN PATH REFUSES WHAT IT CANNOT READ OR VERIFY (wave entries #30/#119/#234/#288).
+//
+// The helpers below tamper with the on-disk header the way a torn write or a rotten
+// sector would, and then re-seal it the way the FIX seals every header it writes: an
+// 8-byte magic at [0,8) and a CRC32C over the six header fields [12,40) stored at [8,12).
+// A case that wants the seal VALID recomputes it after tampering, so the refusal it
+// asserts can only come from the specific consistency check it targets, never from the
+// checksum arm.
+
+#include "absl/crc/crc32c.h"
+
+namespace {
+    constexpr char hash_header_magic[8] = {'o', 't', 'b', 'x', 'h', 'a', 's', 'h'};
+
+    void write_le32_at(std::string& bytes, size_t offset, uint32_t v) {
+        for (unsigned i = 0; i < 4; ++i) {
+            bytes[offset + i] = static_cast<char>((v >> (8U * i)) & 0xFFU);
+        }
+    }
+
+    void write_le64_at(std::string& bytes, size_t offset, uint64_t v) {
+        for (unsigned i = 0; i < 8; ++i) {
+            bytes[offset + i] = static_cast<char>((v >> (8U * i)) & 0xFFU);
+        }
+    }
+
+    // Re-seal the header page the way persist_header does after the fix: magic at [0,8),
+    // CRC32C of [12,40) at [8,12).
+    void reseal_hash_header(std::string& bytes) {
+        std::memcpy(bytes.data(), hash_header_magic, sizeof(hash_header_magic));
+        const auto crc = static_cast<uint32_t>(absl::ComputeCrc32c(absl::string_view(bytes.data() + 12, 28)));
+        write_le32_at(bytes, 8, crc);
+    }
+} // namespace
+
+// Wave entry #30. count_entries_unlocked used to `break` out of a bucket chain whose page
+// could not be read and hand open_or_create a COUNT OF THE READABLE PART -- so the table
+// opened with an entry_count_ (and therefore a load factor) that silently understated the
+// file. A walk that could not finish must refuse, and the open must hand that refusal on.
+TEST_CASE("services::index::disk_hash_table::open_refuses_when_the_entry_count_cannot_be_counted") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("hash_open_count_refusal.data");
+    const auto overflow_path = std::filesystem::path(path).concat(".ovf");
+    std::filesystem::remove(path);
+    std::filesystem::remove(overflow_path);
+
+    {
+        disk_hash_table_t table(path, 8, &resource);
+        table.set_auto_rehash_suppressed(true);
+        for (int64_t i = 0; i < 64; ++i) {
+            REQUIRE_FALSE(table.put("count-key-" + std::to_string(i), i, 1, 100 + static_cast<uint64_t>(i))
+                              .contains_error());
+        }
+        REQUIRE_FALSE(table.sync().contains_error());
+    }
+
+    // Cut the file mid-table: the header and the first four bucket pages survive, the last
+    // four bucket pages do not. Before the fix this opened fine and counted only what the
+    // readable half held.
+    std::filesystem::resize_file(path, static_cast<uintmax_t>(5) * disk_hash_table_t::page_size);
+
+    auto reopened = disk_hash_table_t::create(path, 8, &resource);
+    INFO("an open that could not count its entries must refuse, not open over a partial count");
+    REQUIRE(reopened.has_error());
+    REQUIRE(reopened.error().type == core::error_code_t::io_error);
+}
+
+// Wave entry #119. load_existing_file used to meet an INCONSISTENT level/split_bucket pair
+// -- a header where 2^level + split_bucket != bucket_count -- and silently REWRITE it from
+// the bucket count. The header is re-sealed with a VALID checksum here, so the refusal
+// this asserts can only come from the linear-state check itself.
+TEST_CASE("services::index::disk_hash_table::open_refuses_a_corrupt_linear_hash_state_instead_of_repairing_it") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("hash_open_linear_state_refusal.data");
+    const auto overflow_path = std::filesystem::path(path).concat(".ovf");
+    std::filesystem::remove(path);
+    std::filesystem::remove(overflow_path);
+
+    {
+        disk_hash_table_t table(path, 32, &resource);
+        REQUIRE_FALSE(table.put("k", 7, 1, 100).contains_error());
+        REQUIRE_FALSE(table.sync().contains_error());
+    }
+
+    auto bytes = read_file_bytes(path);
+    // level 3 says base = 8; split stays 0; 8 + 0 != 32, so the pair no longer describes
+    // the bucket count. Before the fix the open repaired this silently and reported
+    // nothing.
+    write_le32_at(bytes, 28, 3);
+    reseal_hash_header(bytes);
+    restore_file_bytes(path, bytes);
+
+    auto reopened = disk_hash_table_t::create(path, 32, &resource);
+    INFO("a header whose linear-hash state does not describe its bucket count is corruption, not input");
+    REQUIRE(reopened.has_error());
+}
+
+// Wave entry #288. The second silent auto-repair in the same function: a stored
+// next_overflow_page BELOW the overflow id base was clamped up to the base and the open
+// went on. Same shape as #119, same channel, same verdict. The seal is VALID here too.
+TEST_CASE("services::index::disk_hash_table::open_refuses_a_corrupt_overflow_cursor_instead_of_clamping_it") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("hash_open_overflow_cursor_refusal.data");
+    const auto overflow_path = std::filesystem::path(path).concat(".ovf");
+    std::filesystem::remove(path);
+    std::filesystem::remove(overflow_path);
+
+    {
+        disk_hash_table_t table(path, 16, &resource);
+        REQUIRE_FALSE(table.put("k", 7, 1, 100).contains_error());
+        REQUIRE_FALSE(table.sync().contains_error());
+    }
+
+    auto bytes = read_file_bytes(path);
+    // 5 is far below the 2^40 overflow id base: no persist_header ever wrote it, so it is
+    // a damaged file, not a value to clamp.
+    write_le64_at(bytes, 20, 5);
+    reseal_hash_header(bytes);
+    restore_file_bytes(path, bytes);
+
+    auto reopened = disk_hash_table_t::create(path, 16, &resource);
+    INFO("an overflow cursor below the overflow page id base is corruption, not a value to clamp");
+    REQUIRE(reopened.has_error());
+}
+
+// Wave entry #234, the checksum arm. A flipped bit in the header used to pass whenever the
+// value it produced still looked plausible: bucket_count 16 -> 17 keeps every structural
+// check happy (base 16 + split 1 == 17) and silently re-addresses EVERY key in the file.
+// The stale seal is left in place here, so only the checksum can catch it -- which is the
+// point of having one.
+TEST_CASE("services::index::disk_hash_table::open_refuses_a_header_whose_checksum_does_not_match") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("hash_open_checksum_refusal.data");
+    const auto overflow_path = std::filesystem::path(path).concat(".ovf");
+    std::filesystem::remove(path);
+    std::filesystem::remove(overflow_path);
+
+    {
+        disk_hash_table_t table(path, 16, &resource);
+        REQUIRE_FALSE(table.put("k", 7, 1, 100).contains_error());
+        REQUIRE_FALSE(table.sync().contains_error());
+    }
+
+    auto bytes = read_file_bytes(path);
+    write_le32_at(bytes, 16, 17); // one flipped count, structurally plausible
+    restore_file_bytes(path, bytes);
+
+    auto reopened = disk_hash_table_t::create(path, 16, &resource);
+    INFO("a header the checksum disowns must not be loaded, however plausible its fields look");
+    REQUIRE(reopened.has_error());
+}
+
+// Wave entry #234, the magic arm. A file that is not a hash index at all -- or a header
+// page that was never sealed by this codec -- must be refused by NAME, before any field of
+// it is interpreted. The seal's checksum is made VALID over the tampered fields, so the
+// refusal can only come from the magic check.
+TEST_CASE("services::index::disk_hash_table::open_refuses_a_file_without_the_magic") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("hash_open_magic_refusal.data");
+    const auto overflow_path = std::filesystem::path(path).concat(".ovf");
+    std::filesystem::remove(path);
+    std::filesystem::remove(overflow_path);
+
+    {
+        disk_hash_table_t table(path, 16, &resource);
+        REQUIRE_FALSE(table.put("k", 7, 1, 100).contains_error());
+        REQUIRE_FALSE(table.sync().contains_error());
+    }
+
+    auto bytes = read_file_bytes(path);
+    reseal_hash_header(bytes);
+    std::memset(bytes.data(), 0, 8); // valid checksum, no name
+    restore_file_bytes(path, bytes);
+
+    auto reopened = disk_hash_table_t::create(path, 16, &resource);
+    INFO("a header page that does not carry this table's magic is not this table's header");
+    REQUIRE(reopened.has_error());
+}
+
+// Wave entry #234, the slot arm. An erased slot used to stay dead forever: every later
+// insert appended a NEW slot and NEW payload bytes, so a workload that puts and erases the
+// same key marched the page to exhaustion and then grew an overflow chain -- for a table
+// whose LIVE contents never exceeded one entry.
+TEST_CASE("services::index::disk_hash_table::an_erased_slot_is_reused_by_the_next_insert") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("hash_slot_reuse.data");
+    const auto overflow_path = std::filesystem::path(path).concat(".ovf");
+    std::filesystem::remove(path);
+    std::filesystem::remove(overflow_path);
+
+    disk_hash_table_t table(path, 1, &resource);
+    table.set_auto_rehash_suppressed(true);
+
+    // 500 put/erase rounds of one identically-sized entry: live size never exceeds 1.
+    for (int64_t i = 0; i < 500; ++i) {
+        REQUIRE_FALSE(table.put("steady-key", i, 1, static_cast<uint64_t>(1000 + i)).contains_error());
+        auto erased = table.erase("steady-key", loader_must_not_be_consulted);
+        REQUIRE_FALSE(erased.has_error());
+        REQUIRE(erased.value());
+    }
+
+    // One live entry's worth of state must not have grown an overflow chain.
+    const bool overflow_grew =
+        std::filesystem::exists(overflow_path) && std::filesystem::file_size(overflow_path) > 0;
+    INFO("a page cycling ONE live entry must reuse its freed slot, not grow an overflow chain");
+    REQUIRE_FALSE(overflow_grew);
+
+    // And the table still answers correctly through the reused slot.
+    REQUIRE_FALSE(table.put("steady-key", 42, 3, 4242).contains_error());
+    auto found = must_read(table.get("steady-key", loader_must_not_be_consulted));
+    REQUIRE(found.has_value());
+    REQUIRE(found->value == 42);
+    REQUIRE(found->log_file_id == 3);
+    REQUIRE(found->log_offset == 4242);
+}
+
+// Wave entry #117. The destructor's closing header flush used to be checked only by
+// assert(false), which -DNDEBUG compiles out -- so in release a failed closing persist was
+// dropped in complete silence. The failure is staged through the close failpoint (the one
+// seam this class has for a write the filesystem cannot be made to refuse from outside),
+// and the property is that the destructor SAYS SO on stderr, in every build mode, instead
+// of saying nothing.
+
+#include <fcntl.h>
+#include <unistd.h>
+
+namespace {
+    template<typename fn_t>
+    std::string capture_stderr_of(const std::filesystem::path& capture_file, fn_t&& fn) {
+        std::fflush(stderr);
+        const int saved_stderr = ::dup(2);
+        REQUIRE(saved_stderr >= 0);
+        const int capture_fd =
+            ::open(capture_file.c_str(), O_CREAT | O_TRUNC | O_WRONLY, 0600);
+        REQUIRE(capture_fd >= 0);
+        REQUIRE(::dup2(capture_fd, 2) == 2);
+        ::close(capture_fd);
+        fn();
+        std::fflush(stderr);
+        REQUIRE(::dup2(saved_stderr, 2) == 2);
+        ::close(saved_stderr);
+        return read_file_bytes(capture_file);
+    }
+} // namespace
+
+TEST_CASE("services::index::disk_hash_table::a_failed_closing_flush_is_reported_loudly") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("hash_close_flush_report.data");
+    const auto capture_file = mk_path("hash_close_flush_report.stderr");
+    std::filesystem::remove(path);
+    std::filesystem::remove(std::filesystem::path(path).concat(".ovf"));
+
+    const auto stderr_text = capture_stderr_of(capture_file, [&] {
+        env_var_guard_t failpoint("OTTERBRIX_DISK_HASH_CLOSE_FAILPOINT", "1");
+        disk_hash_table_t table(path, 8, &resource);
+        REQUIRE_FALSE(table.put("k", 7, 1, 100).contains_error());
+        // The destructor runs here, meets the staged persist failure, and must REPORT it.
+    });
+
+    INFO("a closing flush that failed must be named on stderr, not dropped in silence");
+    REQUIRE(stderr_text.find("disk_hash_table") != std::string::npos);
+    REQUIRE(stderr_text.find(path.string()) != std::string::npos);
+}

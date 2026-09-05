@@ -3277,3 +3277,65 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         }
     }
 }
+// Wave entry #325. The leaf HEADER had no checksum at all: header_t is bare counters and
+// the block_metadata array behind them is what places every range lookup -- so a flipped
+// bit in a counter or a key boundary passed the single structural check (segment count vs
+// capacity) and the leaf answered WRONG, silently. The blocks each carry a CRC; the
+// region that says where the blocks are and what they cover carried none.
+//
+// The tampering here zeroes the three counters -- a header that is structurally
+// PLAUSIBLE (0 segments fits every bound) and factually false: the leaf loads empty over
+// a file full of rows and, before the fix, reported nothing on the channel.
+TEST_CASE("core::b_plus_tree::a_tampered_leaf_header_is_refused_not_believed") {
+    auto resource = core::pmr::otterbrix_resource();
+    local_file_system_t fs = local_file_system_t();
+    path_t testing_directory = scratch_dir("segment_tree_header_seal");
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        return block_t::index_t(read_unaligned<uint64_t>(data.data));
+    };
+    auto fname = testing_directory;
+    fname /= "leaf_with_sealed_header";
+
+    constexpr uint64_t item_count = 64;
+    {
+        segment_tree_t tree(&resource,
+                            key_getter,
+                            open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+        std::vector<uint64_t> payload(8, 0);
+        for (uint64_t i = 0; i < item_count; i++) {
+            payload[0] = i;
+            REQUIRE(tree.append(reinterpret_cast<data_ptr_t>(payload.data()),
+                                static_cast<uint32_t>(payload.size() * sizeof(uint64_t))));
+        }
+        REQUIRE(tree.flush());
+    }
+
+    // Zero the leading counters of the header region: segments_count_ becomes 0, which
+    // every structural check accepts.
+    {
+        auto handle = open_file(fs, fname, file_flags::READ | file_flags::WRITE);
+        REQUIRE(handle != nullptr);
+        std::vector<char> zeros(sizeof(size_t) * 3, 0);
+        REQUIRE(handle->write(zeros.data(), zeros.size(), 0));
+        REQUIRE(handle->sync());
+    }
+
+    {
+        segment_tree_t reopened(&resource, key_getter, open_file(fs, fname, file_flags::READ | file_flags::WRITE));
+        reopened.lazy_load();
+        INFO("a header the seal disowns must be refused on the channel, not believed empty");
+        // RED before the fix: the zeroed counters loaded as an EMPTY leaf with
+        // load_failure() == none -- every row silently gone.
+        REQUIRE(reopened.load_failure() != load_failure_t::none);
+        REQUIRE(reopened.count() == 0); // refused leaves serve nothing, not something else
+        // And nothing may ever write that emptiness over the rows still on the device.
+        REQUIRE_FALSE(reopened.flush());
+    }
+
+    remove_directory(fs, testing_directory);
+}

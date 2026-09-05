@@ -11,7 +11,6 @@
 #include <memory>
 #include <memory_resource>
 #include <optional>
-#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -120,7 +119,6 @@ namespace services::index {
         template<hash_key_loader loader_t>
         [[nodiscard]] core::result_wrapper_t<std::vector<value_ref_t>>
         get_all(std::string_view key, const loader_t& load_full_key) const {
-            std::unique_lock lock(mutex_);
             const uint32_t key_hash = hash_key(key);
             uint64_t page_id = bucket_primary_page_id(bucket_id_for_hash(key_hash));
             std::pmr::vector<value_ref_t> values(memory_resource_);
@@ -200,7 +198,6 @@ namespace services::index {
         // and then delete the whole segment.
         template<typename callback_t>
         [[nodiscard]] core::error_t for_each(callback_t&& cb) const {
-            std::shared_lock lock(mutex_);
             byte_buffer_t page(memory_resource_);
             page.resize(page_size);
             for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
@@ -407,7 +404,6 @@ namespace services::index {
         template<hash_key_loader loader_t>
         [[nodiscard]] core::result_wrapper_t<bool>
         erase_matching(std::string_view key, std::optional<int64_t> expected_value, const loader_t& load_full_key) {
-            std::unique_lock lock(mutex_);
             const uint32_t key_hash = hash_key(key);
             uint64_t page_id = bucket_primary_page_id(bucket_id_for_hash(key_hash));
             byte_buffer_t page(memory_resource_);
@@ -487,12 +483,19 @@ namespace services::index {
         put_unlocked(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
         [[nodiscard]] core::error_t
         insert_payload_into_bucket_unlocked(uint32_t bucket_id, uint32_t key_hash, const byte_buffer_t& payload);
-        uint64_t count_entries_unlocked() const;
+        // A COUNT THAT COULD NOT FINISH REFUSES (wave #30). This used to `break` out of a
+        // chain whose page would not read and answer with the count of the readable part,
+        // which open_or_create then published as entry_count_ -- a load factor quietly
+        // understating the file. Same rule as every other walk in this class.
+        [[nodiscard]] core::result_wrapper_t<uint64_t> count_entries_unlocked() const;
         [[nodiscard]] core::error_t rehash_unlocked(uint32_t new_bucket_count);
         [[nodiscard]] core::error_t maybe_rehash_if_needed_unlocked();
         [[nodiscard]] core::error_t split_one_bucket_unlocked(bool durable_commit = true);
         bool slot_belongs_to_bucket_unlocked(uint32_t key_hash, uint32_t bucket_id) const;
-        void initialize_linear_state_from_bucket_count();
+        // Refuses a zero bucket count as a VALUE (wave #166): the assert that used to
+        // stand in front of the arithmetic is compiled out under NDEBUG, and the
+        // fall-through computed split_bucket = 0 - 1 = UINT32_MAX and kept running.
+        [[nodiscard]] core::error_t initialize_linear_state_from_bucket_count();
         uint32_t bucket_id_for_hash(uint32_t key_hash) const;
 
         byte_buffer_t
@@ -502,7 +505,12 @@ namespace services::index {
 
         std::filesystem::path file_path_;
         std::filesystem::path overflow_file_path_;
-        mutable std::shared_mutex mutex_;
+        // NO MUTEX, deliberately (C6b's last leg). This table has exactly one owner --
+        // bitcask_index_disk_t -- and that store has exactly one owner, its agent, whose
+        // mailbox is the serialization domain for every call that reaches here (rule 10).
+        // The shared_mutex that used to sit on this line was a THIRD serialization domain
+        // under two that already guarantee single-threaded access, and a lock that only
+        // ever runs uncontended still taxes every read and hides the ownership story.
         core::filesystem::local_file_system_t fs_;
         std::unique_ptr<core::filesystem::file_handle_t> file_;
         std::unique_ptr<core::filesystem::file_handle_t> ovf_file_;

@@ -33,6 +33,13 @@ namespace services::index {
     // process-wide, consulted once per open_file this translation unit performs. Returning
     // nullptr from wrap() models a file that WILL NOT OPEN and is faithful rather than a
     // stand-in: core::filesystem::open_file answers nullptr for exactly that.
+    // TEST-OBSERVABLE COUNT of descriptor opens performed to read a ROTATED segment
+    // (wave #327). The active segment is read through the store's own held descriptor;
+    // every rotated-segment read used to pay an open/close pair, and this meter is what
+    // lets a test pin the budget instead of timing syscalls.
+    [[nodiscard]] uint64_t bitcask_rotated_segment_opens() noexcept;
+    void reset_bitcask_rotated_segment_opens() noexcept;
+
     struct bitcask_file_interposer_t {
         virtual ~bitcask_file_interposer_t() = default;
         virtual std::unique_ptr<core::filesystem::file_handle_t>
@@ -197,7 +204,13 @@ namespace services::index {
         // write handler it is already inside -- never from the middle of a record append,
         // where a statement writing N segments' worth of rows would pay N merges. A
         // no-merge-owed call is free.
-        void merge_pending_segments();
+        // Pays the merge debt and ANSWERS FOR IT (wave #305). This was void, so a
+        // directory-listing refusal met inside the merge was parked in
+        // pending_write_error_ and surfaced on the NEXT force_flush -- a later round's
+        // step, which is where a debugger then hunted for a failure that happened here.
+        // The caller (the agent write handler that pays the debt) folds this into its own
+        // reply, so the refusal reaches the statement of the round that met it.
+        [[nodiscard]] core::error_t merge_pending_segments();
         // bitcask-internal rehash-suppression window (pre-existing optimization, opened
         // around the bulk run in bitcask_index_agent_t::commit_inserts).
         void set_bulk_mode(bool enabled);
@@ -417,6 +430,28 @@ namespace services::index {
         // bulk inserts, the startup rebuild, segment merge). force_flush() hands it to the caller,
         // which is the first point on those paths that can report anything at all.
         core::error_t pending_write_error_{core::error_t::no_error()};
+        // HELD DESCRIPTORS FOR ROTATED-SEGMENT READS (wave #327). The active segment is
+        // read through file_; every rotated read used to open and close a descriptor of
+        // its own -- one syscall pair per find(), and one chance per find() to meet a
+        // process-wide descriptor-table exhaustion that has nothing to do with this
+        // index. A small LRU (capacity 8) holds the handles instead: rotated segments
+        // never change, so a held handle cannot go stale by content -- only by the FILE
+        // being replaced, which is why every path that unlinks or re-derives segments
+        // (load_from_disk, clear, drop, the merge) drops the whole cache. Mutable, and
+        // safely so: the store has one owner, its agent, whose mailbox serializes every
+        // reader (the same argument that removed the keydir's mutex).
+        struct rotated_segment_lease_t {
+            uint64_t segment_id{0};
+            std::unique_ptr<core::filesystem::file_handle_t> handle;
+            uint64_t last_used{0};
+        };
+        static constexpr size_t rotated_read_cache_capacity_ = 8;
+        mutable std::vector<rotated_segment_lease_t> rotated_read_cache_;
+        mutable uint64_t rotated_read_tick_{0};
+        void invalidate_rotated_read_cache_() const noexcept { rotated_read_cache_.clear(); }
+        // A read that failed through a held handle drops that handle, so the next attempt
+        // re-opens instead of retrying a descriptor that may be the problem.
+        void drop_cached_rotated_segment_(uint64_t segment_id) const noexcept;
         // Set by seal_writes, read by refuse_if_sealed, cleared by clear(). See seal_writes.
         bool writes_sealed_{false};
         uint64_t next_timestamp_{0};

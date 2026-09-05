@@ -100,6 +100,40 @@ namespace services::index {
 
     btree_index_disk_t::~btree_index_disk_t() = default;
 
+    namespace {
+        // THE TREE'S REFUSAL CHANNEL, ANSWERED AT LAST (wave #324, closing #331 with it).
+        // btree_t::load_failure() is reported into by every leaf, and NOTHING above
+        // core/b_plus_tree ever read it: a walk over a block the tree could not read came
+        // back SHORT with no_error(). For a UNIQUE constraint that is an accepted
+        // duplicate; for a FK a lost parent. The check is STICKY on purpose -- the cell is
+        // peeked, never taken -- so a store that has once served out of a damaged tree
+        // refuses every later question until the tree is rebuilt (clear() constructs a
+        // fresh btree_t, and so does reopening the index): a wedged-loud index is
+        // recoverable, a silently short one is not. The pre-op check is also what removes
+        // the degraded state's price (#331): the walk that would re-read the damaged
+        // 256 KB block on every access is refused before it starts, so the re-read
+        // happens once -- on the operation that met the damage.
+        core::error_t tree_load_refusal(core::b_plus_tree::load_failure_t failure,
+                                        std::pmr::memory_resource* resource) {
+            using core::b_plus_tree::load_failure_t;
+            const auto code = failure == load_failure_t::data_corruption ? core::error_code_t::data_corruption
+                              : failure == load_failure_t::out_of_memory ? core::error_code_t::out_of_memory
+                                                                         : core::error_code_t::io_error;
+            std::pmr::string message{"btree index: the tree reports an unresolved load failure: ", resource};
+            message += core::b_plus_tree::to_string(failure);
+            return core::error_t{code, std::move(message)};
+        }
+
+        [[nodiscard]] core::error_t consult_failure_channel(const core::b_plus_tree::btree_t& db,
+                                                            std::pmr::memory_resource* resource) {
+            const auto failure = db.load_failure();
+            if (failure == core::b_plus_tree::load_failure_t::none) {
+                return core::error_t::no_error();
+            }
+            return tree_load_refusal(failure, resource);
+        }
+    } // namespace
+
     core::error_t btree_index_disk_t::insert(const value_t& key, size_t value) {
         if (key_is_absent(key)) {
             return core::error_t::no_error();
@@ -120,6 +154,9 @@ namespace services::index {
             components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(value));
             db_->append(out.data(), static_cast<uint32_t>(out.size()));
             mark_operation_dirty();
+            // The append itself walks and splits leaves; a block it could not read is on
+            // the channel now and the write may not report success over it.
+            RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
             return flush_if_needed();
         }
         return core::error_t::no_error();
@@ -129,8 +166,10 @@ namespace services::index {
         if (key_is_absent(key)) {
             return core::error_t::no_error();
         }
+        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
         db_->remove_index(convert(key));
         mark_operation_dirty();
+        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
         return flush_if_needed();
     }
 
@@ -150,6 +189,7 @@ namespace services::index {
             components::index::codec::append_le<uint64_t>(out, static_cast<uint64_t>(row_id));
             db_->remove(out.data(), static_cast<uint32_t>(out.size()));
             mark_operation_dirty();
+            RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
             return flush_if_needed();
         }
         return core::error_t::no_error();
@@ -197,6 +237,13 @@ namespace services::index {
     }
 
     core::error_t btree_index_disk_t::force_flush() {
+        if (db_) {
+            // A checkpoint must not be told "flushed" over a tree that has served (or
+            // holds) a block it could not read: the WAL behind it would be trimmed. The
+            // bulk_unchecked doors have no channel of their own, so this is also where a
+            // bulk load's refused block surfaces.
+            RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
+        }
         if (is_dirty() && db_) {
             if (!db_->flush()) {
                 // The tree keeps the failed leaves dirty, so a later flush can still succeed —
@@ -246,6 +293,10 @@ namespace services::index {
         if (key_is_absent(value)) {
             return core::error_t::no_error();
         }
+        // BEFORE the walk: a tree that has already failed to read a block refuses the
+        // question instead of walking again (and instead of re-reading the damaged block
+        // on every probe -- the #331 price).
+        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
         auto index = convert(value);
         size_t count = db_->item_count(index);
         res.reserve(res.size() + count);
@@ -259,6 +310,9 @@ namespace services::index {
             }
             res.emplace_back(id.value<components::types::physical_type::UINT64>());
         }
+        // AFTER the walk: this probe's own refused block is on the channel now, and a
+        // short answer with no_error() is exactly the wrong answer this closes.
+        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
         return core::error_t::no_error();
     }
 
@@ -270,6 +324,7 @@ namespace services::index {
         if (key_is_absent(value)) {
             return core::error_t::no_error();
         }
+        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
 
         // Both scan_ascending bounds are INCLUSIVE, which is what makes lte and gte
         // expressible at all: the ray simply runs to the probe and stops, with no
@@ -333,6 +388,7 @@ namespace services::index {
         if (!reader.all_ok) {
             return unreadable_record(resource());
         }
+        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
         return core::error_t::no_error();
     }
 

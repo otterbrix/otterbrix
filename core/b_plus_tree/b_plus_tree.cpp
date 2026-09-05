@@ -213,13 +213,14 @@ namespace core::b_plus_tree {
     /* leaf node */
 
     btree_t::leaf_node_t::leaf_node_t(std::pmr::memory_resource* resource,
-                                      std::unique_ptr<filesystem::file_handle_t> file,
+                                      filesystem::local_file_system_t& fs,
+                                      filesystem::path_t file_path,
                                       index_t (*func)(const item_data&),
                                       uint64_t segment_tree_id,
                                       size_t min_node_capacity,
                                       size_t max_node_capacity)
         : btree_t::base_node_t(resource, min_node_capacity, max_node_capacity)
-        , segment_tree_(std::make_unique<segment_tree_t>(resource, func, std::move(file)))
+        , segment_tree_(std::make_unique<segment_tree_t>(resource, func, fs, std::move(file_path)))
         , segment_tree_id_(segment_tree_id) {}
 
     btree_t::leaf_node_t::leaf_node_t(std::pmr::memory_resource* resource,
@@ -241,10 +242,9 @@ namespace core::b_plus_tree {
     }
     bool btree_t::leaf_node_t::remove_index(const index_t& index) { return segment_tree_->remove_index(index); }
 
-    btree_t::leaf_node_t* btree_t::leaf_node_t::split(std::unique_ptr<filesystem::file_handle_t> file,
-                                                      uint64_t segment_tree_id) {
+    btree_t::leaf_node_t* btree_t::leaf_node_t::split(filesystem::path_t file_path, uint64_t segment_tree_id) {
         auto* node = new leaf_node_t(resource_,
-                                     segment_tree_->split(std::move(file)),
+                                     segment_tree_->split(std::move(file_path)),
                                      segment_tree_id,
                                      min_node_capacity_,
                                      max_node_capacity_);
@@ -320,10 +320,9 @@ namespace core::b_plus_tree {
             uint64_t segment_tree_id = get_unique_id_();
             std::filesystem::path file_name = storage_directory_;
             file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
-            std::unique_ptr<core::filesystem::file_handle_t> file =
-                open_file(fs_, file_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
             root_ = static_cast<base_node_t*>(new leaf_node_t(resource_,
-                                                              std::move(file),
+                                                              fs_,
+                                                              std::move(file_name),
                                                               key_func_,
                                                               segment_tree_id,
                                                               min_node_capacity_,
@@ -350,9 +349,8 @@ namespace core::b_plus_tree {
                 uint64_t segment_tree_id = get_unique_id_();
                 std::filesystem::path file_name = storage_directory_;
                 file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
-                std::unique_ptr<core::filesystem::file_handle_t> file =
-                    open_file(fs_, file_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
-                leaf_node_t* splited_node = static_cast<leaf_node_t*>(root_)->split(std::move(file), segment_tree_id);
+                leaf_node_t* splited_node =
+                    static_cast<leaf_node_t*>(root_)->split(std::move(file_name), segment_tree_id);
                 leaf_nodes_count_++;
                 if (splited_node->min_index() < index) {
                     result = splited_node->append(index, item);
@@ -408,10 +406,8 @@ namespace core::b_plus_tree {
             uint64_t segment_tree_id = get_unique_id_();
             std::filesystem::path file_name = storage_directory_;
             file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
-            std::unique_ptr<core::filesystem::file_handle_t> file =
-                open_file(fs_, file_name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
             leaf_node_t* splited_node =
-                static_cast<leaf_node_t*>(current_node)->split(std::move(file), segment_tree_id);
+                static_cast<leaf_node_t*>(current_node)->split(std::move(file_name), segment_tree_id);
             leaf_nodes_count_++;
 
             if (splited_node->min_index() <= index) {
@@ -991,6 +987,13 @@ namespace core::b_plus_tree {
             std::filesystem::path leaf_file_name = storage_directory_;
             leaf_file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
             if (!file_exists(fs_, leaf_file_name)) {
+                // A leaf the metadata NAMES but the directory does not hold. Returning the
+                // empty tree this leg used to return is a silent SUBSET -- every row of
+                // every other leaf vanishes with no way to ask why -- so the refusal goes
+                // on the channel like every other load failure. The tree still opens
+                // (empty), still answers about nothing rather than something else, and
+                // its files can still be deleted, which is all DROP INDEX needs.
+                failures_.report(load_failure_t::io_error);
                 for (size_t j = 0; j < i; j++) {
                     delete *(nodes_layer + j);
                 }
@@ -1001,10 +1004,9 @@ namespace core::b_plus_tree {
                 tree_mutex_.unlock();
                 return;
             }
-            std::unique_ptr<core::filesystem::file_handle_t> leaf_file =
-                open_file(fs_, leaf_file_name, file_flags::READ | file_flags::WRITE);
             base_node_t* node = static_cast<base_node_t*>(new leaf_node_t(resource_,
-                                                                          std::move(leaf_file),
+                                                                          fs_,
+                                                                          std::move(leaf_file_name),
                                                                           key_func_,
                                                                           segment_tree_id,
                                                                           min_node_capacity_,

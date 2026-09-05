@@ -54,6 +54,8 @@
 #include <utility>
 #include <vector>
 
+#include "index_fixture_path.hpp"
+
 using components::expressions::compare_type;
 using components::session::session_id_t;
 using components::table::TRANSACTION_ID_START;
@@ -68,7 +70,7 @@ namespace {
     constexpr components::catalog::oid_t kIndexOid = 17301;
 
     std::filesystem::path fresh_index_root(const char* name) {
-        const std::filesystem::path path{std::filesystem::path{"/tmp"} / name};
+        const std::filesystem::path path{services::index::tests::index_fixture_path(name)};
         std::filesystem::remove_all(path);
         std::filesystem::create_directories(path / std::to_string(static_cast<unsigned>(kTableOid)) /
                                             std::to_string(static_cast<unsigned>(kIndexOid)));
@@ -524,4 +526,71 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
     }
 
     std::filesystem::remove_all(path);
+}
+
+// Wave entry #305. A directory-listing refusal met by the merge a write handler pays for
+// (pay_merge_debt -> merge_immutable_segments -> collect_segments) used to be PARKED in
+// pending_write_error_ and surfaced on the NEXT force_flush -- i.e. at step (a) of a
+// LATER round, which is exactly where a debugger then went looking for a failure that
+// happened at step (c2) of this one. The refusal comes back from the handler that ran
+// the merge now, and nothing is left behind for the next round to trip over.
+TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the round that met it") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    const auto path = fresh_index_root("index_agent_merge_attribution");
+    const auto index_dir = path / std::to_string(static_cast<unsigned>(kTableOid)) /
+                           std::to_string(static_cast<unsigned>(kIndexOid));
+
+    auto agent_result = bitcask_index_agent_t::create(&resource,
+                                                      path,
+                                                      kTableOid,
+                                                      kIndexOid,
+                                                      /*flush_threshold=*/1000,
+                                                      /*segment_record_limit=*/2,
+                                                      log,
+                                                      std::pmr::set<std::uint64_t>(&resource));
+    REQUIRE_FALSE(agent_result.has_error());
+    auto agent = std::move(agent_result.value());
+
+    const auto session = session_id_t::generate_uid();
+    const uint64_t txn1 = TRANSACTION_ID_START + 61;
+    const uint64_t txn2 = TRANSACTION_ID_START + 62;
+
+    // Round 1: enough records to rotate; the merge debt this arms is paid at the end of
+    // the commit, against a directory that is still perfectly listable.
+    REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent,
+                                                            session,
+                                                            txn1,
+                                                            entries(&resource, {{1, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 5}}))
+                      .contains_error());
+    REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, txn1).contains_error());
+
+    // The directory stops being LISTABLE and nothing else: files inside can still be
+    // opened, created and renamed (owner keeps write+execute), so every write of round 2
+    // lands and only the merge's collect_segments can refuse.
+    std::filesystem::permissions(index_dir,
+                                 std::filesystem::perms::owner_write | std::filesystem::perms::owner_exec);
+    struct restore_perms_t {
+        std::filesystem::path dir;
+        ~restore_perms_t() { std::filesystem::permissions(dir, std::filesystem::perms::owner_all); }
+    } restore{index_dir};
+
+    // Round 2: the writes rotate again, the handler pays the merge debt, the listing
+    // refuses. The refusal belongs to THIS reply.
+    REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent,
+                                                            session,
+                                                            txn2,
+                                                            entries(&resource, {{6, 6}, {7, 7}, {8, 8}}))
+                      .contains_error());
+    auto commit2 = ask<&index_agent_contract::commit_inserts>(agent, session, txn2);
+    INFO("the merge met the unlistable directory inside THIS commit; the reply must say so");
+    // RED before the fix: no_error here, and the refusal surfaced on the NEXT force_flush.
+    REQUIRE(commit2.contains_error());
+
+    // The device heals; the next flush must be CLEAN -- nothing may still be parked from
+    // a failure that was already reported.
+    std::filesystem::permissions(index_dir, std::filesystem::perms::owner_all);
+    auto flush = ask<&index_agent_contract::force_flush>(agent, session);
+    INFO("a refusal already delivered must not be re-delivered by a later round");
+    REQUIRE_FALSE(flush.contains_error());
 }

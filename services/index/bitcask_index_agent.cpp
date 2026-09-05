@@ -331,11 +331,17 @@ namespace services::index {
     // so piling a compaction onto a store that has just failed to write would turn an
     // error the statement could report into a dead process. The debt keeps: the store
     // holds the flag and the next write that succeeds pays it.
-    void bitcask_index_agent_t::pay_merge_debt(const core::error_t& write_error) {
+    core::error_t bitcask_index_agent_t::pay_merge_debt(core::error_t write_error) {
         if (write_error.contains_error()) {
-            return;
+            return write_error;
         }
-        store_.merge_pending_segments();
+        // THE MERGE'S OWN REFUSAL RIDES THIS ROUND'S REPLY (wave #305). It used to be
+        // parked in the store's pending_write_error_ and surfaced on the NEXT
+        // force_flush -- the wrong round, and on debugging the wrong step. The write
+        // itself landed (write_error above is clean), so what this reports is "stored,
+        // but the storage is refusing maintenance", the same shape disk_hash_table's put
+        // reports for a failed auto-rehash.
+        return store_.merge_pending_segments();
     }
 
     // Take bucket `txn_id` and bucket 0, hand every entry to `apply`, and erase both.
@@ -440,8 +446,7 @@ namespace services::index {
             }
             // Propagate the txn-log IO error straight back to the manager's commit handler.
             auto apply_error = store_.apply_txn_inserts(txn_id, journal);
-            pay_merge_debt(apply_error);
-            co_return apply_error;
+            co_return pay_merge_debt(std::move(apply_error));
         }
         // txn_id == 0: committed-for-everyone (rebuild / repopulate feed), no journal.
         // insert_bulk_unchecked skips the per-insert dedup find() and the per-insert
@@ -461,8 +466,7 @@ namespace services::index {
         // OUTSIDE the bulk window, deliberately: bulk mode holds the keydir's auto-rehash
         // suppressed and restores it on the way out, and a merge inside that window would
         // be compacting under a setting the window is about to put back.
-        pay_merge_debt(publish_error);
-        co_return publish_error;
+        co_return pay_merge_debt(std::move(publish_error));
     }
 
     bitcask_index_agent_t::unique_future<core::error_t>
@@ -509,8 +513,7 @@ namespace services::index {
                 co_return core::error_t::no_error();
             }
             auto apply_error = store_.apply_txn_deletes(txn_id, journal);
-            pay_merge_debt(apply_error);
-            co_return apply_error;
+            co_return pay_merge_debt(std::move(apply_error));
         }
         // bitcask's remove is already O(1) (a keydir lookup) and honours bulk mode, so the
         // bulk remove IS the normal remove path -- there is no per-key find() scan to
@@ -518,8 +521,7 @@ namespace services::index {
         auto publish_error = publish_buckets(pending_deletes_, txn_id, [this](const value_t& key, size_t row_id) {
             store_.remove_bulk_unchecked(key, row_id);
         });
-        pay_merge_debt(publish_error);
-        co_return publish_error;
+        co_return pay_merge_debt(std::move(publish_error));
     }
 
     bitcask_index_agent_t::unique_future<core::error_t>

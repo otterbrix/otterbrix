@@ -555,7 +555,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
         // behind the owner's back any more, so a fixture that wants the merged layout
         // asks for it -- and gets it synchronously, instead of sleeping and hoping a
         // background thread got there first.
-        index.merge_pending_segments();
+        REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
     }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
@@ -597,7 +597,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_keeps_latest_snapshot_for_
         // behind the owner's back any more, so a fixture that wants the merged layout
         // asks for it -- and gets it synchronously, instead of sleeping and hoping a
         // background thread got there first.
-        index.merge_pending_segments();
+        REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
     }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
@@ -637,7 +637,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
         // behind the owner's back any more, so a fixture that wants the merged layout
         // asks for it -- and gets it synchronously, instead of sleeping and hoping a
         // background thread got there first.
-        index.merge_pending_segments();
+        REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
     }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
@@ -676,7 +676,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_survives_more_than_two_rou
         // handler -- so this runs the merge four times over, not once at the end.
         for (int i = 1; i <= key_count; ++i) {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
-            index.merge_pending_segments();
+            REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
@@ -718,7 +718,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_e
         // behind the owner's back any more, so a fixture that wants the merged layout
         // asks for it -- and gets it synchronously, instead of sleeping and hoping a
         // background thread got there first.
-        index.merge_pending_segments();
+        REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
     }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
@@ -933,7 +933,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_dat
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
-        index.merge_pending_segments();
+        REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
     }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
@@ -949,7 +949,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_dat
         // replaces was there to wait for a background merge that this scope never
         // scheduled either.
         REQUIRE(index.force_flush().type == core::error_code_t::none);
-        index.merge_pending_segments();
+        REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
     }
 
     std::filesystem::remove_all(blocking_path);
@@ -2197,8 +2197,11 @@ TEST_CASE("services::index::bitcask_index_disk::merge_refuses_on_an_unreadable_r
     REQUIRE_FALSE(victim_bytes.empty());
     std::filesystem::resize_file(victim, 0);
 
-    index.merge_pending_segments();
-    REQUIRE(index.force_flush().contains_error());
+    // The refusal arrives on the call that ran the merge (wave #305), not parked for a
+    // later round's force_flush -- which stays CLEAN: nothing is left behind to
+    // re-deliver.
+    REQUIRE(index.merge_pending_segments().contains_error());
+    REQUIRE(index.force_flush().type == core::error_code_t::none);
 
     // NOTHING WAS PUBLISHED AND NOTHING WAS UNLINKED -- asserted at the filesystem, because
     // that is the level the loss happened at.
@@ -2212,7 +2215,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_refuses_on_an_unreadable_r
 
     // THE DEBT SURVIVED THE REFUSAL, so the retry is a plain re-run rather than a rotation
     // the caller has to arrange -- and it compacts once, not twice.
-    index.merge_pending_segments();
+    REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
     REQUIRE(index.force_flush().type == core::error_code_t::none);
     REQUIRE(count_bitcask_data_files(path) == 2);
 
@@ -2482,7 +2485,7 @@ TEST_CASE("services::index::bitcask_index_disk::open_survives_a_keydir_entry_lef
         // THE OWNER MERGES, synchronously. This publishes the manifest, renames the merged
         // segment into place, replays the relocation journal into the keydir and unlinks the
         // source segment.
-        index.merge_pending_segments();
+        REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
@@ -2579,7 +2582,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_killed_merge_never_broke_the_o
 
         std::filesystem::copy_file(keydir_file, keydir_backup, overwrite);
         std::filesystem::copy_file(keydir_overflow_file, keydir_overflow_backup, overwrite);
-        index.merge_pending_segments();
+        REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
@@ -3441,7 +3444,7 @@ TEST_CASE("services::index::bitcask_index_disk::every_byte_of_a_record_header_is
         index.remove(logical_value_t(&resource, 7l), 7);
         REQUIRE(index.force_flush().type == core::error_code_t::none);
         poison_the_stack_below();
-        index.merge_pending_segments();
+        REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
@@ -3558,7 +3561,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_finished_merge_leaves_no_manif
         REQUIRE(index.force_flush().type == core::error_code_t::none);
         REQUIRE(count_bitcask_data_files(path) == 3);
 
-        index.merge_pending_segments();
+        REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
         REQUIRE(index.force_flush().type == core::error_code_t::none);
         // Sensitivity: the merge really ran -- three segments went in and two came out.
         REQUIRE(count_bitcask_data_files(path) == 2);
@@ -4008,12 +4011,12 @@ TEST_CASE("services::index::bitcask_index_disk::a_stale_merge_temp_that_will_not
         occupant << "x";
     }
 
-    index.merge_pending_segments();
-    // merge_pending_segments is void and parks what it could not do; force_flush is the door
-    // that hands it over.
-    const auto merge_error = index.force_flush();
+    // The refusal is the CALL's answer now (wave #305); force_flush afterwards is clean,
+    // because nothing was parked for it to re-deliver.
+    const auto merge_error = index.merge_pending_segments();
     REQUIRE(merge_error.contains_error());
     REQUIRE(message_mentions(merge_error, "left behind by an earlier attempt"));
+    REQUIRE(index.force_flush().type == core::error_code_t::none);
 
     // NOTHING WAS PUBLISHED AND NOTHING WAS UNLINKED, which is what a merge that refuses
     // before it starts must leave: every row still answers, out of the segments that were
@@ -4024,7 +4027,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_stale_merge_temp_that_will_not
 
     // And with the obstruction gone the debt is still owed, so the merge runs.
     std::filesystem::remove_all(stale_temp);
-    index.merge_pending_segments();
+    REQUIRE(index.merge_pending_segments().type == core::error_code_t::none);
     REQUIRE(index.force_flush().type == core::error_code_t::none);
     REQUIRE(count_bitcask_data_files(path) == 2);
 }

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <catch2/catch_test_macros.hpp>
+#include <fstream>
 #include <map>
 #include <components/expressions/forward.hpp>
 #include <core/date/date_types.hpp>
@@ -779,4 +780,161 @@ TEST_CASE("services::index::index_disk::a_leaf_record_whose_key_will_not_decode_
     CHECK(index.find(logical_value_t(&resource, int64_t(7)), good_rows).type == core::error_code_t::none);
     REQUIRE(good_rows.size() == 1);
     CHECK(good_rows.front() == 5);
+}
+
+// ---------------------------------------------------------------------------------------
+// Wave entry #324. The b+tree's refusal channel (btree_t::load_failure) is REPORTED INTO
+// by every leaf, and until this fix NOTHING above core/b_plus_tree ever read it:
+// btree_index_disk_t::find/scan_range answered a SHORT result with no_error() over a
+// block the tree could not read, and insert/remove threw the tree's bool away. For a
+// UNIQUE constraint that is an accepted duplicate; for a FK it is a lost parent.
+TEST_CASE("services::index::index_disk::a_corrupt_block_refuses_the_probe_instead_of_shortening_it") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::filesystem::path path{index_fixture_path("btree_block_corruption_refusal")};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = btree_index_disk_t(path, &resource);
+        for (int i = 1; i <= 200; ++i) {
+            REQUIRE_FALSE(index.insert(logical_value_t(&resource, int64_t{i}), static_cast<size_t>(i))
+                              .contains_error());
+        }
+        REQUIRE_FALSE(index.force_flush().contains_error());
+        REQUIRE(index.find(logical_value_t(&resource, int64_t{42})).size() == 1);
+    }
+
+    // Flip one byte INSIDE a stored block (past the leaf's header region) of every leaf
+    // file, so the block's own CRC refuses it at the next load.
+    size_t corrupted_files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(path)) {
+        const auto name = entry.path().filename().string();
+        if (name.rfind("segmented_block", 0) != 0) {
+            continue;
+        }
+        std::fstream file(entry.path(), std::ios::in | std::ios::out | std::ios::binary);
+        REQUIRE(file.is_open());
+        const auto offset =
+            static_cast<std::streamoff>(core::b_plus_tree::segment_tree_t::header_size) + 128;
+        file.seekg(offset);
+        char byte = 0;
+        REQUIRE(file.get(byte).good());
+        file.seekp(offset);
+        REQUIRE(file.put(static_cast<char>(byte ^ 0x01)).good());
+        ++corrupted_files;
+    }
+    REQUIRE(corrupted_files > 0);
+
+    {
+        auto index = btree_index_disk_t(path, &resource);
+        btree_index_disk_t::result found(&resource);
+        auto probe = index.find(logical_value_t(&resource, int64_t{42}), found);
+        INFO("a probe over a block the tree could not read must REFUSE, not answer short with no_error");
+        // RED before the fix: no_error() over an empty `found`.
+        REQUIRE(probe.contains_error());
+
+        btree_index_disk_t::result ranged(&resource);
+        auto scan = index.scan_range(components::expressions::compare_type::gte,
+                                     logical_value_t(&resource, int64_t{1}),
+                                     ranged);
+        INFO("and so must the range walk, whose subset is the same wrong answer");
+        REQUIRE(scan.contains_error());
+
+        INFO("a write into a tree that cannot prove its dedup probe must refuse too");
+        auto insert = index.insert(logical_value_t(&resource, int64_t{42}), 4242);
+        REQUIRE(insert.contains_error());
+    }
+
+    std::filesystem::remove_all(path);
+}
+
+// Wave entry #326 (+#331 as its side effect). One segment_tree_t is one B+tree leaf and,
+// before the fix, one PERMANENTLY OPEN file descriptor -- so a tree of N leaves held N
+// descriptors for its whole life, and under `ctest -j4` the process table's descriptor
+// budget was exhausted by neighbours and came back as "file could not be opened" inside
+// unrelated stores. A leaf's file is opened for the duration of the operation that needs
+// it and released after; at rest the tree holds no descriptor per leaf.
+TEST_CASE("services::index::index_disk::the_tree_holds_no_descriptor_per_leaf_at_rest") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::filesystem::path path{index_fixture_path("btree_leaf_descriptor_budget")};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    const auto open_descriptors = [] {
+        size_t count = 0;
+        for ([[maybe_unused]] const auto& entry : std::filesystem::directory_iterator("/dev/fd")) {
+            ++count;
+        }
+        return count;
+    };
+
+    const auto descriptors_before = open_descriptors();
+    {
+        auto index = btree_index_disk_t(path, &resource);
+        // DEFAULT_NODE_CAPACITY unique keys per leaf; 1500 distinct keys force >= 11 leaves.
+        for (int i = 1; i <= 1500; ++i) {
+            index.insert_bulk_unchecked(logical_value_t(&resource, int64_t{i}), static_cast<size_t>(i));
+        }
+        REQUIRE_FALSE(index.force_flush().contains_error());
+
+        size_t leaf_files = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(path)) {
+            if (entry.path().filename().string().rfind("segmented_block", 0) == 0) {
+                ++leaf_files;
+            }
+        }
+        REQUIRE(leaf_files >= 11);
+
+        const auto descriptors_at_rest = open_descriptors();
+        INFO("a resting tree of " << leaf_files << " leaves held "
+                                  << (descriptors_at_rest - descriptors_before)
+                                  << " new descriptors; the budget is not per leaf");
+        // RED before the fix: one descriptor per leaf file, held for the life of the tree.
+        REQUIRE(descriptors_at_rest < descriptors_before + 8);
+
+        // And the tree still answers through the released descriptors.
+        REQUIRE(index.find(logical_value_t(&resource, int64_t{777})).size() == 1);
+    }
+
+    std::filesystem::remove_all(path);
+}
+
+// Wave entry #327. Only the ACTIVE segment was read through the store's held descriptor;
+// every read that resolved into a ROTATED segment opened a brand-new descriptor and
+// closed it again -- one open/close pair per find(), for files that never change after
+// rotation. The rotated reads go through a small LRU of held descriptors now, so a scan
+// over the same segments costs a handful of opens, not one per row.
+TEST_CASE("services::index::index_disk::rotated_segments_are_read_through_held_descriptors") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::filesystem::path path{index_fixture_path("bitcask_rotated_read_descriptors")};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    // segment_record_limit 10: 40 keys land as 3 rotated segments plus the active one.
+    auto index = bitcask_index_disk_t(path,
+                                      &resource,
+                                      /*flush_threshold=*/1000,
+                                      /*segment_record_limit=*/10,
+                                      std::pmr::set<std::uint64_t>{});
+    constexpr int64_t key_count = 40;
+    for (int64_t i = 1; i <= key_count; ++i) {
+        index.insert(logical_value_t(&resource, i), static_cast<size_t>(i));
+    }
+    REQUIRE_FALSE(index.force_flush().contains_error());
+
+    services::index::reset_bitcask_rotated_segment_opens();
+    constexpr int rounds = 5;
+    for (int round = 0; round < rounds; ++round) {
+        for (int64_t i = 1; i <= key_count; ++i) {
+            auto rows = index.find(logical_value_t(&resource, i));
+            REQUIRE_FALSE(rows.has_error());
+            REQUIRE(rows.value().size() == 1);
+        }
+    }
+    const auto opens = services::index::bitcask_rotated_segment_opens();
+    INFO("200 probes over ~3 rotated segments performed " << opens << " descriptor opens");
+    // RED before the fix: one open per rotated-key probe (150 for this workload).
+    REQUIRE(opens <= 8);
+
+    std::filesystem::remove_all(path);
 }

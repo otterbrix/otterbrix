@@ -2,12 +2,14 @@
 
 #include <components/index/logical_value_binary_codec.hpp>
 
+#include "absl/crc/crc32c.h"
+
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <mutex>
 #include <random>
 #include <stdexcept>
 
@@ -43,6 +45,22 @@ namespace services::index {
         }
 
         constexpr uint64_t overflow_page_id_base = 1ULL << 40;
+
+        // THE HEADER SEAL (wave #234). hash_index.bin used to carry neither a magic nor a
+        // checksum, so a flipped bit that still produced a plausible field -- a bucket
+        // count off by one re-addresses EVERY key -- was loaded and served. The first 12
+        // bytes of the header page were unused; they now carry the file's NAME and the
+        // proof its fields arrived unchanged: 8 bytes of magic at [0,8) and a CRC32C over
+        // the six header fields [12,40) at [8,12).
+        constexpr char hash_header_magic[8] = {'o', 't', 'b', 'x', 'h', 'a', 's', 'h'};
+        constexpr size_t hash_header_fields_offset = 12;
+        constexpr size_t hash_header_fields_size = 28;
+
+        uint32_t hash_header_crc(const uint8_t* header_page) {
+            return static_cast<uint32_t>(absl::ComputeCrc32c(
+                absl::string_view(reinterpret_cast<const char*>(header_page) + hash_header_fields_offset,
+                                  hash_header_fields_size)));
+        }
 
 #ifdef DEV_MODE
         bool split_crash_failpoint(const char* stage) {
@@ -98,6 +116,16 @@ namespace services::index {
             const char* v = std::getenv("OTTERBRIX_DISK_HASH_SKIP_WIPE_FAILPOINT");
             return v != nullptr && *v != '\0' && std::strcmp(v, "0") != 0;
         }
+
+        // THE CLOSING FLUSH'S FAILURE (wave #117), unstageable from outside for the same
+        // reason as the overflow allocation above: it is a write to an fd this class opened
+        // itself, and nothing done to the path reaches an open descriptor. Armed where the
+        // failure would really happen -- the destructor's persist -- so the report travels
+        // the production path.
+        bool close_flush_failpoint() {
+            const char* v = std::getenv("OTTERBRIX_DISK_HASH_CLOSE_FAILPOINT");
+            return v != nullptr && *v != '\0' && std::strcmp(v, "0") != 0;
+        }
 #else
         bool split_crash_failpoint(const char*) { return false; }
         bool overflow_alloc_failpoint() { return false; }
@@ -106,6 +134,7 @@ namespace services::index {
         // file's own pattern broken for the sake of a single function.
         bool reset_reopen_failpoint() { return false; }
         bool reset_skip_wipe_failpoint() { return false; }
+        bool close_flush_failpoint() { return false; }
 #endif
     } // namespace
 
@@ -157,24 +186,27 @@ namespace services::index {
     }
 
     disk_hash_table_t::~disk_hash_table_t() {
-        std::unique_lock lock(mutex_);
         if (file_) {
-            // Closing flush: nothing above can act on a failure here, but the value is not dropped
-            // silently either.
-            if (!persist_header()) {
-                assert(false && "disk_hash_table: header flush failed on close");
-            }
-            // Same as the header above: nothing above this can act on a closing flush, and
-            // the value is read rather than dropped silently.
-            if (!sync_files()) {
-                assert(false && "disk_hash_table: fsync failed on close");
+            // THE CLOSING FLUSH SAYS SO WHEN IT FAILS (wave #117). This used to be two
+            // assert(false) arms, which -DNDEBUG compiles out -- so in release a failed
+            // closing persist was dropped in complete silence. A destructor has no value
+            // channel (rule 2 forbids the exception that would be the alternative), so the
+            // loud-not-fatal form is a line on stderr, in EVERY build mode -- the same
+            // door bitcask uses for its active-segment tail cut.
+            const bool header_persisted = !close_flush_failpoint() && persist_header();
+            const bool synced = sync_files();
+            if (!header_persisted || !synced) {
+                std::fprintf(stderr,
+                             "disk_hash_table: %s: the closing %s failed; the table's last "
+                             "state may not have reached the device\n",
+                             file_path_.string().c_str(),
+                             header_persisted ? "fsync" : "header flush");
             }
         }
     }
 
     core::error_t
     disk_hash_table_t::put(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset) {
-        std::unique_lock lock(mutex_);
         return put_unlocked(key, value, log_file_id, log_offset);
     }
 
@@ -233,22 +265,15 @@ namespace services::index {
         }
     }
 
-    core::error_t disk_hash_table_t::rehash(uint32_t new_bucket_count) {
-        std::unique_lock lock(mutex_);
-        return rehash_unlocked(new_bucket_count);
-    }
+    core::error_t disk_hash_table_t::rehash(uint32_t new_bucket_count) { return rehash_unlocked(new_bucket_count); }
 
-    core::error_t disk_hash_table_t::trigger_rehash_if_needed() {
-        std::unique_lock lock(mutex_);
-        return maybe_rehash_if_needed_unlocked();
-    }
+    core::error_t disk_hash_table_t::trigger_rehash_if_needed() { return maybe_rehash_if_needed_unlocked(); }
 
     bool disk_hash_table_t::set_auto_rehash_suppressed(bool suppressed) noexcept {
         return suppress_auto_rehash_.exchange(suppressed, std::memory_order_acq_rel);
     }
 
     double disk_hash_table_t::load_factor() const {
-        std::shared_lock lock(mutex_);
         if (header_.bucket_count_value == 0) {
             return 0.0;
         }
@@ -473,13 +498,9 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    uint32_t disk_hash_table_t::bucket_count() const {
-        std::shared_lock lock(mutex_);
-        return header_.bucket_count_value;
-    }
+    uint32_t disk_hash_table_t::bucket_count() const { return header_.bucket_count_value; }
 
     core::error_t disk_hash_table_t::sync() {
-        std::shared_lock lock(mutex_);
         if (!sync_files()) {
             return io_failure("disk_hash_table: " + file_path_.string() + " could not be made durable");
         }
@@ -487,7 +508,6 @@ namespace services::index {
     }
 
     core::error_t disk_hash_table_t::reset_storage() {
-        std::unique_lock lock(mutex_);
         file_.reset();
         ovf_file_.reset();
         // A REFUSED unlink IS A REFUSED WIPE, and the std::error_code the old body collected
@@ -519,6 +539,14 @@ namespace services::index {
         header_ = header_t{};
         header_.bucket_count_value = bucket_count;
         header_.hash_seed_value = hash_seed;
+        // SELF-CONSISTENT IMMEDIATELY, not only after initialize_new_file gets to run.
+        // header_t{} zeroes level/split and the overflow cursor against the KEPT bucket
+        // count -- a state persist_header would happily seal if the re-open below refused
+        // and the destructor's closing flush then ran. The wipe-refusal test caught
+        // exactly that: the closing flush wrote a sealed-but-inconsistent header over the
+        // survived file, and the next open refused it as corruption.
+        header_.next_overflow_page = overflow_page_id_base;
+        RETURN_IF_ERROR(initialize_linear_state_from_bucket_count());
         if (reset_reopen_failpoint()) {
             return io_failure("disk_hash_table: the reset failpoint refused the re-open of " + file_path_.string());
         }
@@ -551,10 +579,16 @@ namespace services::index {
             return io_failure("disk_hash_table: failed to open file " + file_path_.string());
         }
         if (file_->file_size() != 0) {
+            // RELEASE THE HANDLE WITH THE REFUSAL: a table that refused to open holds no
+            // resources, or the destructor's closing flush would write this object's
+            // header over a file it just declined to trust.
+            file_.reset();
             return io_failure("disk_hash_table: " + file_path_.string() + " survived the wipe");
         }
         RETURN_IF_ERROR(open_overflow_file());
         if (ovf_file_->file_size() != 0) {
+            file_.reset();
+            ovf_file_.reset();
             return io_failure("disk_hash_table: " + overflow_file_path_.string() + " survived the wipe");
         }
         return initialize_new_file();
@@ -575,7 +609,6 @@ namespace services::index {
     // is not consulted by anything. It is the table's RESOURCES, and the next successful
     // reset_storage re-opens both files and puts it back to work.
     void disk_hash_table_t::close_storage() {
-        std::unique_lock lock(mutex_);
         file_.reset();
         ovf_file_.reset();
     }
@@ -620,7 +653,10 @@ namespace services::index {
             return initialize_new_file();
         }
         RETURN_IF_ERROR(load_existing_file());
-        entry_count_ = count_entries_unlocked();
+        // The count is assigned only AFTER the walk finished (state changes on success
+        // only): a count that met an unreadable page refuses, and the open hands that on
+        // instead of publishing a load factor that understates the file (wave #30).
+        VALUE_OR_RETURN(entry_count_, count_entries_unlocked());
         return core::error_t::no_error();
     }
 
@@ -643,7 +679,7 @@ namespace services::index {
         // still gets a random seed while one coming out of reset_storage keeps the seed its
         // entries were hashed with -- which is what makes a rebuilt layout reproducible.
         header_.hash_seed_value = header_.hash_seed_value != 0 ? header_.hash_seed_value : generate_hash_seed();
-        initialize_linear_state_from_bucket_count();
+        RETURN_IF_ERROR(initialize_linear_state_from_bucket_count());
 
         RETURN_IF_ERROR(open_overflow_file());
         if (!persist_header()) {
@@ -670,26 +706,54 @@ namespace services::index {
         if (!file_->read(hdr.data(), page_size, 0)) {
             return io_failure("disk_hash_table: failed to read header page");
         }
+        // THE SEAL FIRST (wave #234): the name, then the proof the fields arrived
+        // unchanged, then -- and only then -- any interpretation of them. Without the CRC a
+        // flipped bit that still produced a plausible value was simply LOADED: a bucket
+        // count off by one passes every structural check below and silently re-addresses
+        // every key in the file.
+        if (std::memcmp(hdr.data(), hash_header_magic, sizeof(hash_header_magic)) != 0) {
+            return io_failure("disk_hash_table: " + file_path_.string() +
+                              " does not carry the hash-table magic; refusing to interpret it");
+        }
+        if (codec::read_le_ptr<uint32_t>(hdr.data() + 8) != hash_header_crc(hdr.data())) {
+            return core::error_t{core::error_code_t::data_corruption,
+                                 std::pmr::string{"disk_hash_table: the header checksum of " + file_path_.string() +
+                                                      " does not match its fields",
+                                                  memory_resource_}};
+        }
         header_.page_size_value = codec::read_le_ptr<uint32_t>(hdr.data() + 12);
         header_.bucket_count_value = codec::read_le_ptr<uint32_t>(hdr.data() + 16);
         header_.next_overflow_page = codec::read_le_ptr<uint64_t>(hdr.data() + 20);
         header_.level_value = codec::read_le_ptr<uint32_t>(hdr.data() + 28);
         header_.split_bucket_value = codec::read_le_ptr<uint32_t>(hdr.data() + 32);
-        header_.hash_seed_value = hdr.size() >= 40 ? codec::read_le_ptr<uint32_t>(hdr.data() + 36) : 0;
+        header_.hash_seed_value = codec::read_le_ptr<uint32_t>(hdr.data() + 36);
         if (header_.page_size_value != page_size || header_.bucket_count_value == 0) {
             return io_failure("disk_hash_table: incompatible header");
         }
+        // A LINEAR-HASH STATE THAT DOES NOT DESCRIBE THE BUCKET COUNT IS CORRUPTION, NOT
+        // INPUT (wave #119). What stood here re-derived level/split from the bucket count
+        // and went on -- a silent auto-repair that re-addressed keys mid-split state and
+        // reported nothing. persist_header only ever writes consistent triples, so an
+        // inconsistent one on disk is a damaged file and is refused like one.
         const uint32_t base = header_.level_value > 31 ? 0 : (1U << header_.level_value);
         if (base == 0 || base > header_.bucket_count_value || header_.split_bucket_value > base ||
             (base + header_.split_bucket_value) != header_.bucket_count_value) {
-            initialize_linear_state_from_bucket_count();
+            return core::error_t{core::error_code_t::data_corruption,
+                                 std::pmr::string{"disk_hash_table: the linear-hash state of " + file_path_.string() +
+                                                      " does not describe its bucket count",
+                                                  memory_resource_}};
+        }
+        // SAME VERDICT FOR THE OVERFLOW CURSOR (wave #288): no persist_header ever wrote a
+        // value below the overflow id base, so one on disk is a damaged file -- it used to
+        // be silently clamped up to the base and the open went on.
+        if (header_.next_overflow_page < overflow_page_id_base) {
+            return core::error_t{core::error_code_t::data_corruption,
+                                 std::pmr::string{"disk_hash_table: the overflow cursor of " + file_path_.string() +
+                                                      " points below the overflow page id base",
+                                                  memory_resource_}};
         }
 
-        RETURN_IF_ERROR(open_overflow_file());
-        if (header_.next_overflow_page < overflow_page_id_base) {
-            header_.next_overflow_page = overflow_page_id_base;
-        }
-        return core::error_t::no_error();
+        return open_overflow_file();
     }
 
     bool disk_hash_table_t::is_overflow_page_id(uint64_t page_id) { return page_id >= overflow_page_id_base; }
@@ -722,9 +786,14 @@ namespace services::index {
         return bucket;
     }
 
-    void disk_hash_table_t::initialize_linear_state_from_bucket_count() {
+    core::error_t disk_hash_table_t::initialize_linear_state_from_bucket_count() {
         if (header_.bucket_count_value == 0) {
+            // The assert that stood alone here is compiled out under NDEBUG, and the
+            // fall-through computed split_bucket = 0 - 1 = UINT32_MAX and kept running
+            // (wave #166). The refusal is a value now, so a release build refuses the
+            // same state a debug build refuses.
             assert(false && "disk_hash_table: bucket_count must be > 0");
+            return io_failure("disk_hash_table: cannot derive a linear-hash state from zero buckets");
         }
         uint32_t base = 1;
         uint32_t level = 0;
@@ -734,9 +803,10 @@ namespace services::index {
         }
         header_.level_value = level;
         header_.split_bucket_value = header_.bucket_count_value - base;
+        return core::error_t::no_error();
     }
 
-    uint64_t disk_hash_table_t::count_entries_unlocked() const {
+    core::result_wrapper_t<uint64_t> disk_hash_table_t::count_entries_unlocked() const {
         uint64_t count = 0;
         byte_buffer_t page(memory_resource_);
         page.resize(page_size);
@@ -744,7 +814,10 @@ namespace services::index {
             uint64_t page_id = bucket_primary_page_id(bucket);
             while (page_id != 0) {
                 if (!read_page(page_id, page)) {
-                    break; // unreadable page: stop walking this chain
+                    // A count that could not finish REFUSES (wave #30): the `break` that
+                    // stood here answered with the readable part, which the open then
+                    // published as the whole entry count.
+                    return page_read_failure(page_id);
                 }
                 const auto cnt = page_count(page);
                 for (uint16_t i = 0; i < cnt; ++i) {
@@ -888,6 +961,26 @@ namespace services::index {
                                                        bool& changed) {
         const uint16_t free_off = page_free_offset(page);
         const uint16_t cnt = page_count(page);
+        // AN ERASED SLOT IS REUSED FIRST (wave #234). Every insert used to append a new
+        // slot and new payload bytes even while freed slots sat in the directory, so a
+        // put/erase workload marched the page to exhaustion and grew an overflow chain for
+        // a table whose live contents never grew at all. A freed slot whose payload area
+        // is wide enough takes the new entry in place; its recorded length is KEPT (the
+        // entry self-describes its own extent), so the hole's full capacity survives for
+        // the next reuse instead of shrinking on every cycle.
+        for (uint16_t i = 0; i < cnt; ++i) {
+            auto slot = read_slot(page, i);
+            if (slot.flags != slot_flag_free || slot.length < payload.size() ||
+                static_cast<uint32_t>(slot.offset) + slot.length > page_size) {
+                continue;
+            }
+            std::memcpy(page.data() + slot.offset, payload.data(), payload.size());
+            slot.flags = slot_flag_used;
+            slot.key_hash = key_hash;
+            write_slot(page, i, slot);
+            changed = true;
+            return true;
+        }
         const uint16_t dir_start = slot_dir_offset(cnt);
         const auto required = static_cast<size_t>(free_off) + payload.size() + static_cast<size_t>(slot_size);
         const auto available_limit = static_cast<size_t>(dir_start) + static_cast<size_t>(slot_size);
@@ -938,7 +1031,10 @@ namespace services::index {
             return 0; // the answer a failed page write below produces; see the seam's note
         }
         if (header_.next_overflow_page < overflow_page_id_base) {
-            header_.next_overflow_page = overflow_page_id_base;
+            // Unreachable while the load-time check (wave #288) holds -- the clamp that
+            // stood here hid exactly that corruption. Refuse through the same door a
+            // failed page write uses: a cursor below the base would address the MAIN file.
+            return 0;
         }
         const uint64_t page_id = header_.next_overflow_page++;
         byte_buffer_t page(memory_resource_);
@@ -959,6 +1055,10 @@ namespace services::index {
         codec::write_le_ptr<uint32_t>(hdr.data() + 28, header_.level_value);
         codec::write_le_ptr<uint32_t>(hdr.data() + 32, header_.split_bucket_value);
         codec::write_le_ptr<uint32_t>(hdr.data() + 36, header_.hash_seed_value);
+        // The seal goes last, over the fields as written (wave #234): the magic names the
+        // file, the CRC proves the six fields above came back unchanged.
+        std::memcpy(hdr.data(), hash_header_magic, sizeof(hash_header_magic));
+        codec::write_le_ptr<uint32_t>(hdr.data() + 8, hash_header_crc(hdr.data()));
         if (!file_->write(hdr.data(), page_size, 0)) {
             return false;
         }

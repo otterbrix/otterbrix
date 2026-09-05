@@ -77,8 +77,13 @@ namespace core::b_plus_tree {
 
         class leaf_node_t : public base_node_t {
         public:
+            // LAZY-MODE LEAF (wave #326): the segment tree underneath remembers where its
+            // file is and holds no descriptor at rest. This is the only production door;
+            // the pinned-handle segment_tree_t ctor remains as the unit tests' fault
+            // seam and is not reachable through btree_t.
             leaf_node_t(std::pmr::memory_resource* resource,
-                        std::unique_ptr<filesystem::file_handle_t> file,
+                        filesystem::local_file_system_t& fs,
+                        filesystem::path_t file_path,
                         index_t (*func)(const item_data&),
                         uint64_t segment_tree_id,
                         size_t min_node_capacity,
@@ -92,7 +97,7 @@ namespace core::b_plus_tree {
             bool append(const index_t& index, item_data item);
             bool remove(const index_t& index, item_data item);
             bool remove_index(const index_t& index);
-            [[nodiscard]] leaf_node_t* split(std::unique_ptr<filesystem::file_handle_t> file, uint64_t segment_tree_id);
+            [[nodiscard]] leaf_node_t* split(filesystem::path_t file_path, uint64_t segment_tree_id);
             void balance(base_node_t* neighbour) override;
             [[nodiscard]] bool merge(base_node_t* neighbour) override;
 

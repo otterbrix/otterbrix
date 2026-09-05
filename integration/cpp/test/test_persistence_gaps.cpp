@@ -6,9 +6,11 @@
 #include <string>
 #include <vector>
 
-// Persistence gaps: restart/crash scenarios that the write path must survive but (as of
-// the branch point) does not. Each test encodes the DESIRED behavior; on HEAD they are
-// expected to fail (red-first proof for the fixes that follow).
+// Persistence gaps: restart/crash scenarios the write path must survive. Each test
+// encodes the DESIRED behavior and was written RED at the branch point, before the fix
+// it describes; each is now green and stands as the regression guard for that fix. The
+// diagnoses below are kept in the PAST tense on purpose — they say what the defect was,
+// which is what makes a future regression recognisable.
 //
 // 1a/1b. type_spec_lost_across_restart_{decimal,list} — the .otbx checkpoint serializes
 //    each column type as ONE byte (data_table.cpp checkpoint():
@@ -21,9 +23,17 @@
 //    LIST leg), so a variadic-list INSERT record crashes WAL replay at startup. The two
 //    variants are separate TEST_CASEs on purpose: the list crash is a process-killing
 //    SIGSEGV and must not mask the decimal symptom.
-// 2. default_lost_across_restart — column DEFAULTs are applied from the storage-layer
-//    column list, and the restart rehydration rebuilds that list from pg_attribute
-//    WITHOUT defaults (manager_disk_bootstrap.cpp: defs.emplace_back(name, type)).
+// 2. default_lost_across_restart — column DEFAULTs USED TO be applied from the
+//    storage-layer column list, and the restart rehydration rebuilt that list from
+//    pg_attribute WITHOUT defaults (manager_disk_bootstrap.cpp: defs.emplace_back(name,
+//    type)), so a default silently became NULL in every session after the first. A2b
+//    moved the expansion ABOVE the journal: the dispatcher's enrich pass stamps the
+//    omitted columns and their values onto node_insert (build_insert_fill_list, the one
+//    reader of pg_attribute.attdefspec on the write path) and operator_insert
+//    materialises them before the append. The value now comes from the catalog, which
+//    survives a restart, and the constraint operators read the stored row rather than a
+//    plan-side guess — see test_persistence::default_{check,unique}_constraint_agrees_
+//    after_restart for the convergence of those two.
 // 3. create_then_kill_before_checkpoint — a freshly created .otbx that was never
 //    checkpointed still has meta_block == INVALID_INDEX in its header; after a crash
 //    (simulated by copying the live directory), reopening the copy must still start the
@@ -209,8 +219,9 @@ TEST_CASE("integration::cpp::test_persistence_gaps::default_lost_across_restart"
         }
 
         // NOT NULL DEFAULT: after the restart the INSERT must still succeed AND land the
-        // row (on HEAD the lost default makes the agent reject the row while the cursor
-        // still reports success — "success, 0 rows").
+        // row. Before A2b the lost default made the agent reject the row while the cursor
+        // still reported success — "success, 0 rows" — so the row count is asserted
+        // separately from the verdict and neither alone is enough.
         {
             auto ins = exec("INSERT INTO b.t2 (id) VALUES (1);");
             INFO("INSERT omitting a NOT NULL DEFAULT column after restart");

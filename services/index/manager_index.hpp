@@ -251,8 +251,10 @@ namespace services::index {
         // manager's own configuration -- which is what makes bootstrap and runtime CREATE INDEX
         // raise IDENTICAL agents.
         //
-        // committed_txn_ids: the WAL-replay set of committed transaction ids, used by the hashed
-        // family's txn-log recover gate; the ordered family ignores it (no log).
+        // committed_commit_ids: the WAL-replay set of the COMMIT IDS every durable COMMIT marker
+        // carries, used by the hashed family's txn-log recover gate; the ordered family ignores it
+        // (no log). COMMIT ids and not txn ids: only the commit clock is re-derived from the
+        // durable frontier at reopen, so only a commit id names one transaction across restarts.
         //
         // Returns the reason the index could not be brought up -- an unregistered table (bootstrap
         // order violated), a duplicate row, an unsupported type, or a storage that would not open.
@@ -262,7 +264,7 @@ namespace services::index {
                                                          components::catalog::oid_t index_oid,
                                                          components::logical_plan::index_type type,
                                                          components::index::keys_base_storage_t keys,
-                                                         std::pmr::set<std::uint64_t> committed_txn_ids);
+                                                         std::pmr::set<std::uint64_t> committed_commit_ids);
 
         // Restore a dropped-table entry from pg_class.delete_id (alias of
         // mark_table_dropped_sync).
@@ -517,7 +519,12 @@ namespace services::index {
             // Which bucket the agent must publish when the wait is over. The hashed family
             // also journals under it, which is why it is carried rather than re-derived.
             uint64_t txn_id{0};
-            // The horizon this batch is waiting for.
+            // The horizon this batch is waiting for -- AND the identity the hashed family stamps
+            // into the txn-log frame it writes when the sweep finally fires. Two jobs for one
+            // number, both of them requiring the SAME number: the erase may only be published once
+            // no live snapshot predates this commit, and the frame may only be replayed if this
+            // commit's WAL marker is durable. Re-deriving either from the txn id is what the reuse
+            // bug was (bitcask_index_disk.cpp, recover_txn_log).
             uint64_t commit_id{0};
         };
 
@@ -657,7 +664,7 @@ namespace services::index {
         spawn_disk_agent(components::catalog::oid_t table_oid,
                          components::catalog::oid_t index_oid,
                          components::logical_plan::index_type type,
-                         std::pmr::set<std::uint64_t> committed_txn_ids);
+                         std::pmr::set<std::uint64_t> committed_commit_ids);
 
         // Take every disk agent of `table_oid` out of the manager: its records leave
         // indexes_per_oid_ and its owners leave the vectors above. The agents are matched

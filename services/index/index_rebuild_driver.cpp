@@ -44,18 +44,19 @@ namespace services::index {
 
         std::pmr::vector<components::catalog::oid_t> indexed_oids{resource};
         {
-            auto [_io, iof] =
-                actor_zeta::send(index_address, &services::index::manager_index_t::all_indexed_oids, session);
+            auto [_io, iof] = actor_zeta::otterbrix::send(index_address,
+                                                          &services::index::manager_index_t::all_indexed_oids,
+                                                          session);
             indexed_oids = co_await std::move(iof);
         }
 
         for (const auto table_oid : indexed_oids) {
             std::uint64_t total = 0;
             {
-                auto [_tr, trf] = actor_zeta::send(disk_address,
-                                                   &services::disk::manager_disk_t::storage_total_rows,
-                                                   session,
-                                                   table_oid);
+                auto [_tr, trf] = actor_zeta::otterbrix::send(disk_address,
+                                                              &services::disk::manager_disk_t::storage_total_rows,
+                                                              session,
+                                                              table_oid);
                 auto total_r = co_await std::move(trf);
                 if (total_r.has_error()) {
                     // The same refusal the scan below would hit, one round-trip earlier: an
@@ -79,15 +80,16 @@ namespace services::index {
                 uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
                 core::error_t scan_error = core::error_t::no_error();
                 while (true) {
-                    auto [_ss, ssf] = actor_zeta::send(disk_address,
-                                                       &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                                       session,
-                                                       table_oid,
-                                                       cursor_id,
-                                                       std::unique_ptr<components::table::table_filter_t>(nullptr),
-                                                       /*limit=*/int64_t{-1},
-                                                       std::vector<size_t>{},
-                                                       txn);
+                    auto [_ss, ssf] =
+                        actor_zeta::otterbrix::send(disk_address,
+                                                    &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                    session,
+                                                    table_oid,
+                                                    cursor_id,
+                                                    std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                    /*limit=*/int64_t{-1},
+                                                    std::vector<size_t>{},
+                                                    txn);
                     auto scan_r = co_await std::move(ssf);
                     if (scan_r.has_error()) {
                         scan_error = scan_r.error();
@@ -102,24 +104,25 @@ namespace services::index {
                 }
                 if (scan_error.contains_error()) {
                     if (cursor_id != 0) {
-                        auto [_cc, ccf] = actor_zeta::send(disk_address,
-                                                           &services::disk::manager_disk_t::storage_close_cursor,
-                                                           session,
-                                                           table_oid,
-                                                           cursor_id);
+                        auto [_cc, ccf] =
+                            actor_zeta::otterbrix::send(disk_address,
+                                                        &services::disk::manager_disk_t::storage_close_cursor,
+                                                        session,
+                                                        table_oid,
+                                                        cursor_id);
                         co_await std::move(ccf);
                     }
                     co_return scan_error;
                 }
             }
 
-            auto [_rp, rpf] = actor_zeta::send(index_address,
-                                               &services::index::manager_index_t::repopulate_table,
-                                               session,
-                                               table_oid,
-                                               std::move(scan_data),
-                                               total,
-                                               session_tz);
+            auto [_rp, rpf] = actor_zeta::otterbrix::send(index_address,
+                                                          &services::index::manager_index_t::repopulate_table,
+                                                          session,
+                                                          table_oid,
+                                                          std::move(scan_data),
+                                                          total,
+                                                          session_tz);
             auto repopulate_error = co_await std::move(rpf);
             if (repopulate_error.contains_error()) {
                 // A producer defect in the rebuild feed (scan chunks without physical

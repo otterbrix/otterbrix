@@ -95,20 +95,23 @@ namespace services::index {
         // handed to anyone. Splitting them is what the by-value store costs and all it costs -- the
         // store is not movable, so it cannot be built elsewhere and moved in.
         //
-        // committed_txn_ids: the WAL-replay set of committed transaction ids, forwarded to the
-        // txn-log recover gate. Fresh, post-bootstrap agents pass an EMPTY set. This parameter
-        // exists ONLY here: the ordered family owns no txn log and its factory does not take one.
+        // committed_commit_ids: the WAL-replay set of the COMMIT IDS every durable COMMIT marker
+        // carries, forwarded to the txn-log recover gate. Fresh, post-bootstrap agents pass an
+        // EMPTY set. This parameter exists ONLY here: the ordered family owns no txn log and its
+        // factory does not take one. COMMIT ids and not txn ids, because only the commit clock is
+        // re-derived from the durable frontier at reopen -- see the gate in bitcask_index_disk.cpp.
         //
         // index_oid = pg_index.indexrelid; the agent's on-disk directory is
         // ${path_db}/${table_oid}/${index_oid}/ -- oid-keyed, never name-keyed.
-        [[nodiscard]] static core::result_wrapper_t<agent_ptr_t> create(std::pmr::memory_resource* resource,
-                                                                        const path_t& path_db,
-                                                                        components::catalog::oid_t table_oid,
-                                                                        components::catalog::oid_t index_oid,
-                                                                        uint64_t flush_threshold,
-                                                                        uint64_t segment_record_limit,
-                                                                        log_t& log,
-                                                                        std::pmr::set<std::uint64_t> committed_txn_ids);
+        [[nodiscard]] static core::result_wrapper_t<agent_ptr_t>
+        create(std::pmr::memory_resource* resource,
+               const path_t& path_db,
+               components::catalog::oid_t table_oid,
+               components::catalog::oid_t index_oid,
+               uint64_t flush_threshold,
+               uint64_t segment_record_limit,
+               log_t& log,
+               std::pmr::set<std::uint64_t> committed_commit_ids);
 
         // BUILDS THE STORE, it does not receive one. The store is a member BY VALUE and cannot be
         // moved into place (bitcask_index_disk_t's deleted copy ctor suppresses the implicit move),
@@ -124,7 +127,7 @@ namespace services::index {
                               uint64_t flush_threshold,
                               uint64_t segment_record_limit,
                               log_t& log,
-                              std::pmr::set<std::uint64_t> committed_txn_ids);
+                              std::pmr::set<std::uint64_t> committed_commit_ids);
         ~bitcask_index_agent_t();
 
         [[nodiscard]] components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
@@ -135,8 +138,8 @@ namespace services::index {
         stage_inserts(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
         unique_future<core::error_t>
         stage_deletes(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
-        unique_future<core::error_t> commit_inserts(session_id_t session, uint64_t txn_id);
-        unique_future<core::error_t> commit_deletes(session_id_t session, uint64_t txn_id);
+        unique_future<core::error_t> commit_inserts(session_id_t session, uint64_t txn_id, uint64_t commit_id);
+        unique_future<core::error_t> commit_deletes(session_id_t session, uint64_t txn_id, uint64_t commit_id);
         unique_future<core::error_t> revert_inserts(session_id_t session, uint64_t txn_id);
         unique_future<core::error_t> revert_deletes(session_id_t session, uint64_t txn_id);
         unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>

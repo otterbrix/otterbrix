@@ -80,17 +80,25 @@ namespace services::index {
         // VALUES a caller acts on instead of aborts inside a constructor that rule 2 forbids from
         // refusing.
         //
-        // committed_txn_ids: the WAL-replay set of committed transaction ids; the txn-log recover
-        // gate applies a frame only when its txn_id is in the set (an uncommitted frame's WAL
-        // commit marker never landed). A fresh, runtime-created instance passes an EMPTY set.
-        // Stored HERE, by this ctor, so the gate is armed before open() runs recovery.
+        // committed_commit_ids: the WAL-replay set of the COMMIT IDS every durable COMMIT marker
+        // carries; the txn-log recover gate applies a frame only when the commit id stamped into
+        // it is in the set (an uncommitted frame's WAL commit marker never landed). A fresh,
+        // runtime-created instance passes an EMPTY set. Stored HERE, by this ctor, so the gate is
+        // armed before open() runs recovery.
+        //
+        // COMMIT IDS AND NOT TXN IDS, and that is the whole of the reuse fix: txn ids restart at
+        // TRANSACTION_ID_START every process (transaction_manager_t::next_transaction_id_ is never
+        // seeded from the journal), so a marker written by an EARLIER incarnation vouches for the
+        // frame of a LATER one that never committed. Commit ids are the opposite -- every reopen
+        // raises current_timestamp_ past the durable frontier (restore_commit_clock), so one is
+        // never issued twice and membership means exactly "this transaction committed".
         struct deferred_open_t {};
 
         bitcask_index_disk_t(const path_t& path,
                              std::pmr::memory_resource* resource,
                              uint64_t flush_threshold,
                              uint64_t segment_record_limit,
-                             std::pmr::set<std::uint64_t> committed_txn_ids,
+                             std::pmr::set<std::uint64_t> committed_commit_ids,
                              deferred_open_t);
 
         // CONSTRUCT AND OPEN IN ONE STEP, aborting on a failure it has no way to report (rule 2: a
@@ -103,7 +111,7 @@ namespace services::index {
                              std::pmr::memory_resource* resource,
                              uint64_t flush_threshold,
                              uint64_t segment_record_limit,
-                             std::pmr::set<std::uint64_t> committed_txn_ids);
+                             std::pmr::set<std::uint64_t> committed_commit_ids);
         ~bitcask_index_disk_t();
 
         bitcask_index_disk_t(const bitcask_index_disk_t&) = delete;
@@ -196,9 +204,16 @@ namespace services::index {
         // surfaces a core::error_t so the manager's commit handler can return an index-side abort
         // instead of taking the whole process down. True logic invariants (corrupt magic, bad
         // op_kind) stay asserts in the recovery path.
+        //
+        // commit_id IS PART OF THE JOURNALLED FACT, not decoration: it is what the recover gate
+        // matches against the WAL's committed set, and it is the only identifier in the frame that
+        // cannot be handed out twice across restarts. Both doors take it and both stamp it into
+        // the frame they append.
         [[nodiscard]] core::error_t apply_txn_inserts(uint64_t txn_id,
+                                                      uint64_t commit_id,
                                                       const std::vector<std::pair<value_t, size_t>>& values);
         [[nodiscard]] core::error_t apply_txn_deletes(uint64_t txn_id,
+                                                      uint64_t commit_id,
                                                       const std::vector<std::pair<value_t, size_t>>& values);
         // Bulk-load fast path: skips the per-operation dedup find() and the per-operation flush;
         // force_flush() persists once at the end. WHAT THE CALLER GUARANTEES: each (key, row_id)
@@ -309,6 +324,7 @@ namespace services::index {
         // error if the txn-log file cannot be opened (the only recoverable IO
         // failure on this path; write/sync surface through the file handle).
         [[nodiscard]] core::error_t append_txn_record(uint64_t txn_id,
+                                                      uint64_t commit_id,
                                                       uint8_t op_kind,
                                                       const std::vector<std::pair<value_t, size_t>>& values);
         // A TXN LOG THAT CANNOT BE READ IS NOT AN EMPTY ONE: returning silently on an
@@ -455,14 +471,14 @@ namespace services::index {
         // paths: the flag is only ever read from inside a handler, and a handler is the only thing
         // running.
         bool merge_pending_{false};
-        // WAL-replay committed transaction ids -- the recover gate applies a txn-log frame only
-        // when committed_txn_ids_.count(header.txn_id) > 0. Allocated on resource_, empty for a
-        // fresh runtime-created instance. A SET IS WEAKER THAN THE RULE IT STANDS FOR: txn ids are
-        // recycled across restarts, so an id in here may have been committed by an EARLIER
-        // incarnation than the frame that names it, and membership then vouches for a frame that
-        // never committed. The gate itself (recover_txn_log, bitcask_index_disk.cpp) carries what
-        // that costs and what closing it needs.
-        std::pmr::set<std::uint64_t> committed_txn_ids_;
+        // WAL-replay committed COMMIT IDS -- the recover gate applies a txn-log frame only when
+        // committed_commit_ids_.count(header.commit_id) > 0. Allocated on resource_, empty for a
+        // fresh runtime-created instance. MEMBERSHIP IS THE WHOLE TEST HERE, unlike the txn-id set
+        // this replaced: a commit id is issued once in the life of the database (restore_commit_clock
+        // raises the clock past the durable frontier at every reopen), so an id in here belongs to
+        // the one transaction that wrote the marker carrying it and to no other incarnation. The
+        // gate itself (recover_txn_log, bitcask_index_disk.cpp) carries the argument in full.
+        std::pmr::set<std::uint64_t> committed_commit_ids_;
         // Set by load_from_disk when a ROTATED segment's CRC check fails, and only then. Nothing
         // has appended to a rotated segment since the day it was rotated, so bytes that will not
         // verify there are a DAMAGED FILE and the records behind them are rows find() would

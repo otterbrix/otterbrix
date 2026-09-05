@@ -54,6 +54,15 @@ using services::index::manager_index_t;
 
 namespace {
 
+    // THE COMMIT ID A FIXTURE'S TRANSACTION COMMITTED AT, kept far from the txn id it is derived
+    // from because the two are different id spaces. The txn id says WHICH BUCKET to publish; the
+    // commit id is what the hashed family stamps into its durable txn-log frame and what the
+    // recover gate judges the frame by (bitcask_index_disk.cpp). One number serving as both is
+    // exactly the confusion that let a COMMIT marker of an earlier incarnation vouch for a later
+    // one's frame under a recycled txn id. The rebuild feed (txn_id 0) journals nothing and
+    // carries commit id 0.
+    constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
+
     constexpr components::catalog::oid_t kTableOid = 17400;
     constexpr components::catalog::oid_t kIndexOid = 17401;
 
@@ -169,7 +178,9 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     REQUIRE_FALSE(
         ask<&index_agent_contract::stage_inserts>(agent, session, writer_txn, one_entry(&resource, 42, 7))
             .contains_error());
-    REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, writer_txn).contains_error());
+    REQUIRE_FALSE(
+        ask<&index_agent_contract::commit_inserts>(agent, session, writer_txn, commit_id_of(writer_txn))
+            .contains_error());
 
     const auto probe = [&](uint64_t txn_id) {
         auto answer = ask<&index_agent_contract::read_rows>(agent,
@@ -260,7 +271,9 @@ TEST_CASE("services::index::tearing an index down drops the erases it was still 
     REQUIRE_FALSE(
         ask<&index_agent_contract::stage_inserts>(agent, session, deleter_txn, one_entry(&resource, 11, 3))
             .contains_error());
-    REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, deleter_txn).contains_error());
+    REQUIRE_FALSE(
+        ask<&index_agent_contract::commit_inserts>(agent, session, deleter_txn, commit_id_of(deleter_txn))
+            .contains_error());
     REQUIRE_FALSE(
         ask<&index_agent_contract::stage_deletes>(agent, session, deleter_txn, one_entry(&resource, 11, 3))
             .contains_error());

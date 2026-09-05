@@ -115,8 +115,23 @@ namespace services::index {
         // yet durable), which is the pair the commit path has always folded together.
         // Returns the IO failure as a VALUE so manager_index_t's commit handlers can fail
         // the statement instead of the process.
-        unique_future<core::error_t> commit_inserts(session_id_t session, uint64_t txn_id);
-        unique_future<core::error_t> commit_deletes(session_id_t session, uint64_t txn_id);
+        //
+        // commit_id IS CARRIED FOR THE DURABLE JOURNAL, and the hashed family is the only one that
+        // spends it: it goes into the txn-log frame, and the recover gate matches it against the
+        // WAL's committed COMMIT-ID set. It has to be a CONTRACT parameter rather than a bitcask-only
+        // one -- the message id is this method's POSITION in dispatch_traits, so a parameter added on
+        // one side only would send every later handler's messages to the wrong body. The ordered
+        // family takes it and does not use it, which is the honest shape: an agent that keeps no
+        // journal has nothing to stamp.
+        //
+        // WHY THE COMMIT ID AND NOT THE TXN ID DECIDES THE REPLAY: txn ids restart at
+        // TRANSACTION_ID_START in every process, so a marker of an earlier incarnation vouches for a
+        // later one's frame of the same id; commit ids are re-derived from the durable frontier at
+        // every reopen (transaction_manager_t::restore_commit_clock) and are never handed out twice.
+        // 0 is the "no commit id" value (the clock starts at 1) and the txn_id == 0 rebuild feed,
+        // which journals nothing, is the one caller that passes it.
+        unique_future<core::error_t> commit_inserts(session_id_t session, uint64_t txn_id, uint64_t commit_id);
+        unique_future<core::error_t> commit_deletes(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
         // DISCARD this transaction's bucket. Nothing durable was written for it, so the
         // abort is a bucket erase and touches no store.
@@ -194,6 +209,7 @@ namespace services::index {
         requires(agent_t& agent,
                  index_agent_contract::session_id_t session,
                  uint64_t txn_id,
+                 uint64_t commit_id,
                  std::vector<std::pair<index_agent_contract::value_t, size_t>> values,
                  index_agent_contract::value_t key,
                  actor_zeta::mailbox::message* msg) {
@@ -201,8 +217,8 @@ namespace services::index {
         { agent.clear(session) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
         { agent.stage_inserts(session, txn_id, values) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
         { agent.stage_deletes(session, txn_id, values) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
-        { agent.commit_inserts(session, txn_id) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
-        { agent.commit_deletes(session, txn_id) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
+        { agent.commit_inserts(session, txn_id, commit_id) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
+        { agent.commit_deletes(session, txn_id, commit_id) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
         { agent.revert_inserts(session, txn_id) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
         { agent.revert_deletes(session, txn_id) } -> std::same_as<actor_zeta::unique_future<core::error_t>>;
         {

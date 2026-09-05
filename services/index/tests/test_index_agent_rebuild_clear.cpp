@@ -74,6 +74,15 @@ using services::index::index_agent_contract;
 
 namespace {
 
+    // THE COMMIT ID A FIXTURE'S TRANSACTION COMMITTED AT, kept far from the txn id it is derived
+    // from because the two are different id spaces. The txn id says WHICH BUCKET to publish; the
+    // commit id is what the hashed family stamps into its durable txn-log frame and what the
+    // recover gate judges the frame by (bitcask_index_disk.cpp). One number serving as both is
+    // exactly the confusion that let a COMMIT marker of an earlier incarnation vouch for a later
+    // one's frame under a recycled txn id. The rebuild feed (txn_id 0) journals nothing and
+    // carries commit id 0.
+    constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
+
     constexpr components::catalog::oid_t kTableOid = 17500;
     constexpr components::catalog::oid_t kIndexOid = 17501;
 
@@ -145,12 +154,15 @@ namespace {
             REQUIRE_FALSE(
                 ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(resource, {{99, 3}}))
                     .contains_error());
-            REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}).contains_error());
+            REQUIRE_FALSE(
+                ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
             // ---------------------------------------------------------------------------
 
             // The writer commits. Its batch was staged, never reverted and never dropped, so
             // this commit owes the index row 7.
-            REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, writer).contains_error());
+            REQUIRE_FALSE(
+                ask<&index_agent_contract::commit_inserts>(agent, session, writer, commit_id_of(writer))
+                    .contains_error());
 
             // What this catches: a wiped bucket turning commit_inserts into a no-op that still
             // reports success, so the heap keeps the row and the index does not.
@@ -165,7 +177,8 @@ namespace {
             REQUIRE_FALSE(
                 ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(resource, {{42, 7}}))
                     .contains_error());
-            REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}).contains_error());
+            REQUIRE_FALSE(
+                ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
             REQUIRE(read(42, onlooker) == std::vector<int64_t>{7});
 
             // The writer stages the delete and has not committed it.
@@ -179,10 +192,13 @@ namespace {
             REQUIRE_FALSE(
                 ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(resource, {{42, 7}}))
                     .contains_error());
-            REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}).contains_error());
+            REQUIRE_FALSE(
+                ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
             // ---------------------------------------------------------------------------
 
-            REQUIRE_FALSE(ask<&index_agent_contract::commit_deletes>(agent, session, writer).contains_error());
+            REQUIRE_FALSE(
+                ask<&index_agent_contract::commit_deletes>(agent, session, writer, commit_id_of(writer))
+                    .contains_error());
 
             // What this catches: the delete reported as landed while the row stays in the
             // rebuilt index for every later reader.

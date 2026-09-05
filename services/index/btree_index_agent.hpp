@@ -127,8 +127,14 @@ namespace services::index {
         stage_inserts(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
         unique_future<core::error_t>
         stage_deletes(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
-        unique_future<core::error_t> commit_inserts(session_id_t session, uint64_t txn_id);
-        unique_future<core::error_t> commit_deletes(session_id_t session, uint64_t txn_id);
+        // commit_id is taken and NOT spent here, and that is the honest shape rather than an
+        // oversight: it exists so the hashed family can stamp its durable txn-log frame with an
+        // identity no restart hands out twice, and this family keeps no journal at all. It cannot be
+        // a bitcask-only parameter either -- the contract is POSITIONAL by msg_id, so both classes
+        // carry it or neither does (index_agent_contract.hpp). It is traced, so a publish can still
+        // be tied to the transaction that caused it.
+        unique_future<core::error_t> commit_inserts(session_id_t session, uint64_t txn_id, uint64_t commit_id);
+        unique_future<core::error_t> commit_deletes(session_id_t session, uint64_t txn_id, uint64_t commit_id);
         unique_future<core::error_t> revert_inserts(session_id_t session, uint64_t txn_id);
         unique_future<core::error_t> revert_deletes(session_id_t session, uint64_t txn_id);
         unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>

@@ -131,10 +131,23 @@ namespace services::index {
             uint64_t timestamp;
         };
 
+        // THE COMMIT ID IS THE FIELD THE RECOVER GATE JUDGES BY, and it sits inside the CRC's
+        // range with everything else (the range is sizeof(header) minus magic and crc, so adding a
+        // member to the middle extends it and needs no second edit). txn_id stays because it is
+        // what the frame's rows belong to and what the diagnostics name; it is NOT what the gate
+        // compares, because it is reused across restarts and a commit id never is.
+        //
+        // THE FORMAT HAS NO VERSION AND NEEDS NO MIGRATION. A log written by a build without
+        // commit_id has a 32-byte header where this one reads 40: its first frame fails the CRC
+        // check, recover_txn_log ends the walk there, and the lazy open in append_txn_record cuts
+        // the file -- the same road a torn tail takes. Those frames are dropped rather than
+        // misread, which is the conservative side: an unapplied frame that never replays leaves
+        // the segments exactly as the previous run left them.
         struct txn_frame_header_t {
             uint32_t magic;
             uint32_t crc;
             uint64_t txn_id;
+            uint64_t commit_id;
             uint8_t op_kind; // 1=insert, 2=delete(row)
             uint64_t payload_size;
         };
@@ -536,7 +549,7 @@ namespace services::index {
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
                                                uint64_t segment_record_limit,
-                                               std::pmr::set<std::uint64_t> committed_txn_ids,
+                                               std::pmr::set<std::uint64_t> committed_commit_ids,
                                                deferred_open_t)
         : resource_(resource)
         , flush_threshold_(flush_threshold)
@@ -544,7 +557,7 @@ namespace services::index {
         , hash_index_file_path_(path_ / hash_index_file)
         , fs_(core::filesystem::local_file_system_t())
         , segment_record_limit_(segment_record_limit)
-        , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {}
+        , committed_commit_ids_(committed_commit_ids.begin(), committed_commit_ids.end(), resource) {}
 
     // THE WHOLE OPEN, as a value. The keydir opens here and the reason it could not is this
     // function's RETURN rather than a flag on the object: nothing after the failing step has run,
@@ -600,12 +613,12 @@ namespace services::index {
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
                                                uint64_t segment_record_limit,
-                                               std::pmr::set<std::uint64_t> committed_txn_ids)
+                                               std::pmr::set<std::uint64_t> committed_commit_ids)
         : bitcask_index_disk_t(path,
                                resource,
                                flush_threshold,
                                segment_record_limit,
-                               std::move(committed_txn_ids),
+                               std::move(committed_commit_ids),
                                deferred_open_t{}) {
         if (const auto open_error = open(); open_error.contains_error()) {
             std::fprintf(stderr,
@@ -1594,6 +1607,7 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::append_txn_record(uint64_t txn_id,
+                                                          uint64_t commit_id,
                                                           uint8_t op_kind,
                                                           const std::vector<std::pair<value_t, size_t>>& values) {
         // The third write door, sealed for the same reason as the two segment doors: the
@@ -1610,6 +1624,7 @@ namespace services::index {
         txn_frame_header_t header{};
         header.magic = txn_magic;
         header.txn_id = txn_id;
+        header.commit_id = commit_id;
         header.op_kind = op_kind;
         header.payload_size = static_cast<uint64_t>(payload.size());
 
@@ -1710,21 +1725,22 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    // Replay the index txn log, gated by the WAL committed-txn set.
+    // Replay the index txn log, gated by the WAL committed COMMIT-ID set.
     //
     // Invariant: index txn-log frames are fsync'd durable BEFORE the WAL commit marker is written,
     // so a crash inside that window leaves durable index frames for a transaction whose WAL replay
     // rejects. Replaying such a frame would resurrect an uncommitted transaction's index entries,
-    // so the gate APPLIES a frame only when its txn_id is in committed_txn_ids_; every frame,
-    // applied or skipped, still advances write_applied_log_offset(frame_end) so the log is consumed
-    // monotonically. There is no txn_id==0 frame class -- both writers are guarded txn_id!=0.
+    // so the gate APPLIES a frame only when the COMMIT ID stamped into it is in
+    // committed_commit_ids_; every frame, applied or skipped, still advances
+    // write_applied_log_offset(frame_end) so the log is consumed monotonically. There is no
+    // txn_id==0 frame class -- both writers are guarded txn_id!=0.
     //
-    // AND MEMBERSHIP DOES NOT ACTUALLY CLOSE THAT WINDOW. Txn ids are recycled across restarts, so
-    // the set can hold an id an EARLIER incarnation committed and vouch for the frame of a LATER
-    // one that never did -- an index entry with no heap row behind it, since the WAL's own filter
-    // is ordered by wal id and correctly refuses that transaction's rows. Read this paragraph as
-    // the mechanism only; the gate body below carries what the residue costs, why the frame header
-    // cannot tell the two incarnations apart, and what closing it needs.
+    // AND THE IDENTITY IN THE FRAME IS WHAT MAKES MEMBERSHIP ENOUGH. It used to be the txn id, and
+    // that did NOT close the window: txn ids are recycled across restarts, so the set could hold an
+    // id an EARLIER incarnation committed and vouch for the frame of a LATER one that never did --
+    // an index entry with no heap row behind it, since the WAL's own filter is ordered by wal id
+    // and correctly refuses that transaction's rows. The gate body below carries why the commit id
+    // has no such twin.
     core::error_t bitcask_index_disk_t::recover_txn_log() {
         const auto log_path = txn_log_file_path();
         // NOTHING WALKED YET, so nothing to say about where the frames end -- set on every
@@ -1819,36 +1835,50 @@ namespace services::index {
                 break;
             }
 
-            // Gate: apply only frames of committed transactions. A frame whose txn_id never
-            // committed (its WAL commit marker did not land) is skipped to avoid phantom index
-            // entries. op_kind is still validated for every frame so a corrupt log still refuses.
+            // Gate: apply only frames of committed transactions. A frame whose commit id never
+            // reached a durable COMMIT marker is skipped to avoid phantom index entries. op_kind is
+            // still validated for every frame so a corrupt log still refuses.
             //
-            // MEMBERSHIP IS NOT THE WHOLE TEST, AND THIS GATE IS THE RESIDUE OF THE TXN-ID REUSE
-            // PROBLEM. Txn ids are recycled across restarts --
-            // transaction_manager_t::next_transaction_id_ is never seeded from the surviving
-            // journal, while the wal id allocator IS re-derived from the segment files. That is why
-            // the WAL replay filter is ORDERED BY wal id: a physical record belongs to a committed
-            // transaction only when a COMMIT marker for the SAME txn id sits at a STRICTLY GREATER
-            // wal id (filter_committed_records, services/wal/wal.hpp).
+            // WHY THE COMMIT ID AND NOT THE TXN ID -- this line is the whole of the txn-id reuse
+            // fix. Txn ids are recycled across restarts: transaction_manager_t::next_transaction_id_
+            // is never seeded from the surviving journal, so the SAME id names a different
+            // transaction in every run. Judging a frame by it let a COMMIT marker written by a
+            // PREVIOUS incarnation vouch for the frame of the CURRENT one's transaction of the
+            // recycled id, which never committed -- the WAL's own filter, ordered by wal id
+            // (filter_committed_records, services/wal/wal.hpp), correctly refused that
+            // transaction's rows while this gate applied its index entries, leaving index entries
+            // with no heap row behind them.
             //
-            // WHAT REACHES THIS GATE IS STILL THE UNORDERED SET -- the union of txn ids that have
-            // any COMMIT marker at all. So a COMMIT marker written by a PREVIOUS incarnation
-            // vouches for the frame of the CURRENT incarnation's transaction of the recycled id,
-            // which never committed: the WAL correctly refuses that transaction's rows while this
-            // gate applies its index entries, leaving index entries with no heap row behind them.
-            // The frame carries nothing that could tell the two incarnations apart --
-            // txn_frame_header_t holds magic, crc, txn_id, op_kind and payload_size, and not one of
-            // them is monotone across restarts.
+            // COMMIT IDS ARE THE ONE ID SPACE THE REOPEN REBUILDS. Every start raises
+            // current_timestamp_ past the durable frontier -- the max of the checkpointed
+            // pg_attribute commit ids and the max COMMIT marker in the replayed journal
+            // (transaction_manager_t::restore_commit_clock, driven from base_spaces.cpp) -- and the
+            // clock only ever fetch_adds afterwards. So a commit id is handed out at most ONCE in
+            // the life of the database, in-process and across restarts alike, and the set can hold
+            // it only because THIS transaction's marker landed. No ordered comparison is needed on
+            // top: with a unique identity, membership already says exactly what the WAL's
+            // strictly-greater rule says about rows.
             //
-            // CLOSING IT MEANS THE FRAME MUST CARRY THE WAL ID its transaction's physical records
-            // landed on, so the same strictly-greater comparison can be made here against a per-txn
-            // commit wal id. That is a change of the DURABLE frame format plus a wal id threaded
-            // down the commit path (commit_inserts/commit_deletes in index_agent_contract.hpp is a
-            // POSITIONAL msg_id contract, so a parameter cannot be added on one side only), then
-            // apply_txn_*, then a committed-txn MAP in place of this set in manager_index.cpp and
-            // integration/cpp/base_spaces.cpp. Until that lands, this gate is exactly as strong as
-            // the txn id space is unique across restarts -- which it is not.
-            const bool committed = committed_txn_ids_.count(header.txn_id) > 0;
+            // WHAT THE FRAME'S commit_id IS. It is the id the commit pipeline allocated for this
+            // transaction before it touched the index (operator_commit_transaction step 1 runs
+            // under commit_id_ > 0) and stamped into the WAL COMMIT marker one step later, so the
+            // two are the same number by construction. Zero is not a commit id -- the clock starts
+            // at 1 -- so a frame carrying zero is refused below rather than looked up.
+            //
+            // WHICH DIRECTION THE REMAINING WINDOW FAILS IN. The set is built from the markers the
+            // bootstrap replay could SEE, i.e. those past the checkpoint frontier, so a frame whose
+            // marker was checkpointed away is skipped. That is the SUPERSET side -- the one
+            // manager_index_t::apply_wal_record_for_index already accepts by name when it drops an
+            // undecided delete leg:
+            //   op_kind 1  a skipped INSERT frame leaves the segments as the previous run left
+            //              them; nothing is invented.
+            //   op_kind 2  a skipped DELETE frame leaves an id in the index that the table no
+            //              longer has -- a superset again.
+            // What the superset is worth is NOT settled here: it is harmless while the row id it
+            // names stays absent, and the question of whether a LATER row reusing that physical id
+            // turns it into a wrong answer belongs to the index scan (does it recheck the key after
+            // storage_fetch?), which lives outside this store and was not established.
+            const bool committed = header.commit_id != 0 && committed_commit_ids_.count(header.commit_id) > 0;
             if (header.op_kind != 1 && header.op_kind != 2) {
                 return io_failure("bitcask: the txn log holds a frame with an unknown op kind");
             }
@@ -1897,13 +1927,14 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::apply_txn_inserts(uint64_t txn_id,
+                                                          uint64_t commit_id,
                                                           const std::vector<std::pair<value_t, size_t>>& values) {
         // A txn-log append/open/sidecar IO failure is recoverable — return
         // it so the manager turns it into an index-side abort. The durable index
         // frame is written BEFORE the data segments are touched, so bailing here
         // leaves the data segments untouched and the frame is re-evaluated by the
         // recover gate on the next open (gated on the WAL commit marker).
-        if (auto err = append_txn_record(txn_id, 1, values); err.contains_error()) {
+        if (auto err = append_txn_record(txn_id, commit_id, 1, values); err.contains_error()) {
             return err;
         }
         // A SECOND LAZY OPEN HERE WOULD BE A DOOR MISSING HALF OF THE FIRST ONE'S JOB.
@@ -1936,10 +1967,11 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::apply_txn_deletes(uint64_t txn_id,
+                                                          uint64_t commit_id,
                                                           const std::vector<std::pair<value_t, size_t>>& values) {
         // Mirror of apply_txn_inserts — IO failure becomes a returned error
         // rather than a process abort. Same frame-before-segments ordering.
-        if (auto err = append_txn_record(txn_id, 2, values); err.contains_error()) {
+        if (auto err = append_txn_record(txn_id, commit_id, 2, values); err.contains_error()) {
             return err;
         }
         // The same checked invariant as apply_txn_inserts', for the reason stated there: there
@@ -2699,7 +2731,7 @@ namespace services::index {
         // doors that have nowhere else to put a failure; this door has a return value, and
         // parking here is exactly what would make the failure invisible to find().
         //
-        // committed_txn_ids_ is intentionally left as-is: the txn log it gated
+        // committed_commit_ids_ is intentionally left as-is: the txn log it gated
         // is gone, and txn_id==0 re-inserts take the direct path (no gate).
         return first_error;
     }

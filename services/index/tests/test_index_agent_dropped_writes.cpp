@@ -63,6 +63,15 @@ using services::index::index_agent_contract;
 
 namespace {
 
+    // THE COMMIT ID A FIXTURE'S TRANSACTION COMMITTED AT, kept far from the txn id it is derived
+    // from because the two are different id spaces. The txn id says WHICH BUCKET to publish; the
+    // commit id is what the hashed family stamps into its durable txn-log frame and what the
+    // recover gate judges the frame by (bitcask_index_disk.cpp). One number serving as both is
+    // exactly the confusion that let a COMMIT marker of an earlier incarnation vouch for a later
+    // one's frame under a recycled txn id. The rebuild feed (txn_id 0) journals nothing and
+    // carries commit id 0.
+    constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
+
     constexpr components::catalog::oid_t kTableOid = 17200;
     constexpr components::catalog::oid_t kIndexOid = 17201;
 
@@ -116,7 +125,10 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
     REQUIRE(stage_error.type == core::error_code_t::index_not_exists);
 
     auto [commit_sched, commit_future] =
-        actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(), session, uint64_t{0});
+        actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(),
+                                                                           session,
+                                                                           uint64_t{0},
+                                                                           uint64_t{0});
     agent->resume(1);
     REQUIRE(commit_future.is_ready());
     auto commit_error = std::move(commit_future).take_ready();
@@ -137,7 +149,10 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
     REQUIRE(stage_del_error.type == core::error_code_t::index_not_exists);
 
     auto [commit_del_sched, commit_del_future] =
-        actor_zeta::otterbrix::send<&index_agent_contract::commit_deletes>(agent->address(), session, uint64_t{0});
+        actor_zeta::otterbrix::send<&index_agent_contract::commit_deletes>(agent->address(),
+                                                                           session,
+                                                                           uint64_t{0},
+                                                                           uint64_t{0});
     agent->resume(1);
     REQUIRE(commit_del_future.is_ready());
     auto commit_del_error = std::move(commit_del_future).take_ready();
@@ -199,7 +214,10 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
     // txn-log file and then walks into append_snapshot, which writes through the segment
     // handle drop() reset.
     auto [txn_sched, txn_future] =
-        actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(), session, uint64_t{99});
+        actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(),
+                                                                           session,
+                                                                           uint64_t{99},
+                                                                           commit_id_of(99));
     agent->resume(1);
     REQUIRE(txn_future.is_ready());
     auto txn_error = std::move(txn_future).take_ready();
@@ -209,7 +227,10 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
 
     // txn_id == 0: the direct bulk route, through the keydir drop() released.
     auto [bulk_sched, bulk_future] =
-        actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(), session, uint64_t{0});
+        actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(),
+                                                                           session,
+                                                                           uint64_t{0},
+                                                                           uint64_t{0});
     agent->resume(1);
     REQUIRE(bulk_future.is_ready());
     auto bulk_error = std::move(bulk_future).take_ready();
@@ -229,7 +250,10 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
     REQUIRE(stage_del_error.type == core::error_code_t::index_not_exists);
 
     auto [remove_sched, remove_future] =
-        actor_zeta::otterbrix::send<&index_agent_contract::commit_deletes>(agent->address(), session, uint64_t{99});
+        actor_zeta::otterbrix::send<&index_agent_contract::commit_deletes>(agent->address(),
+                                                                           session,
+                                                                           uint64_t{99},
+                                                                           commit_id_of(99));
     agent->resume(1);
     REQUIRE(remove_future.is_ready());
     auto remove_error = std::move(remove_future).take_ready();

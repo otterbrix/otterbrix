@@ -96,15 +96,16 @@ namespace {
     bitcask_index_disk_t
     make_test_index(const std::filesystem::path& path,
                     std::pmr::memory_resource* resource,
-                    std::pmr::set<std::uint64_t> committed_txn_ids = std::pmr::set<std::uint64_t>{}) {
+                    std::pmr::set<std::uint64_t> committed_commit_ids = std::pmr::set<std::uint64_t>{}) {
         return bitcask_index_disk_t(path,
                                     resource,
                                     test_flush_threshold,
                                     test_segment_record_limit,
-                                    std::move(committed_txn_ids));
+                                    std::move(committed_commit_ids));
     }
 
-    // Build a committed set from an initializer list using the given resource.
+    // Build a committed set from an initializer list using the given resource. Its members are
+    // COMMIT ids, which is what the recover gate matches a frame by.
     std::pmr::set<std::uint64_t> committed_set(std::pmr::memory_resource* resource,
                                                std::initializer_list<std::uint64_t> ids) {
         std::pmr::set<std::uint64_t> out(resource);
@@ -113,6 +114,14 @@ namespace {
         }
         return out;
     }
+
+    // THE COMMIT ID A FIXTURE'S TRANSACTION COMMITTED AT, kept deliberately far from the txn id
+    // it is derived from. The gate judges a frame by its COMMIT id, and a fixture that used one
+    // number for both would pass just as happily against a gate that compared txn ids — the very
+    // confusion that let a marker of an earlier incarnation vouch for a later one's frame. In
+    // production the two spaces cannot collide at all (txn ids start at TRANSACTION_ID_START,
+    // commit ids at 1); here they only have to differ.
+    constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
     // Simulate the crash window: the durable txn-log frames survive, but the
     // eagerly-applied segment state and the applied-offset checkpoint do not.
@@ -261,12 +270,13 @@ namespace {
         uint32_t magic{0x314E5854}; // TXN1, the txn_magic of bitcask_index_disk.cpp
         uint32_t crc{0};
         uint64_t txn_id{0};
+        uint64_t commit_id{0};
         uint8_t op_kind{1};
         uint64_t payload_size{0};
     };
     // The same tie, for the same reason, on the frame header: the size alone would let a
-    // reordering of magic/crc/txn_id through in silence.
-    static_assert(sizeof(crashed_txn_frame_header_t) == 32,
+    // reordering of magic/crc/txn_id/commit_id through in silence.
+    static_assert(sizeof(crashed_txn_frame_header_t) == 40,
                   "the stump must be the store's txn frame header, byte for byte");
     static_assert(offsetof(crashed_txn_frame_header_t, magic) == 0,
                   "the stump must be the store's txn frame header, byte for byte");
@@ -274,9 +284,11 @@ namespace {
                   "the stump must be the store's txn frame header, byte for byte");
     static_assert(offsetof(crashed_txn_frame_header_t, txn_id) == 8,
                   "the stump must be the store's txn frame header, byte for byte");
-    static_assert(offsetof(crashed_txn_frame_header_t, op_kind) == 16,
+    static_assert(offsetof(crashed_txn_frame_header_t, commit_id) == 16,
                   "the stump must be the store's txn frame header, byte for byte");
-    static_assert(offsetof(crashed_txn_frame_header_t, payload_size) == 24,
+    static_assert(offsetof(crashed_txn_frame_header_t, op_kind) == 24,
+                  "the stump must be the store's txn frame header, byte for byte");
+    static_assert(offsetof(crashed_txn_frame_header_t, payload_size) == 32,
                   "the stump must be the store's txn frame header, byte for byte");
 
 
@@ -1480,12 +1492,12 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_replays_committ
         std::vector<std::pair<logical_value_t, size_t>> inserts;
         inserts.emplace_back(logical_value_t(&resource, 1001l), 11);
         inserts.emplace_back(logical_value_t(&resource, 1002l), 22);
-        REQUIRE(!index.apply_txn_inserts(5001, inserts).contains_error());
+        REQUIRE(!index.apply_txn_inserts(5001, commit_id_of(5001), inserts).contains_error());
     }
 
     {
         // txn 5001 is committed: its frame must replay if the gate is consulted.
-        auto index = make_test_index(path, &resource, committed_set(&resource, {5001}));
+        auto index = make_test_index(path, &resource, committed_set(&resource, {commit_id_of(5001)}));
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 1001l))).size() == 1);
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 1001l))).front() == 11);
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 1002l))).size() == 1);
@@ -1504,12 +1516,12 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_applied_checkpoint_preve
         auto index = make_test_index(path, &resource);
         std::vector<std::pair<logical_value_t, size_t>> inserts;
         inserts.emplace_back(logical_value_t(&resource, 2001l), 77);
-        REQUIRE(!index.apply_txn_inserts(6001, inserts).contains_error());
+        REQUIRE(!index.apply_txn_inserts(6001, commit_id_of(6001), inserts).contains_error());
     }
 
     {
         // txn 6001 is committed: replays once, never duplicated across reopens.
-        auto index = make_test_index(path, &resource, committed_set(&resource, {6001}));
+        auto index = make_test_index(path, &resource, committed_set(&resource, {commit_id_of(6001)}));
         auto rows = rows_of(index.find(logical_value_t(&resource, 2001l)));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front() == 77);
@@ -1527,17 +1539,18 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_is_order_indepe
         auto index = make_test_index(path, &resource);
         std::vector<std::pair<logical_value_t, size_t>> first;
         first.emplace_back(logical_value_t(&resource, 3001l), 1);
-        REQUIRE(!index.apply_txn_inserts(9002, first).contains_error());
+        REQUIRE(!index.apply_txn_inserts(9002, commit_id_of(9002), first).contains_error());
 
         std::vector<std::pair<logical_value_t, size_t>> second;
         second.emplace_back(logical_value_t(&resource, 3002l), 2);
         // lower txn_id, committed later
-        REQUIRE(!index.apply_txn_inserts(9001, second).contains_error());
+        REQUIRE(!index.apply_txn_inserts(9001, commit_id_of(9001), second).contains_error());
     }
 
     {
         // Both txns committed regardless of txn_id order.
-        auto index = make_test_index(path, &resource, committed_set(&resource, {9001, 9002}));
+        auto index =
+            make_test_index(path, &resource, committed_set(&resource, {commit_id_of(9001), commit_id_of(9002)}));
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 3001l))).size() == 1);
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 3001l))).front() == 1);
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 3002l))).size() == 1);
@@ -1589,12 +1602,12 @@ TEST_CASE("services::index::bitcask_index_disk::recover_gates_uncommitted_txn_fr
         std::vector<std::pair<logical_value_t, size_t>> a_inserts;
         a_inserts.emplace_back(logical_value_t(&resource, 4001l), 41);
         a_inserts.emplace_back(logical_value_t(&resource, 4002l), 42);
-        REQUIRE(!index.apply_txn_inserts(txn_a, a_inserts).contains_error());
+        REQUIRE(!index.apply_txn_inserts(txn_a, commit_id_of(txn_a), a_inserts).contains_error());
 
         std::vector<std::pair<logical_value_t, size_t>> b_inserts;
         b_inserts.emplace_back(logical_value_t(&resource, 5001l), 51);
         b_inserts.emplace_back(logical_value_t(&resource, 5002l), 52);
-        REQUIRE(!index.apply_txn_inserts(txn_b, b_inserts).contains_error());
+        REQUIRE(!index.apply_txn_inserts(txn_b, commit_id_of(txn_b), b_inserts).contains_error());
     }
 
     // Crash window: keep only the durable txn-log; drop the eagerly-applied
@@ -1604,7 +1617,7 @@ TEST_CASE("services::index::bitcask_index_disk::recover_gates_uncommitted_txn_fr
 
     {
         // Only txn B committed: A's frame must be skipped, B's applied.
-        auto index = make_test_index(path, &resource, committed_set(&resource, {txn_b}));
+        auto index = make_test_index(path, &resource, committed_set(&resource, {commit_id_of(txn_b)}));
 
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 4001l))).empty());
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 4002l))).empty());
@@ -1615,6 +1628,86 @@ TEST_CASE("services::index::bitcask_index_disk::recover_gates_uncommitted_txn_fr
         const auto b_second = rows_of(index.find(logical_value_t(&resource, 5002l)));
         REQUIRE(b_second.size() == 1);
         REQUIRE(b_second.front() == 52);
+    }
+}
+
+// THE GATE MUST NOT TAKE A COMMIT MARKER OF AN EARLIER INCARNATION FOR THIS ONE'S.
+//
+// transaction_manager_t::next_transaction_id_ restarts at TRANSACTION_ID_START every process
+// (components/table/transaction_manager.hpp says so in as many words), so the SAME txn id is
+// handed out again after a restart. The commit clock is the opposite: restore_commit_clock
+// raises current_timestamp_ past the durable frontier at every reopen, so a COMMIT id is
+// never issued twice.
+//
+// The shape reproduced here is the one services/wal/wal.hpp names:
+//
+//   incarnation 1:  txn 7 runs and COMMITS      -> its marker is durable (commit id 100)
+//   -- restart, no checkpoint --
+//   incarnation 2:  txn 7 (the SAME id, reused) journals its index frame and CRASHES
+//                   before its own marker (commit id 200) can land
+//
+// Replay is right about the heap: wal.hpp's ordered filter refuses incarnation 2's physical
+// records, so the row is NOT in the table. The index gate must refuse the frame for the same
+// transaction, or the index names a row the heap does not have.
+TEST_CASE("services::index::bitcask_index_disk::recover_gate_refuses_a_reused_txn_id_vouched_by_an_earlier_run") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    std::filesystem::path path{index_fixture_path("bitcask_recover_gate_reuse")};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    // The id the two incarnations SHARE, and the two commit ids that separate them. The
+    // commit ids are what makes this case a case at all: one number for both runs is exactly
+    // what the journal cannot give, and exactly what the old gate assumed.
+    constexpr std::uint64_t reused_txn_id = 7;
+    constexpr std::uint64_t committed_in_run_1 = 100;
+    constexpr std::uint64_t never_committed_in_run_2 = 200;
+    static_assert(committed_in_run_1 != never_committed_in_run_2,
+                  "the two incarnations must be separable, or this case proves nothing");
+
+    {
+        // Incarnation 2's frame: durable, and its transaction never committed.
+        auto index = make_test_index(path, &resource);
+        std::vector<std::pair<logical_value_t, size_t>> inserts;
+        inserts.emplace_back(logical_value_t(&resource, 4242l), 42);
+        REQUIRE(!index.apply_txn_inserts(reused_txn_id, never_committed_in_run_2, inserts).contains_error());
+    }
+
+    wipe_all_but_txn_log(path);
+    REQUIRE(std::filesystem::exists(path / "bitcask.txn.log"));
+
+    {
+        // What the journal really vouches for after the crash: incarnation 1's marker, and
+        // nothing else. Incarnation 2's commit id is absent because its marker never landed --
+        // while the TXN ID the old gate compared is common to both runs, which is why it let
+        // this frame through.
+        auto index = make_test_index(path, &resource, committed_set(&resource, {committed_in_run_1}));
+        INFO("the frame of a transaction whose marker never landed must not reach the index");
+        REQUIRE(rows_of(index.find(logical_value_t(&resource, 4242l))).empty());
+    }
+
+    {
+        // AND THE CONTROL, so the case above cannot pass for the wrong reason: the SAME frame,
+        // the SAME reused txn id, with incarnation 2's own commit id in the set this time --
+        // the marker landed. It must be applied. Without this arm a gate that refused
+        // everything would look just as green.
+        std::filesystem::remove_all(path);
+        std::filesystem::create_directories(path);
+        {
+            auto index = make_test_index(path, &resource);
+            std::vector<std::pair<logical_value_t, size_t>> inserts;
+            inserts.emplace_back(logical_value_t(&resource, 4242l), 42);
+            REQUIRE(!index.apply_txn_inserts(reused_txn_id, never_committed_in_run_2, inserts).contains_error());
+        }
+        wipe_all_but_txn_log(path);
+
+        auto index = make_test_index(path,
+                                     &resource,
+                                     committed_set(&resource, {committed_in_run_1, never_committed_in_run_2}));
+        const auto rows = rows_of(index.find(logical_value_t(&resource, 4242l)));
+        INFO("a frame whose own commit marker DID land must still be replayed");
+        REQUIRE(rows.size() == 1);
+        REQUIRE(rows.front() == 42);
     }
 }
 
@@ -1636,11 +1729,11 @@ TEST_CASE("services::index::bitcask_index_disk::recover_skipped_frames_advance_a
 
         std::vector<std::pair<logical_value_t, size_t>> a_inserts;
         a_inserts.emplace_back(logical_value_t(&resource, 6001l), 61);
-        REQUIRE(!index.apply_txn_inserts(txn_a, a_inserts).contains_error());
+        REQUIRE(!index.apply_txn_inserts(txn_a, commit_id_of(txn_a), a_inserts).contains_error());
 
         std::vector<std::pair<logical_value_t, size_t>> b_inserts;
         b_inserts.emplace_back(logical_value_t(&resource, 7001l), 71);
-        REQUIRE(!index.apply_txn_inserts(txn_b, b_inserts).contains_error());
+        REQUIRE(!index.apply_txn_inserts(txn_b, commit_id_of(txn_b), b_inserts).contains_error());
     }
 
     wipe_all_but_txn_log(path);
@@ -1648,7 +1741,7 @@ TEST_CASE("services::index::bitcask_index_disk::recover_skipped_frames_advance_a
     {
         // First reopen gates A out; recover advances the applied offset past
         // every frame, including A's skipped one.
-        auto index = make_test_index(path, &resource, committed_set(&resource, {txn_b}));
+        auto index = make_test_index(path, &resource, committed_set(&resource, {commit_id_of(txn_b)}));
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 6001l))).empty());
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 7001l))).size() == 1);
     }
@@ -1656,7 +1749,8 @@ TEST_CASE("services::index::bitcask_index_disk::recover_skipped_frames_advance_a
     {
         // Second reopen now reports A committed too, but A's frame was already
         // consumed (offset advanced past it) — it must NOT come back.
-        auto index = make_test_index(path, &resource, committed_set(&resource, {txn_a, txn_b}));
+        auto index =
+            make_test_index(path, &resource, committed_set(&resource, {commit_id_of(txn_a), commit_id_of(txn_b)}));
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 6001l))).empty());
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 7001l))).size() == 1);
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 7001l))).front() == 71);
@@ -2161,16 +2255,16 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_append_refuses
     batch.emplace_back(logical_value_t(&resource, 9l), 99);
 
     fault.plan.fail_writes_from = 1;
-    REQUIRE(index.apply_txn_inserts(1, batch).contains_error());
+    REQUIRE(index.apply_txn_inserts(1, commit_id_of(1), batch).contains_error());
     fault.plan.fail_writes_from = 0;
     REQUIRE(fault.plan.writes_seen > 0); // sensitivity: the frame append went through the seam
 
     fault.plan.fail_syncs_from = 1;
-    REQUIRE(index.apply_txn_inserts(1, batch).contains_error());
+    REQUIRE(index.apply_txn_inserts(1, commit_id_of(1), batch).contains_error());
     fault.plan.fail_syncs_from = 0;
     REQUIRE(fault.plan.syncs_seen > 0);
 
-    REQUIRE(index.apply_txn_inserts(1, batch).type == core::error_code_t::none);
+    REQUIRE(index.apply_txn_inserts(1, commit_id_of(1), batch).type == core::error_code_t::none);
     REQUIRE(rows_of(index.find(logical_value_t(&resource, 9l))).front() == 99);
 }
 
@@ -2239,7 +2333,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unopenable_txn_log_refuses_th
         auto index = make_test_index(path, &resource);
         std::vector<std::pair<logical_value_t, size_t>> batch;
         batch.emplace_back(logical_value_t(&resource, 21l), 210);
-        REQUIRE(index.apply_txn_inserts(7, batch).type == core::error_code_t::none);
+        REQUIRE(index.apply_txn_inserts(7, commit_id_of(7), batch).type == core::error_code_t::none);
     }
     // The crash window: the durable frames survive, the eagerly-applied segment state and
     // the applied-offset checkpoint do not, so recovery alone decides what the index holds.
@@ -2252,7 +2346,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unopenable_txn_log_refuses_th
                                    &resource,
                                    test_flush_threshold,
                                    test_segment_record_limit,
-                                   committed_set(&resource, {7}),
+                                   committed_set(&resource, {commit_id_of(7)}),
                                    bitcask_index_disk_t::deferred_open_t{});
         const auto open_error = index.open();
         REQUIRE(open_error.contains_error());
@@ -2266,7 +2360,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unopenable_txn_log_refuses_th
                                           &resource,
                                           test_flush_threshold,
                                           test_segment_record_limit,
-                                          committed_set(&resource, {7}));
+                                          committed_set(&resource, {commit_id_of(7)}));
         const auto rows = rows_of(index.find(logical_value_t(&resource, 21l)));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front() == 210);
@@ -2291,10 +2385,10 @@ TEST_CASE("services::index::bitcask_index_disk::a_corrupt_txn_log_frame_is_a_tai
         auto index = make_test_index(path, &resource);
         std::vector<std::pair<logical_value_t, size_t>> batch;
         batch.emplace_back(logical_value_t(&resource, 31l), 310);
-        REQUIRE(index.apply_txn_inserts(3, batch).type == core::error_code_t::none);
+        REQUIRE(index.apply_txn_inserts(3, commit_id_of(3), batch).type == core::error_code_t::none);
         std::vector<std::pair<logical_value_t, size_t>> second;
         second.emplace_back(logical_value_t(&resource, 32l), 320);
-        REQUIRE(index.apply_txn_inserts(4, second).type == core::error_code_t::none);
+        REQUIRE(index.apply_txn_inserts(4, commit_id_of(4), second).type == core::error_code_t::none);
     }
     wipe_all_but_txn_log(path);
 
@@ -2310,7 +2404,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_corrupt_txn_log_frame_is_a_tai
                                    &resource,
                                    test_flush_threshold,
                                    test_segment_record_limit,
-                                   committed_set(&resource, {3, 4}),
+                                   committed_set(&resource, {commit_id_of(3), commit_id_of(4)}),
                                    bitcask_index_disk_t::deferred_open_t{});
         const auto open_error = index.open();
         REQUIRE_FALSE(open_error.contains_error());
@@ -2324,7 +2418,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_corrupt_txn_log_frame_is_a_tai
         // this line was unreachable, because the open before it never returned a store.
         std::vector<std::pair<logical_value_t, size_t>> after;
         after.emplace_back(logical_value_t(&resource, 33l), 330);
-        REQUIRE(index.apply_txn_inserts(5, after).type == core::error_code_t::none);
+        REQUIRE(index.apply_txn_inserts(5, commit_id_of(5), after).type == core::error_code_t::none);
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 33l))).front() == 330);
     }
 
@@ -2333,7 +2427,9 @@ TEST_CASE("services::index::bitcask_index_disk::a_corrupt_txn_log_frame_is_a_tai
     // which is what stops the next open from meeting the same wall.
     wipe_all_but_txn_log(path);
     {
-        auto index = make_test_index(path, &resource, committed_set(&resource, {3, 4, 5}));
+        auto index = make_test_index(path,
+                                     &resource,
+                                     committed_set(&resource, {commit_id_of(3), commit_id_of(4), commit_id_of(5)}));
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 33l))).front() == 330);
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 31l))).empty());
     }
@@ -3319,10 +3415,10 @@ TEST_CASE("services::index::bitcask_index_disk::a_crash_left_txn_log_stump_does_
     const auto log_path = path / "bitcask.txn.log";
 
     {
-        auto index = make_test_index(path, &resource, committed_set(&resource, {1, 2}));
+        auto index = make_test_index(path, &resource, committed_set(&resource, {commit_id_of(1), commit_id_of(2)}));
         std::vector<std::pair<logical_value_t, size_t>> batch;
         batch.emplace_back(logical_value_t(&resource, 1l), 11);
-        REQUIRE(index.apply_txn_inserts(1, batch).type == core::error_code_t::none);
+        REQUIRE(index.apply_txn_inserts(1, commit_id_of(1), batch).type == core::error_code_t::none);
     }
 
     REQUIRE(std::filesystem::exists(log_path));
@@ -3343,13 +3439,13 @@ TEST_CASE("services::index::bitcask_index_disk::a_crash_left_txn_log_stump_does_
                                    &resource,
                                    test_flush_threshold,
                                    test_segment_record_limit,
-                                   committed_set(&resource, {1, 2}),
+                                   committed_set(&resource, {commit_id_of(1), commit_id_of(2)}),
                                    bitcask_index_disk_t::deferred_open_t{});
         REQUIRE(index.open().type == core::error_code_t::none);
 
         std::vector<std::pair<logical_value_t, size_t>> batch;
         batch.emplace_back(logical_value_t(&resource, 2l), 22);
-        REQUIRE(index.apply_txn_inserts(2, batch).type == core::error_code_t::none);
+        REQUIRE(index.apply_txn_inserts(2, commit_id_of(2), batch).type == core::error_code_t::none);
         // TWO FRAMES AND NOTHING BETWEEN THEM. With the stump still in place this is 32 bytes
         // longer, and those 32 bytes are the ones that kill the next open.
         CHECK(std::filesystem::file_size(log_path) == 2 * one_frame);
@@ -3366,7 +3462,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_crash_left_txn_log_stump_does_
                                    &resource,
                                    test_flush_threshold,
                                    test_segment_record_limit,
-                                   committed_set(&resource, {1, 2}),
+                                   committed_set(&resource, {commit_id_of(1), commit_id_of(2)}),
                                    bitcask_index_disk_t::deferred_open_t{});
         REQUIRE(index.open().type == core::error_code_t::none);
 
@@ -3781,7 +3877,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_txn_frame_whose_declared_paylo
         auto index = make_test_index(path, &resource);
         std::vector<std::pair<logical_value_t, size_t>> batch;
         batch.emplace_back(logical_value_t(&resource, 81l), 810);
-        REQUIRE(index.apply_txn_inserts(81, batch).type == core::error_code_t::none);
+        REQUIRE(index.apply_txn_inserts(81, commit_id_of(81), batch).type == core::error_code_t::none);
     }
     wipe_all_but_txn_log(path);
 
@@ -3801,7 +3897,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_txn_frame_whose_declared_paylo
     {
         // Reaching this line is the assertion again, and the committed frame in front of the
         // stump is still replayed: a tail costs the tail.
-        auto index = make_test_index(path, &resource, committed_set(&resource, {81}));
+        auto index = make_test_index(path, &resource, committed_set(&resource, {commit_id_of(81)}));
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 81l))).front() == 810);
     }
 }
@@ -3910,7 +4006,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unreadable_applied_offset_sid
         auto index = make_test_index(path, &resource);
         std::vector<std::pair<logical_value_t, size_t>> batch;
         batch.emplace_back(logical_value_t(&resource, 101l), 1010);
-        REQUIRE(index.apply_txn_inserts(101, batch).type == core::error_code_t::none);
+        REQUIRE(index.apply_txn_inserts(101, commit_id_of(101), batch).type == core::error_code_t::none);
     }
 
     const auto applied = path / "bitcask.txn.applied";
@@ -3928,7 +4024,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unreadable_applied_offset_sid
                                    &resource,
                                    test_flush_threshold,
                                    test_segment_record_limit,
-                                   committed_set(&resource, {101}),
+                                   committed_set(&resource, {commit_id_of(101)}),
                                    bitcask_index_disk_t::deferred_open_t{});
         const auto open_error = index.open();
         REQUIRE(open_error.contains_error());
@@ -3942,7 +4038,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unreadable_applied_offset_sid
                                        &resource,
                                        test_flush_threshold,
                                        test_segment_record_limit,
-                                       committed_set(&resource, {101}),
+                                       committed_set(&resource, {commit_id_of(101)}),
                                        bitcask_index_disk_t::deferred_open_t{});
             const auto open_error = index.open();
             REQUIRE(open_error.contains_error());
@@ -4021,7 +4117,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_repair_keeps_i
         auto index = make_test_index(path, &resource);
         std::vector<std::pair<logical_value_t, size_t>> batch;
         batch.emplace_back(logical_value_t(&resource, 111l), 1110);
-        REQUIRE(index.apply_txn_inserts(111, batch).type == core::error_code_t::none);
+        REQUIRE(index.apply_txn_inserts(111, commit_id_of(111), batch).type == core::error_code_t::none);
     }
 
     const auto log_path = path / "bitcask.txn.log";
@@ -4043,7 +4139,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_repair_keeps_i
                                &resource,
                                test_flush_threshold,
                                test_segment_record_limit,
-                               committed_set(&resource, {111, 112, 113}),
+                               committed_set(&resource, {commit_id_of(111), commit_id_of(112), commit_id_of(113)}),
                                bitcask_index_disk_t::deferred_open_t{});
     // The open reads the log through the wrapper with nothing armed, so recovery measures the
     // clean end exactly as it would on a healthy device.
@@ -4055,7 +4151,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_repair_keeps_i
     {
         std::vector<std::pair<logical_value_t, size_t>> batch;
         batch.emplace_back(logical_value_t(&resource, 112l), 1120);
-        REQUIRE(index.apply_txn_inserts(112, batch).contains_error());
+        REQUIRE(index.apply_txn_inserts(112, commit_id_of(112), batch).contains_error());
     }
     // Nothing was cut and nothing was appended: the file is byte-for-byte what it was.
     REQUIRE(std::filesystem::file_size(log_path) == one_frame + sizeof(crashed_txn_frame_header_t));
@@ -4066,7 +4162,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_repair_keeps_i
     {
         std::vector<std::pair<logical_value_t, size_t>> batch;
         batch.emplace_back(logical_value_t(&resource, 113l), 1130);
-        REQUIRE(index.apply_txn_inserts(113, batch).type == core::error_code_t::none);
+        REQUIRE(index.apply_txn_inserts(113, commit_id_of(113), batch).type == core::error_code_t::none);
     }
 
     // THE STUMP IS GONE. Both frames carry one int64 key and one row id, so they are the same
@@ -4078,7 +4174,10 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_repair_keeps_i
     // And the log reads back as two frames rather than as one frame and a wall.
     wipe_all_but_txn_log(path);
     {
-        auto index_after = make_test_index(path, &resource, committed_set(&resource, {111, 112, 113}));
+        auto index_after =
+            make_test_index(path,
+                            &resource,
+                            committed_set(&resource, {commit_id_of(111), commit_id_of(112), commit_id_of(113)}));
         REQUIRE(rows_of(index_after.find(logical_value_t(&resource, 111l))).front() == 1110);
         REQUIRE(rows_of(index_after.find(logical_value_t(&resource, 113l))).front() == 1130);
     }

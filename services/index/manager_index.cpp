@@ -647,7 +647,7 @@ namespace services::index {
                                                         components::catalog::oid_t index_oid,
                                                         components::logical_plan::index_type type,
                                                         components::index::keys_base_storage_t keys,
-                                                        std::pmr::set<std::uint64_t> committed_txn_ids) {
+                                                        std::pmr::set<std::uint64_t> committed_commit_ids) {
         // Steady-state equivalent of create_index below, minus the mailbox wrapper (see
         // the declaration). Every gate, and the AGENT-FIRST order, is the same one
         // create_index uses -- that identity is the point: an index restored at startup
@@ -712,7 +712,7 @@ namespace services::index {
         // (rule 10), so its failure is only knowable once the agent exists; registering
         // the record first would mean unwinding a live index out of the registry on that
         // failure, and this way there is nothing to unwind.
-        auto spawned = spawn_disk_agent(table_oid, index_oid, type, std::move(committed_txn_ids));
+        auto spawned = spawn_disk_agent(table_oid, index_oid, type, std::move(committed_commit_ids));
         if (spawned.has_error()) {
             return spawned.error();
         }
@@ -799,7 +799,7 @@ namespace services::index {
     manager_index_t::spawn_disk_agent(components::catalog::oid_t table_oid,
                                       components::catalog::oid_t index_oid,
                                       components::logical_plan::index_type type,
-                                      std::pmr::set<std::uint64_t> committed_txn_ids) {
+                                      std::pmr::set<std::uint64_t> committed_commit_ids) {
         // THE ONE PLACE pg_index.indtype picks a class. index_type::hashed -> the bitcask
         // LSM agent; everything else (single / composite / multikey / wildcard) -> the
         // ordered b+tree agent. Every other line of this manager works through an
@@ -809,8 +809,8 @@ namespace services::index {
         // defaults, and that is true on both roads into this function (bootstrap and
         // runtime CREATE INDEX). Nothing else may build an agent.
         if (type == components::logical_plan::index_type::hashed) {
-            // Only this family owns a txn log, so only it receives the WAL committed-txn
-            // set for the recover gate.
+            // Only this family owns a txn log, so only it receives the WAL's committed
+            // COMMIT-ID set for the recover gate.
             auto agent = bitcask_index_agent_t::create(resource_,
                                                        path_db_,
                                                        table_oid,
@@ -818,7 +818,7 @@ namespace services::index {
                                                        bitcask_flush_threshold_,
                                                        bitcask_segment_record_limit_,
                                                        log_,
-                                                       std::move(committed_txn_ids));
+                                                       std::move(committed_commit_ids));
             if (agent.has_error()) {
                 return agent.error();
             }
@@ -1321,13 +1321,31 @@ namespace services::index {
     manager_index_t::unique_future<core::error_t>
     manager_index_t::commit_inserts(execution_context_t ctx,
                                     std::pmr::vector<components::catalog::oid_t> table_oids,
-                                    // The commit id is no longer carried down. It stamped
-                                    // insert_id / delete_id on in-memory index entries, and
-                                    // those stamps died with the last in-memory index: a
-                                    // committed row is simply in the store and an
-                                    // uncommitted one is simply in a bucket. It stays in the
-                                    // signature because it is part of index_contract.
-                                    uint64_t /*commit_id*/) {
+                                    // THE COMMIT ID IS CARRIED DOWN AGAIN, and for a different job
+                                    // than the one it lost. It no longer stamps insert_id /
+                                    // delete_id on in-memory index entries -- those stamps died
+                                    // with the last in-memory index, and a committed row is simply
+                                    // in the store while an uncommitted one is simply in a bucket.
+                                    // What it does now is name the transaction DURABLY: the hashed
+                                    // family writes it into its txn-log frame, and the recover gate
+                                    // matches it against the WAL's committed COMMIT-ID set. The txn
+                                    // id cannot do that job -- it is handed out again after every
+                                    // restart (bitcask_index_disk.cpp, recover_txn_log).
+                                    //
+                                    // AND THIS STILL DOES NOT STAMP THE COMMIT ID ANYWHERE A DISCARD
+                                    // COULD BE READ BACK FROM, which is the property that lets this
+                                    // handler keep its place ABOVE the WAL commit marker
+                                    // (operator_commit_transaction.cpp's ordering block). Writing the
+                                    // id into a txn-log frame is not the "stamping" that ordering
+                                    // forbids: the frame is INERT unless the marker for that same id
+                                    // lands, because the gate that replays it asks the WAL, and the
+                                    // id itself can never come back -- a discarded commit id is
+                                    // erased from in_flight_commits_ and never reissued, the clock
+                                    // only ever fetch_adds. The stale half of that block's sentence
+                                    // is "takes the commit id as an UNNAMED parameter"; its
+                                    // CONCLUSION is unchanged and the reason is the paragraph you
+                                    // are reading.
+                                    uint64_t commit_id) {
         auto session = ctx.session;
         auto txn_id = ctx.txn.transaction_id;
 
@@ -1358,7 +1376,8 @@ namespace services::index {
                 auto [needs_sched, f] =
                     actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(record.address,
                                                                                        session,
-                                                                                       txn_id);
+                                                                                       txn_id,
+                                                                                       commit_id);
                 schedule_agent(record.address, needs_sched);
                 futures.emplace_back(std::move(f));
             }
@@ -1434,11 +1453,11 @@ namespace services::index {
             // operator_commit_transaction awaits that reply before it sends txn_publish_msg, so the
             // mark is in the dispatcher's mailbox ahead of the publish that triggers the broadcast.
             constexpr uint8_t INDEX_KIND = 2;
-            pending_void_.emplace_back(
-                std::move(actor_zeta::send(manager_dispatcher_,
-                                           &services::dispatcher::manager_dispatcher_t::on_drop_resource_marked,
-                                           INDEX_KIND)
-                              .second));
+            pending_void_.emplace_back(std::move(
+                actor_zeta::otterbrix::send(manager_dispatcher_,
+                                            &services::dispatcher::manager_dispatcher_t::on_drop_resource_marked,
+                                            INDEX_KIND)
+                    .second));
         }
         co_return core::error_t::no_error();
     }
@@ -1658,6 +1677,7 @@ namespace services::index {
             auto [commit_sched, commit_future] =
                 actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(record.address,
                                                                                    session,
+                                                                                   uint64_t{0},
                                                                                    uint64_t{0});
             schedule_agent(record.address, commit_sched);
             futures.emplace_back(std::move(commit_future));
@@ -1966,10 +1986,18 @@ namespace services::index {
         if (!core::filesystem::move_files(fs, tmp_path, marker)) {
             return refuse("the rename over the live marker was refused");
         }
-        // The rename is published; its own durability is a separate question. Mirrors
-        // persist_checkpoint_sidecar: the directory fsync is what makes the NAME survive, and
-        // losing it costs a start that reads the previous list -- which for an ARM is the
-        // dangerous direction, so it is reported rather than shrugged off.
+        // The rename is published; its own durability is a separate question. Same shape as the
+        // checkpoint sidecar, which agent_disk.cpp splits into stage_checkpoint_sidecar (tmp +
+        // fsync, before the commit point), publish_checkpoint_sidecar (the rename) and
+        // sync_checkpoint_sidecar_directory (this fsync) -- and the OUTCOME here is deliberately
+        // the stricter one. There, a refused directory fsync is a warn: the new wal id is already
+        // published and the worst a crash can surface is the PREVIOUS id, a floor too low, which
+        // costs replay work and not correctness. Here the previous list is asymmetric between
+        // this function's callers: from clear_rebuild_marker_ / forget_rebuild_marker_entry_ it
+        // is a LONGER list and costs one rebuild that was already done, but from
+        // arm_rebuild_marker_ it is a SHORTER one -- it does not name the index just armed, so a
+        // start brings that index up unrebuilt. The dangerous direction decides the outcome for
+        // the shared path, so this is reported rather than shrugged off.
         auto dir = core::filesystem::open_file(fs, marker.parent_path(), core::filesystem::file_flags::READ);
         if (dir == nullptr || !core::filesystem::file_sync(fs, *dir)) {
             return core::error_t(core::error_code_t::io_error,
@@ -2216,7 +2244,8 @@ namespace services::index {
                 auto [needs_sched, f] =
                     actor_zeta::otterbrix::send<&index_agent_contract::commit_deletes>(record->address,
                                                                                        session_id_t{},
-                                                                                       entry->txn_id);
+                                                                                       entry->txn_id,
+                                                                                       entry->commit_id);
                 schedule_agent(record->address, needs_sched);
                 delete_futures.emplace_back(std::move(f));
                 swept_entries.emplace_back(*entry);
@@ -2249,9 +2278,9 @@ namespace services::index {
             // out over, so a force_flush cannot reach one of them in the first place.
             constexpr uint8_t INDEX_KIND = 2;
             pending_void_.emplace_back(
-                std::move(actor_zeta::send(manager_dispatcher_,
-                                           &services::dispatcher::manager_dispatcher_t::on_subscriber_empty,
-                                           INDEX_KIND)
+                std::move(actor_zeta::otterbrix::send(manager_dispatcher_,
+                                                      &services::dispatcher::manager_dispatcher_t::on_subscriber_empty,
+                                                      INDEX_KIND)
                               .second));
             subscriber_acked = true;
         }
@@ -2284,11 +2313,11 @@ namespace services::index {
             // Re-arm the broadcast the way commit_deletes does, or no horizon would ever
             // publish the re-queued erases.
             constexpr uint8_t INDEX_KIND = 2;
-            pending_void_.emplace_back(
-                std::move(actor_zeta::send(manager_dispatcher_,
-                                           &services::dispatcher::manager_dispatcher_t::on_drop_resource_marked,
-                                           INDEX_KIND)
-                              .second));
+            pending_void_.emplace_back(std::move(
+                actor_zeta::otterbrix::send(manager_dispatcher_,
+                                            &services::dispatcher::manager_dispatcher_t::on_drop_resource_marked,
+                                            INDEX_KIND)
+                    .second));
         }
         for (auto& f : drop_futures) {
             co_await std::move(f);

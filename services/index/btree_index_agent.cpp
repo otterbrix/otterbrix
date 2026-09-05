@@ -343,8 +343,13 @@ namespace services::index {
     }
 
     btree_index_agent_t::unique_future<core::error_t> btree_index_agent_t::commit_inserts(session_id_t session,
-                                                                                          uint64_t txn_id) {
-        trace(log_, "btree_index_agent_t::commit_inserts, txn_id: {}, session: {}", txn_id, session.data());
+                                                                                          uint64_t txn_id,
+                                                                                          uint64_t commit_id) {
+        trace(log_,
+              "btree_index_agent_t::commit_inserts, txn_id: {}, commit_id: {}, session: {}",
+              txn_id,
+              commit_id,
+              session.data());
         if (is_dropped_) {
             co_return core::error_t{
                 core::error_code_t::index_not_exists,
@@ -360,8 +365,13 @@ namespace services::index {
     }
 
     btree_index_agent_t::unique_future<core::error_t> btree_index_agent_t::commit_deletes(session_id_t session,
-                                                                                          uint64_t txn_id) {
-        trace(log_, "btree_index_agent_t::commit_deletes, txn_id: {}, session: {}", txn_id, session.data());
+                                                                                          uint64_t txn_id,
+                                                                                          uint64_t commit_id) {
+        trace(log_,
+              "btree_index_agent_t::commit_deletes, txn_id: {}, commit_id: {}, session: {}",
+              txn_id,
+              commit_id,
+              session.data());
         if (is_dropped_) {
             co_return core::error_t{
                 core::error_code_t::index_not_exists,

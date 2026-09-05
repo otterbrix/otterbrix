@@ -60,6 +60,15 @@ using services::index::index_agent_contract;
 
 namespace {
 
+    // THE COMMIT ID A FIXTURE'S TRANSACTION COMMITTED AT, kept far from the txn id it is derived
+    // from because the two are different id spaces. The txn id says WHICH BUCKET to publish; the
+    // commit id is what the hashed family stamps into its durable txn-log frame and what the
+    // recover gate judges the frame by (bitcask_index_disk.cpp). One number serving as both is
+    // exactly the confusion that let a COMMIT marker of an earlier incarnation vouch for a later
+    // one's frame under a recycled txn id. The rebuild feed (txn_id 0) journals nothing and
+    // carries commit id 0.
+    constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
+
     constexpr components::catalog::oid_t kTableOid = 17300;
     constexpr components::catalog::oid_t kIndexOid = 17301;
 
@@ -169,7 +178,8 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
         REQUIRE_FALSE(
             ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 0}}))
                 .contains_error());
-        REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, txn1).contains_error());
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
         // The row is no longer in a bucket AND it is still in the answer -- which is the
         // half the facade could never show, because it had no store to publish into.
         CHECK(read(txn2, compare_type::eq) == std::vector<int64_t>{0});
@@ -190,7 +200,8 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
         REQUIRE_FALSE(
             ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 7}}))
                 .contains_error());
-        REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, txn1).contains_error());
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
         REQUIRE(read(txn2, compare_type::eq) == std::vector<int64_t>{7});
 
         REQUIRE_FALSE(
@@ -201,7 +212,8 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
         INFO("and everyone else must still see it, because the delete is not committed");
         CHECK(read(TRANSACTION_ID_START + 3, compare_type::eq) == std::vector<int64_t>{7});
 
-        REQUIRE_FALSE(ask<&index_agent_contract::commit_deletes>(agent, session, txn2).contains_error());
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::commit_deletes>(agent, session, txn2, commit_id_of(txn2)).contains_error());
         CHECK(read(TRANSACTION_ID_START + 3, compare_type::eq).empty());
     }
 
@@ -219,7 +231,8 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
         REQUIRE_FALSE(
             ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 1}}))
                 .contains_error());
-        REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, txn1).contains_error());
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
         REQUIRE_FALSE(
             ask<&index_agent_contract::stage_inserts>(agent, session, txn2, entries(&resource, {{42, 2}}))
                 .contains_error());
@@ -330,7 +343,8 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
         CHECK(read(txn1, val42) == std::vector<int64_t>{7});
         CHECK(read(txn2, val42).empty());
 
-        REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, txn1).contains_error());
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
         CHECK(read(txn2, val42) == std::vector<int64_t>{7});
 
         REQUIRE_FALSE(
@@ -339,7 +353,8 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
         CHECK(read(txn2, val42).empty());
         CHECK(read(TRANSACTION_ID_START + 3, val42) == std::vector<int64_t>{7});
 
-        REQUIRE_FALSE(ask<&index_agent_contract::commit_deletes>(agent, session, txn2).contains_error());
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::commit_deletes>(agent, session, txn2, commit_id_of(txn2)).contains_error());
         CHECK(read(TRANSACTION_ID_START + 3, val42).empty());
     }
 
@@ -366,7 +381,8 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
         INFO("the staged half must be found by a narrower probe");
         CHECK(read(txn1, probe_small) == std::vector<int64_t>{1});
 
-        REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, txn1).contains_error());
+        REQUIRE_FALSE(
+            ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
         INFO("and so must the committed half, or the two halves would key differently");
         CHECK(read(txn2, probe_small) == std::vector<int64_t>{1});
 
@@ -492,7 +508,8 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
 
     REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 1}}))
                       .contains_error());
-    REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, txn1).contains_error());
+    REQUIRE_FALSE(
+        ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
     // A bucket left standing across the clear, which is what the second half is about.
     REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 2}}))
                       .contains_error());
@@ -515,7 +532,7 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
         // And the repopulate's own next two messages do not turn the refusal into a success.
         REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(&resource, {{42, 3}}))
                           .contains_error());
-        REQUIRE(ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}).contains_error());
+        REQUIRE(ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
     }
 
     // Disarmed: the agent is repairable in place, which is what keeps "loud" from meaning
@@ -523,7 +540,8 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
     REQUIRE_FALSE(ask<&index_agent_contract::clear>(agent, session).contains_error());
     REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(&resource, {{42, 4}}))
                       .contains_error());
-    REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}).contains_error());
+    REQUIRE_FALSE(
+        ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
     {
         auto answer = ask<&index_agent_contract::read_rows>(agent,
                                                             session,
@@ -571,7 +589,8 @@ TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the
                                                             txn1,
                                                             entries(&resource, {{1, 1}, {2, 2}, {3, 3}, {4, 4}, {5, 5}}))
                       .contains_error());
-    REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, txn1).contains_error());
+    REQUIRE_FALSE(
+        ask<&index_agent_contract::commit_inserts>(agent, session, txn1, commit_id_of(txn1)).contains_error());
 
     // The directory stops being LISTABLE and nothing else: files inside can still be
     // opened, created and renamed (owner keeps write+execute), so every write of round 2
@@ -590,7 +609,7 @@ TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the
                                                             txn2,
                                                             entries(&resource, {{6, 6}, {7, 7}, {8, 8}}))
                       .contains_error());
-    auto commit2 = ask<&index_agent_contract::commit_inserts>(agent, session, txn2);
+    auto commit2 = ask<&index_agent_contract::commit_inserts>(agent, session, txn2, commit_id_of(txn2));
     INFO("the merge met the unlistable directory inside THIS commit; the reply must say so");
     // What this catches: no_error here, with the refusal surfacing on the NEXT force_flush.
     REQUIRE(commit2.contains_error());

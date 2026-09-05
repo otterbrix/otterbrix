@@ -88,7 +88,7 @@ namespace services::index {
                                   uint64_t flush_threshold,
                                   uint64_t segment_record_limit,
                                   log_t& log,
-                                  std::pmr::set<std::uint64_t> committed_txn_ids) {
+                                  std::pmr::set<std::uint64_t> committed_commit_ids) {
         // The open runs BEFORE anyone can address the actor, and its failure is the return value.
         // There is therefore no such thing as a REACHABLE agent whose store did not open: a caller
         // cannot forget to ask, because there is nothing to ask -- it holds either an agent or a
@@ -105,7 +105,7 @@ namespace services::index {
                                                               flush_threshold,
                                                               segment_record_limit,
                                                               log,
-                                                              std::move(committed_txn_ids));
+                                                              std::move(committed_commit_ids));
         // The deferred half. On a failure the agent is destroyed by this scope, having
         // never published its address, and the caller gets the reason instead -- the store's
         // own failures (an unopenable keydir file, a segment CRC mismatch) stay values.
@@ -124,7 +124,7 @@ namespace services::index {
                                                  uint64_t flush_threshold,
                                                  uint64_t segment_record_limit,
                                                  log_t& log,
-                                                 std::pmr::set<std::uint64_t> committed_txn_ids)
+                                                 std::pmr::set<std::uint64_t> committed_commit_ids)
         : actor_zeta::basic_actor<bitcask_index_agent_t>(resource)
         , log_(log.clone())
         , table_oid_(table_oid)
@@ -135,7 +135,7 @@ namespace services::index {
                  resource,
                  flush_threshold,
                  segment_record_limit,
-                 std::move(committed_txn_ids),
+                 std::move(committed_commit_ids),
                  bitcask_index_disk_t::deferred_open_t{})
         , pending_inserts_(resource)
         , pending_deletes_(resource) {
@@ -241,6 +241,12 @@ namespace services::index {
         // never fetched and never filtered. The mirror cost a staged delete that never landed.
         // Both are pinned per family by test_index_agent_rebuild_clear.cpp.
         //
+        // AND THE BOUND IS THE WHOLE FILE'S NOW, not this handler's alone. When it was written it
+        // was true of clear() only: commit_inserts/commit_deletes still took bucket 0 along with
+        // the committing transaction's own, so "bucket 0 belongs to the rebuild" read as an
+        // invariant two handlers out of three did not keep. They keep it now -- see
+        // publish_buckets -- so this paragraph may be read as the property it looks like.
+        //
         // The staged row ids survive the round: a pending txn id is above every compact
         // watermark, so has_versions_above defers the compaction that would renumber them.
         pending_inserts_.erase(0);
@@ -343,9 +349,23 @@ namespace services::index {
         return store_.merge_pending_segments();
     }
 
-    // Take bucket `txn_id` and bucket 0, hand every entry to `apply`, and erase both. The pair is
-    // what the commit path has always folded together: bucket 0 is committed for everyone but not
-    // yet durable, and it must reach disk with whatever transaction gets there first.
+    // Take THE COMMITTING TRANSACTION'S OWN BUCKET, hand every entry to `apply`, and erase it.
+    //
+    // ONE BUCKET, NOT A PAIR. This used to publish bucket `txn_id` AND bucket 0 -- the rebuild's
+    // stage -- on the stated ground that bucket 0 is "committed for everyone, so it must reach disk
+    // with whatever transaction gets there first". The ground does not hold up: bucket 0 has
+    // exactly one feeder, manager_index_t::repopulate_table, and that feeder posts
+    // clear -> stage_inserts(0) -> commit_inserts(0) into one agent's FIFO with no co_await between
+    // them, so bucket 0 is ALWAYS empty by the time any other transaction's commit is dequeued.
+    // The fold was therefore never publishing anything today -- and the day a cross-actor await is
+    // added to that loop, it would start handing the rebuild's rows to a stranger's commit. See the
+    // journalled leg in commit_inserts for what that costs there, and the case
+    // "a foreign commit does not journal the rebuild's bucket" in
+    // tests/test_index_agent_commit_retry.cpp for the pin.
+    //
+    // Narrowing costs nothing on the other side either: read_rows folds bucket 0 in for EVERY
+    // reader, so rows left in it between a foreign commit and the rebuild's own commit are still
+    // answered -- they are simply not durable yet, which is exactly what the bucket means.
     //
     // Keys are decoded back into a logical_value_t on the way out because the store's write doors
     // take one. The round trip is not wasted: the encoding is what made the staged key comparable
@@ -359,23 +379,18 @@ namespace services::index {
         // hand the store an NA key, which hashes like any other value and would answer a
         // later probe for a key nobody ever inserted.
         bool decode_ok = true;
-        const auto publish_one = [&](uint64_t bucket_id) {
-            auto it = buckets.find(bucket_id);
-            if (it == buckets.end()) {
-                return;
-            }
+        // Written as a plain lookup rather than a bucket-taking helper: a helper parameterized by
+        // bucket id is what let the second call on 0 sit here unremarked, and one call site does
+        // not need one.
+        if (auto it = buckets.find(txn_id); it != buckets.end()) {
             for (const auto& [encoded, row_id] : it->second) {
                 size_t pos = 0;
                 auto key = codec::read_logical_value(resource(), encoded, pos, &decode_ok);
                 if (!decode_ok) {
-                    return;
+                    break;
                 }
                 apply(key, static_cast<size_t>(row_id));
             }
-        };
-        publish_one(txn_id);
-        if (txn_id != 0 && decode_ok) {
-            publish_one(0);
         }
         if (!decode_ok) {
             return core::error_t{
@@ -386,8 +401,8 @@ namespace services::index {
         // The rows are only in the index once this succeeds. Reporting no_error on a failed flush
         // would leave the statement believing the index matches the table when it does not.
         //
-        // AND THE BUCKETS ARE ERASED ONLY AFTER THE FLUSH SAYS YES, the same ordering the
-        // journalled txn!=0 legs keep. An erase inside publish_one, ahead of this verdict, would
+        // AND THE BUCKET IS ERASED ONLY AFTER THE FLUSH SAYS YES, the same ordering the
+        // journalled txn!=0 legs keep. An erase inside the walk above, ahead of this verdict, would
         // clear the bucket even when the flush refused -- an fsync the device rejected, or a put
         // failure the void write doors could only PARK for force_flush to hand over -- so the RETRY
         // of that commit would publish nothing, find nothing parked, and report success over rows
@@ -399,13 +414,16 @@ namespace services::index {
             return flush_error;
         }
         buckets.erase(txn_id);
-        buckets.erase(0);
         return core::error_t::no_error();
     }
 
     bitcask_index_agent_t::unique_future<core::error_t>
-    bitcask_index_agent_t::commit_inserts(session_id_t session, uint64_t txn_id) {
-        trace(log_, "bitcask_index_agent_t::commit_inserts, txn_id: {}, session: {}", txn_id, session.data());
+    bitcask_index_agent_t::commit_inserts(session_id_t session, uint64_t txn_id, uint64_t commit_id) {
+        trace(log_,
+              "bitcask_index_agent_t::commit_inserts, txn_id: {}, commit_id: {}, session: {}",
+              txn_id,
+              commit_id,
+              session.data());
         if (is_dropped_) {
             co_return core::error_t{
                 core::error_code_t::index_not_exists,
@@ -424,29 +442,28 @@ namespace services::index {
             // is replayed by every later open, so one NA key would be re-inserted into the index on
             // every restart from then on.
             //
-            // THE BUCKETS ARE READ HERE AND ERASED ONLY AFTER THE JOURNAL SAYS YES. An erase inside
+            // THE BUCKET IS READ HERE AND ERASED ONLY AFTER THE JOURNAL SAYS YES. An erase inside
             // this collector, ahead of apply_txn_inserts, would lose the staged batch on a journal
             // IO refusal, and a RETRY of the same commit would find an empty bucket and report
             // success over nothing.
+            //
+            // AND ONLY THIS TRANSACTION'S BUCKET, never bucket 0 as well. The frame this journal
+            // becomes is stamped with `txn_id` AND `commit_id`, and recover_txn_log applies a frame
+            // only when that COMMIT id is in the WAL's committed set -- so folding the rebuild's
+            // stage in here would make rows that belong to NO transaction replayable only behind a
+            // commit marker written for one that never staged them. The bound is stated once, over
+            // publish_buckets.
             bool decode_ok = true;
-            const auto collect = [&](uint64_t bucket_id) {
-                auto it = pending_inserts_.find(bucket_id);
-                if (it == pending_inserts_.end()) {
-                    return;
-                }
+            if (auto it = pending_inserts_.find(txn_id); it != pending_inserts_.end()) {
                 journal.reserve(journal.size() + it->second.size());
                 for (const auto& [encoded, row_id] : it->second) {
                     size_t pos = 0;
                     auto key = codec::read_logical_value(resource(), encoded, pos, &decode_ok);
                     if (!decode_ok) {
-                        return;
+                        break;
                     }
                     journal.emplace_back(std::move(key), static_cast<size_t>(row_id));
                 }
-            };
-            collect(txn_id);
-            if (decode_ok) {
-                collect(0);
             }
             if (!decode_ok) {
                 co_return core::error_t{
@@ -455,13 +472,30 @@ namespace services::index {
                                      resource()}};
             }
             if (journal.empty()) {
+                // AN EMPTY BUCKET AT COMMIT IS A LEGAL STATE, not a broken "whoever staged
+                // commits" invariant, and this road is the right answer rather than a swallowed
+                // one. Three ordinary productions of it, all in manager_index_t:
+                //   - commit_inserts fans out to EVERY index record of every touched table
+                //     (no test on what was staged), while insert_rows stages only where the
+                //     statement's chunks actually carry that index's key columns -- so an index
+                //     this statement does not apply to is committed with no bucket at all;
+                //   - a DELETE-only transaction is still handed the insert leg of the commit;
+                //   - stage_inserts drops NULL keys (index_key_is_null), so INSERTing a NULL
+                //     into an indexed nullable column CREATES the bucket and leaves it empty.
+                // The third one is why the erase is here: `pending_inserts_[txn_id]` was
+                // materialized by stage_inserts, and a road that returns without taking it back
+                // leaks one empty bucket per such transaction for the life of the agent.
+                //
+                // ITS OWN BUCKET AND NOTHING ELSE. Now that the collector above no longer folds
+                // bucket 0 in, "the journal is empty" no longer implies "bucket 0 is empty" --
+                // erasing 0 here would be the same theft this handler just stopped committing.
+                pending_inserts_.erase(txn_id);
                 co_return core::error_t::no_error();
             }
             // Propagate the txn-log IO error straight back to the manager's commit handler.
-            auto apply_error = store_.apply_txn_inserts(txn_id, journal);
+            auto apply_error = store_.apply_txn_inserts(txn_id, commit_id, journal);
             if (!apply_error.contains_error()) {
                 pending_inserts_.erase(txn_id);
-                pending_inserts_.erase(0);
             }
             co_return pay_merge_debt(std::move(apply_error));
         }
@@ -487,8 +521,12 @@ namespace services::index {
     }
 
     bitcask_index_agent_t::unique_future<core::error_t>
-    bitcask_index_agent_t::commit_deletes(session_id_t session, uint64_t txn_id) {
-        trace(log_, "bitcask_index_agent_t::commit_deletes, txn_id: {}, session: {}", txn_id, session.data());
+    bitcask_index_agent_t::commit_deletes(session_id_t session, uint64_t txn_id, uint64_t commit_id) {
+        trace(log_,
+              "bitcask_index_agent_t::commit_deletes, txn_id: {}, commit_id: {}, session: {}",
+              txn_id,
+              commit_id,
+              session.data());
         if (is_dropped_) {
             co_return core::error_t{
                 core::error_code_t::index_not_exists,
@@ -502,26 +540,20 @@ namespace services::index {
             //
             // And the same erase-only-after-success ordering as commit_inserts: a journal
             // refusal must leave the staged deletes in their bucket, or the retried commit
-            // reports success while the row stays in the index forever.
+            // reports success while the row stays in the index forever. Same single bucket, too,
+            // and for the same reason -- the frame carries this transaction's `txn_id` and
+            // `commit_id` and nothing else.
             bool decode_ok = true;
-            const auto collect = [&](uint64_t bucket_id) {
-                auto it = pending_deletes_.find(bucket_id);
-                if (it == pending_deletes_.end()) {
-                    return;
-                }
+            if (auto it = pending_deletes_.find(txn_id); it != pending_deletes_.end()) {
                 journal.reserve(journal.size() + it->second.size());
                 for (const auto& [encoded, row_id] : it->second) {
                     size_t pos = 0;
                     auto key = codec::read_logical_value(resource(), encoded, pos, &decode_ok);
                     if (!decode_ok) {
-                        return;
+                        break;
                     }
                     journal.emplace_back(std::move(key), static_cast<size_t>(row_id));
                 }
-            };
-            collect(txn_id);
-            if (decode_ok) {
-                collect(0);
             }
             if (!decode_ok) {
                 co_return core::error_t{
@@ -530,12 +562,15 @@ namespace services::index {
                                      resource()}};
             }
             if (journal.empty()) {
+                // The ruling and the three productions of an empty bucket are written out over
+                // the same road in commit_inserts; this leg reaches it through the fan-out that
+                // hands the delete leg to every index of the table, staged or not.
+                pending_deletes_.erase(txn_id);
                 co_return core::error_t::no_error();
             }
-            auto apply_error = store_.apply_txn_deletes(txn_id, journal);
+            auto apply_error = store_.apply_txn_deletes(txn_id, commit_id, journal);
             if (!apply_error.contains_error()) {
                 pending_deletes_.erase(txn_id);
-                pending_deletes_.erase(0);
             }
             co_return pay_merge_debt(std::move(apply_error));
         }

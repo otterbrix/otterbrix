@@ -3,6 +3,7 @@
 
 #include <array>
 #include <charconv>
+#include <components/index/logical_value_binary_codec.hpp>
 
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
@@ -21,7 +22,7 @@
 //                                              constraints, deps).
 //                 — adds `atttypspec`        : flat-text encoded complex_logical_type for
 //                                              types that don't fit a single pg_type.oid.
-//                 — adds `attdefspec`        : flat-text encoded default value (replaces
+//                 — adds `attdefspec`        : binary-encoded default value (replaces
 //                                              text `attdefval` — survives roundtrip).
 //                 — adds `atthasdefault`/`attisdropped` : tombstone; attnum is never reused.
 //                 — no `attstattarget`       : no statistics layer yet.
@@ -107,7 +108,7 @@ namespace components::catalog {
             // DECIMAL / STRUCT / ENUM / UNKNOWN, atttypspec carries the flat-text encoded
             // complex_logical_type (preserves precision/scale, element types, child types).
             c.emplace_back("atttypspec", str_col(), false);
-            // attdefspec: flat-text encoded logical_value_t default via encode_default_spec
+            // attdefspec: binary logical_value_t default, hex-armoured (encode_default_spec)
             // (pg_attrdef-equivalent inlined into pg_attribute). Empty when
             // atthasdefault=false.
             c.emplace_back("attdefspec", str_col(), false);
@@ -862,148 +863,135 @@ namespace components::catalog {
 
     types::logical_type pg_name_to_logical_type(std::string_view name) noexcept { return scalar_name_to_type(name); }
 
-    std::string encode_default_spec(const types::logical_value_t& v) {
-        if (v.is_null())
-            return "NULL";
-        using LT = types::logical_type;
-        const auto lt = v.type().type();
-        const auto name = scalar_type_to_name(lt);
-        if (name.empty())
-            return ""; // complex type — not persisted
-        std::string out(name);
-        out += ':';
-        switch (lt) {
-            case LT::BOOLEAN:
-                out += v.value<bool>() ? '1' : '0';
-                break;
-            case LT::TINYINT:
-                out += std::to_string(v.value<int8_t>());
-                break;
-            case LT::UTINYINT:
-                out += std::to_string(static_cast<unsigned>(v.value<uint8_t>()));
-                break;
-            case LT::SMALLINT:
-                out += std::to_string(v.value<int16_t>());
-                break;
-            case LT::USMALLINT:
-                out += std::to_string(static_cast<unsigned>(v.value<uint16_t>()));
-                break;
-            case LT::INTEGER:
-                out += std::to_string(v.value<int32_t>());
-                break;
-            case LT::UINTEGER:
-                out += std::to_string(v.value<uint32_t>());
-                break;
-            case LT::BIGINT:
-                out += std::to_string(v.value<int64_t>());
-                break;
-            case LT::UBIGINT:
-                out += std::to_string(v.value<uint64_t>());
-                break;
-            case LT::FLOAT:
-                out += std::to_string(v.value<float>());
-                break;
-            case LT::DOUBLE:
-                out += std::to_string(v.value<double>());
-                break;
-            case LT::STRING_LITERAL:
-                out += v.value<std::string_view>();
-                break;
-            default:
-                return "";
+    namespace {
+
+        constexpr char kDefaultSpecNull = 'N';
+        constexpr char kDefaultSpecValue = 'V';
+
+        core::error_t default_spec_error(std::pmr::memory_resource* resource,
+                                         core::error_code_t code,
+                                         const std::string& text) {
+            return core::error_t{code, std::pmr::string{text.c_str(), resource}};
         }
-        return out;
+
+        // Readable type for the rule-6 rejection message. encode_type_spec renders the
+        // full tree for complex types and "" for scalars, where the pg name is the answer.
+        std::string describe_default_type(const types::complex_logical_type& t) {
+            auto spec = encode_type_spec(t);
+            if (!spec.empty()) {
+                return spec;
+            }
+            const auto name = scalar_type_to_name(t.type());
+            if (!name.empty()) {
+                return std::string{name};
+            }
+            return "type#" + std::to_string(static_cast<int>(t.type()));
+        }
+
+        void append_hex(std::string& out, const std::pmr::string& raw) {
+            static constexpr char kDigits[] = "0123456789ABCDEF";
+            out.reserve(out.size() + raw.size() * 2);
+            for (char raw_byte : raw) {
+                const auto byte = static_cast<unsigned char>(raw_byte);
+                out.push_back(kDigits[byte >> 4U]);
+                out.push_back(kDigits[byte & 0x0FU]);
+            }
+        }
+
+        bool read_hex(std::pmr::memory_resource* resource, std::string_view hex, std::pmr::string& out) {
+            if (hex.size() % 2 != 0) {
+                return false;
+            }
+            const auto nibble = [](char c) -> int {
+                if (c >= '0' && c <= '9') {
+                    return c - '0';
+                }
+                if (c >= 'A' && c <= 'F') {
+                    return c - 'A' + 10;
+                }
+                if (c >= 'a' && c <= 'f') {
+                    return c - 'a' + 10;
+                }
+                return -1;
+            };
+            out = std::pmr::string{resource};
+            out.reserve(hex.size() / 2);
+            for (std::size_t i = 0; i < hex.size(); i += 2) {
+                const int hi = nibble(hex[i]);
+                const int lo = nibble(hex[i + 1]);
+                if (hi < 0 || lo < 0) {
+                    return false;
+                }
+                out.push_back(static_cast<char>((static_cast<unsigned>(hi) << 4U) | static_cast<unsigned>(lo)));
+            }
+            return true;
+        }
+
+    } // namespace
+
+    core::error_t
+    encode_default_spec(std::pmr::memory_resource* resource, const types::logical_value_t& v, std::string& out) {
+        out.clear();
+        if (v.is_null()) {
+            // An explicit DEFAULT NULL is a default. Recording it as "" would make it
+            // indistinguishable from having none, which is what the old flat-text form did.
+            out.push_back(kDefaultSpecNull);
+            return core::error_t::no_error();
+        }
+        if (!index::codec::is_encodable_value_type(v.type())) {
+            return default_spec_error(resource,
+                                      core::error_code_t::schema_error,
+                                      std::string{"DEFAULT of type "} + describe_default_type(v.type()) +
+                                          " cannot be persisted");
+        }
+        std::pmr::string payload{resource};
+        if (!index::codec::append_typed_value(payload, v)) {
+            return default_spec_error(resource,
+                                      core::error_code_t::schema_error,
+                                      std::string{"DEFAULT of type "} + describe_default_type(v.type()) +
+                                          " cannot be persisted");
+        }
+        out.push_back(kDefaultSpecValue);
+        append_hex(out, payload);
+        return core::error_t::no_error();
     }
 
-    std::optional<types::logical_value_t> decode_default_spec(std::pmr::memory_resource* resource,
-                                                              const std::string& spec) {
-        if (spec.empty() || spec == "NULL")
-            return std::nullopt;
-        const auto colon = spec.find(':');
-        if (colon == std::string::npos)
-            return std::nullopt;
-        const auto type_name = std::string_view(spec).substr(0, colon);
-        const auto val_str = spec.substr(colon + 1);
-        const auto lt = scalar_name_to_type(type_name);
-        using LT = types::logical_type;
-        const char* b = val_str.data();
-        const char* e = val_str.data() + val_str.size();
-        switch (lt) {
-            case LT::BOOLEAN:
-                return types::logical_value_t(resource, val_str == "1");
-            case LT::TINYINT: {
-                int v{};
-                auto [p, ec] = std::from_chars(b, e, v);
-                if (ec != std::errc{})
-                    return std::nullopt;
-                return types::logical_value_t(resource, static_cast<int8_t>(v));
-            }
-            case LT::UTINYINT: {
-                unsigned long v{};
-                auto [p, ec] = std::from_chars(b, e, v);
-                if (ec != std::errc{})
-                    return std::nullopt;
-                return types::logical_value_t(resource, static_cast<uint8_t>(v));
-            }
-            case LT::SMALLINT: {
-                int v{};
-                auto [p, ec] = std::from_chars(b, e, v);
-                if (ec != std::errc{})
-                    return std::nullopt;
-                return types::logical_value_t(resource, static_cast<int16_t>(v));
-            }
-            case LT::USMALLINT: {
-                unsigned long v{};
-                auto [p, ec] = std::from_chars(b, e, v);
-                if (ec != std::errc{})
-                    return std::nullopt;
-                return types::logical_value_t(resource, static_cast<uint16_t>(v));
-            }
-            case LT::INTEGER: {
-                int v{};
-                auto [p, ec] = std::from_chars(b, e, v);
-                if (ec != std::errc{})
-                    return std::nullopt;
-                return types::logical_value_t(resource, v);
-            }
-            case LT::UINTEGER: {
-                unsigned long v{};
-                auto [p, ec] = std::from_chars(b, e, v);
-                if (ec != std::errc{})
-                    return std::nullopt;
-                return types::logical_value_t(resource, static_cast<uint32_t>(v));
-            }
-            case LT::BIGINT: {
-                long long v{};
-                auto [p, ec] = std::from_chars(b, e, v);
-                if (ec != std::errc{})
-                    return std::nullopt;
-                return types::logical_value_t(resource, static_cast<int64_t>(v));
-            }
-            case LT::UBIGINT: {
-                unsigned long long v{};
-                auto [p, ec] = std::from_chars(b, e, v);
-                if (ec != std::errc{})
-                    return std::nullopt;
-                return types::logical_value_t(resource, static_cast<uint64_t>(v));
-            }
-            case LT::FLOAT:
-                try {
-                    return types::logical_value_t(resource, std::stof(val_str));
-                } catch (...) {
-                    return std::nullopt;
-                }
-            case LT::DOUBLE:
-                try {
-                    return types::logical_value_t(resource, std::stod(val_str));
-                } catch (...) {
-                    return std::nullopt;
-                }
-            case LT::STRING_LITERAL:
-                return types::logical_value_t(resource, val_str);
-            default:
-                return std::nullopt;
+    core::error_t decode_default_spec(std::pmr::memory_resource* resource,
+                                      const types::complex_logical_type& column_type,
+                                      std::string_view spec,
+                                      std::optional<types::logical_value_t>& out) {
+        out.reset();
+        if (spec.empty()) {
+            return core::error_t::no_error(); // no default at all
         }
+        if (spec.size() == 1 && spec.front() == kDefaultSpecNull) {
+            // An explicit DEFAULT NULL: present, and NULL. NULL is NA-typed here
+            // (is_null() IS type()==NA), so the value cannot carry column_type — the
+            // caller holds the type separately.
+            out.emplace(resource, types::complex_logical_type{types::logical_type::NA});
+            return core::error_t::no_error();
+        }
+        if (spec.front() != kDefaultSpecValue) {
+            return default_spec_error(resource,
+                                      core::error_code_t::data_corruption,
+                                      "pg_attribute.attdefspec is not a recognised default encoding");
+        }
+        std::pmr::string payload{resource};
+        if (!read_hex(resource, spec.substr(1), payload)) {
+            return default_spec_error(resource,
+                                      core::error_code_t::data_corruption,
+                                      "pg_attribute.attdefspec payload is not valid hex");
+        }
+        std::size_t pos = 0;
+        bool ok = true;
+        auto value = index::codec::read_typed_value(resource, column_type, payload, pos, ok);
+        if (!ok || pos != payload.size()) {
+            return default_spec_error(resource,
+                                      core::error_code_t::data_corruption,
+                                      "pg_attribute.attdefspec does not decode against the column type");
+        }
+        out.emplace(std::move(value));
+        return core::error_t::no_error();
     }
 
 } // namespace components::catalog

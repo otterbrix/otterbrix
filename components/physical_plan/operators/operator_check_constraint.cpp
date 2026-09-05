@@ -55,20 +55,11 @@ namespace components::operators {
             return expressions::param_storage{id};
         }
 
-        // The decoded DEFAULT value for `col`, or nullptr when the column has none.
-        const types::logical_value_t*
-        find_default(const std::vector<std::pair<std::string, types::logical_value_t>>* defaults,
-                     std::string_view col) {
-            if (defaults == nullptr) {
-                return nullptr;
-            }
-            for (const auto& [name, value] : *defaults) {
-                if (name == col) {
-                    return &value;
-                }
-            }
-            return nullptr;
-        }
+        // (There used to be a find_default() here, and a `defaults` member on the build
+        // context: the compiled predicate decided an ABSENT column's fate from the plan's
+        // copy of its DEFAULT. Absent columns no longer reach this operator — the insert
+        // expands them — and deciding from a second copy of the default is precisely how
+        // a CHECK came to admit a row whose stored value it had never seen.)
 
         // Parse a literal constant string into a logical_value_t without a type hint.
         types::logical_value_t parse_const(std::pmr::memory_resource* r, std::string_view s) {
@@ -116,8 +107,6 @@ namespace components::operators {
         }
 
         struct check_build_context {
-            const std::vector<std::pair<std::string, types::logical_value_t>>* defaults;
-            bool strict_absent;
             const vector::data_chunk_t* chunk;
             core::date::timezone_offset_t session_tz;
             types::parameter_map_t* params;
@@ -181,17 +170,13 @@ namespace components::operators {
             constexpr std::string_view kIsNull = " IS NULL";
             if (expr.size() > kIsNotNull.size() && expr.substr(expr.size() - kIsNotNull.size()) == kIsNotNull) {
                 auto col = std::string(trim(expr.substr(0, expr.size() - kIsNotNull.size())));
-                // A column absent from the INSERT write-set stores the table DEFAULT
-                // when one exists (filled agent-side at storage_append) — the STORED
-                // row is then non-NULL and IS NOT NULL must PASS. Absent with no
-                // (non-NULL) default really stores NULL, so it must FAIL — otherwise
-                // `INSERT (a) VALUES (..)` would silently bypass `CHECK (b IS NOT
-                // NULL)` for the omitted column b. Resolved once at compile time.
-                const auto* def = find_default(ctx.defaults, col);
-                const bool absent_is_valid = !ctx.strict_absent || (def != nullptr && !def->is_null());
+                // Every table column is IN the row by the time this runs: an INSERT that
+                // omitted one had it expanded (to its DEFAULT, or NULL) before the append.
+                // So the predicate reads the column. A name that is still not here belongs
+                // to no column of this write-set, and a CHECK says nothing about it.
                 auto ordinal = find_col_index(*ctx.chunk, col);
                 if (!ordinal.has_value()) {
-                    return constant_leaf(r, absent_is_valid);
+                    return constant_leaf(r, true);
                 }
                 // IS NOT NULL is not an operator of its own — it is a negated is_null, which is
                 // exactly how the graph builder wants to see it.
@@ -204,14 +189,10 @@ namespace components::operators {
             }
             if (expr.size() > kIsNull.size() && expr.substr(expr.size() - kIsNull.size()) == kIsNull) {
                 auto col = std::string(trim(expr.substr(0, expr.size() - kIsNull.size())));
-                // Mirror of IS NOT NULL: an absent column stores its (non-NULL)
-                // DEFAULT when one exists, so IS NULL fails; with no default the
-                // stored value IS NULL.
-                const auto* def = find_default(ctx.defaults, col);
-                const bool absent_is_null = !ctx.strict_absent || def == nullptr || def->is_null();
+                // Mirror of IS NOT NULL: the column is in the row, so read it.
                 auto ordinal = find_col_index(*ctx.chunk, col);
                 if (!ordinal.has_value()) {
-                    return constant_leaf(r, absent_is_null);
+                    return constant_leaf(r, true);
                 }
                 return expressions::make_compare_expression(r,
                                                             CT::is_null,
@@ -243,33 +224,14 @@ namespace components::operators {
                 auto col_name = std::string(col_is_rhs ? rhs : lhs);
                 auto const_val = parse_const(r, col_is_rhs ? lhs : rhs);
 
-                auto apply = [&op](types::compare_t cmp) -> bool {
-                    using Cmp = types::compare_t;
-                    if (op == ">")
-                        return cmp == Cmp::more;
-                    if (op == "<")
-                        return cmp == Cmp::less;
-                    if (op == ">=")
-                        return cmp == Cmp::more || cmp == Cmp::equals;
-                    if (op == "<=")
-                        return cmp == Cmp::less || cmp == Cmp::equals;
-                    if (op == "=")
-                        return cmp == Cmp::equals;
-                    if (op == "<>")
-                        return cmp != Cmp::equals;
-                    return true;
-                };
-
+                // (An `apply` lambda used to fold a compare_t into this operator's answer,
+                // for the one caller that decided an ABSENT column's comparison against the
+                // plan's copy of its DEFAULT. That caller is gone with the absent case.)
                 auto ordinal = find_col_index(*ctx.chunk, col_name);
                 if (!ordinal.has_value()) {
-                    // Absent-column policy, resolved here: with a non-NULL DEFAULT the stored row
-                    // carries that value, so the comparison is decided against it once, for every
-                    // row; without one, keep the legacy pass (untyped/unknown shape).
-                    const auto* def = find_default(ctx.defaults, col_name);
-                    if (!ctx.strict_absent || def == nullptr || def->is_null()) {
-                        return constant_leaf(r, true);
-                    }
-                    return constant_leaf(r, apply(col_is_rhs ? const_val.compare(*def) : def->compare(const_val)));
+                    // Not a column of this write-set (see the IS NOT NULL arm): a CHECK over
+                    // it has nothing to compare.
+                    return constant_leaf(r, true);
                 }
 
                 const auto compare_type_of = [&op]() {
@@ -314,13 +276,9 @@ namespace components::operators {
         log_t log,
         std::vector<std::string> not_null_columns,
         std::vector<std::pair<std::string, std::string>> check_exprs,
-        std::vector<std::pair<std::string, uint64_t>> array_size_reqs,
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults,
-        bool write_set_named)
+        std::vector<std::pair<std::string, uint64_t>> array_size_reqs)
         : read_write_operator_t(resource, log, operator_type::check_constraint)
         , not_null_columns_(std::move(not_null_columns))
-        , column_defaults_(std::move(column_defaults))
-        , write_set_named_(write_set_named)
         , array_size_reqs_(std::move(array_size_reqs))
         , check_exprs_(std::move(check_exprs)) {}
 
@@ -366,9 +324,7 @@ namespace components::operators {
         const components::graph_execution_context graph_context{};
         if (schema_chunk != nullptr && !check_exprs_.empty()) {
             check_params_.clear();
-            check_build_context build_ctx{&column_defaults_,
-                                          write_set_named_,
-                                          schema_chunk,
+            check_build_context build_ctx{schema_chunk,
                                           graph_context.timezone_offset,
                                           &check_params_,
                                           0};
@@ -396,10 +352,12 @@ namespace components::operators {
                 continue;
             }
 
-            // NOT NULL checks. A column ABSENT from the write-set stores the table
-            // DEFAULT when one exists (filled agent-side); with no non-NULL default
-            // the stored value IS NULL — a violation (e.g. an INSERT omitting a
-            // PRIMARY KEY column, which pg_attribute never marks attnotnull).
+            // NOT NULL checks over the MATERIALISED row. An INSERT that omitted the
+            // column had it expanded before the append — to its DEFAULT, or to NULL when
+            // there is none — so the validity bit answers the question directly, for the
+            // value that was actually stored. (An INSERT omitting a PRIMARY KEY column,
+            // which pg_attribute never marks attnotnull, therefore fails here on the NULL
+            // that was written, not on a plan-side guess about what would be.)
             for (const auto& col_name : not_null_columns_) {
                 bool found = false;
                 for (uint64_t col = 0; col < chunk.column_count(); ++col) {
@@ -416,14 +374,10 @@ namespace components::operators {
                     }
                     break;
                 }
-                if (!found && write_set_named_) {
-                    const auto* def = find_default(&column_defaults_, col_name);
-                    if (def == nullptr || def->is_null()) {
-                        set_error(core::error_t{
-                            core::error_code_t::other_error,
-                            std::pmr::string{"NOT NULL constraint violated for column: " + col_name, resource_}});
-                        return;
-                    }
+                if (!found) {
+                    // Not a column of this write-set at all (a dynamic-schema table, or a
+                    // path that hands storage ready-made rows). Nothing materialised to judge.
+                    continue;
                 }
             }
 

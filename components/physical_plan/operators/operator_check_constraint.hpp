@@ -18,21 +18,17 @@ namespace components::operators {
     // against — into an expression tree and then an execution graph.
     class operator_check_constraint_t final : public read_write_operator_t {
     public:
-        // column_defaults: decoded DEFAULT values (name -> value) of the target
-        // table. A column ABSENT from the write-set stores its DEFAULT (filled
-        // agent-side at storage_append), so the compiled predicates evaluate an
-        // absent column AS its default; absent with NO default means stored NULL.
-        // write_set_named: absent-by-name is only meaningful when the write-set's
-        // aliases are the statement's column names (SQL INSERT with a column list;
-        // every UPDATE). Positional / hand-built inserts alias arbitrarily, so
-        // absent columns keep the legacy pass-through there.
+        // The rows this validates are MATERIALISED: every table column is present,
+        // because operator_insert expands the statement's omissions (their DEFAULT, or
+        // NULL) before the append. So the predicates read the column, never a
+        // plan-side copy of what the column was going to become — which is exactly
+        // where a CHECK used to admit a row it had judged against a value the write
+        // path did not store.
         operator_check_constraint_t(std::pmr::memory_resource* resource,
                                     log_t log,
                                     std::vector<std::string> not_null_columns,
                                     std::vector<std::pair<std::string, std::string>> check_exprs = {},
-                                    std::vector<std::pair<std::string, uint64_t>> array_size_reqs = {},
-                                    std::vector<std::pair<std::string, types::logical_value_t>> column_defaults = {},
-                                    bool write_set_named = false);
+                                    std::vector<std::pair<std::string, uint64_t>> array_size_reqs = {});
 
         // STREAMING CONSTRAINT SINK. check_constraint is the PARENT of a DML sink in
         // the plan chain (check_constraint -> insert/update -> scan). Its validation
@@ -69,10 +65,6 @@ namespace components::operators {
         };
 
         std::vector<std::string> not_null_columns_;
-        // Decoded DEFAULTs (name -> value); consulted for columns absent from the
-        // write-set by the NOT NULL loop and the compiled CHECK predicates.
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_;
-        bool write_set_named_{false}; // see ctor note
         // Fixed-ARRAY columns (NOT NULL, no DEFAULT) and their declared sizes: a value
         // shorter than the size cannot be padded and is rejected with an error.
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;

@@ -47,9 +47,9 @@ namespace components::catalog::alter_column_validators {
                                   const std::pmr::vector<std::pair<int, components::catalog::oid_t>>& dependents);
 
     // Error-returning wrapper over encode_default_spec (system_table_schemas.hpp).
-    // Writes the encoded form into `out_spec`. A complex value encodes to an empty
-    // string; that is forwarded as success, so callers must treat "no encoded
-    // default" identically to "no default supplied".
+    // Writes the encoded form into `out_spec`. `out_spec` is empty ONLY when no default
+    // was supplied: a default whose type the value codec cannot carry now fails the
+    // statement (rule 6) instead of encoding to "" and being read back as "no default".
     core::error_t encode_default_spec_ec(std::pmr::memory_resource* resource,
                                          const std::optional<components::types::logical_value_t>& default_value,
                                          std::pmr::string& out_spec);

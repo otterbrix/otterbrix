@@ -63,6 +63,43 @@ namespace components::operators {
                 }
                 input.data[i] = std::move(casted);
             }
+            // DEFAULT expansion, ABOVE the journal. Every table column the statement
+            // omitted is appended here, carrying the value the catalog says it defaults
+            // to (or a typed NULL when it has none). Downstream — storage_append, the
+            // PHYSICAL_INSERT record, and the constraint operators reading the written-row
+            // snapshot — all see one full-width row, so nothing has to re-derive what an
+            // absent column "would have" become and nothing can disagree about it.
+            //
+            // EXPLICITLY RELEASED, as PostgreSQL releases CREATE TABLE AS, matviews and
+            // catalog inserts from its rewriter: a catalog-table insert is a ready-made
+            // pg_catalog tuple from ddl_metadata_builder and skips the whole user
+            // preprocess (see await_async_and_resume). operator_create_matview and
+            // operator_vacuum never reach this operator at all. Their fill list is empty
+            // anyway; the guard states the decision rather than leaving it to that.
+            if (!fill_list_.empty() && !components::catalog::is_catalog_table(table_oid_)) {
+                const uint64_t rows = input.size();
+                const uint64_t capacity = input.capacity();
+                input.data.reserve(input.data.size() + fill_list_.size());
+                for (const auto& column : fill_list_) {
+                    auto column_type = column.type;
+                    column_type.set_alias(std::string{column.name.c_str()});
+                    // RULE 1. ONE logical_value_t per column per chunk: build the vector
+                    // as a CONSTANT over the plan-node value and let flatten() broadcast
+                    // it typed. The agent used to do set_value(row, default) once PER ROW
+                    // — a logical_value_t round trip on the row path — and that shape must
+                    // not travel upwards with the logic.
+                    if (column.value.is_null()) {
+                        vector::vector_t filled(resource_, column_type, capacity);
+                        filled.validity().set_all_invalid(rows);
+                        input.data.emplace_back(std::move(filled));
+                        continue;
+                    }
+                    vector::vector_t filled(resource_, column.value, capacity);
+                    filled.flatten(rows);
+                    filled.set_type_alias(std::string{column.name.c_str()});
+                    input.data.emplace_back(std::move(filled));
+                }
+            }
             output_->append_chunk(std::move(input));
         }
         return core::error_t::no_error();
@@ -86,8 +123,8 @@ namespace components::operators {
         // Catalog-table insert (DDL pg_catalog row): delegate to the WAL-first
         // append_pg_catalog_row instead of the user append-first path. The row is
         // a ready-made pg_catalog tuple built by ddl_metadata_builder (atttypid /
-        // attoid already allocated), so the user preprocess — NOT-NULL
-        // checks, DEFAULT fill, type promotion, RETURNING readback — is skipped;
+        // attoid already allocated), so the user preprocess — NOT-NULL checks, the
+        // DEFAULT fill in push(), type promotion, RETURNING readback — is skipped;
         // append_pg_catalog_row runs the lighter catalog preprocess on the agent.
         // The returned range MUST land in ctx->pg_catalog_appends (NOT dml_*):
         // operator_commit_transaction publishes catalog rows via
@@ -207,9 +244,10 @@ namespace components::operators {
                     affected_rows_ += count;
                 } else if (count > 0) {
                     // RETURNING: read the just-appended range back from storage so
-                    // DB-applied DEFAULTs and generated columns (filled on
-                    // storage_append's own copy, not the submitted chunks) are
-                    // present in the projected rows. The read returns
+                    // anything the storage layer itself derives is present in the
+                    // projected rows. (DEFAULTs no longer need this — push() expands
+                    // them into the submitted chunk — but generated columns will.)
+                    // The read returns
                     // ≤DEFAULT_VECTOR_CAPACITY chunks; project each into the
                     // cross-flush accumulator.
                     //

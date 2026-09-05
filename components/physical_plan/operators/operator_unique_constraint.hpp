@@ -38,29 +38,18 @@ namespace components::operators {
     //
     // NULL handling: a key with any NULL column is SKIPPED (SQL UNIQUE treats NULLs
     // as distinct; PRIMARY KEY columns are NOT NULL, enforced upstream by
-    // operator_check_constraint). A key column ABSENT from the write-set stores the
-    // table DEFAULT when one exists — it is materialized as a constant key column so
-    // omitted-column rows still participate; absent with no (non-NULL) default means
-    // stored NULL => the group is void for this write-set. On the first duplicate it
+    // operator_check_constraint). Every table column is IN the rows this reads — an
+    // INSERT that omitted one had it expanded to its DEFAULT (or to NULL) before the
+    // append — so the key is extracted from what was STORED. It used to be assembled
+    // from the plan's own copy of the default, which is how the uniqueness verdict came
+    // to be about a value the write path had not written. On the first duplicate it
     // sets a core::error_t — no silent dedup, no throw across the mailbox (R2/R9).
     class operator_unique_constraint_t final : public read_write_operator_t {
     public:
-        // column_defaults: decoded DEFAULT values (name -> value) of the target
-        // table. A key column ABSENT from the write-set stores its DEFAULT (filled
-        // agent-side at storage_append), so it is materialized as a constant key
-        // column; absent with NO (or NULL) default stores NULL => NULLS DISTINCT
-        // voids the group.
-        // write_set_named: absent-by-name is only meaningful when the write-set's
-        // aliases are the statement's column names (SQL INSERT with a column list;
-        // every UPDATE). A positional / hand-built insert aliases arbitrarily, so
-        // absent key columns void the group there (legacy skip) instead of being
-        // default-materialized.
         operator_unique_constraint_t(std::pmr::memory_resource* resource,
                                      log_t log,
                                      catalog::oid_t table_oid,
-                                     std::vector<std::vector<std::string>> unique_groups,
-                                     std::vector<std::pair<std::string, types::logical_value_t>> column_defaults = {},
-                                     bool write_set_named = false);
+                                     std::vector<std::vector<std::string>> unique_groups);
 
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
@@ -79,10 +68,6 @@ namespace components::operators {
 
         catalog::oid_t table_oid_;
         std::vector<std::vector<std::string>> unique_groups_;
-        // Decoded DEFAULTs (name -> value); consulted for key columns absent from
-        // the write-set (see ctor note).
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults_;
-        bool write_set_named_{false}; // see ctor note
     };
 
 } // namespace components::operators

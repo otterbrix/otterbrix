@@ -1512,6 +1512,20 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 300;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'dave';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'eve';", 1);
+
+        // A restart must not turn the DEFAULT off. Reading the rows written BEFORE the
+        // restart says nothing about that (their tag was materialised in the creating
+        // session); only a NEW partial INSERT does.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.TestCollection (name, score) VALUES ('frank', 400);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 6);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE tag = 'untagged';", 6);
     }
 }
 
@@ -1587,6 +1601,163 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'pending';", 2);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'charlie';", 1);
+
+        // The NOT NULL DEFAULT column must still be filled for a NEW partial INSERT.
+        // Re-reading pre-restart rows cannot show this: their status was materialised
+        // in the creating session.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (name) VALUES ('dave');");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 4);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'pending';", 3);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'dave';", 1);
+    }
+}
+
+// A2b — SOURCE CONVERGENCE (1/2). What a diverged DEFAULT breaks is not the value but
+// the CONSTRAINT. `CHECK (c IS NOT NULL)` on a column with a DEFAULT is compiled against
+// the PLAN's copy of the default (pg_attribute.attdefspec, which survives a restart) and
+// therefore PASSES an INSERT that omits `c` — "the stored row will carry 5". The value
+// actually written came from the storage-layer column list, which after a restart has no
+// defaults, so NULL was stored. The constraint admitted exactly what it exists to reject.
+// This test requires the check's verdict and the stored value to agree.
+TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_after_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/default_check_agrees");
+    test_clear_directory(config);
+
+    INFO("phase 1: c INT DEFAULT 5 with CHECK (c IS NOT NULL); verdict and value agree in-session");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (id bigint, c int DEFAULT 5);")
+                    ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "ALTER TABLE TestDatabase.TestCollection "
+                                      "ADD CONSTRAINT chk_c_not_null CHECK (c IS NOT NULL);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id) VALUES (1);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT c FROM TestDatabase.TestCollection WHERE id = 1;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE_FALSE(cur->value(0, 0).is_null());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
+        }
+    }
+
+    INFO("phase 2: restart — the CHECK verdict and the STORED value must still agree");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto ins = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id) VALUES (2);");
+            INFO("the CHECK passed this row believing the DEFAULT would be stored");
+            REQUIRE(ins->is_success());
+            REQUIRE(ins->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT c FROM TestDatabase.TestCollection WHERE id = 2;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            INFO("CHECK (c IS NOT NULL) admitted the row, so the stored c must satisfy it");
+            CHECK_FALSE(cur->value(0, 0).is_null());
+        }
+        // Stated as the constraint itself: no row in the table may violate the CHECK the
+        // engine claims to enforce.
+        CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE c IS NULL;", 0);
+    }
+}
+
+// A2b — SOURCE CONVERGENCE (2/2). Uniqueness diverges symmetrically: an omitted key
+// column is compared as its DEFAULT (from the catalog, which survives) while NULL is what
+// lands on disk. Before the fix two inserts omitting the column both succeed after a
+// restart — the duplicate-key decision was made about 5 and NULL was stored twice. The
+// decision must be about what is really written.
+TEST_CASE("integration::cpp::test_persistence::default_unique_constraint_agrees_after_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/default_unique_agrees");
+    test_clear_directory(config);
+
+    INFO("phase 1: code bigint DEFAULT 5 UNIQUE; one omitted-column row lands with 5");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "CREATE TABLE TestDatabase.TestCollection (id bigint, code bigint DEFAULT 5);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher
+                        ->execute_sql(session,
+                                      "ALTER TABLE TestDatabase.TestCollection "
+                                      "ADD CONSTRAINT uq_code UNIQUE (code);")
+                        ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id) VALUES (1);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE code = 5;", 1);
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
+        }
+    }
+
+    INFO("phase 2: restart — the duplicate-key decision must be about the STORED value");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto ins = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id) VALUES (2);");
+            INFO("a second row omitting the UNIQUE column takes the same DEFAULT key as row 1");
+            CHECK(ins->is_error());
+        }
+        // Whatever the verdict, the table must not end up holding two rows that share the
+        // key the constraint compared them by.
+        CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE code = 5;", 1);
+        CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE code IS NULL;", 0);
     }
 }
 

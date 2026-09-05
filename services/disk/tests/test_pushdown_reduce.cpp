@@ -57,10 +57,19 @@ namespace {
 
     // One-chunk append batch of BIGINT tuples. `rows[i]` is one row across `ncols` columns.
     std::pmr::vector<components::vector::data_chunk_t>
-    batch_rows(std::pmr::memory_resource* r, size_t ncols, const std::vector<std::vector<int64_t>>& rows) {
+    // `names` are the TARGET COLUMN NAMES, carried as the column type aliases. The append
+    // routes by name and by name only — there is no positional fallback behind it — so a
+    // hand-built batch has to say where each column lands, exactly as the insert operator
+    // does when it renames the streamed columns to their targets.
+    batch_rows(std::pmr::memory_resource* r,
+               const std::vector<std::string>& names,
+               const std::vector<std::vector<int64_t>>& rows) {
+        const size_t ncols = names.size();
         std::pmr::vector<types::complex_logical_type> ct{r};
         for (size_t c = 0; c < ncols; ++c) {
-            ct.emplace_back(types::logical_type::BIGINT);
+            types::complex_logical_type t{types::logical_type::BIGINT};
+            t.set_alias(names[c]);
+            ct.emplace_back(std::move(t));
         }
         components::vector::data_chunk_t chunk{r, ct, rows.empty() ? size_t{1} : rows.size()};
         chunk.set_cardinality(rows.size());
@@ -150,7 +159,7 @@ TEST_CASE("pushdown_reduce: read-your-own-writes SUM over an uncommitted txn (D4
     auto appended = fx.invoke(&manager_disk_t::storage_append,
                               append_ctx,
                               table_oid,
-                              batch_rows(&fx.resource, 1, {{10}, {20}, {30}}));
+                              batch_rows(&fx.resource, {"val"}, {{10}, {20}, {30}}));
     REQUIRE_FALSE(appended.has_error());
 
     auto partials = fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), txn);
@@ -218,7 +227,7 @@ TEST_CASE("pushdown_reduce: GROUP BY key + SUM returns the full grouped result")
     auto appended = fx.invoke(&manager_disk_t::storage_append,
                               append_ctx,
                               table_oid,
-                              batch_rows(&fx.resource, 2, {{1, 10}, {1, 20}, {2, 30}, {2, 5}}));
+                              batch_rows(&fx.resource, {"grp", "val"}, {{1, 10}, {1, 20}, {2, 30}, {2, 5}}));
     REQUIRE_FALSE(appended.has_error());
 
     auto partials = fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/0, /*val_col=*/1), txn);

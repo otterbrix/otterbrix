@@ -172,7 +172,19 @@ namespace components::catalog {
                 a.has_default = col.has_default_value();
                 a.typspec = encode_type_spec(col.type());
                 if (col.has_default_value()) {
-                    a.defspec = encode_default_spec(col.default_value());
+                    // Rule 6: a DEFAULT the codec cannot carry is rejected UPSTREAM, on the
+                    // paths that own an error channel — convert_column_defaults (CREATE
+                    // TABLE) and encode_default_spec_ec (ALTER SET DEFAULT / ADD COLUMN).
+                    // This builder returns rows, not errors, so reaching a failure here
+                    // would mean the gate was bypassed. Do not write the two halves of the
+                    // catalog row into disagreement: atthasdefault and attdefspec say the
+                    // same thing or neither does.
+                    auto encoded = encode_default_spec(resource, col.default_value(), a.defspec);
+                    assert(!encoded.contains_error() && "ungated DEFAULT reached build_create_table_writes");
+                    if (encoded.contains_error()) {
+                        a.defspec.clear();
+                        a.has_default = false;
+                    }
                 }
                 attrs.push_back(std::move(a));
             }

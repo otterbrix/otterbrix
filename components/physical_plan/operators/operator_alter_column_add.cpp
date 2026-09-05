@@ -103,8 +103,16 @@ namespace components::operators {
         const catalog::oid_t attoid = att_batch.allocate();
 
         const std::string typspec = catalog::encode_type_spec(column_.type());
-        const std::string defspec =
-            column_.has_default_value() ? catalog::encode_default_spec(column_.default_value()) : std::string{};
+        std::string defspec;
+        if (column_.has_default_value()) {
+            // Rule 6: a DEFAULT that cannot be persisted fails the ALTER here, before any
+            // catalog row is written — never a column that claims a default it has lost.
+            if (auto ec_spec = catalog::encode_default_spec(resource_, column_.default_value(), defspec);
+                ec_spec.contains_error()) {
+                set_error(std::move(ec_spec));
+                co_return;
+            }
+        }
         const catalog::oid_t atttypid = (column_.atttypid() != catalog::INVALID_OID)
                                             ? column_.atttypid()
                                             : catalog::builtin_type_to_oid(column_.type().type());

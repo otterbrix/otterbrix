@@ -557,10 +557,21 @@ namespace services::disk {
 
             std::vector<components::vector::vector_t> expanded_data;
             expanded_data.reserve(table_columns.size());
-            // Computing tables match by (name, type) so each type-variant lands in
-            // its own physical column; unmatched variants get NULL. Positional
-            // fallback is disabled there (it assumes one column per name).
-            const bool positional_fallback = !is_computed_table && (data->column_count() == table_columns.size());
+            // Matching is BY NAME only. There used to be a positional fallback here —
+            // when the incoming column count happened to equal the table's, an
+            // unmatched name took whatever sat at the same ordinal — and it stood on a
+            // path that no longer needs it: the insert operator renames every column to
+            // its target and appends the ones the statement omitted, so a chunk arrives
+            // full width with the right aliases. A named fallback on the very path being
+            // rewritten is rule 6; it is gone, and a name that does not match now stays
+            // unmatched instead of quietly picking up a neighbour's data.
+            //
+            // A column with no incoming vector is filled NULL. DEFAULTs are NOT applied
+            // here: they are expanded ABOVE the journal, in operator_insert, from
+            // pg_attribute — the one place they are stored. This layer used to
+            // substitute them from its own column list, which after a restart carries
+            // none (load_from_disk rebuilds column definitions without defaults), so the
+            // catalog and the write path disagreed about what an omitted column held.
             for (size_t t = 0; t < table_columns.size(); t++) {
                 bool found = false;
                 for (uint64_t col = 0; col < data->column_count(); col++) {
@@ -572,20 +583,9 @@ namespace services::disk {
                         break;
                     }
                 }
-                if (!found && positional_fallback && t < data->column_count()) {
-                    expanded_data.push_back(std::move(data->data[t]));
-                    found = true;
-                }
                 if (!found) {
-                    if (table_columns[t].has_default_value()) {
-                        expanded_data.emplace_back(resource(), full_types[t], data->size());
-                        for (uint64_t row = 0; row < data->size(); row++) {
-                            expanded_data.back().set_value(row, table_columns[t].default_value());
-                        }
-                    } else {
-                        expanded_data.emplace_back(resource(), full_types[t], data->size());
-                        expanded_data.back().validity().set_all_invalid(data->size());
-                    }
+                    expanded_data.emplace_back(resource(), full_types[t], data->size());
+                    expanded_data.back().validity().set_all_invalid(data->size());
                 }
             }
             data->data = std::move(expanded_data);
@@ -2288,9 +2288,11 @@ namespace services::disk {
     // updated on this agent's own slice. The preprocessing body applies only schema
     // adoption + alias-keyed column expansion + numeric/string cast rather than the
     // heavier storage_append_inner pipeline — storage_append_inner adds NOT NULL
-    // rejection, default-value / positional fallback, and broader
-    // is_convertable_to casting, none of which the catalog-append path applied, so
-    // this lighter path keeps WAL-time semantics faithful.
+    // rejection and broader is_convertable_to casting, neither of which the
+    // catalog-append path applied, so this lighter path keeps WAL-time semantics
+    // faithful. (Neither path substitutes DEFAULTs any more: they are expanded above
+    // the journal, in operator_insert, and catalog rows are released from that fill —
+    // ddl_metadata_builder hands storage a ready-made pg_catalog tuple.)
     agent_disk_t::unique_future<components::pg_catalog_append_range_t>
     agent_disk_t::append_pg_catalog_row_inner(execution_context_t ctx,
                                               components::catalog::oid_t table_oid,

@@ -52,14 +52,10 @@ namespace components::operators {
         std::pmr::memory_resource* resource,
         log_t log,
         catalog::oid_t table_oid,
-        std::vector<std::vector<std::string>> unique_groups,
-        std::vector<std::pair<std::string, types::logical_value_t>> column_defaults,
-        bool write_set_named)
+        std::vector<std::vector<std::string>> unique_groups)
         : read_write_operator_t(resource, std::move(log), operator_type::unique_constraint)
         , table_oid_(table_oid)
-        , unique_groups_(std::move(unique_groups))
-        , column_defaults_(std::move(column_defaults))
-        , write_set_named_(write_set_named) {}
+        , unique_groups_(std::move(unique_groups)) {}
 
     actor_zeta::unique_future<void> operator_unique_constraint_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Resolve the rows to validate — identical policy to operator_fk_check_t: the
@@ -85,53 +81,34 @@ namespace components::operators {
             if (group.empty())
                 continue;
 
-            // Resolve each group column in the written-row schema. A column ABSENT
-            // from the write-set stores the table DEFAULT when one exists (filled
-            // agent-side at storage_append): materialize that (non-NULL) default as
-            // a constant key column so omitted-column rows still participate in
-            // uniqueness. Absent with NO (or NULL) default means the stored value is
-            // NULL => NULLS DISTINCT voids the group (nothing to compare), matching
-            // operator_fk_check_t's has_absent skip.
-            struct key_source_t {
-                uint64_t col{kAbsentCol};                   // present: column index in the chunk
-                const types::logical_value_t* def{nullptr}; // absent: the non-NULL default
-            };
-            std::vector<key_source_t> sources;
+            // Resolve each group column in the written-row schema. The rows are
+            // MATERIALISED — an omitted column was expanded to its DEFAULT (or to NULL)
+            // before the append — so every key column of a table group is present and the
+            // key is read straight off the stored value. A name that is not here belongs
+            // to no column of this write-set (a dynamic-schema table); with nothing stored
+            // to compare, the group is void for this write-set.
+            std::vector<uint64_t> sources;
             sources.reserve(group.size());
             bool group_void = false;
             for (const auto& col_name : group) {
-                key_source_t src;
-                src.col = find_col_index(in_chunks.front(), col_name);
-                if (src.col == kAbsentCol) {
-                    // Only a NAMED write-set proves the statement omitted the column
-                    // (a positional insert aliases arbitrarily — legacy skip).
-                    if (write_set_named_) {
-                        for (const auto& [name, value] : column_defaults_) {
-                            if (name == col_name && !value.is_null()) {
-                                src.def = &value;
-                                break;
-                            }
-                        }
-                    }
-                    if (src.def == nullptr) {
-                        group_void = true;
-                        break;
-                    }
+                const auto col = find_col_index(in_chunks.front(), col_name);
+                if (col == kAbsentCol) {
+                    group_void = true;
+                    break;
                 }
-                sources.push_back(src);
+                sources.push_back(col);
             }
             if (group_void)
                 continue;
 
-            // Materialize the group's key columns once per chunk: present columns
-            // are zero-copy REFERENCED, absent-with-default columns constant-filled.
-            // Every downstream layer (hash, NULL skip, verify, LAYER-2 key
-            // extraction) reads these key chunks, so present and defaulted columns
-            // flow through one shape; col_ids is simply 0..k-1 over them.
+            // Materialize the group's key columns once per chunk: zero-copy REFERENCES
+            // of the stored columns. Every downstream layer (hash, NULL skip, verify,
+            // LAYER-2 key extraction) reads these key chunks, so col_ids is simply
+            // 0..k-1 over them.
             std::pmr::vector<types::complex_logical_type> key_types(resource_);
             key_types.reserve(sources.size());
-            for (const auto& src : sources) {
-                key_types.push_back(src.col != kAbsentCol ? in_chunks.front().data[src.col].type() : src.def->type());
+            for (const auto src : sources) {
+                key_types.push_back(in_chunks.front().data[src].type());
             }
             std::pmr::vector<components::vector::data_chunk_t> key_chunks(resource_);
             key_chunks.reserve(in_chunks.size());
@@ -139,16 +116,7 @@ namespace components::operators {
                 const uint64_t n = chunk.size();
                 components::vector::data_chunk_t keys_chunk(resource_, key_types, n == 0 ? 1 : n);
                 for (std::size_t j = 0; j < sources.size(); ++j) {
-                    if (sources[j].col != kAbsentCol) {
-                        keys_chunk.data[j].reference(chunk.data[sources[j].col]);
-                    } else {
-                        // Absent-with-default: reference the default as ONE CONSTANT
-                        // vector rather than n per-row logical_value_t writes (LAYER-0
-                        // minimize, rule 1). A CONSTANT column with cardinality n is
-                        // valid — downstream hash / vector_ops::copy / cells_equal all
-                        // read CONSTANT via get_value / zero-indexing.
-                        keys_chunk.data[j].reference(*sources[j].def);
-                    }
+                    keys_chunk.data[j].reference(chunk.data[sources[j]]);
                 }
                 keys_chunk.set_cardinality(n);
                 key_chunks.emplace_back(std::move(keys_chunk));
@@ -185,13 +153,11 @@ namespace components::operators {
                     // hash() takes column_ids by non-const ref; hand it a copy.
                     std::vector<uint64_t> hash_cols = col_ids;
                     chunk.hash(hash_cols, hash_vec);
-                    // When EVERY key column is an absent-with-default CONSTANT (LAYER 0
-                    // fills those via reference()), data_chunk_t::hash returns a CONSTANT
-                    // hash vector — only element 0 is written. The per-row hashes[row]
-                    // read below assumes FLAT, so broadcast the constant across all n
-                    // rows. A mixed present/CONSTANT key already flattens inside
-                    // combine_hash; this only fires for the all-defaulted group (e.g. a
-                    // lone defaulted UNIQUE column omitted by every batch row).
+                    // data_chunk_t::hash returns a CONSTANT hash vector when every key
+                    // column it hashed is itself CONSTANT — only element 0 is written.
+                    // The per-row hashes[row] read below assumes FLAT, so broadcast it.
+                    // The write path materialises its fill columns FLAT, so this is a
+                    // guard on the vector kind rather than on any particular producer.
                     if (hash_vec.get_vector_type() != components::vector::vector_type::FLAT) {
                         hash_vec.flatten(n);
                     }

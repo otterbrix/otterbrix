@@ -9,6 +9,7 @@
 #include <memory_resource>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace components::index::codec {
 
@@ -522,6 +523,317 @@ namespace components::index::codec {
                 assert(false && "skip_logical_value: unsupported physical type");
                 std::abort(); // NDEBUG drops the assert; without this control continues into the next case
                 break;
+        }
+    }
+
+    // -----------------------------------------------------------------------------
+    // TYPE-DIRECTED VALUE CODEC — the form a column DEFAULT is persisted in
+    // (pg_attribute.attdefspec; see components/catalog/system_table_schemas.hpp).
+    //
+    // Same file, same primitives and the same payload bytes as the key encoders
+    // above. Two differences, both forced by what a DEFAULT is and an index key is
+    // not:
+    //   * a DEFAULT may be NULL, so every value carries a one-byte presence flag.
+    //     Index keys are never NULL — the constraint layers skip NULL keys — so the
+    //     key encoders have no place to put one;
+    //   * the reader ALREADY knows the type: pg_attribute.atttypspec sits in the
+    //     next column. Nothing type-describing goes into the stream — no logical
+    //     tag, and no DECIMAL width/scale. That is exactly what lets a NESTED value
+    //     (ARRAY / LIST / STRUCT) round-trip here without carrying a schema, which
+    //     the self-describing key form cannot do.
+    //
+    // Nothing in this section aborts. Its input is a catalog row, so a short or
+    // inconsistent payload is DATA, not a broken invariant: it is reported through
+    // `ok` and the caller raises data_corruption. Symmetrically, a value whose type
+    // has no encoding is reported as `false` rather than silently dropped — the
+    // caller turns that into an error at CREATE TABLE / ALTER SET DEFAULT.
+
+    // The types this codec can carry. Scalars are exactly the hashed-index key set
+    // (that predicate is the single authority and gates the same payload writers);
+    // nested types are carried element-wise, so they are encodable exactly when
+    // every leaf is.
+    inline bool is_encodable_value_type(const components::types::complex_logical_type& type) {
+        switch (type.type()) {
+            case logical_type_t::ARRAY:
+            case logical_type_t::LIST:
+                return is_encodable_value_type(type.child_type());
+            case logical_type_t::STRUCT: {
+                if (type.child_types().empty()) {
+                    return false;
+                }
+                for (const auto& field : type.child_types()) {
+                    if (!is_encodable_value_type(field)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            default:
+                return is_representable_index_key_type(type.type(), /*ordered=*/false);
+        }
+    }
+
+    // Raw scaled-integer width of a DECIMAL, taken from the TYPE (never from the
+    // stream, which carries no width). Returns physical_type_t::INVALID for a
+    // width the engine has no storage for.
+    inline physical_type_t decimal_storage_of(const components::types::complex_logical_type& type) {
+        const auto physical = type.to_physical_type();
+        switch (physical) {
+            case physical_type_t::INT16:
+            case physical_type_t::INT32:
+            case physical_type_t::INT64:
+            case physical_type_t::INT128:
+                return physical;
+            default:
+                return physical_type_t::INVALID;
+        }
+    }
+
+    inline bool append_typed_value(std::pmr::string& out, const logical_value_t& value) {
+        const auto& type = value.type();
+        if (value.is_null()) {
+            append_le<uint8_t>(out, 0);
+            return true;
+        }
+        append_le<uint8_t>(out, 1);
+        switch (type.type()) {
+            case logical_type_t::ARRAY:
+            case logical_type_t::LIST: {
+                const auto& children = value.children();
+                append_le<uint32_t>(out, static_cast<uint32_t>(children.size()));
+                for (const auto& child : children) {
+                    if (!append_typed_value(out, child)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            case logical_type_t::STRUCT: {
+                const auto& children = value.children();
+                if (children.size() != type.child_types().size()) {
+                    return false;
+                }
+                for (const auto& child : children) {
+                    if (!append_typed_value(out, child)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            case logical_type_t::DECIMAL:
+                switch (decimal_storage_of(type)) {
+                    case physical_type_t::INT16:
+                        append_le<int16_t>(out, value.value<int16_t>());
+                        return true;
+                    case physical_type_t::INT32:
+                        append_le<int32_t>(out, value.value<int32_t>());
+                        return true;
+                    case physical_type_t::INT64:
+                        append_le<int64_t>(out, value.value<int64_t>());
+                        return true;
+                    case physical_type_t::INT128:
+                        append_le<components::types::int128_t>(out, value.value<components::types::int128_t>());
+                        return true;
+                    default:
+                        return false;
+                }
+            case logical_type_t::BOOLEAN:
+                append_le<uint8_t>(out, value.value<bool>() ? 1 : 0);
+                return true;
+            case logical_type_t::TINYINT:
+                append_le<int8_t>(out, value.value<int8_t>());
+                return true;
+            case logical_type_t::UTINYINT:
+                append_le<uint8_t>(out, value.value<uint8_t>());
+                return true;
+            case logical_type_t::SMALLINT:
+                append_le<int16_t>(out, value.value<int16_t>());
+                return true;
+            case logical_type_t::USMALLINT:
+                append_le<uint16_t>(out, value.value<uint16_t>());
+                return true;
+            case logical_type_t::INTEGER:
+            case logical_type_t::DATE:
+                append_le<int32_t>(out, value.value<int32_t>());
+                return true;
+            case logical_type_t::UINTEGER:
+                append_le<uint32_t>(out, value.value<uint32_t>());
+                return true;
+            case logical_type_t::BIGINT:
+            case logical_type_t::TIME:
+            case logical_type_t::TIMESTAMP:
+            case logical_type_t::TIMESTAMP_TZ:
+                append_le<int64_t>(out, value.value<int64_t>());
+                return true;
+            case logical_type_t::UBIGINT:
+                append_le<uint64_t>(out, value.value<uint64_t>());
+                return true;
+            case logical_type_t::FLOAT:
+                append_le<float>(out, value.value<float>());
+                return true;
+            case logical_type_t::DOUBLE:
+                append_le<double>(out, value.value<double>());
+                return true;
+            case logical_type_t::STRING_LITERAL: {
+                const auto s = value.value<std::string_view>();
+                append_le<uint32_t>(out, static_cast<uint32_t>(s.size()));
+                out.append(s.data(), s.size());
+                return true;
+            }
+            default:
+                // No encoding for this type. Reported, never dropped (rule 6).
+                return false;
+        }
+    }
+
+    inline logical_value_t read_typed_value(std::pmr::memory_resource* resource,
+                                            const components::types::complex_logical_type& type,
+                                            const std::pmr::string& in,
+                                            size_t& pos,
+                                            bool& ok) {
+        const auto fail = [&]() {
+            ok = false;
+            return logical_value_t(resource, components::types::complex_logical_type{logical_type_t::NA});
+        };
+        bool read_ok = true;
+        const auto present = read_le<uint8_t>(in, pos, &read_ok);
+        if (!read_ok || present > 1) {
+            return fail();
+        }
+        if (present == 0) {
+            // NULL in this engine is NA-typed (logical_value_t::is_null() IS
+            // type()==NA), so a null value cannot also carry the column's type. The
+            // caller keeps the type alongside — that is the whole point of a
+            // type-directed codec — and "present==0" says only: this one is NULL.
+            return logical_value_t(resource, components::types::complex_logical_type{logical_type_t::NA});
+        }
+        switch (type.type()) {
+            case logical_type_t::ARRAY:
+            case logical_type_t::LIST: {
+                const auto count = read_le<uint32_t>(in, pos, &read_ok);
+                if (!read_ok || count > in.size()) { // one element costs >=1 byte
+                    return fail();
+                }
+                std::vector<logical_value_t> children;
+                children.reserve(count);
+                for (uint32_t i = 0; i < count; ++i) {
+                    children.push_back(read_typed_value(resource, type.child_type(), in, pos, ok));
+                    if (!ok) {
+                        return fail();
+                    }
+                }
+                return type.type() == logical_type_t::ARRAY
+                           ? logical_value_t::create_array(resource, type.child_type(), children)
+                           : logical_value_t::create_list(resource, type.child_type(), children);
+            }
+            case logical_type_t::STRUCT: {
+                std::vector<logical_value_t> fields;
+                fields.reserve(type.child_types().size());
+                for (const auto& field_type : type.child_types()) {
+                    fields.push_back(read_typed_value(resource, field_type, in, pos, ok));
+                    if (!ok) {
+                        return fail();
+                    }
+                }
+                return logical_value_t::create_struct(resource, type, fields);
+            }
+            case logical_type_t::DECIMAL: {
+                switch (decimal_storage_of(type)) {
+                    case physical_type_t::INT16: {
+                        const auto v = read_le<int16_t>(in, pos, &read_ok);
+                        return read_ok ? logical_value_t::create_decimal(resource, type, static_cast<int64_t>(v))
+                                       : fail();
+                    }
+                    case physical_type_t::INT32: {
+                        const auto v = read_le<int32_t>(in, pos, &read_ok);
+                        return read_ok ? logical_value_t::create_decimal(resource, type, static_cast<int64_t>(v))
+                                       : fail();
+                    }
+                    case physical_type_t::INT64: {
+                        const auto v = read_le<int64_t>(in, pos, &read_ok);
+                        return read_ok ? logical_value_t::create_decimal(resource, type, v) : fail();
+                    }
+                    case physical_type_t::INT128: {
+                        const auto v = read_le<components::types::int128_t>(in, pos, &read_ok);
+                        return read_ok ? logical_value_t::create_decimal(resource, type, v) : fail();
+                    }
+                    default:
+                        return fail();
+                }
+            }
+            case logical_type_t::BOOLEAN: {
+                const auto v = read_le<uint8_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, v != 0) : fail();
+            }
+            case logical_type_t::TINYINT: {
+                const auto v = read_le<int8_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, v) : fail();
+            }
+            case logical_type_t::UTINYINT: {
+                const auto v = read_le<uint8_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, v) : fail();
+            }
+            case logical_type_t::SMALLINT: {
+                const auto v = read_le<int16_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, v) : fail();
+            }
+            case logical_type_t::USMALLINT: {
+                const auto v = read_le<uint16_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, v) : fail();
+            }
+            case logical_type_t::INTEGER: {
+                const auto v = read_le<int32_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, v) : fail();
+            }
+            case logical_type_t::DATE: {
+                const auto v = read_le<int32_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, core::date::date_t{core::date::days{v}}) : fail();
+            }
+            case logical_type_t::UINTEGER: {
+                const auto v = read_le<uint32_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, v) : fail();
+            }
+            case logical_type_t::BIGINT: {
+                const auto v = read_le<int64_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, v) : fail();
+            }
+            case logical_type_t::TIME: {
+                const auto v = read_le<int64_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, core::date::time_t{core::date::microseconds{v}}) : fail();
+            }
+            case logical_type_t::TIMESTAMP: {
+                const auto v = read_le<int64_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, core::date::timestamp_t{core::date::microseconds{v}})
+                               : fail();
+            }
+            case logical_type_t::TIMESTAMP_TZ: {
+                const auto v = read_le<int64_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, core::date::timestamptz_t{core::date::microseconds{v}})
+                               : fail();
+            }
+            case logical_type_t::UBIGINT: {
+                const auto v = read_le<uint64_t>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, v) : fail();
+            }
+            case logical_type_t::FLOAT: {
+                const auto v = read_le<float>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, v) : fail();
+            }
+            case logical_type_t::DOUBLE: {
+                const auto v = read_le<double>(in, pos, &read_ok);
+                return read_ok ? logical_value_t(resource, v) : fail();
+            }
+            case logical_type_t::STRING_LITERAL: {
+                const auto n = read_le<uint32_t>(in, pos, &read_ok);
+                if (!read_ok || pos + n > in.size()) {
+                    return fail();
+                }
+                std::pmr::string s(in.data() + pos, n, resource);
+                pos += n;
+                return logical_value_t(resource, std::move(s));
+            }
+            default:
+                return fail();
         }
     }
 

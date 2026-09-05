@@ -210,12 +210,26 @@ namespace components::operators {
                     if (schema_idx == absent)
                         continue;
                     // SET DEFAULT: decode attdefspec once; NULL default → same as SET NULL.
+                    // The decode is type-directed, and the column's stored type is right
+                    // here in the fetched chunk.
                     std::optional<types::logical_value_t> default_val;
-                    if (!is_set_null) {
-                        const auto& spec =
-                            ci < fk_.child_col_default_specs.size() ? fk_.child_col_default_specs[ci] : std::string{};
-                        default_val =
-                            spec.empty() ? std::nullopt : components::catalog::decode_default_spec(resource_, spec);
+                    if (!is_set_null && ci < fk_.child_col_default_specs.size() &&
+                        !fk_.child_col_default_specs[ci].empty() && !fetched.empty() &&
+                        schema_idx < fetched.front().column_count()) {
+                        if (auto ec = components::catalog::decode_default_spec(resource_,
+                                                                               fetched.front().data[schema_idx].type(),
+                                                                               fk_.child_col_default_specs[ci],
+                                                                               default_val);
+                            ec.contains_error()) {
+                            // A default that does not decode is catalog corruption. Applying
+                            // SET DEFAULT as SET NULL instead would be a silent substitution.
+                            set_error(std::move(ec));
+                            mark_failed();
+                            co_return;
+                        }
+                        if (default_val.has_value() && default_val->is_null()) {
+                            default_val.reset(); // explicit DEFAULT NULL == SET NULL here
+                        }
                     }
                     for (auto& chunk : fetched) {
                         if (schema_idx >= chunk.column_count())

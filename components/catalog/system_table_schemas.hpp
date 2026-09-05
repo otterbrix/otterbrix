@@ -22,7 +22,9 @@
 #include <components/table/column_definition.hpp>
 
 #include <components/types/logical_value.hpp>
+#include <core/result_wrapper.hpp>
 
+#include <memory_resource>
 #include <optional>
 #include <span>
 #include <string>
@@ -49,8 +51,8 @@ namespace components::catalog {
     //                       cardinality stats; no row composite types). Carries an otterbrix-
     //                       specific `relstoragemode` ('d'=disk, 'm'=in-memory) instead.
     //   pg_attribute      — no `attstattarget` (no stats target). `attdefval` (raw default
-    //                       expression text) is replaced by `attdefspec` (flat-text-encoded
-    //                       logical_value_t) — strictly richer round-trip. `atttypspec`
+    //                       expression text) is replaced by `attdefspec` (a hex-armoured
+    //                       binary logical_value_t) — strictly richer round-trip. `atttypspec`
     //                       carries the full complex_logical_type tree for non-scalar types.
     //                       `attisdropped` (PG tombstone) prevents attnum reuse.
     //   pg_proc           — no `proowner` (no roles). `proargtypes` (CSV of input type OIDs)
@@ -147,11 +149,31 @@ namespace components::catalog {
     // to its canonical logical_type. Returns logical_type::UNKNOWN for user-defined types.
     types::logical_type pg_name_to_logical_type(std::string_view name) noexcept;
 
-    // Encode/decode a column default value (logical_value_t) to flat text for storage in
-    // pg_attribute.attdefspec. Format: "type_name:value" for scalars, "NULL" for null.
-    // Returns "" for complex types (ARRAY/STRUCT/LIST) — treated as no default on decode.
-    std::string encode_default_spec(const types::logical_value_t& v);
-    std::optional<types::logical_value_t> decode_default_spec(std::pmr::memory_resource* resource,
-                                                              const std::string& spec);
+    // Encode/decode a column DEFAULT value for storage in pg_attribute.attdefspec.
+    //
+    // The value is encoded BINARY, by the one binary value codec in the tree
+    // (components/index/logical_value_binary_codec.hpp — the same codec that writes index
+    // keys), then hex-armoured so the column stays printable text like its neighbour
+    // atttypspec. The encoding is type-DIRECTED: the type is NOT in the payload, because
+    // the column's own type sits one column away in atttypspec. That is what makes it
+    // lossless for every type the codec carries, nested types included, rather than only
+    // for the ones somebody remembered to list in a switch.
+    //
+    // Three states, all distinguishable. The previous flat-text form ("type_name:value")
+    // collapsed the last two into "no default", and dropped every type outside its switch:
+    //   ""        no default at all
+    //   "N"       an explicit DEFAULT NULL
+    //   "V"<hex>  the encoded value
+    //
+    // Rule 6: a value whose type the codec cannot carry is an ERROR, surfaced at CREATE
+    // TABLE / ALTER SET DEFAULT, never a silent "no default". Symmetrically, a non-empty
+    // spec that does not decode against `column_type` is catalog corruption and is
+    // reported as such — `out` is set to nullopt ONLY for a genuinely absent default.
+    [[nodiscard]] core::error_t
+    encode_default_spec(std::pmr::memory_resource* resource, const types::logical_value_t& v, std::string& out);
+    [[nodiscard]] core::error_t decode_default_spec(std::pmr::memory_resource* resource,
+                                                    const types::complex_logical_type& column_type,
+                                                    std::string_view spec,
+                                                    std::optional<types::logical_value_t>& out);
 
 } // namespace components::catalog

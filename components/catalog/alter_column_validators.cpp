@@ -54,15 +54,18 @@ namespace components::catalog::alter_column_validators {
         return core::error_t::no_error();
     }
 
-    core::error_t encode_default_spec_ec(std::pmr::memory_resource* /*resource*/,
+    core::error_t encode_default_spec_ec(std::pmr::memory_resource* resource,
                                          const std::optional<components::types::logical_value_t>& default_value,
                                          std::pmr::string& out_spec) {
         out_spec.clear();
         if (!default_value.has_value()) {
             return core::error_t::no_error();
         }
-        // encode_default_spec returns "" for complex types; we forward that as success (see .hpp).
-        const std::string encoded = components::catalog::encode_default_spec(*default_value);
+        std::string encoded;
+        if (auto ec = components::catalog::encode_default_spec(resource, *default_value, encoded);
+            ec.contains_error()) {
+            return ec;
+        }
         out_spec.assign(encoded.begin(), encoded.end());
         return core::error_t::no_error();
     }

@@ -73,12 +73,6 @@ namespace components::planner {
                 // NOT NULL / CHECK) still gets the wrapper via the guard above.
                 cc->set_unique_groups(ins->unique_groups());
                 cc->set_table_oid(ins->table_oid());
-                // Decoded DEFAULTs: the constraint ops evaluate a column ABSENT from
-                // the write-set as its default (the stored row carries it). Absent-by-
-                // name is only meaningful when the INSERT carried an explicit column
-                // list (key_translation) — positional inserts may alias arbitrarily.
-                cc->set_column_defaults(ins->column_defaults());
-                cc->set_write_set_named(!ins->key_translation().empty());
                 cc->append_child(cur);
                 cur = cc;
             }
@@ -129,9 +123,6 @@ namespace components::planner {
                 // UNIQUE / PK enforcement on the UPDATE write-set (see rewrite_insert).
                 cc->set_unique_groups(std::move(live_unique_groups));
                 cc->set_table_oid(upd->table_oid());
-                cc->set_column_defaults(upd->column_defaults());
-                // An UPDATE write-set is the gathered storage row — always named.
-                cc->set_write_set_named(true);
                 cc->append_child(cur);
                 cur = cc;
             }

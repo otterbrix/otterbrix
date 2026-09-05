@@ -845,8 +845,10 @@ namespace services::disk {
         // 6=atthasdefault, 7=attisdropped, 8=atttypspec, ...]. Each column's (attnum, name,
         // type) reconstructs the storage schema in ordinal order — the same order CREATE
         // TABLE registered. NOT-NULL is deliberately not part of the storage schema here:
-        // the executor overlays it from the catalog (data_table_t::overlay_not_null), the
-        // same way it always has for rehydrated in-memory shells.
+        // it is enforced ABOVE storage, by operator_check_constraint over the materialised
+        // row, from the catalog's own attnotnull. (There used to be a
+        // data_table_t::overlay_not_null that pushed the bit down into the storage column
+        // list; nothing called it, and under this design nothing would.)
         struct catalog_col_t {
             std::int32_t attnum{0};
             std::string name;

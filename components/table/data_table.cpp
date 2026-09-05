@@ -159,18 +159,6 @@ namespace components::table {
         mark_modified();
     }
 
-    void data_table_t::overlay_not_null(const std::string& col_name) {
-        for (auto& col : column_definitions_) {
-            if (col.name() == col_name) {
-                col.set_not_null(true);
-                // The not-null bit is part of the serialized column description (checkpoint
-                // writes it, load_from_disk reads it back), so this IS a change to the file.
-                mark_modified();
-                return;
-            }
-        }
-    }
-
     void data_table_t::initialize_scan(table_scan_state& state,
                                        const std::vector<storage_index_t>& column_ids,
                                        const table_filter_t* filter) {

@@ -559,8 +559,23 @@ namespace services::dispatcher {
                                           const components::casts::cast_registry_t* cast_registry,
                                           const components::graph_execution_context& execution_context,
                                           std::vector<components::table::column_definition_t>& columns) {
+        // Rule 6 gate for CREATE TABLE. This is the only path to a pg_attribute row that
+        // owns an error channel BEFORE the DDL builder (which returns rows, not errors)
+        // runs, so a DEFAULT the catalog cannot carry has to be refused here — not
+        // written as an empty attdefspec next to atthasdefault=true and read back as
+        // "no default" by everything that follows.
+        const auto gate_persistable = [&](const components::table::column_definition_t& column) {
+            std::string encoded;
+            return components::catalog::encode_default_spec(resource, column.default_value(), encoded);
+        };
         for (auto& column : columns) {
-            if (!column.has_default_value() || column.default_value().type() == column.type()) {
+            if (!column.has_default_value()) {
+                continue;
+            }
+            if (column.default_value().type() == column.type()) {
+                if (auto ec = gate_persistable(column); ec.contains_error()) {
+                    return ec;
+                }
                 continue;
             }
             const auto& written = column.default_value();
@@ -579,6 +594,9 @@ namespace services::dispatcher {
                 return error;
             }
             column.set_default_value(converted.value(0));
+            if (auto ec = gate_persistable(column); ec.contains_error()) {
+                return ec;
+            }
         }
         return core::error_t::no_error();
     }

@@ -64,11 +64,15 @@ namespace services::dispatcher { namespace {
 
     using components::logical_plan::catalog_resolves_t;
 
-    void fill_not_null(const components::logical_plan::resolved_table_metadata_t& md,
-                       std::vector<std::string>& out,
-                       bool include_with_defaults) {
+    // Every NOT NULL column of the target, DEFAULT-backed ones included. Both write
+    // paths hand the constraint operator a row that carries every column — the INSERT
+    // because its omissions are expanded above the journal, the UPDATE because its
+    // write-set IS the gathered storage row — so each one has a materialised value to
+    // judge. (The INSERT used to skip DEFAULT-backed columns because nothing above the
+    // storage layer knew what would land in them.)
+    void fill_not_null(const components::logical_plan::resolved_table_metadata_t& md, std::vector<std::string>& out) {
         for (const auto& col : md.columns) {
-            if (col.attnotnull && (include_with_defaults || !col.atthasdefault)) {
+            if (col.attnotnull) {
                 out.push_back(col.attname);
             }
         }
@@ -77,49 +81,69 @@ namespace services::dispatcher { namespace {
     // PRIMARY KEY implies NOT NULL, but pg_attribute.attnotnull is only written for
     // column-level constraints at CREATE TABLE — ALTER TABLE ADD PRIMARY KEY / a
     // table-level PK never back-fills it. Merge the resolved PK columns into the DML
-    // node's NOT-NULL list. include_with_defaults mirrors fill_not_null's policy:
-    // INSERT skips DEFAULT-backed columns (the disk agent fills them non-NULL);
-    // UPDATE keeps them (the write-set carries every column, an explicit NULL must
-    // still fail).
-    void merge_pk_not_null(const components::logical_plan::resolved_table_metadata_t* md,
-                           const std::vector<std::string>& pk_columns,
-                           std::vector<std::string>& not_null,
-                           bool include_with_defaults) {
+    // node's NOT-NULL list. Same policy as fill_not_null: a DEFAULT does not exempt a
+    // key column, because the row the check reads carries whatever the default put there.
+    void merge_pk_not_null(const std::vector<std::string>& pk_columns, std::vector<std::string>& not_null) {
         for (const auto& col : pk_columns) {
-            if (!include_with_defaults && md != nullptr) {
-                bool has_default = false;
-                for (const auto& c : md->columns) {
-                    if (c.attname == col) {
-                        has_default = c.atthasdefault;
-                        break;
-                    }
-                }
-                if (has_default) {
-                    continue;
-                }
-            }
             if (std::find(not_null.begin(), not_null.end(), col) == not_null.end()) {
                 not_null.push_back(col);
             }
         }
     }
 
-    // Decoded column DEFAULT values for the constraint operators: an INSERT omitting
-    // a defaulted column stores the default (filled agent-side at storage_append), so
-    // CHECK / UNIQUE must evaluate the ABSENT column AS its default.
-    std::vector<std::pair<std::string, components::types::logical_value_t>>
-    decode_column_defaults(std::pmr::memory_resource* resource,
-                           const components::logical_plan::resolved_table_metadata_t& md) {
-        std::vector<std::pair<std::string, components::types::logical_value_t>> defaults;
-        for (const auto& col : md.columns) {
-            if (!col.atthasdefault || col.attdefspec.empty()) {
+    // The columns this INSERT does NOT write, each with the value it must be filled
+    // with. This is where DEFAULT is expanded — ABOVE the journal, on the plan, once.
+    //
+    // ONE ORACLE, not one choke point (the shape PostgreSQL uses for
+    // build_column_default and its seven callers): pg_attribute.attdefspec is read HERE
+    // and nowhere else on the write path, so no writer ever derives a default for
+    // itself. Presence is not re-derived either — validate_schema has already resolved
+    // which target column each incoming column lands in (column_bindings), and that IS
+    // the statement of what the write-set covers. An empty binding list means validate
+    // did not run the static-shape pass, which happens exactly for a dynamic-schema
+    // (relkind='g') target: such a table has no fixed column list to fill against, so
+    // nothing is stamped and the append keeps adopting the incoming shape.
+    core::error_t build_insert_fill_list(components::logical_plan::node_insert_t* node,
+                                         const components::logical_plan::resolved_table_metadata_t& md) {
+        auto* resource = node->resource();
+        components::logical_plan::insert_fill_list_t fill(resource);
+        if (node->column_bindings().empty()) {
+            node->set_fill_list(std::move(fill));
+            return core::error_t::no_error();
+        }
+        for (std::size_t i = 0; i < md.columns.size(); ++i) {
+            const auto& col = md.columns[i];
+            bool written = false;
+            for (const auto& binding : node->column_bindings()) {
+                if (binding.target_index == i) {
+                    written = true;
+                    break;
+                }
+            }
+            if (written) {
                 continue;
             }
-            if (auto v = components::catalog::decode_default_spec(resource, col.attdefspec)) {
-                defaults.emplace_back(col.attname, std::move(*v));
+            std::optional<components::types::logical_value_t> decoded;
+            if (col.atthasdefault) {
+                // A default that does not decode is catalog corruption, and it fails the
+                // statement. Reading it as "no default" is what put NULL into a column the
+                // constraint layer had already cleared on the strength of its DEFAULT.
+                if (auto ec = components::catalog::decode_default_spec(resource, col.type, col.attdefspec, decoded);
+                    ec.contains_error()) {
+                    return ec;
+                }
             }
+            fill.push_back(components::logical_plan::insert_fill_column_t{
+                std::pmr::string{col.attname.c_str(), resource},
+                col.type,
+                decoded.has_value()
+                    ? std::move(*decoded)
+                    : components::types::logical_value_t(
+                          resource,
+                          components::types::complex_logical_type{components::types::logical_type::NA})});
         }
-        return defaults;
+        node->set_fill_list(std::move(fill));
+        return core::error_t::no_error();
     }
 
     void enrich_insert_sync(components::logical_plan::node_insert_t* node) {
@@ -128,7 +152,7 @@ namespace services::dispatcher { namespace {
         if (!md)
             return;
         std::vector<std::string> nn;
-        fill_not_null(*md, nn, /*include_with_defaults=*/false);
+        fill_not_null(*md, nn);
         node->set_not_null_cols(std::move(nn));
 
         // A too-short value for a fixed ARRAY reconciles by padding NULL, which a NOT NULL column
@@ -151,7 +175,7 @@ namespace services::dispatcher { namespace {
         if (!md)
             return;
         std::vector<std::string> nn;
-        fill_not_null(*md, nn, /*include_with_defaults=*/true);
+        fill_not_null(*md, nn);
         node->set_not_null_cols(std::move(nn));
     }
 
@@ -853,12 +877,14 @@ namespace services::dispatcher { namespace {
                     node->set_unique_groups(constraints->unique_constraints);
                     if (!constraints->pk_columns.empty()) {
                         auto nn = node->not_null_cols();
-                        merge_pk_not_null(md, constraints->pk_columns, nn, /*include_with_defaults=*/false);
+                        merge_pk_not_null(constraints->pk_columns, nn);
                         node->set_not_null_cols(std::move(nn));
                     }
                 }
                 if (md != nullptr) {
-                    node->set_column_defaults(decode_column_defaults(node->resource(), *md));
+                    if (auto ec = build_insert_fill_list(node, *md); ec.contains_error()) {
+                        co_return ec;
+                    }
                 }
                 break;
             }
@@ -898,12 +924,9 @@ namespace services::dispatcher { namespace {
                     node->set_unique_groups(constraints->unique_constraints);
                     if (!constraints->pk_columns.empty()) {
                         auto nn = node->not_null_cols();
-                        merge_pk_not_null(md, constraints->pk_columns, nn, /*include_with_defaults=*/true);
+                        merge_pk_not_null(constraints->pk_columns, nn);
                         node->set_not_null_cols(std::move(nn));
                     }
-                }
-                if (md != nullptr) {
-                    node->set_column_defaults(decode_column_defaults(node->resource(), *md));
                 }
                 break;
             }

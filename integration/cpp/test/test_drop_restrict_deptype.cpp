@@ -1,45 +1,55 @@
 // ============================================================================
-// RESTRICT IS UNREACHABLE FROM SQL, AND THE TWO THINGS THAT WOULD BREAK IF IT
-// WERE WIRED UP.
+// WHAT `RESTRICT` AND `CASCADE` MEAN ONCE THE WRITTEN WORD IS HONOURED.
 //
-// gram.y fills DropStmt::behavior and AlterTableCmd::behavior, and
-// `opt_drop_behavior` defaults to DROP_RESTRICT
-// (components/sql/parser/gram.y:3108-3112). Everything from the logical node
-// down is already wired: node_drop_t::behavior() reaches
+// Everything from the logical node DOWN is wired — node_drop_t::behavior() reaches
 // node_dynamic_cascade_delete_t and alter_table_subcommand_t::behavior reaches
 // node_alter_column_t (both components/planner/planner.cpp), and both operators
-// implement the restrict_ leg. The ONE missing hop is the transformer copying
-// the parser's value onto the node — and because the grammar's default is
-// RESTRICT, adding that hop is not a wiring change, it is a semantics change for
-// EVERY existing statement: 89 `DROP TABLE` and 138 `DROP COLUMN` occurrences in
-// this tree, of which only 10 and 1 respectively say CASCADE.
+// implement the restrict_ leg. TWO hops above the node are still missing, and
+// both live in components/sql/**:
 //
-// So the hop is deliberately NOT taken here; this file builds the two plans by
-// hand with behavior = restrict_ — the same nodes the transformer would produce
-// — and runs them through the ordinary execute_plan channel.
+//   (a) gram.y's `opt_drop_behavior` empty alternative fills DROP_RESTRICT for a
+//       statement that wrote NEITHER word (components/sql/parser/gram.y ~:3111,
+//       and a second hardcoded `ds->behavior = DROP_RESTRICT` ~:3545). A third
+//       DropBehavior member is needed so "unwritten" stays distinguishable from
+//       a written RESTRICT; it must be added LAST — gram.y has initializers that
+//       depend on the existing order.
+//   (b) the transformer copying that value onto the node. transform_table.cpp
+//       builds node_drop_t in THREE places, each of which copies missing_ok and
+//       nothing else — wrap_one (~:245), wrap_index for DROP INDEX (~:304) and
+//       the DROP TYPE arm (~:364) — plus transform_alter_table.cpp's
+//       AT_DropColumn arm (~:391). A recipe that wires only wrap_one leaves
+//       `DROP INDEX ... RESTRICT` and `DROP TYPE ... RESTRICT` silently
+//       cascading.
 //
-// Both cases below are CHARACTERIZATION, each with a `correct:` note stating
-// what it must do once the defect above it is fixed. Both defects live outside
-// this file, so they are measured here and reported, not patched:
+// So this file builds the two plans BY HAND with behavior = restrict_ — the same
+// nodes the transformer will produce — and runs them through the ordinary
+// execute_plan channel. Plain SQL still carries the node default, which is
+// `unspecified` ("the statement named neither word") and resolves to CASCADE
+// (components/catalog/results/ddl_result.hpp; moving that default is #638), so
+// the tree's bare DROP statements are unaffected by anything here.
 //
-//   (1) components/physical_plan/operators/operator_computed_field_register.cpp
-//       :288 writes the edge (pg_computed_column, attoid) -> (pg_class,
-//       table_oid) with deptype 'n' — a table's dependency on ITSELF.
-//       catalog::deptype::blocks_restrict is exactly `dt == 'n'`
-//       (components/catalog/dependency_walker.hpp:24), so under RESTRICT a
-//       computing table is blocked from being dropped BY ITS OWN COLUMNS.
-//       PostgreSQL writes 'a' (auto) for an owned object; 'a' still cascades
-//       (topological_drop_order does not filter on deptype,
-//       cascade_planner.cpp:40-42), it just stops blocking RESTRICT.
+// The three cases below were CHARACTERIZATION of three measured defects and are
+// now the pins on their fixes:
 //
-//   (2) components/physical_plan/operators/operator_alter_column_drop.cpp
-//       refuses DROP COLUMN RESTRICT when `dependents` is non-empty, and
-//       `dependents` is EVERY pg_depend row keyed on the column, collected
-//       unconditionally. The deptype filter its own comment describes ("abort if
-//       any non-internal dep exists") is the one that builds `blocking` further
-//       up, and it was never applied here — so an index or a constraint on the
-//       column, an 'a'/'i' edge PostgreSQL drops ALONG WITH the column, blocks
-//       the drop instead.
+//   (1) operator_computed_field_register.cpp wrote the edge
+//       (pg_computed_column, attoid) -> (pg_class, table_oid) with deptype 'n' —
+//       a table's dependency on ITSELF. catalog::deptype::blocks_restrict is
+//       exactly `dt == 'n'` (components/catalog/dependency_walker.hpp), so a
+//       computing table was blocked from being dropped BY ITS OWN COLUMNS. It
+//       now writes 'a' (auto), the deptype build_create_index_writes already
+//       uses for "owned by the parent"; 'a' still cascades.
+//
+//   (2) operator_alter_column_drop.cpp refused DROP COLUMN RESTRICT whenever
+//       `dependents` was non-empty, and `dependents` was EVERY pg_depend row
+//       keyed on the column. It now refuses on `restrict_blockers` — the rows
+//       whose deptype actually blocks — so an index on the column, an edge
+//       dropped ALONG WITH the column, stops blocking it. The FK-parent gate
+//       above it is unconditional and unchanged.
+//
+//   (3) components/catalog/cascade_planner.cpp's RESTRICT ALLOW-path returned a
+//       plan with ZERO steps: the seed was never pushed, so an accepted
+//       `DROP TABLE t RESTRICT` deleted nothing and answered success. The leg now
+//       falls through to the same seed-last order the CASCADE leg builds.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -47,14 +57,21 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/catalog/catalog_codes.hpp>
+#include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_drop.hpp>
+#include <components/physical_plan/operators/operator_data.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <services/disk/manager_disk.hpp>
 
 #include <unistd.h>
 
+#include <limits>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -69,6 +86,118 @@ namespace {
         p += '_';
         p += leaf;
         return p;
+    }
+
+    namespace catalog = components::catalog;
+
+    // The two cases that pin a refusal gate need to READ and WRITE pg_depend
+    // directly: one dependency shape the gates answer is not producible from SQL
+    // (see the forged-edge case below). manager_disk_ is protected on the base,
+    // so the fixture opens exactly that one door and nothing else.
+    class restrict_spaces_t final : public otterbrix::base_otterbrix_t {
+    public:
+        explicit restrict_spaces_t(const configuration::config& config)
+            : otterbrix::base_otterbrix_t(config) {
+            components::compute::function_registry_t::reset_default();
+        }
+
+        services::disk::manager_disk_t* disk() noexcept { return manager_disk_.get(); }
+    };
+
+    // Await a disk future the way the other catalog-probing integration tests do:
+    // the disk actor runs on its own scheduler, so the test thread spins.
+    template<typename Future>
+    void spin_until_ready(Future& fut) {
+        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
+            std::this_thread::yield();
+        }
+        REQUIRE(fut.is_ready());
+    }
+
+    // Committed rows of `table_oid` whose column `key_col` equals `key`, read
+    // through the disk manager's own funnel (every committed row).
+    template<typename Key>
+    core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
+    catalog_chunks_with(restrict_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
+        auto* resource = space.disk()->resource();
+        components::table::transaction_data td{0, 0};
+        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+        components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
+        std::pmr::vector<std::uint64_t> key_cols(resource);
+        key_cols.emplace_back(key_col);
+        auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
+                                                    &services::disk::manager_disk_t::read_chunks_by_key,
+                                                    exec_ctx,
+                                                    table_oid,
+                                                    std::move(key_cols),
+                                                    components::operators::make_key_chunk(resource, key),
+                                                    std::pmr::vector<std::uint64_t>{resource});
+        spin_until_ready(fut);
+        return std::move(fut).take_ready();
+    }
+
+    // The relation's oid from the pg_class row that names it.
+    catalog::oid_t table_oid_named(restrict_spaces_t& space, const std::string& name) {
+        auto batches =
+            catalog_chunks_with(space, catalog::well_known_oid::pg_class_table, catalog::pg_class_col::relname,
+                                std::string_view{name});
+        REQUIRE_FALSE(batches.has_error());
+        for (const auto& chunk : batches.value()) {
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                if (!chunk.is_null(0, i)) {
+                    return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                }
+            }
+        }
+        return catalog::INVALID_OID;
+    }
+
+    // The column's attoid, resolved the way operator_alter_column_drop resolves it:
+    // pg_attribute keyed on attrelid, matched on attname.
+    catalog::oid_t attoid_of(restrict_spaces_t& space, catalog::oid_t table_oid, const std::string& column) {
+        auto batches = catalog_chunks_with(space,
+                                           catalog::well_known_oid::pg_attribute_table,
+                                           catalog::pg_attribute_col::attrelid,
+                                           table_oid);
+        REQUIRE_FALSE(batches.has_error());
+        for (const auto& chunk : batches.value()) {
+            if (chunk.column_count() < 3) {
+                continue;
+            }
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                if (chunk.is_null(0, i) || chunk.is_null(2, i)) {
+                    continue;
+                }
+                if (chunk.get_value<std::string_view>(2, i) == column) {
+                    return static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                }
+            }
+        }
+        return catalog::INVALID_OID;
+    }
+
+    // Forge one pg_depend edge through the manager's own funnel. The gate under
+    // test keys on (refclassid, refobjid) and classifies by (classid, deptype),
+    // and no writer in this engine emits the combination the case needs.
+    void forge_depend_edge(restrict_spaces_t& space,
+                           catalog::oid_t classid,
+                           catalog::oid_t objid,
+                           catalog::oid_t refclassid,
+                           catalog::oid_t refobjid,
+                           char deptype) {
+        auto* resource = space.disk()->resource();
+        components::table::transaction_data td{0, 0};
+        td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
+        components::execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
+        auto row = catalog::build_pg_depend_row(resource, classid, objid, refclassid, refobjid, deptype);
+        auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
+                                                    &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                    exec_ctx,
+                                                    catalog::well_known_oid::pg_depend_table,
+                                                    std::move(row));
+        spin_until_ready(fut);
+        auto appended = std::move(fut).take_ready();
+        REQUIRE_FALSE(appended.has_error());
     }
 
     components::cursor::cursor_t_ptr run_ok(otterbrix::wrapper_dispatcher_t* d, const std::string& sql) {
@@ -132,12 +261,15 @@ namespace {
 } // namespace
 
 // ---------------------------------------------------------------------------
-// BLOCKER (1): a computing table's own columns block dropping it under RESTRICT.
+// BLOCKER (1), now the pin on its fix. The test name is the DEFECT's name: a
+// computing table's own columns used to block dropping it under RESTRICT.
 //
 // `CREATE TABLE ns.docs();` makes a relkind='g' table; the first INSERT
 // registers its columns through operator_computed_field_register, which writes
-// the self-edge with deptype 'n'. Nothing outside this table depends on it, so
-// RESTRICT has nothing to refuse — and refuses anyway.
+// the (pg_computed_column, attoid) -> (pg_class, table_oid) edge. With 'n' on
+// that edge the table depended on ITSELF and RESTRICT refused it; with 'a' the
+// columns are owned children, cascaded with the table and blocking nothing.
+// Nothing outside this table depends on it, so RESTRICT must let it through.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::drop_restrict::computing_table_is_blocked_by_its_own_columns") {
     auto config = make_test_config(fixture_path("own_columns"));
@@ -155,25 +287,27 @@ TEST_CASE("integration::cpp::drop_restrict::computing_table_is_blocked_by_its_ow
 
     auto dropped = drop_table_restrict(d, "dr", "docs");
 
-    // characterization. correct: is_success() — the only pg_depend edges on this
-    // table are its OWN columns, which PostgreSQL records as 'a' (auto) and
-    // drops with the table. Fix at operator_computed_field_register.cpp:288.
-    CHECK_FALSE(dropped->is_success());
-    CHECK(error_text(dropped).find("DROP RESTRICT: object has dependents") != std::string::npos);
+    // The only pg_depend edges on this table are its OWN columns. A column row
+    // cannot outlive its table, so the edge is 'a' (auto) — it cascades with the
+    // table and does not block RESTRICT, exactly as the index→table edge
+    // ddl_metadata_builder.cpp writes for a declared table does not.
+    INFO("error: " << error_text(dropped));
+    CHECK(dropped->is_success());
 
-    // And the table is still there, which is the part that makes this a defect
-    // rather than a wording quibble: a user who wrote RESTRICT to mean "refuse
-    // if anything ELSE depends on it" cannot drop this table at all.
-    CHECK(run_ok(d, "SELECT * FROM dr.docs;")->size() == 1);
+    // And RESTRICT allowing the drop means the table is GONE, rows and all — not
+    // that the statement was waved through over an object it left live.
+    auto gone = exec(d, "SELECT * FROM dr.docs;");
+    CHECK_FALSE(gone->is_success());
 }
 
 // ---------------------------------------------------------------------------
-// BLOCKER (2): DROP COLUMN RESTRICT counts every dependent, not the blocking ones.
+// BLOCKER (2), now the pin on its fix. The test name is the DEFECT's name:
+// DROP COLUMN RESTRICT used to count every dependent, not the blocking ones.
 //
-// An index on the column is an auto dependency: PostgreSQL drops the index
+// An index on the column is an owned dependency: PostgreSQL drops the index
 // along with the column and lets RESTRICT through. operator_alter_column_drop
-// counts it as a blocker because it never applies the deptype filter it
-// already computed further up.
+// counted it as a blocker because it never applied the deptype filter; it now
+// refuses on `restrict_blockers`, the deptype-filtered subset.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::drop_restrict::column_is_blocked_by_its_own_index") {
     auto config = make_test_config(fixture_path("own_index"));
@@ -188,43 +322,160 @@ TEST_CASE("integration::cpp::drop_restrict::column_is_blocked_by_its_own_index")
 
     auto dropped = drop_column_restrict(d, "dr", "t", "a");
 
-    // characterization. correct: is_success() — the index depends on the column
-    // through an auto edge and is dropped with it; nothing EXTERNAL references
-    // column a. Fix at operator_alter_column_drop.cpp — filter `dependents`
-    // through catalog::deptype::blocks_restrict, the way `blocking` already is.
-    CHECK_FALSE(dropped->is_success());
-    CHECK(error_text(dropped).find("DROP COLUMN RESTRICT: column has dependent objects") != std::string::npos);
+    // The index depends on the column through an 'i'/'a' edge and is dropped with
+    // it; nothing EXTERNAL references column a, so RESTRICT has nothing to refuse.
+    INFO("error: " << error_text(dropped));
+    CHECK(dropped->is_success());
 
-    // The column survived, so this is a statement that cannot be expressed at
-    // all rather than one that is merely worded oddly.
-    auto after = run_ok(d, "SELECT a FROM dr.t;");
-    CHECK(after->size() == 2);
+    // And the column is actually gone — an allowed RESTRICT is a real drop.
+    auto after = exec(d, "SELECT a FROM dr.t;");
+    CHECK_FALSE(after->is_success());
 }
 
 // ---------------------------------------------------------------------------
-// BLOCKER (3), found by the control case for blocker (1) and worse than either:
-// THE RESTRICT PATH THAT ALLOWS A DROP DROPS NOTHING, AND REPORTS SUCCESS.
+// The other half of the same gate: an edge that DOES block still blocks. A
+// foreign key on ANOTHER table references this column through a 'n' (normal)
+// edge, and that one may not be cascaded away by a statement that said RESTRICT.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::drop_restrict::column_referenced_by_a_foreign_key_is_refused") {
+    auto config = make_test_config(fixture_path("fk_blocks"));
+    config.log.level = log_t::level::off;
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+
+    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE TABLE dr.parent (id bigint PRIMARY KEY);");
+    run_ok(d, "CREATE TABLE dr.child (pid bigint, FOREIGN KEY (pid) REFERENCES dr.parent (id));");
+
+    auto dropped = drop_column_restrict(d, "dr", "parent", "id");
+    CHECK_FALSE(dropped->is_success());
+
+    // WHICH gate answered, spelled out. The FK-parent gate runs BEFORE the
+    // RESTRICT gate and runs under every behavior, so this refusal is not
+    // evidence about the restrict leg — `restrict_blockers` is pinned separately,
+    // by the case below. Naming the gate here is what keeps the two apart: with
+    // only `is_success()==false` asserted, deleting either gate would leave this
+    // case green.
+    INFO("error: " << error_text(dropped));
+    CHECK(error_text(dropped).find("foreign key constraint") != std::string::npos);
+
+    // The parent column survived the refusal.
+    auto after = run_ok(d, "SELECT id FROM dr.parent;");
+    CHECK(after->size() == 0);
+}
+
+// ---------------------------------------------------------------------------
+// THE RESTRICT LEG OF DROP COLUMN, PINNED ON ITS OWN.
 //
-// A DECLARED table owns no pg_computed_column self-edges, so it reaches the
-// allow-path that blockers (1) and (2) never get to — and that path is:
+// operator_alter_column_drop has two refusal gates and the FK one comes first,
+// so every dependency shape TODAY'S writers can produce is answered before the
+// RESTRICT gate is reached: the only 'n' edges keyed on a column are the confkey
+// rows of build_create_constraint_writes, and those are pg_constraint-classed,
+// which is exactly what the FK gate matches. `restrict_blockers` is therefore
+// broader than anything the engine writes right now — it is the gate for a
+// blocking edge from ANY catalog — and it was reachable by no test at all.
 //
-//   components/catalog/cascade_planner.cpp:14-25
+// So the edge is forged, through the disk manager's own funnel: a 'n' edge from
+// a pg_class-classed object onto the column. `blocking` stays empty (wrong
+// classid for the FK gate) and `restrict_blockers` does not, which is the one
+// combination that reaches the leg. The control drop of the untouched column in
+// the same table is what says the refusal came from the forged edge and not from
+// the table's shape.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::drop_restrict::a_non_constraint_blocking_edge_refuses_the_column_drop") {
+    auto config = make_test_config(fixture_path("foreign_blocker"));
+    config.log.level = log_t::level::off;
+    restrict_spaces_t space(config);
+    auto* d = space.dispatcher();
+
+    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE TABLE dr.t (a bigint, b bigint);");
+    run_ok(d, "INSERT INTO dr.t (a, b) VALUES (1, 10);");
+
+    const auto table_oid = table_oid_named(space, "t");
+    REQUIRE(table_oid != components::catalog::INVALID_OID);
+    const auto att_a = attoid_of(space, table_oid, "a");
+    REQUIRE(att_a != components::catalog::INVALID_OID);
+
+    // An object in pg_class depending on column a through a NORMAL edge. Its oid
+    // is outside the allocator's range so it can never collide with a real row.
+    constexpr components::catalog::oid_t kForeignBlocker = 990001;
+    forge_depend_edge(space,
+                      components::catalog::well_known_oid::pg_class_table,
+                      kForeignBlocker,
+                      components::catalog::well_known_oid::pg_attribute_table,
+                      att_a,
+                      'n');
+
+    auto refused = drop_column_restrict(d, "dr", "t", "a");
+    INFO("error: " << error_text(refused));
+    CHECK_FALSE(refused->is_success());
+    // The RESTRICT gate's own message, naming the blocking oid — not the FK
+    // gate's, which this shape does not reach.
+    CHECK(error_text(refused).find("DROP COLUMN RESTRICT: column has dependent objects") != std::string::npos);
+    CHECK(error_text(refused).find(std::to_string(kForeignBlocker)) != std::string::npos);
+
+    // Refused before the first mutation: the column is still readable.
+    CHECK(run_ok(d, "SELECT a FROM dr.t;")->size() == 1);
+
+    // CONTROL: the sibling column carries no blocking edge, so the same statement
+    // against it is allowed and really drops.
+    auto allowed = drop_column_restrict(d, "dr", "t", "b");
+    INFO("error: " << error_text(allowed));
+    CHECK(allowed->is_success());
+    CHECK_FALSE(exec(d, "SELECT b FROM dr.t;")->is_success());
+}
+
+// ---------------------------------------------------------------------------
+// THE RESTRICT LEG OF DROP TABLE, PINNED ON ITS OWN.
+//
+// The refusing half of cascade_planner's gate: a foreign key on another table
+// depends on this one through a 'n' edge (constraint→ref_table, written by
+// build_create_constraint_writes), so a statement that WROTE RESTRICT may not
+// cascade it away. This is the one refusal shape today's writers produce
+// unaided, and it is what the message "DROP RESTRICT: object has dependents"
+// exists for — the string had no test naming it.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::drop_restrict::table_referenced_by_a_foreign_key_is_refused") {
+    auto config = make_test_config(fixture_path("fk_table_blocks"));
+    config.log.level = log_t::level::off;
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+
+    run_ok(d, "CREATE DATABASE dr;");
+    run_ok(d, "CREATE TABLE dr.parent (id bigint PRIMARY KEY);");
+    run_ok(d, "INSERT INTO dr.parent (id) VALUES (1);");
+    run_ok(d, "CREATE TABLE dr.child (pid bigint, FOREIGN KEY (pid) REFERENCES dr.parent (id));");
+
+    auto refused = drop_table_restrict(d, "dr", "parent");
+    INFO("error: " << error_text(refused));
+    CHECK_FALSE(refused->is_success());
+    CHECK(error_text(refused).find("DROP RESTRICT: object has dependents") != std::string::npos);
+
+    // A refused DROP plans nothing, so the table is untouched — rows included.
+    CHECK(run_ok(d, "SELECT id FROM dr.parent;")->size() == 1);
+}
+
+// ---------------------------------------------------------------------------
+// BLOCKER (3), now the pin on its fix, and worse than either of the other two.
+// The test name is the DEFECT's name: the RESTRICT path that ALLOWED a drop
+// dropped nothing and reported success.
+//
+// A DECLARED table owns no pg_computed_column self-edges (build_create_table_writes
+// gives its columns only a pg_type edge), so it reaches the allow-path that
+// blockers (1) and (2) never got to. That path used to be:
+//
 //     if (behavior == drop_behavior_t::restrict_) {
-//         for (const auto& d : deps) { ...blocks_restrict → restrict_blocked... }
-//         // No external deps → RESTRICT allows the drop (only auto/internal children).
-//         return plan;                     // <-- plan.steps is EMPTY
+//         for (const auto& d : deps) { ...blocks_restrict -> restrict_blocked... }
+//         return plan;                     // <-- plan.steps EMPTY
 //     }
 //
-// The CASCADE path below it ends with `plan.steps.push_back({seed_classid, seed_oid,
-// 'n'})` (:43) — the seed is what makes the drop delete the object's own catalog rows.
-// The RESTRICT allow-path never pushes it, nor the auto/internal children its own
-// comment says it is allowing, and hands back a plan with zero steps.
-//
-// operator_dynamic_cascade_delete then dedups zero steps into zero steps, probes
-// nothing, emits no delete spec, and runs to mark_executed(). So `DROP TABLE t
-// RESTRICT` on a table nothing depends on is a COMPLETE no-op that answers success —
-// the "success over the rows it did not touch" shape, in the planner rather than the
-// operator. Fixing (1) and (2) would only widen the set of statements that reach it.
+// while the CASCADE leg below it ended with `plan.steps.push_back({seed_classid,
+// seed_oid, 'n'})` — the seed step is what makes a drop delete the object's own
+// catalog rows. operator_dynamic_cascade_delete iterated zero steps, emitted no
+// delete spec, and ran to mark_executed(): success over an object left fully
+// live. The allow-path now falls through to the same order computation, so an
+// accepted RESTRICT is a real drop.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::drop_restrict::allowed_restrict_drop_removes_nothing") {
     auto config = make_test_config(fixture_path("declared_ok"));
@@ -242,23 +493,19 @@ TEST_CASE("integration::cpp::drop_restrict::allowed_restrict_drop_removes_nothin
     INFO("error: " << error_text(dropped));
     CHECK(dropped->is_success());
 
-    // characterization. correct: CHECK_FALSE(...is_success()) — the table was
-    // reported dropped, so selecting from it must fail. Today the accepted DROP
-    // deleted nothing and the table is still fully live, rows and all.
-    // Fix at components/catalog/cascade_planner.cpp:23-24 — the allow-path must
-    // build the same seed-last step list the CASCADE path does.
+    // The table was reported dropped, so selecting from it must fail. The
+    // allow-path builds the same seed-last step list the CASCADE path does
+    // (components/catalog/cascade_planner.cpp) — an accepted RESTRICT is a drop,
+    // not a statement that answers success over rows it never touched.
     auto gone = exec(d, "SELECT id FROM dr.plain;");
-    CHECK(gone->is_success());
-    CHECK(gone->size() == 1);
+    CHECK_FALSE(gone->is_success());
 }
 
 // ---------------------------------------------------------------------------
-// The control the two cases above need: CASCADE — today's only reachable
-// behaviour, and the one every SQL statement in the tree gets — is unaffected.
-// If the two defects above are fixed by weakening the restrict_ leg rather
-// than by correcting the deptype, this case still passes and the two above
-// start passing too, so it is here to keep the CASCADE contract pinned while
-// that work happens.
+// The control the cases above need: the behaviour every bare SQL statement in
+// the tree gets — the node default, `unspecified`, resolved to CASCADE — is
+// unaffected by any of it. If a restrict_ defect above were ever "fixed" by
+// weakening the cascade leg instead, this case is what would catch it.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::drop_restrict::cascade_still_drops_the_computing_table") {
     auto config = make_test_config(fixture_path("cascade_control"));
@@ -270,7 +517,8 @@ TEST_CASE("integration::cpp::drop_restrict::cascade_still_drops_the_computing_ta
     run_ok(d, "CREATE TABLE dr.docs();");
     run_ok(d, "INSERT INTO dr.docs (id, n) VALUES (1, 42);");
 
-    // Plain SQL: the transformer leaves node_drop_t at its cascade_ default.
+    // Plain SQL: the transformer leaves node_drop_t at its `unspecified` default,
+    // which resolves to CASCADE.
     run_ok(d, "DROP TABLE dr.docs;");
 
     auto gone = exec(d, "SELECT * FROM dr.docs;");

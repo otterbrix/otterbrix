@@ -34,12 +34,18 @@
 // own-row delete counts 0. The statement must refuse — and the refused DROP must leave the
 // parent table intact (the autocommit abort puts the already-deleted rows back).
 //
-// The second case pins the reason a blanket zero-refusal was NOT the fix: the dependency walker
-// pushes a dependent once per edge that reaches it (topological_drop_order's order.push_back
-// sits outside the black-set check), so an FK constraint reachable from BOTH its table and its
-// referenced table appears TWICE in the plan. The second occurrence's own-row delete
-// legitimately counts 0 — steps have to be deduplicated by (classid, objid) before any count is
-// judged, and this DROP DATABASE must keep succeeding.
+// The second case pins the reason a blanket zero-refusal was NOT the fix, and is now the pin on
+// the fix that was: the dependency walker USED TO push a dependent once per edge that reached it,
+// so an FK constraint reachable from BOTH its table and its referenced table appeared TWICE in
+// the plan, and the second occurrence's own-row delete legitimately counted 0. The walker now
+// emits an object when it FINISHES it, so one object is one step
+// (components/catalog/dependency_walker.{hpp,cpp} — "A SET, NOT A MULTISET").
+//
+// THE DEDUP THIS CASE ONCE DESCRIBED IS GONE ON PURPOSE, AND MUST NOT COME BACK. It was a second
+// enforcement of the walker's own invariant, sitting in the consumer: with it in place the walker
+// could start emitting duplicates again and nothing would turn red, because the caller quietly
+// repaired them. One invariant, one keeper. This case now guards the walker from the far end —
+// the diamond must judge its dependent exactly once and this DROP DATABASE must keep succeeding.
 
 using namespace test_helpers;
 

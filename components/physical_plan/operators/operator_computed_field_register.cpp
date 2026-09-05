@@ -3,6 +3,7 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/dependency_walker.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
@@ -239,10 +240,22 @@ namespace components::operators {
             // Emit pg_depend rows so the dynamic computed-column mirrors the static ALTER ADD COLUMN dependency
             // graph:
             //   1) (pg_computed_column, attoid) → (pg_type, atttypid) 'n' lets DROP TYPE refuse to drop a type
-            //      still used by a dynamic column (relkind='g');
-            //   2) (pg_computed_column, attoid) → (pg_class, table_oid) 'n' lets DROP TABLE cascade sweep
+            //      still used by a dynamic column (relkind='g'). 'n' matches what a DECLARED column gets:
+            //      build_create_table_writes writes (pg_attribute, attoid) → (pg_type, atttypid) "n"
+            //      (components/catalog/ddl_metadata_builder.cpp, the per-column dep chunk).
+            //   2) (pg_computed_column, attoid) → (pg_class, table_oid) 'a' lets DROP TABLE cascade sweep
             //      dynamic-column rows alongside the parent — operator_dynamic_cascade_delete already discovers
             //      these via the pg_depend reverse index, so no extra cascade wiring is needed here.
+            //
+            // WHY 'a' AND NOT 'n' ON EDGE 2. This edge points AT the table, so it makes the table's own columns
+            // read as dependents OF the table — and catalog::deptype::blocks_restrict is exactly `dt == 'n'`
+            // (components/catalog/dependency_walker.hpp), so with 'n' a computing table was refused a
+            // `DROP TABLE ... RESTRICT` by its own columns and could not be dropped under RESTRICT at all. 'a'
+            // is the deptype this tree already uses for "owned by the parent, torn down with it": the
+            // index→table edge in ddl_metadata_builder.cpp's build_create_index_writes writes 'a' for exactly
+            // that relationship. CASCADE is unaffected — cascade_planner does not filter on deptype, so an 'a'
+            // edge is walked and dropped just as an 'n' one was.
+            //
             // The unregister side intentionally does NOT remove these rows: the parent DROP TABLE cascade or
             // namespace VACUUM sweeps them later, and a stale pg_depend row to a still-live oid is harmless
             // (refcount=0 columns simply remain undiscoverable via attname).
@@ -268,7 +281,7 @@ namespace components::operators {
                                                  attoid,                                            // objid
                                                  catalog::well_known_oid::pg_class_table,           // refclassid
                                                  table_oid_,                                        // refobjid
-                                                 /*deptype=*/'n');
+                                                 /*deptype=*/catalog::deptype::auto_dep);
                 auto [_dc, dcf] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::append_pg_catalog_row,
                                                    exec_ctx,

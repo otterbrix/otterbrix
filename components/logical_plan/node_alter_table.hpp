@@ -26,14 +26,17 @@ namespace components::logical_plan {
         // a missing column is an error, and IF EXISTS is the ONE form PostgreSQL
         // lets pass, so without this flag the loud path would refuse it too.
         bool missing_ok{false};
-        // drop_column only: RESTRICT/CASCADE. gram.y fills AlterTableCmd::behavior;
-        // the planner forwards this onto the alter_column primitive, and
-        // operator_alter_column_drop_t already refuses a dependent-blocked drop
-        // under restrict_. The transformer does not copy the grammar's value yet,
-        // so today every clause carries this DEFAULT — kept at cascade_ (the
-        // pre-existing hardcode) because flipping it to PostgreSQL's restrict_
-        // changes the semantics of every DROP COLUMN and is the owner's call.
-        components::catalog::drop_behavior_t behavior{components::catalog::drop_behavior_t::cascade_};
+        // drop_column only: RESTRICT/CASCADE/neither. gram.y fills
+        // AlterTableCmd::behavior; the planner forwards this onto the alter_column
+        // primitive, and operator_alter_column_drop_t refuses a dependent-blocked
+        // drop when the clause WROTE restrict_. The transformer does not copy the
+        // grammar's value yet, so today every clause carries this DEFAULT — which
+        // is `unspecified`, the form for "the clause named neither word", NOT
+        // cascade_: only that separation lets a written RESTRICT be honoured
+        // without the same hop changing what the tree's bare DROP COLUMN clauses
+        // mean. `unspecified` resolves to CASCADE today
+        // (components/catalog/results/ddl_result.hpp, owner decision; GitHub #638).
+        components::catalog::drop_behavior_t behavior{components::catalog::drop_behavior_t::unspecified};
         components::table::column_definition_t column;
         alter_table_subcommand_t()
             : column("", components::types::complex_logical_type{components::types::logical_type::UNKNOWN}) {}

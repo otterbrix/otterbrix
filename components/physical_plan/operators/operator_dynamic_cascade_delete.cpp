@@ -15,7 +15,6 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -154,9 +153,12 @@ namespace components::operators {
             dep_graph.insert_or_assign(k, std::move(deps));
         }
 
-        // plan_drop: RESTRICT returns restrict_blocked on the first 'n' (normal
-        // external) dependency; CASCADE computes the topological drop order and
-        // reports cycle_detected (blocking_oid = offending oid) on a cycle.
+        // plan_drop: a written RESTRICT is a GATE, not a smaller drop — it returns
+        // restrict_blocked on the first 'n' (normal external) dependency and
+        // otherwise plans exactly what CASCADE would, seed last. CASCADE and the
+        // unspecified form (a statement that named neither word) skip the gate.
+        // Any of the three reports cycle_detected (blocking_oid = offending oid)
+        // on a pg_depend cycle.
         const auto plan = catalog::plan_drop(
             resource_,
             seed_classid_,
@@ -193,22 +195,15 @@ namespace components::operators {
             co_return;
         }
 
-        // ONE STEP PER OBJECT. topological_drop_order pushes a dependent once per edge that reaches it (its
-        // order.push_back sits outside the black-set re-visit check), so a diamond — an FK constraint reachable
-        // from BOTH its table and its referenced table — appears in plan.steps twice. The catalog deletes are
-        // idempotent, so duplicates only cost over-generated specs; but the own-row zero judgement below is NOT
-        // duplicate-proof (the second occurrence's own row legitimately deletes 0 rows), so the plan is
-        // deduplicated by (classid, objid), keeping the first — dependents-first — occurrence.
-        std::pmr::vector<catalog::drop_step_t> steps(resource_);
-        steps.reserve(plan.steps.size());
-        {
-            std::pmr::unordered_set<std::uint64_t> seen(resource_);
-            for (const auto& step : plan.steps) {
-                if (seen.insert(encode_key(step.classid, step.objid)).second) {
-                    steps.push_back(step);
-                }
-            }
-        }
+        // ONE STEP PER OBJECT, and the walker owns that. topological_drop_order emits an object when it
+        // FINISHES it, not once per edge that reaches it, so a diamond — an FK constraint reachable from BOTH
+        // its table and its referenced table — appears in plan.steps exactly once
+        // (components/catalog/dependency_walker.{hpp,cpp}). The own-row zero judgement further down depends on
+        // that and on nothing else: a repeated object's second own-row delete legitimately counts 0 and would
+        // be read here as "the catalog does not hold the object". A second dedup at this end was removed rather
+        // than kept as a belt: two places enforcing one invariant means the walker's contract can rot silently
+        // behind a caller that quietly repairs it.
+        const auto& steps = plan.steps;
 
         // Record table_oids of storage-backed (relkind 'r'/'g') pg_class objects
         // BEFORE deleting their pg_class rows: once a row is gone we can no longer

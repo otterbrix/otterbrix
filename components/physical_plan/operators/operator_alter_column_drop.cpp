@@ -5,6 +5,7 @@
 #include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/dependency_walker.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
@@ -24,7 +25,6 @@ namespace components::operators {
     operator_alter_column_drop_t::operator_alter_column_drop_t(std::pmr::memory_resource* resource,
                                                                log_t log,
                                                                catalog::oid_t table_oid,
-                                                               catalog::oid_t namespace_oid,
                                                                std::string column_name,
                                                                catalog::oid_t attoid,
                                                                catalog::drop_behavior_t behavior,
@@ -34,7 +34,6 @@ namespace components::operators {
         // operators).
         : read_write_operator_t(resource, std::move(log), operator_type::alter_column_drop)
         , table_oid_(table_oid)
-        , namespace_oid_(namespace_oid)
         , column_name_(std::move(column_name))
         , attoid_(attoid)
         , behavior_(behavior)
@@ -198,13 +197,29 @@ namespace components::operators {
         // ABORT-on-error gate: validate dependents BEFORE the first mutating delete/append below, so a
         // rejected DROP leaves the catalog untouched.
         //
-        // `blocking` is the subset this operator may NOT cascade over: a constraint that depends on this
-        // column through a 'n' (normal) edge. Only one writer emits that shape — build_create_constraint_writes,
-        // for the confkey columns of a FOREIGN KEY, i.e. the PARENT columns a constraint on ANOTHER table
+        // TWO REFUSAL SETS, DIFFERENT AUDIENCES.
+        //
+        // `blocking` is the subset NO behavior may cascade over: a CONSTRAINT that depends on this column
+        // through a 'n' (normal) edge. Only one writer emits that shape — build_create_constraint_writes, for
+        // the confkey columns of a FOREIGN KEY, i.e. the PARENT columns a constraint on ANOTHER table
         // references. Everything else reaching here is 'i' (internal): an index or a constraint whose own key
         // column this is, which cannot outlive the column and is therefore dropped with it, below.
-        std::pmr::vector<std::pair<int, catalog::oid_t>> dependents{resource_};
-        dependents.reserve(dep_row_count);
+        //
+        // `restrict_blockers` is the subset only a statement that WROTE RESTRICT refuses: any edge whose deptype
+        // blocks (catalog::deptype::blocks_restrict — 'n'), whatever catalog it lives in. It is a SUPERSET of
+        // `blocking` and is read only on the restrict_ leg, so the two sets never disagree about a foreign key.
+        //
+        // WITH TODAY'S WRITERS THE TWO SETS ARE EQUAL, and that is worth saying out loud rather than leaving to
+        // be rediscovered: the only 'n' edges anything writes onto a column are the confkey rows, which are
+        // pg_constraint-classed, so the FK gate below answers every shape SQL can currently produce and the
+        // RESTRICT gate under it is never the one that speaks. It is kept broader on purpose — a blocking edge
+        // from any other catalog must not become droppable the day some writer emits one — and because it is
+        // unreachable from SQL it is pinned by a FORGED edge instead
+        // (integration/cpp/test/test_drop_restrict_deptype.cpp,
+        // drop_restrict::a_non_constraint_blocking_edge_refuses_the_column_drop). Without that case, deleting
+        // this whole gate would leave every test green.
+        std::pmr::vector<catalog::oid_t> restrict_blockers{resource_};
+        restrict_blockers.reserve(dep_row_count);
         std::pmr::vector<catalog::oid_t> blocking{resource_};
         for (auto& chunk : dep_batches) {
             // A CHUNK NARROWER THAN pg_depend'S SCHEMA IS A DIFFERENT ANSWER, NOT A MISS. The read was issued
@@ -228,14 +243,28 @@ namespace components::operators {
                     continue;
                 const auto dep_cls = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 const auto dep_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
-                dependents.emplace_back(static_cast<int>(dep_cls), dep_oid);
+                const bool deptype_null = chunk.is_null(catalog::pg_depend_col::deptype, i);
+                const auto deptype_cell =
+                    deptype_null ? std::string_view{}
+                                 : chunk.get_value<std::string_view>(catalog::pg_depend_col::deptype, i);
+
+                // WHICH DEPENDENTS A WRITTEN `RESTRICT` REFUSES. Counting EVERY row keyed on the column made a
+                // column undroppable under RESTRICT by the index built on it — an edge that is dropped with the
+                // column a few lines below, so the refusal named a dependent that was never going to survive.
+                // An unreadable deptype is a dependency of UNKNOWN kind, and one of the kinds blocks: it is read
+                // as blocking here, never as clear. (For a constraint edge that same unreadable cell is a hard
+                // refusal — see the gate right below, which runs whatever the behavior is.)
+                if (deptype_cell.empty() || catalog::deptype::blocks_restrict(deptype_cell[0])) {
+                    restrict_blockers.push_back(dep_oid);
+                }
+
                 if (dep_cls != catalog::well_known_oid::pg_constraint_table)
                     continue;
                 // A CONSTRAINT EDGE WHOSE deptype CANNOT BE READ IS A DEPENDENCY OF
                 // UNKNOWN KIND — and one of the kinds is "blocks this drop". Reading
                 // it as non-blocking is the same silence as the missing column above,
                 // one cell at a time; no writer in this engine emits a NULL deptype.
-                if (chunk.is_null(catalog::pg_depend_col::deptype, i)) {
+                if (deptype_null) {
                     std::string msg = "alter_column_drop: a pg_depend row for constraint oid ";
                     msg += std::to_string(dep_oid);
                     msg += " has no readable deptype — whether it blocks dropping column \"";
@@ -245,7 +274,6 @@ namespace components::operators {
                         core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
                     co_return;
                 }
-                const auto deptype_cell = chunk.get_value<std::string_view>(catalog::pg_depend_col::deptype, i);
                 if (!deptype_cell.empty() && deptype_cell[0] == 'n')
                     blocking.push_back(dep_oid);
             }
@@ -327,16 +355,19 @@ namespace components::operators {
             co_return;
         }
 
-        // for RESTRICT, abort if any non-internal dep exists. For CASCADE,
-        // drop each dependent object.
-        if (behavior_ == catalog::drop_behavior_t::restrict_) {
-            if (!dependents.empty()) {
-                set_error(
-                    core::error_t{core::error_code_t::other_error,
-                                  std::pmr::string{"DROP COLUMN RESTRICT: column has dependent objects", resource_}});
-                mark_executed();
-                co_return;
-            }
+        // A written RESTRICT refuses when a BLOCKING dependent exists. CASCADE (and the unspecified form, which
+        // this build resolves to CASCADE — see catalog::drop_behavior_t) drops each dependent object below.
+        // `restrict_blockers` is already the filtered subset; the FK-parent gate above ran unconditionally and
+        // refuses under every behavior, so nothing here can let a foreign key through.
+        if (catalog::refuses_on_dependency(behavior_) && !restrict_blockers.empty()) {
+            // No structured DDL-refusal cursor exists: the message string is the only channel, so it names the
+            // blocking oid itself.
+            std::string msg = "DROP COLUMN RESTRICT: column has dependent objects (blocking oid ";
+            msg += std::to_string(static_cast<unsigned>(restrict_blockers.front()));
+            msg += ")";
+            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
+            mark_executed();
+            co_return;
         }
 
         // Collect every dependent-scrub delete across all dep_rows into one

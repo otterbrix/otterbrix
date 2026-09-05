@@ -62,12 +62,16 @@ namespace components::logical_plan {
         components::catalog::oid_t index_oid() const noexcept { return index_oid_; }
         void set_index_oid(components::catalog::oid_t oid) noexcept { index_oid_ = oid; }
 
-        // RESTRICT/CASCADE. The dynamic cascade operator already refuses a
-        // dependent-blocked drop under restrict_; the transformer does not copy
-        // DropStmt.behavior yet, so today every DROP carries the DEFAULT — kept
-        // at cascade_ (the pre-existing always-CASCADE shape) because flipping
-        // it to PostgreSQL's restrict_ changes every DROP TABLE's semantics and
-        // is the owner's call.
+        // RESTRICT/CASCADE/neither. The dynamic cascade operator refuses a
+        // dependent-blocked drop when the statement WROTE restrict_. The
+        // transformer does not copy DropStmt.behavior yet, so today every DROP
+        // arrives with the DEFAULT — which is `unspecified`, the form for "the
+        // statement named neither word", NOT cascade_. That distinction is the
+        // whole point: it lets a written RESTRICT be honoured the moment the
+        // transformer copies the value, without that hop silently changing what
+        // the tree's bare DROP statements mean. `unspecified` resolves to CASCADE
+        // today (components/catalog/results/ddl_result.hpp, owner decision;
+        // moving it is GitHub #638).
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
 
@@ -90,7 +94,7 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};
-        components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::cascade_};
+        components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::unspecified};
         bool missing_ok_{false};
     };
 

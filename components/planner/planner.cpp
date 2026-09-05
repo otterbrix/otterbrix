@@ -726,12 +726,13 @@ namespace components::planner {
                         // (dependency-free; lowers to operator_computed_field_unregister_t).
                         drop->set_computed(true);
                     } else {
-                        drop->set_namespace_oid(catalog::INVALID_OID);
-                        // RESTRICT/CASCADE comes from the subcommand (defaulted to
-                        // cascade_ until the transformer copies the grammar's
-                        // AlterTableCmd::behavior); the operator refuses blocked
-                        // drops under restrict_. Hardcoding cascade_ here would make
-                        // RESTRICT unreachable by construction.
+                        // RESTRICT/CASCADE/neither comes from the subcommand (defaulted
+                        // to `unspecified` until the transformer copies the grammar's
+                        // AlterTableCmd::behavior); the operator refuses blocked drops
+                        // under restrict_ and treats `unspecified` as CASCADE
+                        // (components/catalog/results/ddl_result.hpp). Hardcoding a
+                        // behavior here would make the written word unreachable by
+                        // construction.
                         drop->set_behavior(sub.behavior);
                     }
                     seq->append_child(drop);

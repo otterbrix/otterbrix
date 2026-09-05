@@ -55,11 +55,10 @@ namespace components::vector::arrow {
         explicit arrow_type(types::complex_logical_type type, std::unique_ptr<arrow_type_info> type_info = nullptr)
             : type_(std::move(type))
             , type_info_(std::move(type_info)) {}
-        explicit arrow_type(std::string error_message_p, bool not_implemented = false)
-            : type_(types::logical_type::INVALID)
-            , type_info_(nullptr)
-            , error_message_(std::move(error_message_p))
-            , not_implemented_(not_implemented) {}
+        // (An error-reporting constructor lived here — error_message_ + not_implemented_ that
+        // nothing ever read, so a type built through it presented as a plain INVALID type with
+        // no diagnostic. Refusals travel core::result_wrapper_t through type_from_format /
+        // type_from_schema below instead.)
 
         types::complex_logical_type type(bool use_dictionary = false) const;
 
@@ -86,8 +85,6 @@ namespace components::vector::arrow {
         std::unique_ptr<arrow_type> dictionary_type_;
         bool run_end_encoded_ = false;
         std::unique_ptr<arrow_type_info> type_info_;
-        std::string error_message_;
-        bool not_implemented_ = false;
     };
 
     core::result_wrapper_t<std::unique_ptr<arrow_type>> type_from_format(std::pmr::memory_resource* resource,

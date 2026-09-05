@@ -251,11 +251,12 @@ namespace {
 
     // Rebuilds a fixed-ARRAY column vector as a variable-length LIST(elem_type), converting
     // the rows filled so far. Used when a later VALUES row carries a different array shape.
-    components::vector::vector_t promote_array_to_list(std::pmr::memory_resource* resource,
-                                                       const components::vector::vector_t& col,
-                                                       size_t num_rows,
-                                                       const components::types::complex_logical_type& elem_type,
-                                                       uint64_t capacity) {
+    core::result_wrapper_t<components::vector::vector_t>
+    promote_array_to_list(std::pmr::memory_resource* resource,
+                          const components::vector::vector_t& col,
+                          size_t num_rows,
+                          const components::types::complex_logical_type& elem_type,
+                          uint64_t capacity) {
         auto list_type = components::types::complex_logical_type::create_list(elem_type);
         list_type.set_alias(std::string(col.type().alias()));
         components::vector::vector_t new_col(resource, list_type, capacity);
@@ -271,8 +272,14 @@ namespace {
         std::optional<components::vector::vector_t> casted;
         const components::vector::vector_t* elems = &src_child;
         if (src_child.type().to_physical_type() != elem_type.to_physical_type()) {
-            casted.emplace(
-                components::vector::vector_ops::cast_vector(resource, src_child, elem_type, num_rows * stride));
+            // cast_vector range-checks every element now; a stored value that does not fit
+            // the promoted element type refuses the INSERT instead of truncating silently.
+            auto casted_result =
+                components::vector::vector_ops::cast_vector(resource, src_child, elem_type, num_rows * stride);
+            if (casted_result.has_error()) {
+                return casted_result.error();
+            }
+            casted.emplace(std::move(casted_result.value()));
             elems = &casted.value();
         }
 
@@ -554,8 +561,13 @@ namespace components::sql::transform {
                                 // ARRAY later if needed.
                                 auto elem_type = value.type().child_type();
                                 if (col_type == types::logical_type::ARRAY) {
-                                    chunk.data[column_index] =
-                                        promote_array_to_list(resource_, *it, chunk_row, elem_type, chunk.capacity());
+                                    VALUE_OR_RETURN(auto list_col,
+                                                    promote_array_to_list(resource_,
+                                                                          *it,
+                                                                          chunk_row,
+                                                                          elem_type,
+                                                                          chunk.capacity()));
+                                    chunk.data[column_index] = std::move(list_col);
                                 }
                                 chunk.set_value(column_index, chunk_row, to_list_value(resource_, value, elem_type));
                             } else if (col_type == types::logical_type::NA && !value.is_null()) {

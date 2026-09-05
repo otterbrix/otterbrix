@@ -532,6 +532,16 @@ namespace components::vector {
                 ok = false;
                 return make_empty_error_chunk(resource);
             }
+            // The mask is indexed below by row * num_columns + column BITS, so it must cover
+            // the whole chunk. A header that says otherwise (truncation, corruption) used to be
+            // TRUSTED: the per-cell reads ran past the mask into the first column's type header
+            // and the chunk decoded with wrong NULL flags, ok still true. Refuse it instead.
+            const uint64_t required_bits = static_cast<uint64_t>(num_rows) * num_columns;
+            const uint64_t required_bytes = (required_bits + 7) / 8;
+            if (static_cast<uint64_t>(null_mask_size) < required_bytes) {
+                ok = false;
+                return make_empty_error_chunk(resource);
+            }
             null_mask = pointer;
             pointer += null_mask_size;
         }

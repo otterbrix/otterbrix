@@ -127,7 +127,10 @@ namespace components::vector {
         void resize(uint64_t new_size);
 
         [[nodiscard]] std::pmr::vector<types::complex_logical_type> types() const;
-        size_t column_index(std::string_view key) const;
+        // Index of the column whose alias is `key`. A name this chunk does not carry is a
+        // field_not_exists error: what stood here answered SIZE_MAX behind a bare assert, and
+        // the public cursor API forwarded that sentinel to embedders as a normal index.
+        [[nodiscard]] core::result_wrapper_t<size_t> column_index(std::string_view key) const;
         std::pmr::vector<size_t> sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const;
 
         std::pmr::memory_resource* resource() const;

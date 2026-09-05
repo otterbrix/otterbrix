@@ -86,7 +86,9 @@ namespace components::cursor {
 
     std::size_t cursor_t::size() const { return size_; }
     std::size_t cursor_t::column_count() const { return type_data_.size(); }
-    std::size_t cursor_t::column_index(std::string_view key) const { return chunks_.front().column_index(key); }
+    core::result_wrapper_t<std::size_t> cursor_t::column_index(std::string_view key) const {
+        return chunks_.front().column_index(key);
+    }
     bool cursor_t::has_next() const { return static_cast<std::size_t>(current_index_ + 1) < size_; }
     void cursor_t::advance() { ++current_index_; }
     index_t cursor_t::current_index() const { return current_index_; }

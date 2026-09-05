@@ -36,7 +36,8 @@ namespace components::cursor {
 
         std::size_t size() const;
         std::size_t column_count() const;
-        std::size_t column_index(std::string_view key) const;
+        // A name the result does not carry is a field_not_exists error, not a sentinel index.
+        [[nodiscard]] core::result_wrapper_t<std::size_t> column_index(std::string_view key) const;
 
         bool has_next() const;
         void advance();

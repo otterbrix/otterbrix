@@ -8,6 +8,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_validity_mask.cpp
         test_arithmetic_empty.cpp
         test_apply_operator.cpp
+        test_cast_copy_guards.cpp
         test_nested_null_read.cpp
 )
 

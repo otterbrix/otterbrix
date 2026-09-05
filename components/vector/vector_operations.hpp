@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vector.hpp"
+#include <core/result_wrapper.hpp>
 
 namespace components::vector::vector_ops {
 
@@ -370,11 +371,14 @@ namespace components::vector::vector_ops {
     copy_strided_target(const vector_t& source, vector_t& target, uint64_t count, uint64_t stride, uint64_t offset);
 
     // Returns a new FLAT vector of target_type with each element cast from source.
-    // Only numeric physical types are supported.
-    vector_t cast_vector(std::pmr::memory_resource* resource,
-                         const vector_t& source,
-                         const types::complex_logical_type& target_type,
-                         uint64_t count);
+    // Numeric physical types cast with a per-element RANGE CHECK -- a value that does not fit
+    // the target is a conversion_failure error, never a silent truncation. A string source
+    // casts only to a string target (deep copy); every other string pair is refused through
+    // the error channel. Validity travels per row in every supported pair.
+    core::result_wrapper_t<vector_t> cast_vector(std::pmr::memory_resource* resource,
+                                                 const vector_t& source,
+                                                 const types::complex_logical_type& target_type,
+                                                 uint64_t count);
 
     enum class unary_vector_op
     {
@@ -399,11 +403,13 @@ namespace components::vector::vector_ops {
     apply_unary_vector_op(std::pmr::memory_resource* resource, unary_vector_op op, const vector_t& src, uint64_t count);
 
     // Element-wise binary op. exp returns DOUBLE; bitwise/shift ops preserve lhs type.
-    vector_t apply_binary_vector_op(std::pmr::memory_resource* resource,
-                                    binary_vector_op op,
-                                    const vector_t& lhs,
-                                    const vector_t& rhs,
-                                    uint64_t count);
+    // A mixed-type rhs is cast to lhs's type first; a value that does not fit is a
+    // conversion_failure error (see cast_vector).
+    core::result_wrapper_t<vector_t> apply_binary_vector_op(std::pmr::memory_resource* resource,
+                                                            binary_vector_op op,
+                                                            const vector_t& lhs,
+                                                            const vector_t& rhs,
+                                                            uint64_t count);
 
     bool is_hashable(const types::complex_logical_type& type);
 

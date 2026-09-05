@@ -1623,8 +1623,16 @@ namespace services::disk {
             if (src.type().to_physical_type() == stored_key_types[j].to_physical_type()) {
                 components::vector::vector_ops::copy(src, norm_keys.data[j], nkeys, 0, 0);
             } else {
-                norm_keys.data[j] =
+                // cast_vector range-checks every element now. Before, an out-of-range key
+                // TRUNCATED silently (INT64 70000 -> INT16 4464) and could hash equal to an
+                // unrelated stored key -- a false FK match. A key that cannot be represented
+                // in the stored column's type surfaces as a loud refusal instead.
+                auto casted =
                     components::vector::vector_ops::cast_vector(resource, src, stored_key_types[j], nkeys);
+                if (casted.has_error()) {
+                    return casted.error();
+                }
+                norm_keys.data[j] = std::move(casted.value());
             }
         }
 

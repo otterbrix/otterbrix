@@ -389,14 +389,20 @@ namespace components::vector {
         return types;
     }
 
-    size_t data_chunk_t::column_index(std::string_view key) const {
+    core::result_wrapper_t<size_t> data_chunk_t::column_index(std::string_view key) const {
         for (uint64_t i = 0; i < column_count(); i++) {
             if (data[i].type().alias() == key) {
-                return i;
+                return static_cast<size_t>(i);
             }
         }
-        assert(false && "data_chunk_t::column_index: no such column");
-        return std::numeric_limits<size_t>::max();
+        // An embedder asking for a name this chunk does not carry is USER input, not an
+        // invariant: it must come back as an error, not as the SIZE_MAX sentinel that stood
+        // here behind a bare assert (and indexed the chunk out of bounds under NDEBUG).
+        std::pmr::string message{resource_};
+        message.append("data_chunk_t::column_index: no column named \"");
+        message.append(key);
+        message.append("\"");
+        return core::error_t{core::error_code_t::field_not_exists, std::move(message)};
     }
 
     std::pmr::vector<size_t> data_chunk_t::sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const {

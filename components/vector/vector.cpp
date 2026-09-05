@@ -1,6 +1,7 @@
 #include "vector.hpp"
 
 #include <components/types/logical_value.hpp>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <vector/vector_operations.hpp>
@@ -457,8 +458,14 @@ namespace components::vector {
                     break;
                 }
                 default:
-                    assert(false);
-                    break;
+                    // A path step through a type that has no sub-elements is a planner bug: the
+                    // paths walked here are built from the type tree. The bare assert that stood
+                    // here vanished under NDEBUG and the walk STAYED on the parent vector -- the
+                    // function then answered a WRONG leaf/index as a valid element. An invariant
+                    // violation must not throw through the noexcept executor coroutine
+                    // (operations_helper.hpp precedent), so it refuses identically in both builds.
+                    assert(false && "resolve_nested_element: path step through a non-container type");
+                    std::abort();
             }
         }
 
@@ -616,8 +623,15 @@ namespace components::vector {
             index = 0;
         }
         if (!val.is_null() && val.type() != type_) {
+            // A mistyped value here IS a caller bug (validation splices the cast in before any
+            // write reaches this point). The bare assert-then-return that stood here vanished
+            // under NDEBUG and the write became a silent no-op: the row kept its old payload AND
+            // its old validity, and the caller reported success -- the exact shape that once
+            // turned a wrong type into data corruption. An invariant must not throw through the
+            // noexcept executor coroutine (operations_helper.hpp precedent): refuse loudly and
+            // identically in both builds.
             assert(false && "value has to be casted to vector's type before set_value");
-            return;
+            std::abort();
         }
 
         validity_.set(index, !val.is_null());
@@ -975,9 +989,13 @@ namespace components::vector {
                 for (uint64_t i = offlen.offset; i < offlen.offset + offlen.length; i++) {
                     children.push_back(child_vec.value(i));
                 }
-                return types::logical_value_t::create_list(vector->resource(),
-                                                           vector->type_.child_type(),
-                                                           std::move(children));
+                // Pass the DECLARED list type through, extension included: create_list(child)
+                // would rebuild it with a fresh default list_logical_type_extension and drop the
+                // declared field_id/required. This was the LAST leg that rebuilt the type instead
+                // of passing it through (the MAP and STRUCT legs above already do).
+                return types::logical_value_t::create_list_from_type(vector->resource(),
+                                                                     vector->type_,
+                                                                     std::move(children));
             }
             case types::logical_type::ARRAY: {
                 auto stride =

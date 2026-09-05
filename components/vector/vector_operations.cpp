@@ -1,6 +1,9 @@
 #include "vector_operations.hpp"
 #include <cmath>
 #include <components/types/operations_helper.hpp>
+#include <cstdlib>
+#include <limits>
+#include <optional>
 #include <stdexcept>
 
 namespace components::vector::vector_ops {
@@ -1038,18 +1041,104 @@ namespace components::vector::vector_ops {
                     }
                 }
             } else {
-                assert(false && "copy_strided_target: string type not supported");
+                // The leg that stood here was `assert(false)` with no else: under NDEBUG it
+                // copied NOTHING and wrote no validity, while the caller (operator_update's
+                // ARRAY-element leg) reported success -- an UPDATE of one element of a
+                // string-array column silently changed nothing. Strings copy like every other
+                // leg now; set_value deep-copies the payload into the target's own string heap.
+                auto sdata = source.data<std::string_view>();
+                auto& smask = source.validity();
+                auto& tmask = target.validity();
+                for (uint64_t i = 0; i < count; ++i) {
+                    uint64_t tpos = i * stride + offset;
+                    if (smask.row_is_valid(i)) {
+                        target.set_value(tpos, std::string_view{sdata[i]});
+                    } else {
+                        tmask.set(tpos, false);
+                    }
+                }
             }
         }
     };
+
+    template<typename T>
+    inline constexpr bool cast_is_int128_family_v =
+        std::is_same_v<T, types::int128_t> || std::is_same_v<T, types::uint128_t>;
+
+    template<typename T>
+    inline constexpr bool cast_is_signed_v = std::is_signed_v<T> || std::is_same_v<T, types::int128_t>;
+
+    // Does `value` fit DstType without silent truncation? A bool TARGET is a deliberate
+    // truthiness mapping (non-zero -> true), not a truncation, so it always "fits"; every
+    // other narrowing pair is range-checked. Floating targets are checked against their
+    // finite range (a non-finite source stays non-finite); integral targets from a floating
+    // source additionally require a finite value.
+    template<typename DstType, typename SrcType>
+    bool cast_value_fits(SrcType value) {
+        if constexpr (std::is_same_v<DstType, SrcType> || std::is_same_v<DstType, bool> ||
+                      std::is_same_v<SrcType, bool>) {
+            return true;
+        } else if constexpr (std::is_same_v<DstType, double>) {
+            // double's finite range covers every source type, the 128-bit family included.
+            return true;
+        } else if constexpr (std::is_same_v<DstType, float>) {
+            const double d = static_cast<double>(value);
+            if constexpr (std::is_floating_point_v<SrcType>) {
+                if (!std::isfinite(d)) {
+                    return true; // inf/NaN map to inf/NaN, no truncation involved
+                }
+            }
+            return d >= -static_cast<double>(std::numeric_limits<float>::max()) &&
+                   d <= static_cast<double>(std::numeric_limits<float>::max());
+        } else if constexpr (std::is_floating_point_v<SrcType>) {
+            // floating -> integral: the fraction truncates (standard cast semantics); the
+            // MAGNITUDE must fit. 2^digits is exactly representable in double, so the bounds
+            // below are exact where it matters.
+            const double d = static_cast<double>(value);
+            if (!std::isfinite(d)) {
+                return false;
+            }
+            const double upper = std::ldexp(1.0, std::numeric_limits<DstType>::digits);
+            if constexpr (cast_is_signed_v<DstType>) {
+                return d >= -upper && d < upper;
+            } else {
+                return d > -1.0 && d < upper;
+            }
+        } else if constexpr (cast_is_signed_v<SrcType> == cast_is_signed_v<DstType>) {
+            if constexpr (sizeof(DstType) >= sizeof(SrcType)) {
+                return true;
+            } else {
+                return value >= static_cast<SrcType>(std::numeric_limits<DstType>::min()) &&
+                       value <= static_cast<SrcType>(std::numeric_limits<DstType>::max());
+            }
+        } else if constexpr (cast_is_signed_v<SrcType>) {
+            // signed -> unsigned
+            if (value < SrcType{0}) {
+                return false;
+            }
+            if constexpr (sizeof(DstType) >= sizeof(SrcType)) {
+                return true;
+            } else {
+                return value <= static_cast<SrcType>(std::numeric_limits<DstType>::max());
+            }
+        } else {
+            // unsigned -> signed
+            if constexpr (sizeof(DstType) > sizeof(SrcType)) {
+                return true;
+            } else {
+                return value <= static_cast<SrcType>(std::numeric_limits<DstType>::max());
+            }
+        }
+    }
 
     template<typename T = void>
     struct cast_vector_callback_t;
 
     template<>
     struct cast_vector_callback_t<void> {
+        // Returns the first row whose value does not fit the target type, nullopt on success.
         template<typename DstType, typename SrcType>
-        void operator()(const vector_t& source, vector_t& target, uint64_t count) const {
+        std::optional<uint64_t> operator()(const vector_t& source, vector_t& target, uint64_t count) const {
             if constexpr (!std::is_same_v<SrcType, std::string_view> && !std::is_same_v<DstType, std::string_view>) {
                 auto sdata = source.data<SrcType>();
                 auto tdata = target.data<DstType>();
@@ -1059,6 +1148,12 @@ namespace components::vector::vector_ops {
                     bool valid = smask.row_is_valid(i);
                     tmask.set(i, valid);
                     if (valid) {
+                        // The bare static_cast that stood here TRUNCATED silently: INT32 70000
+                        // -> INT16 4464, and an out-of-range index key hashed equal to an
+                        // unrelated stored key. Out of range is a refusal now (rule 6).
+                        if (!cast_value_fits<DstType, SrcType>(sdata[i])) {
+                            return i;
+                        }
                         if constexpr (std::is_same_v<DstType, bool> && std::is_floating_point_v<SrcType>) {
                             tdata[i] = (sdata[i] < SrcType{0} || sdata[i] > SrcType{0});
                         } else if constexpr ((std::is_same_v<DstType, types::int128_t> ||
@@ -1072,8 +1167,14 @@ namespace components::vector::vector_ops {
                         }
                     }
                 }
+                return std::nullopt;
             } else {
-                assert(false && "cast_vector: string type not supported");
+                // Unreachable: cast_vector guards the string pairs before dispatching here
+                // (string->string copies, string<->non-string refuses through the error
+                // channel). An invariant violation must not throw through the noexcept
+                // executor coroutine (operations_helper.hpp precedent).
+                assert(false && "cast_vector: string pair dispatched into the numeric callback");
+                std::abort();
             }
         }
     };
@@ -1090,17 +1191,97 @@ namespace components::vector::vector_ops {
                                                                     offset);
     }
 
-    vector_t cast_vector(std::pmr::memory_resource* resource,
-                         const vector_t& source,
-                         const types::complex_logical_type& target_type,
-                         uint64_t count) {
+    namespace {
+        // The set the (double_)simple_physical_type_switch dispatches over, minus STRING,
+        // which cast_vector handles before dispatching. Anything else (NA, nested types)
+        // must be refused HERE: the switch's own `default:` is an invariant abort.
+        bool is_simple_numeric_physical_type(types::physical_type type) {
+            switch (type) {
+                case types::physical_type::BOOL:
+                case types::physical_type::UINT8:
+                case types::physical_type::INT8:
+                case types::physical_type::UINT16:
+                case types::physical_type::INT16:
+                case types::physical_type::UINT32:
+                case types::physical_type::INT32:
+                case types::physical_type::UINT64:
+                case types::physical_type::INT64:
+                case types::physical_type::UINT128:
+                case types::physical_type::INT128:
+                case types::physical_type::FLOAT:
+                case types::physical_type::DOUBLE:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        core::error_t cast_vector_error(std::pmr::memory_resource* resource,
+                                        const char* what,
+                                        const types::complex_logical_type& source_type,
+                                        const types::complex_logical_type& target_type) {
+            std::pmr::string message{resource};
+            message.append("cast_vector: ");
+            message.append(what);
+            message.append(" (logical types ");
+            message.append(std::to_string(static_cast<int>(source_type.type())).c_str());
+            message.append(" -> ");
+            message.append(std::to_string(static_cast<int>(target_type.type())).c_str());
+            message.append(")");
+            return core::error_t{core::error_code_t::conversion_failure, std::move(message)};
+        }
+    } // namespace
+
+    core::result_wrapper_t<vector_t> cast_vector(std::pmr::memory_resource* resource,
+                                                 const vector_t& source,
+                                                 const types::complex_logical_type& target_type,
+                                                 uint64_t count) {
         assert(source.get_vector_type() == vector_type::FLAT);
+        const auto source_physical = source.type().to_physical_type();
+        const auto target_physical = target_type.to_physical_type();
+
+        // What stood here dispatched every pair straight into the switch, whose string leg
+        // was `assert(false)` with no else: under NDEBUG a CAST into or out of a string
+        // answered a freshly allocated vector with UNINITIALISED data and validity, as a
+        // normal value with no error channel at all.
+        if (source_physical == types::physical_type::STRING && target_physical == types::physical_type::STRING) {
+            vector_t target(resource, target_type, count);
+            auto sdata = source.data<std::string_view>();
+            auto& smask = source.validity();
+            auto& tmask = target.validity();
+            for (uint64_t i = 0; i < count; ++i) {
+                if (smask.row_is_valid(i)) {
+                    target.set_value(i, std::string_view{sdata[i]});
+                } else {
+                    tmask.set(i, false);
+                }
+            }
+            return target;
+        }
+        if (source_physical == types::physical_type::STRING || target_physical == types::physical_type::STRING) {
+            return cast_vector_error(resource, "string casts are not supported", source.type(), target_type);
+        }
+        if (!is_simple_numeric_physical_type(source_physical) || !is_simple_numeric_physical_type(target_physical)) {
+            return cast_vector_error(resource, "physical type is not castable", source.type(), target_type);
+        }
+
         vector_t target(resource, target_type, count);
-        types::double_simple_physical_type_switch<cast_vector_callback_t>(target_type.to_physical_type(),
-                                                                          source.type().to_physical_type(),
-                                                                          source,
-                                                                          target,
-                                                                          count);
+        auto failed_row = types::double_simple_physical_type_switch<cast_vector_callback_t>(target_physical,
+                                                                                            source_physical,
+                                                                                            source,
+                                                                                            target,
+                                                                                            count);
+        if (failed_row.has_value()) {
+            std::pmr::string message{resource};
+            message.append("cast_vector: value at row ");
+            message.append(std::to_string(failed_row.value()).c_str());
+            message.append(" does not fit the target type (logical types ");
+            message.append(std::to_string(static_cast<int>(source.type().type())).c_str());
+            message.append(" -> ");
+            message.append(std::to_string(static_cast<int>(target_type.type())).c_str());
+            message.append(")");
+            return core::error_t{core::error_code_t::conversion_failure, std::move(message)};
+        }
         return target;
     }
 
@@ -1273,18 +1454,24 @@ namespace components::vector::vector_ops {
         }
     };
 
-    vector_t apply_binary_vector_op(std::pmr::memory_resource* resource,
-                                    binary_vector_op op,
-                                    const vector_t& lhs,
-                                    const vector_t& rhs,
-                                    uint64_t count) {
+    core::result_wrapper_t<vector_t> apply_binary_vector_op(std::pmr::memory_resource* resource,
+                                                            binary_vector_op op,
+                                                            const vector_t& lhs,
+                                                            const vector_t& rhs,
+                                                            uint64_t count) {
         if (op == binary_vector_op::exp) {
             const auto dbl_type = types::complex_logical_type(types::logical_type::DOUBLE);
             auto lhs_d = cast_vector(resource, lhs, dbl_type, count);
+            if (lhs_d.has_error()) {
+                return lhs_d.error();
+            }
             auto rhs_d = cast_vector(resource, rhs, dbl_type, count);
+            if (rhs_d.has_error()) {
+                return rhs_d.error();
+            }
             vector_t result(resource, dbl_type, count);
-            const auto* l = lhs_d.data<double>();
-            const auto* r = rhs_d.data<double>();
+            const auto* l = lhs_d.value().data<double>();
+            const auto* r = rhs_d.value().data<double>();
             auto* d = result.data<double>();
             const auto& lv = lhs.validity();
             const auto& rv = rhs.validity();
@@ -1302,7 +1489,11 @@ namespace components::vector::vector_ops {
         std::optional<vector_t> rhs_casted;
         const vector_t* rhs_ptr = &rhs;
         if (lhs_phys != rhs.type().to_physical_type()) {
-            rhs_casted.emplace(cast_vector(resource, rhs, lhs.type(), count));
+            auto casted = cast_vector(resource, rhs, lhs.type(), count);
+            if (casted.has_error()) {
+                return casted.error();
+            }
+            rhs_casted.emplace(std::move(casted.value()));
             rhs_ptr = &rhs_casted.value();
         }
         vector_t result(resource, lhs.type(), count);

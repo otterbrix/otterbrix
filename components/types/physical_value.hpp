@@ -85,7 +85,7 @@ namespace components::types {
         static constexpr physical_type get_type_() {
             if constexpr (std::is_same_v<T, bool>)
                 return physical_type::BOOL;
-            if constexpr (std::is_same_v<T, uint8_t>)
+            else if constexpr (std::is_same_v<T, uint8_t>)
                 return physical_type::UINT8;
             else if constexpr (std::is_same_v<T, uint16_t>)
                 return physical_type::UINT16;
@@ -109,8 +109,13 @@ namespace components::types {
                 return physical_type::INT128;
             else if constexpr (std::is_same_v<T, uint128_t>)
                 return physical_type::UINT128;
-            //static_assert(false && "should be unreachable");
-            return physical_type::NA;
+            else
+                // The commented-out assert that stood here fell through to `return
+                // physical_type::NA`: constructing a physical_value from any type outside the
+                // list above (`long` on LP64, an enum, a pointer) silently produced an NA-typed
+                // value carrying a memcpy'd payload. Unsupported payload types are a COMPILE
+                // error now.
+                static_assert(sizeof(T) == 0, "physical_value: unsupported payload type");
         }
 
         physical_type type_ = physical_type::NA;

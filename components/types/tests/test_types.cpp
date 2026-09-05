@@ -485,3 +485,90 @@ TEST_CASE("logical_value: an unsupported operand type is a refusal, not a throw"
         CHECK(product.value().value<double>() == 4.0);
     }
 }
+
+// #37 -- CASTING A STRING THAT NAMES NO ENUM ENTRY IS A REFUSAL, NOT A NULL.
+//
+// The string leg of the ENUM cast walked the entry table and, on a miss, answered
+// logical_type::NA -- the tree's spelling of NULL. NA then flowed on as a normal value:
+// bound into a parameter it compares as UNKNOWN, and on the INSERT coercion path it
+// stored a silent NULL in place of the misspelled label. PostgreSQL refuses:
+// `invalid input value for enum`. The refusal now travels the cast_as error channel.
+TEST_CASE("logical_value: cast of a string that is not an enum entry is a refusal") {
+    std::pmr::monotonic_buffer_resource resource;
+
+    std::vector<logical_value_t> entries;
+    {
+        logical_value_t happy(&resource, int32_t{0});
+        happy.set_alias("happy");
+        entries.push_back(std::move(happy));
+        logical_value_t sad(&resource, int32_t{7});
+        sad.set_alias("sad");
+        entries.push_back(std::move(sad));
+    }
+    auto mood = complex_logical_type::create_enum("mood", std::move(entries));
+
+    const logical_value_t absent(&resource, std::string("angry"));
+    auto result = absent.cast_as(mood, {});
+    REQUIRE(result.has_error());
+    CHECK(result.error().type == core::error_code_t::conversion_failure);
+
+    // A string that IS an entry still casts.
+    const logical_value_t present(&resource, std::string("sad"));
+    auto ok = present.cast_as(mood, {});
+    REQUIRE_FALSE(ok.has_error());
+    CHECK(ok.value().value<int32_t>() == 7);
+
+    // The numeric leg has the same contract: an ordinal that names no entry is a refusal.
+    const logical_value_t bad_ordinal(&resource, int32_t{99});
+    auto ordinal_result = bad_ordinal.cast_as(mood, {});
+    REQUIRE(ordinal_result.has_error());
+    CHECK(ordinal_result.error().type == core::error_code_t::conversion_failure);
+
+    const logical_value_t good_ordinal(&resource, int32_t{7});
+    auto good = good_ordinal.cast_as(mood, {});
+    REQUIRE_FALSE(good.has_error());
+    CHECK(good.value().value<int32_t>() == 7);
+}
+
+// #263 -- A NUMERIC THAT DOES NOT FIT THE DECIMAL WIDTH IS A REFUSAL, NOT A SENTINEL.
+//
+// int_to_decimal answers width overflow with decimal_limits::pos_inf/neg_inf -- Int128Max /
+// Int128Min for the int128 storage cast_as uses. cast_as then wrapped that sentinel into a
+// DECIMAL logical_value and answered it as a normal value, so CAST(10000 AS NUMERIC(3,1))
+// produced a "decimal" whose payload was 170141183460469231731687303715884105727.
+// PostgreSQL refuses: `numeric field overflow`.
+TEST_CASE("logical_value: numeric overflow into DECIMAL is a refusal") {
+    std::pmr::monotonic_buffer_resource resource;
+
+    const auto decimal_3_1 = make_decimal(3, 1);
+
+    SECTION("positive overflow") {
+        const logical_value_t big(&resource, int64_t{10000});
+        auto result = big.cast_as(decimal_3_1, {});
+        REQUIRE(result.has_error());
+        CHECK(result.error().type == core::error_code_t::conversion_failure);
+    }
+
+    SECTION("negative overflow") {
+        const logical_value_t big(&resource, int64_t{-10000});
+        auto result = big.cast_as(decimal_3_1, {});
+        REQUIRE(result.has_error());
+        CHECK(result.error().type == core::error_code_t::conversion_failure);
+    }
+
+    SECTION("floating NaN and overflow") {
+        const logical_value_t nan_val(&resource, std::numeric_limits<double>::quiet_NaN());
+        auto nan_result = nan_val.cast_as(decimal_3_1, {});
+        REQUIRE(nan_result.has_error());
+
+        const logical_value_t huge(&resource, double{1e30});
+        auto huge_result = huge.cast_as(decimal_3_1, {});
+        REQUIRE(huge_result.has_error());
+    }
+
+    SECTION("a fitting value still casts") {
+        const logical_value_t fits(&resource, int64_t{99});
+        auto result = fits.cast_as(decimal_3_1, {});
+        REQUIRE_FALSE(result.has_error());
+    }
+}

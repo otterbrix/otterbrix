@@ -16,6 +16,7 @@
 #include <components/physical_plan_generator/impl/create_plan_register_cast.hpp>
 #include <components/physical_plan_generator/impl/create_plan_register_udf.hpp>
 #include <core/executor.hpp>
+#include <core/pipeline_bypass.hpp>
 #include <core/tracy/tracy.hpp>
 
 #include <services/collection/context_storage.hpp>
@@ -446,21 +447,45 @@ namespace services::dispatcher {
         auto new_lowest = txn_manager_.lowest_active_snapshot_horizon();
         if (new_lowest > last_broadcast_horizon_) {
             last_broadcast_horizon_ = new_lowest;
-            if (disk_has_dropped_ && disk_address_ != actor_zeta::address_t::empty_address()) {
-                // Fire-and-forget (subscriber acks via on_subscriber_empty).
-                // Parking the future on pending_void_ is just bookkeeping —
-                // poll_pending() drains it via is_ready(); dropping it instead
-                // would be memory-safe too.
-                auto disk_send_result =
-                    actor_zeta::send(disk_address_, &services::disk::manager_disk_t::on_horizon_advanced, new_lowest);
-                pending_void_.emplace_back(std::move(disk_send_result.second));
-            }
-            if (index_has_dropped_ && index_address_ != actor_zeta::address_t::empty_address()) {
-                auto index_send_result = actor_zeta::send(index_address_,
-                                                          &services::index::manager_index_t::on_horizon_advanced,
-                                                          new_lowest);
-                pending_void_.emplace_back(std::move(index_send_result.second));
-            }
+            // BYPASS (2) OF 3, DECLARED — see core/pipeline_bypass.hpp for the rule and the whole
+            // list. These two sends reach the disk and index managers with no statement behind
+            // them: no logical plan, no planner, no optimizer, no executor.
+            //
+            // WHY IT IS LEGAL: the broadcast carries no rows and describes no query. The DROP that
+            // produced the artefacts already went through the pipeline and COMMITTED; what is left
+            // is the reclaim, and no plan can express it, because it belongs to no statement — it
+            // belongs to the moment the oldest live snapshot passes the commit that dropped them.
+            // The dispatcher owns that moment (txn_manager_ lives here), which is why this is the
+            // only place in the tree that may start a sweep.
+            //
+            // WHAT BREAKS IF A RUNTIME PATH STARTS ONE TOO: the horizon is the ONLY thing standing
+            // between a live reader and a deleted file. A sweep carrying anything other than
+            // txn_manager_.lowest_active_snapshot_horizon(), or issued before the DROP-GC remap
+            // proved above has landed, unlinks .otbx files and erases index entries a live snapshot
+            // is still entitled to read: missing files and silently short answers, with no error
+            // raised anywhere. It would also desynchronise the ack protocol, because
+            // on_subscriber_empty clears the very flags that gate this broadcast.
+            auto sweep_broadcast =
+                core::maintenance::pipeline_bypass<core::maintenance::bypass_site::horizon_gc_sweep>([&] {
+                    if (disk_has_dropped_ && disk_address_ != actor_zeta::address_t::empty_address()) {
+                        // Fire-and-forget (subscriber acks via on_subscriber_empty).
+                        // Parking the future on pending_void_ is just bookkeeping —
+                        // poll_pending() drains it via is_ready(); dropping it instead
+                        // would be memory-safe too.
+                        auto disk_send_result = actor_zeta::send(disk_address_,
+                                                                 &services::disk::manager_disk_t::on_horizon_advanced,
+                                                                 new_lowest);
+                        pending_void_.emplace_back(std::move(disk_send_result.second));
+                    }
+                    if (index_has_dropped_ && index_address_ != actor_zeta::address_t::empty_address()) {
+                        auto index_send_result =
+                            actor_zeta::send(index_address_,
+                                             &services::index::manager_index_t::on_horizon_advanced,
+                                             new_lowest);
+                        pending_void_.emplace_back(std::move(index_send_result.second));
+                    }
+                });
+            sweep_broadcast();
         }
     }
 

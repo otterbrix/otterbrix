@@ -10,6 +10,7 @@
 
 #include <actor-zeta/spawn.hpp>
 #include <core/executor.hpp>
+#include <core/pipeline_bypass.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
 // Needed for the auto-checkpoint orchestration (run_auto_checkpoint): the WAL
@@ -433,15 +434,41 @@ namespace services::wal {
         // commit_txn latency. The self-sent message lands in inbox_ and the loop
         // runs run_auto_checkpoint as an independent in-flight entry after this
         // coroutine returns its wal_id to the caller.
-        if (needs_auto_checkpoint() && !auto_checkpoint_in_flight_) {
-            auto_checkpoint_in_flight_ = true;
-            reset_auto_checkpoint_bytes();
-            auto [_ac, ac_fut] = actor_zeta::send(address(), &manager_wal_replicate_t::run_auto_checkpoint, session);
-            // needs_sched is always false: enqueue_impl only pushes to inbox_ and
-            // wakes the loop (no scheduler hop). Park the [[nodiscard]] future;
-            // the loop drains it once ready (poll_auto_checkpoint_).
-            pending_auto_checkpoint_.emplace_back(std::move(ac_fut));
-        }
+        // BYPASS (3) OF 3, DECLARED — see core/pipeline_bypass.hpp for the rule and the whole list.
+        // This starts a full checkpoint (index flush, storage compaction that RENUMBERS physical
+        // row ids, index clear-and-rebuild, WAL segment unlink) with no logical plan, no planner,
+        // no optimizer and no operator behind it.
+        //
+        // WHAT MAKES IT DIFFERENT FROM THE OTHER TWO, AND WHY IT IS DECLARED ANYWAY: the other two
+        // run where the pipeline cannot be used — before the schedulers start, or on a service
+        // message that carries no rows. This one runs with the engine fully up, and the same work
+        // has a statement form that DOES go through the pipeline (operator_checkpoint, which
+        // ~base_otterbrix_t reaches by building a node_checkpoint plan). So the declaration here
+        // records a bypass that exists, not one that was judged unavoidable: it is written down so
+        // the marker grep answers with the truth. Settling it means either routing this trigger
+        // through a node_checkpoint plan, or accepting the self-send deliberately.
+        //
+        // WHAT THE BYPASS ALREADY COSTS, so the decision is made with it in view: with no statement
+        // above the frame there is no error channel — run_auto_checkpoint LOGS a failed index
+        // rebuild and returns, where the operator would fail its statement. And the rebuild step
+        // itself had to be retrofitted (see (c2) there) precisely because the first version of this
+        // path mirrored the operator incompletely and left every index of every compacted table
+        // naming pre-compact row ids: short and wrong answers, silently. That is the standing
+        // hazard of a second copy of an operator's work living outside the operator.
+        auto trigger_auto_checkpoint =
+            core::maintenance::pipeline_bypass<core::maintenance::bypass_site::wal_auto_checkpoint>([&] {
+                if (needs_auto_checkpoint() && !auto_checkpoint_in_flight_) {
+                    auto_checkpoint_in_flight_ = true;
+                    reset_auto_checkpoint_bytes();
+                    auto [_ac, ac_fut] =
+                        actor_zeta::send(address(), &manager_wal_replicate_t::run_auto_checkpoint, session);
+                    // needs_sched is always false: enqueue_impl only pushes to inbox_ and
+                    // wakes the loop (no scheduler hop). Park the [[nodiscard]] future;
+                    // the loop drains it once ready (poll_auto_checkpoint_).
+                    pending_auto_checkpoint_.emplace_back(std::move(ac_fut));
+                }
+            });
+        trigger_auto_checkpoint();
         co_return result;
     }
 
@@ -531,6 +558,10 @@ namespace services::wal {
     // gate reads. Truncating here cannot strand an index frame's commit decision.
     // -----------------------------------------------------------------------
 
+    // Body of declared bypass (3) — core/pipeline_bypass.hpp lists it; the declaration itself sits
+    // at the only trigger in the tree, the threshold test in commit_txn above. Do NOT add a second
+    // trigger: a checkpoint that no statement asked for has no error channel to fail into, and its
+    // compaction renumbers physical row ids under every index of every table it touches.
     manager_wal_replicate_t::unique_future<void> manager_wal_replicate_t::run_auto_checkpoint(session_id_t session) {
         // Always clear the in-flight guard on every exit path below so a future
         // threshold trip can launch the next checkpoint. enabled_ is implied: the

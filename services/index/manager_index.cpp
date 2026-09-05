@@ -1798,6 +1798,12 @@ namespace services::index {
     // GC subscriber (see declaration): erases per-oid state for tables whose
     // dropped_at_commit_id is below the new snapshot floor, publishes the committed index
     // erases the floor has now made safe, then acks once BOTH queues are empty.
+    //
+    // Receiving half of the horizon GC sweep — a DECLARED maintenance bypass of the rule-3 pipeline
+    // (core/pipeline_bypass.hpp lists it; the declaration itself sits at the only sender in the
+    // tree, manager_dispatcher_t::try_trigger_cleanup_if_horizon_advanced). Do NOT add a second
+    // sender: the horizon this argument carries is the one thing keeping the deferred erases off
+    // entries a live snapshot is still entitled to read.
     manager_index_t::unique_future<void> manager_index_t::on_horizon_advanced(uint64_t new_horizon) {
         trace(log_, "manager_index_t::on_horizon_advanced , horizon : {}", new_horizon);
 

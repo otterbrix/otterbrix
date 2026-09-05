@@ -7,6 +7,7 @@
 #include <core/executor.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
+#include <core/pipeline_bypass.hpp>
 #include <cstdint>
 #include <memory>
 #include <services/disk/manager_disk.hpp>
@@ -249,143 +250,167 @@ namespace otterbrix {
                 }
             }
 
-            auto replay_one = [disk_ptr, &log = log_](components::catalog::oid_t table_oid,
-                                                      components::catalog::oid_t ns_oid,
-                                                      std::vector<services::wal::record_t*>& records) {
-                for (auto* r : records) {
-                    switch (r->record_type) {
-                        case services::wal::wal_record_type::PHYSICAL_INSERT:
-                            if (!r->physical_data.empty()) {
-                                if (!disk_ptr->has_storage(table_oid)) {
-                                    // Try lazy-load from .otbx; if the file is absent
-                                    // (lost with its unfsynced directory entry, or the
-                                    // record predates this table's .otbx) synthesise a
-                                    // DISK storage from the WAL chunk's column types at
-                                    // the standard path — B1a: every table is
-                                    // disk-backed, replay synthesis included.
-                                    disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+            // BYPASS (1) OF 3, DECLARED — see core/pipeline_bypass.hpp for the rule and the whole
+            // list. This callable reaches storage with no plan behind it: where a table's .otbx is
+            // gone it SYNTHESISES one from the journalled chunk's own column types, then applies
+            // the records straight to storage (direct_append / delete / update / add_column).
+            //
+            // WHY IT IS LEGAL HERE, AND ONLY HERE: it runs inside base_otterbrix_t's constructor,
+            // before scheduler_, scheduler_disk_ and scheduler_dispatcher_ are started. There is no
+            // planner, no optimizer, no executor and no transaction to route it through yet — the
+            // pipeline it would "bypass" does not exist at this point in the process's life. Rule
+            // 11 names base_spaces as the one place allowed direct synchronous calls, and this is
+            // that place.
+            //
+            // WHAT BREAKS IF IT IS EVER CALLED FROM A RUNNING ENGINE: (a) the writes are stamped
+            // transaction_data{0, 0} — committed-for-everyone — so they would appear inside
+            // snapshots older than any commit that could have produced them; (b) nothing journals
+            // them, so the next crash loses exactly the rows this path was asked to restore; (c) no
+            // index is maintained, so an indexed table would keep answering from an index that
+            // never heard of the rows; (d) storage synthesis mutates manager_disk_t::storages_, an
+            // unordered_map guarded by nothing but the single-threadedness of this window — the
+            // parallel variant of the replay below was already caught racing on it by TSan.
+            auto replay_one = core::maintenance::pipeline_bypass<
+                core::maintenance::bypass_site::wal_replay_storage_synthesis>(
+                [disk_ptr, &log = log_](components::catalog::oid_t table_oid,
+                                        components::catalog::oid_t ns_oid,
+                                        std::vector<services::wal::record_t*>& records) {
+                    for (auto* r : records) {
+                        switch (r->record_type) {
+                            case services::wal::wal_record_type::PHYSICAL_INSERT:
+                                if (!r->physical_data.empty()) {
                                     if (!disk_ptr->has_storage(table_oid)) {
-                                        if (ns_oid == components::catalog::INVALID_OID) {
-                                            // Rule 6: the namespace names the directory the
-                                            // file belongs in, and nothing in the record
-                                            // implies it. Synthesising under a guessed one
-                                            // writes a file the table's own resolve will
-                                            // never open. Report and drop this table's
-                                            // records rather than manufacture that.
-                                            error(log,
-                                                  "spaces::replay: table oid={} has no pg_class.relnamespace; "
-                                                  "cannot place its .otbx and refusing to guess — records for "
-                                                  "this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid));
-                                            return;
+                                        // Try lazy-load from .otbx; if the file is absent
+                                        // (lost with its unfsynced directory entry, or the
+                                        // record predates this table's .otbx) synthesise a
+                                        // DISK storage from the WAL chunk's column types at
+                                        // the standard path — B1a: every table is
+                                        // disk-backed, replay synthesis included.
+                                        disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                        if (!disk_ptr->has_storage(table_oid)) {
+                                            if (ns_oid == components::catalog::INVALID_OID) {
+                                                // Rule 6: the namespace names the directory the
+                                                // file belongs in, and nothing in the record
+                                                // implies it. Synthesising under a guessed one
+                                                // writes a file the table's own resolve will
+                                                // never open. Report and drop this table's
+                                                // records rather than manufacture that.
+                                                error(log,
+                                                      "spaces::replay: table oid={} has no pg_class.relnamespace; "
+                                                      "cannot place its .otbx and refusing to guess — records for "
+                                                      "this table are NOT replayed",
+                                                      static_cast<unsigned>(table_oid));
+                                                return;
+                                            }
+                                            auto types = r->physical_data.front().types();
+                                            std::vector<components::table::column_definition_t> cols;
+                                            cols.reserve(types.size());
+                                            for (const auto& t : types) {
+                                                cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
+                                            }
+                                            auto otbx = disk_ptr->path_db() /
+                                                        std::to_string(static_cast<unsigned>(ns_oid)) /
+                                                        std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
+                                            std::filesystem::create_directories(otbx.parent_path());
+                                            // B1b: the synthesised storage must keep the computed
+                                            // (relkind='g') flag — its columns come from the WAL
+                                            // chunk, so they are NON-empty even for a computed
+                                            // table, and the flag cannot be inferred from them.
+                                            // pg_class is final here: system-table records replay
+                                            // FIRST and sequentially, user replay is sequential
+                                            // too, so the single-threaded relkind scan is safe.
+                                            const bool synth_computed =
+                                                disk_ptr->relkind_for_oid_sync(table_oid) ==
+                                                components::catalog::relkind::computed;
+                                            disk_ptr->create_storage_disk_sync(table_oid,
+                                                                               ns_oid,
+                                                                               std::move(cols),
+                                                                               otbx,
+                                                                               synth_computed);
                                         }
-                                        auto types = r->physical_data.front().types();
-                                        std::vector<components::table::column_definition_t> cols;
-                                        cols.reserve(types.size());
-                                        for (const auto& t : types) {
-                                            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
-                                        }
-                                        auto otbx = disk_ptr->path_db() /
-                                                    std::to_string(static_cast<unsigned>(ns_oid)) /
-                                                    std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
-                                        std::filesystem::create_directories(otbx.parent_path());
-                                        // B1b: the synthesised storage must keep the computed
-                                        // (relkind='g') flag — its columns come from the WAL
-                                        // chunk, so they are NON-empty even for a computed
-                                        // table, and the flag cannot be inferred from them.
-                                        // pg_class is final here: system-table records replay
-                                        // FIRST and sequentially, user replay is sequential
-                                        // too, so the single-threaded relkind scan is safe.
-                                        const bool synth_computed =
-                                            disk_ptr->relkind_for_oid_sync(table_oid) ==
-                                            components::catalog::relkind::computed;
-                                        disk_ptr->create_storage_disk_sync(table_oid,
-                                                                           ns_oid,
-                                                                           std::move(cols),
-                                                                           otbx,
-                                                                           synth_computed);
+                                    }
+                                    // TODO: load timezone from settings?
+                                    for (auto& chunk : r->physical_data) {
+                                        disk_ptr->direct_append_sync(table_oid, chunk);
                                     }
                                 }
-                                // TODO: load timezone from settings?
-                                for (auto& chunk : r->physical_data) {
-                                    disk_ptr->direct_append_sync(table_oid, chunk);
-                                }
-                            }
-                            break;
-                        case services::wal::wal_record_type::PHYSICAL_ADD_COLUMN:
-                            // Schema-growth record: add the new columns before the
-                            // dependent PHYSICAL_INSERT (higher wal_id, so replays after
-                            // this). Storage must exist first — load .otbx or synthesise
-                            // it from the schema chunk's column types.
-                            if (!r->physical_data.empty()) {
-                                if (!disk_ptr->has_storage(table_oid)) {
-                                    disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                break;
+                            case services::wal::wal_record_type::PHYSICAL_ADD_COLUMN:
+                                // Schema-growth record: add the new columns before the
+                                // dependent PHYSICAL_INSERT (higher wal_id, so replays after
+                                // this). Storage must exist first — load .otbx or synthesise
+                                // it from the schema chunk's column types.
+                                if (!r->physical_data.empty()) {
                                     if (!disk_ptr->has_storage(table_oid)) {
-                                        if (ns_oid == components::catalog::INVALID_OID) {
-                                            // Same refusal as the PHYSICAL_INSERT branch: no
-                                            // namespace, no directory, no guessing (rule 6).
-                                            error(log,
-                                                  "spaces::replay: table oid={} has no pg_class.relnamespace; "
-                                                  "cannot place its .otbx and refusing to guess — records for "
-                                                  "this table are NOT replayed",
-                                                  static_cast<unsigned>(table_oid));
-                                            return;
+                                        disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                        if (!disk_ptr->has_storage(table_oid)) {
+                                            if (ns_oid == components::catalog::INVALID_OID) {
+                                                // Same refusal as the PHYSICAL_INSERT branch: no
+                                                // namespace, no directory, no guessing (rule 6).
+                                                error(log,
+                                                      "spaces::replay: table oid={} has no pg_class.relnamespace; "
+                                                      "cannot place its .otbx and refusing to guess — records for "
+                                                      "this table are NOT replayed",
+                                                      static_cast<unsigned>(table_oid));
+                                                return;
+                                            }
+                                            auto types = r->physical_data.front().types();
+                                            std::vector<components::table::column_definition_t> cols;
+                                            cols.reserve(types.size());
+                                            for (const auto& t : types) {
+                                                cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
+                                            }
+                                            // B1a: synthesise DISK storage (standard path),
+                                            // mirroring the PHYSICAL_INSERT branch above —
+                                            // including the B1b relkind-derived computed flag.
+                                            auto otbx = disk_ptr->path_db() /
+                                                        std::to_string(static_cast<unsigned>(ns_oid)) /
+                                                        std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
+                                            std::filesystem::create_directories(otbx.parent_path());
+                                            const bool synth_computed =
+                                                disk_ptr->relkind_for_oid_sync(table_oid) ==
+                                                components::catalog::relkind::computed;
+                                            disk_ptr->create_storage_disk_sync(table_oid,
+                                                                               ns_oid,
+                                                                               std::move(cols),
+                                                                               otbx,
+                                                                               synth_computed);
+                                            // create_* already seeded these columns; nothing
+                                            // more to add for a freshly-synthesised storage.
+                                            break;
                                         }
-                                        auto types = r->physical_data.front().types();
-                                        std::vector<components::table::column_definition_t> cols;
-                                        cols.reserve(types.size());
-                                        for (const auto& t : types) {
-                                            cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
+                                    }
+                                    disk_ptr->direct_add_column_sync(table_oid, r->physical_data.front());
+                                }
+                                break;
+                            case services::wal::wal_record_type::PHYSICAL_DELETE: {
+                                disk_ptr->direct_delete_sync(table_oid, r->physical_row_ids, r->physical_row_count);
+                                break;
+                            }
+                            case services::wal::wal_record_type::PHYSICAL_UPDATE:
+                                if (!r->physical_data.empty()) {
+                                    // physical_row_ids is flat across the batch; slice it per
+                                    // chunk in vector order to match each chunk's rows.
+                                    std::size_t id_base = 0;
+                                    for (auto& chunk : r->physical_data) {
+                                        const std::size_t n = chunk.size();
+                                        std::pmr::vector<int64_t> ids(r->physical_row_ids.get_allocator().resource());
+                                        ids.reserve(n);
+                                        for (std::size_t i = 0;
+                                             i < n && id_base + i < r->physical_row_ids.size();
+                                             ++i) {
+                                            ids.push_back(r->physical_row_ids[id_base + i]);
                                         }
-                                        // B1a: synthesise DISK storage (standard path),
-                                        // mirroring the PHYSICAL_INSERT branch above —
-                                        // including the B1b relkind-derived computed flag.
-                                        auto otbx = disk_ptr->path_db() /
-                                                    std::to_string(static_cast<unsigned>(ns_oid)) /
-                                                    std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
-                                        std::filesystem::create_directories(otbx.parent_path());
-                                        const bool synth_computed =
-                                            disk_ptr->relkind_for_oid_sync(table_oid) ==
-                                            components::catalog::relkind::computed;
-                                        disk_ptr->create_storage_disk_sync(table_oid,
-                                                                           ns_oid,
-                                                                           std::move(cols),
-                                                                           otbx,
-                                                                           synth_computed);
-                                        // create_* already seeded these columns; nothing
-                                        // more to add for a freshly-synthesised storage.
-                                        break;
+                                        id_base += n;
+                                        disk_ptr->direct_update_sync(table_oid, ids, chunk);
                                     }
                                 }
-                                disk_ptr->direct_add_column_sync(table_oid, r->physical_data.front());
-                            }
-                            break;
-                        case services::wal::wal_record_type::PHYSICAL_DELETE: {
-                            disk_ptr->direct_delete_sync(table_oid, r->physical_row_ids, r->physical_row_count);
-                            break;
+                                break;
+                            default:
+                                break;
                         }
-                        case services::wal::wal_record_type::PHYSICAL_UPDATE:
-                            if (!r->physical_data.empty()) {
-                                // physical_row_ids is flat across the batch; slice it per
-                                // chunk in vector order to match each chunk's rows.
-                                std::size_t id_base = 0;
-                                for (auto& chunk : r->physical_data) {
-                                    const std::size_t n = chunk.size();
-                                    std::pmr::vector<int64_t> ids(r->physical_row_ids.get_allocator().resource());
-                                    ids.reserve(n);
-                                    for (std::size_t i = 0; i < n && id_base + i < r->physical_row_ids.size(); ++i) {
-                                        ids.push_back(r->physical_row_ids[id_base + i]);
-                                    }
-                                    id_base += n;
-                                    disk_ptr->direct_update_sync(table_oid, ids, chunk);
-                                }
-                            }
-                            break;
-                        default:
-                            break;
                     }
-                }
-            };
+                });
 
             // Replay system-table records first (sequential — mutates the catalog
             // that all user-table replays depend on).

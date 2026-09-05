@@ -808,6 +808,11 @@ namespace services::disk {
         }
     }
 
+    // Receiving half of the horizon GC sweep — a DECLARED maintenance bypass of the rule-3 pipeline
+    // (core/pipeline_bypass.hpp lists it; the declaration itself sits at the only sender in the
+    // tree, manager_dispatcher_t::try_trigger_cleanup_if_horizon_advanced). Do NOT add a second
+    // sender: the horizon this argument carries is the one thing keeping the sweep off files a live
+    // snapshot is still entitled to read.
     manager_disk_t::unique_future<void> manager_disk_t::on_horizon_advanced(uint64_t new_horizon) {
         trace(log_, "manager_disk::on_horizon_advanced , horizon : {}", new_horizon);
 

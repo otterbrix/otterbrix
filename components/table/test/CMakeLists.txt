@@ -21,6 +21,7 @@ set(${PROJECT_NAME}_SOURCES
         test_block_e_procarray.cpp
         test_disk_backed_scan.cpp
         test_root_reclaim.cpp
+        test_nested_compact_reclaim.cpp
         test_failed_round_rollback.cpp
         test_checkpoint_crash_matrix.cpp
 )

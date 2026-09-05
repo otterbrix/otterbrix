@@ -443,4 +443,16 @@ namespace components::table {
         }
         return child_column->initialize_column(*persistent_data.child_columns[1]);
     }
+
+    void list_column_data_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const {
+        // The base walk covers the own offsets segments; a reloaded list column additionally
+        // owns its validity bitmap and its element column, each sitting on the blocks
+        // initialize_column registered. Before F6 this override did not exist and compact
+        // leaked both children (only offset blocks — and whatever the B2 packer happened to
+        // co-locate with them — were reclaimed).
+        column_data_t::collect_disk_block_ids(out);
+        validity.collect_disk_block_ids(out);
+        child_column->collect_disk_block_ids(out);
+    }
+
 } // namespace components::table

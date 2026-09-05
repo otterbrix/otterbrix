@@ -59,6 +59,11 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool>
         initialize_column(const persistent_column_data_t& persistent_data) override;
 
+        // Compact reclaim (F6): the base walk covers only the own offsets segments; the
+        // validity child and the element column are collected here. See the contract on
+        // column_data_t::collect_disk_block_ids.
+        void collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const override;
+
     private:
         // Checkpoint NVI hook: child_columns[0] = validity, child_columns[1] = the element
         // column's persistent form.

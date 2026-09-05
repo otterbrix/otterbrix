@@ -329,4 +329,17 @@ namespace components::table {
         return true;
     }
 
+    void struct_column_data_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const {
+        // The base walk of the own data_ tree finds nothing (a struct node keeps no segments,
+        // see initialize_column above); it is kept so every node reports through one path.
+        // What a reloaded struct column actually owns is its children: the validity bitmap and
+        // one sub-column per field, each sitting on the blocks initialize_column registered.
+        // Before F6 this override did not exist and compact leaked all of them.
+        column_data_t::collect_disk_block_ids(out);
+        validity.collect_disk_block_ids(out);
+        for (const auto& sub_column : sub_columns) {
+            sub_column->collect_disk_block_ids(out);
+        }
+    }
+
 } // namespace components::table

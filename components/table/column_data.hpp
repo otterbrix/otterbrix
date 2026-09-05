@@ -196,9 +196,15 @@ namespace components::table {
 
         // Compact reclaim: append the ids of disk blocks EXCLUSIVELY owned by this column (and its
         // sub-columns) to `out`, so the caller can mark them free once this collection is replaced by a
-        // compacted one. Mirrors the transition_to_disk recursion: the standard subclass also collects from
-        // its validity child; struct/list/array collect their own data_ blocks only (their children's
-        // payloads stay managed, matching base transition_to_disk).
+        // compacted one. Mirrors the checkpoint_children / initialize_column recursion, NOT the
+        // transition_to_disk one: since the checkpoint_children hooks every child (validity is always
+        // children[0]; struct fields and list/array elements follow) is a persisted column in its own
+        // right, so a RELOADED child sits on real disk blocks even though write-through never descends
+        // into nested children. Every subclass with sub-columns therefore overrides this to collect its
+        // validity child and its nested children on top of the base walk of its own data_ tree; before
+        // F6 struct/list/array had no override and compact orphaned their children's blocks — durably,
+        // once a checkpoint moved the root past the one they were loaded from
+        // (test_nested_compact_reclaim.cpp).
         virtual void collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const;
 
     protected:

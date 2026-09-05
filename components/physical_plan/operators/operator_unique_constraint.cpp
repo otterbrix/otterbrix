@@ -78,28 +78,55 @@ namespace components::operators {
         // One constraint group at a time. Each group is an independent UNIQUE/PK
         // constraint; a violation in any group fails the whole write.
         for (const auto& group : unique_groups_) {
-            if (group.empty())
-                continue;
+            // AN EMPTY KEY COLUMN LIST ENFORCES NOTHING. Every row would carry the
+            // same zero-column key, so the group is either meaningless or its column
+            // list was lost on the way here. Skipping it is this operator's SUCCESS
+            // path, which is the one reading a declared key must never have. Same
+            // refusal, same reason, as operator_fk_check_t's `indices.empty()`.
+            if (group.empty()) {
+                set_error(core::error_t{
+                    core::error_code_t::invalid_constraint,
+                    std::pmr::string{"UNIQUE constraint: key column list is empty — nothing to enforce", resource_}});
+                co_return;
+            }
 
-            // Resolve each group column in the written-row schema. The rows are
+            // EVERY KEY COLUMN MUST HAVE A POSITION IN THE WRITTEN ROW. The rows are
             // MATERIALISED — an omitted column was expanded to its DEFAULT (or to NULL)
             // before the append — so every key column of a table group is present and the
-            // key is read straight off the stored value. A name that is not here belongs
-            // to no column of this write-set (a dynamic-schema table); with nothing stored
-            // to compare, the group is void for this write-set.
+            // key is read straight off the stored value.
+            //
+            // This used to mark the group "void" and `continue`, which is this
+            // operator's SUCCESS path: the rows are ALREADY written when a constraint
+            // sink runs, so a skipped group left the duplicate in the table and reported
+            // success — the declared UNIQUE / PRIMARY KEY enforced nothing. There is no
+            // reading of an absent column that is a uniqueness check, so refuse and name
+            // the column. This is the write-side half of the resolve-side guard in
+            // operator_resolve_constraint (which refuses a group whose attoids do not
+            // resolve instead of dropping it), and the exact shape of
+            // operator_fk_check_t's "referencing column has no position in the written
+            // row" — the two constraint families now refuse the same condition alike.
+            //
+            // The one route that used to reach here through plain SQL was a
+            // dynamic-schema (relkind='g') table, whose columns live in
+            // pg_computed_column and are per-row rather than per-table; UNIQUE / PRIMARY
+            // KEY on such a table is refused at DDL now (executor_t::execute_plan_full),
+            // and a group left over from a catalog written before that gate is refused
+            // one step earlier, at resolve. So this guard names no live SQL path — it is
+            // the floor under a write-set that disagrees with the catalog about the
+            // table's shape.
             std::vector<uint64_t> sources;
             sources.reserve(group.size());
-            bool group_void = false;
             for (const auto& col_name : group) {
                 const auto col = find_col_index(in_chunks.front(), col_name);
                 if (col == kAbsentCol) {
-                    group_void = true;
-                    break;
+                    std::pmr::string what{"UNIQUE constraint: key column \"", resource_};
+                    what.append(col_name.c_str());
+                    what.append("\" has no position in the written row");
+                    set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                    co_return;
                 }
                 sources.push_back(col);
             }
-            if (group_void)
-                continue;
 
             // Materialize the group's key columns once per chunk: zero-copy REFERENCES
             // of the stored columns. Every downstream layer (hash, NULL skip, verify,

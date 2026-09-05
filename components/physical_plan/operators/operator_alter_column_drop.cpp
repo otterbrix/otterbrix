@@ -262,13 +262,6 @@ namespace components::operators {
             mark_executed();
             co_return;
         }
-        auto ec_cascade =
-            components::catalog::alter_column_validators::validate_cascade_dependencies(resource_, dependents);
-        if (ec_cascade.contains_error()) {
-            set_error(std::move(ec_cascade));
-            mark_executed();
-            co_return;
-        }
 
         // for RESTRICT, abort if any non-internal dep exists. For CASCADE,
         // drop each dependent object.

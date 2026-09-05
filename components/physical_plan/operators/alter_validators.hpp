@@ -26,7 +26,6 @@
 
 #include <memory_resource>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace components::operators::alter_validators {
@@ -42,26 +41,15 @@ namespace components::operators::alter_validators {
                          components::execution_context_t exec_ctx,
                          components::catalog::oid_t table_oid);
 
-    // Async pg_depend scan: (classid, objid) pairs depending on (refclassid,
-    // refobjid, refobjsubid). refobjsubid is the altered column's attnum
-    // (0 = whole-relation). Feeds validate_cascade_dependencies for RESTRICT, or
-    // the cascade loop for CASCADE.
-    // TBD-impl: pg_depend has no refobjsubid yet, so this returns ALL dependents
-    // of the refobj (table); callers must refine once the column-grain id lands.
-    actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::pair<int, components::catalog::oid_t>>>>
-    scan_cascade_dependents(std::pmr::memory_resource* resource,
-                            actor_zeta::address_t disk_address,
-                            components::execution_context_t exec_ctx,
-                            components::catalog::oid_t ref_classid,
-                            components::catalog::oid_t ref_objid,
-                            std::int32_t ref_objsubid);
+    // There is no pg_depend gatherer here. One lived here — scan_cascade_dependents,
+    // keyed on (refclassid, refobjid) — and it never had a caller: it dropped
+    // pg_depend.deptype, which is the only field that tells a blocking edge from a
+    // cascadable one, so the operator that needs the answer reads pg_depend itself.
 
     // Re-export the pure validators so callsites reach pure + async helpers
     // through one `using namespace alter_validators;`.
     using components::catalog::alter_column_validators::encode_default_spec_ec;
-    using components::catalog::alter_column_validators::validate_cascade_dependencies;
     using components::catalog::alter_column_validators::validate_column_not_duplicate;
-    using components::catalog::alter_column_validators::validate_default_value_evaluatable;
     using components::catalog::alter_column_validators::validate_default_value_type;
 
 } // namespace components::operators::alter_validators

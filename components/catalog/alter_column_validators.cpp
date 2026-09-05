@@ -38,22 +38,6 @@ namespace components::catalog::alter_column_validators {
         return core::error_t::no_error();
     }
 
-    core::error_t
-    validate_default_value_evaluatable(std::pmr::memory_resource* /*resource*/,
-                                       const std::optional<components::types::logical_value_t>& default_value) {
-        // A materialised logical_value_t is evaluatable by construction; nothing to check yet.
-        (void) default_value;
-        return core::error_t::no_error();
-    }
-
-    core::error_t
-    validate_cascade_dependencies(std::pmr::memory_resource* /*resource*/,
-                                  const std::pmr::vector<std::pair<int, components::catalog::oid_t>>& dependents) {
-        // TODO: stub; real handler table dispatches on pg_depend.classid (see .hpp).
-        (void) dependents;
-        return core::error_t::no_error();
-    }
-
     core::error_t encode_default_spec_ec(std::pmr::memory_resource* resource,
                                          const std::optional<components::types::logical_value_t>& default_value,
                                          std::pmr::string& out_spec) {

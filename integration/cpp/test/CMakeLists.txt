@@ -45,6 +45,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_index_ordered_read_through_agent.cpp
         test_index_rebuild_crash.cpp
         test_index_stale_after_compact.cpp
+        test_vacuum_index_rebuild.cpp
         test_index_rebuild_live_snapshot.cpp
         test_dml_dictionary_rowids.cpp
         test_persistence_gaps.cpp

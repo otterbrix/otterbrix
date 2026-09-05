@@ -57,14 +57,6 @@ namespace components::operators {
             co_return;
         }
 
-        auto ec_eval = components::catalog::alter_column_validators::validate_default_value_evaluatable(
-            resource_,
-            column_.default_value_opt());
-        if (ec_eval.contains_error()) {
-            set_error(std::move(ec_eval));
-            co_return;
-        }
-
         // scan pg_attribute for max(attnum) for this table.
         constexpr catalog::oid_t pg_attr_oid = catalog::well_known_oid::pg_attribute_table;
         std::pmr::vector<std::uint64_t> pa_keys(resource_);

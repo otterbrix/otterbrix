@@ -202,3 +202,57 @@ TEST_CASE("cells_equal resolves dictionary indirection like the hash does", "[un
     REQUIRE(vector::cells_equal(dict, 1, flat, 1));
     REQUIRE_FALSE(vector::cells_equal(dict, 0, flat, 1));
 }
+
+// ---------------------------------------------------------------------------
+// A GROUP THIS WRITE-SET CANNOT ANSWER IS A REFUSAL, NOT A SKIP.
+//
+// The group column names arrive already resolved from LIVE pg_attribute rows of
+// this very table (operator_resolve_constraint refuses a group it cannot resolve
+// rather than dropping it), and the DML materialises every column of the row it
+// writes. So a name with no column in the write-set means the write-set and the
+// catalog disagree about the table's shape — and there is no reading of an absent
+// column that is a uniqueness check.
+//
+// This used to `continue` on that condition, which is this operator's SUCCESS
+// path: the declared key was enforced against nothing and the rows the DML had
+// ALREADY written stayed in the table. Same defect, same shape and same cure as
+// operator_fk_check_t's "referencing column has no position in the written row",
+// which was made loud earlier; this is the UNIQUE / PRIMARY KEY half of it.
+// ---------------------------------------------------------------------------
+TEST_CASE("unique constraint operator: a key column absent from the write-set is refused, not skipped",
+          "[unique_constraint]") {
+    auto resource = core::pmr::otterbrix_resource();
+    // Write-set exposes only "a"; the group is declared on (a, b).
+    std::pmr::vector<types::complex_logical_type> cols(&resource);
+    cols.emplace_back(types::logical_type::BIGINT);
+    cols.back().set_alias("a");
+    vector::data_chunk_t chunk(&resource, cols, 2);
+    chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
+    chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(1)));
+    chunk.set_cardinality(2);
+
+    std::string err;
+    REQUIRE(run_unique(&resource, std::move(chunk), {{"a", "b"}}, &err));
+    INFO("error: " << err);
+    // The message has to name the column the user can act on, not the symptom.
+    REQUIRE(err.find("\"b\"") != std::string::npos);
+}
+
+TEST_CASE("unique constraint operator: a key column list that is empty is refused, not skipped",
+          "[unique_constraint]") {
+    auto resource = core::pmr::otterbrix_resource();
+    // An empty column list enforces nothing at all: every row has the same
+    // (zero-column) key, so the constraint is either meaningless or lost. Mirrors
+    // operator_fk_check_t's `indices.empty()` refusal.
+    std::pmr::vector<types::complex_logical_type> cols(&resource);
+    cols.emplace_back(types::logical_type::BIGINT);
+    cols.back().set_alias("a");
+    vector::data_chunk_t chunk(&resource, cols, 2);
+    chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
+    chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(2)));
+    chunk.set_cardinality(2);
+
+    std::string err;
+    REQUIRE(run_unique(&resource, std::move(chunk), {{}}, &err));
+    INFO("error: " << err);
+}

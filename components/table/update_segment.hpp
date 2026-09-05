@@ -212,7 +212,10 @@ namespace components::table {
                                    uint64_t count,
                                    vector::vector_t& result,
                                    uint64_t result_offset_base = 0);
-        // Returns write_conflict or out_of_memory; true on success.
+        // Returns out_of_memory / data_corruption / io_error (the refusals undo_buffer_pointer_t::pin
+        // can raise); true on success. It does NOT return write_conflict and cannot: update_info_t
+        // carries no transaction or commit stamp, so there is no other writer's mark to compare
+        // against. See the note inside update_segment_t::update.
         [[nodiscard]] core::result_wrapper_t<bool> update(uint64_t column_index,
                                                           vector::vector_t& update,
                                                           int64_t* ids,

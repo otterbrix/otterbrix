@@ -55,11 +55,28 @@ namespace components::compute {
 
     private:
         parameter_type() = default;
+        // MOVE-CONSTRUCTS admissible_, and that is the whole point: assigning a vector over a
+        // default-constructed member is move-ASSIGNMENT, which for a pmr vector with a
+        // DIFFERENT allocator relocates element by element and allocates in the TARGET's
+        // resource. Constructing takes the source's buffer AND its resource, so nothing is
+        // allocated and the caller's arena is preserved.
+        parameter_type(variable_id id, std::pmr::vector<types::complex_logical_type> admissible)
+            : is_variable_(true)
+            , id_(id)
+            , admissible_(std::move(admissible)) {}
 
         bool is_variable_{false};
         variable_id id_{0};
         types::complex_logical_type type_{types::logical_type::ANY};
-        std::pmr::vector<types::complex_logical_type> admissible_{std::pmr::get_default_resource()};
+        // null, NOT get_default_resource() and NOT new_delete_resource(): both of those are
+        // process-global arenas, and a default member initializer runs on every
+        // default-construction, so either one would silently decide this vector's arena.
+        // NOTHING is allowed to allocate through this initializer: exact() and variable(id)
+        // leave the vector empty forever, and variable(id, admissible) MOVES a caller-owned
+        // vector -- with the caller's own resource -- in over it. So an allocation here means
+        // a new path filled admissible_ without bringing a resource, and null makes that
+        // refuse loudly instead of quietly borrowing an arena nobody chose (rule 6).
+        std::pmr::vector<types::complex_logical_type> admissible_{std::pmr::null_memory_resource()};
     };
 
     using fixed_t = types::complex_logical_type;

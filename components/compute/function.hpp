@@ -92,17 +92,19 @@ namespace components::compute {
         virtual size_t num_kernels() const = 0;
         virtual void accept_visitor(function_visitor& visitor) const = 0;
 
-        virtual core::result_wrapper_t<datum_t> execute(const vector::data_chunk_t& args,
-                                                        const function_options* options = nullptr,
-                                                        exec_context_t& ctx = default_exec_context()) const;
+        // `ctx` is not optional and has no default: it names the memory resource everything
+        // below allocates from. See the note over exec_context_t in kernel_utils.hpp for what
+        // the default used to be and cost.
+        virtual core::result_wrapper_t<datum_t>
+        execute(const vector::data_chunk_t& args, const function_options* options, exec_context_t& ctx) const;
 
         virtual core::result_wrapper_t<datum_t> execute(const std::vector<vector::data_chunk_t>& args,
-                                                        const function_options* options = nullptr,
-                                                        exec_context_t& ctx = default_exec_context()) const;
+                                                        const function_options* options,
+                                                        exec_context_t& ctx) const;
 
         virtual core::result_wrapper_t<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs,
-                                                        const function_options* options = nullptr,
-                                                        exec_context_t& ctx = default_exec_context()) const;
+                                                        const function_options* options,
+                                                        exec_context_t& ctx) const;
 
         const function_options* default_options() const;
 
@@ -110,17 +112,23 @@ namespace components::compute {
         dispatch_exact(std::pmr::memory_resource* resource,
                        const std::pmr::vector<types::complex_logical_type>& types) const;
 
+        // BY REFERENCE, and the reference is what matters: the by-value parameter this
+        // replaced was copy-constructed from the caller's lvalue, and a std::pmr::vector copy
+        // does NOT inherit the source's allocator -- select_on_container_copy_construction
+        // hands back a default-constructed polymorphic_allocator, i.e. the process-global
+        // default resource. One 16-byte allocation per execute() landed there even after the
+        // defaulted exec_context_t was gone, and the value was never read: the body ignores
+        // this argument entirely.
         virtual core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
         get_best_executor(std::pmr::memory_resource* resource,
-                          std::pmr::vector<types::complex_logical_type> types) const;
+                          const std::pmr::vector<types::complex_logical_type>& types) const;
 
-        // When state of kernel has to be accessible
-        // TODO: remove default context
+        // When state of kernel has to be accessible. `ctx` is mandatory, as above.
         [[nodiscard]] core::result_wrapper_t<std::unique_ptr<function_executor>>
         make_executor(std::pmr::memory_resource* resource,
                       std::pmr::vector<types::complex_logical_type> in_types,
-                      const function_options* options = nullptr,
-                      exec_context_t& ctx = default_exec_context()) const;
+                      const function_options* options,
+                      exec_context_t& ctx) const;
 
         [[nodiscard]] virtual std::vector<kernel_signature_t> get_signatures() const;
 

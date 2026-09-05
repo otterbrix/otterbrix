@@ -7,6 +7,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_type_switch.cpp
         test_type_spec_codec.cpp
         test_tri_bool.cpp
+        test_decimal_descale_refusal.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

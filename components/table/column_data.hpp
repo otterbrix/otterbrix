@@ -154,7 +154,9 @@ namespace components::table {
         virtual void
         fetch_row(column_fetch_state& state, int64_t row_id, vector::vector_t& result, uint64_t result_idx);
 
-        // Update path returns write_conflict / out_of_memory; true on success.
+        // Update path returns out_of_memory / data_corruption / io_error; true on success.
+        // NOT write_conflict — the update overlay below carries no transaction stamp to
+        // conflict with (components/table/update_segment.hpp).
         [[nodiscard]] virtual core::result_wrapper_t<bool>
         update(uint64_t column_index, vector::vector_t& update_vector, int64_t* row_ids, uint64_t update_count);
         [[nodiscard]] virtual core::result_wrapper_t<bool> update_column(const std::vector<uint64_t>& column_path,

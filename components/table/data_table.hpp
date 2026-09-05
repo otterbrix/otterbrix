@@ -96,8 +96,16 @@ namespace components::table {
 
         std::unique_ptr<table_update_state>
         initialize_update(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
-        // Returns write_conflict / out_of_memory. On success the pair is
-        // {0, affected-row count}; the caller's update reply carries it.
+        // Returns write_conflict when an ALTER has superseded this table, and
+        // out_of_memory / data_corruption / io_error from the storage below. On success the
+        // pair is {0, affected-row count}; the caller's update reply carries it.
+        //
+        // NOT A TRANSACTIONAL UPDATE, and the signature says so by having nowhere to put a
+        // transaction id: the overlay it writes is published immediately, to every reader,
+        // with no version chain and no undo (components/table/update_segment.hpp, and
+        // components/table/test/test_storage_update_rollback.cpp measures it). The
+        // txn-carrying UPDATE a statement runs is delete-stamp + append, in
+        // components/storage/table_storage_adapter.hpp.
         [[nodiscard]] core::result_wrapper_t<std::pair<int64_t, uint64_t>>
         update(table_update_state& state,
                vector::vector_t& row_ids,

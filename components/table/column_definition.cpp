@@ -89,13 +89,20 @@ namespace components::table {
     void column_definition_t::set_oid(uint64_t oid) { oid_ = oid; }
 
     void column_definition_t::set_attoid(std::uint32_t v) {
-        // attoid is immutable after first assignment — programmer-error precondition.
-        // Hot DDL/resolve path: no throw (rules 2/9). A re-stamp with a DIFFERENT value means
+        // attoid is immutable after first assignment. A re-stamp with a DIFFERENT value means
         // two identity sources disagree about this column; the old release build swallowed
-        // that silently (neither applied nor reported). It is still refused — the first stamp
-        // stays authoritative — but the disagreement is now SAID (rule 6: loud, not fatal).
-        assert((attoid_ == 0 || attoid_ == v) &&
-               "column_definition_t::set_attoid: attoid is immutable after assignment");
+        // that silently (neither applied nor reported). It is refused — the first stamp stays
+        // authoritative — and the disagreement is SAID (rule 6: loud, not fatal).
+        //
+        // AND IT IS THE SAME ANSWER IN EVERY BUILD. The assert that used to stand here made
+        // the Debug build abort on an input the release build merely refused, and this is
+        // INPUT, not a programmer-error precondition: the stamps come off DISK on the catalog
+        // load and bootstrap paths (services/disk/manager_disk_bootstrap.cpp:1339,
+        // services/disk/manager_disk_io.cpp:269, services/disk/agent_disk.cpp:386 and :636),
+        // so aborting would make a database whose two catalog identity sources disagree
+        // unopenable in the very build a developer would debug it in. That is the difference
+        // from the sibling catalog::table_id::set_oid, which does abort: nothing stamps a
+        // table_id from a disk row while opening the database.
         if (attoid_ != 0 && attoid_ != v) {
             std::fprintf(stderr,
                          "components::table::column_definition_t::set_attoid: refusing to re-stamp column "

@@ -170,10 +170,20 @@ namespace components::compute {
     private:
         core::error_t check_init() {
             if (!kernel_ctx_) {
-                // didn't call init, default (i.e. no options/exec_ctx) call
-                if (auto st = init(nullptr, default_exec_context()); st.contains_error()) {
-                    return st;
-                }
+                // NO IMPLICIT INIT (rule 6). This used to init() itself against
+                // default_exec_context() -- the process-global arena -- so an executor whose
+                // caller forgot init() silently ran on memory nobody had asked for. Both
+                // in-tree producers of this object (function::make_executor and the three
+                // function::execute overloads) init it with the caller's context before
+                // handing it out, so reaching this is a caller bug, and it is answered, not
+                // papered over. The message is built on in_types_' own resource: that vector
+                // is moved in from make_executor's caller, so it carries the caller's arena
+                // even on the one path where init() never ran. No process-global resource is
+                // reachable from here, and none is needed.
+                return core::error_t(core::error_code_t::kernel_error,
+                                     std::pmr::string{"function executor used before init(): "
+                                                      "no execution context was ever supplied",
+                                                      in_types_.get_allocator().resource()});
             }
 
             return core::error_t::no_error();
@@ -226,7 +236,8 @@ namespace components::compute {
     }
 
     core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
-    function::get_best_executor(std::pmr::memory_resource* resource, std::pmr::vector<complex_logical_type>) const {
+    function::get_best_executor(std::pmr::memory_resource* resource,
+                               const std::pmr::vector<complex_logical_type>&) const {
         detail::kernel_executor_visitor vis(resource);
         accept_visitor(vis);
 

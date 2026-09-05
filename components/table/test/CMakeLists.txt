@@ -35,6 +35,9 @@ set(${PROJECT_NAME}_SOURCES
         test_block_accounting_bounds.cpp
         test_wave_table.cpp
         test_segment_tree_reinitialize.cpp
+        test_storage_update_rollback.cpp
+        test_column_identity_restamp.cpp
+        test_predicate_fetch_state.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

@@ -280,7 +280,34 @@ namespace core::filesystem {
     public:
         void close() override {
             if (fd != -1) {
-                ::close(fd);
+                // ::close CAN FAIL, and its failure is not cosmetic: on a write-back
+                // filesystem this is where a deferred write error (EIO) is finally reported,
+                // so a discarded return is a lost write reported as a clean close. It used to
+                // be discarded outright.
+                //
+                // THIS IS ONLY HALF THE FIX, and the missing half is not in this file:
+                // file_handle_t::close() is declared `virtual void`
+                // (core/file/file_handle.hpp:104), so there is no channel to hand the refusal
+                // back on — and the destructor below is one of the callers, where there would
+                // be nothing to hand it to anyway. Until that signature carries a
+                // core::error_t, the loudest honest answer is to SAY it (rule 6: loud, not
+                // fatal, and never silent).
+                //
+                // The descriptor is released either way, including on EINTR: on this platform
+                // (and on Linux) close() consumes the descriptor before it can report, so
+                // keeping fd set would invite a second close of a number the kernel may have
+                // already handed to another opener. Clearing it is not "cleaning up before
+                // success" — the descriptor IS gone.
+                const int rc = ::close(fd);
+                if (rc != 0) {
+                    const int err = errno;
+                    std::fprintf(stderr,
+                                 "core::filesystem::unix_file_handle_t::close: closing '%s' failed (errno %d: %s); "
+                                 "data written to it may not have reached the device\n",
+                                 path_.c_str(),
+                                 err,
+                                 std::strerror(err));
+                }
                 fd = -1;
             }
         };
@@ -677,6 +704,11 @@ namespace core::filesystem {
             if (!fd_) {
                 return;
             }
+            // NOT FIXED HERE, deliberately, and the POSIX twin above says why the fix is only
+            // half a fix anyway: CloseHandle's BOOL is discarded exactly like ::close's int
+            // used to be. This arm cannot be compiled or exercised from this tree's CI (macOS
+            // and Linux only), so it is named rather than changed blind — see
+            // core/file/file_handle.hpp:104 for where both halves end.
             CloseHandle(fd_);
             fd_ = nullptr;
         };

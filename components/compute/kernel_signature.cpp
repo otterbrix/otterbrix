@@ -31,11 +31,9 @@ namespace components::compute {
     }
 
     parameter_type parameter_type::variable(variable_id id, std::pmr::vector<types::complex_logical_type> admissible) {
-        parameter_type result;
-        result.is_variable_ = true;
-        result.id_ = id;
-        result.admissible_ = std::move(admissible);
-        return result;
+        // Through the constructor, NOT by assigning over a default-constructed member: see the
+        // note at that constructor. Assignment would allocate in admissible_'s own resource.
+        return parameter_type{id, std::move(admissible)};
     }
 
     parameter_type parameter_type::variable(variable_id id) {

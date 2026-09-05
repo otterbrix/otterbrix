@@ -306,8 +306,23 @@ namespace components::table {
             }
         }
         vector::data_chunk_t rows{res, chunk_types, referenced, count};
+        // ONE state for the whole function, a CHILD of it per column — the shape
+        // row_group_t::fetch_row already uses, and both halves of it are load-bearing here.
+        //
+        // The child is what stops two bound columns from sharing child_states: a struct
+        // column reads its fields through child(0), so two struct-typed bound columns used
+        // to alias each other's field states. Harmless while handles are keyed by block id
+        // and the flag/error are homogeneous, but an aliasing invariant nobody stated.
+        //
+        // The single OUTER state is what keeps the pins: result_outlives_pins is false here
+        // (this chunk dies inside the call), so a fetched long string is a view into a
+        // pinned block, and `rows` is read by run_graph BELOW this loop. Declaring the state
+        // inside the loop instead would release each column's pins one iteration early —
+        // the same one-line "fix" that looks equivalent and is not.
         column_fetch_state fetch_state;
+        size_t child_slot = 0;
         for (size_t column : referenced) {
+            auto& column_state = fetch_state.child(child_slot++);
             if (column >= materialized) {
                 rows.data[column].validity().set_all_invalid(count);
                 continue;
@@ -316,8 +331,9 @@ namespace components::table {
 #ifdef DEV_MODE
                 g_predicate_row_fetches.fetch_add(1, std::memory_order_relaxed);
 #endif
-                get_column(column).fetch_row(fetch_state, base_row + static_cast<int64_t>(row), rows.data[column], row);
-                if (fetch_state.fetch_error.contains_error()) {
+                get_column(column)
+                    .fetch_row(column_state, base_row + static_cast<int64_t>(row), rows.data[column], row);
+                if (fetch_state.absorb_error(column_state)) {
                     return fetch_state.fetch_error;
                 }
             }
@@ -755,7 +771,7 @@ namespace components::table {
                 return col_data.update(column, update_chunk.data[i], ids, count);
             }();
             if (updated.has_error()) {
-                return updated; // write_conflict / out_of_memory
+                return updated; // out_of_memory / data_corruption / io_error
             }
         }
         return true;

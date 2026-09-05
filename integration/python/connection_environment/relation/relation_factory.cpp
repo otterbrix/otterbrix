@@ -12,6 +12,7 @@
 #include <scan/python_replacement_scan.hpp>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 using namespace components;
@@ -193,24 +194,49 @@ namespace otterbrix {
                                                      node_sort_ptr sort,
                                                      node_select_ptr select,
                                                      node_limit_ptr limit) {
-        // The scratch table this aggregate materialises into. The counter stays
-        // process-wide -- two connections in one process would otherwise both start
-        // at t0 and hand the same name to the same `tmp` database -- but it is now
-        // atomic (Python threads can build relations concurrently) and 64-bit (a
-        // plain int wraps).
+        // The scratch table this aggregate materialises into.
+        //
+        // THE NAME HAS TO BE UNUSED IN THE DATABASE, NOT MERELY UNUSED IN THIS PROCESS.
+        // The counter is process-wide and starts at zero in every new process, while the
+        // tmp.* tables it names are persisted with the database — so the second process to
+        // open a database that a first one built relations against asked for a name that was
+        // already there. That was not a hypothetical: running
+        // integration/python/tests/fast/dataframe/test_dataframe_limit.py twice against the
+        // same `default` directory turned "4 passed" into "4 failed", every one of them
+        // `RuntimeError: relation: creating the scratch table tmp.t2 failed: collection
+        // already exists`.
+        //
+        // Two changes, and both are needed. The name now carries the PID, so two processes
+        // sharing a database do not walk the same sequence at all; and a name that IS taken
+        // (a recycled pid, or the same process re-opening its own leftovers) advances to the
+        // next one instead of failing the user's operation. Taken-ness is not an error of the
+        // statement the user asked for — it is one step of allocating a unique name, so it is
+        // retried and nothing else is: any other refusal, a missing cursor, or an exhausted
+        // search is still LOUD (rule 6).
         static std::atomic<std::uint64_t> indx{0};
-        auto session = otterbrix::session_id_t();
-        std::string name = "t";
-        name += std::to_string(indx.fetch_add(1, std::memory_order_relaxed));
-        // Rule 6: this cursor used to go on the floor. A scratch table that was not
-        // created cannot hold the aggregate's output, and saying nothing only moves
-        // the failure to a later, less obvious statement.
-        auto create = space->dispatcher()->execute_sql(session, "CREATE TABLE tmp." + name + "();");
-        if (!create) {
-            throw std::runtime_error("relation: creating the scratch table tmp." + name + " returned no cursor");
-        }
-        if (create->is_error()) {
+        const auto pid = static_cast<std::uint64_t>(::getpid());
+        // Bounded so a database whose `tmp` is somehow saturated cannot spin forever; the
+        // pid prefix makes even one collision unlikely, let alone this many.
+        constexpr int max_name_attempts = 64;
+        std::string name;
+        for (int attempt = 0;; attempt++) {
+            name = "t" + std::to_string(pid) + "_" + std::to_string(indx.fetch_add(1, std::memory_order_relaxed));
+            // A fresh session per attempt: the previous one carries a refused statement.
+            auto session = otterbrix::session_id_t();
+            // Rule 6: this cursor used to go on the floor. A scratch table that was not
+            // created cannot hold the aggregate's output, and saying nothing only moves
+            // the failure to a later, less obvious statement.
+            auto create = space->dispatcher()->execute_sql(session, "CREATE TABLE tmp." + name + "();");
+            if (!create) {
+                throw std::runtime_error("relation: creating the scratch table tmp." + name + " returned no cursor");
+            }
+            if (!create->is_error()) {
+                break;
+            }
             const auto err = create->get_error();
+            if (err.type == core::error_code_t::table_already_exists && attempt + 1 < max_name_attempts) {
+                continue;
+            }
             throw std::runtime_error("relation: creating the scratch table tmp." + name +
                                      " failed: " + std::string(err.what.begin(), err.what.end()));
         }

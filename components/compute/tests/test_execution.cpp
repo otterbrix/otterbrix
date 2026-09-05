@@ -85,7 +85,8 @@ static core::result_wrapper_t<std::pmr::vector<int>> run_aggregate(std::pmr::mem
                                                                    uint64_t group_count) {
     std::pmr::vector<complex_logical_type> in_types(resource);
     in_types.emplace_back(logical_type::INTEGER);
-    auto executor = fn.make_executor(resource, in_types);
+    exec_context_t ctx(resource);
+    auto executor = fn.make_executor(resource, in_types, nullptr, ctx);
     if (executor.has_error()) {
         return executor.error();
     }
@@ -125,6 +126,7 @@ inline function_doc function_doc_with_options() { return function_doc{"", "", {}
 
 TEST_CASE("components::compute::vector::single") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
@@ -140,13 +142,14 @@ TEST_CASE("components::compute::vector::single") {
     chunk.set_value(0, 0, 10);
     chunk.set_cardinality(1);
 
-    auto res = fn->execute(chunk, &opts);
+    auto res = fn->execute(chunk, &opts, ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(std::get<data_chunk_t>(res.value()).data[0].data<int>()[0] == MAGIC_MULTIPLIER * 10);
 }
 
 TEST_CASE("components::compute::vector::batch") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
@@ -170,7 +173,7 @@ TEST_CASE("components::compute::vector::batch") {
     batch.emplace_back(std::move(c1));
     batch.emplace_back(std::move(c2));
 
-    auto res = fn->execute(batch, &opts);
+    auto res = fn->execute(batch, &opts, ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(std::get<data_chunk_t>(res.value()).data.size() == 2);
     REQUIRE(std::get<data_chunk_t>(res.value()).data[0].data<int>()[0] == MAGIC_MULTIPLIER);
@@ -179,6 +182,7 @@ TEST_CASE("components::compute::vector::batch") {
 
 TEST_CASE("components::compute::vector::output_resolver_refusal_reaches_the_caller") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
@@ -195,7 +199,7 @@ TEST_CASE("components::compute::vector::output_resolver_refusal_reaches_the_call
     vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
     REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
-    CHECK(fn->make_executor(&resource, {logical_type::INTEGER}, &opts).has_error());
+    CHECK(fn->make_executor(&resource, {logical_type::INTEGER}, &opts, ctx).has_error());
 }
 
 static data_chunk_t two_ints(std::pmr::memory_resource* resource, int first, int second) {
@@ -263,6 +267,7 @@ TEST_CASE("components::compute::aggregate::per_group") {
 
 TEST_CASE("components::compute::row::single") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     auto fn = std::make_unique<row_function>("row_single", arity::unary(), function_doc{}, 1);
 
     kernel_signature_t sig(function_type_t::row,
@@ -277,7 +282,7 @@ TEST_CASE("components::compute::row::single") {
     chunk.set_value(0, 2, 3);
     chunk.set_cardinality(3);
 
-    auto res = fn->execute(chunk);
+    auto res = fn->execute(chunk, nullptr, ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 3);
@@ -288,6 +293,7 @@ TEST_CASE("components::compute::row::single") {
 
 TEST_CASE("components::compute::row::batch") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     auto fn = std::make_unique<row_function>("row_batch", arity::unary(), function_doc{}, 1);
 
     kernel_signature_t sig(function_type_t::row,
@@ -309,7 +315,7 @@ TEST_CASE("components::compute::row::batch") {
     batch.emplace_back(std::move(c1));
     batch.emplace_back(std::move(c2));
 
-    auto res = fn->execute(batch);
+    auto res = fn->execute(batch, nullptr, ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 3);
@@ -320,6 +326,7 @@ TEST_CASE("components::compute::row::batch") {
 
 TEST_CASE("components::compute::row::values") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     // Direct pmr::vector path — single scalar call
     auto fn = std::make_unique<row_function>("row_vals", arity::unary(), function_doc{}, 1);
 
@@ -332,7 +339,7 @@ TEST_CASE("components::compute::row::values") {
     std::pmr::vector<logical_value_t> inputs(&resource);
     inputs.emplace_back(&resource, 21);
 
-    auto res = fn->execute(inputs);
+    auto res = fn->execute(inputs, nullptr, ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 1);
@@ -389,6 +396,7 @@ TEST_CASE("components::compute::expand::generate_series") {
 
 TEST_CASE("components::compute::options_required") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     auto fn = std::make_unique<vector_function>("opts", arity::unary(), function_doc_with_options(), 1);
 
     kernel_signature_t sig(function_type_t::vector,
@@ -401,13 +409,14 @@ TEST_CASE("components::compute::options_required") {
     chunk.set_value(0, 0, 1);
     chunk.set_cardinality(1);
 
-    auto res = fn->execute(chunk);
+    auto res = fn->execute(chunk, nullptr, ctx);
     REQUIRE(res.has_error());
     REQUIRE(res.error().type == core::error_code_t::kernel_error);
 }
 
 TEST_CASE("components::compute::errors") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     data_chunk_t chunk(&resource, {logical_type::INTEGER});
 
     SECTION("arity mismatch") {
@@ -433,7 +442,7 @@ TEST_CASE("components::compute::errors") {
         try_chunk.set_value(0, 0, logical_value_t(chunk.resource(), "oops"));
         try_chunk.set_cardinality(1);
 
-        auto res = fn->execute(try_chunk);
+        auto res = fn->execute(try_chunk, nullptr, ctx);
         REQUIRE(res.has_error());
         REQUIRE(res.error().type == core::error_code_t::kernel_error);
     }
@@ -448,7 +457,7 @@ TEST_CASE("components::compute::errors") {
         vector_kernel k(std::move(sig), vector_exec_fail, vector_init, vector_finalize);
         REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
-        auto status = fn->execute(chunk, &opts).error().type;
+        auto status = fn->execute(chunk, &opts, ctx).error().type;
         REQUIRE(status == core::error_code_t::kernel_error);
     }
 
@@ -474,7 +483,7 @@ TEST_CASE("components::compute::errors") {
         std::pmr::vector<logical_value_t> inputs(&resource);
         inputs.emplace_back(&resource, 1);
 
-        auto status = fn->execute(inputs).error().type;
+        auto status = fn->execute(inputs, nullptr, ctx).error().type;
         REQUIRE(status == core::error_code_t::kernel_error);
     }
 }
@@ -487,6 +496,9 @@ namespace {
     struct string_registry_fixture {
         core::pmr::otterbrix_resource resource;
         function_registry_t registry{&resource};
+        // Explicit, because function::execute has no defaulted context any more: the calls
+        // below used to run on the process-global default resource.
+        exec_context_t ctx{&resource, &registry};
 
         // The full builtin set, not register_string_functions alone: the
         // helpers are ORDERED STAGES of register_default_functions ("substring"
@@ -516,7 +528,7 @@ TEST_CASE("components::compute::string::substring_basic") {
     inputs.emplace_back(&fx.resource, static_cast<int64_t>(7));
     inputs.emplace_back(&fx.resource, static_cast<int64_t>(5));
 
-    auto res = fn->execute(inputs);
+    auto res = fn->execute(inputs, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 1);
@@ -532,7 +544,7 @@ TEST_CASE("components::compute::string::substring_omit_len") {
     inputs.emplace_back(&fx.resource, std::string("abcdefgh"));
     inputs.emplace_back(&fx.resource, static_cast<int64_t>(3));
 
-    auto res = fn->execute(inputs);
+    auto res = fn->execute(inputs, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 1);
@@ -549,7 +561,7 @@ TEST_CASE("components::compute::string::substring_out_of_range") {
     inputs.emplace_back(&fx.resource, static_cast<int64_t>(99));
     inputs.emplace_back(&fx.resource, static_cast<int64_t>(5));
 
-    auto res = fn->execute(inputs);
+    auto res = fn->execute(inputs, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 1);
@@ -566,7 +578,7 @@ TEST_CASE("components::compute::string::substring_null") {
     inputs.emplace_back(&fx.resource, static_cast<int64_t>(1));
     inputs.emplace_back(&fx.resource, static_cast<int64_t>(2));
 
-    auto res = fn->execute(inputs);
+    auto res = fn->execute(inputs, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 1);
@@ -581,7 +593,7 @@ TEST_CASE("components::compute::string::length_basic") {
     std::pmr::vector<logical_value_t> inputs(&fx.resource);
     inputs.emplace_back(&fx.resource, std::string("hello"));
 
-    auto res = fn->execute(inputs);
+    auto res = fn->execute(inputs, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 1);
@@ -596,7 +608,7 @@ TEST_CASE("components::compute::string::length_empty") {
     std::pmr::vector<logical_value_t> inputs(&fx.resource);
     inputs.emplace_back(&fx.resource, std::string(""));
 
-    auto res = fn->execute(inputs);
+    auto res = fn->execute(inputs, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 1);
@@ -611,7 +623,7 @@ TEST_CASE("components::compute::string::length_null") {
     std::pmr::vector<logical_value_t> inputs(&fx.resource);
     inputs.emplace_back(&fx.resource, logical_type::NA);
 
-    auto res = fn->execute(inputs);
+    auto res = fn->execute(inputs, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 1);
@@ -628,7 +640,7 @@ TEST_CASE("components::compute::string::regexp_replace_basic") {
     inputs.emplace_back(&fx.resource, std::string("[0-9]+"));
     inputs.emplace_back(&fx.resource, std::string("#"));
 
-    auto res = fn->execute(inputs);
+    auto res = fn->execute(inputs, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 1);
@@ -645,7 +657,7 @@ TEST_CASE("components::compute::string::regexp_replace_no_match") {
     inputs.emplace_back(&fx.resource, std::string("[0-9]+"));
     inputs.emplace_back(&fx.resource, std::string("#"));
 
-    auto res = fn->execute(inputs);
+    auto res = fn->execute(inputs, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 1);
@@ -662,7 +674,7 @@ TEST_CASE("components::compute::string::regexp_replace_null") {
     inputs.emplace_back(&fx.resource, std::string("x"));
     inputs.emplace_back(&fx.resource, std::string("y"));
 
-    auto res = fn->execute(inputs);
+    auto res = fn->execute(inputs, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
     REQUIRE(vals.size() == 1);
@@ -692,6 +704,7 @@ static data_chunk_t one_int(std::pmr::memory_resource* resource, int value) {
 // so the fused chunk carried the values and reported zero rows to everyone who asked size().
 TEST_CASE("components::compute::vector::batch_reports_the_rows_it_carries") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
@@ -701,7 +714,7 @@ TEST_CASE("components::compute::vector::batch_reports_the_rows_it_carries") {
     batch.emplace_back(one_int(&resource, 1));
     batch.emplace_back(one_int(&resource, 10));
 
-    auto res = fn->execute(batch, &opts);
+    auto res = fn->execute(batch, &opts, ctx);
     REQUIRE_FALSE(res.has_error());
     const auto& out = std::get<data_chunk_t>(res.value());
     REQUIRE(out.data.size() == 2);
@@ -713,6 +726,7 @@ TEST_CASE("components::compute::vector::batch_reports_the_rows_it_carries") {
 // pick one and mislabel the rest.
 TEST_CASE("components::compute::vector::batch_refuses_chunks_of_unequal_height") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
@@ -722,7 +736,7 @@ TEST_CASE("components::compute::vector::batch_refuses_chunks_of_unequal_height")
     batch.emplace_back(one_int(&resource, 1));
     batch.emplace_back(two_ints(&resource, 2, 3));
 
-    auto res = fn->execute(batch, &opts);
+    auto res = fn->execute(batch, &opts, ctx);
     REQUIRE(res.has_error());
     REQUIRE(res.error().type == core::error_code_t::kernel_error);
 }
@@ -734,6 +748,7 @@ TEST_CASE("components::compute::vector::batch_refuses_chunks_of_unequal_height")
 // memory, so the case fails on the wrong VALUE instead of on freed bytes.
 TEST_CASE("components::compute::vector::a_reused_executor_answers_the_current_chunk") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
@@ -741,7 +756,7 @@ TEST_CASE("components::compute::vector::a_reused_executor_answers_the_current_ch
 
     std::pmr::vector<complex_logical_type> in_types(&resource);
     in_types.emplace_back(logical_type::INTEGER);
-    auto executor = fn->make_executor(&resource, in_types, &opts);
+    auto executor = fn->make_executor(&resource, in_types, &opts, ctx);
     REQUIRE_FALSE(executor.has_error());
 
     auto first_chunk = one_int(&resource, 3);
@@ -807,10 +822,11 @@ static data_chunk_t three_ints(std::pmr::memory_resource* resource, int first, i
 // about the return code, so the length is checked first and the refusal second.
 TEST_CASE("components::compute::row::a_row_the_kernel_left_empty_is_refused_not_skipped") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     auto fn = unary_row_function(&resource, "row_silent", row_double_silent_on_two);
 
     auto chunk = three_ints(&resource, 1, 2, 3);
-    auto res = fn->execute(chunk);
+    auto res = fn->execute(chunk, nullptr, ctx);
 
     if (!res.has_error()) {
         const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
@@ -830,10 +846,11 @@ TEST_CASE("components::compute::row::a_row_the_kernel_left_empty_is_refused_not_
 // well-behaved one.
 TEST_CASE("components::compute::row::a_row_with_several_outputs_is_refused") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     auto fn = unary_row_function(&resource, "row_two_outputs", row_double_and_triple);
 
     auto chunk = three_ints(&resource, 1, 2, 3);
-    auto res = fn->execute(chunk);
+    auto res = fn->execute(chunk, nullptr, ctx);
 
     REQUIRE(res.has_error());
     REQUIRE(res.error().type == core::error_code_t::kernel_error);
@@ -846,13 +863,14 @@ TEST_CASE("components::compute::row::a_row_with_several_outputs_is_refused") {
 // must reach the caller too rather than shortening the concatenated result.
 TEST_CASE("components::compute::row::a_broken_contract_in_a_later_chunk_still_refuses") {
     core::pmr::otterbrix_resource resource;
+    exec_context_t ctx(&resource);
     auto fn = unary_row_function(&resource, "row_silent_batch", row_double_silent_on_two);
 
     std::vector<data_chunk_t> batch;
     batch.emplace_back(three_ints(&resource, 1, 3, 5));
     batch.emplace_back(three_ints(&resource, 7, 2, 9));
 
-    auto res = fn->execute(batch);
+    auto res = fn->execute(batch, nullptr, ctx);
 
     if (!res.has_error()) {
         const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());

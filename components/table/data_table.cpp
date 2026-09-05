@@ -689,6 +689,18 @@ namespace components::table {
         if (count == 0) {
             return std::pair<int64_t, uint64_t>{0, 0};
         }
+
+        // Concurrent DDL altered the table (no longer root). The two sibling write entry
+        // points already refuse here — append_lock above and update_column below — and this
+        // one did not: the overlay went into a collection the successor table replaced, so
+        // the write was lost and reported as applied. Same channel, same code and same
+        // nothing-asked-nothing-refused ordering as update_column (no throw: rules 2/9
+        // across the disk agent's coroutine boundary).
+        if (!is_root_) {
+            return core::error_t(core::error_code_t::write_conflict,
+                                 std::pmr::string("Transaction conflict: updating a table that has been altered!",
+                                                  resource_));
+        }
         vector::vector_t max_row_id_vec(resource_,
                                         types::logical_value_t(resource_, static_cast<int64_t>(MAX_ROW_ID)),
                                         count);
@@ -717,7 +729,9 @@ namespace components::table {
             mark_modified();
             auto updated = row_groups_->update(row_ids_slice.data<int64_t>(), column_ids, updates_slice);
             if (updated.has_error()) {
-                return updated.convert_error<std::pair<int64_t, uint64_t>>(); // write_conflict / out_of_memory
+                // out_of_memory / data_corruption / io_error. The write_conflict this function
+                // can return is the is_root_ refusal above, not one raised down here.
+                return updated.convert_error<std::pair<int64_t, uint64_t>>();
             }
         }
         // pair = {0, affected-row count}; the caller's update reply reads it.

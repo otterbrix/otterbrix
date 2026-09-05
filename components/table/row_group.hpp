@@ -147,7 +147,9 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool>
         append(row_group_append_state& append_state, vector::data_chunk_t& chunk, uint64_t append_count);
 
-        // Update path returns write_conflict / out_of_memory; true on success.
+        // Update path returns out_of_memory / data_corruption / io_error; true on success.
+        // NOT write_conflict — that refusal lives one level up, on the table's is_root_
+        // predicate (data_table_t::update); nothing below it carries a transaction stamp.
         [[nodiscard]] core::result_wrapper_t<bool> update(vector::data_chunk_t& updates,
                                                           int64_t* ids,
                                                           uint64_t offset,

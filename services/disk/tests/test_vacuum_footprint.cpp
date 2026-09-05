@@ -186,6 +186,35 @@ namespace {
         return table_oid;
     }
 
+    // B6: a checkpoint round skips a table that has not changed since its durable root, so a
+    // test that needs a round to actually WRITE has to hand it something to write. One row is
+    // the smallest such change; the two call sites below each add one and the row-count
+    // assertions account for them.
+    void append_one_row(fixture& fx, catalog::oid_t table_oid, uint64_t row) {
+        std::pmr::vector<complex_logical_type> types(&fx.resource);
+        {
+            complex_logical_type id_t{logical_type::BIGINT};
+            id_t.set_alias("id");
+            types.push_back(std::move(id_t));
+            complex_logical_type name_t{logical_type::STRING_LITERAL};
+            name_t.set_alias("name");
+            types.push_back(std::move(name_t));
+        }
+        auto chunk = std::make_unique<data_chunk_t>(&fx.resource, types, 1);
+        chunk->set_cardinality(1);
+        chunk->set_value(0, 0, static_cast<std::int64_t>(row));
+        auto name = "vacuum_row_payload_padding_" + std::to_string(row);
+        chunk->set_value(1, 0, std::string_view{name});
+        std::pmr::vector<data_chunk_t> batch(&fx.resource);
+        batch.emplace_back(std::move(*chunk));
+        components::execution_context_t append_ctx{session_id_t{},
+                                                   components::table::transaction_data{0, 0},
+                                                   {},
+                                                   table_oid};
+        auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+        REQUIRE_FALSE(r.has_error());
+    }
+
 } // namespace
 
 // ---------------------------------------------------------------------------------------
@@ -257,6 +286,17 @@ TEST_CASE("services::disk::vacuum_footprint::a_failed_checkpoint_stops_compactio
     //
     // Measure a healthy round's write count first, then fail everything after it: the next
     // round's writes all succeed until its final header write, which is the one that fails.
+    //
+    // B6 — WHY THE APPENDS. checkpoint(10) left every table clean, and a round now skips a
+    // table it has nothing to write for, so without these two rows both the measuring round
+    // and the first failing round would be no-ops and the fault would never be reached
+    // (writes_per_round came back 0). One row before the measuring round and one before the
+    // first failing round is all that is needed: from there the failures themselves keep the
+    // entry dirty, because the flag is cleared only by a COMMITTED header. The measured count
+    // is now the user table's alone — every system table is unchanged and writes nothing —
+    // which is if anything tighter than before, when the injected failure landed on whichever
+    // table the round happened to write last.
+    append_one_row(fx, table_oid, VACUUM_ROWS);
     plan.writes_seen = 0;
     fx.checkpoint(services::wal::id_t{15});
     const uint64_t writes_per_round = plan.writes_seen;
@@ -276,6 +316,7 @@ TEST_CASE("services::disk::vacuum_footprint::a_failed_checkpoint_stops_compactio
         plan.fail_after_writes = 0;
     };
 
+    append_one_row(fx, table_oid, VACUUM_ROWS + 1);
     failed_round(20);
     const uint64_t after_first_failure = file_size_of(path);
 
@@ -319,14 +360,14 @@ TEST_CASE("services::disk::vacuum_footprint::a_failed_checkpoint_stops_compactio
     // Loud is not fatal, and the rollback must not have taken anything the live tree depends on:
     // the table still answers with all of its rows after five failed checkpoints.
     auto total = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid);
-    CHECK(total == VACUUM_ROWS);
+    CHECK(total == VACUUM_ROWS + 2);
 
     // A TRANSIENT failure recovers: with the fault disarmed the next round commits, and it does so
     // without growing the file -- the blocks the failed rounds gave back are what it spends.
     fx.checkpoint(services::wal::id_t{100});
     CHECK(file_size_of(path) <= after_more_failures);
     auto total_after_recovery = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid);
-    CHECK(total_after_recovery == VACUUM_ROWS);
+    CHECK(total_after_recovery == VACUUM_ROWS + 2);
 
     // NOTE for a later round of work: this table has no dead rows, so compact() has nothing to
     // rebuild here. A version with DELETEs would exercise the registry-alive side of the

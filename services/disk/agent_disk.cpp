@@ -1817,6 +1817,10 @@ namespace services::disk {
         //   is taken (A7.5) — then persist the .wal_id sidecar via tmp+rename.
         //   Tally min(prev_checkpoint_wal_id_) for the manager's
         //   cross-agent std::min. Null entries are skipped.
+        // B6: an entry that is UNCHANGED since its durable root skips the compact and the
+        //   rewrite — and nothing else. It still advances its wal-id chain, still writes its
+        //   sidecar and still contributes to the min, so the round's WAL floor does not depend
+        //   on which entries had work to do. See the gate below.
 #ifdef DEV_MODE
         g_table_checkpoints.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -1866,72 +1870,109 @@ namespace services::disk {
                 continue;
             }
 
-            // Failed-round gate: the previous checkpoint attempt on this entry failed. Retry
-            // the checkpoint below — a transient error must be able to recover — but do NOT
-            // rebuild first. A compact whose header never commits cannot return space under
-            // the split free pool, only spend it: the rebuilt tree is allocated by extending
-            // the file (reusable_ refills only on a committed header) and the outgoing tree
-            // lands in pending_free_ where nothing can reach it. Without this gate a
-            // persistent write error at the header offset — which deliberately does not latch,
-            // so storage_degraded() stays false — costs a full copy of the table every round,
-            // forever, with every health indicator reporting the file healthy.
-            const bool skip_compact_this_round = entry->table_storage.last_checkpoint_failed();
-            if (skip_compact_this_round) {
-                warn(log_,
-                     "agent_disk[{}]::checkpoint_inner oid={} previous checkpoint failed — retrying WITHOUT "
-                     "compaction; the rebuild resumes once a checkpoint commits",
-                     pool_idx_,
-                     static_cast<unsigned>(tbl_oid));
-            }
-
-            // MVCC gate FIRST: compact() refuses the rebuild when any version
-            // stamp is above the watermark (an active snapshot or an in-flight
-            // commit still needs the history, or a positional commit_append is
-            // pending). Persisting a non-compacted table would resurrect dead /
-            // uncommitted rows on recovery (.otbx has no version metadata), so
-            // the entry's checkpoint is deferred to a later round; the WAL keeps
-            // its replay records because the old sidecar/prev ids stay in the min.
-            if (!skip_compact_this_round && !entry->table_storage.table().compact(compact_watermark)) {
+            // B6 — UNCHANGED-TABLE GATE, and the only one here that is not a refusal. Nothing
+            // has touched this entry since the header naming its current root committed, so a
+            // rebuild would produce the same table in different blocks: compact() allocates a
+            // fresh copy of every surviving row (it rebuilds unconditionally — there is no
+            // "nothing to do" early exit, and even a table with no dead row pays the full
+            // copy), checkpoint() writes it out behind two fsyncs, and the outgoing tree goes
+            // to the free list to be reused next round. T1 measured the bill: on 100 tables of
+            // 100 rows an EMPTY round cost 205.7 ms against 124.4 ms for the round that had
+            // actually written all of them.
+            //
+            // This is NOT a deferral and the entry does NOT leave the round. It advances its
+            // wal-id chain exactly as a rewrite would have (prev <- current, current <- this
+            // round's id), persists its sidecar through the same code below, and feeds its
+            // prev_checkpoint_wal_id into the min through the same statement at the bottom of
+            // the loop. That is deliberate and load-bearing: B2's floor is min(prev) over EVERY
+            // entry, and an entry that stopped contributing — or contributed a prev frozen at
+            // the last round that happened to write it — would either drop the floor to
+            // whatever the rest report or pin it forever, and truncate_before acts on that
+            // number. Both halves of the advance are literally true of an unchanged table; the
+            // argument is on table_storage_t::advance_wal_id_without_rewrite.
+            //
+            // What counts as changed is table_storage_t::needs_checkpoint's business, not this
+            // loop's. The gate sits AFTER the two refusals above so that a degraded or
+            // cursor-held entry keeps its own, more conservative treatment.
+            if (!entry->table_storage.needs_checkpoint()) {
                 trace(log_,
-                      "agent_disk[{}]::checkpoint_inner oid={} has version stamps above watermark {} — "
-                      "skipping this round",
+                      "agent_disk[{}]::checkpoint_inner oid={} is unchanged since its durable root — advancing "
+                      "its wal id without rewriting it",
                       pool_idx_,
-                      static_cast<unsigned>(tbl_oid),
-                      compact_watermark);
-                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
-                continue;
-            }
+                      static_cast<unsigned>(tbl_oid));
+                entry->table_storage.advance_wal_id_without_rewrite(current_wal_id);
+            } else {
+                // Failed-round gate: the previous checkpoint attempt on this entry failed. Retry
+                // the checkpoint below — a transient error must be able to recover — but do NOT
+                // rebuild first. A compact whose header never commits cannot return space under
+                // the split free pool, only spend it: the rebuilt tree is allocated by extending
+                // the file (reusable_ refills only on a committed header) and the outgoing tree
+                // lands in pending_free_ where nothing can reach it. Without this gate a
+                // persistent write error at the header offset — which deliberately does not latch,
+                // so storage_degraded() stays false — costs a full copy of the table every round,
+                // forever, with every health indicator reporting the file healthy.
+                const bool skip_compact_this_round = entry->table_storage.last_checkpoint_failed();
+                if (skip_compact_this_round) {
+                    warn(log_,
+                         "agent_disk[{}]::checkpoint_inner oid={} previous checkpoint failed — retrying WITHOUT "
+                         "compaction; the rebuild resumes once a checkpoint commits",
+                         pool_idx_,
+                         static_cast<unsigned>(tbl_oid));
+                }
 
-            trace(log_,
-                  "agent_disk[{}]::checkpoint_inner checkpointing oid={}",
-                  pool_idx_,
-                  static_cast<unsigned>(tbl_oid));
+                // MVCC gate FIRST: compact() refuses the rebuild when any version
+                // stamp is above the watermark (an active snapshot or an in-flight
+                // commit still needs the history, or a positional commit_append is
+                // pending). Persisting a non-compacted table would resurrect dead /
+                // uncommitted rows on recovery (.otbx has no version metadata), so
+                // the entry's checkpoint is deferred to a later round; the WAL keeps
+                // its replay records because the old sidecar/prev ids stay in the min.
+                if (!skip_compact_this_round && !entry->table_storage.table().compact(compact_watermark)) {
+                    trace(log_,
+                          "agent_disk[{}]::checkpoint_inner oid={} has version stamps above watermark {} — "
+                          "skipping this round",
+                          pool_idx_,
+                          static_cast<unsigned>(tbl_oid),
+                          compact_watermark);
+                    min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                    continue;
+                }
+
+                trace(log_,
+                      "agent_disk[{}]::checkpoint_inner checkpointing oid={}",
+                      pool_idx_,
+                      static_cast<unsigned>(tbl_oid));
+
+                // A7.5: no external backup copy is taken before the round. Shadow paging is the
+                // crash protection now — the round writes only fresh blocks (A7.2 split pool keeps
+                // every block the durable root names off-limits), the header write is the atomic
+                // commit point (A7.1 two-slot root), and a failed round's allocations are rolled
+                // back (A7.7) — so on any failure below the durable root N is still on the device,
+                // intact, inside the .otbx itself (proven per crash point by the A7.4 matrix).
+                //
+                // checkpoint(wal_id) returns out_of_memory on a column flush pin failure; it
+                // aborts BEFORE the header swap and leaves the wal_id fields unchanged. On error,
+                // defer this entry to a later round (same as the MVCC-gate skip above): do NOT
+                // persist the sidecar, and feed the unchanged prev_checkpoint_wal_id into the
+                // min() so the WAL keeps this table's replay records.
+                auto cp_r = entry->table_storage.checkpoint(current_wal_id);
+                if (cp_r.has_error()) {
+                    warn(log_,
+                         "agent_disk[{}]::checkpoint_inner oid={} checkpoint failed (rules 2/9) — deferring this "
+                         "round",
+                         pool_idx_,
+                         static_cast<unsigned>(tbl_oid));
+                    min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                    continue;
+                }
+            }
 
             const auto& otbx_path = entry->otbx_path;
 
-            // A7.5: no external backup copy is taken before the round. Shadow paging is the
-            // crash protection now — the round writes only fresh blocks (A7.2 split pool keeps
-            // every block the durable root names off-limits), the header write is the atomic
-            // commit point (A7.1 two-slot root), and a failed round's allocations are rolled
-            // back (A7.7) — so on any failure below the durable root N is still on the device,
-            // intact, inside the .otbx itself (proven per crash point by the A7.4 matrix).
-            //
-            // checkpoint(wal_id) returns out_of_memory on a column flush pin failure; it
-            // aborts BEFORE the header swap and leaves the wal_id fields unchanged. On error,
-            // defer this entry to a later round (same as the MVCC-gate skip above): do NOT
-            // persist the sidecar, and feed the unchanged prev_checkpoint_wal_id into the
-            // min() so the WAL keeps this table's replay records.
-            auto cp_r = entry->table_storage.checkpoint(current_wal_id);
-            if (cp_r.has_error()) {
-                warn(log_,
-                     "agent_disk[{}]::checkpoint_inner oid={} checkpoint failed (rules 2/9) — deferring this round",
-                     pool_idx_,
-                     static_cast<unsigned>(tbl_oid));
-                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
-                continue;
-            }
-
-            // Persist sidecar wal_id atomically (tmp + rename).
+            // Persist sidecar wal_id atomically (tmp + rename). Reached by BOTH branches above:
+            // the sidecar is the durable half of checkpoint_wal_id_, and an entry that skipped
+            // its rewrite advanced that id just the same, so leaving the file behind would put
+            // the two halves out of step for no gain.
             {
                 auto sidecar_path = otbx_path;
                 sidecar_path += ".wal_id";

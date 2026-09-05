@@ -131,6 +131,50 @@ namespace services::disk {
         /// Propagates the checkpoint() error; on error the wal_id fields stay unchanged.
         [[nodiscard]] core::result_wrapper_t<bool> checkpoint(wal::id_t new_wal_id);
 
+        /// B6 — DOES THIS ROUND HAVE ANY PHYSICAL WORK TO DO FOR THIS TABLE?
+        ///
+        /// False means the .otbx on the device already describes this table exactly, so
+        /// compacting and rewriting it would produce the same table in different blocks at the
+        /// cost of a full copy and two fsyncs. T1 measured that: 100 tables x 100 rows, an
+        /// EMPTY round took 205.7 ms against 124.4 ms for the round that had actually written
+        /// them all.
+        ///
+        /// WHAT COUNTS AS CHANGED. Everything that changes what a checkpoint would serialize:
+        /// appends (committed or not), deletes, updates, reverts, schema growth and the ALTER
+        /// rebuilds, a compact, and a table that has never been written at all. That set is
+        /// enforced one level down, by data_table_t::modified_since_checkpoint — see the long
+        /// note there for why the bit lives where the mutations are instead of where the
+        /// decision is. Two pieces of state live up HERE and are named separately:
+        ///   * pending_released_blocks_ — B3c files a dropped column's block ids here and only
+        ///     checkpoint() can commit their release. Today a drop also rebuilds the
+        ///     data_table_t, so the entry is dirty anyway and this conjunct never fires on its
+        ///     own; it is stated all the same because this is the ONLY durable effect a round
+        ///     owes that is not derivable from the table, and a skip that dropped it would
+        ///     leak the blocks silently;
+        ///   * a failed previous checkpoint needs no conjunct: the flag is cleared only by a
+        ///     COMMITTED header, so a failed round leaves the entry dirty by construction.
+        /// A construction that failed has no table to write and answers false; its caller drops
+        /// the entry and reports the refusal (see construction_failed()).
+        ///
+        /// Answering false does NOT take the entry out of the round: it still advances its
+        /// wal-id chain (advance_wal_id_without_rewrite), persists its sidecar and contributes
+        /// its prev_checkpoint_wal_id to the round's min. Only the rebuild is skipped.
+        [[nodiscard]] bool needs_checkpoint() const noexcept;
+
+        /// B6 — the wal-id bookkeeping of a round that had nothing to write for this table.
+        /// Exactly what checkpoint(wal::id_t) does on success, minus the writing:
+        /// prev_checkpoint_wal_id_ <- checkpoint_wal_id_, checkpoint_wal_id_ <- new_wal_id.
+        ///
+        /// Both halves are literally true of a skipped entry, which is why the skip is
+        /// invisible to WAL sealing. `prev` means "the root a lost commit this round would fall
+        /// back to": no commit happened, so that root is the one already on the device, taken
+        /// at the old checkpoint_wal_id_. `current` means "every WAL record at or below this id
+        /// for this table is already in the file": true up to the round's id, because the table
+        /// is unchanged since the last one. Recovery filters records on exactly that
+        /// (integration/cpp/base_spaces.cpp: `record.id <= cp_id` -> skip) and skips nothing it
+        /// would have needed, since an unchanged table has no records above its old id.
+        void advance_wal_id_without_rewrite(wal::id_t new_wal_id) noexcept;
+
         /// W-TORN: latest committed checkpoint wal_id for this table (0 if never checkpointed).
         wal::id_t checkpoint_wal_id() const noexcept { return checkpoint_wal_id_; }
         /// Used by load path to seed checkpoint_wal_id_ from sidecar before WAL replay
@@ -202,6 +246,21 @@ namespace services::disk {
         // A7.6: set by the DISK load ctor when the .otbx was proven young (never checkpointed)
         // and constructed empty with the catalog's schema. See never_checkpointed().
         bool never_checkpointed_{false};
+#ifdef DEV_MODE
+        // B6 — the DEV_MODE safety net for a hand-maintained flag, in the shape
+        // segment_tree_t::flush uses: a cheap description of what the durable root was written
+        // from, captured whenever the table is known clean, and re-checked every time
+        // needs_checkpoint() is about to answer false. A mutation path that forgot to mark
+        // never reaches the disk and is lost at restart, silently — this is what turns that
+        // into an abort on the spot. See capture_clean_fingerprint().
+        struct clean_fingerprint_t {
+            uint64_t total_rows = 0;
+            uint64_t committed_rows = 0;
+            uint64_t column_count = 0;
+        };
+        clean_fingerprint_t clean_fingerprint_{};
+        void capture_clean_fingerprint() noexcept;
+#endif
     };
 
     // Storage entry per collection. Namespace-scope so agent_disk_t can own a

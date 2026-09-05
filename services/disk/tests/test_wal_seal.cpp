@@ -37,6 +37,13 @@
 // prev_checkpoint_wal_id — which it still feeds into the min. That contribution is what
 // pins the floor below the records the deferred table has not persisted yet.
 //
+// B6 added a fifth path that writes nothing, and it is NOT a deferral: an entry that is
+// unchanged since its durable root skips the rebuild, but advances prev <- current and
+// current <- this round's id exactly as a rewrite would have, writes its sidecar, and
+// contributes the same prev. That is why every number below is unchanged: the floor a round
+// reports does not depend on which entries had work to do, only on what each one's durable
+// root is. See services/disk/tests/test_checkpoint_dirty.cpp.
+//
 // These tests own the two ends of that contract:
 //   * floor_pinned_by_deferred_table — a table that does NOT get checkpointed holds the
 //     floor down while every other table races ahead, across consecutive rounds, and a
@@ -179,7 +186,9 @@ namespace {
 //
 //    Timeline (the wal ids are what checkpoint_all is told the WAL has reached):
 //      round 1 @ 100 -> every table: prev 0,   current 100.  floor 0 ("do not truncate").
-//      round 2 @ 200 -> every table: prev 100, current 200.  floor 100.
+//      round 2 @ 200 -> every table: prev 100, current 200.  floor 100.  (B6: nothing has
+//                       changed since round 1, so this round advances the chain without
+//                       rewriting a single file.)
 //      rows are appended to the user table and a cursor is opened on it and abandoned.
 //      round 3 @ 300 -> user table DEFERRED (prev 100, current 200);
 //                       everything else: prev 200, current 300.  floor must be 100.
@@ -206,9 +215,11 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
         // is 0 — which the WAL side reads as "do not truncate". A first checkpoint never seals.
         REQUIRE(fd.checkpoint_round(services::wal::id_t{100}) == services::wal::id_t{0});
 
-        // Round 2. Now every table has a superseded root taken at 100, so 100 is the floor.
-        // It is NOT 200: the records between 100 and 200 are still live for any table whose
-        // next round dies before its header commit and reopens the superseded root.
+        // Round 2. Now every table's fall-back root is the one taken at 100, so 100 is the
+        // floor. It is NOT 200: the records between 100 and 200 are still live for any table
+        // whose next round dies before its header commit and reopens that root. (Nothing has
+        // changed since round 1, so under B6 this round rewrites nothing — the arithmetic is
+        // the same either way, which is the point.)
         REQUIRE(fd.checkpoint_round(services::wal::id_t{200}) == services::wal::id_t{100});
 
         // Rows that no checkpoint has folded into the file yet.

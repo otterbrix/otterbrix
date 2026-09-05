@@ -154,6 +154,44 @@ namespace components::table {
         // The checkpoint chain returns out_of_memory when a column flush pin fails;
         // true on success.
         [[nodiscard]] core::result_wrapper_t<bool> checkpoint(storage::metadata_writer_t& writer);
+
+        // B6 — HAS ANYTHING HAPPENED TO THIS TABLE SINCE THE ROOT ON THE DEVICE WAS WRITTEN?
+        //
+        // The checkpoint round used to rebuild and rewrite every table it owned, whether or
+        // not anything in it had changed. This is the bit that lets it stop: an entry whose
+        // answer is false is byte-for-byte already on the device and the round has nothing to
+        // do for it (see table_storage_t::needs_checkpoint, which combines this with the
+        // little state that lives ABOVE the table).
+        //
+        // The bit lives HERE, and not on table_storage_t, because here it cannot be forgotten.
+        // Everything that changes a table's content — the storage adapter, WAL replay, the
+        // bootstrap catalog writers, the ALTER rebuilds — holds a data_table_t& and must come
+        // through one of the mutating methods below, so each of THEM marks and no caller has
+        // to remember. A caller-marked flag would have a dozen call sites in agent_disk.cpp
+        // alone, every one of them a place to forget, and forgetting means the change never
+        // reaches the disk and is lost at restart, silently. What still cannot be caught this
+        // way is a NEW mutating method added without a mark; the DEV_MODE net on
+        // table_storage_t::needs_checkpoint is aimed at exactly that.
+        //
+        // Set: by every method that changes what a checkpoint would write — the append
+        // sequence, deletes, updates, the schema mutators, merge_storage, compact's collection
+        // swap, and the ALTER rebuild constructors (a rebuilt table has never been written in
+        // its new shape). NOT set by cleanup_versions: version-chain GC drops history no
+        // snapshot can see any more and cannot change the set of live committed rows, which is
+        // the only thing a checkpoint serializes.
+        //
+        // Cleared: exactly twice. By load_from_disk, because a table built out of the file's
+        // own pointer stream matches the file by definition; and by table_storage_t::checkpoint
+        // once write_header has committed. It starts TRUE for every other construction path,
+        // so a fresh .otbx and an A7.6 young file (schema overlaid from the catalog, nothing
+        // serialized yet) always take their first checkpoint.
+        [[nodiscard]] bool modified_since_checkpoint() const noexcept { return modified_since_checkpoint_; }
+        // For table_storage_t::checkpoint, at the point where the committing header is on the
+        // device. Deliberately not called by data_table_t::checkpoint itself: that one has only
+        // written the pointer stream, and a round that dies between it and write_header must
+        // stay dirty. Nothing can mutate the table in between — the whole round is one
+        // agent mailbox handler (see the no-lock proof below).
+        void clear_modified_since_checkpoint() noexcept { modified_since_checkpoint_ = false; }
         // Returns data_corruption when the on-disk metadata chain is truncated/corrupt (the reader records
         // a sticky error during deserialize, checked here at the boundary) instead of throwing on the
         // load path. The caller (bootstrap/load) reports the refusal loudly and leaves the file untouched
@@ -180,6 +218,11 @@ namespace components::table {
 #endif
 
     private:
+        // B6 — see modified_since_checkpoint(). A plain bool, not an atomic: this member obeys
+        // the same single-actor ownership rule as everything else in the class (the proof is on
+        // row_groups_ below), so there is no second thread to publish it to.
+        void mark_modified() noexcept { modified_since_checkpoint_ = true; }
+
         void initialize_scan_with_offset(table_scan_state& state,
                                          const std::vector<storage_index_t>& column_ids,
                                          int64_t start_row,
@@ -216,6 +259,10 @@ namespace components::table {
         // destroy-on-swap ownership rule is ever broken — they are the loud-failure
         // channel for such a regression, not a live code path.
         std::atomic<bool> is_root_;
+        // B6 — true when this table holds something the durable root does not. See
+        // modified_since_checkpoint(). Starts true: a table that was BUILT has never been
+        // written, and only load_from_disk (built out of the file itself) may say otherwise.
+        bool modified_since_checkpoint_{true};
         std::string name_;
     };
 

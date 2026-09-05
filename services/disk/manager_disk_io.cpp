@@ -72,12 +72,20 @@ namespace services::disk {
             // The sentinel means "no entry reported a WAL floor", NOT "no entry was
             // checkpointed" — the predicate used to be called `all_disk_checkpointed`, and that
             // name was wrong in both halves. EVERY entry an agent owns contributes its
-            // prev_checkpoint_wal_id to the min: the ones that committed a new root and, just as
-            // importantly, the ones checkpoint_inner DEFERRED (degraded storage, open cursor,
-            // version stamps above the watermark, a failed checkpoint) with their prev
-            // UNCHANGED. A deferred table therefore pins the floor at the id its still-durable
-            // root was taken at, which is exactly what keeps the records it would need for
-            // replay out of truncate_before's reach.
+            // prev_checkpoint_wal_id to the min, in all three shapes:
+            //   * the ones that committed a new root this round (prev <- the id the superseded
+            //     root was taken at);
+            //   * the ones checkpoint_inner DEFERRED (degraded storage, open cursor, version
+            //     stamps above the watermark, a failed checkpoint) with their prev UNCHANGED. A
+            //     deferred table therefore pins the floor at the id its still-durable root was
+            //     taken at, which is exactly what keeps the records it would need for replay
+            //     out of truncate_before's reach;
+            //   * B6: the ones that were UNCHANGED and so were not rewritten. These are not
+            //     deferrals — the entry has nothing outstanding — so it advances prev <-
+            //     current exactly as a rewrite would have, and contributes that. Skipping the
+            //     work must not change the arithmetic: an unchanged entry that kept a frozen
+            //     prev would hold the floor at the last round that happened to write it and the
+            //     WAL would stop truncating altogether.
             // So min_prev_id survives as max() only when the agents own nothing checkpointable
             // at all. Sealing then would hand truncate_before max(), i.e. delete the whole WAL —
             // report id 0 ("do not truncate") instead.
@@ -315,13 +323,19 @@ namespace services::disk {
         // trusts). A checkpointed file never has this size: its blocks put it past
         // BLOCK_START. Two consequences, checked in the REFUSING-first order:
         //
-        //   1. Contradiction: the `.wal_id` sidecar is written solely by a COMMITTED
-        //      checkpoint, so "no checkpointed content" and "a checkpoint committed at wal
-        //      id N" cannot both be true. Something rebuilt or truncated the .otbx out from
+        //   1. Contradiction: a `.wal_id` sidecar only ever exists for a table that has
+        //      committed a root, so "no checkpointed content" and "a checkpoint committed at
+        //      wal id N" cannot both be true. Something rebuilt or truncated the .otbx out from
         //      under its sidecar; opening it as empty would silently discard whatever that
         //      checkpoint held. The sidecar is consulted in the refusing direction ONLY —
         //      its absence proves nothing and legalises nothing (a separate file, losable on
         //      its own), which is exactly why it is not the youth witness.
+        //      B6 REFINED THE PREMISE without weakening it: the sidecar is now written by a
+        //      round that committed a header AND by one that skipped the rewrite because the
+        //      table was unchanged. The second cannot reach a young file — "unchanged" is
+        //      table_storage_t::needs_checkpoint, and a young file's table was BUILT rather
+        //      than loaded, so it is modified-since-checkpoint by construction and every round
+        //      writes it for real until one commits.
         //   2. Defer: opening a young file as an empty table requires the catalog's schema;
         //      when none could be resolved, this walk simply ran before the catalog knows
         //      the table (the bootstrap walk precedes WAL replay). Defer rather than

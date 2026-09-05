@@ -2973,6 +2973,12 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
 // and prev is 0 for every table until a round supersedes a root. Segments are also never
 // deleted while the writer is still on them, hence the deliberately small max_segment_size —
 // without it the whole test fits in one live segment and nothing is retired.
+//
+// B6 does not change any of that. Between the two checkpoints only TruncCollection is
+// written to, so it is the only table the second round rewrites; every system table is
+// unchanged and merely advances its wal-id chain — to the same prev the rewrite would have
+// left it at. min(prev) is therefore the same number it always was, which is why the floor
+// still lands on checkpoint #1's wal id and the segments below it still go.
 TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_replay") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/wal_truncate_no_double_replay");
     test_clear_directory(config);

@@ -178,6 +178,66 @@ namespace services::disk {
             return;
         }
         table_ = std::move(loaded.value());
+#ifdef DEV_MODE
+        // B6: load_from_disk built this table out of the file's own pointer stream and cleared
+        // its modified flag, so the entry is clean from here — and the net that guards that
+        // needs its baseline taken at the same moment.
+        capture_clean_fingerprint();
+#endif
+    }
+
+#ifdef DEV_MODE
+    // B6 — see clean_fingerprint_t. Three numbers, all O(row groups) and none of them a scan:
+    //   * total_rows       — every physical row, dead ones included. Moves on any append and
+    //                        on a reverted one;
+    //   * committed_rows   — total minus the committed-deleted count, so a DELETE that has
+    //                        been committed moves it while total_rows does not;
+    //   * column_count     — the ALTER rebuilds.
+    // What it deliberately does NOT cover is an in-place UPDATE: MVCC updates write into the
+    // row group's update segments and move neither count. That gap is why the flag is set
+    // inside data_table_t::update itself rather than by its callers — there is exactly one
+    // path and it cannot be bypassed — and the net is aimed at the residual risk, a NEW
+    // mutating method added to data_table_t without a mark.
+    void table_storage_t::capture_clean_fingerprint() noexcept {
+        if (!table_) {
+            clean_fingerprint_ = clean_fingerprint_t{};
+            return;
+        }
+        auto collection = table_->row_group();
+        clean_fingerprint_.total_rows = collection->total_rows();
+        clean_fingerprint_.committed_rows = collection->committed_row_count();
+        clean_fingerprint_.column_count = table_->column_count();
+    }
+#endif
+
+    bool table_storage_t::needs_checkpoint() const noexcept {
+        if (!table_) {
+            return false; // construction failed; the caller drops the entry and says so loudly
+        }
+        if (!pending_released_blocks_.empty()) {
+            return true;
+        }
+        if (table_->modified_since_checkpoint()) {
+            return true;
+        }
+#ifdef DEV_MODE
+        auto collection = table_->row_group();
+        assert(collection->total_rows() == clean_fingerprint_.total_rows &&
+               "clean table holds a different number of rows than the durable root was written from — a "
+               "mutation path forgot to mark the table modified");
+        assert(collection->committed_row_count() == clean_fingerprint_.committed_rows &&
+               "clean table holds a different number of live rows than the durable root was written from — a "
+               "mutation path forgot to mark the table modified");
+        assert(table_->column_count() == clean_fingerprint_.column_count &&
+               "clean table has a different column count than the durable root was written from — a "
+               "mutation path forgot to mark the table modified");
+#endif
+        return false;
+    }
+
+    void table_storage_t::advance_wal_id_without_rewrite(wal::id_t new_wal_id) noexcept {
+        prev_checkpoint_wal_id_ = checkpoint_wal_id_;
+        checkpoint_wal_id_ = new_wal_id;
     }
 
     bool table_storage_t::storage_degraded() const noexcept {
@@ -280,6 +340,15 @@ namespace services::disk {
         if (header_r.has_error()) {
             return header_r;
         }
+        // B6: and only here. The header naming the new root is on the device, so the table and
+        // the file agree and the next round has nothing to do for this entry until something
+        // changes it. Everything above this line can fail, and every one of those failures must
+        // leave the entry dirty so the round retries it — which is also why
+        // last_checkpoint_failed() needs no separate conjunct in needs_checkpoint().
+        table_->clear_modified_since_checkpoint();
+#ifdef DEV_MODE
+        capture_clean_fingerprint();
+#endif
         return true;
     }
 

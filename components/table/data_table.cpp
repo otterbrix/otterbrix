@@ -156,12 +156,16 @@ namespace components::table {
             column_definitions_.emplace_back(type.alias(), type);
         }
         row_groups_->adopt_types(std::pmr::vector<types::complex_logical_type>(types, resource_));
+        mark_modified();
     }
 
     void data_table_t::overlay_not_null(const std::string& col_name) {
         for (auto& col : column_definitions_) {
             if (col.name() == col_name) {
                 col.set_not_null(true);
+                // The not-null bit is part of the serialized column description (checkpoint
+                // writes it, load_from_disk reads it back), so this IS a change to the file.
+                mark_modified();
                 return;
             }
         }
@@ -323,6 +327,11 @@ namespace components::table {
 
         // Swap old collection with compacted one
         row_groups_ = std::move(new_collection);
+        // B6: the rebuild allocated FRESH blocks for every surviving row and released the
+        // outgoing tree's, so the durable root no longer describes this table even when not a
+        // single row was dead. A compact must be followed by a checkpoint, which is exactly why
+        // checkpoint_inner is the only caller.
+        mark_modified();
 
         // Return the OLD (now-replaced) collection's disk blocks to the block manager's free list so the
         // NEXT compact reuses them instead of bumping total_blocks() unbounded. The new collection's
@@ -477,7 +486,12 @@ namespace components::table {
 
     std::string data_table_t::table_name() const { return name_; }
 
-    void data_table_t::set_table_name(std::string new_name) { name_ = std::move(new_name); }
+    void data_table_t::set_table_name(std::string new_name) {
+        // checkpoint() writes the name as the first field of the table's metadata stream and
+        // load_from_disk reads it back, so renaming is a change to the file.
+        name_ = std::move(new_name);
+        mark_modified();
+    }
 
     void data_table_t::fetch(vector::data_chunk_t& result,
                              const std::vector<storage_index_t>& column_ids,
@@ -517,33 +531,49 @@ namespace components::table {
                 core::error_code_t::invalid_parameter,
                 std::pmr::string("data_table_t::append_lock must precede initialize_append", resource_));
         }
+        // The append sequence marks at its first structural step: initialize_append can open a
+        // fresh row group before a single row lands in it.
+        mark_modified();
         return row_groups_->initialize_append(state); // out_of_memory
     }
 
     core::result_wrapper_t<bool> data_table_t::append(vector::data_chunk_t& chunk, table_append_state& state) {
         assert(is_root_);
+        mark_modified();
         return row_groups_->append(chunk, state); // out_of_memory
     }
 
     void data_table_t::finalize_append(table_append_state& state, transaction_data txn) {
         row_groups_->finalize_append(state, txn);
+        mark_modified();
     }
 
     void data_table_t::commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) {
         row_groups_->commit_append(commit_id, row_start, count);
+        // Visibility, not bytes — and a checkpoint serializes exactly the rows that are
+        // visible to all, so a commit changes what it would write.
+        mark_modified();
     }
 
     void data_table_t::revert_append(int64_t row_start, uint64_t count) {
         row_groups_->revert_append(row_start, count);
+        mark_modified();
     }
 
     void data_table_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
         row_groups_->commit_all_deletes(txn_id, commit_id);
+        mark_modified();
     }
 
-    void data_table_t::revert_all_deletes(uint64_t txn_id) { row_groups_->revert_all_deletes(txn_id); }
+    void data_table_t::revert_all_deletes(uint64_t txn_id) {
+        row_groups_->revert_all_deletes(txn_id);
+        mark_modified();
+    }
 
-    void data_table_t::merge_storage(collection_t& data) { row_groups_->merge_storage(data); }
+    void data_table_t::merge_storage(collection_t& data) {
+        row_groups_->merge_storage(data);
+        mark_modified();
+    }
 
     std::unique_ptr<table_delete_state>
     data_table_t::initialize_delete(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints) {
@@ -568,6 +598,7 @@ namespace components::table {
             return 0;
         }
 
+        mark_modified();
         row_identifiers.flatten(count);
         auto ids = row_identifiers.data<int64_t>();
 
@@ -634,6 +665,7 @@ namespace components::table {
             for (size_t i = 0; i < column_count(); i++) {
                 column_ids.emplace_back(i);
             }
+            mark_modified();
             auto updated = row_groups_->update(row_ids_slice.data<int64_t>(), column_ids, updates_slice);
             if (updated.has_error()) {
                 return updated.convert_error<std::pair<int64_t, uint64_t>>(); // write_conflict / out_of_memory
@@ -663,6 +695,7 @@ namespace components::table {
 
         updates.flatten();
         row_ids.flatten(updates.size());
+        mark_modified();
         return row_groups_->update_column(row_ids, column_path, updates);
     }
 
@@ -810,6 +843,13 @@ namespace components::table {
         collect_root_blocks(loaded_pointers, durable_blocks);
         block_manager.adopt_durable_root_data_blocks(durable_blocks);
 
+        // B6: everything above was built out of the file's own pointer stream, so by definition
+        // this table matches the file and a checkpoint would write it back unchanged. The flag
+        // starts true for every construction — a table that was BUILT has never been written —
+        // and this is the one point where "clean" is provable, so it is the one place that
+        // clears it outside a committed checkpoint. Without it the first round after any
+        // restart rewrote every table in the database.
+        table->clear_modified_since_checkpoint();
         return table;
     }
 

@@ -29,10 +29,19 @@ namespace components::operators {
     // lives in ONE place.
     actor_zeta::unique_future<core::error_t> index_scan::open_index_window(pipeline::context_t* ctx) {
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
-            // No index service — empty window (no matched ids).
+            // An index_scan is built ONLY when the planner proved an index exists
+            // (can_use_index), so an unwired index service is the same planner-invariant
+            // violation manager_index answers index_not_exists for — "no engine for the
+            // oid", "no index on the predicate key". The empty window this used to hand
+            // back was indistinguishable from "no row matches the predicate": a silently
+            // short result set, the one failure the comment below says must never happen.
+            // Same channel, same code as the manager's own refusals.
             pos_ = 0;
             end_ = 0;
-            co_return core::error_t::no_error();
+            co_return core::error_t{core::error_code_t::index_not_exists,
+                                    std::pmr::string{"index_scan: no index service is wired into this topology; "
+                                                     "a planned index_scan cannot be answered",
+                                                     resource_}};
         }
 
         // Search index for matching row IDs (txn-aware visibility). One-shot: the whole matched

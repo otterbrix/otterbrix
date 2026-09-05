@@ -47,7 +47,16 @@ namespace components::operators {
         , indkey_(std::move(indkey)) {}
 
     actor_zeta::unique_future<void> operator_create_index_backfill_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // No-op when there is no index actor wired (e.g. some test harnesses).
+        // No-op when there is no index actor wired, AND THAT QUIET SUCCESS IS PINNED,
+        // not an oversight to harden away: the dispatcher differential harness
+        // deliberately syncs an EMPTY index address
+        // (services/dispatcher/tests/test_variant_e3_differential.cpp — the sync_pack's
+        // third slot) and REQUIREs CREATE INDEX to succeed there, because what that
+        // harness compares is the CATALOG half of the statement. Every production
+        // topology wires the index manager unconditionally (base_spaces spawns it
+        // before the executor exists), so this branch is a harness seam, unreachable
+        // from a real start; converting it to a refusal was tried and reverted against
+        // that pinned test.
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
             mark_executed();
             co_return;
@@ -366,8 +375,15 @@ namespace components::operators {
 
                 // Recover the OLD key chunks for DELETE/UPDATE. If the fetch can't
                 // run or returns empty (rows physically gone), the slot stays an empty
-                // batch: manager_index logs+skips and the convergence guard catches any
-                // persistent divergence next iteration.
+                // batch, which the manager tolerates BY CONTRACT: its catchup applies
+                // an insert leg only and drops the delete leg whole (an undecided
+                // journal delete may not shrink an index — manager_index.cpp, the
+                // missing-leg note). What is NOT tolerated does not ride the WAL-id
+                // convergence check below — that check only proves the journal went
+                // quiet and detects no divergence. The real guard is the manager's:
+                // a record its registry cannot place, or a staging an agent refuses,
+                // is RECORDED against this build's transaction (catchup_failures_)
+                // and refuses the commit_inserts that publishes the build.
                 const bool needs_old_chunk = (rec.record_type == services::wal::wal_record_type::PHYSICAL_DELETE ||
                                               rec.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) &&
                                              !rec.physical_row_ids.empty() &&
@@ -498,6 +514,11 @@ namespace components::operators {
                 }
             }
 
+            // Completion-sync only. apply_wal_record_for_index's contract returns void,
+            // so a refused apply cannot answer through these futures — the manager
+            // records it against this build's txn (catchup_failures_) and refuses the
+            // build's commit_inserts, the one door it must pass to publish (proven
+            // end-to-end by test_create_index_catchup_refusal).
             for (auto& af : apply_futures) {
                 co_await std::move(af);
             }

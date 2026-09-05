@@ -25,9 +25,12 @@ namespace components::operators {
     // publish anything by being forgotten. The full argument, and what each move
     // rests on, is at the head of that block in the .cpp.
     //
-    // DDL-commit mode (set_ddl_commit): prepends a flush durability barrier and
-    // a WAL commit_txn record (with commit_id=0, since it isn't allocated yet)
-    // before the RPC-mode body.
+    // DDL-commit mode (set_ddl_commit): prepends a flush durability barrier
+    // before the RPC-mode body. The WAL commit_txn marker is NOT part of the
+    // prefix: it is emitted in STEP 2 with the real commit_id, below the drain
+    // and the index insert-commit — a marker durable before the last refusable
+    // step would let a restart resurrect a commit the live process rejected
+    // (replay keys committed txns off the marker's transaction_id).
     //
     // commit_id() exposes the result for the dispatcher's unique_future API.
     class operator_commit_transaction_t final : public read_write_operator_t {

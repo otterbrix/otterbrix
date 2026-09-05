@@ -25,44 +25,23 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::commit_transaction) {}
 
     actor_zeta::unique_future<void> operator_commit_transaction_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // In DDL-commit mode, prepend the durability barrier + WAL commit record.
-        if (is_ddl_commit_) {
-            if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-                auto [_f, ff] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::flush,
-                                                 ctx->session,
-                                                 services::wal::id_t{0});
-                co_await std::move(ff);
-            }
-            if (ctx->wal_address != actor_zeta::address_t::empty_address() && txn_id_ != 0) {
-                // commit_id isn't allocated yet (this prefix runs before commit()),
-                // so pass 0. In DDL-commit mode this cid=0 marker is the ONLY WAL
-                // commit record: replay gating keys off transaction_id, which the
-                // marker carries, so no real-cid DDL record is needed afterwards.
-                // The commit_id on the marker only feeds the replay-horizon
-                // max-scan, which a 0 here simply does not advance.
-                // This cid=0 record is replay-safe BECAUSE replay decides
-                // visibility by transaction_id, not by the recorded cid. The
-                // invariant is therefore a constraint on any FUTURE replay change:
-                // if replay ever starts gating on the marker's cid, this 0 would
-                // silently hide the DDL — such a change must first stop emitting
-                // cid=0 here.
-                auto [_c, cf] = actor_zeta::send(ctx->wal_address,
-                                                 &services::wal::manager_wal_replicate_t::commit_txn,
-                                                 ctx->session,
-                                                 txn_id_,
-                                                 services::wal::wal_sync_mode::FULL,
-                                                 database_oid_,
-                                                 uint64_t{0});
-                // FULL means "this marker is on the device". The reply used to be discarded,
-                // so a refused append or a failed fsync still let the DDL commit proceed and
-                // report success — a durable commit claimed over a page that never landed.
-                // Nothing has been published at this point, so failing here is a clean abort.
-                if (auto commit_result = co_await std::move(cf); commit_result.has_error()) {
-                    set_error(commit_result.error());
-                    co_return;
-                }
-            }
+        // In DDL-commit mode, prepend the storage durability barrier. The WAL commit
+        // marker is NOT written here any more: this prefix runs BEFORE the drain that
+        // allocates the commit_id and before the index insert-commit — i.e. before the
+        // last step that may still refuse the commit — and replay's first pass keys
+        // committed transactions off the MARKER's transaction_id (wal_reader.cpp pass
+        // 1). A marker already durable at this point turned every later refusal into a
+        // resurrection: the live process reported the commit failed and discarded it,
+        // and the next start replayed the transaction's physicals anyway. The DDL
+        // marker now rides STEP 2 below, unified with the DML marker, where the
+        // ordering invariant covers it. The flush stays: data pages must be on the
+        // device before the marker, and it stamps nothing and cannot refuse.
+        if (is_ddl_commit_ && ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            auto [_f, ff] = actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::flush,
+                                             ctx->session,
+                                             services::wal::id_t{0});
+            co_await std::move(ff);
         }
 
         // Snapshot txn_data, drain all swap-info and allocate the commit_id in a
@@ -231,17 +210,30 @@ namespace components::operators {
         // contractually infallible, which is what lets the discard above be a plain
         // erase. It precedes the in-memory MVCC flip AND the ProcArray barrier, so a
         // crash at any point after it replays into the same commit, and a crash before
-        // it drops the transaction whole. Skip when the DDL-commit branch at the top
-        // already emitted one.
-        if (!is_ddl_commit_ && ctx->wal_address != actor_zeta::address_t::empty_address() &&
-            txn_data.transaction_id != 0 && commit_id_ > 0) {
-            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+        // it drops the transaction whole.
+        //
+        // BOTH MODES EMIT IT HERE. The DDL-commit prefix used to write its own marker
+        // BEFORE the drain, with cid=0 ("not allocated yet") and a standing warning
+        // that any replay change gating on the marker's cid must first stop emitting
+        // that 0. That position was the resurrection window: replay keys committed
+        // txns off the marker's transaction_id, so a STEP-1 refusal (or a drain that
+        // answered no commit at all) discarded a commit whose durable marker survived
+        // into the next start. Below the drain the DDL marker carries the REAL
+        // commit_id — the reopen frontier's marker max-scan (base_spaces) now sees
+        // DDL commits too, and the cid=0 landmine is gone. The txn id is the mode's
+        // own: the DDL records in the journal carry txn_id_, so the marker must match
+        // them; the DML marker keeps the drained txn_data.transaction_id.
+        if (ctx->wal_address != actor_zeta::address_t::empty_address() && commit_id_ > 0 &&
+            (is_ddl_commit_ ? txn_id_ != 0 : txn_data.transaction_id != 0)) {
+            const std::uint64_t marker_txn_id = is_ddl_commit_ ? txn_id_ : txn_data.transaction_id;
+            const components::catalog::oid_t marker_db_oid =
+                is_ddl_commit_ ? database_oid_ : components::catalog::well_known_oid::main_database;
             auto [_w, wf] = actor_zeta::send(ctx->wal_address,
                                              &services::wal::manager_wal_replicate_t::commit_txn,
                                              ctx->session,
-                                             txn_data.transaction_id,
+                                             marker_txn_id,
                                              services::wal::wal_sync_mode::FULL,
-                                             db_oid,
+                                             marker_db_oid,
                                              commit_id_);
             // FULL means "this marker is on the device". Discarding this reply is what let
             // a failed fsync be followed by the barrier anyway: readers would see a commit
@@ -354,7 +346,7 @@ namespace components::operators {
             // in-place" whether or not any of them were. It answers now — but this is STEP 4,
             // and the ordering block at the top of this function is the authority on what may
             // be done with it: the durable commit marker is already on the device (STEP 2, or
-            // the DDL prefix), the commit_id is stamped, and "nothing below may refuse it". A
+            // both modes), the commit_id is stamped, and "nothing below may refuse it". A
             // set_error + co_return here would strand commit_id_ in in_flight_commits_ with no
             // one left to take it out — the unbounded horizon pin STEP 1 and STEP 2 were
             // hoisted above this line to prevent — and would tell the client a committed,

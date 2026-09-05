@@ -173,19 +173,36 @@ namespace components::operators {
         for (const auto& pg_class_rows : pg_class_batches) {
             for (std::uint64_t i = 0; i < pg_class_rows.size(); ++i) {
                 // pg_class columns: 0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode
-                const auto rkv = pg_class_rows.is_null(3, i) ? std::string_view{"r"}
-                                                             : pg_class_rows.get_value<std::string_view>(3, i);
-                const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
-                if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed) {
-                    continue;
+                //
+                // EVERY writer of pg_class stamps both the oid and the relkind (each
+                // build_* in ddl_metadata_builder.cpp sets column 3 from a relkind
+                // constant and column 0 from a real oid), so a NULL / empty / invalid
+                // value in either is a corrupt catalog row, not a variant to default.
+                // What stood here defaulted a NULL relkind to 'r' and skipped NULL-oid
+                // rows silently — quietly re-deciding which tables get the column-GC /
+                // compaction below: a 'g' table with a damaged relkind simply lost its
+                // GC forever, with nothing said. Rule 6: refuse the statement.
+                if (pg_class_rows.is_null(0, i) || pg_class_rows.is_null(3, i)) {
+                    set_error(core::error_t{
+                        core::error_code_t::data_corruption,
+                        std::pmr::string{"VACUUM: a pg_class row carries a NULL oid or relkind — corrupt "
+                                         "catalog row; refusing to decide table maintenance over it",
+                                         resource_}});
+                    mark_failed();
+                    co_return;
                 }
-
-                if (pg_class_rows.is_null(0, i))
-                    continue;
+                const auto rkv = pg_class_rows.get_value<std::string_view>(3, i);
                 const auto this_oid = static_cast<catalog::oid_t>(pg_class_rows.get_value<std::uint32_t>(0, i));
-                if (this_oid == catalog::INVALID_OID)
-                    continue;
-
+                if (rkv.empty() || this_oid == catalog::INVALID_OID) {
+                    set_error(core::error_t{
+                        core::error_code_t::data_corruption,
+                        std::pmr::string{"VACUUM: a pg_class row carries an empty relkind or oid 0 — corrupt "
+                                         "catalog row; refusing to decide table maintenance over it",
+                                         resource_}});
+                    mark_failed();
+                    co_return;
+                }
+                const char relkind = rkv[0];
                 if (relkind == catalog::relkind::computed) {
                     computing_table_oids.push_back(this_oid);
                 }
@@ -399,7 +416,19 @@ namespace components::operators {
                                                        cc_ctx,
                                                        table_oid,
                                                        std::move(live_attnames));
-                    (void) co_await std::move(dcf);
+                    // The door answers with the number of physical columns it actually
+                    // dropped (its only channel: DISK-backed storages and already-compact
+                    // columns are skipped silently by contract). It used to be
+                    // (void)-discarded, so the SUBTRACTIVE leg of VACUUM ran with no
+                    // record of what it subtracted. Read it and say it.
+                    const std::uint64_t dropped_columns = co_await std::move(dcf);
+                    if (dropped_columns > 0) {
+                        trace(log_,
+                              "operator_vacuum: relkind='g' storage oid {} — column compaction dropped {} "
+                              "physical column(s)",
+                              static_cast<unsigned>(table_oid),
+                              dropped_columns);
+                    }
                 }
             }
         }

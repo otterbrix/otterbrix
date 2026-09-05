@@ -24,11 +24,33 @@ namespace components::operators {
         , catalog_deletes_(std::move(catalog_deletes)) {}
 
     actor_zeta::unique_future<void> operator_drop_index_t::await_async_and_resume(pipeline::context_t* ctx) {
+        // NOTHING TO SCRUB IS A REFUSAL, NOT A SUCCESS. The catalog scrub below is
+        // this operator's verdict — "at least one identity row went" — and the verdict
+        // can only fire over a non-empty spec list sent to a real disk actor. The
+        // planner never produces this shape (rewrite_drop_index refuses an unresolved
+        // index before emitting anything and otherwise always emits the full list), so
+        // arriving here with no specs, or with no disk service to send them to, is a
+        // caller-invariant violation: proceeding meant tearing down the engine entry
+        // over a catalog that still describes the index and reporting a DROP INDEX
+        // that dropped nothing as success — the exact "success over leftover rows"
+        // shape the verdict below exists to refuse.
+        if (catalog_deletes_.empty() || ctx->disk_address == actor_zeta::address_t::empty_address()) {
+            std::string msg = "operator_drop_index: index oid ";
+            msg += std::to_string(static_cast<unsigned>(index_oid_));
+            msg += catalog_deletes_.empty() ? " arrived with no catalog delete specs"
+                                            : " cannot be scrubbed: no disk service is wired";
+            msg += " — nothing this statement could verify as dropped";
+            set_error(core::error_t{core::error_code_t::index_not_exists,
+                                    std::pmr::string{std::move(msg), resource_}});
+            mark_failed();
+            co_return;
+        }
+
         // Scrub catalog rows referencing the dropped index. Dependants are
         // deleted before pg_class (order set by rewrite_drop_index). Each delete
         // is keyed by (oid_col_idx, target_oid) so in a catalog with multiple oid
         // columns (e.g. pg_depend's objid AND refobjid) only the right row is hit.
-        if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
+        {
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
             std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource_);
             specs.reserve(catalog_deletes_.size());
@@ -61,7 +83,7 @@ namespace components::operators {
                 if (ctx->txn.transaction_id != 0)
                     ctx->pg_catalog_delete_tables.insert(d.catalog_table_oid);
             }
-            if (!specs.empty()) {
+            {
                 auto [_, fut] = actor_zeta::send(ctx->disk_address,
                                                  &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
                                                  exec_ctx,

@@ -22,6 +22,11 @@ namespace components::table::storage {
         // at a (possibly non-zero) offset alongside other columns' segments. This is the single
         // source of truth for the write-side "dedicated vs shared" decision (used by both the
         // checkpoint flush path and the B2 write-through transition).
+        //
+        // Invariant: every offset handed out is 8-byte aligned. Offsets are persisted in the data
+        // pointers and dereferenced after restart with typed pointers up to uint64_t wide (validity
+        // bitmaps, string dictionary offsets, fixed-size scans), so byte-granular placement would
+        // be permanent UB baked into the file. Enforced in get_block_allocation.
         static constexpr double FULL_THRESHOLD = 0.8;
 
         explicit partial_block_manager_t(block_manager_t& block_manager, double full_threshold = FULL_THRESHOLD);

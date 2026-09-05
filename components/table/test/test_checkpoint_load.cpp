@@ -1654,3 +1654,89 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
 
     cleanup_test_file();
 }
+
+TEST_CASE("checkpoint_load: 4-byte CONSTANT segment must not misalign the segments packed after it") {
+    // Layout regression (F8): the partial-block packer places segments back-to-back, and the
+    // resulting offset is PERSISTED in the data pointer, so it survives restart. An INT32
+    // column whose values are all identical flushes as a 4-byte CONSTANT segment; before the
+    // packer aligned placements, everything packed after it — this column's validity bitmap
+    // (read through uint64_t*) and the next column's UNCOMPRESSED BIGINT payload (handed to
+    // the result vector as a raw int64 pointer by fixed_size_scan) — sat at offset 4 mod 8.
+    // Scanning the reloaded table then performed misaligned uint64/int64 loads: undefined
+    // behaviour, observable under -fsanitize=alignment. This test is the sanitizer repro and
+    // the value-level round-trip check in one.
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    cleanup_test_file();
+
+    test_env_t env;
+    constexpr uint64_t NUM_ROWS = 1000;
+    constexpr int32_t CONSTANT_TAG = 7;
+
+    meta_block_pointer_t table_pointer;
+
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.create_new_database().has_error());
+
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("tag", logical_type::INTEGER);   // all-constant -> 4-byte segment
+        columns.emplace_back("value", logical_type::BIGINT);  // varied -> uncompressed int64 payload
+        auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "packed_misalign");
+
+        auto types = table->copy_types();
+        uint64_t offset = 0;
+        while (offset < NUM_ROWS) {
+            uint64_t batch = std::min(NUM_ROWS - offset, uint64_t(DEFAULT_VECTOR_CAPACITY));
+            data_chunk_t chunk(&env.resource, types, batch);
+            chunk.set_cardinality(batch);
+            for (uint64_t i = 0; i < batch; i++) {
+                uint64_t row = offset + i;
+                chunk.set_value(0, i, CONSTANT_TAG);
+                chunk.set_value(1, i, static_cast<int64_t>(row) * 1000003 + 17);
+            }
+            table_append_state state(&env.resource);
+            REQUIRE_FALSE(table->append_lock(state).has_error());
+            REQUIRE_FALSE(table->initialize_append(state).has_error());
+            REQUIRE_FALSE(table->append(chunk, state).has_error());
+            table->finalize_append(state, transaction_data{0, 0});
+            offset += batch;
+        }
+        REQUIRE(table->calculate_size() == NUM_ROWS);
+
+        metadata_manager_t meta_mgr(bm);
+        metadata_writer_t writer(meta_mgr);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
+        table_pointer = writer.get_block_pointer();
+
+        database_header_t header;
+        header.initialize();
+        REQUIRE_FALSE(bm.write_header(header).has_error());
+    }
+
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+        REQUIRE(!bm.load_existing_database().has_error());
+
+        metadata_manager_t meta_mgr(bm);
+        metadata_reader_t reader(meta_mgr, table_pointer);
+        auto loaded_result = data_table_t::load_from_disk(&env.resource, bm, reader);
+        REQUIRE(!loaded_result.has_error());
+        auto& loaded = loaded_result.value();
+
+        uint64_t scanned = 0;
+        otterbrix_test::scan_table_segment(*loaded, 0, NUM_ROWS, [&](data_chunk_t& chunk) {
+            for (uint64_t i = 0; i < chunk.size(); i++) {
+                uint64_t row = scanned + i;
+                REQUIRE(chunk.data[0].get_value<int32_t>(i) == CONSTANT_TAG);
+                REQUIRE(chunk.data[1].get_value<int64_t>(i) == static_cast<int64_t>(row) * 1000003 + 17);
+            }
+            scanned += chunk.size();
+        });
+        REQUIRE(scanned == NUM_ROWS);
+    }
+
+    cleanup_test_file();
+}

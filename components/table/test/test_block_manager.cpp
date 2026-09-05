@@ -7,6 +7,7 @@
 #include <core/result_wrapper.hpp>
 
 #include <components/table/storage/metadata_manager.hpp>
+#include <components/table/storage/partial_block_manager.hpp>
 #include <components/table/storage/metadata_reader.hpp>
 #include <components/table/storage/metadata_writer.hpp>
 
@@ -776,6 +777,40 @@ TEST_CASE("block_manager: a stale handle's destructor must not erase the live ha
     again.reset();
     live.reset();
     CHECK_FALSE(bm.registry_alive(id));
+
+    cleanup_test_file();
+}
+
+TEST_CASE("partial_block_manager: every packed segment offset is 8-byte aligned") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.create_new_database().has_error());
+
+    partial_block_manager_t pbm(bm);
+
+    // The offsets handed out here are persisted in the data pointers and dereferenced after
+    // restart with the segment's own element type: uint64_t* for validity bitmaps
+    // (validity_scan / validity_fetch_row), int32_t* for string dictionary offsets, and the
+    // raw T* that fixed_size_scan hands to the result vector. A byte-granular placement —
+    // e.g. a validity bitmap packed right after a 4-byte CONSTANT INT32 segment — makes every
+    // one of those reads a misaligned (UB) access forever, so the allocator must align every
+    // placement to 8 bytes.
+    auto first = pbm.get_block_allocation(4); // CONSTANT INT32 main segment
+    REQUIRE(first.offset_in_block % 8 == 0);
+    auto validity = pbm.get_block_allocation(128); // 1024-row validity bitmap
+    REQUIRE(validity.block_id == first.block_id);
+    REQUIRE(validity.offset_in_block % 8 == 0);
+
+    // RLE payloads, dictionary blobs and big-string records are byte-granular in SIZE;
+    // a run of odd sizes must still keep every subsequent placement aligned.
+    const uint64_t odd_sizes[] = {1, 3, 20, 7, 8, 9, 4096, 5, 133};
+    for (auto size : odd_sizes) {
+        auto alloc = pbm.get_block_allocation(size);
+        REQUIRE(alloc.offset_in_block % 8 == 0);
+    }
 
     cleanup_test_file();
 }

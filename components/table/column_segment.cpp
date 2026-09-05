@@ -1778,8 +1778,10 @@ namespace components::table {
                 // at offset 0 is typically the SAME column's values. Addressing handle.ptr()
                 // directly smeared this 0xFF reset over that neighbour, so after a multi-row-group
                 // revert the surviving rows of the first packed column read mask bytes (-1/-2).
-                // No uint64_t* view here: the packer does not align offsets, so the segment base
-                // is not guaranteed 8-byte aligned -- set the partial byte's bits directly.
+                // Byte-wise on purpose: the reset starts at an arbitrary BIT boundary, so the
+                // shared first byte is patched separately and the tail is memset — a word-wide
+                // view buys nothing here. (The packer now 8-aligns segment starts, so a uint64_t*
+                // view would be legal again; keeping bytes avoids the width assumption entirely.)
                 auto* bitmap = handle.ptr() + block_offset();
                 uint64_t revert_start;
                 if (start_bit % 8 != 0) {

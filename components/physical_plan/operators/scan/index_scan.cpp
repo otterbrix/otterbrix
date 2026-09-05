@@ -71,14 +71,16 @@ namespace components::operators {
         }
         row_ids_vec_ = std::move(matched.value());
 
-        // Apply the read-cap (offset+limit head cap) count to compute the [0, count) window over the
-        // matched ids. SELECT OFFSET is applied by operator_limit above, so the scan receives
-        // offset()==0 and the seek starts at 0 (head_cap() == limit here).
-        const size_t total = row_ids_vec_.size();
-        const int64_t cap = limit_.head_cap();
-        const size_t count = (cap >= 0) ? std::min(total, static_cast<size_t>(cap)) : total;
+        // The whole matched set is the fetch window. The read-cap (offset+limit head cap) is
+        // deliberately NOT applied here any more (C4b): the index answer is a SUPERSET —
+        // manager_index says so — and since C4b the fetch DROPS the rows this transaction may
+        // not see, so cutting the id list to `limit` before the fetch can cut away the very
+        // ids whose rows survive it and return fewer rows than the LIMIT asked for. The cap
+        // now rides BELOW that filter, in source_next, over the rows actually produced —
+        // the same order full_scan uses, where the agent counts POST-filter matched rows.
+        // SELECT OFFSET is applied by operator_limit above, so the seek starts at 0.
         pos_ = 0;
-        end_ = count;
+        end_ = row_ids_vec_.size();
         co_return core::error_t::no_error();
     }
 
@@ -102,7 +104,12 @@ namespace components::operators {
                                          table_oid_,
                                          std::move(row_ids),
                                          count,
-                                         projected_cols_);
+                                         projected_cols_,
+                                         // The reader's own snapshot: the index answered with a
+                                         // superset of ids and the table decides which of them
+                                         // this transaction may see.
+                                         ctx->txn,
+                                         table::fetch_visibility_t::SNAPSHOT);
         co_return co_await std::move(ff);
     }
 
@@ -159,10 +166,24 @@ namespace components::operators {
             batch_pos_ = 0;
         }
 
-        // Emit the next buffered chunk.
+        // Emit the next buffered chunk, capped BELOW the visibility filter. The cap counts
+        // rows the fetch actually produced, so a row the snapshot hid never consumes budget —
+        // which is exactly what applying it to the raw index answer used to do.
+        const int64_t cap = limit_.head_cap();
+        if (cap >= 0 && emitted_rows_ >= static_cast<uint64_t>(cap)) {
+            batch_pos_ = batch_.size();
+        }
         if (batch_pos_ < batch_.size()) {
+            auto chunk = std::move(batch_[batch_pos_++]);
+            if (cap >= 0) {
+                const uint64_t budget = static_cast<uint64_t>(cap) - emitted_rows_;
+                if (chunk.size() > budget) {
+                    chunk.set_cardinality(budget);
+                }
+            }
+            emitted_rows_ += chunk.size();
             emitted_any_ = true;
-            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(batch_[batch_pos_++]));
+            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(chunk));
         }
 
         // Buffer exhausted ⇒ drain.

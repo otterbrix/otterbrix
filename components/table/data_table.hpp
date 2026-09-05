@@ -67,12 +67,18 @@ namespace components::table {
                                                                     int64_t max_row,
                                                                     bool& drained);
 
+        // Point fetch by row id. `txn` + `visibility` are NOT optional and have no default:
+        // under SNAPSHOT the collection drops rows the transaction may not see, under RAW it
+        // drops nothing (the CREATE INDEX backfill reads deleted rows on purpose). The filled
+        // chunk's row_ids name exactly the rows it carries — see collection_t::fetch.
         void fetch(vector::data_chunk_t& result,
                    const std::vector<storage_index_t>& column_ids,
                    const vector::vector_t& row_ids,
                    uint64_t fetch_count,
                    column_fetch_state& state,
-                   const std::vector<size_t>& projected_cols);
+                   const std::vector<size_t>& projected_cols,
+                   const transaction_data& txn,
+                   fetch_visibility_t visibility);
 
         std::unique_ptr<table_delete_state>
         initialize_delete(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
@@ -116,6 +122,32 @@ namespace components::table {
         initialize_constraint_state(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
         std::string table_name() const;
         void set_table_name(std::string new_name);
+
+        // Rename ONE column IN PLACE — the storage half of ALTER TABLE RENAME COLUMN.
+        //
+        // Unlike the ALTER add/drop rebuilds this constructs no successor table: a name is not
+        // part of any segment, row group or block, so nothing below column_definitions_ moves
+        // and every holder of this data_table_t (the storage adapter among them) stays valid.
+        // It IS a change to the file — checkpoint() writes each column's name into the metadata
+        // stream and load_from_disk reads it back — so it marks the table modified.
+        //
+        // WHY IT EXISTS AT ALL, and it is not cosmetic. manager_disk_t's bootstrap
+        // reconciliation (B3c2) compares the loaded storage's column names against the live
+        // pg_attribute rows BY NAME and treats a storage column the catalog does not name as a
+        // DROP. A rename written to the catalog alone would therefore make the NEXT start read
+        // the old name as a dropped column and physically remove a surviving one. The catalog
+        // and the storage must carry the same name.
+        //
+        // Three outcomes, kept apart because rule 6 needs them apart:
+        //   true  = renamed;
+        //   false = this table has no column called `old_name` (a column the catalog knows but
+        //           storage never materialized — the ALTER ADD COLUMN case — is legitimately
+        //           nothing to rename here);
+        //   error = `new_name` is ALREADY a column of this table. The durable schema is
+        //           name-addressed, so completing that would leave two columns answering to one
+        //           name and the reconciliation with no way to tell them apart.
+        [[nodiscard]] core::result_wrapper_t<bool> rename_column(const std::string& old_name,
+                                                                 const std::string& new_name);
 
         uint64_t row_group_size() const;
 

@@ -322,7 +322,15 @@ namespace components::operators {
                                                      static_cast<uint64_t>(rec.physical_row_ids.size()),
                                                      // No projection: the backfill hands whole rows
                                                      // to the index engine's chunk binding.
-                                                     std::vector<size_t>{});
+                                                     std::vector<size_t>{},
+                                                     // RAW, and an EMPTY transaction_data is NOT a
+                                                     // substitute for it: these rows are being read
+                                                     // BECAUSE they were deleted — the DELETE/UPDATE
+                                                     // record's old key columns are the whole point —
+                                                     // and an empty txn means "see everything
+                                                     // COMMITTED", which a committed delete hides.
+                                                     components::table::transaction_data{},
+                                                     components::table::fetch_visibility_t::RAW);
                     fetch_futures.push_back(std::move(ff));
                     fetch_slots.push_back(r);
                 }

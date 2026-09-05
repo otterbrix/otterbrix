@@ -120,6 +120,48 @@ namespace services::disk {
             }
             co_await std::move(fut);
         }
+
+        // RN-oid — the added_at marker's SECOND half, and the only leg of "every storage column
+        // carries its attoid" that has to travel forward in time.
+        //
+        // ALTER TABLE ADD COLUMN writes a pg_attribute row and stops; the STORAGE column is
+        // materialised later, by the schema-growth stage of storage_append_inner, out of an
+        // INSERT chunk that carries nothing but an alias-tagged type — and on an agent that
+        // owns no pg_attribute and may not take a second cross-actor await inside an append.
+        // So the identity is parked on the owning agent NOW, keyed by the attname the future
+        // chunk will carry, and stamped onto the column at the moment it is created.
+        //
+        // FIRE-AND-FORGET, deliberately: this handler already co_awaits per backfill above, and
+        // the ordering that matters is not "before this returns" but "before the client's next
+        // statement". Both are satisfied by the mailbox — the note is ENQUEUED on the target
+        // agent before this coroutine returns, the COMMIT's reply is what unblocks the client,
+        // and the agent's mailbox is FIFO, so any later INSERT is processed after it.
+        //
+        // A note that finds no owner no-ops (note_column_identity_inner). That is not a silent
+        // degradation: it means the storage this attoid describes is not loaded, in which case
+        // there is no column to materialise, and bootstrap re-derives the same publication from
+        // pg_attribute the next time the table IS loaded.
+        for (const auto& b : backfills) {
+            if (b.kind != components::pg_attribute_commit_id_backfill_t::kind_t::added_at ||
+                b.release_attname.empty() || b.release_table_oid == components::catalog::INVALID_OID ||
+                b.attoid == components::catalog::INVALID_OID) {
+                continue;
+            }
+            const std::size_t owner_idx = pool_idx_for_oid(b.release_table_oid, agents_.size());
+            if (owner_idx >= agents_.size() || agents_[owner_idx] == nullptr) {
+                continue;
+            }
+            auto& owner = agents_[owner_idx];
+            auto [owner_sched, note_fut] = actor_zeta::otterbrix::send(owner->address(),
+                                                                       &agent_disk_t::note_column_identity_inner,
+                                                                       b.release_table_oid,
+                                                                       b.release_attname,
+                                                                       static_cast<std::uint32_t>(b.attoid));
+            [[maybe_unused]] auto dropped_note_future = std::move(note_fut);
+            if (owner_sched) {
+                scheduler_disk_->enqueue(owner.get());
+            }
+        }
         co_return;
     }
 
@@ -178,6 +220,45 @@ namespace services::disk {
         // already durable, so answering "done" here would be exactly the silent degradation
         // rule 6 forbids: the column would be hidden forever and its space never named again.
         std::pmr::string msg{"manager_disk::drop_storage_column: no disk agent owns table oid ", resource()};
+        msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
+        co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
+    }
+
+    // ALTER TABLE RENAME COLUMN's physical half. Same thin-router shape as the DROP leg above:
+    // pool_idx_for_oid -> otterbrix::send -> enqueue if needed -> await, with the work running
+    // intra-agent on that agent's own slice. The manager never borrows a storage entry across
+    // the actor boundary.
+    //
+    // The point of the leg is in disk_contract.hpp: the storage's column name is a cache of
+    // the catalog's, and the write path still addresses columns by it. Identity is the attoid
+    // (RN-oid), so a rename the storage never saw is repaired at the next bootstrap rather than
+    // read as a drop — but repairing it only at a restart would leave the live append path
+    // expanding chunks against a stale name in the meantime.
+    manager_disk_t::unique_future<core::result_wrapper_t<bool>>
+    manager_disk_t::rename_storage_column(session_id_t /*session*/,
+                                          components::catalog::oid_t table_oid,
+                                          std::string old_attname,
+                                          std::string new_attname) {
+        if (!agents_.empty()) {
+            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
+            auto& agent = agents_[idx];
+            if (agent != nullptr) {
+                auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                      &agent_disk_t::rename_storage_column_inner,
+                                                                      table_oid,
+                                                                      std::move(old_attname),
+                                                                      std::move(new_attname));
+                if (needs_sched) {
+                    scheduler_disk_->enqueue(agent.get());
+                }
+                co_return co_await std::move(fut);
+            }
+        }
+        // No agent to route to at all. The caller is a COMMITTED ALTER whose new attname is
+        // already durable, so answering "done" here would leave the storage carrying the OLD
+        // name against a catalog carrying the new one — precisely the divergence the bootstrap
+        // walk reads as a DROP. Rule 6: refuse loudly instead.
+        std::pmr::string msg{"manager_disk::rename_storage_column: no disk agent owns table oid ", resource()};
         msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
         co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
     }

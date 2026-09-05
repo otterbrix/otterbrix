@@ -2,6 +2,8 @@
 
 #include "constraint_util.hpp"
 
+#include <cstring>
+
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
@@ -164,10 +166,10 @@ namespace components::operators {
                 // agent). The SET NULL / SET DEFAULT transform is uniform across rows
                 // — it keys off per-COLUMN child_col_schema_indices / per-COLUMN
                 // child_col_default_specs, never off the parent row — so a single
-                // combined update chunk is value-correct. Each child row_id stays
-                // paired with its fetched chunk position because storage_fetch returns
-                // rows positionally aligned with the requested row_ids, and
-                // storage_update applies data[i] to row_ids[i] positionally.
+                // combined update chunk is value-correct. Each fetched row is paired
+                // back to its id through the chunk's OWN row_ids, which the producer
+                // stamps with the rows it carries: the reply is NOT positionally the
+                // request, because the fetch drops rows this transaction may not see.
                 std::pmr::vector<int64_t> all_child_ids(resource_);
                 for (const auto& child_ids : per_row_child_ids) {
                     for (auto id : child_ids) {
@@ -190,7 +192,12 @@ namespace components::operators {
                                                    static_cast<uint64_t>(all_child_ids.size()),
                                                    // No projection: which columns the cascade's consumers read is not
                                                    // proven here, and an unproven narrowing reads back stubs silently.
-                                                   std::vector<size_t>{});
+                                                   std::vector<size_t>{},
+                                                   // The cascade runs INSIDE the parent transaction and must see
+                                                   // exactly what it sees — including its own earlier writes, and
+                                                   // NOT a child row it has already deleted in this same statement.
+                                                   ctx->txn,
+                                                   components::table::fetch_visibility_t::SNAPSHOT);
                 auto fetched_r = co_await std::move(ffut); // vector of ≤CAP chunks
                 if (fetched_r.has_error()) {
                     // A failed child-row read must abort the cascade: applying the
@@ -244,18 +251,24 @@ namespace components::operators {
                     }
                 }
 
-                // Single update for the whole set — one chunk per fetched chunk, with the
-                // flat all_child_ids sliced positionally to match each chunk's rows.
+                // Single update for the whole set — one chunk per fetched chunk, addressed by
+                // the ids the FETCH REPORTS rather than by re-slicing all_child_ids.
+                //
+                // The old code walked all_child_ids positionally on the assumption that the
+                // reply is the request. Since C4b it is not: the point fetch drops rows this
+                // transaction may not see (a child row the same statement already deleted is
+                // the reachable case), so one dropped row would shift every later id by one
+                // and the SET NULL / SET DEFAULT would be written to the WRONG child rows.
+                // chunk.row_ids is stamped by the producer with the rows the chunk carries.
                 std::pmr::vector<components::vector::vector_t> upd_ids_batch(resource_);
                 std::pmr::vector<components::vector::data_chunk_t> upd_data_batch(resource_);
-                std::size_t id_base = 0;
                 for (auto& chunk : fetched) {
                     const uint64_t n = chunk.size();
-                    components::vector::vector_t ids(resource_, types::logical_type::BIGINT, n);
-                    for (uint64_t i = 0; i < n; ++i) {
-                        ids.data<int64_t>()[i] = all_child_ids[id_base + i];
+                    if (n == 0) {
+                        continue;
                     }
-                    id_base += n;
+                    components::vector::vector_t ids(resource_, types::logical_type::BIGINT, n);
+                    std::memcpy(ids.data(), chunk.row_ids.data(), n * sizeof(int64_t));
                     upd_ids_batch.emplace_back(std::move(ids));
                     upd_data_batch.emplace_back(std::move(chunk));
                 }

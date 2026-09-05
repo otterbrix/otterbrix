@@ -291,11 +291,19 @@ namespace services::disk {
         //   (empty when the agent doesn't own the OID). The wrapper carries the
         //   buffer-pool OOM / data_corruption the point-fetch surfaced — the first
         //   window error aborts the batch (a partial answer must not ship).
+        //   Under fetch_visibility_t::SNAPSHOT the table layer drops every row `txn` may
+        //   not see, so a produced chunk can be SHORTER than its window; each chunk's
+        //   row_ids are stamped by the producer (collection_t::fetch) with the rows it
+        //   actually carries, and this handler no longer re-stamps them from the request.
+        //   RAW keeps every row whatever its version stamps say — the CREATE INDEX
+        //   backfill reads deleted rows on purpose.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_fetch_inner(components::catalog::oid_t table_oid,
                             components::vector::vector_t row_ids,
                             uint64_t count,
-                            std::vector<size_t> projected_cols);
+                            std::vector<size_t> projected_cols,
+                            components::table::transaction_data txn,
+                            components::table::fetch_visibility_t visibility);
 
         // Read-path handlers (scan_batched / scan_segment / types / total_rows).
         // Not-owned OIDs return an empty/zero sentinel.
@@ -552,6 +560,21 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<bool>> drop_storage_column_inner(components::catalog::oid_t table_oid,
                                                                              std::string attname);
 
+        // rename_storage_column_inner: rename ONE column of this agent's slice for `table_oid`.
+        //   The physical half of ALTER TABLE RENAME COLUMN. It keeps the storage's cached name
+        //   in step with the catalog's from the moment of the commit, which is what the append
+        //   path's column expansion and drop_column (both name-addressed) need. It is no longer
+        //   an invariant the bootstrap reconciliation depends on: that walk compares
+        //   pg_attribute.attoid (RN-oid) and repairs a stale storage name from the catalog.
+        //   true  = renamed;
+        //   false = the storage exists but never carried `old_attname` (an ALTER ADD COLUMN
+        //           that no INSERT has materialized yet is legitimately nothing to rename);
+        //   error = no materialized storage for the oid here, or `new_attname` is already a
+        //           column of that storage.
+        unique_future<core::result_wrapper_t<bool>> rename_storage_column_inner(components::catalog::oid_t table_oid,
+                                                                                std::string old_attname,
+                                                                                std::string new_attname);
+
         // mark_storage_dropped_many_inner — batched DROP-mark: one message per agent
         //   carries that agent's whole oid slice (manager partitioned by pool_idx_for_oid)
         //   plus the shared dropped_at_commit_id. Loops the canonical per-oid mark body
@@ -560,6 +583,17 @@ namespace services::disk {
         //   GC entry via register_dropped_storage_inner_sync. Over-routed oids no-op.
         unique_future<void> mark_storage_dropped_many_inner(std::pmr::vector<components::catalog::oid_t> table_oids,
                                                             uint64_t dropped_at_commit_id);
+
+        // note_column_identity_inner — RN-oid. Park a pg_attribute.attoid on this agent's
+        //   entry for `table_oid` against the column NAME it was minted for, so that the
+        //   schema-growth stage of storage_append_inner can stamp it onto the storage column
+        //   at the moment it materialises the column. See
+        //   collection_storage_entry_t::note_column_identity for why the identity has to
+        //   arrive BEFORE the column, and who publishes it. Not-owned oids no-op, exactly like
+        //   every other mutation handler here.
+        unique_future<void> note_column_identity_inner(components::catalog::oid_t table_oid,
+                                                       std::string attname,
+                                                       std::uint32_t attoid);
 
         // Bootstrap-only: base_spaces wires the manager_dispatcher_t address into
         // every agent before scheduler.start. on_horizon_advanced_inner uses it to
@@ -605,7 +639,9 @@ namespace services::disk {
                                                             &agent_disk_t::update_pg_attribute_commit_id_field_inner,
                                                             &agent_disk_t::compact_relkind_g_storage_inner,
                                                             &agent_disk_t::drop_storage_column_inner,
+                                                            &agent_disk_t::rename_storage_column_inner,
                                                             &agent_disk_t::mark_storage_dropped_many_inner,
+                                                            &agent_disk_t::note_column_identity_inner,
                                                             &agent_disk_t::create_storage_disk_inner>;
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);

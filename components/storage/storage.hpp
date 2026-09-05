@@ -128,10 +128,21 @@ namespace components::storage {
         // column_fetch_state::fetch_error (same value-shape as fetch_next_batch's
         // scan_error above), else true. An error nobody reads is the same silent
         // failure the old abort was replaced to avoid — every caller must check.
+        //
+        // VISIBILITY IS PART OF THE CALL, and neither parameter has a default (C4b):
+        //   SNAPSHOT — the row must be visible to `txn`. Rows that are not are DROPPED, so
+        //              the reply is SHORTER than the request and cannot be paired with it by
+        //              position; `output.row_ids` names the rows actually carried, in order.
+        //   RAW      — no visibility question at all. The only legitimate user is the CREATE
+        //              INDEX backfill, which reads deleted rows to recover old key columns.
+        // An empty `txn` is NOT the raw mode: it means "see every COMMITTED row", so a
+        // committed delete still hides the row from it.
         [[nodiscard]] virtual core::result_wrapper_t<bool> fetch(vector::data_chunk_t& output,
                                                                  const vector::vector_t& row_ids,
                                                                  uint64_t count,
-                                                                 const std::vector<size_t>& projected_cols) = 0;
+                                                                 const std::vector<size_t>& projected_cols,
+                                                                 const table::transaction_data& txn,
+                                                                 table::fetch_visibility_t visibility) = 0;
 
         virtual uint64_t append(vector::data_chunk_t& data) = 0;
 

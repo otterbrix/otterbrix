@@ -333,7 +333,9 @@ namespace components::planner {
         // catalog row writes, body scan, and storage_append in one async coroutine.
         node_ptr rewrite_create_matview(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cm = static_cast<logical_plan::node_create_matview_t*>(node.get());
-            const auto& cols = cm->inferred_columns();
+            // Non-const: build_create_table_writes stamps the allocated attoids back onto
+            // these columns (RN-oid), and plan-gen reads THIS list into the create operator.
+            auto& cols = cm->inferred_columns();
             if (cols.empty()) {
                 // Schema derivation failed (see derive_matview_output_schema).
                 // Leave the node unchanged; physical_plan_generator returns

@@ -96,14 +96,31 @@ namespace components::table {
                                                    const std::vector<storage_index_t>&,
                                                    int64_t start_row,
                                                    int64_t end_row) {
-        auto row_group = row_groups_->get_segment(start_row);
-        assert(row_group);
         state.row_groups = row_groups_.get();
         state.max_row = end_row;
         state.initialize(types_);
+        auto row_group = row_groups_->get_segment(start_row);
+        if (!row_group) {
+            // The seek names a row the segment tree does not bracket. Rule 2: no throw
+            // crosses this layer (the caller is a disk agent behind a mailbox); rule 6: it
+            // is not a quiet empty scan either. Both live callers — data_table_t::compact
+            // and data_table_t::fetch_next_batch — already read has_error() before they
+            // trust the batch, and compact refuses the round on it rather than swapping a
+            // truncated collection in.
+            state.scan_error =
+                core::error_t{core::error_code_t::data_corruption,
+                              std::pmr::string{"collection_t::initialize_scan_with_offset: no row group brackets "
+                                               "the requested start row",
+                                               resource_}};
+            return;
+        }
         uint64_t start_vector = static_cast<uint64_t>(start_row - row_group->start) / vector::DEFAULT_VECTOR_CAPACITY;
         if (!row_group->initialize_scan_with_offset(state, start_vector)) {
-            throw std::logic_error("Failed to initialize row group scan with offset");
+            // The resolved group is empty or entirely past the scan ceiling. That is a
+            // legitimate end-of-scan, not a failure: the group's max_row_group_row is left
+            // at the seek position, so the caller's next_batch produces nothing and the
+            // fetch-next loop walks on to the following group / drains.
+            return;
         }
     }
 
@@ -125,9 +142,23 @@ namespace components::table {
                              const vector::vector_t& row_identifiers,
                              uint64_t fetch_count,
                              column_fetch_state& state,
-                             const std::vector<size_t>& projected_cols) {
+                             const std::vector<size_t>& projected_cols,
+                             const transaction_data& txn,
+                             fetch_visibility_t visibility) {
         auto row_ids = row_identifiers.data<int64_t>();
+        auto* produced_ids = result.row_ids.data<int64_t>();
         uint64_t count = 0;
+        // Read only by the DEV_MODE pairing guard below; the increment stays unconditional so
+        // the counter cannot drift from the loop it is meant to describe.
+        [[maybe_unused]] uint64_t stamped = 0;
+#ifdef DEV_MODE
+        // The stamps are written into result.row_ids, which the chunk allocated at its own
+        // capacity. A caller asking for more rows than the chunk can hold would overrun it —
+        // and would have overrun the columns too, so this guards the whole call, not just
+        // the new field.
+        assert(fetch_count <= result.capacity() &&
+               "collection_t::fetch: the request is larger than the chunk it must fill");
+#endif
         for (uint64_t i = 0; i < fetch_count; i++) {
             auto row_id = row_ids[i];
             row_group_t* row_group;
@@ -135,17 +166,35 @@ namespace components::table {
                 uint64_t segment_index;
                 auto l = row_groups_->lock();
                 if (!row_groups_->try_segment_index(l, row_id, segment_index)) {
+                    // The id names no row group. It is dropped from the answer rather than
+                    // gathered — and because the stamps below name only gathered rows, the
+                    // drop is REPORTED, not masked by a request-shaped row_ids vector.
                     continue;
                 }
                 row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+            }
+            // The visibility question, asked BEFORE the gather so an invisible row costs no
+            // column read. `row_id` stays collection-absolute: row_version_manager_t::fetch
+            // keeps the absolute contract for this one method and rebases internally (A6).
+            if (visibility == fetch_visibility_t::SNAPSHOT && !row_group->is_visible(txn, row_id)) {
+                continue;
             }
 #ifdef DEV_MODE
             note_gather_row_fetched();
 #endif
             row_group->fetch_row(state, column_ids, row_id, result, count, projected_cols);
+            produced_ids[count] = row_id;
+            stamped++;
             count++;
         }
         result.set_cardinality(count);
+#ifdef DEV_MODE
+        // One stamp per row carried, no more and no fewer. The guard is on the PAIRING: it
+        // is the invariant every consumer of this reply now relies on in place of "the reply
+        // is positionally the request", which it no longer is. An edit that sets the
+        // cardinality from the request — the shape this code had — trips it here.
+        assert(stamped == result.size() && "collection_t::fetch: stamped row_ids disagree with the cardinality");
+#endif
     }
 
     bool collection_t::is_empty() const {

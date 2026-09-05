@@ -83,12 +83,25 @@ namespace components::table {
                                                  uint64_t vector_index,
                                                  int64_t max_row);
 
+        // Point fetch by row id. The PRODUCER of the answer, in both senses:
+        //
+        //   * VISIBILITY. Under fetch_visibility_t::SNAPSHOT a row is gathered only if it
+        //     is visible to `txn` (row_group_t::is_visible). RAW skips the question — the
+        //     CREATE INDEX backfill reads deleted rows on purpose. There is no default:
+        //     a caller that does not name the mode does not compile.
+        //   * WHICH ROWS CAME BACK. `result.row_ids` is stamped here, one slot per row
+        //     actually gathered, in output order, and the cardinality counts exactly those.
+        //     A requested id that is invisible, or that names no row group at all, shortens
+        //     the answer instead of being masked: the caller cannot pair the reply with its
+        //     request positionally and must read the stamps.
         void fetch(vector::data_chunk_t& result,
                    const std::vector<storage_index_t>& column_ids,
                    const vector::vector_t& row_identifiers,
                    uint64_t fetch_count,
                    column_fetch_state& state,
-                   const std::vector<size_t>& projected_cols);
+                   const std::vector<size_t>& projected_cols,
+                   const transaction_data& txn,
+                   fetch_visibility_t visibility);
 
         // The append chain returns out_of_memory when a row group / column segment allocation
         // fails. initialize_append: true on success. append: on success the bool reports whether

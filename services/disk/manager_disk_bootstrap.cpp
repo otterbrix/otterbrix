@@ -710,17 +710,37 @@ namespace services::disk {
     // next start re-derives it from the same two durable facts), physically dropping a column
     // the catalog does describe is not. So every ambiguous reading refuses.
     //
-    // WHAT THIS WALK IS COUPLED TO, and it is a real hazard for a future change: the comparison
-    // is BY NAME, so it reads "in the storage, not in the live catalog" as "dropped". That is
-    // sound only while nothing can rename a column in pg_attribute without renaming it in the
-    // storage. Today nothing can — ALTER TABLE RENAME COLUMN is itself a no-op (the sibling of
-    // the defect B3c1 fixed; the note is at integration/cpp/test/test_multi_database_isolation
-    // .cpp:444) — so a storage-only name has exactly one cause. Whoever makes RENAME write the
-    // catalog must make it rename the storage column in the same commit, or this walk will read
-    // the old name as a drop and physically remove a SURVIVING column on the next start. The
-    // rename cannot be told apart from an ALTER ADD COLUMN not yet materialized in storage (that
-    // one is legal and common, and is why extra CATALOG-only names are ignored here), so there
-    // is no guard to add on this side; the invariant has to hold on the writing side.
+    // WHAT THIS WALK COMPARES ON, and why it is not the name any more (RN-oid).
+    //
+    // It used to be the name: "in the storage, not in the live catalog" read as "dropped".
+    // That is sound only while nothing can change a column's name in pg_attribute without
+    // changing it in the storage in the same durable breath — and nothing can guarantee that,
+    // because the two halves are durable at DIFFERENT points and no ordering closes the gap.
+    // The catalog half of an ALTER TABLE RENAME COLUMN is durable at the WAL commit marker; the
+    // storage half only at that table's NEXT CHECKPOINT, unbounded later. A crash in between
+    // left a storage naming the old column against a catalog naming the new one, and a
+    // name-keyed walk read that as a DROP and physically released a SURVIVING column's blocks.
+    // Reversing the order does not help: the storage's durability point is later either way,
+    // and the comparison destroys on divergence in BOTH directions. The window was real, it was
+    // reachable from one ordinary statement, and it cost the column with all of its data.
+    //
+    // So the key is the IDENTITY the catalog minted for the column — pg_attribute.attoid —
+    // which the storage now carries per column and serializes into the .otbx. A rename does not
+    // move it, so the divergence stops being observable here; what a rename leaves behind is a
+    // stale storage NAME, and this walk repairs that FROM the catalog instead of acting on it.
+    // The coupling to operator_alter_column_rename_t / manager_disk_t::rename_storage_column is
+    // gone with it: that path still writes the storage name at commit (it is the cheap way, and
+    // it keeps the two halves agreeing without waiting for a restart), but this walk no longer
+    // DEPENDS on it having run.
+    //
+    // On the oid the two states the name conflated are finally distinct, and in opposite
+    // directions: a RENAMED column's attoid IS in the live catalog (under another name), while
+    // an ALTER ADD COLUMN not yet materialised is an attoid in the catalog with NO storage
+    // column — legal, common, and now handled positively rather than by being ignored (its
+    // identity is published forward so the INSERT that materialises it is born identified).
+    //
+    // A storage column with NO attoid is refused, loudly, for the whole table. See the note at
+    // the refusal itself for why that refusal is here and not on the load path.
     void manager_disk_t::rearm_dropped_column_blocks_sync() {
         if (agents_.empty() || agents_[0] == nullptr) {
             return;
@@ -788,30 +808,158 @@ namespace services::disk {
                 continue;
             }
 
-            std::set<std::string> live_names;
+            // RN-oid — THE COMPARISON IS BY attoid. Every live pg_attribute row carries one;
+            // a row that does not is a catalog this walk cannot reason about, and the whole
+            // table is left alone rather than compared on a weaker key.
+            std::set<catalog::oid_t> live_attoids;
             for (const auto& def : it->second) {
-                live_names.insert(def.name());
-            }
-            // The storage's own columns come from the file's serialized schema (load_from_disk
-            // reads each name back), so this is the durable root's answer, not the catalog's.
-            std::vector<std::string> to_drop;
-            for (const auto& column : owned->table_storage.table().columns()) {
-                if (live_names.find(column.name()) == live_names.end()) {
-                    to_drop.push_back(column.name());
+                if (def.attoid() != 0) {
+                    live_attoids.insert(static_cast<catalog::oid_t>(def.attoid()));
                 }
             }
-            if (to_drop.empty()) {
+            std::size_t catalog_unidentified = 0;
+            for (const auto& def : it->second) {
+                if (def.attoid() == 0) {
+                    ++catalog_unidentified;
+                }
+            }
+            if (catalog_unidentified != 0) {
+                error(log_,
+                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} has {} of {} live "
+                      "pg_attribute column(s) with NO attoid — refusing to reconcile a catalog whose "
+                      "columns are not identified; nothing was released",
+                      static_cast<unsigned>(oid),
+                      catalog_unidentified,
+                      it->second.size());
                 continue;
             }
-            if (to_drop.size() >= owned->table_storage.table().column_count()) {
-                // Not one name in common. That is a schema mismatch between the file and the
+
+            // The storage's own columns come from the file's serialized schema (load_from_disk
+            // reads each attoid back), so this is the durable root's answer, not the catalog's.
+            //
+            // attoid == 0 on a LOADED column is a loud refusal of the whole table, and it is
+            // refused HERE rather than at the load. Rule 6 forbids the quiet degradations —
+            // skipping the column, or falling back to the name — because both put a physical
+            // drop back on a key that cannot tell a rename apart. It does not follow that the
+            // refusal belongs on the READ path: aborting data_table_t::load_from_disk over an
+            // unidentified column would make the database unopenable over an accounting gap,
+            // trading a recoverable state for an unrecoverable one. Refusing here leaves every
+            // byte in place, every query answerable, and the leak re-derivable by the next
+            // start once whatever produced the 0 is fixed.
+            const auto& storage_columns = owned->table_storage.table().columns();
+            std::vector<std::string> unidentified;
+            for (const auto& column : storage_columns) {
+                if (column.attoid() == 0) {
+                    unidentified.push_back(column.name());
+                }
+            }
+            if (!unidentified.empty()) {
+                error(log_,
+                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} has {} storage column(s) "
+                      "carrying NO pg_attribute.attoid (first: '{}') — refusing to reconcile a schema whose "
+                      "columns are not identified; nothing was released",
+                      static_cast<unsigned>(oid),
+                      unidentified.size(),
+                      unidentified.front());
+                continue;
+            }
+
+            // One pass over the storage schema, splitting it three ways against the catalog:
+            //   * attoid absent from the live set   -> a real DROP; arm the release;
+            //   * attoid present, name disagrees    -> a RENAME whose storage half a crash lost
+            //                                          before the table's next checkpoint. Not a
+            //                                          drop, and not a no-op either: the storage
+            //                                          NAME is a cache of the catalog's, and the
+            //                                          append path's column expansion and
+            //                                          drop_column still address columns by it;
+            //   * attoid present, name agrees       -> nothing to do.
+            // Catalog attoids with no storage column are the mirror image — an ALTER ADD COLUMN
+            // not materialised yet — and are handled after the drops, by publishing their
+            // identity forward (see below). By NAME those last two are the SAME observation,
+            // which is exactly why the old comparison had no guard to add on its own side.
+            struct storage_rename_t {
+                std::string from;
+                std::string to;
+            };
+            std::vector<std::string> to_drop;
+            std::vector<storage_rename_t> to_rename;
+            for (const auto& column : storage_columns) {
+                if (live_attoids.find(static_cast<catalog::oid_t>(column.attoid())) == live_attoids.end()) {
+                    to_drop.push_back(column.name());
+                    continue;
+                }
+                for (const auto& def : it->second) {
+                    if (def.attoid() == column.attoid()) {
+                        if (def.name() != column.name()) {
+                            to_rename.push_back(storage_rename_t{column.name(), def.name()});
+                        }
+                        break;
+                    }
+                }
+            }
+            if (to_drop.size() >= owned->table_storage.table().column_count() && !to_drop.empty()) {
+                // Not one attoid in common. That is a schema mismatch between the file and the
                 // catalog, not a DROP COLUMN — acting on it would empty the table.
                 error(log_,
-                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} shares NO column name with "
+                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} shares NO column attoid with "
                       "its {} live pg_attribute column(s) — refusing to drop all {} storage columns",
                       static_cast<unsigned>(oid),
                       it->second.size(),
                       to_drop.size());
+                continue;
+            }
+
+            // RN-oid, the forward half: publish the identity of every live catalog column this
+            // storage does not carry, so the INSERT that eventually materialises it stamps the
+            // right attoid. This is an OID-SET DIFFERENCE, not a name match — the storage's
+            // attoids are known and complete (refused above otherwise) — and it is what makes a
+            // crash between an ALTER TABLE ADD COLUMN's commit and the table's next checkpoint
+            // survivable: the pg_attribute row is durable, the parked identity is not, and this
+            // re-derives it from the catalog before any statement can run.
+            for (const auto& def : it->second) {
+                bool in_storage = false;
+                for (const auto& column : storage_columns) {
+                    if (column.attoid() == def.attoid()) {
+                        in_storage = true;
+                        break;
+                    }
+                }
+                if (!in_storage) {
+                    owned->note_column_identity(def.name(), def.attoid());
+                    trace(log_,
+                          "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} published identity "
+                          "attoid={} for catalog-only column '{}'",
+                          static_cast<unsigned>(oid),
+                          static_cast<unsigned>(def.attoid()),
+                          def.name());
+                }
+            }
+
+            // The storage's NAME for a surviving column is repaired from the catalog before any
+            // drop, while `storage_columns` is still the live schema. A collision (two columns
+            // trading names) is refused by data_table_t::rename_column; it is logged and left
+            // alone — the divergence is inert (identity is the oid) and the next start retries.
+            for (const auto& r : to_rename) {
+                auto renamed = owned->rename_column(r.from, r.to);
+                if (renamed.has_error()) {
+                    error(log_,
+                          "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} could not repair the "
+                          "storage name of column '{}' to '{}': {} — the column and its data are untouched",
+                          static_cast<unsigned>(oid),
+                          r.from,
+                          r.to,
+                          renamed.error().what);
+                    continue;
+                }
+                trace(log_,
+                      "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} repaired the storage name "
+                      "'{}' -> '{}' from the catalog (a RENAME whose storage half a crash discarded)",
+                      static_cast<unsigned>(oid),
+                      r.from,
+                      r.to);
+            }
+
+            if (to_drop.empty()) {
                 continue;
             }
 
@@ -851,6 +999,11 @@ namespace services::disk {
         // list; nothing called it, and under this design nothing would.)
         struct catalog_col_t {
             std::int32_t attnum{0};
+            // RN-oid: pg_attribute.attoid — the column's IDENTITY, and from here on the ONLY
+            // thing the bootstrap reconciliation compares on. Carried into the
+            // column_definition_t so that every storage this function schemas (the rehydrated
+            // .otbx, the young-file overlay) is born with its columns identified.
+            catalog::oid_t attoid{catalog::INVALID_OID};
             std::string name;
             components::types::complex_logical_type type;
         };
@@ -897,6 +1050,9 @@ namespace services::disk {
                     if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
                         continue; // tombstoned column
                     catalog_col_t rc;
+                    rc.attoid = chunk.is_null(0, i)
+                                    ? catalog::INVALID_OID
+                                    : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                     if (!chunk.is_null(2, i)) {
                         auto attname_v = chunk.get_value<std::string_view>(2, i);
                         rc.name.assign(attname_v.data(), attname_v.size());
@@ -930,6 +1086,7 @@ namespace services::disk {
             defs.reserve(cols.size());
             for (auto& c : cols) {
                 defs.emplace_back(c.name, c.type);
+                defs.back().set_attoid(static_cast<std::uint32_t>(c.attoid));
             }
             result.emplace(relid, std::move(defs));
         }

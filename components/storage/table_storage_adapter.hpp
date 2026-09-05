@@ -202,7 +202,9 @@ namespace components::storage {
         [[nodiscard]] core::result_wrapper_t<bool> fetch(vector::data_chunk_t& output,
                                                          const vector::vector_t& row_ids,
                                                          uint64_t count,
-                                                         const std::vector<size_t>& projected_cols) override {
+                                                         const std::vector<size_t>& projected_cols,
+                                                         const table::transaction_data& txn,
+                                                         table::fetch_visibility_t visibility) override {
             table::column_fetch_state state;
             // The chunk we fill is returned to the caller and then moved across a mailbox; the pins
             // taken below die with `state` when this function returns. Without this flag the string
@@ -232,7 +234,7 @@ namespace components::storage {
             // The list stays FULL WIDTH and the projection is applied as a skip below it, because the
             // fetch mapping is positional: a shorter list would compact the chunk and shift every
             // column a consumer addresses by ordinal.
-            table_.fetch(output, column_indices, row_ids, count, state, projected_cols);
+            table_.fetch(output, column_indices, row_ids, count, state, projected_cols, txn, visibility);
             // The string leg records buffer-pool OOM / data_corruption in
             // state.fetch_error; surface it as a value so the agent_disk fetch
             // reply can carry it across the mailbox (same shape as

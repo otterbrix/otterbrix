@@ -215,6 +215,32 @@ namespace services::disk {
         /// Returns true if the column was found and removed; false if it was missing.
         bool drop_column(const std::string& attname);
 
+        /// Rename ONE column of the live table — the storage half of ALTER TABLE RENAME COLUMN.
+        ///
+        /// The storage's name for a column is a CACHE of the catalog's; the identity is the
+        /// column's pg_attribute.attoid, which a rename does not move (RN-oid). Keeping the two
+        /// in step here is what lets the append path's column expansion and drop_column — both
+        /// of which still address columns by name — go on working straight after the statement,
+        /// without waiting for a restart.
+        ///
+        /// Nothing is allocated, moved or released. Unlike drop_column this builds no successor
+        /// data_table_t — a name is not part of any segment or block — so there are no ids to
+        /// name into pending_released_blocks_ and no adapter to rebuild.
+        ///
+        /// CRASH WINDOW, stated rather than hidden: the rename is in memory until this table's
+        /// next checkpoint serializes the schema, while the catalog half is durable at the WAL
+        /// commit marker, so a crash in between reloads a storage carrying the OLD name against
+        /// a catalog carrying the NEW one. That state used to COST THE COLUMN — the bootstrap
+        /// walk compared names and read it as a drop. It no longer can: the walk compares
+        /// attoids, sees no drop, and repairs the stale name from the catalog
+        /// (rearm_dropped_column_blocks_sync). The window is closed by IDENTITY, not by making
+        /// this call replayable.
+        ///
+        /// true = renamed; false = this storage never carried `old_attname`;
+        /// error = `new_attname` is already a column here, or no table is loaded.
+        [[nodiscard]] core::result_wrapper_t<bool> rename_column(const std::string& old_attname,
+                                                                 const std::string& new_attname);
+
     private:
         /// B3c — the deferred half of drop_column, run from checkpoint() once the new root's
         /// pointer stream is on the device and immediately before the free list that the
@@ -324,6 +350,74 @@ namespace services::disk {
             storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), res);
             return true;
         }
+
+        /// Rename a column of the live table_. Deliberately does NOT recreate the storage
+        /// adapter, and that is not an omission: drop_column has to because its rebuild
+        /// move-assigns a NEW data_table_t over table_ and leaves the adapter's data_table_t&
+        /// dangling. A rename mutates the SAME object in place, and the adapter reads columns()
+        /// straight through that reference, so it already answers with the new name.
+        [[nodiscard]] core::result_wrapper_t<bool> rename_column(const std::string& old_attname,
+                                                                 const std::string& new_attname) {
+            return table_storage.rename_column(old_attname, new_attname);
+        }
+
+        // RN-oid — IDENTITY FOR A COLUMN THAT DOES NOT EXIST YET.
+        //
+        // Every storage column must carry its pg_attribute.attoid, because that is what the
+        // bootstrap reconciliation compares on (see rearm_dropped_column_blocks_sync). Three of
+        // the four ways a storage column comes into being are handed the catalog row that
+        // created it — CREATE TABLE / CREATE MATERIALIZED VIEW through
+        // build_create_table_writes, and both catalog-driven load paths through
+        // collect_catalog_columns_sync. The fourth is not: ALTER TABLE ADD COLUMN writes only
+        // pg_attribute, and the storage column is materialised LATER, by the schema-growth
+        // stage of storage_append_inner, out of an INSERT chunk that carries nothing but an
+        // alias-tagged type. That stage has no catalog to ask (pg_attribute is agent 0's, and
+        // an append handler may not take a second cross-actor await).
+        //
+        // So the identity is DELIVERED AHEAD OF THE COLUMN and parked here, keyed by the only
+        // thing the future INSERT chunk will carry — the name. Two publishers, and between them
+        // they cover the live case and every crash:
+        //   * the ALTER's own commit (manager_disk_t::update_pg_attribute_commit_id_fields
+        //     routes each added_at marker to the owning agent), reaching this entry before the
+        //     client's next statement can, by mailbox FIFO;
+        //   * bootstrap (rearm_dropped_column_blocks_sync), for every live catalog attoid the
+        //     storage does not already carry — which is an OID-set difference, not a name
+        //     match, and re-publishes whatever a crash discarded before any INSERT can run.
+        // A pending entry is consumed on use. It is NOT durable and does not need to be: it
+        // describes a column that does not exist yet, and bootstrap re-derives it from the two
+        // durable facts every time.
+        struct pending_column_identity_t {
+            std::string attname;
+            std::uint32_t attoid{0};
+        };
+
+        void note_column_identity(std::string attname, std::uint32_t attoid) {
+            if (attname.empty() || attoid == 0) {
+                return;
+            }
+            for (auto& p : pending_column_identities) {
+                if (p.attname == attname) {
+                    p.attoid = attoid;
+                    return;
+                }
+            }
+            pending_column_identities.push_back(pending_column_identity_t{std::move(attname), attoid});
+        }
+
+        // 0 = nothing published for this name. The caller is the one materialising the column,
+        // so the entry is dropped on the way out: it has served its single purpose.
+        std::uint32_t take_column_identity(const std::string& attname) {
+            for (auto it = pending_column_identities.begin(); it != pending_column_identities.end(); ++it) {
+                if (it->attname == attname) {
+                    const auto attoid = it->attoid;
+                    pending_column_identities.erase(it);
+                    return attoid;
+                }
+            }
+            return 0;
+        }
+
+        std::vector<pending_column_identity_t> pending_column_identities;
     };
 
     // One tombstoned pg_class row, as scan_dropped_oids_sync reports it: the table's own oid,
@@ -761,6 +855,20 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<bool>>
         drop_storage_column(session_id_t session, components::catalog::oid_t table_oid, std::string attname);
 
+        // ALTER TABLE RENAME COLUMN's physical half: rename ONE column of `table_oid`'s
+        // storage. Thin router to the owning agent; the three-way answer and the reason this
+        // leg has to exist at all are in disk_contract.hpp.
+        //
+        // ORDERING mirrors drop_storage_column and for the same reason in the ROLLBACK
+        // direction: operator_commit_transaction_t drives it only after the WAL commit marker
+        // and the publish barrier, so a reverted ALTER can never leave the storage renamed
+        // against a catalog that took the rename back — and the bootstrap walk would read that
+        // divergence as a DROP of a surviving column.
+        unique_future<core::result_wrapper_t<bool>> rename_storage_column(session_id_t session,
+                                                                          components::catalog::oid_t table_oid,
+                                                                          std::string old_attname,
+                                                                          std::string new_attname);
+
         // ALTER TABLE ADD COLUMN owned by operator_alter_column_add_t; computed
         // tables maintained via operator_computed_field_register_t.
 
@@ -924,12 +1032,18 @@ namespace services::disk {
         // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
         // The wrapper forwards the owning agent's buffer-pool OOM / data_corruption
         // unchanged; callers read has_error() before .value().
+        // `txn` + `visibility` ride this same message (C4b) and neither has a default: under
+        // SNAPSHOT rows invisible to `txn` are dropped, so the reply is SHORTER than the
+        // request and is paired with it through each chunk's row_ids, never by position.
+        // See the contract note on disk_contract::storage_fetch.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
                       uint64_t count,
-                      std::vector<size_t> projected_cols);
+                      std::vector<size_t> projected_cols,
+                      components::table::transaction_data txn,
+                      components::table::fetch_visibility_t visibility);
         // Appends every chunk in order. Appends within one txn are contiguous, so the
         // result is the single coalesced range [range_start, range_start + total_count).
         // Reply wraps (start_row, count) so a write_conflict / out_of_memory from the
@@ -1007,6 +1121,7 @@ namespace services::disk {
                                                        &manager_disk_t::read_chunks_by_keys,
                                                        &manager_disk_t::compact_relkind_g_storage,
                                                        &manager_disk_t::drop_storage_column,
+                                                       &manager_disk_t::rename_storage_column,
                                                        &manager_disk_t::on_horizon_advanced,
                                                        &manager_disk_t::mark_storage_dropped_many,
                                                        &manager_disk_t::storage_dropped_committed,

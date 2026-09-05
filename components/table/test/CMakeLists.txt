@@ -10,6 +10,7 @@ set(${PROJECT_NAME}_SOURCES
         test_shadow_free_list.cpp
         test_big_strings.cpp
         test_storage_adapter_fetch.cpp
+        test_fetch_visibility.cpp
         test_eviction_guard.cpp
         test_buffer_spill.cpp
         test_eviction_queue_leak_repro.cpp

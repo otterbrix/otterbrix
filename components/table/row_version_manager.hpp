@@ -42,6 +42,25 @@ namespace components::table {
     static constexpr uint64_t TRANSACTION_ID_START = uint64_t(4611686018427388000);      // 2^62
     static constexpr uint64_t NOT_DELETED_ID = std::numeric_limits<uint64_t>::max() - 1; // 2^64 - 1
 
+    // Which rows a point fetch by row_id is allowed to produce. NO DEFAULT VALUE is
+    // given to any parameter of this type anywhere: every sender names the mode, so
+    // forgetting one is a compile error rather than a silently wrong answer.
+    //
+    //   SNAPSHOT — apply row_version_manager_t::fetch: the row must be visible to the
+    //              accompanying transaction_data. This is what every reader wants.
+    //   RAW      — skip the check and produce the row whatever its version stamps say.
+    //              The ONLY legitimate user is the CREATE INDEX backfill, which reads
+    //              DELETED rows on purpose to recover the old key columns.
+    //
+    // An EMPTY transaction_data is NOT the raw mode and must never be used as one: it
+    // means "see everything COMMITTED" (see snapshot_horizon below), so a committed
+    // delete still hides the row from it. That is why RAW is a separate explicit value.
+    enum class fetch_visibility_t : uint8_t
+    {
+        SNAPSHOT = 0,
+        RAW = 1
+    };
+
     struct transaction_data {
         transaction_data() = default;
         transaction_data(uint64_t id, uint64_t time)

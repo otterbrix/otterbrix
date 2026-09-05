@@ -322,7 +322,9 @@ namespace services::disk {
                                   catalog::oid_t table_oid,
                                   components::vector::vector_t row_ids,
                                   uint64_t count,
-                                  std::vector<size_t> projected_cols) {
+                                  std::vector<size_t> projected_cols,
+                                  components::table::transaction_data txn,
+                                  components::table::fetch_visibility_t visibility) {
         if (!agents_.empty()) {
             const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[pool_idx];
@@ -331,7 +333,9 @@ namespace services::disk {
                                                                   table_oid,
                                                                   row_ids,
                                                                   count,
-                                                                  std::move(projected_cols));
+                                                                  std::move(projected_cols),
+                                                                  std::move(txn),
+                                                                  visibility);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }

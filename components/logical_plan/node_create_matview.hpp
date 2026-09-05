@@ -54,6 +54,11 @@ namespace components::logical_plan {
         // metadata + access to dispatcher_idx). Planner reads it to call
         // build_create_table_writes for pg_class + pg_attribute rows.
         const std::vector<table::column_definition_t>& inferred_columns() const noexcept { return inferred_columns_; }
+        // RN-oid: the planner's rewrite hands this list to build_create_table_writes, which
+        // stamps each column's freshly allocated pg_attribute.attoid back onto it. Plan-gen
+        // then copies the SAME list into operator_create_matview_t, so the matview's storage
+        // columns carry the identity the catalog minted for them.
+        std::vector<table::column_definition_t>& inferred_columns() noexcept { return inferred_columns_; }
         void set_inferred_columns(std::vector<table::column_definition_t> cols) { inferred_columns_ = std::move(cols); }
 
         // The matview's own oid (pg_class.oid). Stamped by planner from

@@ -598,6 +598,17 @@ namespace components::table {
         }
     }
 
+    bool row_group_t::is_visible(const transaction_data& txn, int64_t row_id) {
+        auto* versions = version_info();
+        if (!versions) {
+            // No manager == no insert stamp and no tombstone recorded for this group.
+            // Everything in it is committed-and-visible, which is the same answer
+            // row_version_manager_t::fetch gives over a null chunk_info.
+            return true;
+        }
+        return versions->fetch(txn, static_cast<uint64_t>(row_id));
+    }
+
     void row_group_t::append_version_info(transaction_data txn, uint64_t count) {
         uint64_t row_group_start = this->count.load();
         uint64_t row_group_end = row_group_start + count;

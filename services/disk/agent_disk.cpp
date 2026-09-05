@@ -305,6 +305,13 @@ namespace services::disk {
                 continue;
             }
             components::table::column_definition_t def(name, ctype);
+            // RN-oid: a materialised column must carry its pg_attribute.attoid. This replay
+            // leg re-applies a schema-growth record, so the identity comes from whatever the
+            // catalog published for this table (see
+            // collection_storage_entry_t::note_column_identity). 0 means nothing published it
+            // — the relkind='g' case, whose columns live in pg_computed_column and which the
+            // bootstrap reconciliation never walks.
+            def.set_attoid(entry->take_column_identity(name));
             entry->add_column(def, resource());
             // add_column rebuilt the adapter; refresh the local pointer.
             s = entry->storage.get();
@@ -432,6 +439,14 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::drop_storage_column_inner, msg);
                 break;
             }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::rename_storage_column_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::rename_storage_column_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::note_column_identity_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::note_column_identity_inner, msg);
+                break;
+            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::mark_storage_dropped_many_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::mark_storage_dropped_many_inner, msg);
                 break;
@@ -534,6 +549,12 @@ namespace services::disk {
             }
             if (!new_columns.empty()) {
                 for (auto& col : new_columns) {
+                    // RN-oid: stamp the identity the catalog published ahead of this
+                    // materialisation. For a regular table that publisher is the ALTER TABLE
+                    // ADD COLUMN commit (or bootstrap re-publishing it after a crash); for a
+                    // relkind='g' table there is none — its columns are described by
+                    // pg_computed_column, and the reconciliation excludes 'g' at the source.
+                    col.set_attoid(entry->take_column_identity(col.name()));
                     entry->add_column(col, resource());
                     // Record for the PHYSICAL_ADD_COLUMN WAL record written below.
                     wal_added_columns.push_back(col);
@@ -880,7 +901,9 @@ namespace services::disk {
     agent_disk_t::storage_fetch_inner(components::catalog::oid_t table_oid,
                                       components::vector::vector_t row_ids,
                                       uint64_t count,
-                                      std::vector<size_t> projected_cols) {
+                                      std::vector<size_t> projected_cols,
+                                      components::table::transaction_data txn,
+                                      components::table::fetch_visibility_t visibility) {
         std::pmr::vector<components::vector::data_chunk_t> out{resource()};
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
@@ -907,14 +930,20 @@ namespace services::disk {
             components::vector::vector_t window_ids(resource(), components::types::logical_type::BIGINT, n);
             std::memcpy(window_ids.data(), ids + offset, n * sizeof(int64_t));
             components::vector::data_chunk_t chunk(resource(), types, n);
-            auto fetch_r = entry->storage->fetch(chunk, window_ids, n, projected_cols);
+            auto fetch_r = entry->storage->fetch(chunk, window_ids, n, projected_cols, txn, visibility);
             if (fetch_r.has_error()) {
                 // First window error aborts the whole batch: the reply must never
                 // pair "success" with a chunk whose string cells were left empty
                 // by a failed overflow-block read.
                 co_return fetch_r.convert_error<std::pmr::vector<components::vector::data_chunk_t>>();
             }
-            std::memcpy(chunk.row_ids.data(), ids + offset, n * sizeof(int64_t));
+            // The row_ids are NOT stamped here any more. This handler used to memcpy the
+            // REQUEST over them, which made the field a restatement of the question rather
+            // than a report of the answer — and the answer can be shorter, because the
+            // producer drops rows this txn may not see and rows that name no row group at
+            // all. collection_t::fetch stamps the ids of the rows it actually gathered, and
+            // the guard below is on that pairing.
+            assert(chunk.size() <= n && "storage_fetch_inner: a window produced more rows than it was asked for");
             out.emplace_back(std::move(chunk));
         }
         co_return std::move(out);
@@ -2719,6 +2748,52 @@ namespace services::disk {
         co_return core::result_wrapper_t<bool>(dropped);
     }
 
+    // ALTER TABLE RENAME COLUMN's physical half on this agent's own slice — the sibling of
+    // drop_storage_column_inner, and it exists for a reason that is not symmetry.
+    //
+    // manager_disk_t::rearm_dropped_column_blocks_sync reconciles every loaded storage's column
+    // names against the live pg_attribute rows at bootstrap and reads a storage-only name as a
+    // DROP: it takes the column out of the collection and arms its blocks. That reading is
+    // correct only while a catalog name and a storage name cannot diverge. A RENAME that wrote
+    // pg_attribute and stopped there would make them diverge by construction, and the next start
+    // would physically remove a SURVIVING column together with its data. So the same commit that
+    // writes the new name into the catalog writes it here.
+    //
+    // WHEN this runs is the same argument drop_storage_column_inner makes:
+    // operator_commit_transaction drives it only after the txn's WAL commit marker and the
+    // ProcArray publish barrier, so an explicit ROLLBACK — which reverts the pg_attribute rows,
+    // being ordinary inserts under this txn id — can never leave the storage renamed against a
+    // catalog that took the rename back. What it does NOT close, and it is written down rather
+    // than glossed: the rename is memory-resident until this table's next checkpoint, while the
+    // catalog half is durable at the marker. See the note on table_storage_t::rename_column.
+    agent_disk_t::unique_future<core::result_wrapper_t<bool>>
+    agent_disk_t::rename_storage_column_inner(components::catalog::oid_t table_oid,
+                                              std::string old_attname,
+                                              std::string new_attname) {
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            // Not owned here, or a record-only marker. The caller's catalog rename is already
+            // committed, so a quiet "done" would leave the two halves disagreeing forever with
+            // nothing to re-derive the rename from.
+            std::pmr::string msg{"agent_disk::rename_storage_column: no materialized storage for table oid ",
+                                 resource()};
+            msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
+            co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
+        }
+        auto renamed = it->second->rename_column(old_attname, new_attname);
+        if (renamed.has_error()) {
+            co_return renamed;
+        }
+        trace(log_,
+              "agent_disk[{}]::rename_storage_column_inner: oid={} '{}' -> '{}' {}",
+              pool_idx_,
+              static_cast<unsigned>(table_oid),
+              old_attname,
+              new_attname,
+              renamed.value() ? "renamed" : "absent from the storage schema — nothing to rename");
+        co_return renamed;
+    }
+
     // Runtime DROP path, canonical per-oid mark: read otbx_path + derive the .wal_id
     // sidecar from the own slice, then record the GC entry via
     // register_dropped_storage_inner_sync. Replaces the manager-side storage_entry borrow
@@ -2757,6 +2832,25 @@ namespace services::disk {
         for (auto table_oid : table_oids) {
             mark_storage_dropped_one_local(table_oid, dropped_at_commit_id);
         }
+        co_return;
+    }
+
+    // RN-oid. See the declaration and collection_storage_entry_t::note_column_identity: this
+    // parks the identity of a column the catalog has already created and the storage has not
+    // materialised yet, so that whichever INSERT does materialise it stamps the right attoid
+    // instead of leaving a 0 the bootstrap reconciliation would have to refuse.
+    agent_disk_t::unique_future<void> agent_disk_t::note_column_identity_inner(components::catalog::oid_t table_oid,
+                                                                              std::string attname,
+                                                                              std::uint32_t attoid) {
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr) {
+            trace(log_,
+                  "agent_disk[{}]::note_column_identity_inner: oid {} not owned by this agent — no-op",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            co_return;
+        }
+        it->second->note_column_identity(std::move(attname), attoid);
         co_return;
     }
 

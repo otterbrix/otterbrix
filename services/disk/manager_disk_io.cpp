@@ -189,6 +189,55 @@ namespace services::disk {
         if (agents_.empty()) {
             return;
         }
+
+        // RN-oid — the WAL-REPLAY SYNTHESIS leg of "every storage column carries its attoid".
+        //
+        // base_spaces' replay synthesises a storage for a table whose .otbx was lost (the
+        // directory entry of a freshly created file is not fsynced) out of the WAL chunk's
+        // COLUMN TYPES, which carry a name in the alias and nothing else. Left at 0, those
+        // columns are unidentified and the bootstrap reconciliation has to refuse the whole
+        // table for good.
+        //
+        // The catalog is final at that point — system-table records replay first and
+        // sequentially, so pg_class and pg_attribute are already repopulated — so this is
+        // exactly the moment the identity IS knowable. Binding it by NAME here is not the
+        // comparison this task removed: nothing is destroyed on a miss, and a column that finds
+        // no catalog row simply stays unidentified (the relkind='g' case, whose columns are
+        // described by pg_computed_column and which the reconciliation never walks). Identity is
+        // established ONCE, at materialisation; from then on the oid is what everything keys on.
+        //
+        // A no-op on every other caller: bootstrap_system_tables_sync runs before pg_attribute
+        // holds anything (and system tables are below FIRST_USER_OID, outside the walk), and
+        // rehydrate_missing_user_storages_sync already passes columns stamped by
+        // collect_catalog_columns_sync — set_attoid is idempotent for the same value.
+        {
+            bool needs_identity = false;
+            for (const auto& col : columns) {
+                if (col.attoid() == 0) {
+                    needs_identity = true;
+                    break;
+                }
+            }
+            if (needs_identity) {
+                std::unordered_set<components::catalog::oid_t> wanted;
+                wanted.insert(table_oid);
+                auto cols_by_relid = collect_catalog_columns_sync(wanted);
+                auto found = cols_by_relid.find(table_oid);
+                if (found != cols_by_relid.end()) {
+                    for (auto& col : columns) {
+                        if (col.attoid() != 0) {
+                            continue;
+                        }
+                        for (const auto& def : found->second) {
+                            if (def.name() == col.name() && def.attoid() != 0) {
+                                col.set_attoid(def.attoid());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         const std::size_t pool_idx_c = pool_idx_for_oid(table_oid, agents_.size());
         trace(log_,
               "manager_disk_t::create_storage_disk_sync: create oid={} pool_idx={} path={}",

@@ -25,10 +25,19 @@ namespace components::catalog {
     //   - Each column must have atttypid set. Columns with atttypid == INVALID_OID
     //     still get a pg_attribute row but their pg_depend row is omitted.
     //   - oid_batch must hold at least 1 + N OIDs (table OID + one attoid per column).
+    //
+    // RN-oid: `columns` is taken by NON-const reference because this is the ONE place the
+    // attoid of a brand-new column comes into existence. Every allocated attoid is stamped
+    // back onto its column_definition_t, so the very list handed to the physical storage
+    // (node_create_collection_t::column_definitions / node_create_matview_t::inferred_columns,
+    // read by plan-gen AFTER this rewrite) carries the identity the catalog just minted. The
+    // storage serializes it into the .otbx and the bootstrap reconciliation compares on it.
+    // Returning it out-of-band instead would let the two halves drift apart silently, which is
+    // exactly the class of defect this closes.
     std::vector<catalog_write_t> build_create_table_writes(std::pmr::memory_resource* resource,
                                                            const std::string& dbname,
                                                            const std::string& relname,
-                                                           const std::vector<table::column_definition_t>& columns,
+                                                           std::vector<table::column_definition_t>& columns,
                                                            oid_t namespace_oid,
                                                            oid_batch_t& oid_batch,
                                                            char relkind = relkind::regular);

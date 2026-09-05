@@ -52,8 +52,8 @@ namespace components::operators {
         // node_alter_column_t::set_attoid has no callers anywhere in the pipeline, so attoid_
         // was INVALID on every execution and ALTER TABLE DROP COLUMN returned success having
         // written nothing at all — no tombstone, no dependent scrub, no storage release. The
-        // sibling defect is pinned by the note in
-        // integration/cpp/test/test_multi_database_isolation.cpp (RENAME COLUMN, same cause).
+        // sibling defect — RENAME COLUMN, same cause — was fixed by the same move; its gate is
+        // integration/cpp/test/test_alter_rename_column.cpp.
         // Resolving by (attrelid, attname) is also what planner.cpp::rewrite_alter_table's own
         // comment always said this operator does — "looks up the attoid by (table_oid,
         // column_name) at execution time" — so this makes the code agree with its contract
@@ -308,7 +308,9 @@ namespace components::operators {
             attoid,
             components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at,
             table_oid_,
-            column_name_});
+            column_name_,
+            // rename_to_attname is the storage_rename kind's field; a DROP names no new name.
+            std::string{}});
 
         // Note: drop_column on a relkind='g' (computing) table is routed to
         // operator_computed_field_unregister_t in planner.cpp::rewrite_alter_table,

@@ -144,7 +144,18 @@ namespace components::operators {
             // Backfill added_at_commit_id on this row, keyed by attoid.
             ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
                 attoid,
-                components::pg_attribute_commit_id_backfill_t::kind_t::added_at});
+                components::pg_attribute_commit_id_backfill_t::kind_t::added_at,
+                // RN-oid: an added_at marker DOES carry a second half now — not a release and
+                // not a rename, but the delivery of this column's IDENTITY to the storage that
+                // will materialise it. ALTER TABLE ADD COLUMN writes pg_attribute and stops;
+                // the storage column appears later, out of the first INSERT that carries it,
+                // on an agent that cannot read pg_attribute. Naming the table and the attname
+                // here is what lets manager_disk_t::update_pg_attribute_commit_id_fields park
+                // this attoid on the owning agent, so the materialised column is born with it
+                // instead of with a 0 the bootstrap reconciliation would have to refuse.
+                table_oid_,
+                std::string(column_.name()),
+                std::string{}});
         }
 
         // resolve_table rebuilds columns from pg_attribute on each call, so

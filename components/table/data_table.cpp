@@ -149,6 +149,15 @@ namespace components::table {
 
     const std::vector<column_definition_t>& data_table_t::columns() const { return column_definitions_; }
 
+    // RN-oid: the columns adopted here carry NO pg_attribute.attoid, and that is not an
+    // oversight. The assert says why — this only ever runs on a SCHEMA-LESS table, and the only
+    // tables created schema-less are relkind='g' (computed) ones, whose columns are described by
+    // pg_computed_column rather than pg_attribute. There is no attoid to adopt: the identity of a
+    // computed column is its pg_computed_column.attoid, minted by
+    // operator_computed_field_register_t inside the same INSERT and never carried down to
+    // storage. Nothing needs it either — manager_disk_t::rearm_dropped_column_blocks_sync
+    // excludes 'g' at the source (scan_live_table_oids_sync yields only 'r' and 'm'), and the
+    // 'g' compaction path (compact_relkind_g_storage) is name-driven by design.
     void data_table_t::adopt_schema(const std::pmr::vector<types::complex_logical_type>& types) {
         assert(column_definitions_.empty() && "adopt_schema can only be called on schema-less table");
         column_definitions_.reserve(types.size());
@@ -481,13 +490,44 @@ namespace components::table {
         mark_modified();
     }
 
+    core::result_wrapper_t<bool> data_table_t::rename_column(const std::string& old_name, const std::string& new_name) {
+        // Collision check FIRST, over the whole list, so a refusal changes nothing. Renaming a
+        // column onto a name another column already answers to would leave the durable schema —
+        // which addresses columns by name — with two indistinguishable entries.
+        uint64_t idx = column_definitions_.size();
+        for (uint64_t i = 0; i < column_definitions_.size(); ++i) {
+            const auto& col_name = column_definitions_[i].name();
+            if (col_name == new_name) {
+                std::pmr::string msg{"data_table_t::rename_column: table '", resource_};
+                msg += std::pmr::string{name_, resource_};
+                msg += std::pmr::string{"' already has a column named '", resource_};
+                msg += std::pmr::string{new_name, resource_};
+                msg += std::pmr::string{"'", resource_};
+                return core::error_t{core::error_code_t::schema_error, std::move(msg)};
+            }
+            if (col_name == old_name) {
+                idx = i;
+            }
+        }
+        if (idx == column_definitions_.size()) {
+            return false; // not a column of this storage — see the contract on the declaration
+        }
+        column_definitions_[idx].set_name(new_name);
+        // checkpoint() serializes the name; until one runs, the durable root still carries the
+        // old one (see the crash-window note on services::disk::table_storage_t::rename_column).
+        mark_modified();
+        return true;
+    }
+
     void data_table_t::fetch(vector::data_chunk_t& result,
                              const std::vector<storage_index_t>& column_ids,
                              const vector::vector_t& row_identifiers,
                              uint64_t fetch_count,
                              column_fetch_state& state,
-                             const std::vector<size_t>& projected_cols) {
-        row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, state, projected_cols);
+                             const std::vector<size_t>& projected_cols,
+                             const transaction_data& txn,
+                             fetch_visibility_t visibility) {
+        row_groups_->fetch(result, column_ids, row_identifiers, fetch_count, state, projected_cols, txn, visibility);
     }
 
     std::unique_ptr<constraint_state> data_table_t::initialize_constraint_state(
@@ -720,6 +760,19 @@ namespace components::table {
             writer.write<uint32_t>(static_cast<uint32_t>(type_spec.size()));
             writer.write_data(type_spec.data(), type_spec.size());
             writer.write<uint8_t>(col.is_not_null() ? 1 : 0);
+            // RN-oid: the column's IDENTITY — pg_attribute.attoid — travels with the column,
+            // because the bootstrap reconciliation
+            // (manager_disk_t::rearm_dropped_column_blocks_sync) has to decide "is this
+            // storage column still described by the catalog?" and the NAME cannot answer it:
+            // ALTER TABLE RENAME COLUMN makes the catalog durable on the new name at its WAL
+            // marker while this schema stays on the old one until the next checkpoint, and a
+            // name-keyed answer reads that gap as a DROP and releases a surviving column's
+            // blocks. The oid is stable across a rename, so the gap stops being observable.
+            //
+            // main_header_t::CURRENT_VERSION is deliberately NOT bumped: the format is ours,
+            // this branch has no files predating the field, and rule 6 forbids carrying a
+            // compatibility path for a state that does not exist.
+            writer.write<uint32_t>(col.attoid());
         }
 
         // write row group count and pointers
@@ -779,6 +832,12 @@ namespace components::table {
             type_spec.resize(spec_size);
             reader.read_data(type_spec.data(), spec_size);
             auto not_null = reader.read<uint8_t>() != 0;
+            // RN-oid, the reading half. 0 here means the column was written by a path that
+            // never learned its pg_attribute.attoid; that is NOT refused at this boundary —
+            // see the note on the writer, and manager_disk_t::rearm_dropped_column_blocks_sync
+            // for where the refusal does live. Aborting a table LOAD over it would turn a
+            // recoverable accounting gap into an unopenable database.
+            const auto attoid = reader.read<uint32_t>();
             if (reader.has_error()) {
                 return core::error_t(reader.error());
             }
@@ -791,6 +850,7 @@ namespace components::table {
                 return col_type.convert_error<std::unique_ptr<data_table_t>>(); // data_corruption
             }
             columns.emplace_back(std::move(col_name), std::move(col_type.value()), not_null);
+            columns.back().set_attoid(attoid);
         }
 
         auto table = std::make_unique<data_table_t>(resource, block_manager, std::move(columns), std::move(name));

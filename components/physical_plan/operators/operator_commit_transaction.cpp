@@ -157,16 +157,34 @@ namespace components::operators {
                 column_releases.push_back(b);
             }
         }
-        if (!swap_backfills.empty() && commit_id_ > 0 && ctx->disk_address != actor_zeta::address_t::empty_address()) {
+        // The RENAME's storage half, copied out on the same principle and for the same reason:
+        // it is unfinished business of an ALTER that is legal only once the commit cannot be
+        // taken back. Unlike the DROP's release it patches NO commit_id column — renaming
+        // preserves added_at_commit_id — so these markers must also be kept OUT of the batch
+        // below: update_pg_attribute_commit_id_field_inner maps kind onto a column index
+        // (added_at -> 10, anything else -> 11) and would stamp dropped_at over a LIVE row.
+        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> column_renames{resource_};
+        for (const auto& b : swap_backfills) {
+            if (b.kind == components::pg_attribute_commit_id_backfill_t::kind_t::storage_rename &&
+                !b.release_attname.empty() && !b.rename_to_attname.empty() &&
+                b.release_table_oid != components::catalog::INVALID_OID) {
+                column_renames.push_back(b);
+            }
+        }
+        // Only the kinds that name a commit_id column reach the patcher.
+        std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfill_markers{resource_};
+        backfill_markers.reserve(swap_backfills.size());
+        for (auto& b : swap_backfills) {
+            if (b.kind != components::pg_attribute_commit_id_backfill_t::kind_t::storage_rename) {
+                backfill_markers.push_back(std::move(b));
+            }
+        }
+        swap_backfills.clear();
+        if (!backfill_markers.empty() && commit_id_ > 0 &&
+            ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t backfill_ctx{ctx->session, txn_data, {}};
             // Log the marker count before the move empties the vector.
-            const auto backfill_count = swap_backfills.size();
-            // The disk handler takes a pmr vector; materialize one (operator
-            // resource_) from the plain-std drain local at the send site.
-            std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfill_markers{
-                std::make_move_iterator(swap_backfills.begin()),
-                std::make_move_iterator(swap_backfills.end()),
-                resource_};
+            const auto backfill_count = backfill_markers.size();
             auto [_b, bf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::update_pg_attribute_commit_id_fields,
                                              backfill_ctx,
@@ -427,6 +445,58 @@ namespace components::operators {
                       release.release_attname,
                       static_cast<unsigned>(release.release_table_oid),
                       released.value() ? "storage rebuilt without it" : "storage never carried it",
+                      commit_id_);
+            }
+        }
+
+        // Commit-time physical COLUMN rename — the DROP block above, one statement across.
+        // operator_alter_column_rename_t only MARKED it: the pg_attribute row it appended
+        // carries insert_id == this txn_id, so a ROLLBACK or a crash before the marker takes
+        // the new name back, while renaming the storage column is not undone by either.
+        //
+        // WHY IT MUST HAPPEN AT ALL: the storage keeps its OWN copy of each column's name and
+        // the write path addresses columns by it — the append's column expansion matches chunk
+        // aliases to storage names, drop_storage_column takes a name. Leaving that copy on the
+        // old name would make the very next INSERT expand its chunk against a name the catalog
+        // no longer uses.
+        //
+        // What it is NOT, any more: the thing that keeps the column alive across a restart.
+        // manager_disk_t::rearm_dropped_column_blocks_sync used to reconcile storage columns
+        // against pg_attribute BY NAME and read a storage-only name as a DROP, so skipping this
+        // send physically deleted a surviving column and its data at the next start. That walk
+        // now compares pg_attribute.attoid (RN-oid), which a rename does not move.
+        //
+        // What a crash leaves, at each window. Before the marker: replay drops the txn, and
+        // both halves still carry the OLD name. Between the marker and here: the catalog
+        // carries the NEW name and the storage the old one — a state no ordering can avoid,
+        // since the storage's durability point (its checkpoint) is later than the catalog's
+        // (the WAL marker) whichever way round the two are performed. It is no longer
+        // destructive: the bootstrap walk matches the two halves on the attoid and repairs the
+        // storage's stale name from the catalog.
+        //
+        // Rule 6: the reply is checked. A committed new attname over a storage that reports it
+        // cannot be renamed is not a success — the live write path would go on using a name the
+        // catalog has retired until the next restart repaired it.
+        if (commit_id_ > 0 && !column_renames.empty() &&
+            ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            for (const auto& rename : column_renames) {
+                auto [_rn, rnf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::rename_storage_column,
+                                                   ctx->session,
+                                                   rename.release_table_oid,
+                                                   rename.release_attname,
+                                                   rename.rename_to_attname);
+                auto renamed = co_await std::move(rnf);
+                if (renamed.has_error()) {
+                    set_error(renamed.error());
+                    co_return;
+                }
+                trace(log_,
+                      "operator_commit_transaction: renamed column '{}' -> '{}' of oid {} — {} (commit_id {})",
+                      rename.release_attname,
+                      rename.rename_to_attname,
+                      static_cast<unsigned>(rename.release_table_oid),
+                      renamed.value() ? "storage schema updated" : "storage never carried it",
                       commit_id_);
             }
         }

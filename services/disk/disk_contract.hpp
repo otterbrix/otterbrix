@@ -203,6 +203,35 @@ namespace services::disk {
         actor_zeta::unique_future<core::result_wrapper_t<bool>>
         drop_storage_column(session_id_t session, components::catalog::oid_t table_oid, std::string attname);
 
+        // Rename ONE named column, the ALTER TABLE RENAME COLUMN leg — and NOT a convenience.
+        //
+        // The storage's column name is a cache of the catalog's; the identity is the column's
+        // pg_attribute.attoid, which a rename does not move (RN-oid). This leg keeps the cache
+        // in step from the commit onward, because the parts of the write path that still
+        // address columns by name — the append's column expansion, drop_storage_column — would
+        // otherwise be reading a stale name until the next restart repaired it.
+        //
+        // It is NOT what keeps the data alive: manager_disk_t::rearm_dropped_column_blocks_sync
+        // compares ATTOIDS, so a rename the storage never saw reads as "same column, stale
+        // name" and is repaired, never as a drop. Before that walk keyed on the oid, skipping
+        // this leg cost the column and all of its data at the next start.
+        //
+        //   value true  — the column was in the live storage schema and now carries new_attname;
+        //   value false — the storage exists but never carried old_attname. ALTER TABLE ADD
+        //                 COLUMN writes pg_attribute only, so a column added and renamed before
+        //                 any INSERT materialized it has nothing to rename here. Not a failure,
+        //                 and not a divergence either: the storage names stay a SUBSET of the
+        //                 catalog's, which is the direction the bootstrap walk tolerates;
+        //   error       — the oid names no materialized storage on its owning agent, or
+        //                 new_attname is already a column of that storage (two columns under
+        //                 one name would leave the name-keyed reconciliation unable to tell
+        //                 them apart).
+        actor_zeta::unique_future<core::result_wrapper_t<bool>> rename_storage_column(
+            session_id_t session,
+            components::catalog::oid_t table_oid,
+            std::string old_attname,
+            std::string new_attname);
+
         // Storage management
         // B1b: `is_computed` = the pg_class.relkind='g' fact, derived by the caller
         // (see manager_disk_t::create_storage_disk).
@@ -254,6 +283,21 @@ namespace services::disk {
         // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
         // The wrapper carries the owning agent's buffer-pool OOM / data_corruption as a
         // value (no throw across the mailbox); callers read has_error() before .value().
+        //
+        // VISIBILITY RIDES THIS MESSAGE (C4b), as a mode and not as a second protocol leg:
+        // only the visibility of the answer differs between the two, not its shape or its
+        // agent-side state, so a dedicated leg would duplicate the manager route, the
+        // dispatch_traits entry and the agent handler for one caller. `visibility` has NO
+        // DEFAULT — a sender that does not name the mode does not compile — and it is an
+        // enum rather than a bool because the disk contract carries no bare booleans.
+        //   SNAPSHOT: rows invisible to `txn` are DROPPED. The reply is then SHORTER than
+        //             the request and NOT positionally paired with it; each returned chunk's
+        //             row_ids names the rows it actually carries, in order, and that is the
+        //             only correct way to pair a reply row with its id.
+        //   RAW:      no visibility question. The CREATE INDEX backfill needs it, because it
+        //             reads DELETED rows on purpose to recover their old key columns.
+        // An empty `txn` is NOT raw: it means "see all COMMITTED rows", so a committed
+        // delete still hides the row from it.
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         // projected_cols holds storage chunk indices; EMPTY means every column, matching
         // storage_fetch_next_batch above. Columns outside the set keep their ordinal slot and come
@@ -262,7 +306,9 @@ namespace services::disk {
                       components::catalog::oid_t table_oid,
                       components::vector::vector_t row_ids,
                       uint64_t count,
-                      std::vector<size_t> projected_cols);
+                      std::vector<size_t> projected_cols,
+                      components::table::transaction_data txn,
+                      components::table::fetch_visibility_t visibility);
 
         // Reply wraps (start_row, count) so a write_conflict / out_of_memory from the
         // table-layer append chain reaches operator_insert as a value.
@@ -379,6 +425,7 @@ namespace services::disk {
                                                             &disk_contract::read_chunks_by_keys,
                                                             &disk_contract::compact_relkind_g_storage,
                                                             &disk_contract::drop_storage_column,
+                                                            &disk_contract::rename_storage_column,
                                                             &disk_contract::on_horizon_advanced,
                                                             &disk_contract::mark_storage_dropped_many,
                                                             &disk_contract::storage_dropped_committed,

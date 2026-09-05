@@ -115,7 +115,9 @@ TEST_CASE("storage_adapter: fetch returns owned big-string bytes on the intact p
     vector_t row_ids(&env.resource, logical_type::BIGINT, 1);
     row_ids.data<int64_t>()[0] = 0;
 
-    auto fetch_r = storage.fetch(out, row_ids, 1, {});
+    // The row was appended at txn 0 and never deleted, so any snapshot sees it; the mode
+    // is named explicitly because fetch_visibility_t has no default (C4b).
+    auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
     REQUIRE_FALSE(fetch_r.has_error());
     REQUIRE(out.size() == 1);
     const auto cell = out.value(1, 0); // named local: chunk.value() is a temporary
@@ -143,7 +145,7 @@ TEST_CASE("storage_adapter: a fetch failure reaches the storage caller as an err
     // Before the fix this was `void storage.fetch(...)` — the data_corruption the
     // string leg recorded had NO reader, and the caller shipped a silently EMPTY
     // payload as if the read had succeeded (RED run: `0 == 5000 (0x1388)`).
-    auto fetch_r = storage.fetch(out, row_ids, 1, {});
+    auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
     REQUIRE(fetch_r.has_error());
     REQUIRE(fetch_r.error().type == core::error_code_t::data_corruption);
 }

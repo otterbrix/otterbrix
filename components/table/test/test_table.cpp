@@ -373,7 +373,16 @@ TEST_CASE("components::table::data_table") {
                 rows.set_value(local, static_cast<int64_t>(base + local));
             }
             data_chunk_t result(&resource, data_table->copy_types(), count);
-            data_table->fetch(result, column_indices, rows, count, state, std::vector<size_t>{});
+            // Rows appended at txn 0 and never deleted: visible to any snapshot. The mode is
+            // spelled out because fetch_visibility_t carries no default (C4b).
+            data_table->fetch(result,
+                              column_indices,
+                              rows,
+                              count,
+                              state,
+                              std::vector<size_t>{},
+                              transaction_data{},
+                              fetch_visibility_t::SNAPSHOT);
             REQUIRE(result.size() == count);
             for (size_t local = 0; local < count; local++) {
                 check_cols(result, local, base + local, base_layout);

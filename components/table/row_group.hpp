@@ -106,6 +106,17 @@ namespace components::table {
                        uint64_t result_idx,
                        const std::vector<size_t>& projected_cols);
 
+        // Point-fetch visibility gate — the predicate fetch_row must be asked BEFORE it
+        // gathers, and the only reader of row_version_manager_t::fetch. `row_id` is
+        // collection-ABSOLUTE: that manager keeps the absolute contract for this one
+        // method and rebases to its group-local slots internally (A6), so nothing here
+        // rebases and nothing here may start.
+        //
+        // A group with no version manager has recorded no insert and no delete, so every
+        // one of its rows is visible — the same answer indexing_vector gives a scan over
+        // a null chunk_info, and the reason this cannot silently hide rows.
+        bool is_visible(const transaction_data& txn, int64_t row_id);
+
         void append_version_info(transaction_data txn, uint64_t count);
 
         void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);

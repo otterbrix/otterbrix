@@ -50,22 +50,32 @@ namespace components::operators {
             co_return;
         }
 
-        // attoid_ is pre-stamped by enrich_logical_plan; INVALID means the
-        // resolver couldn't find the column, so no-op.
-        if (attoid_ == catalog::INVALID_OID) {
+        // Keyed read of the table's live pg_attribute rows, then match the column BY NAME.
+        //
+        // This used to key on attoid_ alone and no-op when it was INVALID_OID, on the stated
+        // premise that enrich_logical_plan had pre-stamped it. Nothing ever did:
+        // node_alter_column_t::set_attoid has no callers anywhere in the pipeline, so attoid_ was
+        // INVALID on every execution and ALTER TABLE RENAME COLUMN returned success having
+        // written nothing — the column kept its old name and the statement lied. This is the
+        // sibling of the DROP COLUMN defect B3c1 fixed by the same move, and the note pinning it
+        // sat in integration/cpp/test/test_multi_database_isolation.cpp.
+        //
+        // Resolving by (attrelid, attname) is also what planner.cpp::rewrite_alter_table's own
+        // comment always claimed the ALTER operators do. attoid_ stays a CROSS-CHECK: when a
+        // caller does stamp it, the row must be that row.
+        if (old_name_.empty()) {
             mark_executed();
             co_return;
         }
 
-        // keyed single-row read of the live pg_attribute row by attoid.
         std::pmr::vector<std::uint64_t> pa_keys(resource_);
-        pa_keys.emplace_back(catalog::pg_attribute_col::attoid);
+        pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
         auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::read_chunks_by_key,
                                            exec_ctx,
                                            pg_attr,
                                            std::move(pa_keys),
-                                           components::operators::make_key_chunk(resource_, attoid_),
+                                           components::operators::make_key_chunk(resource_, table_oid_),
                                            std::pmr::vector<std::uint64_t>{resource_});
         auto attr_batches_r = co_await std::move(paf);
         if (attr_batches_r.has_error()) {
@@ -93,7 +103,18 @@ namespace components::operators {
                     continue;
                 if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
                     continue; // dropped
-                attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                if (chunk.is_null(2, i))
+                    continue;
+                // get_value<string_view> (NOT chunk.value(), whose logical_value_t is a
+                // temporary the view would outlive) — this one points into the chunk's own
+                // string buffer, alive for the whole comparison.
+                const auto attname_cell = chunk.get_value<std::string_view>(2, i);
+                if (attname_cell != old_name_)
+                    continue;
+                const auto row_attoid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                if (attoid_ != catalog::INVALID_OID && row_attoid != attoid_)
+                    continue; // a stamped identity must match the row it names
+                attoid = row_attoid;
                 atttypid = chunk.is_null(3, i) ? catalog::INVALID_OID
                                                : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                 attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
@@ -152,8 +173,54 @@ namespace components::operators {
                                              pg_attr,
                                              std::move(new_row));
             auto rng = co_await std::move(wf);
-            if (rng.count > 0)
-                ctx->pg_catalog_appends.push_back(std::move(rng));
+            // The live row is already deleted above. A 0-row append would leave the column
+            // half-renamed — invisible to resolve_table under either name, and with no MVCC
+            // marker for recovery — so this is a hard error rather than a mark_executed() lie
+            // (same shape as operator_alter_column_drop_t's tombstone append).
+            if (rng.count == 0) {
+                std::string msg = "operator_alter_column_rename: renamed row append produced no rows for attoid ";
+                msg += std::to_string(attoid);
+                set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
+                mark_executed();
+                co_return;
+            }
+            ctx->pg_catalog_appends.push_back(std::move(rng));
+
+            // ARM THE STORAGE HALF.
+            //
+            // The storage keeps its own copy of every column's name, and parts of the write
+            // path address columns by it (the append's column expansion, drop_storage_column).
+            // Leaving that copy on the old name would not be inert: the very next INSERT would
+            // expand its chunk against a name the catalog no longer uses.
+            //
+            // What this marker is NOT is the thing that keeps the column alive across a
+            // restart. manager_disk_t::rearm_dropped_column_blocks_sync (B3c2) used to
+            // reconcile storage columns against pg_attribute BY NAME and read a storage-only
+            // name as a DROP, so a catalog-only rename cost the column and its data at the next
+            // start. That walk now compares pg_attribute.attoid (RN-oid), which a rename does
+            // not move, and repairs the stale storage name from the catalog instead.
+            //
+            // WHY THE MARKER AND NOT A SEND FROM HERE — the same ordering B3c1 established for
+            // the DROP's physical release, in the ROLLBACK direction. The row appended above
+            // carries insert_id == this txn_id: an explicit ROLLBACK reverts it
+            // (storage_revert_appends) and a crash before the commit marker discards it. The
+            // storage rename is not undone by either. Renaming from here would therefore let a
+            // reverted ALTER leave the storage under the new name while the catalog went back
+            // to the old one — and that divergence is exactly what the bootstrap walk reads as
+            // a drop. So this operator only MARKS, and operator_commit_transaction_t performs
+            // the rename after the WAL commit marker and the publish barrier, in the same block
+            // that performs a committed DROP COLUMN's release.
+            //
+            // The marker rides pg_attribute_commit_id_backfill_t because it has exactly that
+            // lifetime (drained at commit, discarded whole by txn_abort_drain_t). Its
+            // storage_rename kind patches no commit_id column — RENAME preserves added_at — and
+            // the commit operator keeps it out of the batch that does.
+            ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
+                attoid,
+                components::pg_attribute_commit_id_backfill_t::kind_t::storage_rename,
+                table_oid_,
+                old_name_,
+                new_name_});
         }
 
         mark_executed();

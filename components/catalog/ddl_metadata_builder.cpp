@@ -116,7 +116,7 @@ namespace components::catalog {
     build_create_table_writes(std::pmr::memory_resource* resource,
                               const std::string& /*dbname*/, // namespace resolved via namespace_oid
                               const std::string& relname,
-                              const std::vector<table::column_definition_t>& columns,
+                              std::vector<table::column_definition_t>& columns,
                               oid_t namespace_oid,
                               oid_batch_t& oid_batch,
                               char relkind_char) {
@@ -161,10 +161,17 @@ namespace components::catalog {
         attrs.reserve(columns.size());
         {
             std::int32_t attnum = 0;
-            for (const auto& col : columns) {
+            for (auto& col : columns) {
                 ++attnum;
                 attr_t a;
                 a.attoid = oid_batch.allocate();
+                // RN-oid: hand the freshly minted identity back to the column itself. This is
+                // the CREATE TABLE / CREATE MATERIALIZED VIEW / composite-type leg of "every
+                // storage column carries its attoid"; the same list is what plan-gen copies
+                // into operator_create_collection_t / operator_create_matview_t and what
+                // reaches table_storage_t. set_attoid is immutable-after-assignment, and a
+                // column is minted exactly once, so this cannot re-stamp.
+                col.set_attoid(static_cast<std::uint32_t>(a.attoid));
                 a.atttypid = (col.atttypid() != INVALID_OID) ? col.atttypid() : builtin_type_to_oid(col.type().type());
                 a.name = col.name();
                 a.attnum = attnum;

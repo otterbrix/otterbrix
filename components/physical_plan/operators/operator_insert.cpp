@@ -267,7 +267,13 @@ namespace components::operators {
                                                      table_oid_,
                                                      std::move(row_ids),
                                                      count,
-                                                     std::vector<size_t>{});
+                                                     std::vector<size_t>{},
+                                                     // This txn's OWN just-appended, still
+                                                     // uncommitted rows. It sees them by the MVCC
+                                                     // self-write rule, not by the positions
+                                                     // happening to line up.
+                                                     ctx->txn,
+                                                     components::table::fetch_visibility_t::SNAPSHOT);
                     auto segments_r = co_await std::move(sf);
                     if (segments_r.has_error()) {
                         // A failed re-read (buffer-pool OOM / corrupt overflow block)

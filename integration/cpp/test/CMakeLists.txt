@@ -30,6 +30,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_index_type_persistence.cpp
         test_index_txn_log_routing.cpp
         test_index_read_through_agent.cpp
+        test_index_fetch_visibility.cpp
         test_index_agent_owns_hash_storage.cpp
         test_index_ordered_read_through_agent.cpp
         test_index_rebuild_crash.cpp
@@ -47,6 +48,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_pool.cpp
         test_persistence.cpp
         test_alter_drop_column_reclaim.cpp
+        test_alter_rename_column.cpp
         test_sql_features.cpp
         test_unique_constraint_operator.cpp
         test_create_index_backfill_batched.cpp

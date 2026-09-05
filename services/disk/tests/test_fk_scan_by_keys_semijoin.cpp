@@ -79,9 +79,13 @@ namespace {
         uint64_t total_rows() const override { return inner_.total_rows(); }
         uint64_t calculate_size() override { return inner_.calculate_size(); }
         void scan(data_chunk_t& o, const table_filter_t* f, int64_t l) override { inner_.scan(o, f, l); }
-        [[nodiscard]] core::result_wrapper_t<bool>
-        fetch(data_chunk_t& o, const vector_t& ids, uint64_t c, const std::vector<size_t>& p) override {
-            return inner_.fetch(o, ids, c, p);
+        [[nodiscard]] core::result_wrapper_t<bool> fetch(data_chunk_t& o,
+                                                         const vector_t& ids,
+                                                         uint64_t c,
+                                                         const std::vector<size_t>& p,
+                                                         const transaction_data& txn,
+                                                         fetch_visibility_t visibility) override {
+            return inner_.fetch(o, ids, c, p, txn, visibility);
         }
         uint64_t append(data_chunk_t& d) override { return inner_.append(d); }
         void update(vector_t& ids, data_chunk_t& d) override { inner_.update(ids, d); }

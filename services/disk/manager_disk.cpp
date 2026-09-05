@@ -70,6 +70,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::read_chunks_by_keys>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::compact_relkind_g_storage>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_column>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::rename_storage_column>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::on_horizon_advanced>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>,
@@ -419,6 +420,25 @@ namespace services::disk {
         return true;
     }
 
+    core::result_wrapper_t<bool> table_storage_t::rename_column(const std::string& old_attname,
+                                                                const std::string& new_attname) {
+        if (!table_) {
+            // A construction that failed leaves no table (see construction_failed()). The
+            // caller's catalog rename is already committed, so this cannot answer "nothing to
+            // do" — the two halves would disagree with nothing left to reconcile them.
+            std::pmr::string msg{"table_storage_t::rename_column: no loaded table for column '",
+                                 pending_released_blocks_.get_allocator().resource()};
+            msg += std::pmr::string{old_attname, pending_released_blocks_.get_allocator().resource()};
+            msg += std::pmr::string{"'", pending_released_blocks_.get_allocator().resource()};
+            return core::error_t{core::error_code_t::other_error, std::move(msg)};
+        }
+        // Nothing to name into pending_released_blocks_ and no successor collection to build:
+        // a rename touches the column DEFINITION only. Every block, segment and row group stays
+        // exactly where it is, which is also why the reconciliation must never mistake this for
+        // a drop — the data is all still there under the new name.
+        return table_->rename_column(old_attname, new_attname);
+    }
+
     // B3c — the deferred half of a DISK-backed column drop, and the ownership proof that makes
     // it safe.
     //
@@ -761,6 +781,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_column>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::drop_storage_column, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::rename_storage_column>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::rename_storage_column, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::on_horizon_advanced>: {

@@ -132,6 +132,10 @@ TEST_CASE("catalog::ddl::create_table_writes_relstoragemode_disk_always") {
     {
         oid_batch_t oids;
         oids.oids.push_back(static_cast<oid_t>(3000));
-        check_pg_class_mode(build_create_table_writes(&poison, "db", "t_computed", {}, 100, oids, relkind::computed));
+        // RN-oid: the builder stamps allocated attoids back onto the column list, so it takes
+        // a non-const lvalue. A schemaless table has none, but the list still has to be one.
+        std::vector<components::table::column_definition_t> no_columns;
+        check_pg_class_mode(
+            build_create_table_writes(&poison, "db", "t_computed", no_columns, 100, oids, relkind::computed));
     }
 }

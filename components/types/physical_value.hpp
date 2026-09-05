@@ -61,7 +61,9 @@ namespace components::types {
 
     private:
         // C3: the 16-byte-family comparison arm of operator<.
-        bool less_128_(const physical_value& other, bool lhs128, bool rhs128) const noexcept;
+        // The 128-bit comparison recomputes both operand kinds from type_, so it takes no
+        // pre-computed flags: the caller's lhs128/rhs128 exist only to GATE the call.
+        bool less_128_(const physical_value& other) const noexcept;
 
         std::nullptr_t value_(std::integral_constant<physical_type, physical_type::NA>) const noexcept;
         bool value_(std::integral_constant<physical_type, physical_type::BOOL>) const noexcept;

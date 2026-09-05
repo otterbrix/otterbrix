@@ -92,7 +92,7 @@ namespace components::types {
             const bool lhs128 = type_ == physical_type::INT128 || type_ == physical_type::UINT128;
             const bool rhs128 = other.type_ == physical_type::INT128 || other.type_ == physical_type::UINT128;
             if (lhs128 || rhs128) {
-                return less_128_(other, lhs128, rhs128);
+                return less_128_(other);
             }
         }
 
@@ -187,7 +187,7 @@ namespace components::types {
         }
     }
 
-    bool physical_value::less_128_(const physical_value& other, bool lhs128, bool rhs128) const noexcept {
+    bool physical_value::less_128_(const physical_value& other) const noexcept {
         // INT128/UINT128 join the numeric family. Promote the narrow side; sign-aware for
         // the mixed signed/unsigned pairing; floating pairings go through double (lossy for
         // >2^53 — the documented cross-domain semantics, covered by the int128<->double
@@ -258,8 +258,6 @@ namespace components::types {
             auto lhs = as_int128(*this);
             return lhs < 0 || uint128_t(lhs) < other.value<physical_type::UINT128>();
         }
-        (void) lhs128;
-        (void) rhs128;
         return as_int128(*this) < as_int128(other);
     }
 

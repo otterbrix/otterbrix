@@ -187,6 +187,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_fixture_root_qualification.cpp
         test_pg_catalog_dml_guard.cpp
         test_pg_catalog_read.cpp
+        test_unqualified_name_ambiguity.cpp
 
         # TODO: casts for dynamic schema
         # stress tests with sanitizer are incredibly slow

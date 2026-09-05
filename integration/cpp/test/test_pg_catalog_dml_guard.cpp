@@ -149,3 +149,29 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::ddl_cannot_drop_or_alter_the_
     require_refused(dispatcher, "DROP DATABASE pg_catalog;");
     require_user_table_intact(dispatcher);
 }
+
+// CREATE INDEX is the remaining DDL door: it neither drops nor alters, so both guards above
+// let it through, yet it writes pg_class + pg_index rows and then BACKFILLS by scanning the
+// target -- an index over pg_class turns every later catalog write into a divergence between
+// the heap and an index nobody can drop safely. PostgreSQL refuses this outright unless
+// allow_system_table_mods is set; otterbrix has no such escape hatch.
+TEST_CASE("integration::cpp::pg_catalog_dml_guard::create_index_cannot_target_the_catalog") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/index_pg_class"),
+                                                 /*wal_on=*/true);
+    config.log.level = log_t::level::off;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    seed_user_table(dispatcher);
+
+    require_refused(dispatcher, "CREATE INDEX smuggled_idx ON pg_catalog.pg_class (relname);");
+    require_user_table_intact(dispatcher);
+
+    // pg_attribute too: a guard hard-wired to pg_class's oid would pass the case above.
+    require_refused(dispatcher, "CREATE INDEX smuggled_attr_idx ON pg_catalog.pg_attribute (attname);");
+    require_user_table_intact(dispatcher);
+
+    // The refusal must not over-reach: the same statement against the user table still works,
+    // and the refused attempts left no half-created index under the smuggled name.
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE INDEX smuggled_idx ON guarddb.alpha (name);")->is_success());
+    require_user_table_intact(dispatcher);
+}

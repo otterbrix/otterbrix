@@ -492,3 +492,139 @@ TEST_CASE("services::disk::sysboot::a_system_table_that_loads_empty_is_seeded_ag
 
     cleanup_boot_dir();
 }
+
+// 13. Catch-up seeding: a database created before pg_class/pg_attribute carried
+// self-description rows loads a pg_class that names the user's tables but no system table.
+// No old binary exists in CI, so the state is fabricated with the engine's own tools: build
+// a modern database with one user table, then scrub every system table's rows out of
+// pg_class/pg_attribute through delete_pg_catalog_rows (the DROP-path delete) and
+// checkpoint. What the files then hold — user rows only, no self-rows — is exactly what the
+// pre-self-description binary persisted. The next open must (a) still resolve the user
+// table through the pg_class read path, (b) resolve pg_class BY NAME again (impossible
+// without a self-row), and (c) change nothing on the open after that.
+TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_up") {
+    cleanup_boot_dir();
+    auto base = std::filesystem::path(boot_test_dir());
+    std::filesystem::create_directories(base);
+
+    constexpr auto pg_class = well_known_oid::pg_class_table;
+    constexpr auto pg_attribute = well_known_oid::pg_attribute_table;
+    const auto n_sys_tables = all_system_tables().size();
+    std::uint64_t n_sys_columns = 0;
+    for (const auto& def : all_system_tables()) {
+        n_sys_columns += def.columns.size();
+    }
+
+    components::catalog::oid_t ns_oid = components::catalog::INVALID_OID;
+
+    // Phase 1 — modern database with one user table, regressed to the old on-disk state.
+    {
+        disk_only_fixture fd(base);
+        fd.manager->bootstrap_system_tables_sync();
+        fd.manager->restore_oid_generator_sync();
+        ns_oid = disk_test_helpers::test_create_namespace(fd, "ns_old");
+        std::vector<components::table::column_definition_t> cols;
+        cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        const auto user_table = disk_test_helpers::test_create_table(fd, ns_oid, "t_old", cols);
+        fd.invoke(&manager_disk_t::create_storage_disk,
+                  components::session::session_id_t{},
+                  user_table,
+                  components::catalog::well_known_oid::main_database,
+                  cols,
+                  /*is_computed=*/false);
+        append_rows(fd, user_table, 3);
+
+        for (const auto& def : all_system_tables()) {
+            fd.invoke(&manager_disk_t::delete_pg_catalog_rows,
+                      disk_test_helpers::auto_ctx(),
+                      pg_class,
+                      std::int64_t{components::catalog::pg_class_col::oid},
+                      def.relation_oid);
+            fd.invoke(&manager_disk_t::delete_pg_catalog_rows,
+                      disk_test_helpers::auto_ctx(),
+                      pg_attribute,
+                      std::int64_t{components::catalog::pg_attribute_col::attrelid},
+                      def.relation_oid);
+        }
+        // The regression landed: pg_class still names the user table and no system table —
+        // in particular, pg_class no longer resolves ITSELF by name.
+        auto rk = fd.manager->relkind_for_oid_sync(pg_class);
+        REQUIRE_FALSE(rk.has_error());
+        REQUIRE(rk.value() == '\0');
+        auto t = test_probe::probe_table(fd, fd.ctx(), ns_oid, std::string("t_old"));
+        REQUIRE(t.found);
+        auto self = test_probe::probe_table(fd,
+                                            fd.ctx(),
+                                            components::catalog::well_known_oid::pg_catalog_namespace,
+                                            std::string("pg_class"));
+        REQUIRE_FALSE(self.found);
+        fd.checkpoint(services::wal::id_t{100});
+    }
+
+    std::uint64_t caught_up_cls_rows = 0;
+    std::uint64_t caught_up_att_rows = 0;
+
+    // Phase 2 — the "old" database opens; the catch-up branch must seed the self-rows.
+    {
+        disk_only_fixture fd2(base);
+        REQUIRE_NOTHROW(fd2.manager->bootstrap_system_tables_sync());
+        fd2.manager->restore_oid_generator_sync();
+        fd2.manager->load_user_table_storages_sync();
+
+        // The user table is still there, resolved through the same pg_class/pg_attribute
+        // read path SELECT uses.
+        auto t = test_probe::probe_table(fd2, fd2.ctx(), ns_oid, std::string("t_old"));
+        INFO("catching up the catalog must not lose the user table's pg_class row");
+        REQUIRE(t.found);
+        CHECK(t.columns.size() == 1);
+
+        // pg_class resolves ITSELF by name again — the row only the catch-up branch writes.
+        auto self = test_probe::probe_table(fd2,
+                                            fd2.ctx(),
+                                            components::catalog::well_known_oid::pg_catalog_namespace,
+                                            std::string("pg_class"));
+        INFO("an old database must be caught up: pg_class needs its own self-description row");
+        REQUIRE(self.found);
+        CHECK(self.oid == pg_class);
+        const auto* cls_def = find_system_table(pg_class);
+        REQUIRE(cls_def != nullptr);
+        CHECK(self.columns.size() == cls_def->columns.size());
+
+        // Exactly the user table's rows survived the scrubbed checkpoint, and exactly the
+        // self-rows were seeded on top: 1 user pg_class row + one per system table, and
+        // 1 user column row + one per system column.
+        caught_up_cls_rows = disk_test_helpers::read_ok(
+            fd2.invoke(&manager_disk_t::storage_total_rows, components::session::session_id_t{}, pg_class));
+        caught_up_att_rows = disk_test_helpers::read_ok(
+            fd2.invoke(&manager_disk_t::storage_total_rows, components::session::session_id_t{}, pg_attribute));
+        CHECK(caught_up_cls_rows == 1 + n_sys_tables);
+        CHECK(caught_up_att_rows == 1 + n_sys_columns);
+    }
+
+    // Phase 3 — idempotence: the caught-up rows persisted (their own checkpoint, no
+    // checkpoint_all ran in phase 2), and reopening seeds nothing on top of them.
+    {
+        disk_only_fixture fd3(base);
+        REQUIRE_NOTHROW(fd3.manager->bootstrap_system_tables_sync());
+        fd3.manager->restore_oid_generator_sync();
+        fd3.manager->load_user_table_storages_sync();
+
+        auto cls_rows = disk_test_helpers::read_ok(
+            fd3.invoke(&manager_disk_t::storage_total_rows, components::session::session_id_t{}, pg_class));
+        auto att_rows = disk_test_helpers::read_ok(
+            fd3.invoke(&manager_disk_t::storage_total_rows, components::session::session_id_t{}, pg_attribute));
+        INFO("a second open of a caught-up database must not seed the self-rows again");
+        CHECK(cls_rows == caught_up_cls_rows);
+        CHECK(att_rows == caught_up_att_rows);
+
+        auto t = test_probe::probe_table(fd3, fd3.ctx(), ns_oid, std::string("t_old"));
+        CHECK(t.found);
+        auto self = test_probe::probe_table(fd3,
+                                            fd3.ctx(),
+                                            components::catalog::well_known_oid::pg_catalog_namespace,
+                                            std::string("pg_class"));
+        CHECK(self.found);
+    }
+
+    cleanup_boot_dir();
+}

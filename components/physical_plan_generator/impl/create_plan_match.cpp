@@ -232,17 +232,31 @@ namespace services::planner::impl {
                                                                                      node->table_oid(),
                                                                                      limit,
                                                                                      std::move(effective_cols)));
-            } else {
-                // No-table sentinel scan (INVALID_OID, e.g. a no-FROM SELECT). It is a
-                // SOURCE that emits one synthetic 1-row placeholder batch (see
-                // transfer_scan::source_next), so it needs a VALID resource to allocate
-                // that batch on — use the logical node's own resource (mirrors
-                // create_plan_aggregate's no-table fallback), not nullptr.
-                return boost::intrusive_ptr(new components::operators::transfer_scan(node->resource(),
-                                                                                     node->table_oid(),
-                                                                                     limit,
-                                                                                     std::move(effective_cols)));
             }
+            // No resolved table behind this node. The node's own declaration — not the
+            // oid — says which absent-table case this is; INVALID_OID looks the same for
+            // both. No default arm: a new match_source value must choose its plan here
+            // or the build stops.
+            switch (static_cast<const components::logical_plan::node_match_t*>(node.get())->source()) {
+                case components::logical_plan::match_source::none:
+                    // No-FROM sentinel scan: a SOURCE that emits one synthetic 1-row
+                    // placeholder batch (see transfer_scan::source_next), so it needs a
+                    // VALID resource to allocate that batch on — the logical node's own
+                    // resource (mirrors create_plan_aggregate's no-table fallback), not
+                    // nullptr.
+                    return boost::intrusive_ptr(new components::operators::transfer_scan(node->resource(),
+                                                                                         node->table_oid(),
+                                                                                         limit,
+                                                                                         std::move(effective_cols)));
+                case components::logical_plan::match_source::table:
+                    // A table was NAMED but no resolved oid arrived. Validation refuses
+                    // this before plan generation; if that refusal is ever lost again,
+                    // planning the sentinel here would answer a synthetic row for a
+                    // table that does not exist. A null root surfaces as
+                    // create_physical_plan_error instead.
+                    return nullptr;
+            }
+            return nullptr; // unreachable: the switch above covers every match_source
         } else {
             const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
             return create_plan_match_(context,

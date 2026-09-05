@@ -1329,6 +1329,21 @@ namespace services::collection::executor {
                 }
                 break;
             }
+            case node_type::create_index_t: {
+                // Same family as the DROP/ALTER arms above: DDL never reaches a system
+                // catalog. An index over pg_class would shadow every later catalog write.
+                const auto* index_node = static_cast<const components::logical_plan::node_create_index_t*>(
+                    plan.sub_queries.back().get());
+                if (components::catalog::is_catalog_table(index_node->table_oid())) {
+                    error = make_cursor(
+                        resource(),
+                        core::error_t{
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"cannot create an index on a system catalog table", resource()}});
+                    break;
+                }
+                [[fallthrough]]; // a user-table target keeps the default validation below
+            }
             default: {
                 services::dispatcher::resolve_expression_types(plan.sub_queries.back(), &plan.catalog_resolves);
                 auto vt_err = services::dispatcher::validate_types(resource(),

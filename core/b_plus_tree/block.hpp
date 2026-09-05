@@ -336,4 +336,39 @@ namespace core::b_plus_tree {
         return block;
     }
 
+    // THE TWO PLACES IN THIS LIBRARY THAT TOUCH A THROWING ALLOCATOR, and the whole reason they
+    // exist: std::pmr::memory_resource::allocate has no non-throwing form, so a resource that
+    // refuses can only say so by throwing. The throw is turned into a VALUE here and is never seen
+    // anywhere above -- each body is one call into an allocating operation, so a throw out of one
+    // of them means exactly "the resource refused" and nothing else. Callers get a value.
+    //
+    // segment_tree_t used to do this inline, with bare `try { ... } catch (...) { evict; retry; }`
+    // blocks wrapped around the LIVE block-load and append paths -- three of them. Two things were
+    // wrong with that and both are gone here: the retry sat INSIDE the catch, where a second
+    // refusal had nothing above it to catch it and that throw crossed the actor that owns the
+    // index; and `catch (...)` there also swallowed anything else those paths could raise. Nothing
+    // above this line catches anything.
+    [[nodiscard]] inline std::unique_ptr<block_t>
+    create_initialize_nothrow(std::pmr::memory_resource* resource,
+                              block_t::index_t (*func)(const block_t::item_data&),
+                              uint32_t size = DEFAULT_BLOCK_SIZE) noexcept {
+        try {
+            return create_initialize(resource, func, size);
+        } catch (...) {
+            return nullptr;
+        }
+    }
+
+    // A refused split comes back as {nullptr, nullptr}; the block is left as split_append() left
+    // it. split_append() allocates BEFORE it moves anything out of the block, so a refusal at the
+    // first allocation leaves the block untouched.
+    [[nodiscard]] inline std::pair<std::unique_ptr<block_t>, std::unique_ptr<block_t>>
+    split_append_nothrow(block_t& block, const block_t::index_t& index, block_t::item_data item) noexcept {
+        try {
+            return block.split_append(index, item);
+        } catch (...) {
+            return {nullptr, nullptr};
+        }
+    }
+
 } // namespace core::b_plus_tree

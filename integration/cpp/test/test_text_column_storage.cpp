@@ -1,7 +1,10 @@
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
 
+#include <components/catalog/catalog_oids.hpp>
+
 #include <catch2/catch_test_macros.hpp>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 
@@ -15,9 +18,9 @@
 // therefore push more values into overflow blocks and end up costing MORE, which would make the
 // change a regression for text-heavy tables even while it is a large win for fixed-width ones.
 //
-// This measures the thing directly: bytes on disk per byte of payload, for three value sizes. It is
-// a characterization test — it states a bound the storage layer must stay inside, so it fails
-// whichever way the layout regresses.
+// This measures the thing directly: table bytes on disk per byte of payload, for three value
+// sizes. It is a characterization test — it states a bound the storage layer must stay inside, so
+// it fails whichever way the layout regresses.
 //
 // Hidden by default ([.]) because it writes hundreds of megabytes. Run it with [textstorage].
 
@@ -39,9 +42,45 @@ namespace {
         return total;
     }
 
+    // The numerator: the files of the user tables themselves — the <table_oid> directories inside
+    // the <database_oid> directories at or above FIRST_USER_OID under the disk path.
+    //
+    // Summing everything under the fixture root was rejected, decomposed on the short-value load
+    // (payload 2,560,000 B): the whole root held 63,766,648 B = 24.9x, of which the table was
+    // 25,440,256 B (9.9x), pg_catalog btrees 35,037,184 B (13.7x — a fixed bootstrap cost,
+    // byte-identical across all three loads), and WAL segments 3,289,088 B (1.3x — the journal of
+    // the INSERTs being measured, its retention also varies run to run with checkpoint timing).
+    // Neither of those is text-column layout, and together they buried it.
+    uint64_t user_table_bytes(const std::filesystem::path& disk_path) {
+        std::error_code ec;
+        uint64_t total = 0;
+        for (std::filesystem::directory_iterator db(disk_path, ec), end; !ec && db != end; db.increment(ec)) {
+            std::error_code entry_ec;
+            if (!db->is_directory(entry_ec)) {
+                continue;
+            }
+            const std::string name = db->path().filename().string();
+            char* tail = nullptr;
+            const unsigned long oid = std::strtoul(name.c_str(), &tail, 10);
+            if (tail == name.c_str() || *tail != '\0' || oid < components::catalog::FIRST_USER_OID) {
+                continue;
+            }
+            for (std::filesystem::directory_iterator table(db->path(), entry_ec), table_end;
+                 !entry_ec && table != table_end;
+                 table.increment(entry_ec)) {
+                // Only table directories: their sibling files are the database's WAL segments.
+                if (table->is_directory(entry_ec)) {
+                    total += directory_bytes(table->path());
+                }
+            }
+        }
+        return total;
+    }
+
     struct measurement_t {
         uint64_t payload_bytes{0};
-        uint64_t disk_bytes{0};
+        uint64_t table_bytes{0};
+        uint64_t root_bytes{0};
         bool failed{false};
         std::string error;
     };
@@ -90,7 +129,8 @@ namespace {
         }
         // CHECKPOINT so what is on disk is the settled layout, not whatever happened to be flushed.
         REQUIRE(exec("CHECKPOINT;")->is_success());
-        out.disk_bytes = directory_bytes(root);
+        out.table_bytes = user_table_bytes(config.disk.path);
+        out.root_bytes = directory_bytes(root);
         return out;
     }
 } // namespace
@@ -109,16 +149,18 @@ TEST_CASE("integration::cpp::test_text_column_storage::amplification_stays_bound
     // segment can hold only a handful of them, and a mix where occasional huge values force
     // overflow blocks.
     //
-    // The bounds are the measured values plus a little headroom, so this pins the layout rather than
-    // guessing at it — with the segment sized to the row group (current), and what the same load
-    // cost under the old whole-block sizing:
+    // The bounds predate the numerator fix: they were calibrated when every CREATE TABLE built an
+    // IN_MEMORY table whose data never reached disk, so the old "measured" values were really
+    // (WAL + pg_catalog) / payload with no table in the numerator at all. Measured against the
+    // table's own files they hold for short and mixed values and are EXCEEDED for large inline
+    // ones:
     //
-    //   short 64 B      9.5x   (was 12.8x)
-    //   inline 4090 B   1.85x  (was 2.29x)
-    //   mixed           3.06x  (was 3.81x)
-    //
-    // So the smaller segment did not push values into overflow blocks and cost more. It does leave a
-    // pre-existing inefficiency visible: a short text value costs about nine times its own length.
+    //   short 64 B      9.9x measured   — a short text value still costs about ten times itself
+    //   inline 4090 B   2.36x measured  — 77,082,624 B for 32,720,000 B of payload, 9,635 B per
+    //                                     row carrying 4,098 B; the bound stays at 2.2 as the
+    //                                     target the layout has to come back to, so this case is
+    //                                     EXPECTED RED until near-block-sized values pack better
+    //   mixed           3.0x measured
     const case_t cases[] = {
         {"short values (64 B)", 40000, 64, 0, 0, 10.5},
         {"large inline values (4090 B)", 8000, 4090, 0, 0, 2.2},
@@ -133,9 +175,11 @@ TEST_CASE("integration::cpp::test_text_column_storage::amplification_stays_bound
         INFO(c.name);
         REQUIRE_FALSE(m.failed);
         REQUIRE(m.payload_bytes > 0);
-        const double amplification = static_cast<double>(m.disk_bytes) / static_cast<double>(m.payload_bytes);
-        WARN(c.name << ": payload " << (m.payload_bytes / 1024) << " KiB, on disk " << (m.disk_bytes / 1024)
-                    << " KiB, amplification " << amplification << "x");
+        REQUIRE(m.table_bytes > 0);
+        const double amplification = static_cast<double>(m.table_bytes) / static_cast<double>(m.payload_bytes);
+        WARN(c.name << ": payload " << (m.payload_bytes / 1024) << " KiB, table " << (m.table_bytes / 1024)
+                    << " KiB, amplification " << amplification << "x (whole fixture root "
+                    << (m.root_bytes / 1024) << " KiB)");
 
         CHECK(amplification < c.max_amplification);
     }

@@ -4,7 +4,7 @@
 
 #include "buffer_handle.hpp"
 #include "buffer_pool.hpp"
-#include "in_memory_block_manager.hpp"
+#include "transient_block_manager.hpp"
 
 namespace components::table::storage {
 
@@ -24,7 +24,7 @@ namespace components::table::storage {
         , fs_(fs)
         , buffer_pool_(buffer_pool)
         , temp_id_(MAXIMUM_BLOCK) {
-        temp_block_manager_ = std::make_unique<in_memory_block_manager_t>(*this, DEFAULT_BLOCK_ALLOC_SIZE);
+        temp_block_manager_ = std::make_unique<transient_block_manager_t>(*this, DEFAULT_BLOCK_ALLOC_SIZE);
         for (uint64_t i = 0; i < static_cast<uint64_t>(memory_tag::MEMORY_TAG_COUNT); i++) {
             evicted_data_per_tag_[i] = 0;
         }
@@ -73,10 +73,10 @@ namespace components::table::storage {
         assert(size <= block_size);
 
         if (size < block_size) {
-            return register_small_memory(memory_tag::IN_MEMORY_TABLE, size);
+            return register_small_memory(memory_tag::TRANSIENT_TABLE, size);
         }
 
-        auto buffer_handle = allocate(memory_tag::IN_MEMORY_TABLE, size, false);
+        auto buffer_handle = allocate(memory_tag::TRANSIENT_TABLE, size, false);
         if (buffer_handle.has_error()) {
             return buffer_handle.convert_error<std::shared_ptr<block_handle_t>>();
         }

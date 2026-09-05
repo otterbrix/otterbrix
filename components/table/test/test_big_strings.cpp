@@ -19,7 +19,7 @@
 #include <components/table/data_table.hpp>
 #include <components/table/persistent_column_data.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/in_memory_block_manager.hpp>
+#include <components/table/storage/transient_block_manager.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/metadata_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
@@ -521,7 +521,7 @@ namespace {
 // channel and leave the process standing.
 TEST_CASE("big_strings: an unresolvable overflow block reports an error and does not abort") {
     bigstr_env_t env;
-    tstorage::in_memory_block_manager_t block_manager(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    tstorage::transient_block_manager_t block_manager(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
 
     const std::string big(5000, 'z');
 
@@ -800,7 +800,7 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
 
 TEST_CASE("big_strings: update surfaces a failed pre-image read instead of recording ''") {
     bigstr_env_t env;
-    tstorage::in_memory_block_manager_t block_manager(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    tstorage::transient_block_manager_t block_manager(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
 
     const std::string big(5000, 'u');
 

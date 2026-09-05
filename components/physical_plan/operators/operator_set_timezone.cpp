@@ -31,8 +31,8 @@ namespace components::operators {
             }
         }
 
-        // IN_MEMORY-only deployment (no disk actor): no pg_settings persistence,
-        // so skip the catalog write.
+        // No disk actor wired (test topologies that spawn the dispatcher alone): no
+        // pg_settings to write to, so skip the catalog write.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             mark_executed();
             co_return;

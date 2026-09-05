@@ -194,7 +194,31 @@ namespace otterbrix {
         if (disk_ptr && !wal_records.empty()) {
             std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>> system_by_oid;
             std::unordered_map<components::catalog::oid_t, std::vector<services::wal::record_t*>> user_by_oid;
-            constexpr components::catalog::oid_t main_db_oid = components::catalog::well_known_oid::main_database;
+            // B4: the namespace oid that names a table's on-disk directory. It is
+            // `pg_class.relnamespace` — what create_storage_disk was given — and the catalog is
+            // final here (system records replay first and sequentially). Every use below used to
+            // substitute well_known_oid::main_database (4), which is a DATABASE oid, not a
+            // namespace one, and which no user table can carry: CREATE DATABASE allocates its
+            // namespace from FIRST_USER_OID upward. Cached per oid: each resolve is a pg_class
+            // scan.
+            std::unordered_map<components::catalog::oid_t, components::catalog::oid_t> ns_cache;
+            auto ns_for = [&](components::catalog::oid_t oid) {
+                auto [it, inserted] = ns_cache.try_emplace(oid);
+                if (inserted) {
+                    // A system table has no pg_class row of its own; its directory oid is the
+                    // fixed bootstrap layout constant. A user table's comes from the catalog.
+                    it->second = oid < components::catalog::FIRST_USER_OID
+                                     ? services::disk::manager_disk_t::system_dir_oid()
+                                     : disk_ptr->relnamespace_for_oid_sync(oid);
+                }
+                return it->second;
+            };
+            // The cache is CLEARED between the two replay phases below: this classification
+            // pass runs BEFORE system records replay, so a crash image whose pg_class rows are
+            // still only in the WAL answers "unknown" here and would poison the answer the user
+            // phase needs. Answering "unknown" is harmless for the sidecar probe it feeds
+            // (peek_checkpoint_wal_id_from_disk reads the loaded entry first, and a table with
+            // no loaded entry has no sidecar to find either).
             // .otbx + sidecar are authoritative for *all* checkpointed
             // tables (system and user alike). Records at or before
             // sidecar.wal_id are already absorbed into the loaded storage;
@@ -206,7 +230,7 @@ namespace otterbrix {
             auto cp_for = [&](components::catalog::oid_t oid) {
                 auto [it, inserted] = cp_cache.try_emplace(oid);
                 if (inserted)
-                    it->second = disk_ptr->peek_checkpoint_wal_id_from_disk(oid, main_db_oid);
+                    it->second = disk_ptr->peek_checkpoint_wal_id_from_disk(oid, ns_for(oid));
                 return it->second;
             };
             for (auto& record : wal_records) {
@@ -226,9 +250,9 @@ namespace otterbrix {
                 }
             }
 
-            auto replay_one = [disk_ptr](components::catalog::oid_t table_oid,
-                                         std::vector<services::wal::record_t*>& records) {
-                constexpr components::catalog::oid_t main_db_oid = components::catalog::well_known_oid::main_database;
+            auto replay_one = [disk_ptr, &log = log_](components::catalog::oid_t table_oid,
+                                                      components::catalog::oid_t ns_oid,
+                                                      std::vector<services::wal::record_t*>& records) {
                 for (auto* r : records) {
                     switch (r->record_type) {
                         case services::wal::wal_record_type::PHYSICAL_INSERT:
@@ -240,8 +264,22 @@ namespace otterbrix {
                                     // DISK storage from the WAL chunk's column types at
                                     // the standard path — B1a: every table is
                                     // disk-backed, replay synthesis included.
-                                    disk_ptr->load_storage_for_wal_replay_sync(table_oid, main_db_oid);
+                                    disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
                                     if (!disk_ptr->has_storage(table_oid)) {
+                                        if (ns_oid == components::catalog::INVALID_OID) {
+                                            // Rule 6: the namespace names the directory the
+                                            // file belongs in, and nothing in the record
+                                            // implies it. Synthesising under a guessed one
+                                            // writes a file the table's own resolve will
+                                            // never open. Report and drop this table's
+                                            // records rather than manufacture that.
+                                            error(log,
+                                                  "spaces::replay: table oid={} has no pg_class.relnamespace; "
+                                                  "cannot place its .otbx and refusing to guess — records for "
+                                                  "this table are NOT replayed",
+                                                  static_cast<unsigned>(table_oid));
+                                            return;
+                                        }
                                         auto types = r->physical_data.front().types();
                                         std::vector<components::table::column_definition_t> cols;
                                         cols.reserve(types.size());
@@ -249,7 +287,7 @@ namespace otterbrix {
                                             cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
                                         }
                                         auto otbx = disk_ptr->path_db() /
-                                                    std::to_string(static_cast<unsigned>(main_db_oid)) /
+                                                    std::to_string(static_cast<unsigned>(ns_oid)) /
                                                     std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
                                         std::filesystem::create_directories(otbx.parent_path());
                                         // B1b: the synthesised storage must keep the computed
@@ -263,7 +301,7 @@ namespace otterbrix {
                                             disk_ptr->relkind_for_oid_sync(table_oid) ==
                                             components::catalog::relkind::computed;
                                         disk_ptr->create_storage_disk_sync(table_oid,
-                                                                           main_db_oid,
+                                                                           ns_oid,
                                                                            std::move(cols),
                                                                            otbx,
                                                                            synth_computed);
@@ -282,8 +320,18 @@ namespace otterbrix {
                             // it from the schema chunk's column types.
                             if (!r->physical_data.empty()) {
                                 if (!disk_ptr->has_storage(table_oid)) {
-                                    disk_ptr->load_storage_for_wal_replay_sync(table_oid, main_db_oid);
+                                    disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
                                     if (!disk_ptr->has_storage(table_oid)) {
+                                        if (ns_oid == components::catalog::INVALID_OID) {
+                                            // Same refusal as the PHYSICAL_INSERT branch: no
+                                            // namespace, no directory, no guessing (rule 6).
+                                            error(log,
+                                                  "spaces::replay: table oid={} has no pg_class.relnamespace; "
+                                                  "cannot place its .otbx and refusing to guess — records for "
+                                                  "this table are NOT replayed",
+                                                  static_cast<unsigned>(table_oid));
+                                            return;
+                                        }
                                         auto types = r->physical_data.front().types();
                                         std::vector<components::table::column_definition_t> cols;
                                         cols.reserve(types.size());
@@ -294,14 +342,14 @@ namespace otterbrix {
                                         // mirroring the PHYSICAL_INSERT branch above —
                                         // including the B1b relkind-derived computed flag.
                                         auto otbx = disk_ptr->path_db() /
-                                                    std::to_string(static_cast<unsigned>(main_db_oid)) /
+                                                    std::to_string(static_cast<unsigned>(ns_oid)) /
                                                     std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
                                         std::filesystem::create_directories(otbx.parent_path());
                                         const bool synth_computed =
                                             disk_ptr->relkind_for_oid_sync(table_oid) ==
                                             components::catalog::relkind::computed;
                                         disk_ptr->create_storage_disk_sync(table_oid,
-                                                                           main_db_oid,
+                                                                           ns_oid,
                                                                            std::move(cols),
                                                                            otbx,
                                                                            synth_computed);
@@ -343,8 +391,13 @@ namespace otterbrix {
             // Replay system-table records first (sequential — mutates the catalog
             // that all user-table replays depend on).
             for (auto& [oid, records] : system_by_oid) {
-                replay_one(oid, records);
+                replay_one(oid, ns_for(oid), records);
             }
+
+            // pg_class is final only now (that is exactly what the system phase above just
+            // established), so every namespace answered before this point was answered against
+            // a partial catalog. Drop them and re-resolve for the user phase.
+            ns_cache.clear();
 
             // After system replay, pg_class reflects the final catalog
             // state. Drop user-table replay buckets whose oid is no longer
@@ -373,7 +426,7 @@ namespace otterbrix {
             // table is not thread-safe (TSan-confirmed). Bootstrap is a rare
             // path, so the perf hit is negligible.
             for (auto& [oid, records] : user_by_oid) {
-                replay_one(oid, records);
+                replay_one(oid, ns_for(oid), records);
             }
 
             uint64_t physical_count = 0;
@@ -465,14 +518,18 @@ namespace otterbrix {
             auto dropped_oids = disk_ptr->scan_dropped_oids_sync();
             if (!dropped_oids.empty()) {
                 const auto db_root = disk_ptr->path_db();
-                constexpr components::catalog::oid_t main_db_oid = components::catalog::well_known_oid::main_database;
-                for (auto& [oid, delete_id] : dropped_oids) {
+                for (const auto& row : dropped_oids) {
                     // Mirrors create_storage_disk's layout:
-                    //   ${db_root}/${db_oid}/${tbl_oid}/table.otbx
+                    //   ${db_root}/${relnamespace}/${tbl_oid}/table.otbx
                     // with sidecar `table.otbx.wal_id`
-                    // — same files drop_storage removes on the live path.
-                    auto base = db_root / std::to_string(static_cast<unsigned>(main_db_oid)) /
-                                std::to_string(static_cast<unsigned>(oid));
+                    // — same files drop_storage removes on the live path. B4: the namespace
+                    // oid comes off the tombstoned pg_class row (scan_dropped_oids_sync reads
+                    // it there because an ordinary catalog read omits deleted rows); this used
+                    // to substitute well_known_oid::main_database and swept a directory no
+                    // user table is ever in, so the .otbx of a crash-interrupted DROP was
+                    // never actually removed.
+                    auto base = db_root / std::to_string(static_cast<unsigned>(row.namespace_oid)) /
+                                std::to_string(static_cast<unsigned>(row.oid));
                     auto otbx = base / "table.otbx";
                     std::pmr::vector<std::filesystem::path> sidecars{&resource};
                     {
@@ -480,8 +537,11 @@ namespace otterbrix {
                         wal_id_sidecar += ".wal_id";
                         sidecars.push_back(std::move(wal_id_sidecar));
                     }
-                    disk_ptr->register_dropped_storage_sync(oid, delete_id, std::move(otbx), std::move(sidecars));
-                    manager_index_->mark_table_dropped_sync(oid, delete_id);
+                    disk_ptr->register_dropped_storage_sync(row.oid,
+                                                            row.delete_id,
+                                                            std::move(otbx),
+                                                            std::move(sidecars));
+                    manager_index_->mark_table_dropped_sync(row.oid, row.delete_id);
                 }
                 // Arm the broadcast flags so the first post-start commit advances
                 // the horizon and broadcasts on_horizon_advanced, draining the
@@ -641,8 +701,10 @@ namespace otterbrix {
         }
 
         auto dropped = manager_disk_->scan_dropped_table_oids_sync();
-        for (auto& [oid, delete_id] : dropped) {
-            manager_index_->bootstrap_dropped_sync(oid, delete_id);
+        for (const auto& row : dropped) {
+            // Index bookkeeping is keyed by table oid alone; the row's namespace oid names the
+            // .otbx directory and is only of interest to the storage sweep.
+            manager_index_->bootstrap_dropped_sync(row.oid, row.delete_id);
         }
 
         // Rebuild the in-memory index against post-restart storage. CHECKPOINT

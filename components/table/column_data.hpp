@@ -203,8 +203,8 @@ namespace components::table {
 
         // Write-through: re-point every COMPLETE managed (in-memory, non-reloadable) segment of this column
         // to a disk-backed segment so the pool can evict+reload them (bounded memory). Called when a row
-        // group is closed (all its column segments are final). A no-op for in-memory tables and for
-        // non-fixed-size / compressed segments. Returns io_error/out_of_memory on failure; true on success.
+        // group is closed (all its column segments are final). A no-op for non-fixed-size / compressed
+        // segments. Returns io_error/out_of_memory on failure; true on success.
         // Sub-columns (validity / struct / list / array children) are handled by the subclass override.
         //
         // The re-pointed segments are PACKED into shared 256 KiB blocks via `pbm` (the same segment-packing
@@ -235,8 +235,8 @@ namespace components::table {
         // Write-through: a just-FILLED transient (managed, block_id >= MAXIMUM_BLOCK) segment at
         // `segment_index` in data_ is written to the table's data file and re-pointed to a fresh disk-backed
         // segment (block_id < MAXIMUM_BLOCK -> is_reloadable()==true), so the pool can evict+reload it ->
-        // bounded memory. A no-op for in-memory tables (no backing store) and for non-fixed-size / compressed
-        // segments (a raw block copy would not round-trip losslessly). Returns io_error/out_of_memory on a
+        // bounded memory. A no-op for non-fixed-size / compressed segments (a raw block copy would not
+        // round-trip losslessly). Returns io_error/out_of_memory on a
         // write/alloc failure; true on success or no-op. Caller MUST hold the tree lock `l`.
         //
         // The re-pointed segment is PACKED into a shared block via `pbm` (segment packing): small segments

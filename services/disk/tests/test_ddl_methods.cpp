@@ -619,7 +619,14 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     REQUIRE(table_oid >= FIRST_USER_OID);
 
     // Storage entry must exist for storage_append / compact to operate on.
-    fx.invoke(&manager_disk_t::create_storage, session_id_t{}, table_oid, catalog::well_known_oid::main_database);
+    // B4: schema-less storages are created through the one surviving CREATE leg. The
+    // computed (relkind='g') flag is what the schema-less entry used to carry implicitly.
+    fx.invoke(&manager_disk_t::create_storage_disk,
+              session_id_t{},
+              table_oid,
+              catalog::well_known_oid::main_database,
+              std::vector<components::table::column_definition_t>{},
+              /*is_computed=*/true);
 
     // Register columns a/b/c in pg_computed_column.
     auto attoid_a = test_computed_register(fx, table_oid, "a", components::catalog::well_known_oid::int64_type);
@@ -772,7 +779,14 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     // writes catalog rows). storage_append needs a storage entry to operate on,
     // so create one explicitly (schema-less, mirroring the runtime path that
     // create_collection takes for fresh tables).
-    fx.invoke(&manager_disk_t::create_storage, session_id_t{}, table_oid, catalog::well_known_oid::main_database);
+    // B4: schema-less storages are created through the one surviving CREATE leg. The
+    // computed (relkind='g') flag is what the schema-less entry used to carry implicitly.
+    fx.invoke(&manager_disk_t::create_storage_disk,
+              session_id_t{},
+              table_oid,
+              catalog::well_known_oid::main_database,
+              std::vector<components::table::column_definition_t>{},
+              /*is_computed=*/true);
 
     auto append_ctx = [&](catalog::oid_t toid) {
         return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}, toid};
@@ -830,7 +844,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     }
 
     {
-        // Bug #96 fix: storage_append now auto-extends the IN_MEMORY schema for
+        // Bug #96 fix: storage_append now auto-extends the live schema for
         // relkind='g' tables when the incoming chunk brings columns that aren't in
         // the current data_table_t. Pre-existing rows get NULL-equivalent
         // (zero-initialized) values for the new column.
@@ -875,7 +889,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
 }
 
 // Batched DROP: drop_storage_many erases N user storages in ONE call. Create N
-// IN_MEMORY user storages (with one row each so they're observably non-empty),
+// user storages (with one row each so they're observably non-empty),
 // confirm each is present, then send a single drop_storage_many with the N oids
 // and assert all N are gone (has_storage false / storage_total_rows 0 /
 // read_chunks_by_key empty) while a non-targeted storage survives untouched.
@@ -913,10 +927,20 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
 
     // Create + populate the N targets and the survivor.
     for (std::size_t i = 0; i < N; ++i) {
-        fx.invoke(&manager_disk_t::create_storage, session_id_t{}, targets[i], well_known_oid::main_database);
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  session_id_t{},
+                  targets[i],
+                  well_known_oid::main_database,
+                  std::vector<components::table::column_definition_t>{},
+                  /*is_computed=*/true);
         append_one(targets[i], static_cast<std::int64_t>(i + 1));
     }
-    fx.invoke(&manager_disk_t::create_storage, session_id_t{}, survivor, well_known_oid::main_database);
+    fx.invoke(&manager_disk_t::create_storage_disk,
+              session_id_t{},
+              survivor,
+              well_known_oid::main_database,
+              std::vector<components::table::column_definition_t>{},
+              /*is_computed=*/true);
     append_one(survivor, std::int64_t{777});
 
     // Pre-DROP: every target is present and non-empty.

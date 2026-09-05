@@ -15,9 +15,12 @@
 #include <components/table/data_table.hpp>
 #include <components/table/row_group.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/in_memory_block_manager.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
+#include <cstdio>
+#include <string>
+#include <unistd.h>
 
 using namespace components::types;
 using namespace components::vector;
@@ -31,17 +34,38 @@ namespace {
     constexpr uint64_t CHUNK_ROWS = 1000;
     constexpr uint64_t CHUNKS = 3;
 
+    // B4: the fixture runs on a real .otbx. It used to hold the file-less block manager, whose
+    // every I/O virtual now aborts; the block_manager_t predicate that made that safe is gone
+    // along with the in-memory table mode it named. The row counts here span more than one row
+    // group, so closing one writes its segments through to the file — this fixture reaches the
+    // disk path for real. The substrate is all that changes: not one assertion below is about it.
+    std::string alter_column_sharing_db_path() {
+        static std::string path = "/tmp/test_otterbrix_alter_column_sharing_" + std::to_string(::getpid()) + ".otbx";
+        return path;
+    }
+
+    // Removes any leftover from an earlier process that died holding this pid, then names the
+    // file. Called from the member-init list, so the removal precedes the manager's open.
+    const std::string& alter_column_sharing_fresh_db_path() {
+        static const std::string path = (std::remove(alter_column_sharing_db_path().c_str()), alter_column_sharing_db_path());
+        return path;
+    }
+
     struct alter_env_t {
         core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
         storage::buffer_pool_t buffer_pool;
         storage::standard_buffer_manager_t buffer_manager;
-        storage::in_memory_block_manager_t block_manager;
+        storage::single_file_block_manager_t block_manager;
 
         alter_env_t()
             : buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
             , buffer_manager(&resource, fs, buffer_pool)
-            , block_manager(buffer_manager, storage::DEFAULT_BLOCK_ALLOC_SIZE) {}
+            , block_manager(buffer_manager, fs, alter_column_sharing_fresh_db_path()) {
+            REQUIRE_FALSE(block_manager.create_new_database().has_error());
+        }
+
+        ~alter_env_t() { std::remove(alter_column_sharing_db_path().c_str()); }
     };
 
     std::unique_ptr<data_table_t> make_table(alter_env_t& env) {

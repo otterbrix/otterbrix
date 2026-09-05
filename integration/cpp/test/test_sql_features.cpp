@@ -6008,9 +6008,8 @@ TEST_CASE("integration::cpp::test_sql_features::union_filter_pushdown") {
 // implements TIMESTAMP->TIME (time-of-day extraction, session-tz-independent) but NOT
 // TIME->TIMESTAMP, whose duration switch falls through to the NA tail. So `WHERE ts OP tm`
 // pre-fix dropped EVERY row on the pushed scan, while the canonical comparator answers via the
-// TIMESTAMP->TIME retry. Applies to BOTH storage modes: IN_MEMORY table_storage_t scans push the
-// same filter, hence the twin space below asserts the canonical ABSOLUTE answer in each mode,
-// not merely one mode against the other.
+// TIMESTAMP->TIME retry. The twin space below asserts the canonical ABSOLUTE answer in each of
+// two independently-created databases, not merely one against the other.
 TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in_memory") {
     auto plan_text = [](const auto& cur) {
         std::string out;
@@ -6057,7 +6056,7 @@ TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in
     auto* disk = space.dispatcher();
     seed(disk);
 
-    // --- IN_MEMORY-storage space with identical data: same pushed filter path, must agree ---
+    // --- second space with identical data: same pushed filter path, must agree ---
     auto mconfig = test_create_config("/tmp/test_sql_features/col_vs_col_promote_mem");
     test_clear_directory(mconfig);
     mconfig.disk.on = false;

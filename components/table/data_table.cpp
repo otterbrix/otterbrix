@@ -325,8 +325,8 @@ namespace components::table {
         row_groups_ = std::move(new_collection);
 
         // Return the OLD (now-replaced) collection's disk blocks to the block manager's free list so the
-        // NEXT compact reuses them instead of bumping total_blocks() unbounded. No-op for in-memory tables
-        // (no backing store). The new collection's write-through already allocated FRESH ids (free list was
+        // NEXT compact reuses them instead of bumping total_blocks() unbounded. The new collection's
+        // write-through already allocated FRESH ids (free list was
         // empty / disjoint), so the old ids it frees are not referenced by row_groups_. The persisted free
         // list survives checkpoint, so reclaimed space is durable. mark_as_free under the block manager's
         // allocation lock; no live segment references the freed blocks (the old collection is being torn down).
@@ -351,33 +351,31 @@ namespace components::table {
         // and stays: it is what makes the reuse safe in the first place.
         if (old_collection) {
             auto& block_manager = old_collection->block_manager();
-            if (!block_manager.in_memory()) {
-                std::pmr::vector<uint64_t> reclaimable{resource_};
-                old_collection->collect_disk_block_ids(reclaimable);
-                // collect_disk_block_ids reports one id PER reloadable segment; B2 packs many segments into a
-                // single shared block, so the SAME block id appears multiple times. mark_as_free /
-                // unregister_block must run ONCE per id (free_list_ is a set so a double mark_as_free is
-                // idempotent, but unregister_block twice could race a reused id's fresh handle), so dedupe.
-                std::sort(reclaimable.begin(), reclaimable.end());
-                reclaimable.erase(std::unique(reclaimable.begin(), reclaimable.end()), reclaimable.end());
-                for (uint64_t block_id : reclaimable) {
-                    // Same domain guard reclaim_superseded_root applies, and for the same
-                    // reason: these ids are DISK-FED. collect_disk_block_ids emits
-                    // state->additional_blocks() unfiltered, and those come from
-                    // data_pointer_t::overflow_blocks, read off the file as a raw uint64 with
-                    // no check. mark_as_free screens its OWN input and returns — it does not
-                    // stop the next statement — so without this `continue` a corrupt id in the
-                    // transient domain reaches unregister_block's assert: an abort on the agent
-                    // thread inside the checkpoint coroutine (rule 9) in a debug build, and
-                    // silence under NDEBUG. mark_as_free has already latched the corruption,
-                    // which is what stops the next write_header from committing.
-                    if (block_id >= storage::MAXIMUM_BLOCK) {
-                        block_manager.mark_as_free(block_id);
-                        continue;
-                    }
+            std::pmr::vector<uint64_t> reclaimable{resource_};
+            old_collection->collect_disk_block_ids(reclaimable);
+            // collect_disk_block_ids reports one id PER reloadable segment; B2 packs many segments into a
+            // single shared block, so the SAME block id appears multiple times. mark_as_free /
+            // unregister_block must run ONCE per id (free_list_ is a set so a double mark_as_free is
+            // idempotent, but unregister_block twice could race a reused id's fresh handle), so dedupe.
+            std::sort(reclaimable.begin(), reclaimable.end());
+            reclaimable.erase(std::unique(reclaimable.begin(), reclaimable.end()), reclaimable.end());
+            for (uint64_t block_id : reclaimable) {
+                // Same domain guard reclaim_superseded_root applies, and for the same
+                // reason: these ids are DISK-FED. collect_disk_block_ids emits
+                // state->additional_blocks() unfiltered, and those come from
+                // data_pointer_t::overflow_blocks, read off the file as a raw uint64 with
+                // no check. mark_as_free screens its OWN input and returns — it does not
+                // stop the next statement — so without this `continue` a corrupt id in the
+                // transient domain reaches unregister_block's assert: an abort on the agent
+                // thread inside the checkpoint coroutine (rule 9) in a debug build, and
+                // silence under NDEBUG. mark_as_free has already latched the corruption,
+                // which is what stops the next write_header from committing.
+                if (block_id >= storage::MAXIMUM_BLOCK) {
                     block_manager.mark_as_free(block_id);
-                    block_manager.unregister_block(block_id);
+                    continue;
                 }
+                block_manager.mark_as_free(block_id);
+                block_manager.unregister_block(block_id);
             }
         }
         return true;
@@ -728,8 +726,7 @@ namespace components::table {
         // job, composing with A7.2): until write_header commits, the root a crash recovers is
         // still root N and still reads every one of them.
         //
-        // No-op for an in-memory table (base-class default) and for the first checkpoint of a
-        // fresh file (no durable root yet).
+        // A no-op for the first checkpoint of a fresh file (no durable root yet).
         std::pmr::vector<uint64_t> new_root_blocks(resource_);
         collect_root_blocks(row_group_pointers, new_root_blocks);
         auto reclaimed = row_groups_->block_manager().reclaim_superseded_root(new_root_blocks);

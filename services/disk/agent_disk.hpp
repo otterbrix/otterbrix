@@ -92,17 +92,15 @@ namespace services::disk {
                      components::vector::data_chunk_t& keys,
                      components::table::transaction_data txn);
 
-    // Plain cross-mailbox result for checkpoint_inner. Folds the IN_MEMORY-twin
-    // signal (formerly read post-await via has_in_memory_inner_sync) into the
-    // fan-out return so checkpoint_all needs no synchronous slice read afterwards.
-    // Plain std fields only (no pmr) — safe to copy across the mailbox by value.
+    // Plain cross-mailbox result for checkpoint_inner. Plain std fields only (no pmr) —
+    // safe to copy across the mailbox by value.
     //   min_prev_checkpoint_wal_id — min(prev_checkpoint_wal_id_) over this agent's
-    //     DISK entries, or wal::id_t max() sentinel when it owns no DISK entry.
-    //   has_in_memory — true iff this agent owns >= 1 IN_MEMORY storage entry (the
-    //     same predicate has_in_memory_inner_sync computed); gates WAL-floor sealing.
+    //     entries, or wal::id_t max() sentinel when it owns none.
+    // It used to carry a second field, `has_in_memory`, which suppressed WAL-floor sealing
+    // while any table still lived only in memory. B4 removed the mode that produced it: every
+    // table is a file, so there is nothing left to suppress on.
     struct checkpoint_result_t {
         wal::id_t min_prev_checkpoint_wal_id;
-        bool has_in_memory;
     };
 
     /// Agent role / storages_ partition. agent 0 = CATALOG (pg_* tables + oid_gen_ +
@@ -165,13 +163,7 @@ namespace services::disk {
         [[nodiscard]] const collection_storage_entry_t*
         storage_entry_sync(components::catalog::oid_t oid) const noexcept;
 
-        /// Bootstrap-only ownership-transfer: moves the rvalue entry into the
-        /// storages_ slice keyed by `oid`. Returns false if `oid` was already present
-        /// (caller logs and drops the duplicate; the existing entry keeps ownership).
-        [[nodiscard]] bool bootstrap_inner_sync(components::catalog::oid_t oid,
-                                                std::unique_ptr<collection_storage_entry_t> entry) noexcept;
-
-        // DISK ownership constructors: build the SFBM-holding entry directly on the
+        // Ownership constructors: build the SFBM-holding entry directly on the
         // agent thread. The SFBM holds an exclusive posix WRITE_LOCK on the .otbx
         // (per-process: closing either fd releases it for both), so these may run
         // ONLY when no other emplace for the same OID can race. Bootstrap-only, not
@@ -205,14 +197,8 @@ namespace services::disk {
         // touches no storage state. Each returns a plain bool: false on duplicate key,
         // mirroring the bootstrap helpers' contract. The bodies reuse the existing
         // bootstrap_*_inner_sync helpers (now called intra-actor).
-        //   create_storage_inner               — IN_MEMORY schema-less entry.
-        //   create_storage_with_columns_inner  — IN_MEMORY entry with columns.
         //   create_storage_disk_inner          — create_directories(parent) on the agent
         //     thread, then construct the new .otbx SFBM entry.
-        unique_future<bool> create_storage_inner(components::catalog::oid_t oid);
-        unique_future<bool>
-        create_storage_with_columns_inner(components::catalog::oid_t oid,
-                                          std::vector<components::table::column_definition_t> columns);
         unique_future<bool> create_storage_disk_inner(components::catalog::oid_t oid,
                                                       std::vector<components::table::column_definition_t> columns,
                                                       std::filesystem::path otbx_path,
@@ -439,12 +425,10 @@ namespace services::disk {
         // Fanout handlers for checkpoint_all / vacuum_all / on_horizon_advanced —
         // each agent iterates its own storages_ slice in parallel.
         //
-        // checkpoint_inner — (compact + checkpoint(wal_id) + sidecar) per DISK entry.
+        // checkpoint_inner — (compact + checkpoint(wal_id) + sidecar) per entry.
         //   Returns a checkpoint_result_t whose min_prev_checkpoint_wal_id is
-        //   min(prev_checkpoint_wal_id_) over the agent's DISK entries (max() sentinel
-        //   when it owns none, IN_MEMORY entries skipped) and whose has_in_memory flags
-        //   whether this agent owns >= 1 IN_MEMORY entry — folding the signal
-        //   checkpoint_all formerly read via has_in_memory_inner_sync into the fan-out.
+        //   min(prev_checkpoint_wal_id_) over the agent's entries (max() sentinel when it
+        //   owns none).
         //   compact_watermark is the dispatcher's visible-to-all horizon
         //   (txn_compact_watermark_msg); compact() refuses the rebuild when any
         //   version stamp is above it, and the entry's checkpoint is then SKIPPED
@@ -456,28 +440,23 @@ namespace services::disk {
         unique_future<checkpoint_result_t>
         checkpoint_inner(session_id_t session, wal::id_t current_wal_id, uint64_t compact_watermark);
 
-        // vacuum_inner — cleanup_versions per entry, plus compact for IN_MEMORY entries only.
+        // vacuum_inner — cleanup_versions per entry. Compaction is NOT done here.
         //   compact_watermark: same visible-to-all horizon contract as checkpoint_inner.
-        //   ITEM B: a DISK-backed entry is NOT compacted here. Under A7.2's split free pool a
-        //   compact whose release is never committed by a header cannot return space, only
-        //   spend it, so compaction of a DISK table is one indivisible unit with the checkpoint
-        //   that commits it — and checkpoint_inner already performs that unit. See the long
-        //   note at maybe_cleanup_inner's definition for the full reasoning, including why
-        //   "checkpoint after compacting" here would duplicate rows on recovery.
+        //   ITEM B: under A7.2's split free pool a compact whose release is never committed by
+        //   a header cannot return space, only spend it, so compaction is one indivisible unit
+        //   with the checkpoint that commits it — and checkpoint_inner already performs that
+        //   unit. It used to run here for in-memory entries, which had no checkpoint round of
+        //   their own; that mode is gone. See the long note at maybe_cleanup_inner's definition
+        //   for the full reasoning, including why "checkpoint after compacting" here would
+        //   duplicate rows on recovery.
         unique_future<void>
         vacuum_inner(session_id_t session, uint64_t lowest_active_start_time, uint64_t compact_watermark);
 
-        // maybe_cleanup_inner — single-OID target, IN_MEMORY entries only (ITEM B, as above).
-        //   If deleted/total > 0.3, runs
-        //   table.compact(compact_watermark). compact_watermark is the dispatcher's
-        //   visible-to-all horizon (txn_publish_msg return) forwarded verbatim;
-        //   compact() itself refuses the rebuild when any version stamp is above
-        //   it (active snapshot / in-flight commit still needs the history).
-        //   The agent mailbox serializing the row_groups_ swap covers the data
-        //   race side; the watermark covers version-history visibility.
-        //   cleanup_versions is intentionally omitted: scan_committed
-        //   needs intact version metadata to filter tombstones, which cleanup_versions
-        //   would strip before compact rebuilds the row_group.
+        // maybe_cleanup_inner — single-OID target. NOTHING is compacted here (ITEM B, as
+        //   above): the compaction of a file-backed table belongs to the checkpoint round that
+        //   can commit the release, and every table is file-backed. The handler stays on the
+        //   contract because operator_commit_transaction sends it per touched oid; see its
+        //   definition for the census that settled the question.
         unique_future<void> maybe_cleanup_inner(components::catalog::oid_t table_oid, uint64_t compact_watermark);
 
         // on_horizon_advanced_inner — sweeps dropped_storages_, removing entries whose
@@ -555,21 +534,20 @@ namespace services::disk {
                                                   components::pg_attribute_commit_id_backfill_t::kind_t kind,
                                                   std::uint64_t commit_id);
 
-        // compact_relkind_g_storage_inner — whole-op intra-agent: read own slice
-        //   (mode + columns), compute the columns NOT in live_attnames, drop each via
-        //   entry->drop_column on its own slice, return the dropped count. Missing /
-        //   already-compact returns 0, and so does a DISK-backed table — not because the
-        //   primitive cannot do it (B3c made table_storage_t::drop_column mode-agnostic) but
-        //   because un-gating this CALLER is its own task; see the note at the gate.
+        // compact_relkind_g_storage_inner — whole-op intra-agent: read own slice, compute the
+        //   columns NOT in live_attnames, drop each via entry->drop_column on its own slice,
+        //   return the dropped count. Missing / already-compact returns 0. B4 removed the gate
+        //   that used to refuse every file-backed table here; the note at the definition says
+        //   why acting is the safe reading and what the refusal cost.
         unique_future<std::uint64_t> compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
                                                                      std::set<std::string> live_attnames);
 
         // B3c1 — drop_storage_column_inner: release the ONE column `attname` from this
         //   agent's own slice for `table_oid`, via the same entry->drop_column primitive the
-        //   compact leg above calls. UNGATED by storage mode, and that is the point: B3c made
-        //   table_storage_t::drop_column mode-agnostic, and unlike VACUUM this caller is a
-        //   committed ALTER, for which "the rebuild now, the block release at the next
-        //   checkpoint" is the design rather than a shortfall.
+        //   compact leg above calls. Unlike the subtractive VACUUM leg this caller NAMES its
+        //   column, so there is no live set to re-derive and no gap in that derivation to turn
+        //   into a drop of a surviving one. Both share B3c's split: the rebuild now, the block
+        //   release at the next checkpoint.
         //   true  = the column was in the schema and is gone;
         //   false = the storage exists but never carried it (ALTER ADD COLUMN never touches
         //           storage), so there is nothing physical to release;
@@ -582,8 +560,7 @@ namespace services::disk {
         //   plus the shared dropped_at_commit_id. Loops the canonical per-oid mark body
         //   (mark_storage_dropped_one_local) over the slice. Each oid reads its otbx_path
         //   + derives the .wal_id sidecar from this agent's own slice, then records the
-        //   GC entry via register_dropped_storage_inner_sync. IN_MEMORY storages leave the
-        //   path empty (uniform GC bookkeeping, no-op sweep). Over-routed oids no-op.
+        //   GC entry via register_dropped_storage_inner_sync. Over-routed oids no-op.
         unique_future<void> mark_storage_dropped_many_inner(std::pmr::vector<components::catalog::oid_t> table_oids,
                                                             uint64_t dropped_at_commit_id);
 
@@ -633,8 +610,6 @@ namespace services::disk {
                                                             &agent_disk_t::compact_relkind_g_storage_inner,
                                                             &agent_disk_t::drop_storage_column_inner,
                                                             &agent_disk_t::mark_storage_dropped_many_inner,
-                                                            &agent_disk_t::create_storage_inner,
-                                                            &agent_disk_t::create_storage_with_columns_inner,
                                                             &agent_disk_t::create_storage_disk_inner>;
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
@@ -668,7 +643,10 @@ namespace services::disk {
         core::filesystem::local_file_system_t fs_;
         file_ptr file_wal_id_;
 
-        agent_role_t role_;
+        // The agent's role is not stored: it is `pool_idx_ == 0` by construction (idx 0 is the
+        // CATALOG agent — see agent_role_t and manager_disk_t::pool_idx_for_oid), and the ctor
+        // parameter is used only to log which one this is. A `role_` member sat here, written
+        // once and never read; clang's -Wunused-private-field is what named it.
         std::size_t pool_idx_;
 
         // This agent's storage slice (incomplete value type safe via the deferred

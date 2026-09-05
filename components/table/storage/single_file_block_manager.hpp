@@ -176,7 +176,6 @@ namespace components::table::storage {
 
         uint64_t total_blocks() override;
         uint64_t free_blocks() override;
-        bool in_memory() override { return false; }
         [[nodiscard]] core::result_wrapper_t<bool> file_sync() override;
         [[nodiscard]] core::result_wrapper_t<bool> truncate() override;
 

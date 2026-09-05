@@ -188,7 +188,7 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
                                                           catalog::relkind::regular);
     REQUIRE(table_oid >= FIRST_USER_OID);
 
-    // Regular IN_MEMORY storage with an explicit {k, payload} schema. The rows
+    // Regular storage with an explicit {k, payload} schema. The rows
     // appended below give:
     //   k=10 -> one row (payload 100)
     //   k=20 -> two rows (payload 200, 201)  [multi-row match]
@@ -198,11 +198,12 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         std::vector<components::table::column_definition_t> scols;
         scols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
         scols.emplace_back("payload", complex_logical_type{logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::create_storage_with_columns,
+        fx.invoke(&manager_disk_t::create_storage_disk,
                   session_id_t{},
                   table_oid,
                   well_known_oid::main_database,
-                  std::move(scols));
+                  std::move(scols),
+                  /*is_computed=*/false);
     }
     {
         std::pmr::vector<complex_logical_type> types(&fx.resource);
@@ -350,11 +351,12 @@ TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
     {
         std::vector<components::table::column_definition_t> scols;
         scols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::create_storage_with_columns,
+        fx.invoke(&manager_disk_t::create_storage_disk,
                   session_id_t{},
                   table_oid,
                   well_known_oid::main_database,
-                  std::move(scols));
+                  std::move(scols),
+                  /*is_computed=*/false);
     }
 
     // A column ordinal this table does not have: the read is impossible, not empty.
@@ -410,11 +412,12 @@ TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
         scols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
         scols.emplace_back("a", complex_logical_type{logical_type::BIGINT});
         scols.emplace_back("b", complex_logical_type{logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::create_storage_with_columns,
+        fx.invoke(&manager_disk_t::create_storage_disk,
                   session_id_t{},
                   table_oid,
                   well_known_oid::main_database,
-                  std::move(scols));
+                  std::move(scols),
+                  /*is_computed=*/false);
     }
     {
         std::pmr::vector<complex_logical_type> types(&fx.resource);

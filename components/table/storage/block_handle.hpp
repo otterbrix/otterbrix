@@ -36,7 +36,11 @@ namespace components::table::storage {
         COLUMN_DATA = 6,
         METADATA = 7,
         OVERFLOW_STRINGS = 8,
-        IN_MEMORY_TABLE = 9,
+        // Buffers with no file behind them — what register_transient_memory hands out and what
+        // column_segment_t's in-place grow allocates. It was named after the in-memory storage
+        // mode until B4, though it never accounted for that mode's tables, and the mode is
+        // gone. Runtime accounting only: the value is never serialized.
+        TRANSIENT_TABLE = 9,
         ALLOCATOR = 10,
         EXTENSION = 11,
         TRANSACTION = 12,

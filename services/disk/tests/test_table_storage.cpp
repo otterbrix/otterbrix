@@ -149,14 +149,19 @@ namespace {
     }
 } // namespace
 
-TEST_CASE("services::disk::table_storage::in_memory") {
+// B4: substrate change, assertions unchanged. table_storage_t is backed by a `.otbx` and
+// nothing else now — the file-less constructor this case used, and the `mode()` it asserted,
+// went with the in-memory table mode. What the case is actually about — append 100 rows, scan
+// them back in order — reads identically on a file.
+TEST_CASE("services::disk::table_storage::append_and_scan") {
+    cleanup_test_dir();
+    std::filesystem::create_directories(test_dir());
     core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> columns;
     columns.emplace_back("value", logical_type::BIGINT);
-    table_storage_t ts(&resource, std::move(columns));
-
-    REQUIRE(ts.mode() == storage_mode_t::IN_MEMORY);
+    table_storage_t ts(&resource, std::move(columns), std::filesystem::path(test_dir()) / "append_and_scan.otbx");
+    REQUIRE_FALSE(ts.construction_failed());
 
     // Insert data
     append_int64_data(ts.table(), &resource, 100);
@@ -175,6 +180,8 @@ TEST_CASE("services::disk::table_storage::in_memory") {
         auto val = result.data[0].value(i);
         REQUIRE(val.value<int64_t>() == static_cast<int64_t>(i));
     }
+
+    cleanup_test_dir();
 }
 
 TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
@@ -190,7 +197,7 @@ TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
         std::vector<column_definition_t> columns;
         columns.emplace_back("value", logical_type::BIGINT);
         table_storage_t ts(&resource, std::move(columns), otbx_path);
-        REQUIRE(ts.mode() == storage_mode_t::DISK);
+        REQUIRE_FALSE(ts.construction_failed());
 
         append_int64_data(ts.table(), &resource, NUM_ROWS);
         REQUIRE(ts.table().calculate_size() == NUM_ROWS);
@@ -202,7 +209,7 @@ TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
     // Load and verify
     {
         table_storage_t ts(&resource, otbx_path, {});
-        REQUIRE(ts.mode() == storage_mode_t::DISK);
+        REQUIRE_FALSE(ts.construction_failed());
 
         auto& table = ts.table();
         REQUIRE(table.calculate_size() == NUM_ROWS);
@@ -224,34 +231,47 @@ TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
     cleanup_test_dir();
 }
 
-TEST_CASE("services::disk::table_storage::mode_query") {
+// B4: this case used to ask `mode()` for each of the three constructors and check it against
+// the storage-mode enum. There is one substrate and no enum to ask, so what is left to pin is
+// what each surviving constructor produces: a schema-less table, a table with columns, and a
+// table reloaded from the file the second one wrote. The shapes it covered are kept; the answer
+// it checks is the schema, which is what `mode()` was standing in for.
+TEST_CASE("services::disk::table_storage::construction_shapes") {
+    cleanup_test_dir();
+    std::filesystem::create_directories(test_dir());
     core::pmr::otterbrix_resource resource;
 
-    // In-memory (schema-less)
+    // Schema-less (computed / relkind='g'): an empty column list is legal on create.
     {
-        table_storage_t ts(&resource);
-        REQUIRE(ts.mode() == storage_mode_t::IN_MEMORY);
+        auto otbx_path = std::filesystem::path(test_dir()) / "shape_schemaless.otbx";
+        table_storage_t ts(&resource, std::vector<column_definition_t>{}, otbx_path);
+        REQUIRE_FALSE(ts.construction_failed());
+        REQUIRE(ts.table().column_count() == 0);
     }
 
-    // In-memory (with columns)
+    // With columns.
     {
-        std::vector<column_definition_t> columns;
-        columns.emplace_back("x", logical_type::DOUBLE);
-        table_storage_t ts(&resource, std::move(columns));
-        REQUIRE(ts.mode() == storage_mode_t::IN_MEMORY);
-    }
-
-    // Disk (new)
-    {
-        cleanup_test_dir();
-        std::filesystem::create_directories(test_dir());
-        auto otbx_path = std::filesystem::path(test_dir()) / "mode_test.otbx";
+        auto otbx_path = std::filesystem::path(test_dir()) / "shape_columns.otbx";
         std::vector<column_definition_t> columns;
         columns.emplace_back("x", logical_type::DOUBLE);
         table_storage_t ts(&resource, std::move(columns), otbx_path);
-        REQUIRE(ts.mode() == storage_mode_t::DISK);
-        cleanup_test_dir();
+        REQUIRE_FALSE(ts.construction_failed());
+        REQUIRE(ts.table().column_count() == 1);
+        REQUIRE(ts.table().columns()[0].name() == "x");
+        auto cp = ts.checkpoint();
+        REQUIRE_FALSE(cp.has_error());
     }
+
+    // Load the file the previous block checkpointed: the schema comes off the file.
+    {
+        auto otbx_path = std::filesystem::path(test_dir()) / "shape_columns.otbx";
+        table_storage_t ts(&resource, otbx_path, {});
+        REQUIRE_FALSE(ts.construction_failed());
+        REQUIRE(ts.table().column_count() == 1);
+        REQUIRE(ts.table().columns()[0].name() == "x");
+    }
+
+    cleanup_test_dir();
 }
 
 TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
@@ -268,7 +288,7 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
         columns.emplace_back("id", logical_type::BIGINT);
         columns.emplace_back("score", logical_type::DOUBLE);
         table_storage_t ts(&resource, std::move(columns), otbx_path);
-        REQUIRE(ts.mode() == storage_mode_t::DISK);
+        REQUIRE_FALSE(ts.construction_failed());
 
         auto types = ts.table().copy_types();
         uint64_t offset = 0;
@@ -298,7 +318,7 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
     // Load and verify both columns
     {
         table_storage_t ts(&resource, otbx_path, {});
-        REQUIRE(ts.mode() == storage_mode_t::DISK);
+        REQUIRE_FALSE(ts.construction_failed());
         REQUIRE(ts.table().calculate_size() == NUM_ROWS);
         REQUIRE(ts.table().column_count() == 2);
 
@@ -321,21 +341,26 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
     cleanup_test_dir();
 }
 
-// Physical column compaction primitive, IN_MEMORY half. table_storage_t::drop_column removes
-// the named column from the data_table_t via the rebuild constructor
-// (data_table_t(parent, removed_column) backed by collection_t::remove_column per row_group
-// segment). An in-memory table has no block manager to charge, so the rebuild IS the whole
-// release; the DISK half — where the blocks have to come back through a committed header — is
-// gated by drop_column_disk_frees_blocks at the bottom of this file.
-TEST_CASE("services::disk::table_storage::drop_column_in_memory") {
+// Physical column compaction primitive, DATA half. table_storage_t::drop_column removes the
+// named column from the data_table_t via the rebuild constructor (data_table_t(parent,
+// removed_column) backed by collection_t::remove_column per row_group segment), and the rows of
+// the SURVIVING columns come through it intact. The other half — the dropped column's blocks
+// coming back through a committed header — is gated by drop_column_disk_frees_blocks at the
+// bottom of this file; the two together are the whole primitive.
+//
+// B4: substrate change, assertions unchanged. This ran on the file-less constructor, which went
+// with the in-memory table mode; what it asserts is about the rebuild, not the substrate.
+TEST_CASE("services::disk::table_storage::drop_column_keeps_surviving_data") {
+    cleanup_test_dir();
+    std::filesystem::create_directories(test_dir());
     core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> columns;
     columns.emplace_back("a", logical_type::BIGINT);
     columns.emplace_back("b", logical_type::BIGINT);
     columns.emplace_back("c", logical_type::BIGINT);
-    table_storage_t ts(&resource, std::move(columns));
-    REQUIRE(ts.mode() == storage_mode_t::IN_MEMORY);
+    table_storage_t ts(&resource, std::move(columns), std::filesystem::path(test_dir()) / "drop_column.otbx");
+    REQUIRE_FALSE(ts.construction_failed());
     REQUIRE(ts.table().column_count() == 3);
 
     // Append 32 rows: a=i, b=i*10, c=i*100.
@@ -386,6 +411,8 @@ TEST_CASE("services::disk::table_storage::drop_column_in_memory") {
     // Dropping a non-existent column is a no-op (false).
     REQUIRE(!ts.drop_column("missing"));
     REQUIRE(ts.table().column_count() == 2);
+
+    cleanup_test_dir();
 }
 
 // B3c — dropping a column from a DISK-backed table must give its physical blocks back.
@@ -432,7 +459,7 @@ TEST_CASE("services::disk::table_storage::drop_column_disk_frees_blocks") {
         columns.emplace_back("b", drop_list_type());
         table_storage_t ts(&resource, std::move(columns), otbx_path);
         REQUIRE_FALSE(ts.construction_failed());
-        REQUIRE(ts.mode() == storage_mode_t::DISK);
+        REQUIRE_FALSE(ts.construction_failed());
         REQUIRE(ts.table().column_count() == 2);
 
         append_drop_rows(ts.table(), &resource, 0, FIRST_ROWS);

@@ -31,10 +31,13 @@
 #include <components/table/collection.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/in_memory_block_manager.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
 #include <limits>
+#include <cstdio>
+#include <string>
+#include <unistd.h>
 
 using namespace components::types;
 using namespace components::vector;
@@ -52,17 +55,33 @@ namespace {
     constexpr uint64_t CHUNKS = 3;
     constexpr uint64_t TOTAL_ROWS = CHUNK_ROWS * CHUNKS;
 
+    // B4: the fixture runs on a real .otbx. It used to hold the file-less block manager, whose
+    // every I/O virtual now aborts; the block_manager_t predicate that made that safe is gone
+    // along with the in-memory table mode it named. TOTAL_ROWS spans several row groups, so closing
+    // one writes its segments through to the file — this fixture reaches the disk path for real.
+    // Nothing this file asserts is about the substrate: the gates are collection IDENTITY and the
+    // owner COUNT, and both read the same on either one.
+    std::string ownership_db_path() {
+        static std::string path = "/tmp/test_otterbrix_collection_ownership_" + std::to_string(::getpid()) + ".otbx";
+        return path;
+    }
+
     struct ownership_env_t {
         core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
         storage::buffer_pool_t buffer_pool;
         storage::standard_buffer_manager_t buffer_manager;
-        storage::in_memory_block_manager_t block_manager;
+        storage::single_file_block_manager_t block_manager;
 
         ownership_env_t()
             : buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
             , buffer_manager(&resource, fs, buffer_pool)
-            , block_manager(buffer_manager, storage::DEFAULT_BLOCK_ALLOC_SIZE) {}
+            , block_manager(buffer_manager, fs, ownership_db_path()) {
+            std::remove(ownership_db_path().c_str());
+            REQUIRE_FALSE(block_manager.create_new_database().has_error());
+        }
+
+        ~ownership_env_t() { std::remove(ownership_db_path().c_str()); }
     };
 
     std::unique_ptr<data_table_t> make_table(ownership_env_t& env) {

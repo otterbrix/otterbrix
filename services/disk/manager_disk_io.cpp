@@ -45,11 +45,8 @@ namespace services::disk {
               current_wal_id,
               compact_watermark);
 
-        // Fan checkpoint_inner to every agent; each returns a checkpoint_result_t with
-        // min(prev_checkpoint_wal_id_) over its DISK entries (max() sentinel when it owns
-        // none) AND a has_in_memory flag — folding the former post-await
-        // has_in_memory_inner_sync read into the fan-out so no synchronous cross-actor
-        // slice read remains.
+        // Fan checkpoint_inner to every agent; each returns a checkpoint_result_t carrying
+        // min(prev_checkpoint_wal_id_) over its entries (max() sentinel when it owns none).
         std::pmr::vector<unique_future<checkpoint_result_t>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
@@ -64,26 +61,20 @@ namespace services::disk {
             agent_futures.emplace_back(std::move(fut));
         }
 
-        // Aggregate: min over min_prev_checkpoint_wal_id AND OR over has_in_memory.
+        // Aggregate: min over min_prev_checkpoint_wal_id.
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
-        bool any_in_memory = false;
         for (auto& f : agent_futures) {
             auto agent_result = co_await std::move(f);
             min_prev_id = std::min(min_prev_id, agent_result.min_prev_checkpoint_wal_id);
-            any_in_memory = any_in_memory || agent_result.has_in_memory;
         }
 
         if (!agents_.empty()) {
-            // IN_MEMORY-twin WAL-seal suppression. The min() tally can't tell "no
-            // DISK entry + no IN_MEMORY twin" (safe to seal) from "no DISK entry +
-            // IN_MEMORY twin" (must NOT seal — those tables still need replay
-            // records). any_in_memory comes from the checkpoint_inner fan-out above,
-            // so no synchronous slice read is needed here.
-
-            // Seal only when some agent actually checkpointed a DISK entry (min_prev_id
-            // still max() => none did) AND no IN_MEMORY twin exists anywhere.
+            // Seal only when some agent actually checkpointed an entry (min_prev_id still
+            // max() => none did). The second conjunct this used to carry — "and no in-memory
+            // twin exists anywhere" — is gone with the mode it guarded: every table is a file,
+            // so no table can still be owed its replay records.
             const bool all_disk_checkpointed = (min_prev_id != std::numeric_limits<wal::id_t>::max());
-            const bool safe_to_seal = all_disk_checkpointed && !any_in_memory;
+            const bool safe_to_seal = all_disk_checkpointed;
             if (current_wal_id > 0 && safe_to_seal) {
                 auto [needs_sched2, future2] =
                     actor_zeta::otterbrix::send(agent(), &agent_disk_t::fix_wal_id, wal::id_t{current_wal_id});
@@ -173,26 +164,6 @@ namespace services::disk {
     }
 
     // --- Synchronous storage creation (for init before schedulers start) ---
-
-    void manager_disk_t::create_storage_with_columns_sync(components::catalog::oid_t table_oid,
-                                                          components::catalog::oid_t /*database_oid*/,
-                                                          std::vector<components::table::column_definition_t> columns) {
-        trace(log_, "manager_disk_t::create_storage_with_columns_sync , oid : {}", static_cast<unsigned>(table_oid));
-        // IN_MEMORY entry is constructed on the agent's resource() and ownership
-        // transferred via bootstrap_inner_sync (rvalue unique_ptr move).
-        if (!agents_.empty()) {
-            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
-            auto& agent = agents_[pool_idx];
-            auto entry = std::make_unique<collection_storage_entry_t>(agent->resource(), std::move(columns));
-            const bool ok = agent->bootstrap_inner_sync(table_oid, std::move(entry));
-            if (!ok) {
-                trace(log_,
-                      "manager_disk_t::create_storage_with_columns_sync: agent[{}] already owned oid {}",
-                      pool_idx,
-                      static_cast<unsigned>(table_oid));
-            }
-        }
-    }
 
     void manager_disk_t::create_storage_disk_sync(components::catalog::oid_t table_oid,
                                                   components::catalog::oid_t /*database_oid*/,
@@ -489,7 +460,7 @@ namespace services::disk {
         auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
                          std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
         if (!std::filesystem::exists(otbx_path)) {
-            return; // in-memory table — WAL replay creates it from the first INSERT chunk
+            return; // no file yet — replay synthesises the storage from the first INSERT chunk
         }
         // A7.6: pass no overlay — load_storage_disk_sync resolves a user table's columns from
         // pg_attribute itself, and by replay time the catalog rows (checkpointed or replayed

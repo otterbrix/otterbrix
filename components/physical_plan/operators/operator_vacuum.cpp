@@ -256,7 +256,7 @@ namespace components::operators {
         //      accumulate over ALTER COLUMN cycles and bloat
         //      pg_computed_column.
         //
-        // Physical column compaction for relkind='g' IN_MEMORY tables.
+        // Physical column compaction for relkind='g' tables.
         // After (a) tombstone GC and (b) version GC above, columns whose
         // every pg_computed_column row was deleted are physically dead in
         // table_storage_t.table().column_definitions_ but invisible to
@@ -266,12 +266,20 @@ namespace components::operators {
         //
         // Implementation: data_table_t has an existing rebuild constructor
         // (parent, removed_column) backed by collection_t::remove_column —
-        // this drops the column from every row_group segment in IN_MEMORY
-        // mode (compact_relkind_g_storage is a no-op for DISK-backed
-        // tables).
+        // this drops the column from every row_group segment. The rebuild
+        // SHARES every surviving column and allocates nothing; the dropped
+        // column's blocks are named into the storage's pending-release set
+        // and handed back by the next checkpoint, the one round that can
+        // commit the release (B3c).
         //
-        // FIXME: storage_append auto-extends the IN_MEMORY schema when an
-        // INSERT brings a new attname. After we drop a physical column
+        // THE LIVE SET BELOW IS LOAD-BEARING. This leg is SUBTRACTIVE — the
+        // disk side drops the COMPLEMENT of the attnames assembled here — so
+        // a gap in this pg_computed_column read becomes a physical drop of a
+        // surviving column. ALTER TABLE DROP COLUMN, which names its column,
+        // goes through drop_storage_column instead.
+        //
+        // FIXME: storage_append auto-extends a computed table's schema when
+        // an INSERT brings a new attname. After we drop a physical column
         // here, a subsequent INSERT with that attname will trigger schema
         // re-extension. That's correct behavior but does waste work if the
         // column is being immediately re-added (e.g. drop+readd cycles).

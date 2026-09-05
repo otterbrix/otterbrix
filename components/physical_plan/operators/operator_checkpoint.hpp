@@ -23,7 +23,8 @@ namespace components::operators {
     //
     // WAL recovery semantics: identical to the legacy dispatcher.cpp checkpoint_t case.
     // The checkpoint_all return value is min(prev_checkpoint_wal_id_) across tables;
-    // truncate_before is gated on > 0 (IN_MEMORY-only DBs leave WAL untrimmed).
+    // truncate_before is gated on > 0 (a round in which no table checkpointed reports 0 and
+    // leaves the WAL untrimmed).
     class operator_checkpoint_t final : public read_write_operator_t {
     public:
         operator_checkpoint_t(std::pmr::memory_resource* resource, log_t log);

@@ -30,9 +30,13 @@
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 
+#include <cstdio>
+#include <filesystem>
 #include <functional>
 #include <memory_resource>
 #include <set>
+#include <string>
+#include <unistd.h>
 #include <vector>
 
 using namespace components::table;
@@ -129,6 +133,26 @@ namespace {
 
     std::set<int64_t> as_set(const std::pmr::vector<int64_t>& v) { return std::set<int64_t>(v.begin(), v.end()); }
 
+    // B4: table_storage_t is backed by a `.otbx` and nothing else — the file-less constructor
+    // these cases used went with the in-memory table mode. Each case gets a fresh file; the
+    // semi-join under test reads the table through the same storage adapter either way.
+    std::filesystem::path semijoin_otbx() {
+        static const std::filesystem::path path =
+            std::filesystem::path("/tmp") /
+            ("test_otterbrix_fk_semijoin_" + std::to_string(::getpid()) + ".otbx");
+        return path;
+    }
+
+    // Returns the path after removing any file at it, so the caller's manager creates a new one.
+    const std::filesystem::path& fresh_semijoin_otbx() {
+        static const std::filesystem::path path = [] {
+            std::filesystem::remove(semijoin_otbx());
+            return semijoin_otbx();
+        }();
+        std::filesystem::remove(path);
+        return path;
+    }
+
 } // namespace
 
 TEST_CASE("services::disk::fk_hash_semijoin::multi_key_single_pass") {
@@ -138,7 +162,8 @@ TEST_CASE("services::disk::fk_hash_semijoin::multi_key_single_pass") {
     std::vector<column_definition_t> cols;
     cols.emplace_back("id", logical_type::BIGINT);
     cols.emplace_back("tag", logical_type::BIGINT);
-    services::disk::table_storage_t ts(&resource, std::move(cols));
+    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_semijoin_otbx());
+    REQUIRE_FALSE(ts.construction_failed());
 
     const int64_t ids[] = {10, 20, 30, 40, 20};
     {
@@ -186,7 +211,8 @@ TEST_CASE("services::disk::fk_hash_semijoin::heterogeneous_type_int32_vs_int64")
 
     std::vector<column_definition_t> cols;
     cols.emplace_back("id", logical_type::BIGINT); // stored physical INT64
-    services::disk::table_storage_t ts(&resource, std::move(cols));
+    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_semijoin_otbx());
+    REQUIRE_FALSE(ts.construction_failed());
 
     const int64_t ids[] = {10, 20, 30, 40, 20};
     {
@@ -229,7 +255,8 @@ TEST_CASE("services::disk::fk_hash_semijoin::null_key_matches_nothing") {
 
     std::vector<column_definition_t> cols;
     cols.emplace_back("id", logical_type::BIGINT);
-    services::disk::table_storage_t ts(&resource, std::move(cols));
+    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_semijoin_otbx());
+    REQUIRE_FALSE(ts.construction_failed());
 
     const int64_t ids[] = {10, 20, 30, 40};
     {
@@ -272,7 +299,8 @@ TEST_CASE("services::disk::fk_hash_semijoin::composite_key") {
     std::vector<column_definition_t> cols;
     cols.emplace_back("a", logical_type::BIGINT);
     cols.emplace_back("b", logical_type::BIGINT);
-    services::disk::table_storage_t ts(&resource, std::move(cols));
+    services::disk::table_storage_t ts(&resource, std::move(cols), fresh_semijoin_otbx());
+    REQUIRE_FALSE(ts.construction_failed());
 
     // Rows (a,b) row_ids 0..3: (1,100),(2,200),(1,200),(2,100).
     const int64_t a_vals[] = {1, 2, 1, 2};

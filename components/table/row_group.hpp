@@ -163,8 +163,8 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> create_from_pointer(const storage::row_group_pointer_t& pointer);
 
         // Write-through: re-point every COMPLETE managed column segment of this row group to a
-        // disk-backed segment (call once the row group is closed -> its segments are final). No-op for
-        // in-memory tables. Returns io_error/out_of_memory on failure; true on success.
+        // disk-backed segment (call once the row group is closed -> its segments are final). Returns
+        // io_error/out_of_memory on failure; true on success.
         //
         // Owns a short-lived partial_block_manager_t so this closed row group's column segments are PACKED
         // into shared blocks (segment packing) and flushed to disk BEFORE returning -- the flush is the

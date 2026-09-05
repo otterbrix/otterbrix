@@ -13,7 +13,8 @@
 // checkpointed table silently becomes a non-NULL zero/empty value.
 //
 // Why nothing catches this today:
-//   * most tables are still IN_MEMORY, so the .otbx load path is rarely taken;
+//   * most tables had no file behind them when this was written, so the .otbx load path was
+//     rarely taken;
 //   * restart tests that DO pass mostly replay the WAL, which rebuilds rows from records
 //     and therefore preserves NULLs — the loss only appears once a CHECKPOINT has folded
 //     the rows into the .otbx and the WAL no longer carries them;

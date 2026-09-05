@@ -1607,7 +1607,7 @@ namespace components::table {
             return old_handle.convert_error<bool>();
         }
         // Genuine fresh allocation — this is the OOM-able site.
-        auto new_handle = buffer_manager.allocate(storage::memory_tag::IN_MEMORY_TABLE, new_size);
+        auto new_handle = buffer_manager.allocate(storage::memory_tag::TRANSIENT_TABLE, new_size);
         if (new_handle.has_error()) {
             return new_handle.convert_error<bool>();
         }

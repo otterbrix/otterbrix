@@ -19,7 +19,7 @@
 
 // B3c1 — ALTER TABLE DROP COLUMN must reach the storage primitive.
 //
-// B3c made table_storage_t::drop_column correct in BOTH modes (rebuild now, blocks NAMED into
+// B3c made table_storage_t::drop_column whole (rebuild now, blocks NAMED into
 // pending_released_blocks_, released by the checkpoint round that can commit the release), and
 // gated that behaviour with services::disk::table_storage::drop_column_disk_frees_blocks — a
 // test that calls the primitive DIRECTLY. Nothing called it from the ALTER path: the operator

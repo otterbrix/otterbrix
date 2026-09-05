@@ -41,7 +41,7 @@ TEST_CASE("wal::torn::id_t_is_uint64") {
 }
 
 // 2. id_t{0} is the conventional "no-op" / "nothing yet" value used by truncate_before
-//    and by the IN_MEMORY-table early-out in checkpoint_all.
+//    and by the "no table checkpointed this round" early-out in checkpoint_all.
 TEST_CASE("wal::torn::id_zero_is_noop_value") {
     REQUIRE(wal::id_t{0} == 0);
     // dispatcher.cpp checks `min_prev_wal_id > 0` before calling truncate_before — id 0

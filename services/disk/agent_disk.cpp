@@ -55,7 +55,6 @@ namespace services::disk {
         , path_(path_db)
         , fs_(core::filesystem::local_file_system_t())
         , file_wal_id_(nullptr)
-        , role_(role)
         , pool_idx_(pool_idx)
         , storages_(resource)
         , active_scans_(resource)
@@ -84,14 +83,6 @@ namespace services::disk {
             return nullptr;
         }
         return it->second.get();
-    }
-
-    bool agent_disk_t::bootstrap_inner_sync(components::catalog::oid_t oid,
-                                            std::unique_ptr<collection_storage_entry_t> entry) noexcept {
-        if (entry == nullptr) {
-            return false;
-        }
-        return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
     bool agent_disk_t::bootstrap_disk_inner_sync(
@@ -172,36 +163,10 @@ namespace services::disk {
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
-    // Runtime CREATE mailbox handlers (see header). The entry is built on the AGENT's
+    // Runtime CREATE mailbox handler (see header). The entry is built on the AGENT's
     // OWN resource() here on the agent thread, then emplaced via the existing
-    // bootstrap_*_inner_sync helpers (now called intra-actor). Each returns false on
-    // duplicate key, mirroring the helpers' contract.
-    agent_disk_t::unique_future<bool> agent_disk_t::create_storage_inner(components::catalog::oid_t oid) {
-        auto entry = std::make_unique<collection_storage_entry_t>(resource());
-        const bool ok = bootstrap_inner_sync(oid, std::move(entry));
-        if (!ok) {
-            trace(log_,
-                  "agent_disk[{}]::create_storage_inner: oid {} already owned — duplicate",
-                  pool_idx_,
-                  static_cast<unsigned>(oid));
-        }
-        co_return ok;
-    }
-
-    agent_disk_t::unique_future<bool>
-    agent_disk_t::create_storage_with_columns_inner(components::catalog::oid_t oid,
-                                                    std::vector<components::table::column_definition_t> columns) {
-        auto entry = std::make_unique<collection_storage_entry_t>(resource(), std::move(columns));
-        const bool ok = bootstrap_inner_sync(oid, std::move(entry));
-        if (!ok) {
-            trace(log_,
-                  "agent_disk[{}]::create_storage_with_columns_inner: oid {} already owned — duplicate",
-                  pool_idx_,
-                  static_cast<unsigned>(oid));
-        }
-        co_return ok;
-    }
-
+    // bootstrap_create_disk_inner_sync helper (now called intra-actor). Returns false on
+    // duplicate key, mirroring the helper's contract.
     agent_disk_t::unique_future<bool>
     agent_disk_t::create_storage_disk_inner(components::catalog::oid_t oid,
                                             std::vector<components::table::column_definition_t> columns,
@@ -481,14 +446,6 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::mark_storage_dropped_many_inner, msg);
                 break;
             }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::create_storage_inner>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::create_storage_inner, msg);
-                break;
-            }
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::create_storage_with_columns_inner>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::create_storage_with_columns_inner, msg);
-                break;
-            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::create_storage_disk_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::create_storage_disk_inner, msg);
                 break;
@@ -550,15 +507,15 @@ namespace services::disk {
             s->adopt_schema(data->types());
         }
 
-        // 1b. Dynamic schema growth, ANY storage mode. B1a made disk the only
-        // mode, so the old IN_MEMORY gate would have turned growth off for every
-        // table — yet growth is load-bearing twice over: computed (relkind='g')
+        // 1b. Dynamic schema growth, on every table. B1a made the .otbx the only
+        // substrate, so the mode gate this used to sit behind would have turned growth off
+        // for every table — yet growth is load-bearing twice over: computed (relkind='g')
         // tables adopt per-document columns (multi-type variants included), and
         // regular tables materialize an ALTER TABLE ADD COLUMN's storage columns
         // on the first INSERT that carries them (ALTER writes only pg_attribute;
         // without growth the catalog says 4 columns while the storage holds 2 and
-        // the next SELECT of the new columns fails). add_column itself is
-        // mode-agnostic (data_table_t rebuild over the same block manager) and
+        // the next SELECT of the new columns fails). add_column itself is a
+        // data_table_t rebuild over the same block manager, and
         // the PHYSICAL_ADD_COLUMN WAL record already replays it.
         // Trigger: alias mismatch at differing chunk/table width = schema
         // growth; equal width = positional rename, handled by column expansion
@@ -894,9 +851,8 @@ namespace services::disk {
         if (!data || entry->storage == nullptr) {
             co_return std::pair<int64_t, uint64_t>{0, 0};
         }
-        // No preprocessing here: the manager body already aligned `data` with the
-        // canonical schema (the twin shares column defs via bootstrap_inner_sync). The
-        // wrapper carries any write_conflict / out_of_memory as a value.
+        // No preprocessing here: the manager body already aligned `data` with the entry's
+        // canonical schema. The wrapper carries any write_conflict / out_of_memory as a value.
         co_return entry->storage->update(row_ids, *data, txn);
     }
 
@@ -1878,23 +1834,13 @@ namespace services::disk {
         //   atomic commit point under A7.1 shadow paging; no external backup copy
         //   is taken (A7.5) — then persist the .wal_id sidecar via tmp+rename.
         //   Tally min(prev_checkpoint_wal_id_) for the manager's
-        //   cross-agent std::min. IN_MEMORY twins and null entries are skipped
-        //   for checkpointing, but an IN_MEMORY twin flips has_in_memory so
-        //   checkpoint_all can gate WAL-floor sealing without a separate sync
-        //   slice read (folded from has_in_memory_inner_sync).
+        //   cross-agent std::min. Null entries are skipped.
 #ifdef DEV_MODE
         g_table_checkpoints.fetch_add(1, std::memory_order_relaxed);
 #endif
         wal::id_t min_prev_id = std::numeric_limits<wal::id_t>::max();
-        bool has_in_memory = false;
         for (auto& [tbl_oid, entry] : storages_) {
             if (entry == nullptr) {
-                continue;
-            }
-            if (entry->table_storage.mode() == storage_mode_t::IN_MEMORY) {
-                has_in_memory = true;
-            }
-            if (entry->table_storage.mode() != storage_mode_t::DISK) {
                 continue;
             }
             if (entry->otbx_path.empty()) {
@@ -2024,49 +1970,37 @@ namespace services::disk {
 
             min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
         }
-        co_return checkpoint_result_t{min_prev_id, has_in_memory};
+        co_return checkpoint_result_t{min_prev_id};
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::vacuum_inner(session_id_t /*session*/,
                                                                  uint64_t lowest_active_start_time,
-                                                                 uint64_t compact_watermark) {
+                                                                 uint64_t /*compact_watermark*/) {
         trace(log_, "agent_disk[{}]::vacuum_inner: {} entries in local slice", pool_idx_, storages_.size());
-        for (auto& [oid, entry] : storages_) {
+        for (auto& slot : storages_) {
+            auto& entry = slot.second;
             if (entry == nullptr) {
                 continue;
             }
             auto& table = entry->table_storage.table();
-            // Pure in-memory MVCC version-chain GC. Touches no block manager, costs no blocks,
-            // and is the half of VACUUM that works the same in both storage modes.
-            table.cleanup_versions(lowest_active_start_time);
-            // ITEM B — a DISK-backed table is NOT compacted here. See the long note at
-            // maybe_cleanup_inner: under A7.2's split pool a compact without a committed header
-            // cannot return space, only spend it, and VACUUM used to do exactly that for EVERY
-            // entry on EVERY call — even one with nothing dead in it. The compaction of a
-            // DISK-backed table belongs to the checkpoint round, which already performs it and
-            // is the only place that can commit the release.
+            // In-memory MVCC version-chain GC, and the whole of what VACUUM does per entry.
+            // Touches no block manager and costs no blocks.
             //
-            // IN_MEMORY storages still compact here, and must: they have no block manager to
-            // charge (data_table_t::compact skips the whole reclaim loop for them) and no
-            // checkpoint round would ever do it for them, so this is their only reclaim.
-            if (entry->table_storage.mode() != storage_mode_t::IN_MEMORY) {
-                continue;
-            }
-            // Cursor gate: skip compact while a streaming fetch-next cursor is open on this oid (its
-            // stored absolute position indexes the un-swapped collection; the atomic swap would
-            // shift rows out from under it — R17). Reclaim is deferred to a later vacuum round.
-            if (has_active_scan_for_oid(oid)) {
-                continue;
-            }
-            // MVCC-gated: a no-op when any version stamp is above the watermark
-            // (concurrent snapshot / in-flight commit still needs the history).
-            table.compact(compact_watermark);
+            // ITEM B — nothing is compacted here. See the long note at maybe_cleanup_inner:
+            // under A7.2's split pool a compact without a committed header cannot return
+            // space, only spend it, and VACUUM used to do exactly that for EVERY entry on
+            // EVERY call — even one with nothing dead in it. Compaction belongs to the
+            // checkpoint round, which already performs it and is the only place that can
+            // commit the release. It used to still run here for the one kind of entry that
+            // had no checkpoint round of its own — the in-memory table — and that kind no
+            // longer exists.
+            table.cleanup_versions(lowest_active_start_time);
         }
         co_return;
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::maybe_cleanup_inner(components::catalog::oid_t table_oid,
-                                                                        uint64_t compact_watermark) {
+                                                                        uint64_t /*compact_watermark*/) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             trace(log_,
@@ -2117,10 +2051,10 @@ namespace services::disk {
         //     checkpoint — a full-table rewrite and two fsyncs — is not a trade the write
         //     path can make.
         //
-        // WHAT VACUUM STILL IS: cleanup_versions (in-memory version-chain GC), the index and
-        // pg_computed_column GC and the index repopulate owned by operator_vacuum_t, plus
-        // IN_MEMORY compaction. Its DISK effect is DEFERRED to the next checkpoint round
-        // instead of being immediate and negative.
+        // WHAT VACUUM STILL IS: cleanup_versions (in-memory version-chain GC) and the index
+        // and pg_computed_column GC / index repopulate owned by operator_vacuum_t. Its effect
+        // on the file is DEFERRED to the next checkpoint round instead of being immediate and
+        // negative.
         //
         // B3c3 settled "deferred, not lost" by measurement rather than by call graph, because
         // that was the one claim the decision above rests on and the one nobody had checked.
@@ -2134,65 +2068,15 @@ namespace services::disk {
         // can no longer commit ANY root, so its reclaim was already unreachable here too).
         // The end-to-end reading is in test_s3_cleanup_scaling: with the checkpoint compact
         // disabled the durable root keeps 700000 rows where 149988 are live.
-        if (entry->table_storage.mode() != storage_mode_t::IN_MEMORY) {
-            trace(log_,
-                  "agent_disk[{}]::maybe_cleanup_inner: oid={} is DISK-backed — its compaction belongs to the "
-                  "checkpoint round that can commit the release",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return;
-        }
-
-        auto& table = entry->table_storage.table();
-        // The counted copy is scoped to the counting, NOT held across compact(): a holder that
-        // outlives the swap keeps the REPLACED collection's block handles alive past the
-        // reclaim, and their destructors then erase registry slots that a reused id has already
-        // refilled (see block_manager_t::unregister_block).
-        uint64_t total = 0;
-        uint64_t committed = 0;
-        {
-            auto rg = table.row_group();
-            total = rg->total_rows();
-            committed = rg->committed_row_count();
-        }
-        if (total == 0) {
-            co_return;
-        }
-
-        auto deleted = total - committed;
-
-        // Cursor gate: skip compact while a streaming fetch-next cursor is open on this oid (its
-        // stored absolute position indexes the un-swapped collection; the atomic swap would shift
-        // rows out from under it — R17). Reclaim is deferred to a later commit.
-        if (has_active_scan_for_oid(table_oid)) {
-            trace(log_,
-                  "agent_disk[{}]::maybe_cleanup_inner: oid={} has an active scan cursor — deferring compact",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return;
-        }
-
-        static constexpr double gc_threshold = 0.3;
-        if (static_cast<double>(deleted) / static_cast<double>(total) > gc_threshold) {
-            trace(log_,
-                  "agent_disk[{}]::maybe_cleanup_inner: oid={}, deleted {}/{}, running compact (watermark {})",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid),
-                  deleted,
-                  total,
-                  compact_watermark);
-            // compact() refuses the rebuild when any version stamp is above the
-            // watermark (concurrent snapshot / in-flight commit still needs the
-            // history); reclaim is merely deferred to a later commit. The agent
-            // mailbox serializing the row_groups_ swap covers the data-race
-            // side; the watermark covers version visibility.
-            // Compact alone (no preceding cleanup_versions): scan_committed
-            // depends on intact version metadata to filter tombstones;
-            // cleanup_versions would strip it before compact rebuilds the
-            // row_group.
-            table.compact(compact_watermark);
-        }
-
+        // B4: unconditional. The gate above used to read "not an in-memory entry -> return",
+        // and every entry is a file now, so the whole compaction body it protected is gone
+        // with it. The handler stays on the contract — operator_commit_transaction sends it
+        // per touched oid — and says plainly that the work belongs elsewhere.
+        trace(log_,
+              "agent_disk[{}]::maybe_cleanup_inner: oid={} — compaction belongs to the checkpoint round that "
+              "can commit the release",
+              pool_idx_,
+              static_cast<unsigned>(table_oid));
         co_return;
     }
 
@@ -2314,8 +2198,9 @@ namespace services::disk {
     // which loops it over its oid slice. Synchronous (no co_await) — the caller runs
     // on the agent thread.
     void agent_disk_t::drop_storage_one_local(components::catalog::oid_t oid) {
-        // Read otbx_path BEFORE the erase, while the unique_ptr is still live. Empty
-        // path (IN_MEMORY twins) skips the remove block. Remove sequence: .otbx +
+        // Read otbx_path BEFORE the erase, while the unique_ptr is still live. An empty
+        // path (a failed construction that was dropped) skips the remove block.
+        // Remove sequence: .otbx +
         // .wal_id sidecar + per-oid directory, all via std::error_code
         // overloads — exceptions FORBIDDEN.
         std::filesystem::path otbx_path;
@@ -2696,10 +2581,40 @@ namespace services::disk {
         co_return;
     }
 
-    // Whole-op intra-agent compaction: read own slice (mode + columns), compute the
-    // columns NOT in live_attnames, drop each via entry->drop_column on its own slice,
-    // and return the dropped count. This eliminates the per-column manager↔agent
-    // round-trips the former manager body did.
+    // Whole-op intra-agent compaction: read own slice, compute the columns NOT in
+    // live_attnames, drop each via entry->drop_column on its own slice, and return the dropped
+    // count. This eliminates the per-column manager<->agent round-trips the former manager body
+    // did.
+    //
+    // B4 — WHY THIS RUNS AT ALL NOW. It used to sit behind a "not an in-memory storage ->
+    // return 0" gate,
+    // and B3c3 measured what that refusal actually did: B1a made every table file-backed, so
+    // the gate was refusing EVERY computed table in production and this handler answered 0
+    // always. Removing the mode leaves exactly two readings of that gate — "always refuse" or
+    // "always act" — and the choice could not be deferred with it.
+    //
+    // ACT is the right one, and it is safe for a reason B3c established rather than assumed:
+    // table_storage_t::drop_column does not free anything here. It NAMES the outgoing column's
+    // blocks into pending_released_blocks_ and rebuilds the table by SHARING every surviving
+    // column, so the call allocates nothing; the release itself is drained by the next
+    // checkpoint, the one place under A7.2's split pool that can commit it. That is the same
+    // split B3c1's ALTER TABLE DROP COLUMN leg runs on. The old note here read "un-gating is a
+    // follow-up", and it argued from the sibling compact() — which really does spend space
+    // outside a committed round. A drop does not.
+    //
+    // WHAT REFUSING WOULD HAVE COST: nothing else re-derives this drop. A 'g' table's DROP
+    // routes to operator_computed_field_unregister_t, which writes only a pg_computed_column
+    // refcount=0 tombstone and defers the physical half to VACUUM — to here. The checkpoint
+    // round compacts but does not drop columns (compact() enumerates the collection as it
+    // stands), and B3c2's bootstrap re-arm excludes 'g' at the source. So a refusal keeps the
+    // column in the durable root forever; measured end to end before B4: CREATE TABLE g();
+    // INSERT (a,b); ALTER ... DROP COLUMN b; VACUUM; CHECKPOINT; reopen the .otbx offline — the
+    // root still named [a, b].
+    //
+    // THE RISK IT CARRIES, stated plainly: unlike drop_storage_column_inner, which is told WHICH
+    // column to drop, this leg is SUBTRACTIVE — it drops the complement of `live_attnames`. Any
+    // gap in the caller's derivation of that live set becomes a physical drop of a SURVIVING
+    // column. The derivation is operator_vacuum_t's pg_computed_column scan.
     agent_disk_t::unique_future<std::uint64_t>
     agent_disk_t::compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
                                                   std::set<std::string> live_attnames) {
@@ -2708,42 +2623,6 @@ namespace services::disk {
             co_return 0;
         }
         auto& entry = it->second;
-        // The primitive underneath is no longer the reason for this gate. B3c made
-        // table_storage_t::drop_column mode-agnostic: it rebuilds in both modes and hands the
-        // dropped column's blocks to the checkpoint round that can commit their release. What
-        // is still missing HERE is the round itself — this handler rides VACUUM, which under
-        // A7.2's split pool cannot commit anything, so a DISK drop taken here would sit
-        // un-released until some later checkpoint and, unlike the sibling compact, is not even
-        // attached to one. Un-gating this call site is the follow-up the owner approved, not
-        // this change.
-        //
-        // B3c3 measured what this gate costs and the answer is NOT a deferral, which is why
-        // the sibling gates' "the checkpoint round does it anyway" argument does not carry
-        // here. Three facts, each checked rather than reasoned:
-        //   * B1a made every table disk-backed — operator_create_collection_t sends
-        //     create_storage_disk for a relkind='g' table too — so the IN_MEMORY leg below is
-        //     unreachable for a computed table in production and this handler always returns 0;
-        //   * the checkpoint round compacts, it does not DROP COLUMNS. compact() enumerates
-        //     the collection as it stands, so a column the catalog stopped describing stays in
-        //     it forever;
-        //   * nothing else re-derives the drop. B3c1 wired ALTER TABLE DROP COLUMN to
-        //     drop_storage_column, but a 'g' table's DROP routes to
-        //     operator_computed_field_unregister_t, which writes only a pg_computed_column
-        //     refcount=0 tombstone and defers the physical half to VACUUM — to here. B3c2's
-        //     bootstrap re-arm excludes 'g' AT THE SOURCE, because a computed table's schema
-        //     lives in pg_computed_column and its empty pg_attribute set would read as "every
-        //     column dropped".
-        // Measured end to end: CREATE TABLE g(); INSERT (a,b); ALTER ... DROP COLUMN b;
-        // VACUUM; CHECKPOINT; reopen the .otbx offline — the durable root still names columns
-        // [a, b]. The gate refused exactly one column and no other path ever takes it.
-        if (entry->table_storage.mode() != storage_mode_t::IN_MEMORY) {
-            trace(log_,
-                  "agent_disk[{}]::compact_relkind_g_storage_inner: skip DISK-backed oid={} — its drop belongs "
-                  "to a checkpoint round (B3c)",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            co_return 0;
-        }
 
         std::vector<std::string> to_drop;
         {
@@ -2762,8 +2641,7 @@ namespace services::disk {
                 ++dropped;
             } else {
                 trace(log_,
-                      "agent_disk[{}]::compact_relkind_g_storage_inner: oid {} column '{}' not "
-                      "found / DISK no-op",
+                      "agent_disk[{}]::compact_relkind_g_storage_inner: oid {} column '{}' not found",
                       pool_idx_,
                       static_cast<unsigned>(table_oid),
                       attname);
@@ -2777,11 +2655,9 @@ namespace services::disk {
     // The body is deliberately the compact leg's inner loop minus its two VACUUM-shaped
     // parts: the subtractive "everything not in live_attnames" enumeration (the ALTER names
     // its column, and re-deriving a live set here would turn any gap in that derivation into
-    // a physical drop of a SURVIVING column) and the IN_MEMORY gate. The gate is not copied
-    // rather than merely relaxed: it is correct where it stands, because VACUUM exists to
-    // reclaim and attaches to no round that can commit a reclaim, whereas here the drop IS
-    // the DDL fact and B3c's split — rebuild now, blocks released by the checkpoint that can
-    // commit their release — is the intended shape, not a deferral of something owed.
+    // a physical drop of a SURVIVING column). Here the ALTER names its column, so there is no
+    // live set to re-derive and no gap to turn into one. Both legs share B3c's split: rebuild
+    // now, blocks released by the checkpoint that can commit their release.
     //
     // WHEN this runs is the safety argument, and it is not local: operator_commit_transaction
     // drives it only AFTER the txn's WAL commit marker and the ProcArray publish barrier, so
@@ -2837,15 +2713,16 @@ namespace services::disk {
                 sidecars.push_back(std::move(wal_id_sidecar));
             }
         }
-        // IN_MEMORY storages leave otbx_path/sidecars empty, but we still record a GC
-        // entry so disk_has_dropped_ bookkeeping is uniform (sweep no-ops on empty path).
+        // An entry whose construction failed leaves otbx_path/sidecars empty, but we still
+        // record a GC entry so disk_has_dropped_ bookkeeping is uniform (sweep no-ops on an
+        // empty path).
         register_dropped_storage_inner_sync(table_oid, dropped_at_commit_id, std::move(otbx_path), std::move(sidecars));
     }
 
     // Batched DROP-mark: one message per agent carries that agent's whole oid slice
     // (manager partitioned by pool_idx_for_oid) plus the shared dropped_at_commit_id.
     // Loops the canonical per-oid mark; an over-routed / not-owned oid records an empty
-    // GC entry (no-op sweep), matching the IN_MEMORY case.
+    // GC entry (no-op sweep).
     agent_disk_t::unique_future<void>
     agent_disk_t::mark_storage_dropped_many_inner(std::pmr::vector<components::catalog::oid_t> table_oids,
                                                   uint64_t dropped_at_commit_id) {

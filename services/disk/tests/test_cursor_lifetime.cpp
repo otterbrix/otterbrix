@@ -99,11 +99,12 @@ namespace {
         columns.emplace_back("value", complex_logical_type{logical_type::BIGINT});
         auto table_oid = test_create_table(fx, ns_oid, "rows", columns);
         REQUIRE(table_oid >= FIRST_USER_OID);
-        fx.invoke(&manager_disk_t::create_storage_with_columns,
+        fx.invoke(&manager_disk_t::create_storage_disk,
                   session_id_t{},
                   table_oid,
                   catalog::well_known_oid::main_database,
-                  columns);
+                  columns,
+                  /*is_computed=*/false);
 
         constexpr uint64_t kRows = 3 * components::vector::DEFAULT_VECTOR_CAPACITY;
         uint64_t written = 0;

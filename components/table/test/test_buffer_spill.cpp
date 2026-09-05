@@ -16,7 +16,7 @@
 #include <components/table/storage/buffer_handle.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/file_buffer.hpp>
-#include <components/table/storage/in_memory_block_manager.hpp>
+#include <components/table/storage/transient_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
 #include <core/pmr.hpp>

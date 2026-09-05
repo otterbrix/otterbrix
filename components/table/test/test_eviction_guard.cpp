@@ -127,7 +127,7 @@ TEST_CASE("buffer manager: re-pinning an evicted managed block does not crash", 
     // evict_blocks() returns {found,...} and never throws, so "nothing freed" is
     // benign.
     env.buffer_pool.add_to_eviction_queue(h1);
-    auto eviction = env.buffer_pool.evict_blocks(memory_tag::IN_MEMORY_TABLE,
+    auto eviction = env.buffer_pool.evict_blocks(memory_tag::TRANSIENT_TABLE,
                                                  /*extra_memory=*/0,
                                                  /*memory_limit=*/0,
                                                  /*buffer=*/nullptr);

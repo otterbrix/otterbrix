@@ -1031,8 +1031,7 @@ namespace components::table {
     core::result_wrapper_t<bool> row_group_t::transition_to_disk() {
         // Own ONE partial_block_manager for this closed row group: ALL its columns' (and validity children's)
         // segments are PACKED together into shared blocks, so a row group of narrow columns shares a handful
-        // of blocks instead of one block per segment (the ~127x over-allocation B2 fixes). In-memory tables
-        // buffer nothing (transition_segment_to_disk early-returns), so the flush below is a harmless no-op.
+        // of blocks instead of one block per segment (the ~127x over-allocation B2 fixes).
         storage::partial_block_manager_t pbm(block_manager());
         // Only transition columns already materialized in memory (a freshly-appended row group). Disk-loaded /
         // unloaded columns are already disk-backed (block_id < MAXIMUM) -> nothing to do; don't force a load.

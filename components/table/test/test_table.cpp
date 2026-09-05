@@ -2,10 +2,13 @@
 #include <components/expressions/execution_dag_builder.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/in_memory_block_manager.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
+#include <cstdio>
 #include <math.h>
+#include <string>
+#include <unistd.h>
 
 TEST_CASE("components::table::data_table") {
     using namespace components::types;
@@ -61,10 +64,19 @@ TEST_CASE("components::table::data_table") {
     union_fields.emplace_back(logical_type::STRING_LITERAL, "string");
     complex_logical_type union_type = complex_logical_type::create_union(union_fields, "test_union");
 
+    // B4: the substrate is a real .otbx. `test_size` above is deliberately more than one row
+    // group, so closing a group writes its segments through to the file — this case genuinely
+    // reaches the disk transition. It used to run on the file-less block manager, kept harmless
+    // by a block_manager_t predicate that went with the in-memory table mode it named, and
+    // every I/O virtual of the file-less manager now aborts instead of pretending. Only the
+    // substrate changes here: every assertion below is unchanged.
+    const std::string db_path = "/tmp/test_otterbrix_data_table_" + std::to_string(::getpid()) + ".otbx";
+    std::remove(db_path.c_str());
     core::filesystem::local_file_system_t fs;
     auto buffer_pool = storage::buffer_pool_t(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
     auto buffer_manager = storage::standard_buffer_manager_t(&resource, fs, buffer_pool);
-    auto block_manager = storage::in_memory_block_manager_t(buffer_manager, storage::DEFAULT_BLOCK_ALLOC_SIZE);
+    auto block_manager = storage::single_file_block_manager_t(buffer_manager, fs, db_path);
+    REQUIRE_FALSE(block_manager.create_new_database().has_error());
 
     std::vector<column_definition_t> columns;
     columns.reserve(8);
@@ -499,4 +511,6 @@ TEST_CASE("components::table::data_table") {
             });
         }
     }
+
+    std::remove(db_path.c_str());
 }

@@ -153,8 +153,9 @@ namespace services::disk {
     // manager never borrows a storage entry across the actor boundary.
     //
     // Not folded into compact_relkind_g_storage: that leg is SUBTRACTIVE (live set in, the
-    // complement dropped) and gated to IN_MEMORY because it rides VACUUM. This one is
-    // additive and ungated on purpose — see the contract note in disk_contract.hpp.
+    // complement dropped), so any gap in the caller's derivation of the live set becomes a
+    // physical drop of a SURVIVING column. This one is told WHICH column to drop — see the
+    // contract note in disk_contract.hpp.
     manager_disk_t::unique_future<core::result_wrapper_t<bool>>
     manager_disk_t::drop_storage_column(session_id_t /*session*/,
                                         components::catalog::oid_t table_oid,

@@ -19,7 +19,7 @@
 #include <components/table/column_state.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
-#include <components/table/storage/in_memory_block_manager.hpp>
+#include <components/table/storage/transient_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/table/table_state.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -103,7 +103,7 @@ namespace {
 
 TEST_CASE("storage_adapter: fetch returns owned big-string bytes on the intact path") {
     adapter_env_t env;
-    tstorage::in_memory_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
     const std::string big(5000, 'q');
     auto built = build_big_string_table(env, bm, big);
 
@@ -124,7 +124,7 @@ TEST_CASE("storage_adapter: fetch returns owned big-string bytes on the intact p
 
 TEST_CASE("storage_adapter: a fetch failure reaches the storage caller as an error") {
     adapter_env_t env;
-    tstorage::in_memory_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+    tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
     const std::string big(5000, 'r');
     auto built = build_big_string_table(env, bm, big);
 

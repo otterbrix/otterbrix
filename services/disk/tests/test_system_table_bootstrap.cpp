@@ -188,7 +188,11 @@ TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
     cleanup_boot_dir();
 }
 
-// 4. Empty config_disk.path — bootstrap is a safe no-op (in-memory deployment).
+// 4. Empty config_disk.path — bootstrap is a safe no-op. It used to mean "in-memory
+// deployment" and built file-less system storages; B4 removed that mode, so an empty
+// path now names no directory a .otbx could live in and the call refuses with a logged
+// error instead of manufacturing a relative-path database under the process CWD. What
+// this case pins is unchanged: the call is safe, idempotent, and leaves nothing behind.
 TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
     core::pmr::otterbrix_resource resource;
     log_t log = initialization_logger("python", "/tmp/docker_logs/");

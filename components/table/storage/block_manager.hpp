@@ -54,7 +54,7 @@ namespace components::table::storage {
         // data blocks stayed allocated forever, so a checkpoint of an UNCHANGED table extended
         // the file every round. These two hooks are the whole interface to the fix.
         //
-        // Only the single-file (disk) manager has a root at all; the in-memory manager keeps
+        // Only the single-file (disk) manager has a root at all; the transient manager keeps
         // the no-op defaults, which is why data_table_t can call them unconditionally.
         //
         // `adopt_durable_root_data_blocks` is how the LOADER states what the durable root
@@ -75,13 +75,12 @@ namespace components::table::storage {
         // design, and both make write_header refuse to commit — which means a degraded manager
         // never promotes pending_free_ again. Rebuilding a table on top of one therefore costs
         // a full extra copy of it EVERY round, for the life of the process. Callers use this to
-        // stop rebuilding rather than to paper over the failure. Always false in memory.
+        // stop rebuilding rather than to paper over the failure. False by default.
         virtual bool degraded() const { return false; }
 
         virtual uint64_t total_blocks() = 0;
         virtual uint64_t free_blocks() = 0;
         virtual bool is_remote() { return false; }
-        virtual bool in_memory() = 0;
         // L2. The pre-header barrier: data and metadata blocks must be on the DEVICE before
         // the root that names them becomes durable. It used to be `virtual void` over a
         // dropped `handle_->sync()` bool, which made the barrier decorative — the header

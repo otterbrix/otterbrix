@@ -41,8 +41,6 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::checkpoint_all>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::vacuum_all>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::maybe_cleanup_many>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_with_columns>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_disk>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::drop_storage_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_types>,
@@ -102,41 +100,16 @@ namespace services::disk {
 
     // ---- table_storage_t implementations ----
 
-    table_storage_t::table_storage_t(std::pmr::memory_resource* resource)
-        : mode_(storage_mode_t::IN_MEMORY)
-        , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-        , buffer_manager_(resource, fs_, buffer_pool_)
-        , block_manager_(std::make_unique<components::table::storage::in_memory_block_manager_t>(
-              buffer_manager_,
-              components::table::storage::DEFAULT_BLOCK_ALLOC_SIZE))
-        , table_(std::make_unique<components::table::data_table_t>(
-              resource,
-              *block_manager_,
-              std::vector<components::table::column_definition_t>{}))
-        , pending_released_blocks_(resource) {}
-
-    table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
-                                     std::vector<components::table::column_definition_t> columns)
-        : mode_(storage_mode_t::IN_MEMORY)
-        , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-        , buffer_manager_(resource, fs_, buffer_pool_)
-        , block_manager_(std::make_unique<components::table::storage::in_memory_block_manager_t>(
-              buffer_manager_,
-              components::table::storage::DEFAULT_BLOCK_ALLOC_SIZE))
-        , table_(std::make_unique<components::table::data_table_t>(resource, *block_manager_, std::move(columns)))
-        , pending_released_blocks_(resource) {}
-
     table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
                                      std::vector<components::table::column_definition_t> columns,
                                      const std::filesystem::path& otbx_path)
-        : mode_(storage_mode_t::DISK)
-        , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
+        : buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_)
         , pending_released_blocks_(resource) {
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
-        // create_new_database reports failure as io_error rather than throwing. This DISK ctor can run on
+        // create_new_database reports failure as io_error rather than throwing. This ctor can run on
         // the agent thread (via bootstrap_create_disk_inner_sync, noexcept), where a throw would
         // std::terminate. Record the error and leave table_/block_manager_ null; the caller checks
         // construction_failed().
@@ -152,15 +125,14 @@ namespace services::disk {
                                      const std::filesystem::path& otbx_path,
                                      std::vector<components::table::column_definition_t> catalog_columns,
                                      bool allow_schemaless)
-        : mode_(storage_mode_t::DISK)
-        , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
+        : buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_)
         , pending_released_blocks_(resource) {
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
         // load_existing_database + load_from_disk report io_error / data_corruption rather than throwing.
-        // This DISK ctor can run on the agent thread (bootstrap_disk_inner_sync is noexcept), where a throw
+        // This ctor can run on the agent thread (bootstrap_disk_inner_sync is noexcept), where a throw
         // would std::terminate. Record the error and leave table_/block_manager_ null; the caller checks
         // construction_failed() and refuses the file loudly, leaving it byte-identical (A7.5).
         if (auto r = bm->load_existing_database(); r.has_error()) {
@@ -209,17 +181,15 @@ namespace services::disk {
     }
 
     bool table_storage_t::storage_degraded() const noexcept {
-        if (mode_ != storage_mode_t::DISK || !block_manager_) {
+        // A failed construction leaves block_manager_ null; such an entry is dropped by its
+        // caller and has nothing to report.
+        if (!block_manager_) {
             return false;
         }
         return block_manager_->degraded();
     }
 
     core::result_wrapper_t<bool> table_storage_t::checkpoint() {
-        if (mode_ != storage_mode_t::DISK) {
-            return true;
-        }
-
         // The block manager latched a failure earlier: a block write or an fsync did not reach
         // the device, or the free list it allocates from was proven corrupt. write_header would
         // refuse to commit anyway, but it would refuse AFTER this round had already rewritten
@@ -314,9 +284,6 @@ namespace services::disk {
     }
 
     core::result_wrapper_t<bool> table_storage_t::checkpoint(wal::id_t new_wal_id) {
-        if (mode_ != storage_mode_t::DISK) {
-            return true;
-        }
         // First persist the data; on a checkpoint() error the wal_id fields stay unchanged and the
         // error is surfaced so the caller skips this entry's seal.
         auto cp_r = checkpoint();
@@ -370,9 +337,9 @@ namespace services::disk {
         // a 10k-row table) named by no root, no registry and no free list — orphaned durably,
         // and still orphaned after a reopen.
         //
-        // IN_MEMORY tables have no block manager to charge; their storage is released outright
-        // when the superseded parent is destroyed.
-        if (block_manager_ && !block_manager_->in_memory()) {
+        // A construction that failed left block_manager_ null (see construction_failed()); such
+        // an entry is dropped by its caller and owns no blocks to charge.
+        if (block_manager_) {
             table_->collect_column_disk_block_ids(idx, pending_released_blocks_);
         }
         // The data_table_t(parent, removed_column) constructor performs the
@@ -607,14 +574,6 @@ namespace services::disk {
                 break;
             }
             // Storage management
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::create_storage, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_with_columns>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::create_storage_with_columns, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::create_storage_disk>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::create_storage_disk, msg);
                 break;

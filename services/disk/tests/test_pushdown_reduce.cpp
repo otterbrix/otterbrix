@@ -135,11 +135,12 @@ TEST_CASE("pushdown_reduce: read-your-own-writes SUM over an uncommitted txn (D4
     const catalog::oid_t table_oid{catalog::FIRST_USER_OID};
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("val", types::complex_logical_type{types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::create_storage_with_columns,
+    fx.invoke(&manager_disk_t::create_storage_disk,
               session_id_t{},
               table_oid,
               catalog::well_known_oid::main_database,
-              cols);
+              cols,
+              /*is_computed=*/false);
 
     // Append 10 + 20 + 30 = 60 UNDER txn 88 (uncommitted; never published).
     const auto txn = open_txn(88);
@@ -176,11 +177,12 @@ TEST_CASE("pushdown_reduce: empty slice SUM emits one NULL scalar row") {
     const catalog::oid_t table_oid{catalog::FIRST_USER_OID};
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("val", types::complex_logical_type{types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::create_storage_with_columns,
+    fx.invoke(&manager_disk_t::create_storage_disk,
               session_id_t{},
               table_oid,
               catalog::well_known_oid::main_database,
-              cols);
+              cols,
+              /*is_computed=*/false);
 
     auto partials =
         fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), open_txn(88));
@@ -200,11 +202,12 @@ TEST_CASE("pushdown_reduce: GROUP BY key + SUM returns the full grouped result")
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("grp", types::complex_logical_type{types::logical_type::BIGINT});
     cols.emplace_back("val", types::complex_logical_type{types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::create_storage_with_columns,
+    fx.invoke(&manager_disk_t::create_storage_disk,
               session_id_t{},
               table_oid,
               catalog::well_known_oid::main_database,
-              cols);
+              cols,
+              /*is_computed=*/false);
 
     // (grp,val): (1,10),(1,20),(2,30),(2,5) => grp1=30, grp2=35 (distinct sums so key/sum
     // columns are identifiable regardless of output order).
@@ -248,11 +251,12 @@ TEST_CASE("pushdown_reduce: manager routes a storage_reduce and replies a well-f
     const catalog::oid_t table_oid{catalog::FIRST_USER_OID};
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("val", types::complex_logical_type{types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::create_storage_with_columns,
+    fx.invoke(&manager_disk_t::create_storage_disk,
               session_id_t{},
               table_oid,
               catalog::well_known_oid::main_database,
-              cols);
+              cols,
+              /*is_computed=*/false);
 
     auto reply = fx.invoke(&manager_disk_t::storage_reduce,
                            session_id_t{},

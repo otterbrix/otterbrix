@@ -571,7 +571,7 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
 // rows must survive.
 //
 // B1b: re-enabled. This test was disabled ("TODO: computed schema does not work for
-// now") while computed tables were IN_MEMORY-only; its assertions are unchanged — the
+// now") while computed tables had no file behind them; its assertions are unchanged — the
 // table is now a disk-backed .otbx whose computed flag is restored from
 // pg_class.relkind on load.
 TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recovery") {
@@ -588,7 +588,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
-        // CREATE TABLE with no columns => relkind='g' (computed / IN_MEMORY dynamic schema).
+        // CREATE TABLE with no columns => relkind='g' (computed, dynamic schema).
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection ();");
@@ -968,6 +968,139 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
             REQUIRE(c2->value(0, 0).value<bool>() == true);
         }
     }
+}
+
+// B4 gate: WAL-replay synthesis must put the recreated `.otbx` where the table's own
+// resolve will look for it — under its pg_class.relnamespace.
+//
+// A table's file lives at ${disk_root}/${relnamespace}/${table_oid}/table.otbx: that is what
+// manager_disk_t::create_storage_disk builds from the namespace oid the planner resolved
+// (create_plan_sequence passes node_create_collection_t::namespace_oid as the create's
+// "database_oid"). Every recovery path that has to REBUILD that path — replay synthesis here,
+// the deferred-DROP GC sweep, the rehydrate of a lost file — used to substitute
+// well_known_oid::main_database == 4 instead. 4 is a pg_database oid, not a namespace oid, and
+// no user table can carry it: CREATE DATABASE allocates its namespace from FIRST_USER_OID
+// upward. So the synthesised file landed in a directory nothing ever opens for this table.
+//
+// It is not merely a misplaced file. The next restart's directory walk (which accepts any
+// numeric directory) loads THAT file for the oid, so a table can come back with the rows a
+// stale synthesis left under 4 rather than the ones its real file holds — and the GC sweep,
+// aimed at the same wrong directory, never removes a dropped table's .otbx at all.
+//
+// Crash model is the one the synthesis branch exists for and is copied from
+// computed_type_variants_survive_crash_replay_synthesis: copy the LIVE directory, then delete
+// the user table's storage directory from the COPY (a freshly created .otbx's directory entry
+// is not fsynced, so a real crash keeps the pg_class row and the WAL while losing the file).
+// The table is computed (relkind='g') on purpose: rehydrate_missing_user_storages_sync skips
+// 'g' at the source, so the ONLY thing that can rebuild this file is replay synthesis.
+TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_under_its_namespace") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/replay_ns_src");
+    test_clear_directory(config);
+
+    const std::filesystem::path crash_dir = "/tmp/otterbrix/integration/test_persistence/replay_ns_copy";
+
+    // Returns every ${ns}/${oid} pair under the disk root that holds a table.otbx and whose
+    // BOTH components are user oids.
+    auto user_table_dirs = [](const std::filesystem::path& root) {
+        std::vector<std::pair<unsigned long, unsigned long>> found;
+        if (!std::filesystem::exists(root)) {
+            return found;
+        }
+        auto numeric = [](const std::filesystem::path& dir) -> unsigned long {
+            const auto name = dir.filename().string();
+            char* end = nullptr;
+            const unsigned long v = std::strtoul(name.c_str(), &end, 10);
+            return (end != nullptr && *end == '\0' && !name.empty()) ? v : 0;
+        };
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+            if (!entry.is_regular_file() || entry.path().filename() != "table.otbx") {
+                continue;
+            }
+            const auto tbl = numeric(entry.path().parent_path());
+            const auto ns = numeric(entry.path().parent_path().parent_path());
+            if (tbl >= components::catalog::FIRST_USER_OID && ns >= components::catalog::FIRST_USER_OID) {
+                found.emplace_back(ns, tbl);
+            }
+        }
+        return found;
+    };
+
+    unsigned long live_ns = 0;
+    unsigned long live_tbl = 0;
+
+    INFO("phase 1: computed table with rows; copy the live directory as the crash image");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection ();");
+            REQUIRE(cur->is_success());
+        }
+        for (int i = 1; i <= 2; ++i) {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session,
+                                               "INSERT INTO TestDatabase.TestCollection (id, a) VALUES (" +
+                                                   std::to_string(i) + ", " + std::to_string(i * 10) + ");");
+            REQUIRE(cur->is_success());
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
+
+        // The live layout is the ANSWER the recovery has to reproduce: one user table, under a
+        // user namespace oid. Read it off the disk rather than assuming a value.
+        const auto live = user_table_dirs(config.disk.path);
+        INFO("the live directory must hold exactly the one user table");
+        REQUIRE(live.size() == 1);
+        live_ns = live.front().first;
+        live_tbl = live.front().second;
+
+        std::filesystem::remove_all(crash_dir);
+        std::filesystem::create_directories(crash_dir.parent_path());
+        std::filesystem::copy(config.main_path, crash_dir, std::filesystem::copy_options::recursive);
+    }
+
+    // Model the lost directory entry: remove the table's storage directory from the copy. The
+    // WAL, which carries the pg_class row and the PHYSICAL_INSERTs, survives.
+    {
+        auto crash_config = test_create_config(crash_dir);
+        auto victim = crash_config.disk.path / std::to_string(live_ns) / std::to_string(live_tbl);
+        REQUIRE(std::filesystem::exists(victim / "table.otbx"));
+        std::filesystem::remove_all(victim);
+    }
+
+    INFO("phase 2: reopen the crash image — synthesis must rebuild the file under live_ns");
+    {
+        auto crash_config = test_create_config(crash_dir);
+        {
+            test_spaces space(crash_config);
+            auto* dispatcher = space.dispatcher();
+            // Functional consequence: a storage the table can actually find holds the rows.
+            CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
+        }
+
+        // Structural gate, and the one that fails on the pre-B4 hardwired oid: the recreated
+        // file sits under the table's own namespace...
+        REQUIRE(std::filesystem::exists(crash_config.disk.path / std::to_string(live_ns) /
+                                        std::to_string(live_tbl) / "table.otbx"));
+        // ...and nothing was manufactured under the main-database oid (4), which is where the
+        // hardwired path put it.
+        REQUIRE_FALSE(std::filesystem::exists(
+            crash_config.disk.path /
+            std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::main_database)) /
+            std::to_string(live_tbl) / "table.otbx"));
+        // Nothing else moved either: still exactly the one user table, at the same coordinates.
+        const auto after = user_table_dirs(crash_config.disk.path);
+        REQUIRE(after.size() == 1);
+        REQUIRE(after.front().first == live_ns);
+        REQUIRE(after.front().second == live_tbl);
+    }
+
+    std::filesystem::remove_all(crash_dir);
 }
 
 // B1b guard: a ZERO-COLUMN REGULAR table (relkind='r' whose only column was
@@ -2657,7 +2790,7 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
 // B1a SEMANTICS CHANGE (explicit): user tables are now ALWAYS disk-backed, so the
 // phase-1 rows are durable across the reopen (the shutdown checkpoint seals the
 // .otbx) and phase 2 sees the union of old + re-inserted rows (200), where the
-// pre-B1a IN_MEMORY table lost its rows and saw only the re-inserted 100. The
+// pre-B1a file-less table lost its rows and saw only the re-inserted 100. The
 // test's load-bearing core is unchanged: after a reopen the storage must exist
 // again, the re-run CREATE TABLE IF NOT EXISTS must be a clean no-op, and the
 // re-INSERT must land and be visible (the SSB "4ms / 0 rows" regression, where

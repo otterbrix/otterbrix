@@ -109,69 +109,6 @@ namespace services::disk {
     // borrow or storage_*_inner mailbox handler). No manager-side storage_t* survives.
 
     manager_disk_t::unique_future<void>
-    manager_disk_t::create_storage(session_id_t session, catalog::oid_t table_oid, catalog::oid_t /*database_oid*/) {
-        trace(log_,
-              "manager_disk_t::create_storage , session : {} , oid : {}",
-              session.data(),
-              static_cast<unsigned>(table_oid));
-        // Pure router: the IN_MEMORY entry is built with the AGENT's own resource() on
-        // the agent thread (create_storage_inner). Only the oid crosses the mailbox; no
-        // entry is constructed on the manager thread.
-        if (!agents_.empty()) {
-            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
-            auto& agent = agents_[pool_idx];
-            auto [needs_sched, fut] =
-                actor_zeta::otterbrix::send(agent->address(), &agent_disk_t::create_storage_inner, table_oid);
-            if (needs_sched) {
-                scheduler_disk_->enqueue(agent.get());
-            }
-            // Await so the storage exists before the future resolves; the bool result
-            // signals dup-key — drop it (the agent already logged the duplicate).
-            const bool ok = co_await std::move(fut);
-            if (!ok) {
-                trace(log_,
-                      "manager_disk_t::create_storage: agent[{}] already owned oid {}",
-                      pool_idx,
-                      static_cast<unsigned>(table_oid));
-            }
-        }
-        co_return;
-    }
-
-    manager_disk_t::unique_future<void>
-    manager_disk_t::create_storage_with_columns(session_id_t session,
-                                                catalog::oid_t table_oid,
-                                                catalog::oid_t /*database_oid*/,
-                                                std::vector<components::table::column_definition_t> columns) {
-        trace(log_,
-              "manager_disk_t::create_storage_with_columns , session : {} , oid : {}",
-              session.data(),
-              static_cast<unsigned>(table_oid));
-        // Pure router: columns cross the mailbox by value (same as today's by-value
-        // parameter); the entry is built on the agent thread via
-        // create_storage_with_columns_inner. No entry on the manager thread.
-        if (!agents_.empty()) {
-            const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
-            auto& agent = agents_[pool_idx];
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::create_storage_with_columns_inner,
-                                                                  table_oid,
-                                                                  std::move(columns));
-            if (needs_sched) {
-                scheduler_disk_->enqueue(agent.get());
-            }
-            const bool ok = co_await std::move(fut);
-            if (!ok) {
-                trace(log_,
-                      "manager_disk_t::create_storage_with_columns: agent[{}] already owned oid {}",
-                      pool_idx,
-                      static_cast<unsigned>(table_oid));
-            }
-        }
-        co_return;
-    }
-
-    manager_disk_t::unique_future<void>
     manager_disk_t::create_storage_disk(session_id_t session,
                                         catalog::oid_t table_oid,
                                         catalog::oid_t database_oid,

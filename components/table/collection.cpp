@@ -230,8 +230,8 @@ namespace components::table {
             }
             // Write-through: the row group we just closed is now COMPLETE (its column segments are final
             // and the append state has moved to the new row group). Re-point its managed segments to disk so the
-            // pool can evict+reload them -> bounded memory at any table size. No-op for in-memory tables; a
-            // write/alloc failure surfaces as io_error/out_of_memory, never a throw.
+            // pool can evict+reload them -> bounded memory at any table size. A write/alloc failure
+            // surfaces as io_error/out_of_memory, never a throw.
             auto transitioned = current_row_group->transition_to_disk();
             if (transitioned.has_error()) {
                 return transitioned;

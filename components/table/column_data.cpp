@@ -322,7 +322,6 @@ namespace components::table {
         // change its placement -- but routing it through the pbm keeps a single write-through code path. We
         // flush at the END of this append so every re-pointed filled segment's block is durable BEFORE the
         // append returns (and so before the row-group close / any scan or eviction of it): flush-before-evict.
-        // No-op for in-memory tables (transition_segment_to_disk early-returns; nothing is buffered).
         storage::partial_block_manager_t pbm(block_manager_);
         bool any_transitioned = false;
         while (true) {
@@ -558,12 +557,6 @@ namespace components::table {
     core::result_wrapper_t<bool> column_data_t::transition_segment_to_disk(std::unique_lock<std::mutex>& l,
                                                                            uint64_t segment_index,
                                                                            storage::partial_block_manager_t& pbm) {
-        // In-memory tables have no backing store, so their segments must stay managed (no disk copy ->
-        // clean OOM, never a crash). No-op.
-        if (block_manager_.in_memory()) {
-            return true;
-        }
-
         auto* segment = data_.segment_at(l, static_cast<int64_t>(segment_index));
         if (!segment) {
             return true;
@@ -730,9 +723,6 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> column_data_t::transition_to_disk(storage::partial_block_manager_t& pbm) {
-        if (block_manager_.in_memory()) {
-            return true; // no backing store -> segments stay managed (clean OOM, never a crash)
-        }
         auto l = data_.lock();
         const uint64_t count = data_.segment_count(l);
         for (uint64_t i = 0; i < count; i++) {
@@ -890,8 +880,8 @@ namespace components::table {
         // so never went through the on-fill write-through) to disk-backed, evictable blocks so the
         // post-checkpoint live table stays bounded. The on-disk metadata returned above is independent of
         // the live tree (it references the partial_block_manager's allocations), so the re-point cannot
-        // corrupt the checkpoint. No-op for in-memory tables and for already-disk-backed segments. A
-        // write/alloc failure surfaces as io_error/out_of_memory.
+        // corrupt the checkpoint. A no-op for already-disk-backed segments. A write/alloc failure
+        // surfaces as io_error/out_of_memory.
         //
         // Use a SEPARATE short-lived partial_block_manager (NOT the checkpoint's `partial_block_manager`,
         // which collection_t::checkpoint already flushed): the re-point packs the live tail's segments into

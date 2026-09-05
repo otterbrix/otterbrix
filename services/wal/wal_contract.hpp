@@ -61,7 +61,7 @@ namespace services::wal {
                               uint64_t txn_id,
                               components::catalog::oid_t database_oid);
 
-        // Schema-growth record (dynamic add_column on IN_MEMORY / computed tables).
+        // Schema-growth record (dynamic add_column on computed / relkind='g' tables).
         // schema_chunk is a 0-row data_chunk whose columns ARE the new columns
         // (alias-tagged types). Written BEFORE the PHYSICAL_INSERT that depends on
         // them so WAL-first replay re-applies the schema before the rows.

@@ -171,8 +171,8 @@ namespace services::disk {
                        components::table::transaction_data txn,
                        components::operators::pushed_aggregate_spec_t spec);
 
-        // Physical column compaction for an IN_MEMORY relkind='g'
-        // table_storage_t.
+        // Physical column compaction for a relkind='g' table_storage_t — see the long note on
+        // manager_disk_t::compact_relkind_g_storage.
         actor_zeta::unique_future<std::uint64_t> compact_relkind_g_storage(execution_context_t ctx,
                                                                            components::catalog::oid_t table_oid,
                                                                            std::set<std::string> live_attnames);
@@ -204,14 +204,6 @@ namespace services::disk {
         drop_storage_column(session_id_t session, components::catalog::oid_t table_oid, std::string attname);
 
         // Storage management
-        actor_zeta::unique_future<void> create_storage(session_id_t session,
-                                                       components::catalog::oid_t table_oid,
-                                                       components::catalog::oid_t database_oid);
-        actor_zeta::unique_future<void>
-        create_storage_with_columns(session_id_t session,
-                                    components::catalog::oid_t table_oid,
-                                    components::catalog::oid_t database_oid,
-                                    std::vector<components::table::column_definition_t> columns);
         // B1b: `is_computed` = the pg_class.relkind='g' fact, derived by the caller
         // (see manager_disk_t::create_storage_disk).
         actor_zeta::unique_future<void>
@@ -354,8 +346,6 @@ namespace services::disk {
                                                             &disk_contract::vacuum_all,
                                                             &disk_contract::maybe_cleanup_many,
                                                             // Storage management
-                                                            &disk_contract::create_storage,
-                                                            &disk_contract::create_storage_with_columns,
                                                             &disk_contract::create_storage_disk,
                                                             &disk_contract::drop_storage_many,
                                                             // Storage queries

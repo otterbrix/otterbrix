@@ -52,7 +52,56 @@ namespace services::index {
         bool erase(std::string_view key, bool lock_bitcask = true) override;
         bool erase(std::string_view key, int64_t value, bool lock_bitcask = true) override;
         void set_full_key_loader(full_key_loader_t loader);
-        void for_each(const std::function<void(const value_ref_t&)>& cb) const;
+        // Rule 14: the callable is a TEMPLATE parameter, not a type-erased `function` wrapper.
+        // Nothing here forces erasure -- for_each is not a virtual customization point, so the
+        // callable can simply be deduced. This is the other branch of the reasoning recorded on
+        // components/index/index.hpp's pending_inserts/pending_deletes: there the customization
+        // point IS virtual, the callable therefore could NOT be a template parameter, and the
+        // entries are RETURNED instead of pushed through a callback. Here it is not virtual, so
+        // the callback survives and the erasure goes. The erased form also heap-allocated for the
+        // capturing lambdas both callers pass. The body lives in the header for the same reason
+        // index_engine_t::for_each_pending_disk_insert's does.
+        //
+        // THE ORDER IS PART OF THE CONTRACT, not an implementation detail: buckets ascending,
+        // each bucket's primary page before its overflow chain, slots 0..count-1 within a page.
+        // Both production callers (bitcask_index_disk_t::load_entries and
+        // ::merge_immutable_segments) accumulate through a by-reference capture, so this is the
+        // order they observe and hand on. `cb` is invoked synchronously, once per live entry,
+        // and is never stored or deferred -- it is NOT forwarded, because it is called in a loop.
+        template<typename callback_t>
+        void for_each(callback_t&& cb) const {
+            std::shared_lock lock(mutex_);
+            byte_buffer_t page(memory_resource_);
+            page.resize(page_size);
+            for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
+                uint64_t page_id = bucket_primary_page_id(bucket);
+                while (page_id != 0) {
+                    if (!read_page(page_id, page)) {
+                        break; // unreadable page: stop walking this chain
+                    }
+                    const auto cnt = page_count(page);
+                    for (uint16_t i = 0; i < cnt; ++i) {
+                        const auto slot = read_slot(page, i);
+                        if (slot.flags != slot_flag_used || slot.length == 0) {
+                            continue;
+                        }
+                        if (!slot_belongs_to_bucket_unlocked(slot.key_hash, bucket)) {
+                            continue;
+                        }
+                        const auto entry = decode_entry(page, slot);
+                        if (!entry.valid) {
+                            continue; // corrupt slot: skip it rather than read past the page
+                        }
+                        cb(value_ref_t{entry.value,
+                                       entry.log_file_id,
+                                       entry.log_offset,
+                                       (entry.entry_flags & entry_flag_truncated) != 0});
+                    }
+                    page_id = page_overflow(page);
+                }
+            }
+        }
+
         bool rehash(uint32_t new_bucket_count);
         bool trigger_rehash_if_needed();
         bool set_auto_rehash_suppressed(bool suppressed) noexcept;

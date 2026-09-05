@@ -3,6 +3,9 @@
 #include <services/index/disk_hash_table.hpp>
 
 #include <cstdlib>
+#include <memory_resource>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -528,4 +531,215 @@ TEST_CASE("services::index::disk_hash_table::create_returns_a_usable_table") {
     auto found = table->get("k");
     REQUIRE(found.has_value());
     REQUIRE(found->value == 42);
+}
+
+// --- for_each: behavioural gate on walk order and capture lifetime -----------
+// for_each's ORDER is observable, not an implementation detail: both production
+// callers (bitcask_index_disk_t::load_entries and ::merge_immutable_segments)
+// accumulate through a by-reference capture, so the sequence for_each hands out is
+// the sequence they build -- load_entries' duplicate entries and the merge's ref
+// list come out in exactly this order. The cases below pin that walk (buckets
+// ascending, primary page before its overflow chain, slots 0..n-1 inside a page)
+// so that a table which is merely "still complete" cannot pass.
+
+TEST_CASE("services::index::disk_hash_table::for_each_walks_duplicates_in_insertion_order") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("for_each_duplicate_order.data");
+    const auto overflow_path = std::filesystem::path(path).concat(".ovf");
+    std::filesystem::remove(path);
+    std::filesystem::remove(overflow_path);
+
+    // ONE bucket: every entry lands on the same chain, so the whole for_each output
+    // is the whole insertion order and no hash seed can perturb it. put() never
+    // reuses a freed slot, it appends at slot index count(), so "insertion order"
+    // is the ground truth the walk has to reproduce.
+    disk_hash_table_t table(path, 1, &resource);
+    REQUIRE_FALSE(table.set_auto_rehash_suppressed(true));
+
+    constexpr int64_t duplicates = 300;
+    for (int64_t i = 0; i < duplicates; ++i) {
+        REQUIRE(table.put("dup", i, static_cast<uint32_t>(i + 1), static_cast<uint64_t>(1000 + i)));
+    }
+    table.sync();
+
+    // ~104 entries of this shape fit one 4096-byte page, so 300 duplicates PROVE the
+    // walk crossed primary -> overflow instead of stopping at the first page. Asserted,
+    // not assumed: without a real chain the order below would be a single-page order.
+    REQUIRE(std::filesystem::exists(overflow_path));
+    REQUIRE(std::filesystem::file_size(overflow_path) >= disk_hash_table_t::page_size);
+
+    std::pmr::vector<disk_hash_table_t::value_ref_t> seen(&resource);
+    table.for_each([&](const disk_hash_table_t::value_ref_t& ref) { seen.push_back(ref); });
+
+    REQUIRE(seen.size() == static_cast<size_t>(duplicates));
+    for (int64_t i = 0; i < duplicates; ++i) {
+        const auto& ref = seen[static_cast<size_t>(i)];
+        REQUIRE(ref.value == i);
+        // The whole value_ref_t rides along in step: a reordering that regenerated
+        // values but shuffled the log coordinates would still be caught here.
+        REQUIRE(ref.log_file_id == static_cast<uint32_t>(i + 1));
+        REQUIRE(ref.log_offset == static_cast<uint64_t>(1000 + i));
+        REQUIRE_FALSE(ref.key_truncated);
+    }
+
+    // Independent oracle: get_all walks the same chain by the same rule and is NOT
+    // touched by this task, so the two orders must agree.
+    auto all = table.get_all("dup");
+    REQUIRE(all.size() == seen.size());
+    for (size_t i = 0; i < all.size(); ++i) {
+        REQUIRE(all[i].value == seen[i].value);
+        REQUIRE(all[i].log_offset == seen[i].log_offset);
+    }
+}
+
+TEST_CASE("services::index::disk_hash_table::for_each_keeps_interleaved_keys_in_chain_order") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("for_each_interleaved_order.data");
+    std::filesystem::remove(path);
+    std::filesystem::remove(std::filesystem::path(path).concat(".ovf"));
+
+    // One bucket again, but now with three keys interleaved: this pins that the walk
+    // reports slot order and does NOT group or sort by key on the way out.
+    disk_hash_table_t table(path, 1, &resource);
+    REQUIRE_FALSE(table.set_auto_rehash_suppressed(true));
+
+    struct put_t {
+        std::string_view key;
+        int64_t value;
+    };
+    const std::pmr::vector<put_t> script(
+        {put_t{"alpha", 1},
+         put_t{"beta", 2},
+         put_t{"alpha", 3},
+         put_t{"gamma", 4},
+         put_t{"beta", 5},
+         put_t{"alpha", 6},
+         put_t{"gamma", 7},
+         put_t{"beta", 8},
+         put_t{"alpha", 9}},
+        &resource);
+    for (const auto& step : script) {
+        REQUIRE(table.put(step.key, step.value, 7, static_cast<uint64_t>(step.value) * 10));
+    }
+
+    std::pmr::vector<int64_t> seen(&resource);
+    table.for_each([&](const disk_hash_table_t::value_ref_t& ref) { seen.push_back(ref.value); });
+
+    REQUIRE(seen.size() == script.size());
+    for (size_t i = 0; i < script.size(); ++i) {
+        REQUIRE(seen[i] == script[i].value);
+    }
+}
+
+TEST_CASE("services::index::disk_hash_table::for_each_multi_bucket_order_is_stable_and_per_key_ordered") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("for_each_multi_bucket_order.data");
+    std::filesystem::remove(path);
+    std::filesystem::remove(std::filesystem::path(path).concat(".ovf"));
+
+    constexpr int key_count = 5;
+    constexpr int64_t per_key = 20;
+    std::pmr::vector<int64_t> first_pass(&resource);
+    std::pmr::vector<int64_t> second_pass(&resource);
+
+    {
+        // Pin the hash seed so the bucket layout -- and therefore this case -- is the
+        // same on every run instead of being reseeded per file.
+        env_var_guard_t seed_guard("OTTERBRIX_DISK_HASH_SEED", "0x5eed1234");
+        disk_hash_table_t table(path, 64, &resource);
+        REQUIRE_FALSE(table.set_auto_rehash_suppressed(true));
+
+        // Interleave the keys so that insertion order and key order disagree; the value
+        // encodes which key produced it (key*1000 + n) so each key's subsequence is
+        // recoverable from the value_ref_t alone.
+        for (int64_t n = 0; n < per_key; ++n) {
+            for (int k = 0; k < key_count; ++k) {
+                const std::string key = "key_" + std::to_string(k);
+                REQUIRE(table.put(key, static_cast<int64_t>(k) * 1000 + n, 1, static_cast<uint64_t>(n)));
+            }
+        }
+
+        table.for_each([&](const disk_hash_table_t::value_ref_t& ref) { first_pass.push_back(ref.value); });
+        table.for_each([&](const disk_hash_table_t::value_ref_t& ref) { second_pass.push_back(ref.value); });
+    }
+
+    REQUIRE(first_pass.size() == static_cast<size_t>(key_count) * static_cast<size_t>(per_key));
+    // Two consecutive walks over an unchanged table must produce the SAME order.
+    REQUIRE(second_pass.size() == first_pass.size());
+    for (size_t i = 0; i < first_pass.size(); ++i) {
+        REQUIRE(second_pass[i] == first_pass[i]);
+    }
+
+    // The bucket loop runs ASCENDING, and with the seed pinned above every key lands
+    // in a bucket of its own, so the whole sequence is fixed: fnv1a-32 seeded with
+    // 0x5eed1234 mod 64 puts key_4 in bucket 3, key_0 in 15, key_3 in 34, key_2 in 53
+    // and key_1 in 60. Walking the buckets the other way, or in any other order, moves
+    // these five groups and is caught here -- the per-key check below cannot see it,
+    // because reversing the bucket loop leaves every chain internally intact.
+    const std::pmr::vector<int> expected_key_order({4, 0, 3, 2, 1}, &resource);
+    for (size_t group = 0; group < expected_key_order.size(); ++group) {
+        for (int64_t n = 0; n < per_key; ++n) {
+            const auto position = group * static_cast<size_t>(per_key) + static_cast<size_t>(n);
+            REQUIRE(first_pass[position] == static_cast<int64_t>(expected_key_order[group]) * 1000 + n);
+        }
+    }
+
+    // Entries of one key share a bucket and a chain, so their relative order in the
+    // output is their insertion order -- ascending n. This holds whatever bucket the
+    // seed sends them to, and breaks the moment a chain is walked backwards or an
+    // overflow page is visited before its primary.
+    for (int k = 0; k < key_count; ++k) {
+        int64_t expected_n = 0;
+        for (auto value : first_pass) {
+            if (value / 1000 != static_cast<int64_t>(k)) {
+                continue;
+            }
+            REQUIRE(value % 1000 == expected_n);
+            ++expected_n;
+        }
+        REQUIRE(expected_n == per_key);
+    }
+}
+
+TEST_CASE("services::index::disk_hash_table::for_each_delivers_every_entry_before_it_returns") {
+    auto resource = core::pmr::otterbrix_resource();
+    const auto path = mk_path("for_each_capture_lifetime.data");
+    std::filesystem::remove(path);
+    std::filesystem::remove(std::filesystem::path(path).concat(".ovf"));
+
+    disk_hash_table_t table(path, 8, &resource);
+
+    // An empty table must not invoke the callable at all -- no phantom entry, and
+    // nothing queued to run later.
+    std::pmr::vector<int64_t> collected(&resource);
+    size_t calls = 0;
+    table.for_each([&](const disk_hash_table_t::value_ref_t& ref) {
+        collected.push_back(ref.value);
+        ++calls;
+    });
+    REQUIRE(calls == 0);
+    REQUIRE(collected.empty());
+
+    constexpr int64_t total = 40;
+    for (int64_t i = 0; i < total; ++i) {
+        REQUIRE(table.put("k" + std::to_string(i), i, 1, static_cast<uint64_t>(i)));
+    }
+
+    table.for_each([&](const disk_hash_table_t::value_ref_t& ref) {
+        collected.push_back(ref.value);
+        ++calls;
+    });
+
+    // Everything the callable did through its by-reference capture is visible to the
+    // caller the instant for_each returns: the walk is synchronous, not deferred.
+    const auto size_on_return = collected.size();
+    REQUIRE(calls == size_on_return);
+    REQUIRE(size_on_return == static_cast<size_t>(total));
+
+    // ... and nothing keeps calling it afterwards: later work on the same table must
+    // not append one more entry through the capture.
+    REQUIRE(table.get("k0").has_value());
+    table.sync();
+    REQUIRE(collected.size() == size_on_return);
+    REQUIRE(calls == size_on_return);
 }

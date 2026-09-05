@@ -257,39 +257,6 @@ namespace services::index {
         return erase(key, std::optional<int64_t>(value), lock_bitcask);
     }
 
-    void disk_hash_table_t::for_each(const std::function<void(const value_ref_t&)>& cb) const {
-        std::shared_lock lock(mutex_);
-        byte_buffer_t page(memory_resource_);
-        page.resize(page_size);
-        for (uint32_t bucket = 0; bucket < header_.bucket_count_value; ++bucket) {
-            uint64_t page_id = bucket_primary_page_id(bucket);
-            while (page_id != 0) {
-                if (!read_page(page_id, page)) {
-                    break; // unreadable page: stop walking this chain
-                }
-                const auto cnt = page_count(page);
-                for (uint16_t i = 0; i < cnt; ++i) {
-                    const auto slot = read_slot(page, i);
-                    if (slot.flags != slot_flag_used || slot.length == 0) {
-                        continue;
-                    }
-                    if (!slot_belongs_to_bucket_unlocked(slot.key_hash, bucket)) {
-                        continue;
-                    }
-                    const auto entry = decode_entry(page, slot);
-                    if (!entry.valid) {
-                        continue; // corrupt slot: skip it rather than read past the page
-                    }
-                    cb(value_ref_t{entry.value,
-                                   entry.log_file_id,
-                                   entry.log_offset,
-                                   (entry.entry_flags & entry_flag_truncated) != 0});
-                }
-                page_id = page_overflow(page);
-            }
-        }
-    }
-
     bool disk_hash_table_t::rehash(uint32_t new_bucket_count) {
         std::unique_lock lock(mutex_);
         return rehash_unlocked(new_bucket_count);

@@ -27,7 +27,8 @@ namespace components::operators {
                                                                catalog::oid_t namespace_oid,
                                                                std::string column_name,
                                                                catalog::oid_t attoid,
-                                                               catalog::drop_behavior_t behavior)
+                                                               catalog::drop_behavior_t behavior,
+                                                               bool missing_ok)
         // Tagged as alter_column_drop (catch-all read_write_operator_t — same
         // convention as the sibling alter_column_add / alter_column_rename
         // operators).
@@ -36,7 +37,8 @@ namespace components::operators {
         , namespace_oid_(namespace_oid)
         , column_name_(std::move(column_name))
         , attoid_(attoid)
-        , behavior_(behavior) {}
+        , behavior_(behavior)
+        , missing_ok_(missing_ok) {}
 
     actor_zeta::unique_future<void> operator_alter_column_drop_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
@@ -126,7 +128,69 @@ namespace components::operators {
                 break;
         }
         if (attoid == catalog::INVALID_OID) {
-            // Row not found or already dropped: no-op, no error.
+            // The column is not there — either never was, or a tombstone already hides it.
+            //
+            // This used to be "no-op, no error": mark_executed() and out, so
+            // `ALTER TABLE t DROP COLUMN nosuchcol` reported SUCCESS having written no
+            // tombstone, scrubbed no dependent and released no storage. PostgreSQL refuses
+            // it (`column "x" of relation "y" does not exist`), and the silence cost more
+            // than a wasted statement: a migration that drops a column and then reads the
+            // table under its new shape got a green ALTER and a schema that never changed,
+            // with nothing between the two to say which half lied.
+            //
+            // WHY IT WAS DELIBERATE, AND WHAT MAKES IT SAFE TO REVERSE NOW. B3c1 left it
+            // silent because a relkind='g' (document) table keeps its columns in
+            // pg_computed_column and has NO pg_attribute row, so EVERY column of one misses
+            // the read above — a loud refusal here would have refused legal drops on every
+            // document table. That is no longer this operator's problem to dodge: the
+            // planner routes a relkind='g' DROP COLUMN to
+            // operator_computed_field_unregister_t (rewrite_alter_table), which refuses a
+            // missing field the same way against the catalog that actually holds it. The
+            // answer is the same for both table shapes; only the catalog consulted differs.
+            //
+            // IF EXISTS is the one form PostgreSQL lets pass, and it is now carried on the
+            // node instead of being assumed — so accepting the miss is the caller's explicit
+            // request, not this operator's guess.
+            if (missing_ok_) {
+                mark_executed();
+                co_return;
+            }
+            // Name the relation, not just the column: in a script that alters several
+            // tables, "column x does not exist" does not say which one was missing it.
+            // pg_class read on the refusal path only, same as the blocking branch below.
+            std::pmr::vector<std::uint64_t> cl_keys(resource_);
+            cl_keys.emplace_back(catalog::pg_class_col::oid);
+            auto [_cl, clf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::read_chunks_by_key,
+                                               exec_ctx,
+                                               pg_class_oid,
+                                               std::move(cl_keys),
+                                               components::operators::make_key_chunk(resource_, table_oid_),
+                                               std::pmr::vector<std::uint64_t>{resource_});
+            auto cls_batches_r = co_await std::move(clf);
+            if (cls_batches_r.has_error()) {
+                set_error(cls_batches_r.error());
+                co_return;
+            }
+            auto rel_id = alter_validators::relation_identity_of(cls_batches_r.value());
+            std::string rel = std::move(rel_id.relname);
+            if (rel.empty()) {
+                rel = "oid ";
+                rel += std::to_string(table_oid_);
+            }
+            // KEEP THE MESSAGE SHORT — under about 120 bytes. A longer error string
+            // built from this operator's resource_ comes back corrupted (doubled, or with
+            // a size that makes reading it throw std::length_error) before the executor
+            // has even copied it into a cursor. That is a separate, pre-existing defect —
+            // reproduced on this branch, NOT fixed here, and unrelated to the cursor-side
+            // lifetime bug that test_cursor_error_lifetime.cpp covers. The pre-existing
+            // FK-blocking refusal further down already sits at that edge.
+            std::string msg = "column \"";
+            msg += column_name_;
+            msg += "\" of relation \"";
+            msg += rel;
+            msg += "\" does not exist; use DROP COLUMN IF EXISTS to ignore it";
+            set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;
         }

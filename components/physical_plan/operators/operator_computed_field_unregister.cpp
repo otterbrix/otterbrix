@@ -1,5 +1,7 @@
 #include "operator_computed_field_unregister.hpp"
 
+#include "alter_validators.hpp"
+
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
@@ -20,11 +22,13 @@ namespace components::operators {
                                                                                log_t log,
                                                                                catalog::oid_t table_oid,
                                                                                catalog::oid_t attoid,
-                                                                               std::string column_name)
+                                                                               std::string column_name,
+                                                                               bool missing_ok)
         : read_write_operator_t(resource, std::move(log), operator_type::computed_field_unregister)
         , table_oid_(table_oid)
         , attoid_(attoid)
-        , column_name_(std::move(column_name)) {}
+        , column_name_(std::move(column_name))
+        , missing_ok_(missing_ok) {}
 
     actor_zeta::unique_future<void>
     operator_computed_field_unregister_t::await_async_and_resume(pipeline::context_t* ctx) {
@@ -114,7 +118,54 @@ namespace components::operators {
             }
         }
         if (!found_live) {
-            // Nothing alive to drop: idempotent no-op.
+            // No live version row for this field. This used to be an "idempotent no-op":
+            // mark_executed() and out, so `ALTER TABLE docs DROP COLUMN nosuchcol`
+            // reported SUCCESS on a document table exactly as its pg_attribute sibling
+            // did on a regular one. Both are now refused, and refused HERE rather than
+            // in one operator for both kinds: a document table's columns live in
+            // pg_computed_column, so this is the only catalog that can answer whether
+            // the field exists. Answering it in the operator that owns the catalog is
+            // what keeps the loudness from being a fallback keyed on relkind — the rule
+            // is one ("a column that is not there is an error"), the lookup is two.
+            //
+            // IF EXISTS is honoured on the same terms as the regular path.
+            if (missing_ok_) {
+                mark_executed();
+                co_return;
+            }
+            std::pmr::vector<std::uint64_t> cl_keys(resource_);
+            cl_keys.emplace_back(catalog::pg_class_col::oid);
+            auto [_cl, clf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::read_chunks_by_key,
+                                               exec_ctx,
+                                               catalog::well_known_oid::pg_class_table,
+                                               std::move(cl_keys),
+                                               components::operators::make_key_chunk(resource_, table_oid_),
+                                               std::pmr::vector<std::uint64_t>{resource_});
+            auto cls_batches_r = co_await std::move(clf);
+            if (cls_batches_r.has_error()) {
+                set_error(cls_batches_r.error());
+                co_return;
+            }
+            auto rel_id = alter_validators::relation_identity_of(cls_batches_r.value());
+            std::string rel = std::move(rel_id.relname);
+            if (rel.empty()) {
+                rel = "oid ";
+                rel += std::to_string(table_oid_);
+            }
+            // KEEP THE MESSAGE SHORT — under about 120 bytes. A longer error string
+            // built from this operator's resource_ comes back corrupted (doubled, or with
+            // a size that makes reading it throw std::length_error) before the executor
+            // has even copied it into a cursor. That is a separate, pre-existing defect —
+            // reproduced on this branch, NOT fixed here, and unrelated to the cursor-side
+            // lifetime bug that test_cursor_error_lifetime.cpp covers. The pre-existing
+            // FK-blocking refusal further down already sits at that edge.
+            std::string msg = "column \"";
+            msg += column_name_;
+            msg += "\" of relation \"";
+            msg += rel;
+            msg += "\" does not exist; use DROP COLUMN IF EXISTS to ignore it";
+            set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;
         }

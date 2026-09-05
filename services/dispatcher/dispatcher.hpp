@@ -217,6 +217,22 @@ namespace services::dispatcher {
         // data_table_t::compact(). Any version stamp above it (another txn's
         // snapshot, an in-flight commit) makes the compact a no-op.
         unique_future<uint64_t> txn_publish_msg(uint64_t commit_id);
+        // THE OTHER END OF txn_publish_msg, for the commits that never reach it.
+        // Sent by operator_commit_transaction_t from an early exit that already holds
+        // an allocated commit_id: transaction_manager_t::discard() takes the id out of
+        // in_flight_commits_ WITHOUT advancing published_horizon_, so the horizon stops
+        // being floored at commit_id - 1 for the rest of the process and nothing
+        // becomes visible in the process. The second half is not optional — the DROP-GC
+        // broadcast is event-driven behind `new_lowest > last_broadcast_horizon_`, so
+        // without try_trigger_cleanup_if_horizon_advanced() here the horizon would rise
+        // with nobody told, and the deferred index-delete queue would go on waiting for
+        // a broadcast that never comes.
+        //
+        // The operator has to be the sender: services/collection/executor.cpp lifts
+        // pipeline_context.committed_id into the result only AFTER both of its error
+        // breaks, so a failed commit reaches the dispatcher with commit_id 0 and no
+        // dispatcher-side net can see the id at all.
+        unique_future<void> txn_discard_msg(uint64_t commit_id);
         // Read-only fetch of txn_manager_.compact_watermark() for the
         // checkpoint/vacuum paths (operator_checkpoint, operator_vacuum and the
         // WAL auto-checkpoint), whose compact runs outside the commit pipeline.
@@ -246,6 +262,7 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::txn_accumulate_msg,
                                                             &manager_dispatcher_t::txn_abort_msg,
                                                             &manager_dispatcher_t::txn_publish_msg,
+                                                            &manager_dispatcher_t::txn_discard_msg,
                                                             &manager_dispatcher_t::txn_compact_watermark_msg,
                                                             &manager_dispatcher_t::on_drop_resource_marked,
                                                             &manager_dispatcher_t::on_subscriber_empty>;

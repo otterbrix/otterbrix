@@ -61,6 +61,11 @@ namespace components::logical_plan {
         void set_column_name(core::columnname_t name) { column_name_ = std::move(static_cast<std::string&>(name)); }
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
+        // `DROP COLUMN IF EXISTS`: the column not being there is the accepted
+        // outcome, not an error. Carried for BOTH drop routes (pg_attribute and
+        // pg_computed_column) so neither has to guess.
+        bool missing_ok() const noexcept { return missing_ok_; }
+        void set_missing_ok(bool v) noexcept { missing_ok_ = v; }
 
         // rename + drop
         components::catalog::oid_t attoid() const noexcept { return attoid_; }
@@ -90,6 +95,7 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         std::string column_name_;
         components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::cascade_};
+        bool missing_ok_{false};
         // rename + drop
         components::catalog::oid_t attoid_{components::catalog::INVALID_OID};
         // computed (relkind='g')

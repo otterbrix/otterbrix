@@ -73,4 +73,26 @@ namespace components::operators::alter_validators {
         co_return out;
     }
 
+    relation_identity_t
+    relation_identity_of(const std::pmr::vector<components::vector::data_chunk_t>& pg_class_batches) {
+        relation_identity_t out;
+        for (const auto& chunk : pg_class_batches) {
+            if (chunk.size() == 0 || chunk.column_count() <= catalog::pg_class_col::relname) {
+                continue;
+            }
+            if (!chunk.is_null(catalog::pg_class_col::relname, 0)) {
+                out.relname.assign(chunk.get_value<std::string_view>(catalog::pg_class_col::relname, 0));
+            }
+            if (chunk.column_count() > catalog::pg_class_col::relkind &&
+                !chunk.is_null(catalog::pg_class_col::relkind, 0)) {
+                const auto kind = chunk.get_value<std::string_view>(catalog::pg_class_col::relkind, 0);
+                if (!kind.empty()) {
+                    out.relkind = kind[0];
+                }
+            }
+            break;
+        }
+        return out;
+    }
+
 } // namespace components::operators::alter_validators

@@ -19,6 +19,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <core/result_wrapper.hpp>
 
 #include <actor-zeta.hpp>
@@ -40,6 +41,27 @@ namespace components::operators::alter_validators {
                          actor_zeta::address_t disk_address,
                          components::execution_context_t exec_ctx,
                          components::catalog::oid_t table_oid);
+
+    // Who the relation is, out of the batches a keyed read on pg_class.oid returned:
+    // the name a refusal has to quote ("column x of relation y ..."), and the relkind
+    // that decides WHICH true sentence the refusal is. An empty name means the batches
+    // carried no readable pg_class row — a caller on a refusal path falls back to the
+    // oid in its message rather than dropping the refusal — and relkind is then 0,
+    // which matches no kind and so picks the ordinary wording.
+    //
+    // PURE, deliberately: the caller does its own send + co_await on its own frame.
+    // This started life as an async helper that did both, and the ALTER refusals whose
+    // messages it built arrived at the cursor as unreadable bytes. Every operator here
+    // already reads pg_class inline elsewhere; this keeps that one shape and shares
+    // only the part that has no lifetime of its own.
+    //
+    // Callers use it on the REFUSAL path only, so an accepted ALTER pays nothing.
+    struct relation_identity_t {
+        std::string relname;
+        char relkind{0};
+    };
+    relation_identity_t
+    relation_identity_of(const std::pmr::vector<components::vector::data_chunk_t>& pg_class_batches);
 
     // There is no pg_depend gatherer here. One lived here — scan_cascade_dependents,
     // keyed on (refclassid, refobjid) — and it never had a caller: it dropped

@@ -667,6 +667,12 @@ namespace components::planner {
                     add->set_column(std::move(col));
                     seq->append_child(add);
                 } else if (sub.kind == logical_plan::alter_table_kind::rename_column) {
+                    // No relkind='g' split here, unlike the DROP clause below. A
+                    // document table's columns are not in pg_attribute either, but
+                    // operator_alter_column_rename_t answers for both kinds: its refusal
+                    // path already reads pg_class for the relation's name, and takes the
+                    // wording from that row's relkind. Splitting here would need a second
+                    // operator whose only reachable outcome is the same refusal.
                     auto rename = logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::rename);
                     rename->set_table_oid(table_oid);
                     rename->set_old_name(core::columnname_t{sub.column_name});
@@ -676,6 +682,10 @@ namespace components::planner {
                     auto drop = logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::drop);
                     drop->set_table_oid(table_oid);
                     drop->set_column_name(core::columnname_t{sub.column_name});
+                    // `IF EXISTS` travels to whichever of the two drop operators runs:
+                    // it is the caller's statement that decides whether a missing
+                    // column is an error, never the table's kind.
+                    drop->set_missing_ok(sub.missing_ok);
                     if (alter->relkind() == catalog::relkind::computed) {
                         // relkind='g' DROP COLUMN: computed-field unregister
                         // (dependency-free; lowers to operator_computed_field_unregister_t).

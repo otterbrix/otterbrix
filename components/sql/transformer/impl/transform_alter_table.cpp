@@ -390,6 +390,10 @@ namespace components::sql::transform {
                     logical_plan::alter_table_subcommand_t sub;
                     sub.kind = logical_plan::alter_table_kind::drop_column;
                     sub.column_name = cmd->name;
+                    // `DROP COLUMN IF EXISTS`. Dropped on the floor until now: with a
+                    // missing column silently succeeding, IF EXISTS and its absence
+                    // behaved identically, so nothing noticed. They no longer do.
+                    sub.missing_ok = cmd->missing_ok;
                     subs.push_back(std::move(sub));
                     break;
                 }
@@ -585,25 +589,19 @@ namespace components::sql::transform {
             // empty command list was refused before it. Kept as a guard that fails
             // loudly — the one thing this branch must never do again is mint the
             // empty-named DROP COLUMN node that made this bug invisible.
-            return core::error_t(
-                core::error_code_t::sql_parse_error,
-                std::pmr::string{"ALTER TABLE produced no subcommand to execute", resource_});
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"ALTER TABLE produced no subcommand to execute", resource_});
         }
-        if (subs.size() == 1) {
-            auto& s = subs.front();
-            switch (s.kind) {
-                case logical_plan::alter_table_kind::add_column:
-                    return wrap_primary(logical_plan::make_node_alter_table_add_column(resource_, std::move(s.column)));
-                case logical_plan::alter_table_kind::drop_column:
-                    return wrap_primary(
-                        logical_plan::make_node_alter_table_drop_column(resource_, std::move(s.column_name)));
-                case logical_plan::alter_table_kind::rename_column:
-                    return wrap_primary(
-                        logical_plan::make_node_alter_table_rename_column(resource_,
-                                                                          std::move(s.column_name),
-                                                                          std::move(s.new_column_name)));
-            }
-        }
+        // ONE construction path for every clause count. There used to be a
+        // `subs.size() == 1` special case here that re-built the single subcommand
+        // through the two-or-three-argument convenience constructors — and those take
+        // only the fields they were written for, so every field this loop fills that
+        // they do not name was silently dropped on the way. `DROP COLUMN IF EXISTS x`
+        // lost its missing_ok exactly that way: the flag was read from the parse tree,
+        // written into `subs`, and then thrown away by a constructor that has no
+        // parameter for it — leaving IF EXISTS indistinguishable from its absence in
+        // the one statement shape it matters for. The multi constructor takes the
+        // subcommands as built, so there is nothing left to keep in step.
         return wrap_primary(logical_plan::make_node_alter_table_multi(resource_, std::move(subs)));
     }
 

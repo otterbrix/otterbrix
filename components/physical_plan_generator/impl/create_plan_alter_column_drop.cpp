@@ -14,7 +14,8 @@ namespace services::planner::impl {
                                                                                             n->namespace_oid(),
                                                                                             n->column_name(),
                                                                                             n->attoid(),
-                                                                                            n->behavior()));
+                                                                                            n->behavior(),
+                                                                                            n->missing_ok()));
     }
 
 } // namespace services::planner::impl

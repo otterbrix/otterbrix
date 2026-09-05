@@ -78,6 +78,7 @@ namespace services::dispatcher {
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_accumulate_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_publish_msg>,
+            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_discard_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_compact_watermark_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_drop_resource_marked>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_subscriber_empty>,
@@ -378,6 +379,10 @@ namespace services::dispatcher {
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_publish_msg>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_publish_msg, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_discard_msg>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_discard_msg, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_compact_watermark_msg>: {
@@ -1360,6 +1365,23 @@ namespace services::dispatcher {
         // broadcast above (lowest_active_snapshot_horizon), which bounds the
         // DROP-tombstone sweep, not version-history collapse.
         co_return txn_manager_.compact_watermark();
+    }
+
+    manager_dispatcher_t::unique_future<void> manager_dispatcher_t::txn_discard_msg(uint64_t commit_id) {
+        trace(log_, "manager_dispatcher_t::txn_discard_msg, commit_id: {}", commit_id);
+        // A LITERAL MIRROR OF txn_publish_msg ABOVE, and of the failure-release net in
+        // execute_plan: mutate the txn manager, then re-evaluate the broadcast. The id
+        // belongs to a commit pipeline that died at an early exit; discard() drops it
+        // from in_flight_commits_ WITHOUT touching published_horizon_, so the floor
+        // rises to the highest genuinely published commit and not one id further.
+        txn_manager_.discard(commit_id);
+        // Without this the fix would be half-done. The horizon would be free to move
+        // and nobody would be told: the broadcast is gated on
+        // `new_lowest > last_broadcast_horizon_` and fires only from a txn-completing
+        // handler, so the deferred index-delete queue and the DROP tombstones would
+        // wait on an event that already passed.
+        try_trigger_cleanup_if_horizon_advanced();
+        co_return;
     }
 
     manager_dispatcher_t::unique_future<uint64_t> manager_dispatcher_t::txn_compact_watermark_msg() {

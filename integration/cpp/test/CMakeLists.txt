@@ -29,6 +29,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_index_bootstrap_failure.cpp
         test_catalog_write_refusal.cpp
         test_catalog_read_refusal.cpp
+        test_udf_refusal_registry_state.cpp
         test_oid_alloc_refusal.cpp
         test_accumulate_refusal.cpp
         test_wal_write_refusal.cpp
@@ -46,6 +47,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_index_rebuild_crash.cpp
         test_index_stale_after_compact.cpp
         test_vacuum_index_rebuild.cpp
+        test_checkpoint_rebuild_before_truncate.cpp
+        test_commit_discard_horizon.cpp
         test_index_rebuild_live_snapshot.cpp
         test_dml_dictionary_rowids.cpp
         test_persistence_gaps.cpp
@@ -69,6 +72,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_persistence.cpp
         test_alter_drop_column_reclaim.cpp
         test_alter_rename_column.cpp
+        test_alter_missing_column.cpp
         test_wal_nested_payload_replay.cpp
         test_type_spec_write_gate.cpp
         test_wide_integer_literal.cpp

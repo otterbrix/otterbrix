@@ -66,7 +66,7 @@ TEST_CASE("catalog::ddl::create_table_writes_the_mvcc_columns_of_pg_attribute") 
 
     auto writes = build_create_table_writes(&poison, "db", "t", columns, 100, oids);
 
-    const auto* schema = find_system_table("pg_attribute");
+    const auto* schema = find_system_table(well_known_oid::pg_attribute_table);
     REQUIRE(schema != nullptr);
     REQUIRE(schema->columns.size() == 12);
 
@@ -100,7 +100,7 @@ TEST_CASE("catalog::ddl::create_table_writes_relstoragemode_disk_always") {
 
     poison_resource_t poison(std::pmr::new_delete_resource());
 
-    const auto* schema = find_system_table("pg_class");
+    const auto* schema = find_system_table(well_known_oid::pg_class_table);
     REQUIRE(schema != nullptr);
 
     auto check_pg_class_mode = [&](const std::vector<catalog_write_t>& writes) {

@@ -24,50 +24,17 @@ namespace {
     }
     void cleanup_boot_dir() { std::filesystem::remove_all(boot_test_dir()); }
 
-    // Mirror of the same helper in services/disk/manager_disk_bootstrap.cpp;
-    // the impl keeps it in an anonymous namespace, so duplicate here.
-    components::catalog::oid_t well_known_oid_for_system_table(std::string_view name) {
-        namespace wk = components::catalog::well_known_oid;
-        if (name == "pg_namespace")
-            return wk::pg_namespace_table;
-        if (name == "pg_class")
-            return wk::pg_class_table;
-        if (name == "pg_attribute")
-            return wk::pg_attribute_table;
-        if (name == "pg_type")
-            return wk::pg_type_table;
-        if (name == "pg_proc")
-            return wk::pg_proc_table;
-        if (name == "pg_depend")
-            return wk::pg_depend_table;
-        if (name == "pg_constraint")
-            return wk::pg_constraint_table;
-        if (name == "pg_index")
-            return wk::pg_index_table;
-        if (name == "pg_computed_column")
-            return wk::pg_computed_column_table;
-        if (name == "pg_database")
-            return wk::pg_database_table;
-        if (name == "pg_sequence")
-            return wk::pg_sequence_table;
-        if (name == "pg_rewrite")
-            return wk::pg_rewrite_table;
-        if (name == "pg_settings")
-            return wk::pg_settings_table;
-        if (name == "pg_cast")
-            return wk::pg_cast_table;
-        return components::catalog::INVALID_OID;
-    }
-
     std::filesystem::path sys_dir_for(const std::filesystem::path& base) {
         return base / std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::main_database));
     }
-    std::filesystem::path otbx_for(const std::filesystem::path& base, std::string_view tbl) {
-        return sys_dir_for(base) / std::to_string(static_cast<unsigned>(well_known_oid_for_system_table(tbl))) /
-               "table.otbx";
+    // The on-disk layout is OID-keyed: <base>/<db_oid>/<table_oid>/table.otbx. The
+    // table OID comes straight off system_table_def_t::relation_oid — there is no
+    // name→oid mapping to mirror here.
+    std::filesystem::path coll_dir_for(const std::filesystem::path& base, components::catalog::oid_t tbl_oid) {
+        return sys_dir_for(base) / std::to_string(static_cast<unsigned>(tbl_oid));
     }
-    std::filesystem::path coll_dir_for(const std::filesystem::path& base, std::string_view tbl) {
-        return sys_dir_for(base) / std::to_string(static_cast<unsigned>(well_known_oid_for_system_table(tbl)));
+    std::filesystem::path otbx_for(const std::filesystem::path& base, components::catalog::oid_t tbl_oid) {
+        return coll_dir_for(base, tbl_oid) / "table.otbx";
     }
 
     struct disk_only_fixture {
@@ -126,7 +93,7 @@ TEST_CASE("services::disk::sysboot::creates_10_otbx_files") {
     REQUIRE(std::filesystem::exists(sys_dir_for(base)));
     size_t otbx_count = 0;
     for (const auto& def : all_system_tables()) {
-        if (std::filesystem::exists(otbx_for(base, def.name))) {
+        if (std::filesystem::exists(otbx_for(base, def.relation_oid))) {
             otbx_count++;
         }
     }
@@ -147,7 +114,7 @@ TEST_CASE("services::disk::sysboot::bootstrap_is_idempotent") {
         fx.manager->bootstrap_system_tables_sync();
     }
 
-    auto pg_class_otbx = otbx_for(base, "pg_class");
+    auto pg_class_otbx = otbx_for(base, well_known_oid::pg_class_table);
     REQUIRE(std::filesystem::exists(pg_class_otbx));
     auto first_size = std::filesystem::file_size(pg_class_otbx);
     auto first_mtime = std::filesystem::last_write_time(pg_class_otbx);
@@ -251,7 +218,7 @@ TEST_CASE("services::disk::sysboot::dir_layout_per_table") {
     }
 
     for (const auto& def : all_system_tables()) {
-        REQUIRE(std::filesystem::is_directory(coll_dir_for(base, def.name)));
+        REQUIRE(std::filesystem::is_directory(coll_dir_for(base, def.relation_oid)));
     }
 
     cleanup_boot_dir();

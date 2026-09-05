@@ -38,7 +38,8 @@ namespace components::operators {
             co_return;
         }
 
-        const auto* settings_def = components::catalog::find_system_table("pg_settings");
+        const auto* settings_def =
+            components::catalog::find_system_table(components::catalog::well_known_oid::pg_settings_table);
         if (settings_def == nullptr) {
             mark_executed();
             co_return;

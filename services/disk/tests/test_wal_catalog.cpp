@@ -107,41 +107,11 @@ namespace {
         }
     };
 
-    // WAL records carry table_oid; pg_catalog tables have well-known oids
-    // (pg_class=11, pg_attribute=12, pg_namespace=10, pg_depend=15, pg_index=17,
-    // pg_proc=14, pg_type=13, pg_constraint=16, pg_sequence=34, pg_rewrite=35,
-    // pg_computed_column=18, pg_database=19). Anything below FIRST_USER_OID is
-    // a system-table record.
+    // WAL records carry table_oid, and every pg_catalog table has a well-known OID
+    // fixed in catalog_oids.hpp. Anything below FIRST_USER_OID is a system-table
+    // record; a specific table is selected by well_known_oid::pg_*_table.
 
     namespace wk = components::catalog::well_known_oid;
-
-    components::catalog::oid_t pg_catalog_oid_for(const std::string& collection) {
-        if (collection == "pg_namespace")
-            return wk::pg_namespace_table;
-        if (collection == "pg_class")
-            return wk::pg_class_table;
-        if (collection == "pg_attribute")
-            return wk::pg_attribute_table;
-        if (collection == "pg_type")
-            return wk::pg_type_table;
-        if (collection == "pg_proc")
-            return wk::pg_proc_table;
-        if (collection == "pg_depend")
-            return wk::pg_depend_table;
-        if (collection == "pg_constraint")
-            return wk::pg_constraint_table;
-        if (collection == "pg_index")
-            return wk::pg_index_table;
-        if (collection == "pg_computed_column")
-            return wk::pg_computed_column_table;
-        if (collection == "pg_database")
-            return wk::pg_database_table;
-        if (collection == "pg_sequence")
-            return wk::pg_sequence_table;
-        if (collection == "pg_rewrite")
-            return wk::pg_rewrite_table;
-        return components::catalog::INVALID_OID;
-    }
 
     std::size_t pg_catalog_physical_count(const std::string& dir) {
         auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -159,7 +129,7 @@ namespace {
         return n;
     }
 
-    std::size_t pg_catalog_records_for(const std::string& dir, const std::string& collection) {
+    std::size_t pg_catalog_records_for(const std::string& dir, components::catalog::oid_t target_oid) {
         auto log = initialization_logger("python", "/tmp/docker_logs/");
         configuration::config_wal c;
         c.path = dir;
@@ -167,7 +137,6 @@ namespace {
         services::wal::wal_reader_t reader(c, log);
         auto records = reader.read_committed_records(services::wal::id_t{0});
         std::size_t n = 0;
-        const auto target_oid = pg_catalog_oid_for(collection);
         for (auto& r : records) {
             if (r.is_physical() && r.table_oid == target_oid)
                 ++n;
@@ -220,10 +189,10 @@ TEST_CASE("services::disk::wal_catalog::create_namespace_writes_pg_namespace") {
     auto before = std::size_t{0};
     {
         fixture fx(dir);
-        before = pg_catalog_records_for(dir, "pg_namespace");
+        before = pg_catalog_records_for(dir, wk::pg_namespace_table);
         test_create_namespace(fx, "user_ns");
     }
-    auto after = pg_catalog_records_for(dir, "pg_namespace");
+    auto after = pg_catalog_records_for(dir, wk::pg_namespace_table);
     REQUIRE(after > before);
     cleanup_dir(dir);
 }
@@ -235,8 +204,8 @@ TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_class_and_pg_attr
     std::size_t cls_before = 0, att_before = 0;
     {
         fixture fx(dir);
-        cls_before = pg_catalog_records_for(dir, "pg_class");
-        att_before = pg_catalog_records_for(dir, "pg_attribute");
+        cls_before = pg_catalog_records_for(dir, wk::pg_class_table);
+        att_before = pg_catalog_records_for(dir, wk::pg_attribute_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -245,8 +214,8 @@ TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_class_and_pg_attr
         cols.emplace_back("count", components::types::complex_logical_type{components::types::logical_type::INTEGER});
         test_create_table(fx, ns_oid, "t", cols);
     }
-    auto cls_after = pg_catalog_records_for(dir, "pg_class");
-    auto att_after = pg_catalog_records_for(dir, "pg_attribute");
+    auto cls_after = pg_catalog_records_for(dir, wk::pg_class_table);
+    auto att_after = pg_catalog_records_for(dir, wk::pg_attribute_table);
     REQUIRE(cls_after >= cls_before + 1);
     // pg_attribute rows for all columns are now batched into a single WAL
     // record (one chunk holds N rows, see build_create_table_writes).
@@ -261,13 +230,13 @@ TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_depend") {
     std::size_t before = 0;
     {
         fixture fx(dir);
-        before = pg_catalog_records_for(dir, "pg_depend");
+        before = pg_catalog_records_for(dir, wk::pg_depend_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         test_create_table(fx, ns_oid, "t", cols);
     }
-    auto after = pg_catalog_records_for(dir, "pg_depend");
+    auto after = pg_catalog_records_for(dir, wk::pg_depend_table);
     // table→namespace only — column→type pg_depend written only when atttypid != INVALID_OID.
     REQUIRE(after >= before + 1);
     cleanup_dir(dir);
@@ -280,14 +249,14 @@ TEST_CASE("services::disk::wal_catalog::create_index_writes_pg_index") {
     std::size_t idx_before = 0;
     {
         fixture fx(dir);
-        idx_before = pg_catalog_records_for(dir, "pg_index");
+        idx_before = pg_catalog_records_for(dir, wk::pg_index_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto rt_oid = test_create_table(fx, ns_oid, "t", cols);
         test_create_index(fx, ns_oid, rt_oid, "idx_id", std::vector<std::string>{"id"});
     }
-    auto idx_after = pg_catalog_records_for(dir, "pg_index");
+    auto idx_after = pg_catalog_records_for(dir, wk::pg_index_table);
     REQUIRE(idx_after >= idx_before + 1);
     cleanup_dir(dir);
 }
@@ -299,7 +268,7 @@ TEST_CASE("services::disk::wal_catalog::index_set_valid_writes_pg_index") {
     std::size_t idx_before = 0, after = 0;
     {
         fixture fx(dir);
-        idx_before = pg_catalog_records_for(dir, "pg_index");
+        idx_before = pg_catalog_records_for(dir, wk::pg_index_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -307,7 +276,7 @@ TEST_CASE("services::disk::wal_catalog::index_set_valid_writes_pg_index") {
         // test_create_index already marks the index as valid; no separate set_valid needed.
         test_create_index(fx, ns_oid, rt_oid, "idx_id", std::vector<std::string>{"id"});
     }
-    after = pg_catalog_records_for(dir, "pg_index");
+    after = pg_catalog_records_for(dir, wk::pg_index_table);
     REQUIRE(after >= idx_before + 1);
     cleanup_dir(dir);
 }
@@ -319,13 +288,13 @@ TEST_CASE("services::disk::wal_catalog::create_type_writes_pg_type_and_depend") 
     std::size_t ty_before = 0, dep_before = 0;
     {
         fixture fx(dir);
-        ty_before = pg_catalog_records_for(dir, "pg_type");
-        dep_before = pg_catalog_records_for(dir, "pg_depend");
+        ty_before = pg_catalog_records_for(dir, wk::pg_type_table);
+        dep_before = pg_catalog_records_for(dir, wk::pg_depend_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         test_create_type(fx, ns_oid, "widget");
     }
-    REQUIRE(pg_catalog_records_for(dir, "pg_type") >= ty_before + 1);
-    REQUIRE(pg_catalog_records_for(dir, "pg_depend") >= dep_before + 1);
+    REQUIRE(pg_catalog_records_for(dir, wk::pg_type_table) >= ty_before + 1);
+    REQUIRE(pg_catalog_records_for(dir, wk::pg_depend_table) >= dep_before + 1);
     cleanup_dir(dir);
 }
 
@@ -336,13 +305,13 @@ TEST_CASE("services::disk::wal_catalog::create_function_writes_pg_proc_and_depen
     std::size_t pr_before = 0, dep_before = 0;
     {
         fixture fx(dir);
-        pr_before = pg_catalog_records_for(dir, "pg_proc");
-        dep_before = pg_catalog_records_for(dir, "pg_depend");
+        pr_before = pg_catalog_records_for(dir, wk::pg_proc_table);
+        dep_before = pg_catalog_records_for(dir, wk::pg_depend_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         test_create_function(fx, ns_oid, "my_fn");
     }
-    REQUIRE(pg_catalog_records_for(dir, "pg_proc") >= pr_before + 1);
-    REQUIRE(pg_catalog_records_for(dir, "pg_depend") >= dep_before + 1);
+    REQUIRE(pg_catalog_records_for(dir, wk::pg_proc_table) >= pr_before + 1);
+    REQUIRE(pg_catalog_records_for(dir, wk::pg_depend_table) >= dep_before + 1);
     cleanup_dir(dir);
 }
 
@@ -392,12 +361,12 @@ TEST_CASE("services::disk::wal_catalog::drop_table_no_resurrect_writes") {
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         t_oid = test_create_table(fx, ns_oid, "t", cols);
-        cls_before_drop = pg_catalog_records_for(dir, "pg_class");
+        cls_before_drop = pg_catalog_records_for(dir, wk::pg_class_table);
         test_drop_table(fx, t_oid);
     }
     // After the drop we still see at least the INSERT records that created the table — drop
     // path is MVCC-delete, not WAL append for new pg_class rows.
-    auto cls_after = pg_catalog_records_for(dir, "pg_class");
+    auto cls_after = pg_catalog_records_for(dir, wk::pg_class_table);
     REQUIRE(cls_after >= cls_before_drop);
     cleanup_dir(dir);
 }
@@ -432,11 +401,11 @@ TEST_CASE("services::disk::wal_catalog::create_sequence_writes_pg_class") {
     std::size_t cls_before = 0;
     {
         fixture fx(dir);
-        cls_before = pg_catalog_records_for(dir, "pg_class");
+        cls_before = pg_catalog_records_for(dir, wk::pg_class_table);
         auto ns_oid = test_create_namespace(fx, "ns");
         test_create_sequence(fx, ns_oid, "widget_seq");
     }
-    REQUIRE(pg_catalog_records_for(dir, "pg_class") >= cls_before + 1);
+    REQUIRE(pg_catalog_records_for(dir, wk::pg_class_table) >= cls_before + 1);
     cleanup_dir(dir);
 }
 

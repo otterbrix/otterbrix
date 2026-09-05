@@ -91,17 +91,20 @@ namespace components::catalog {
         std::vector<table::column_definition_t> columns;
     };
 
-    // Returns the 9 system tables, in bootstrap order (pg_namespace first, since pg_class
-    // and pg_attribute reference namespaces).
-    // Returns the system tables in bootstrap order. Backed by a function-local
-    // `static const std::array<...,12>` populated on first call (C++11 magic-statics
+    // Returns the system tables in bootstrap order (pg_database first — every other
+    // catalog object is conceptually scoped to a database). Backed by a function-local
+    // `static const std::array<...,14>` populated on first call (C++11 magic-statics
     // — thread-safe init). Subsequent calls return a zero-cost `std::span` view.
     std::span<const system_table_def_t> all_system_tables();
 
-    // Convenience: lookup a system table by name (returns nullptr if not a system table).
-    // Useful for routing during DDL — manager_disk_t needs to know which physical
-    // collection ("pg_catalog.<name>") backs a logical pg_<x> reference.
-    const system_table_def_t* find_system_table(std::string_view name);
+    // Lookup a system table by its well-known relation OID (rule 16: system tables are
+    // addressed by oid, never by name). Every system table has a fixed OID below
+    // FIRST_USER_OID (catalog_oids.hpp), so a caller holding `well_known_oid::pg_*_table`
+    // always gets a definition back; nullptr means the OID is not a system table at all.
+    // This is the form production code must use — the schema array is the single place
+    // that still knows the names.
+    const system_table_def_t* find_system_table(oid_t relation_oid);
+
 
     // Type-spec round-trip helpers used by both pg_attribute (atttypspec) and pg_type
     // (typdefspec). For built-in scalar types `encode_type_spec` returns "" — atttypid /

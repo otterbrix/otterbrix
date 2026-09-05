@@ -310,15 +310,16 @@ namespace components::catalog {
         return tables;
     }
 
-    const system_table_def_t* find_system_table(std::string_view name) {
+    const system_table_def_t* find_system_table(oid_t relation_oid) {
         for (const auto& t : all_system_tables()) {
-            if (t.name == name) {
+            if (t.relation_oid == relation_oid) {
                 return &t;
             }
         }
         return nullptr;
     }
 
+    
     // ── flat-text type spec helpers ──────────────────────────────────────────────
     // Format (recursive, scalar names match pg_type.typname):
     //   scalar            →  bool int1 int2 int4 int8 float4 float8 text

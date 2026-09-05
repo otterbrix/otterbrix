@@ -101,40 +101,6 @@ namespace services::disk {
                 {wk::fn_max, "max"},
             };
         }
-
-        // Map system table name (def->name) to its well-known OID.
-        // Mirrors the constants in catalog_oids.hpp::well_known_oid::pg_*_table.
-        components::catalog::oid_t well_known_oid_for_system_table(std::string_view name) {
-            if (name == "pg_namespace")
-                return components::catalog::well_known_oid::pg_namespace_table;
-            if (name == "pg_class")
-                return components::catalog::well_known_oid::pg_class_table;
-            if (name == "pg_attribute")
-                return components::catalog::well_known_oid::pg_attribute_table;
-            if (name == "pg_type")
-                return components::catalog::well_known_oid::pg_type_table;
-            if (name == "pg_proc")
-                return components::catalog::well_known_oid::pg_proc_table;
-            if (name == "pg_depend")
-                return components::catalog::well_known_oid::pg_depend_table;
-            if (name == "pg_constraint")
-                return components::catalog::well_known_oid::pg_constraint_table;
-            if (name == "pg_index")
-                return components::catalog::well_known_oid::pg_index_table;
-            if (name == "pg_computed_column")
-                return components::catalog::well_known_oid::pg_computed_column_table;
-            if (name == "pg_database")
-                return components::catalog::well_known_oid::pg_database_table;
-            if (name == "pg_sequence")
-                return components::catalog::well_known_oid::pg_sequence_table;
-            if (name == "pg_rewrite")
-                return components::catalog::well_known_oid::pg_rewrite_table;
-            if (name == "pg_settings")
-                return components::catalog::well_known_oid::pg_settings_table;
-            if (name == "pg_cast")
-                return components::catalog::well_known_oid::pg_cast_table;
-            return components::catalog::INVALID_OID;
-        }
     } // namespace
 
     void manager_disk_t::bootstrap_system_tables_sync() {
@@ -157,9 +123,9 @@ namespace services::disk {
 
         // Helper: load or create a single system table. Returns true if freshly created.
         auto bootstrap_one = [&](const components::catalog::system_table_def_t& def) -> bool {
-            const auto tbl_oid = well_known_oid_for_system_table(def.name);
-            if (tbl_oid == catalog::INVALID_OID)
-                return false;
+            // The schema array carries the well-known OID for every system table
+            // (catalog_oids.hpp), so there is no name lookup and no "unknown table" case.
+            const auto tbl_oid = def.relation_oid;
             // agents_[0] (CATALOG agent) is the sole source of truth for
             // pg_* system tables.
             if (!agents_.empty() && agents_[0] != nullptr) {
@@ -207,7 +173,7 @@ namespace services::disk {
 
         // Bootstrap pg_settings FIRST so stored_catalog_ is populated before any
         // other table's seeding calls direct_append_sync (which takes the timezone).
-        if (const auto* settings_def = catalog::find_system_table("pg_settings")) {
+        if (const auto* settings_def = catalog::find_system_table(pg_settings_oid)) {
             if (bootstrap_one(*settings_def)) {
                 freshly_created.insert(catalog::well_known_oid::pg_settings_table);
                 auto row = make_row(resource(), settings_def->columns, [&](data_chunk_t& chunk, auto*) {
@@ -227,7 +193,7 @@ namespace services::disk {
         // Remaining tables — pg_settings is already in storages_ so bootstrap_one skips it.
         for (const auto& def : components::catalog::all_system_tables()) {
             if (bootstrap_one(def)) {
-                freshly_created.insert(well_known_oid_for_system_table(def.name));
+                freshly_created.insert(def.relation_oid);
             }
         }
 
@@ -265,7 +231,7 @@ namespace services::disk {
         const auto pg_catalog_ns_oid = catalog::well_known_oid::pg_catalog_namespace;
 
         if (freshly_created.count(pg_database_oid)) {
-            if (auto* def = catalog::find_system_table("pg_database")) {
+            if (auto* def = catalog::find_system_table(pg_database_oid)) {
                 const auto db = builtin_database_row();
                 auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto*) {
                     chunk.set_value(0, 0, db.oid);
@@ -276,7 +242,7 @@ namespace services::disk {
         }
 
         if (freshly_created.count(pg_namespace_oid_tbl)) {
-            if (auto* def = catalog::find_system_table("pg_namespace")) {
+            if (auto* def = catalog::find_system_table(pg_namespace_oid_tbl)) {
                 for (const auto& nrow : builtin_namespace_rows()) {
                     auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto*) {
                         chunk.set_value(0, 0, nrow.oid);
@@ -288,7 +254,7 @@ namespace services::disk {
         }
 
         if (freshly_created.count(pg_type_oid)) {
-            if (auto* def = catalog::find_system_table("pg_type")) {
+            if (auto* def = catalog::find_system_table(pg_type_oid)) {
                 for (const auto& trow : builtin_type_rows()) {
                     auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto*) {
                         chunk.set_value(0, 0, trow.oid);
@@ -301,7 +267,7 @@ namespace services::disk {
         }
 
         if (freshly_created.count(pg_proc_oid)) {
-            if (auto* def = catalog::find_system_table("pg_proc")) {
+            if (auto* def = catalog::find_system_table(pg_proc_oid)) {
                 for (const auto& frow : builtin_proc_rows()) {
                     auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto*) {
                         chunk.set_value(0, 0, frow.oid);
@@ -344,9 +310,7 @@ namespace services::disk {
         core::pmr::otterbrix_resource scan_resource;
 
         for (const auto& tbl : catalog::all_system_tables()) {
-            const auto tbl_oid = well_known_oid_for_system_table(tbl.name);
-            if (tbl_oid == catalog::INVALID_OID)
-                continue;
+            const auto tbl_oid = tbl.relation_oid;
             const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(tbl_oid);
             if (entry == nullptr) {
                 continue;

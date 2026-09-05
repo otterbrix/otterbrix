@@ -53,6 +53,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_like_type_guards.cpp
         test_unary_plus.cpp
         test_multi_database_isolation.cpp
+        test_list_tables.cpp
         test_index_null_correctness.cpp
         test_aggregate_filter.cpp
         test_dispatcher_watchdog_log.cpp

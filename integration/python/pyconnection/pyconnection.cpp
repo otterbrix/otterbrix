@@ -1,6 +1,5 @@
 #include "pyconnection.hpp"
 #include <common/string_util/string_util.hpp>
-#include <components/catalog/catalog_oids.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/sql/parser/parser.h>
@@ -8,10 +7,12 @@
 #include <components/sql/transformer/utils.hpp>
 #include <connection_environment/connection_environment.hpp>
 #include <connection_environment/relation/relation_factory.hpp>
+#include <integration/cpp/catalog_listing.hpp>
 #include <memory>
 #include <otterbrix_wrapper/pyrelation.hpp>
 #include <otterbrix_wrapper/pyresult.hpp>
 #include <scan/python_replacement_scan.hpp>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -186,57 +187,29 @@ namespace otterbrix {
 
     py::list py_connection_t::list_tables() {
         py::gil_scoped_acquire gil;
-        py::list res;
 
         // Enumerate USER tables straight from the engine catalog (pg_class) instead
-        // of a local registry. pg_class layout: [0=oid, 1=relname, 2=relnamespace,
-        // 3=relkind, 4=relstoragemode]. We project the columns we need and filter in
-        // C++: user objects have oid >= FIRST_USER_OID (system catalog rows sit below
-        // that), and only regular relations (relkind 'r') are tables.
-        auto cursor = execute_internal("SELECT oid, relname, relkind FROM pg_class;");
-        if (!cursor || cursor->is_error() || cursor->size() == 0) {
-            return res;
+        // of a local registry. The query and the decode that filters it down to user
+        // tables both live in cpp_otterbrix (integration/cpp/catalog_listing.hpp), so
+        // the C++ suite can gate them; everything this wrapper adds is the translation
+        // from the engine's error channel to Python's.
+        auto cursor = execute_internal(std::string{kListTablesQuery});
+        auto names = user_table_names_from_pg_class(space->dispatcher()->resource(), cursor);
+
+        // Rule 6: a catalog read that failed is NOT a database with no tables in it.
+        // Python's only error channel is an exception, so the failure is raised as a
+        // RuntimeError carrying the engine's own message. Returning [] here — what
+        // this function used to do — told every caller "no tables" whenever the read
+        // broke, and no caller could tell the difference.
+        if (names.has_error()) {
+            const auto& err = names.error();
+            throw std::runtime_error("listTables: reading pg_class failed: " +
+                                     std::string(err.what.begin(), err.what.end()));
         }
 
-        // Resolve the projected column positions by alias, falling back to the
-        // SELECT order above if the cursor carries no aliases.
-        const auto& types = cursor->type_data();
-        components::cursor::index_t oid_col = 0;
-        components::cursor::index_t relname_col = 1;
-        components::cursor::index_t relkind_col = 2;
-        for (std::size_t i = 0; i < types.size(); ++i) {
-            if (!types[i].has_alias()) {
-                continue;
-            }
-            const auto& alias = types[i].alias();
-            if (alias == "oid") {
-                oid_col = static_cast<components::cursor::index_t>(i);
-            } else if (alias == "relname") {
-                relname_col = static_cast<components::cursor::index_t>(i);
-            } else if (alias == "relkind") {
-                relkind_col = static_cast<components::cursor::index_t>(i);
-            }
-        }
-
-        while (cursor->has_next()) {
-            cursor->advance();
-            auto oid_cell = cursor->value(static_cast<uint64_t>(oid_col));
-            if (oid_cell.is_null() || oid_cell.value<std::uint32_t>() < components::catalog::FIRST_USER_OID) {
-                continue; // system catalog object
-            }
-            auto relkind_cell = cursor->value(static_cast<uint64_t>(relkind_col));
-            if (!relkind_cell.is_null()) {
-                auto relkind = relkind_cell.value<std::string_view>();
-                if (!relkind.empty() && relkind.front() != 'r') {
-                    continue; // not a regular table (view / matview / sequence / ...)
-                }
-            }
-            auto relname_cell = cursor->value(static_cast<uint64_t>(relname_col));
-            if (relname_cell.is_null()) {
-                continue;
-            }
-            auto relname = relname_cell.value<std::string_view>();
-            res.append(py::str(std::string(relname)));
+        py::list res;
+        for (const auto& name : names.value()) {
+            res.append(py::str(std::string(name.begin(), name.end())));
         }
         return res;
     }

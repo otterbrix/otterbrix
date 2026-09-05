@@ -5,6 +5,7 @@
 #include "column_state.hpp"
 #include "segment_tree.hpp"
 #include "update_segment.hpp"
+#include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/types/tri_bool.hpp>
 
 namespace components::table {
@@ -44,7 +45,22 @@ namespace components::table {
 
     constexpr uint64_t MAX_ROW_ID = 1ULL << 55; // 2^55
 
-    class column_data_t {
+    // A row group's TOP-LEVEL columns are shared: row_group_t::add_column / remove_column copy the
+    // column vector into the ALTER successor's row group, so parent and successor hold the SAME
+    // column objects and whichever row group dies last must be the one that frees them. The
+    // reference count therefore lives inside the object (boost::intrusive_ref_counter;
+    // std::shared_ptr is forbidden — rule 14). column_data_t::create_column allocates every branch
+    // with plain `new` (std::make_unique), never from the pmr resource — the resource parameter
+    // only feeds the object's internal containers — so the counter's `delete` is the matching
+    // deallocation, and the virtual destructor below makes deleting a derived column through a
+    // column_data_t* correct.
+    //
+    // This counter is for the top-level columns ALONE. Columns reached any other way are
+    // exclusively owned and leave it at zero, untouched: the nested children
+    // (list/array child_column, struct sub_columns) are unique_ptr, and
+    // standard_column_data_t::validity is a BY-VALUE member. Never build an intrusive_ptr to one
+    // of those — releasing it would `delete` a subobject or double-free a unique_ptr's object.
+    class column_data_t : public boost::intrusive_ref_counter<column_data_t> {
         friend class column_segment_t;
         friend class column_data_checkpointer_t;
         friend class column_checkpoint_state_t;
@@ -152,6 +168,10 @@ namespace components::table {
                                              std::vector<uint64_t> col_path,
                                              std::vector<column_segment_info>& result);
 
+        // Hands back EXCLUSIVE ownership. Nested children (list/array child_column, struct
+        // sub_columns) keep it exactly so; a row group adopting the result as one of its
+        // shared top-level columns transfers it into the intrusive counter instead — see
+        // adopt_column() in row_group.cpp.
         static std::unique_ptr<column_data_t> create_column(std::pmr::memory_resource* resource,
                                                             storage::block_manager_t& block_manager,
                                                             uint64_t column_index,

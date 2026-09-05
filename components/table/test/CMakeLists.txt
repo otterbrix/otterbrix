@@ -24,6 +24,7 @@ set(${PROJECT_NAME}_SOURCES
         test_nested_compact_reclaim.cpp
         test_failed_round_rollback.cpp
         test_checkpoint_crash_matrix.cpp
+        test_alter_column_sharing.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

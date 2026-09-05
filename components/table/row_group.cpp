@@ -49,6 +49,16 @@ namespace components::table {
     }
 #endif
 
+    namespace {
+        // create_column hands back EXCLUSIVE ownership because that is what the nested children
+        // need. A row group's TOP-LEVEL columns are shared with its ALTER successors instead, so
+        // this is the one place the two ownership models meet: the fresh object is released from
+        // the unique_ptr and adopted by its own reference count (0 -> 1).
+        boost::intrusive_ptr<column_data_t> adopt_column(std::unique_ptr<column_data_t> column) {
+            return boost::intrusive_ptr<column_data_t>(column.release());
+        }
+    } // namespace
+
     row_group_t::row_group_t(collection_t* collection, int64_t start, uint64_t count)
         : segment_base_t(start, count)
         , collection_(collection)
@@ -70,7 +80,7 @@ namespace components::table {
         }
     }
 
-    std::vector<std::shared_ptr<column_data_t>>& row_group_t::columns() {
+    std::vector<boost::intrusive_ptr<column_data_t>>& row_group_t::columns() {
         for (uint64_t c = 0; c < get_column_count(); c++) {
             get_column(c);
         }
@@ -109,7 +119,7 @@ namespace components::table {
         for (uint64_t i = 0; i < types.size(); i++) {
             auto column_data =
                 column_data_t::create_column(collection_->resource(), block_manager(), i, start, types[i]);
-            columns_.push_back(std::move(column_data));
+            columns_.push_back(adopt_column(std::move(column_data)));
         }
     }
 
@@ -209,8 +219,12 @@ namespace components::table {
         auto row_group = std::make_unique<row_group_t>(new_collection, start, count);
         row_group->set_version_info(get_or_create_version_info_ptr());
         row_group->current_version_ = current_version_;
+        // Structural sharing, deliberately: the successor's row group points at the SAME column
+        // objects as this one, and the intrusive count in each column keeps them alive until the
+        // last of the two row groups is gone. A deep copy here would double the table's memory and
+        // silently fork the two views of the same rows.
         row_group->columns_ = columns();
-        row_group->columns_.push_back(std::move(added_column));
+        row_group->columns_.push_back(adopt_column(std::move(added_column)));
 
         return row_group;
     }
@@ -221,6 +235,8 @@ namespace components::table {
         auto row_group = std::make_unique<row_group_t>(new_collection, start, count);
         row_group->set_version_info(get_or_create_version_info_ptr());
         row_group->current_version_ = current_version_;
+        // Same structural sharing as add_column: every surviving column object is SHARED with the
+        // successor's row group, not copied.
         auto& cols = columns();
         for (uint64_t i = 0; i < cols.size(); i++) {
             if (i != removed_column) {
@@ -1019,5 +1035,21 @@ namespace components::table {
         }
         return true;
     }
+
+#ifdef DEV_MODE
+    const column_data_t* row_group_t::column_identity(uint64_t c) const {
+        assert(c < columns_.size());
+        // Deliberately does NOT lazily load: identity is asked of a column this row group already
+        // holds, and forcing a load would materialize the very object under test. A null answer
+        // means "this row group has no column object here", which the caller must reject.
+        return columns_[c].get();
+    }
+
+    uint64_t row_group_t::column_owner_count(uint64_t c) const {
+        assert(c < columns_.size());
+        // A live column is owned by at least one row group, so 0 can only mean "no object".
+        return columns_[c] ? columns_[c]->use_count() : 0;
+    }
+#endif
 
 } // namespace components::table

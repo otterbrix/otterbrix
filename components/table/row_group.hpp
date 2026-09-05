@@ -2,6 +2,7 @@
 #include "column_data.hpp"
 #include "row_version_manager.hpp"
 #include "storage/data_pointer.hpp"
+#include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <optional>
 
 namespace components::vector {
@@ -48,7 +49,11 @@ namespace components::table {
         std::atomic<row_version_manager_t*> version_info_ = nullptr;
         std::shared_ptr<row_version_manager_t> owned_version_info_;
         uint64_t current_version_ = 0;
-        std::vector<std::shared_ptr<column_data_t>> columns_;
+        // SHARED with the row groups of this group's ALTER successors: add_column / remove_column
+        // copy this vector into the successor, so both point at the SAME column objects and the
+        // last row group to die frees them. Shared ownership is carried by the count inside
+        // column_data_t (see the note on the class), not by a control block.
+        std::vector<boost::intrusive_ptr<column_data_t>> columns_;
 
     public:
         void move_to_collection(collection_t* collection, int64_t new_start);
@@ -153,6 +158,17 @@ namespace components::table {
 
         uint64_t calculate_size();
 
+#ifdef DEV_MODE
+        // Test-observable IDENTITY of top-level column `c`: its object address and the number of
+        // row groups that currently own it. add_column / remove_column must hand the successor's
+        // row group the SAME column objects, not copies — and a deep copy is invisible to every
+        // scan, count and checksum a test could take, because it reads back exactly the same data.
+        // The address and the reference count are the only things that tell the two apart, so the
+        // structural-sharing gate (test_alter_column_sharing.cpp) asserts on these.
+        const column_data_t* column_identity(uint64_t c) const;
+        uint64_t column_owner_count(uint64_t c) const;
+#endif
+
     private:
         uint64_t indexing_vector(transaction_data txn,
                                  uint64_t vector_idx,
@@ -164,7 +180,7 @@ namespace components::table {
         column_data_t& get_column(uint64_t c);
         column_data_t& get_column(const storage_index_t& c);
         uint64_t get_column_count() const;
-        std::vector<std::shared_ptr<column_data_t>>& columns();
+        std::vector<boost::intrusive_ptr<column_data_t>>& columns();
 
         void filter_indexing(std::pmr::memory_resource* resource,
                              uint64_t vector_index,

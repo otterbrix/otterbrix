@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <limits>
 #include <unordered_set>
 
 #include <components/expressions/aggregate_expression.hpp>
@@ -27,6 +28,23 @@ using namespace components::expressions;
 namespace components::sql::transform {
 
     namespace {
+        // The exact int64 an oversize integer literal denotes, for the row-count clauses that
+        // take a plain number rather than a value. False when the text is not an integer at
+        // all, or is one no int64 can hold — both of which the caller reports as the clause's
+        // own "allowed only <integer>" refusal rather than answering with a wrong count.
+        bool exact_int64_literal(Value* value, int64_t& out) {
+            types::int128_t wide{0};
+            if (parse_exact_integer(strVal(value), wide) != integer_text_t::exact) {
+                return false;
+            }
+            if (wide < types::int128_t{std::numeric_limits<int64_t>::min()} ||
+                wide > types::int128_t{std::numeric_limits<int64_t>::max()}) {
+                return false;
+            }
+            out = static_cast<int64_t>(wide);
+            return true;
+        }
+
         expressions::sort_null_order map_sortby_nulls(SortByNulls nulls) {
             switch (nulls) {
                 case SORTBY_NULLS_FIRST:
@@ -378,8 +396,7 @@ namespace components::sql::transform {
                                      std::pmr::string{"FROM element lowered to an empty plan", resource_});
             }
             if (element->type() == logical_plan::node_type::aggregate_t) {
-                agg = logical_plan::node_aggregate_ptr(
-                    static_cast<logical_plan::node_aggregate_t*>(element.get()));
+                agg = logical_plan::node_aggregate_ptr(static_cast<logical_plan::node_aggregate_t*>(element.get()));
             } else {
                 agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
                 agg->append_child(element);
@@ -432,6 +449,21 @@ namespace components::sql::transform {
                         case T_Integer:
                             limit_val = intVal(value);
                             break;
+                        case T_Float:
+                            // An integer literal past int32 does not fit the scanner's `ival`
+                            // and leaves the lexer as a T_Float holding its digits (scan.l,
+                            // process_integer_literal), so `LIMIT 3000000000` lands HERE and
+                            // not in the arm above. Read the digits exactly: it used to be
+                            // truncated on the way through the scanner and silently limited
+                            // the answer to a different number of rows.
+                            if (!exact_int64_literal(value, limit_val)) {
+                                return core::error_t(
+                                    core::error_code_t::sql_parse_error,
+                                    std::pmr::string{
+                                        "Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
+                                        resource_});
+                            }
+                            break;
                         default:
                             return core::error_t(
                                 core::error_code_t::sql_parse_error,
@@ -463,6 +495,16 @@ namespace components::sql::transform {
                             break; // OFFSET NULL — treat as 0
                         case T_Integer:
                             offset_val = intVal(value);
+                            break;
+                        case T_Float:
+                            // Same lexer detour as LIMIT above.
+                            if (!exact_int64_literal(value, offset_val)) {
+                                return core::error_t(
+                                    core::error_code_t::sql_parse_error,
+                                    std::pmr::string{
+                                        "Forbidden expression in offset clause: allowed only OFFSET <integer>",
+                                        resource_});
+                            }
                             break;
                         default:
                             return core::error_t(
@@ -944,6 +986,28 @@ namespace components::sql::transform {
                                 break;
                             }
                         }
+                        // A cast over any other non-literal operand: lower the operand and
+                        // wrap it. Falling through to the T_A_Const arm below hands the whole
+                        // cast to get_value, which can only fold an A_Const — over an A_Expr
+                        // it used to read the operator node's `lexpr` pointer and project it
+                        // as the answer, the same value on every row. (Same defect the jsonb
+                        // arm above was written for; this is the rest of it.)
+                        if (cast->arg && nodeTag(cast->arg) != T_A_Const && nodeTag(cast->arg) != T_ParamRef) {
+                            has_non_star = true;
+                            VALUE_OR_RETURN(auto target_type_res, get_type(resource_, cast->typeName));
+                            logical_plan::node_ptr sel_node = select_node;
+                            VALUE_OR_RETURN(auto operand, resolve_select_operand(cast->arg, names, plan, sel_node));
+                            auto conversion = make_cast_expression(resource_,
+                                                                   std::move(operand),
+                                                                   target_type_res,
+                                                                   casts::cast_t{},
+                                                                   cast->try_cast ? casts::cast_kind::try_cast
+                                                                                  : casts::cast_kind::cast);
+                            conversion->key() =
+                                expressions::key_t{resource_, res->name ? std::string{res->name} : std::string{"cast"}};
+                            select_node->append_expression(conversion);
+                            break;
+                        }
                         [[fallthrough]];
                     }
                     case T_A_Const: {
@@ -1034,17 +1098,15 @@ namespace components::sql::transform {
                                                                    expressions::key_t{resource_, res->name},
                                                                    field_key));
                                     } else {
-                                        select_node->append_expression(make_scalar_expression(resource_,
-                                                                                              scalar_type::get_field,
-                                                                                              field_key));
+                                        select_node->append_expression(
+                                            make_scalar_expression(resource_, scalar_type::get_field, field_key));
                                     }
                                 } else {
                                     // Table-valued navigation (-> / #>): expand the subtree
                                     // under the prefix into its (rerooted) columns.
                                     VALUE_OR_RETURN(auto prefix_key, resolve_jsonb_prefix_key(a_expr, names));
-                                    select_node->append_expression(make_scalar_expression(resource_,
-                                                                                          scalar_type::jsonb_expand,
-                                                                                          prefix_key));
+                                    select_node->append_expression(
+                                        make_scalar_expression(resource_, scalar_type::jsonb_expand, prefix_key));
                                 }
                                 break;
                             }

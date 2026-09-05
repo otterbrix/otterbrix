@@ -61,6 +61,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_alter_rename_column.cpp
         test_wal_nested_payload_replay.cpp
         test_type_spec_write_gate.cpp
+        test_wide_integer_literal.cpp
         test_alter_add_column_unmaterialized.cpp
         test_sql_features.cpp
         test_unique_constraint_operator.cpp

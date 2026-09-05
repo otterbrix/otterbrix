@@ -59,6 +59,9 @@ namespace {
                 case LT::FLOAT:
                     dbl = static_cast<double>(val.value<float>());
                     break;
+                case LT::HUGEINT:
+                    dbl = static_cast<double>(val.value<components::types::int128_t>());
+                    break;
                 default:
                     assert(false && "numeric_widen: unsupported source for float target");
                     return val;
@@ -114,8 +117,47 @@ namespace {
                     assert(false && "numeric_widen: unsupported unsigned target");
                     return val;
             }
+        } else if (target == LT::HUGEINT) {
+            // The 128-bit rung of the same ladder. It exists because an integer literal past
+            // int64 now reaches VALUES as a HUGEINT (numeric_literal_value in
+            // components/sql/transformer/utils.cpp): mixing one with a narrower row —
+            // VALUES (12345678901234567890123456789), (1) — promotes the whole column here.
+            // Without this arm promote_type would answer HUGEINT and the switch below would
+            // fall to its default, hand back the UNWIDENED value, and trip set_value's type
+            // assert on the way into the vector.
+            using components::types::int128_t;
+            switch (val.type().type()) {
+                case LT::BOOLEAN:
+                    return components::types::logical_value_t(resource, int128_t{val.value<bool>() ? 1 : 0});
+                case LT::TINYINT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<int8_t>()});
+                case LT::SMALLINT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<int16_t>()});
+                case LT::INTEGER:
+                    return components::types::logical_value_t(resource, int128_t{val.value<int32_t>()});
+                case LT::BIGINT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<int64_t>()});
+                case LT::UTINYINT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<uint8_t>()});
+                case LT::USMALLINT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<uint16_t>()});
+                case LT::UINTEGER:
+                    return components::types::logical_value_t(resource, int128_t{val.value<uint32_t>()});
+                case LT::UBIGINT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<uint64_t>()});
+                case LT::FLOAT:
+                    return components::types::logical_value_t(resource, int128_t{val.value<float>()});
+                case LT::DOUBLE:
+                    return components::types::logical_value_t(resource, int128_t{val.value<double>()});
+                default:
+                    assert(false && "numeric_widen: unsupported source for hugeint target");
+                    return val;
+            }
         } else {
-            // Signed integer target
+            // Signed integer target. A HUGEINT source is deliberately absent: every caller
+            // passes a target from promote_type, which is never NARROWER than the source, so
+            // reaching here with 128 bits in hand would mean the promotion oracle lied — and
+            // quietly cutting the value down is the bug class this file is being repaired for.
             int64_t ival;
             switch (val.type().type()) {
                 case LT::BOOLEAN:
@@ -437,9 +479,7 @@ namespace components::sql::transform {
                                     chunk.data[column_index] =
                                         promote_column(resource_, *it, chunk_row, promoted, chunk.capacity());
                                 }
-                                chunk.set_value(column_index,
-                                                chunk_row,
-                                                numeric_widen(resource_, value, promoted));
+                                chunk.set_value(column_index, chunk_row, numeric_widen(resource_, value, promoted));
                             } else {
                                 chunk.set_value(column_index, chunk_row, std::move(value));
                             }
@@ -468,9 +508,7 @@ namespace components::sql::transform {
                                     chunk.data[column_index] =
                                         promote_column(resource_, *it, chunk_row, promoted, chunk.capacity());
                                 }
-                                chunk.set_value(column_index,
-                                                chunk_row,
-                                                numeric_widen(resource_, value, promoted));
+                                chunk.set_value(column_index, chunk_row, numeric_widen(resource_, value, promoted));
                             } else if (array_shapes_differ(it->type(), value.type())) {
                                 // VALUES rows carry array literals of different shapes (e.g. ARRAY[1]
                                 // then ARRAY[2,3]): a single fixed-ARRAY vector can't hold both, so
@@ -482,9 +520,7 @@ namespace components::sql::transform {
                                     chunk.data[column_index] =
                                         promote_array_to_list(resource_, *it, chunk_row, elem_type, chunk.capacity());
                                 }
-                                chunk.set_value(column_index,
-                                                chunk_row,
-                                                to_list_value(resource_, value, elem_type));
+                                chunk.set_value(column_index, chunk_row, to_list_value(resource_, value, elem_type));
                             } else if (col_type == types::logical_type::NA && !value.is_null()) {
                                 // The column was created from a LEADING NULL literal (typed NA);
                                 // a later row now carries a concrete type. Every prior row is NULL,

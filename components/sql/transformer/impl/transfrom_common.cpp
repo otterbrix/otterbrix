@@ -343,6 +343,22 @@ namespace components::sql::transform {
                             cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast)}};
                     }
                 }
+                // Every other non-literal operand — arithmetic, a function call, a CASE —
+                // is the SAME defect the jsonb arm above describes, just wearing a different
+                // node: falling through to add_param_value asks get_value to fold the whole
+                // cast into one constant, and get_value can only do that over an A_Const.
+                // Lower the operand and wrap it, so `CAST(x + 1 AS BIGINT)` is computed per
+                // row instead of collapsing to the operator node's pointer.
+                if (cast->arg && nodeTag(cast->arg) != T_A_Const && nodeTag(cast->arg) != T_ParamRef) {
+                    VALUE_OR_RETURN(auto target_type_res, get_type(resource_, cast->typeName));
+                    VALUE_OR_RETURN(auto operand, resolve_select_operand(cast->arg, names, plan, group));
+                    return param_storage{expression_ptr{
+                        make_cast_expression(resource_,
+                                             std::move(operand),
+                                             target_type_res,
+                                             casts::cast_t{},
+                                             cast->try_cast ? casts::cast_kind::try_cast : casts::cast_kind::cast)}};
+                }
                 VALUE_OR_RETURN(auto param, add_param_value(node, plan->parameters.get()));
                 return param;
             }

@@ -14,6 +14,8 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <limits>
+#include <string_view>
 
 namespace components::sql::transform {
     namespace {
@@ -575,10 +577,100 @@ namespace components::sql::transform {
         return types;
     }
 
+    integer_text_t parse_exact_integer(std::string_view text, types::int128_t& out) {
+        size_t i = 0;
+        bool negative = false;
+        if (i < text.size() && (text[i] == '+' || text[i] == '-')) {
+            negative = (text[i] == '-');
+            ++i;
+        }
+        if (i == text.size()) {
+            return integer_text_t::not_an_integer;
+        }
+        // Accumulate in the UNSIGNED domain. The signed range is asymmetric — -(2^127) is
+        // representable and +(2^127) is not — so the negative floor cannot be reached by
+        // building a positive int128 first and negating it; that intermediate does not
+        // exist. The unsigned accumulator holds both bounds, and the two's-complement
+        // negation below turns it back into the signed value without ever overflowing.
+        const types::uint128_t limit =
+            negative ? (types::uint128_t{1} << 127) : ((types::uint128_t{1} << 127) - types::uint128_t{1});
+        const types::uint128_t limit_div10 = limit / 10;
+        const types::uint128_t limit_mod10 = limit % 10;
+        types::uint128_t acc{0};
+        for (; i < text.size(); ++i) {
+            const char c = text[i];
+            if (c < '0' || c > '9') {
+                // A '.', an 'e'/'E', anything else: this literal really is a float.
+                return integer_text_t::not_an_integer;
+            }
+            const types::uint128_t digit{static_cast<uint64_t>(c - '0')};
+            if (acc > limit_div10 || (acc == limit_div10 && digit > limit_mod10)) {
+                return integer_text_t::out_of_range;
+            }
+            acc = acc * 10 + digit;
+        }
+        out = static_cast<types::int128_t>(negative ? (~acc + types::uint128_t{1}) : acc);
+        return integer_text_t::exact;
+    }
+
+    core::result_wrapper_t<types::logical_value_t> numeric_literal_value(std::pmr::memory_resource* resource,
+                                                                         Value* value) {
+        if (nodeTag(value) == T_Integer) {
+            // Already inside int32 — the scanner only stores an integer literal in `ival`
+            // when it fits there. BIGINT (not INTEGER) is what the rest of the pipeline has
+            // always seen from this arm; keeping it means the repair changes wide literals
+            // and nothing else.
+            return types::logical_value_t(resource, static_cast<int64_t>(intVal(value)));
+        }
+        if (nodeTag(value) != T_Float) {
+            // T_BitString / T_Null / anything else keeps a char* in the same union slot as
+            // `ival`. This arm used to read it as an integer and answer with a pointer
+            // value; a wrong node kind here is a parser bug, so it reports as one.
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"not a numeric literal: " + node_tag_to_string(nodeTag(value)), resource});
+        }
+        const char* text = strVal(value);
+        types::int128_t exact{0};
+        switch (parse_exact_integer(text, exact)) {
+            case integer_text_t::exact:
+                // int64 first: HUGEINT is a type most of the pipeline (numeric_widen,
+                // promote_type, the comparison kernels) reaches only through promotion, so
+                // it is spent only on literals that genuinely need 128 bits.
+                if (exact >= types::int128_t{std::numeric_limits<int64_t>::min()} &&
+                    exact <= types::int128_t{std::numeric_limits<int64_t>::max()}) {
+                    return types::logical_value_t(resource, static_cast<int64_t>(exact));
+                }
+                return types::logical_value_t(resource, exact);
+            case integer_text_t::out_of_range:
+                // int128 is the widest exact integer with any storage behind it. PostgreSQL
+                // would widen once more, to arbitrary-precision numeric; we have no such
+                // type, and answering with the nearest double would be the silent wrong
+                // answer this whole path exists to remove. So it is a refusal.
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"integer literal out of range: " + std::string(text), resource});
+            case integer_text_t::not_an_integer:
+                break;
+        }
+        return types::logical_value_t(resource, floatVal(value));
+    }
+
     core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
                 auto cast = pg_ptr_cast<TypeCast>(node);
+                if (!cast->arg || nodeTag(cast->arg) != T_A_Const) {
+                    // A cast collapses to a VALUE only over a literal. `CAST(x + 1 AS BIGINT)`
+                    // carries an A_Expr, and reading that through an A_Const* lands on the
+                    // operator node's `lexpr` POINTER: the answer was that pointer's bit
+                    // pattern, identical on every row and different on every run. The operand
+                    // has to be LOWERED (resolve_select_operand / the SELECT list), not folded,
+                    // so anything that still asks this function for a constant gets a refusal
+                    // rather than a number that means nothing.
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"a cast over a non-constant operand is not a constant value", resource});
+                }
                 auto constant = pg_ptr_cast<A_Const>(cast->arg);
                 if (constant->val.type != T_String) {
                     // A NULL literal under a CAST (`NULL::T`) is a typed NULL. Reading ival/fval of a T_Null
@@ -588,14 +680,13 @@ namespace components::sql::transform {
                     if (constant->val.type == T_Null) {
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     }
-                    // A numeric literal under a CAST: a T_Float keeps its payload in `str`
-                    // (floatVal -> double -> DOUBLE), a T_Integer in `ival` (intVal -> long -> BIGINT).
-                    // Reading `ival` for a T_Float misreads it as a garbage BIGINT — e.g.
-                    // CAST(1000000.0 AS double) — failing every downstream type-matched comparison/join.
-                    if (constant->val.type == T_Float) {
-                        return types::logical_value_t(resource, floatVal(&constant->val));
-                    }
-                    return types::logical_value_t(resource, intVal(&constant->val));
+                    // A numeric literal under a CAST. The two node kinds keep their payload in
+                    // different union members — T_Float in `str`, T_Integer in `ival` — so
+                    // reading the wrong one yields a garbage number (CAST(1000000.0 AS double)
+                    // used to be read as an integer, failing every downstream type-matched
+                    // comparison/join). numeric_literal_value picks by node kind, and reads a
+                    // digits-only T_Float back as an exact integer rather than through atof.
+                    return numeric_literal_value(resource, &constant->val);
                 }
                 std::string_view str = strVal(&constant->val);
                 auto type_res = get_type(resource, cast->typeName);
@@ -659,10 +750,9 @@ namespace components::sql::transform {
                         std::string str = strVal(value);
                         return types::logical_value_t(resource, str);
                     }
-                    case T_Integer:
-                        return types::logical_value_t(resource, intVal(value));
+                    case T_Integer: // fall-through
                     case T_Float:
-                        return types::logical_value_t(resource, floatVal(value));
+                        return numeric_literal_value(resource, value);
                     case T_Null:
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     default:

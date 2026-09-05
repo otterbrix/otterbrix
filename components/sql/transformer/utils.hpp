@@ -313,6 +313,33 @@ namespace components::sql::transform {
     core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
                                                                                     PGList& list);
 
+    // How a numeric literal's TEXT reads as an integer. An integer literal wider than the
+    // scanner's 32-bit `ival` cannot be carried in the parse node's integer slot, so the
+    // lexer hands it on as a T_Float holding its original digits (process_integer_literal
+    // in components/sql/parser/scan.l). This is the boundary where those digits become a
+    // number again, and it is the only one: reading them with atof would round
+    // 9223372036854775807 to 9223372036854775808 and put the truncation bug back in a
+    // different shape.
+    enum class integer_text_t
+    {
+        not_an_integer, // a fraction or an exponent — a real float, atof is correct for it
+        out_of_range,   // plain digits, but more magnitude than the widest integer we store
+        exact           // the out-parameter holds it, digit for digit
+    };
+
+    // Reads `text` (optional sign, then decimal digits, nothing else) as an exact integer.
+    // int128 is the ceiling because it is the widest integer this engine has any storage
+    // for — DECIMAL's scaled payload tops out there too, which is where DECIMAL_MAX_WIDTH
+    // == 38 comes from.
+    integer_text_t parse_exact_integer(std::string_view text, types::int128_t& out);
+
+    // The value a numeric literal (T_Integer or T_Float Value node) denotes, exactly.
+    // BIGINT when it fits int64, HUGEINT when it needs the full 128 bits, DOUBLE only for
+    // literals that are genuinely fractional, and a refusal for a plain integer too wide
+    // for either — silently rounding that one into a double is the defect, not the fix.
+    core::result_wrapper_t<types::logical_value_t> numeric_literal_value(std::pmr::memory_resource* resource,
+                                                                         Value* value);
+
     core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node);
     core::result_wrapper_t<types::logical_value_t> get_array(std::pmr::memory_resource* resource, PGList* list);
 

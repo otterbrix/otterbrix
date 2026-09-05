@@ -1187,18 +1187,29 @@ process_integer_literal(std::pmr::memory_resource* resource, const char *token, 
 
 	errno = 0;
 	val = strtol(token, &endptr, 10);
-	if (*endptr != '\0' || errno == ERANGE
-#ifdef HAVE_LONG_INT_64
-		/* if long > 32 bits, check for overflow of int4 */
-		|| val != (long) ((int32_t) val)
-#endif
-		)
+	/*
+	 * The scanner hands the parser a 32-bit `ival` (core_YYSTYPE in scanner.h, and the
+	 * bison %union built on top of it), so EVERY literal outside int32 has to leave here
+	 * as text or it is truncated on the way in with nothing downstream able to notice.
+	 *
+	 * The int32 range test used to sit behind `#ifdef HAVE_LONG_INT_64`, which nothing in
+	 * this project defines. `long` is 64 bits here, so strtol happily produced a 64-bit
+	 * value and the assignment below quietly cut it down: 9223372036854775807 became -1,
+	 * 123456789012345678 became -1506741426, on a column of ANY type. The test is
+	 * unconditional now; where `long` really is 32 bits it is simply always false.
+	 *
+	 * An out-of-range literal leaves as FCONST carrying the ORIGINAL DIGITS. That is not a
+	 * float: the transformer (get_value in components/sql/transformer/utils.cpp) reads a
+	 * digits-only FCONST back as an exact int64/int128 and never through atof, which would
+	 * round 9223372036854775807 up to 9223372036854775808.
+	 */
+	if (*endptr != '\0' || errno == ERANGE || val != (long) ((int32_t) val))
 	{
-		/* integer too large, treat it as a float */
+		/* out of int32 range: hand the exact text on, do not narrow it */
 		lval->str = pstrdup(resource, token);
 		return FCONST;
 	}
-	lval->ival = val;
+	lval->ival = (int) val;
 	return ICONST;
 }
 

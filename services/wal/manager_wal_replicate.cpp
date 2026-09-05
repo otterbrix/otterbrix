@@ -19,6 +19,7 @@
 // (manager_disk.hpp / manager_index.hpp pull only services/wal/base.hpp back).
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
+#include <services/index/index_rebuild_driver.hpp>
 #include <services/index/manager_index.hpp>
 
 namespace services::wal {
@@ -578,6 +579,46 @@ namespace services::wal {
                                               wal_max_id,
                                               compact_watermark);
         const wal::id_t checkpoint_wal_id = co_await std::move(cp_fut);
+
+        // (c2) INDEX REBUILD, and its absence here was the defect this step exists for.
+        //      checkpoint_all above compacts every entry the MVCC gate lets it
+        //      (agent_disk_t::checkpoint_inner -> data_table_t::compact), and a compact
+        //      rebuilds the table at row id 0, handing every surviving row a NEW physical
+        //      id. An index entry stores that id, so the moment the round commits its
+        //      header, every index of every compacted table is wrong — silently: an id that
+        //      names no row group is dropped by collection_t::fetch (a short answer) and an
+        //      id that now belongs to a different survivor is gathered as the match (a wrong
+        //      answer, observed as `WHERE k = <key of row A>` returning row B).
+        //
+        //      This path is described above as the self-orchestrated analogue of the
+        //      CHECKPOINT statement, and it mirrored steps (a)-(d) of it — but not the
+        //      statement's rebuild, which is why every auto-checkpoint left the indexes
+        //      behind. It now calls the SAME driver the operator does.
+        //
+        //      The snapshot is committed_rows_snapshot(): this is not a statement and owns
+        //      no transaction, and an index is supposed to hold every committed row (the
+        //      TABLE decides what a reader may see, so the index answers a superset and
+        //      never filters by visibility).
+        //
+        //      A refusal is logged rather than propagated: nothing above this frame is a
+        //      statement that could carry the error, and the round must still release its
+        //      dedup guard below. The indexes are then left as the failure found them and
+        //      the next CHECKPOINT — statement or automatic — retries the rebuild.
+        if (manager_index_ != actor_zeta::address_t::empty_address()) {
+            auto rebuild_error = co_await services::index::repopulate_indexes_after_compaction(
+                resource(),
+                manager_disk_,
+                manager_index_,
+                session,
+                services::index::committed_rows_snapshot(),
+                core::date::timezone_offset_t{});
+            if (rebuild_error.contains_error()) {
+                error(log_,
+                      "manager_wal_replicate_t::run_auto_checkpoint: index rebuild after the compacting round "
+                      "failed, the indexes still name pre-compact row ids: {}",
+                      rebuild_error.what);
+            }
+        }
 
         // (d) Truncate WAL below the checkpoint boundary. We are already on the WAL
         //     actor, so invoke truncate_before's body directly (co_await the member

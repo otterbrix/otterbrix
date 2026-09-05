@@ -97,14 +97,33 @@ namespace {
             manager_.reset();
         }
 
+        // Built on the fixture's OWN arena, never the process-global new_delete_resource
+        // singleton. This is real load, and off resource_ it never reaches
+        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only
+        // thing that would report a chunk still alive after the manager is gone. Production
+        // hands the manager chunks off the executor's arena; this is that shape.
+        //
+        // resource_ outlives the asynchronous processing for three independent reasons:
+        // ~journal_writer_t stops the scheduler and resets manager_ -- destroying the mailbox
+        // and any message still holding this batch -- inside its own body; resource_ is
+        // declared FIRST, so it is destroyed LAST; and otterbrix_resource is thread-safe in
+        // both builds (synchronized_pool_resource normally, the mutex-guarded
+        // resource_tracer_t under ASAN). manager_ itself is already allocated on it.
+        //
+        // Extracted so a test can assert the ARENA of a REAL payload: the batch is moved
+        // into the message and is unobservable after send.
+        // to_batch takes the vector's arena from the chunk, so &resource_ carries all the
+        // way through to the batch the message holds.
+        std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
+            return to_batch(gen_data_chunk(rows, &resource_));
+        }
+
         void write_committed_insert(uint64_t txn_id, size_t rows) {
-            auto* arena = std::pmr::new_delete_resource();
-            auto chunk = gen_data_chunk(rows, arena);
             auto [_, insert_fut] = actor_zeta::otterbrix::send(manager_->address(),
                                                                &manager_wal_replicate_t::write_physical_insert,
                                                                session_id_t::generate_uid(),
                                                                kTableOid,
-                                                               to_batch(std::move(chunk)),
+                                                               make_insert_batch(rows),
                                                                uint64_t{0},
                                                                uint64_t{rows},
                                                                txn_id,
@@ -218,4 +237,28 @@ TEST_CASE("wal::classification::segment_index_parses_the_whole_suffix_or_refuses
 
     // Out of uint32 range: refusal (the old catch (...) got this one right).
     REQUIRE(wal_worker_t::parse_segment_index("/j/wal_5_99999999999999999999", "5") == refused);
+}
+
+// ===========================================================================
+// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA.
+//
+// gen_data_chunk output is REAL load, and on the process-global new_delete_resource
+// singleton it escapes core::pmr::otterbrix_resource entirely -- which under ASAN IS
+// resource_tracer_t, so nothing accounts for it. Production hands the manager chunks
+// off the executor's arena; the fixture has to model that.
+//
+// The batch is moved into the message, so it is unobservable after send. The assertion
+// is therefore made on the object make_insert_batch produces -- the same call, on the
+// same path, that send_insert makes -- and not on a value handed in by the test.
+// ===========================================================================
+TEST_CASE("wal::classification::the_insert_payload_is_built_on_the_fixture_arena") {
+    const auto path = base_path() / "payload_arena";
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+    journal_writer_t env(path);
+
+    auto batch = env.make_insert_batch(4);
+    REQUIRE(batch.size() == 1);
+    REQUIRE(batch.get_allocator().resource() == &env.resource_);
+    REQUIRE(batch.front().resource() == &env.resource_);
 }

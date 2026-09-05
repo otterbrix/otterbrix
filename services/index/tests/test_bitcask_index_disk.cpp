@@ -1,4 +1,3 @@
-#include <atomic>
 #include <catch2/catch_test_macros.hpp>
 #include <charconv>
 #include <components/index/logical_value_binary_codec.hpp>
@@ -7,13 +6,10 @@
 #include <fstream>
 #include <limits>
 #include <memory_resource>
-#include <mutex>
-#include <random>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
 #include <services/index/disk_hash_table.hpp>
 #include <set>
-#include <thread>
 #include <unordered_set>
 
 using components::types::logical_value_t;
@@ -161,8 +157,6 @@ TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
         index.remove(logical_value_t(&resource, int64_t(i)));
     }
 
-    { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
-
     REQUIRE(index.find(logical_value_t(&resource, 2l)).empty());
 }
 
@@ -185,8 +179,6 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
-
-    { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(count_bitcask_data_files(path) == 1);
 
@@ -242,9 +234,12 @@ TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
+        // THE OWNER MERGES. Rotation only records that a merge is owed; nothing pays it
+        // behind the owner's back any more, so a fixture that wants the merged layout
+        // asks for it -- and gets it synchronously, instead of sleeping and hoping a
+        // background thread got there first.
+        index.merge_pending_segments();
     }
-
-    { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
 
@@ -281,9 +276,12 @@ TEST_CASE("services::index::bitcask_index_disk::merge_keeps_latest_snapshot_for_
 
         index.insert(logical_value_t(&resource, 30001l), 30001);
         REQUIRE(index.force_flush().type == core::error_code_t::none);
+        // THE OWNER MERGES. Rotation only records that a merge is owed; nothing pays it
+        // behind the owner's back any more, so a fixture that wants the merged layout
+        // asks for it -- and gets it synchronously, instead of sleeping and hoping a
+        // background thread got there first.
+        index.merge_pending_segments();
     }
-
-    { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
 
@@ -318,9 +316,12 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
 
         index.insert(logical_value_t(&resource, 60001l), 60001);
         REQUIRE(index.force_flush().type == core::error_code_t::none);
+        // THE OWNER MERGES. Rotation only records that a merge is owed; nothing pays it
+        // behind the owner's back any more, so a fixture that wants the merged layout
+        // asks for it -- and gets it synchronously, instead of sleeping and hoping a
+        // background thread got there first.
+        index.merge_pending_segments();
     }
-
-    { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
 
@@ -328,6 +329,55 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
     REQUIRE(index.find(logical_value_t(&resource, 555l)).empty());
     REQUIRE(index.find(logical_value_t(&resource, 60001l)).size() == 1);
     REQUIRE(index.find(logical_value_t(&resource, 60001l)).front() == 60001);
+}
+
+// A THIRD MERGE MUST NOT LOSE THE INDEX.
+//
+// The merged output goes to one of the two reserved segment ids below the regular range,
+// and which one it goes to used to be computed as "one less than the lowest segment being
+// merged". That is right exactly twice -- merge 1 takes {2} and writes 1, merge 2 takes
+// {1,3} and writes 0 -- and on merge 3 the lowest is 0, so the id wrapped to 2^64-1. The
+// merged records then lived in a file named for the wrapped id while the keydir recorded
+// its low 32 bits, so every key that had been relocated became unfindable: find() answers
+// EMPTY for the entire merged set, silently, with no I/O error anywhere.
+//
+// Three merges is not an exotic amount of traffic -- it is three rotations, i.e. roughly
+// three times segment_record_limit index writes. The fixtures above stop at two, which is
+// why this went unseen.
+TEST_CASE("services::index::bitcask_index_disk::merge_survives_more_than_two_rounds") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_merge_many_rounds"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    constexpr int key_count = 5 * static_cast<int>(test_segment_record_limit);
+
+    {
+        auto index = make_test_index(path, &resource);
+        // Merge after EVERY rotation, exactly as the agent does at the end of every write
+        // handler -- so this runs the merge four times over, not once at the end.
+        for (int i = 1; i <= key_count; ++i) {
+            index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
+            index.merge_pending_segments();
+        }
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
+    }
+
+    // Two files: the merged output plus the active segment. A merged id that wrapped
+    // leaves a third, named for 2^64-1.
+    REQUIRE(count_bitcask_data_files(path) == 2);
+    REQUIRE(max_bitcask_segment_id(path) < 1000);
+
+    {
+        auto index = make_test_index(path, &resource);
+        for (int i = 1; i <= key_count; ++i) {
+            const auto rows = index.find(logical_value_t(&resource, int64_t(i)));
+            INFO("key " << i << " must survive every merge round");
+            REQUIRE(rows.size() == 1);
+            REQUIRE(rows.front() == static_cast<size_t>(i));
+        }
+    }
 }
 
 TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_entries") {
@@ -347,9 +397,12 @@ TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_e
         index.insert(logical_value_t(&resource, 888l), 888);
         index.insert(logical_value_t(&resource, 889l), 889);
         REQUIRE(index.force_flush().type == core::error_code_t::none);
+        // THE OWNER MERGES. Rotation only records that a merge is owed; nothing pays it
+        // behind the owner's back any more, so a fixture that wants the merged layout
+        // asks for it -- and gets it synchronously, instead of sleeping and hoping a
+        // background thread got there first.
+        index.merge_pending_segments();
     }
-
-    { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
 
@@ -563,6 +616,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_dat
             index.insert(logical_value_t(&resource, int64_t(i)), static_cast<size_t>(i));
         }
         REQUIRE(index.force_flush().type == core::error_code_t::none);
+        index.merge_pending_segments();
     }
 
     REQUIRE(count_bitcask_data_files(path) == 2);
@@ -575,10 +629,13 @@ TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_dat
 
     {
         auto index = make_test_index(path, &resource);
-        // The flush itself succeeds here; the failure this case is about happens later, in the
-        // background merge publish.
+        // Re-opening over a directory sitting where the next segment file would go must
+        // not disturb what is already on disk. Nothing rotates in this scope, so no merge
+        // is owed and the call below is a no-op -- stated plainly because the sleep it
+        // replaces was there to wait for a background merge that this scope never
+        // scheduled either.
         REQUIRE(index.force_flush().type == core::error_code_t::none);
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        index.merge_pending_segments();
     }
 
     std::filesystem::remove_all(blocking_path);

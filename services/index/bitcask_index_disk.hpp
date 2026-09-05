@@ -1,6 +1,5 @@
 #pragma once
 
-#include "bitcask_task_executor.hpp"
 #include "disk_hash_table.hpp"
 
 #include <components/types/logical_value.hpp>
@@ -8,15 +7,12 @@
 #include <core/file/local_file_system.hpp>
 #include <core/result_wrapper.hpp>
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <functional>
 #include <memory>
 #include <memory_resource>
 #include <set>
-#include <shared_mutex>
 #include <vector>
 
 namespace services::index {
@@ -47,9 +43,9 @@ namespace services::index {
         // VALUE: the agent is its sole owner, the type is known statically, and there is
         // no erased base left to hold it by, so the unique_ptr that used to stand between
         // the two was indirection and nothing else. It cannot be MOVED into place either
-        // -- the shared_mutex below is immovable and the deleted copy ctor suppresses the
-        // implicit move -- so the agent builds it in its MEMBER INITIALIZER LIST, from
-        // parameters, and the open runs as a separate step afterwards.
+        // -- the deleted copy ctor suppresses the implicit move -- so the agent builds it
+        // in its MEMBER INITIALIZER LIST, from parameters, and the open runs as a separate
+        // step afterwards.
         //
         // deferred_open_t is that split, spelled in the type: this ctor performs NO I/O,
         // which is what lets the failures open() meets (an unopenable keydir, a segment
@@ -143,7 +139,20 @@ namespace services::index {
         // nothing downstream would ever notice.
         [[nodiscard]] core::error_t force_flush();
         void load_entries(entries_t& entries) const;
-        void enqueue_task(std::function<void()> task);
+
+        // COMPACT THE ROTATED SEGMENTS, ON THE CALLER'S THREAD.
+        //
+        // Rotation only RECORDS that a merge is owed (rotate_active_segment); this is the
+        // one place it is paid. It used to be paid by a std::thread this store started for
+        // itself, which is why the store also held a shared_mutex: two threads reached the
+        // keydir and the segment set, so a second serialization domain had to exist beside
+        // the agent's mailbox. There is one owner again, so there is one domain again.
+        //
+        // The OWNER decides WHEN. bitcask_index_agent_t calls this once, at the end of the
+        // write handler it is already inside -- never from the middle of a record append,
+        // where a statement writing N segments' worth of rows would pay N merges. A
+        // no-merge-owed call is free.
+        void merge_pending_segments();
         // bitcask-internal rehash-suppression window (pre-existing optimization, opened
         // around the bulk run in bitcask_index_agent_t::commit_inserts).
         void set_bulk_mode(bool enabled);
@@ -185,10 +194,8 @@ namespace services::index {
         };
 
         // The whole encoded key of the record at (segment_id, value_offset) — the answer
-        // to the one question a truncated keydir entry cannot answer for itself. Reads
-        // the segment WITHOUT taking this store's lock, because every caller of it below
-        // already holds that lock.
-        bool load_hash_key_at_unlocked(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const;
+        // to the one question a truncated keydir entry cannot answer for itself.
+        bool load_hash_key_at(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const;
 
         // This store's answer to disk_hash_table_t's truncated-key question, as a
         // DEDUCED callable rather than a virtual interface and rather than a
@@ -203,7 +210,7 @@ namespace services::index {
         // boundary either (rule 10) — the table it is handed to is owned by this store.
         [[nodiscard]] auto key_loader() const noexcept {
             return [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) -> bool {
-                return load_hash_key_at_unlocked(log_file_id, log_offset, out_key);
+                return load_hash_key_at(log_file_id, log_offset, out_key);
             };
         }
 
@@ -237,10 +244,10 @@ namespace services::index {
         // M3.5: returns no_error() on a clean append, an index_create_fail
         // error if the txn-log file cannot be opened (the only recoverable IO
         // failure on this path; write/sync surface through the file handle).
-        [[nodiscard]] core::error_t append_txn_record_unlocked(uint64_t txn_id,
-                                                               uint8_t op_kind,
-                                                               const std::vector<std::pair<value_t, size_t>>& values);
-        void recover_txn_log_unlocked();
+        [[nodiscard]] core::error_t append_txn_record(uint64_t txn_id,
+                                                      uint8_t op_kind,
+                                                      const std::vector<std::pair<value_t, size_t>>& values);
+        void recover_txn_log();
         std::filesystem::path txn_log_file_path() const;
         std::filesystem::path txn_applied_file_path() const;
         uint64_t read_applied_log_offset() const;
@@ -251,7 +258,7 @@ namespace services::index {
         // it as the index-side abort.
         [[nodiscard]] core::error_t write_applied_log_offset(uint64_t offset) const;
         void flush_if_needed();
-        void force_flush_unlocked();
+        void sync_if_dirty();
         void note_write_error(core::error_t err);
         // Opens the keydir file and says why it could not, as a VALUE: open() hands that
         // value back and the construct-and-open ctor aborts on it. Nothing is recorded on
@@ -288,15 +295,19 @@ namespace services::index {
         // which is the first point on those paths that can report anything at all.
         core::error_t pending_write_error_{core::error_t::no_error()};
         uint64_t next_timestamp_{0};
-        std::atomic<uint64_t> next_segment_id_{regular_segment_id_start_};
+        uint64_t next_segment_id_{regular_segment_id_start_};
         uint64_t active_segment_id_{0};
         uint64_t active_segment_records_{0};
         uint64_t segment_record_limit_{default_segment_record_limit_};
         bool bulk_mode_{false};
         bool bulk_rehash_guard_active_{false};
         bool bulk_prev_rehash_suppressed_{false};
-        mutable std::shared_mutex mutex_;
-        std::unique_ptr<bitcask_task_executor_t> task_executor_;
+        // A rotation happened and the segments below the active one are owed a merge.
+        // Set by rotate_active_segment, paid and cleared by merge_pending_segments, and
+        // dropped on the floor by clear()/drop() -- which wipe the very segments it names.
+        // There is nothing to DRAIN on those two paths: the flag is only ever read from
+        // inside a handler, and a handler is the only thing running.
+        bool merge_pending_{false};
         // WAL-replay committed transaction ids — the recover gate (M1.1) applies
         // a txn-log frame only when committed_txn_ids_.count(header.txn_id) > 0.
         // Allocated on resource_. Empty for a fresh, runtime-created instance

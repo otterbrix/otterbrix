@@ -101,8 +101,8 @@ namespace services::index {
         //
         // The store is BUILT INSIDE THE AGENT, in its member initializer list, from the
         // parameters below (see the ctor). Nothing is created here and handed across,
-        // which is why the open can only happen after the spawn: a store holding a
-        // shared_mutex cannot be opened elsewhere and moved in.
+        // which is why the open can only happen after the spawn: the store is not
+        // movable, so it cannot be opened elsewhere and moved in.
         //
         // The path is derived in the agent's own translation unit: no caller builds it and
         // no caller opens anything.
@@ -299,6 +299,39 @@ namespace services::index {
         co_return core::error_t::no_error();
     }
 
+    // THE SEGMENT MERGE, RUN AS THIS AGENT'S OWN WORK.
+    //
+    // Rotating the active segment leaves a compaction owed; this pays it, ONCE, at the
+    // end of the write handler the rotation happened inside. The store used to pay it on
+    // a std::thread it started for itself, which is the reason it also carried a
+    // shared_mutex: with two threads on one keydir, the mailbox was no longer the only
+    // thing deciding what happened in what order. It is again.
+    //
+    // WHY HERE AND NOT AT THE ROTATION. Rotation happens inside a single record append,
+    // and a statement big enough to fill N segments rotates N times; merging there would
+    // charge that statement N whole-keydir compactions, each in the middle of a half-
+    // written record. Here it is charged one, over a store that is between records.
+    //
+    // WHY NOT A MESSAGE TO ITSELF. The message id space is index_agent_contract's, and
+    // it is POSITIONAL and SHARED with btree_index_agent_t (see index_agent_contract.hpp)
+    // -- a merge message would have to be an eleventh entry on a contract whose other
+    // implementation has no merge, and `implements<>` refuses a binding that does not
+    // match the contract's shape. It would also buy little: the manager awaits this
+    // handler's reply, so the cost would move to the next statement rather than off the
+    // agent. The mailbox stays FIFO and this agent still awaits nothing.
+    //
+    // NOT AFTER A FAILED WRITE. The failure that just came back is returnable; the merge
+    // is not (its I/O failures are aborts, the recorded debt in bitcask_index_disk.cpp),
+    // so piling a compaction onto a store that has just failed to write would turn an
+    // error the statement could report into a dead process. The debt keeps: the store
+    // holds the flag and the next write that succeeds pays it.
+    void bitcask_index_agent_t::pay_merge_debt(const core::error_t& write_error) {
+        if (write_error.contains_error()) {
+            return;
+        }
+        store_.merge_pending_segments();
+    }
+
     // Take bucket `txn_id` and bucket 0, hand every entry to `apply`, and erase both.
     //
     // The pair is what the commit path has always folded together: bucket 0 is committed
@@ -370,20 +403,30 @@ namespace services::index {
                 co_return core::error_t::no_error();
             }
             // Propagate the txn-log IO error straight back to the manager's commit handler.
-            co_return store_.apply_txn_inserts(txn_id, journal);
+            auto apply_error = store_.apply_txn_inserts(txn_id, journal);
+            pay_merge_debt(apply_error);
+            co_return apply_error;
         }
         // txn_id == 0: committed-for-everyone (rebuild / repopulate feed), no journal.
         // insert_bulk_unchecked skips the per-insert dedup find() and the per-insert
         // flush; set_bulk_mode opens bitcask's rehash-suppression window around the run,
         // and bulk_guard_t closes it on scope exit so a mid-loop bail-out is clean.
-        struct bulk_guard_t {
-            bitcask_index_disk_t& store;
-            ~bulk_guard_t() { store.set_bulk_mode(false); }
-        } guard{store_};
-        store_.set_bulk_mode(true);
-        co_return publish_buckets(pending_inserts_, txn_id, [this](const value_t& key, size_t row_id) {
-            store_.insert_bulk_unchecked(key, row_id);
-        });
+        core::error_t publish_error = core::error_t::no_error();
+        {
+            struct bulk_guard_t {
+                bitcask_index_disk_t& store;
+                ~bulk_guard_t() { store.set_bulk_mode(false); }
+            } guard{store_};
+            store_.set_bulk_mode(true);
+            publish_error = publish_buckets(pending_inserts_, txn_id, [this](const value_t& key, size_t row_id) {
+                store_.insert_bulk_unchecked(key, row_id);
+            });
+        }
+        // OUTSIDE the bulk window, deliberately: bulk mode holds the keydir's auto-rehash
+        // suppressed and restores it on the way out, and a merge inside that window would
+        // be compacting under a setting the window is about to put back.
+        pay_merge_debt(publish_error);
+        co_return publish_error;
     }
 
     bitcask_index_agent_t::unique_future<core::error_t>
@@ -414,14 +457,18 @@ namespace services::index {
             if (journal.empty()) {
                 co_return core::error_t::no_error();
             }
-            co_return store_.apply_txn_deletes(txn_id, journal);
+            auto apply_error = store_.apply_txn_deletes(txn_id, journal);
+            pay_merge_debt(apply_error);
+            co_return apply_error;
         }
         // bitcask's remove is already O(1) (a keydir lookup) and honours bulk mode, so the
         // bulk remove IS the normal remove path -- there is no per-key find() scan to
         // avoid here (that is the ordered family's concern).
-        co_return publish_buckets(pending_deletes_, txn_id, [this](const value_t& key, size_t row_id) {
+        auto publish_error = publish_buckets(pending_deletes_, txn_id, [this](const value_t& key, size_t row_id) {
             store_.remove_bulk_unchecked(key, row_id);
         });
+        pay_merge_debt(publish_error);
+        co_return publish_error;
     }
 
     bitcask_index_agent_t::unique_future<core::error_t>

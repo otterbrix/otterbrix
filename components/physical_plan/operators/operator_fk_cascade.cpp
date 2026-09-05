@@ -66,6 +66,19 @@ namespace components::operators {
         // per-chunk scan is value-equivalent to the old single combined scan. The keys-chunk is an
         // OWNED copy (it crosses the mailbox; actors must not share buffers). The per-chunk scans are
         // sequential co_awaits in this nested operator coroutine (driven by the executor) — no lost-wakeup.
+        //
+        // WHAT THE OUTER INDEX IS AND IS NOT. scan_by_keys states its own invariant: on SUCCESS
+        // result.size() == keys.size(), one (possibly empty) bucket per key in input order — a
+        // shape it guarantees rather than one this operator infers, which is why the error legs
+        // below return instead of reading a short answer as "matched nothing". But NO branch below
+        // indexes per_row_child_ids: RESTRICT / NO ACTION only ask whether a bucket is non-empty,
+        // and CASCADE / SET NULL / SET DEFAULT flatten every bucket into one id set. So the parent
+        // row a bucket came from is never needed, and nothing here pairs a reply with a request by
+        // position. The ids themselves are the addressing, all the way down.
+        //
+        // The ids are also already the reader's OWN view: the semi-join streams the child table
+        // under exec_ctx's transaction, so a child row this transaction has itself deleted earlier
+        // in the statement is filtered out of the buckets and never reaches any action below.
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
         key_types.reserve(par_indices.size());
         for (auto pidx : par_indices) {
@@ -110,7 +123,9 @@ namespace components::operators {
         switch (fk_.del_action) {
             case 'a': // NO ACTION
             case 'r': // RESTRICT
-                // Any referencing child row blocks the parent delete.
+                // Any referencing child row blocks the parent delete. This branch reads
+                // EMPTINESS only — never a bucket's index, never a row's position — so it
+                // has no pairing to get wrong; the loop is over buckets, not over parents.
                 for (const auto& child_ids : per_row_child_ids) {
                     if (!child_ids.empty()) {
                         set_error(core::error_t{
@@ -129,6 +144,17 @@ namespace components::operators {
                 // executor records the child table on the txn's delete channel, so
                 // COMMIT publishes the cascade delete and ROLLBACK reverts it
                 // (revert_all_deletes(parent_txn_id)) — all-or-nothing atomicity.
+                //
+                // NO REPLY IS PAIRED WITH A REQUEST HERE. This is the whole reason the
+                // C4b rework of SET NULL / SET DEFAULT below has no counterpart in this
+                // branch: CASCADE never reads a row back. The ids come out of the scan and
+                // go straight into storage_delete_rows as the rows to mark deleted, which
+                // addresses each row BY ITS ID. Flattening therefore only has to preserve
+                // the SET — order, bucket boundaries and any short-vs-long answer are all
+                // irrelevant to a by-id delete, so there is no positional assumption to
+                // break and nothing for chunk.row_ids to correct. Should this branch ever
+                // grow a read-modify-write step, it acquires the pairing problem the SET
+                // NULL branch has, and must be addressed by the ids the reply REPORTS.
                 std::pmr::vector<int64_t> all_child_ids(resource_);
                 for (const auto& child_ids : per_row_child_ids) {
                     for (auto id : child_ids) {

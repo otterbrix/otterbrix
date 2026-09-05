@@ -31,6 +31,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_index_threshold_config.cpp
         test_index_txn_log_routing.cpp
         test_index_read_through_agent.cpp
+        test_index_concurrent_merge.cpp
         test_index_fetch_visibility.cpp
         test_index_delete_horizon.cpp
         test_index_agent_owns_hash_storage.cpp
@@ -45,6 +46,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_append_pin_lifetime.cpp
         test_gather_string_lifetime.cpp
         test_fk_check_on_update.cpp
+        test_fk_cascade_row_identity.cpp
         test_inline_constraints.cpp
         test_text_column_storage.cpp
         test_update.cpp

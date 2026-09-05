@@ -102,8 +102,8 @@ namespace services::index {
         // TWO STEPS INSIDE, ONE STEP OUTSIDE: the agent is spawned (which builds its store
         // in place, doing no I/O) and then open_store() is run on it, before its address
         // has been handed to anyone. Splitting them is what the by-value store costs and
-        // all it costs -- a store that holds a shared_mutex cannot be built elsewhere and
-        // moved in, so the open cannot happen before the agent exists.
+        // all it costs -- the store is not movable, so it cannot be built elsewhere and
+        // moved in, and the open cannot happen before the agent exists.
         //
         // committed_txn_ids: the WAL-replay set of committed transaction ids, forwarded to
         // the txn-log recover gate (M1.1). Fresh, post-bootstrap agents pass an EMPTY set
@@ -122,10 +122,9 @@ namespace services::index {
                                                                         std::pmr::set<std::uint64_t> committed_txn_ids);
 
         // BUILDS THE STORE, it does not receive one. The store is a member BY VALUE and
-        // cannot be moved into place (bitcask_index_disk_t holds a shared_mutex, which is
-        // immovable, and its deleted copy ctor suppresses the implicit move), so what
-        // crosses this signature is the store's PARAMETERS and the store is constructed in
-        // the member initializer list.
+        // cannot be moved into place (bitcask_index_disk_t's deleted copy ctor suppresses
+        // the implicit move), so what crosses this signature is the store's PARAMETERS and
+        // the store is constructed in the member initializer list.
         //
         // Construction is still infallible, because the ctor it runs does no I/O: the open
         // is open_store() below, and create() above is the only thing that calls it. That
@@ -185,6 +184,12 @@ namespace services::index {
         // destroyed unpublished when the second half of it fails. That is the whole reason
         // an agent can be assumed to have an open store everywhere below.
         [[nodiscard]] core::error_t open_store();
+
+        // Run the segment compaction the store's rotations left owed, on this agent's own
+        // thread, at the end of the write handler that caused them -- and only when that
+        // write succeeded. The whole reasoning, including why this is not a message this
+        // agent sends to itself, is at the definition in bitcask_index_agent.cpp.
+        void pay_merge_debt(const core::error_t& write_error);
 
         log_t log_;
         components::catalog::oid_t table_oid_;

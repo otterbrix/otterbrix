@@ -10,8 +10,6 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
-#include <mutex>
-#include <shared_mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -287,9 +285,9 @@ namespace services::index {
 
     // NO I/O HAPPENS HERE. Every field is set and nothing is touched on disk, which is
     // what lets this ctor run inside bitcask_index_agent_t's member initializer list: the
-    // agent holds the store BY VALUE (it cannot be moved in -- mutex_ is immovable), so
-    // construction has to be the step that cannot fail and open() has to be the step that
-    // can.
+    // agent holds the store BY VALUE (it cannot be moved in -- the deleted copy ctor
+    // suppresses the implicit move), so construction has to be the step that cannot fail
+    // and open() has to be the step that can.
     bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
@@ -302,7 +300,6 @@ namespace services::index {
         , hash_index_file_path_(path_ / hash_index_file)
         , fs_(core::filesystem::local_file_system_t())
         , segment_record_limit_(segment_record_limit)
-        , task_executor_(std::make_unique<bitcask_task_executor_t>())
         , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {}
 
     // THE WHOLE OPEN, as a value. The keydir opens here and the reason it could not is
@@ -320,7 +317,7 @@ namespace services::index {
                                  std::pmr::string{"bitcask: CRC mismatch during recovery", resource_}};
         }
         open_active_segment();
-        recover_txn_log_unlocked();
+        recover_txn_log();
         return core::error_t::no_error();
     }
 
@@ -369,9 +366,9 @@ namespace services::index {
         auto ignored_flush_error = force_flush();
     }
 
-    bool bitcask_index_disk_t::load_hash_key_at_unlocked(uint32_t segment_id,
-                                                         uint64_t value_offset,
-                                                         std::string& out_key) const {
+    bool bitcask_index_disk_t::load_hash_key_at(uint32_t segment_id,
+                                                uint64_t value_offset,
+                                                std::string& out_key) const {
         row_ids_t rows(resource());
         value_t key(resource(), nullptr);
         if (!read_rows_at(segment_id, value_offset, rows, &key)) {
@@ -381,10 +378,7 @@ namespace services::index {
         return true;
     }
 
-    void bitcask_index_disk_t::enqueue_task(std::function<void()> task) { task_executor_->enqueue(std::move(task)); }
-
     void bitcask_index_disk_t::set_bulk_mode(bool enabled) {
-        std::unique_lock lock(mutex_);
         if (enabled) {
             if (!bulk_mode_ && hash_index_) {
                 bulk_prev_rehash_suppressed_ = hash_index_->set_auto_rehash_suppressed(true);
@@ -453,7 +447,7 @@ namespace services::index {
         auto segments = collect_segments();
         if (segments.empty()) {
             active_segment_id_ = regular_segment_id_start_;
-            next_segment_id_.store(regular_segment_id_start_ + 1);
+            next_segment_id_ = regular_segment_id_start_ + 1;
             active_data_file_path_ = segment_file_path(path_, active_segment_id_);
             restore_rehash_state.table = nullptr;
             hash_index_->set_auto_rehash_suppressed(prev_rehash_suppressed);
@@ -530,7 +524,7 @@ namespace services::index {
         });
         const auto& active_segment = active_it == segments.end() ? segments.back() : *active_it;
         active_segment_id_ = active_segment.id;
-        next_segment_id_.store(segments.back().id + 1);
+        next_segment_id_ = segments.back().id + 1;
         active_segment_records_ = active_segment.record_count;
         active_data_file_path_ = active_segment.path;
 
@@ -580,16 +574,31 @@ namespace services::index {
         write_current_segment_id(fs_, path_, active_segment_id_);
     }
 
-    uint64_t bitcask_index_disk_t::allocate_next_segment_id() { return next_segment_id_.fetch_add(1); }
+    uint64_t bitcask_index_disk_t::allocate_next_segment_id() { return next_segment_id_++; }
 
     void bitcask_index_disk_t::rotate_active_segment() {
-        force_flush_unlocked();
+        sync_if_dirty();
         file_.reset();
         active_segment_id_ = allocate_next_segment_id();
         active_segment_records_ = 0;
         active_data_file_path_ = segment_file_path(path_, active_segment_id_);
         open_active_segment();
-        enqueue_task([this]() { merge_immutable_segments(); });
+        // RECORD the debt, do not pay it here. Paying it here would put a whole-keydir
+        // compaction in the middle of one record append, and a statement large enough to
+        // fill N segments would pay it N times. bitcask_index_agent_t pays it once, at the
+        // end of the write handler this rotation happened inside.
+        merge_pending_ = true;
+    }
+
+    void bitcask_index_disk_t::merge_pending_segments() {
+        if (!merge_pending_) {
+            return;
+        }
+        // Cleared FIRST: the merge below either compacts what the rotations left or finds
+        // nothing to compact, and either way the debt is settled. Clearing it afterwards
+        // would re-run the whole scan on the next call for every early return inside.
+        merge_pending_ = false;
+        merge_immutable_segments();
     }
 
     void bitcask_index_disk_t::rotate_active_segment_if_needed() {
@@ -724,10 +733,9 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    core::error_t
-    bitcask_index_disk_t::append_txn_record_unlocked(uint64_t txn_id,
-                                                     uint8_t op_kind,
-                                                     const std::vector<std::pair<value_t, size_t>>& values) {
+    core::error_t bitcask_index_disk_t::append_txn_record(uint64_t txn_id,
+                                                          uint8_t op_kind,
+                                                          const std::vector<std::pair<value_t, size_t>>& values) {
         std::pmr::string payload(resource());
         components::index::codec::append_le<uint32_t>(payload, static_cast<uint32_t>(values.size()));
         for (const auto& [key, row_id] : values) {
@@ -779,7 +787,7 @@ namespace services::index {
     // is in committed_txn_ids_; every frame (applied or skipped) still advances
     // write_applied_log_offset(frame_end) so the log is consumed monotonically.
     // There is no txn_id==0 frame class — both writers are guarded txn_id!=0.
-    void bitcask_index_disk_t::recover_txn_log_unlocked() {
+    void bitcask_index_disk_t::recover_txn_log() {
         const auto log_path = txn_log_file_path();
         if (!std::filesystem::exists(log_path)) {
             return;
@@ -846,7 +854,7 @@ namespace services::index {
                         remove(key, row_id);
                     }
                 }
-                force_flush_unlocked();
+                sync_if_dirty();
             }
             // Every frame — applied or skipped — advances the applied offset so
             // the log is consumed monotonically and never re-replayed. This
@@ -866,13 +874,12 @@ namespace services::index {
 
     core::error_t bitcask_index_disk_t::apply_txn_inserts(uint64_t txn_id,
                                                           const std::vector<std::pair<value_t, size_t>>& values) {
-        std::unique_lock lock(mutex_);
         // M3.5: a txn-log append/open/sidecar IO failure is recoverable — return
         // it so the manager turns it into an index-side abort. The durable index
         // frame is written BEFORE the data segments are touched, so bailing here
         // leaves the data segments untouched and the frame is re-evaluated by the
         // recover gate on the next open (gated on the WAL commit marker).
-        if (auto err = append_txn_record_unlocked(txn_id, 1, values); err.contains_error()) {
+        if (auto err = append_txn_record(txn_id, 1, values); err.contains_error()) {
             return err;
         }
         if (!txn_log_file_) {
@@ -897,16 +904,15 @@ namespace services::index {
             }
             mark_operation_dirty();
         }
-        force_flush_unlocked();
+        sync_if_dirty();
         return write_applied_log_offset(applied_offset);
     }
 
     core::error_t bitcask_index_disk_t::apply_txn_deletes(uint64_t txn_id,
                                                           const std::vector<std::pair<value_t, size_t>>& values) {
-        std::unique_lock lock(mutex_);
         // M3.5: mirror of apply_txn_inserts — IO failure becomes a returned error
         // rather than a process abort. Same frame-before-segments ordering.
-        if (auto err = append_txn_record_unlocked(txn_id, 2, values); err.contains_error()) {
+        if (auto err = append_txn_record(txn_id, 2, values); err.contains_error()) {
             return err;
         }
         if (!txn_log_file_) {
@@ -937,12 +943,11 @@ namespace services::index {
             }
             mark_operation_dirty();
         }
-        force_flush_unlocked();
+        sync_if_dirty();
         return write_applied_log_offset(applied_offset);
     }
 
     void bitcask_index_disk_t::insert(const value_t& key, size_t value) {
-        std::unique_lock lock(mutex_);
         auto rows = current_rows(key);
         if (std::find(rows.begin(), rows.end(), value) != rows.end()) {
             return;
@@ -976,7 +981,6 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::remove(value_t key) {
-        std::unique_lock lock(mutex_);
         if (!hash_index_->get(key_bytes_for_hash(key), key_loader()).has_value()) {
             return;
         }
@@ -986,7 +990,6 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::remove(const value_t& key, size_t row_id) {
-        std::unique_lock lock(mutex_);
         auto rows = current_rows(key);
         if (rows.empty()) {
             return;
@@ -1019,13 +1022,12 @@ namespace services::index {
             return;
         }
         if (should_flush()) {
-            force_flush_unlocked();
+            sync_if_dirty();
         }
     }
 
     core::error_t bitcask_index_disk_t::force_flush() {
-        std::unique_lock lock(mutex_);
-        force_flush_unlocked();
+        sync_if_dirty();
         // Hand over anything the void-returning write paths could not report themselves, once.
         auto pending = pending_write_error_;
         pending_write_error_ = core::error_t::no_error();
@@ -1038,7 +1040,7 @@ namespace services::index {
         }
     }
 
-    void bitcask_index_disk_t::force_flush_unlocked() {
+    void bitcask_index_disk_t::sync_if_dirty() {
         if (is_dirty() && file_) {
             file_->sync();
             hash_index_->sync();
@@ -1047,7 +1049,6 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::load_entries(entries_t& entries) const {
-        std::shared_lock lock(mutex_);
         hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
             row_ids_t rows(resource());
             value_t key(resource(), nullptr);
@@ -1061,7 +1062,6 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::find(const value_t& value, result& res) const {
-        std::shared_lock lock(mutex_);
         auto ref = hash_index_->get(key_bytes_for_hash(value), key_loader());
         if (!ref.has_value()) {
             return;
@@ -1081,40 +1081,62 @@ namespace services::index {
     // is the only place that can answer with core::error_t instead of a signal.
 
     void bitcask_index_disk_t::merge_immutable_segments() {
-        uint64_t frontier_segment_id = 0;
         std::vector<segment_info_t> immutable_segments;
         std::vector<uint64_t> removed_segment_ids;
         std::vector<disk_hash_table_t::value_ref_t> refs;
-        uint64_t merged_segment_id = 0;
         bool built = false;
 
-        {
-            std::unique_lock lock(mutex_);
-            frontier_segment_id = active_segment_id_;
-            auto segments = collect_segments();
-            for (const auto& seg : segments) {
-                if (seg.id < frontier_segment_id) {
-                    immutable_segments.push_back(seg);
-                }
+        const uint64_t frontier_segment_id = active_segment_id_;
+        const auto segments = collect_segments();
+        for (const auto& seg : segments) {
+            if (seg.id < frontier_segment_id) {
+                immutable_segments.push_back(seg);
             }
-            if (immutable_segments.empty()) {
-                return;
-            }
-            merged_segment_id = immutable_segments.front().id - 1;
-            for (const auto& seg : immutable_segments) {
+        }
+        if (immutable_segments.empty()) {
+            return;
+        }
+        // THE MERGED OUTPUT ALTERNATES BETWEEN THE TWO RESERVED IDS, 1 AND 0.
+        //
+        // It used to be `front().id - 1`, which is right exactly twice: the first merge
+        // takes {2,...} and writes 1, the second takes {1,3,...} and writes 0 -- and the
+        // THIRD takes {0,...}, so `0 - 1` wrapped to 2^64-1. That produced a segment file
+        // named for the wrapped id while the keydir recorded its low 32 bits
+        // (0xFFFFFFFF), so every relocated key pointed at a file name that does not
+        // exist and find() answered EMPTY for the whole merged set. Three rotations is
+        // roughly 3 * segment_record_limit index writes, i.e. ordinary traffic.
+        //
+        // The lowest immutable segment is either the PREVIOUS merged output (0 or 1) or,
+        // on the first merge, a regular segment (>= 2). Flipping the reserved bit in the
+        // first case and taking 1 in the second keeps the output below every regular id
+        // -- which is what makes merged data replay before rotated data -- and it can
+        // never collide with the segment it just read, because the merge that wrote the
+        // previous output removed the other reserved id.
+        const uint64_t merged_segment_id =
+            immutable_segments.front().id < regular_segment_id_start_ ? immutable_segments.front().id ^ 1u : 1u;
+        for (const auto& seg : immutable_segments) {
+            // The merged output is published by renaming over its own path, so a segment
+            // that IS the output must not also be unlinked afterwards.
+            if (seg.id != merged_segment_id) {
                 removed_segment_ids.push_back(seg.id);
             }
-            const bool prev_rehash_suppressed = hash_index_->set_auto_rehash_suppressed(true);
-            bulk_prev_rehash_suppressed_ = prev_rehash_suppressed;
-            hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
-                if (ref.log_file_id < static_cast<uint32_t>(frontier_segment_id)) {
-                    refs.push_back(ref);
-                }
-            });
-            if (refs.empty()) {
-                hash_index_->set_auto_rehash_suppressed(prev_rehash_suppressed);
-                return;
+        }
+        // A LOCAL, not bulk_prev_rehash_suppressed_. This used to park the flag on that
+        // MEMBER because the function released the store's lock in the middle and the
+        // value had to survive the gap -- and the member belongs to set_bulk_mode, which
+        // restores the keydir's rehash setting from it when the bulk window closes. A
+        // merge that overwrote it left the window restoring the merge's value instead of
+        // the one bulk mode captured, i.e. auto-rehash suppressed for good. There is no
+        // gap any more, so there is no reason to leave the value on the object.
+        const bool prev_rehash_suppressed = hash_index_->set_auto_rehash_suppressed(true);
+        hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
+            if (ref.log_file_id < static_cast<uint32_t>(frontier_segment_id)) {
+                refs.push_back(ref);
             }
+        });
+        if (refs.empty()) {
+            hash_index_->set_auto_rehash_suppressed(prev_rehash_suppressed);
+            return;
         }
         const auto merged_path = segment_file_path(path_, merged_segment_id);
         const auto temp_path = merge_temp_file_path(path_, merged_segment_id);
@@ -1186,10 +1208,9 @@ namespace services::index {
             remove_file(fs_, meta_temp_path);
         }
 
-        std::unique_lock lock(mutex_);
         if (!built) {
-            hash_index_->set_auto_rehash_suppressed(bulk_prev_rehash_suppressed_);
-            if (!bulk_prev_rehash_suppressed_) {
+            hash_index_->set_auto_rehash_suppressed(prev_rehash_suppressed);
+            if (!prev_rehash_suppressed) {
                 hash_index_->trigger_rehash_if_needed();
             }
             return;
@@ -1254,8 +1275,8 @@ namespace services::index {
             const auto removed_path = segment_file_path(path_, removed_id);
             remove_file(fs_, removed_path);
         }
-        hash_index_->set_auto_rehash_suppressed(bulk_prev_rehash_suppressed_);
-        if (!bulk_prev_rehash_suppressed_) {
+        hash_index_->set_auto_rehash_suppressed(prev_rehash_suppressed);
+        if (!prev_rehash_suppressed) {
             hash_index_->trigger_rehash_if_needed();
         }
     }
@@ -1267,15 +1288,13 @@ namespace services::index {
         // (direct, non-txn-log path) repopulate cleanly. Mirrors the ctor's
         // construction sequence on a wiped directory.
         //
-        // Drain the background merge executor first: a queued
-        // merge_immutable_segments() would otherwise race the wipe by reading
-        // segments we are about to remove.
-        if (task_executor_) {
-            task_executor_->stop();
-        }
-
-        std::unique_lock lock(mutex_);
-
+        // THERE IS NOTHING TO DRAIN. A merge used to be a task on this store's own
+        // thread, so this had to stop that thread before unlinking the segments the
+        // task was about to read. A merge is now the owner's own work, run from inside
+        // one of its handlers, and this IS one of its handlers -- no merge can be
+        // running and none can start. What survives the wipe is the DEBT, and it is
+        // dropped below with the segments it names.
+        //
         // Close every open handle before unlinking so stale inodes are not held.
         file_.reset();
         txn_log_file_.reset();
@@ -1297,15 +1316,16 @@ namespace services::index {
         remove_merge_manifest(path_);
         reset_flush_state();
         next_timestamp_ = 0;
-        next_segment_id_.store(regular_segment_id_start_);
+        next_segment_id_ = regular_segment_id_start_;
         active_segment_id_ = 0;
         active_segment_records_ = 0;
         active_data_file_path_.clear();
         bulk_mode_ = false;
+        // The rotations that owed a merge owed it over segments that no longer exist.
+        merge_pending_ = false;
 
         // Recreate the backing exactly as the ctor does, but over the now-empty
-        // directory. A fresh executor replaces the stopped one.
-        task_executor_ = std::make_unique<bitcask_task_executor_t>();
+        // directory.
         initialize_storage();
         if (!hash_index_) {
             // clear() keeps the index alive and writable, so it is only ever called on a
@@ -1323,11 +1343,9 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::drop() {
-        if (task_executor_) {
-            task_executor_->stop();
-        }
-
-        std::unique_lock lock(mutex_);
+        // No drain here either, for the reason clear() states: a merge only ever runs
+        // inside one of the owner's handlers, and this is one of them.
+        merge_pending_ = false;
         if (is_dirty() && file_) {
             file_->sync();
             if (hash_index_) {
@@ -1340,7 +1358,7 @@ namespace services::index {
         hash_index_.reset();
         reset_flush_state();
         next_timestamp_ = 0;
-        next_segment_id_.store(regular_segment_id_start_);
+        next_segment_id_ = regular_segment_id_start_;
         active_segment_id_ = 0;
         active_segment_records_ = 0;
         active_data_file_path_.clear();

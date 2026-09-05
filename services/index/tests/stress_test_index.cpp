@@ -1,19 +1,15 @@
-#include <atomic>
+#include <array>
 #include <catch2/catch_test_macros.hpp>
-#include <charconv>
 #include <components/index/logical_value_binary_codec.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
-#include <fstream>
-#include <limits>
+#include <filesystem>
 #include <memory_resource>
-#include <mutex>
 #include <random>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
 #include <services/index/disk_hash_table.hpp>
 #include <set>
-#include <thread>
 #include <unordered_set>
 
 using components::types::logical_value_t;
@@ -40,25 +36,42 @@ namespace {
 
 } // namespace
 
-TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_stress", "[stress][long]") {
+// A LONG RANDOMIZED RUN AGAINST THE STORE, ON ONE THREAD.
+//
+// THE THREADS ARE GONE, AND THAT IS THE POINT. This used to drive
+// bitcask_index_disk_t from eight threads at once, because the store carried a
+// shared_mutex and could be driven that way. It cannot any more, and nothing in the
+// engine ever did: the store is a by-value member of bitcask_index_agent_t, reached only
+// through that agent's mailbox, which serializes every door it has. A multi-threaded
+// fixture over it would not be testing production, it would be testing a second
+// serialization domain that production does not have — and, after C6b, would simply be a
+// data race.
+//
+// What it always really tested survives whole, because none of it was about threads: a
+// long randomized insert/remove/find mixture over a small key space, the invariant that a
+// key's row list never contains a duplicate, and — the durable half — that closing and
+// re-opening the store answers exactly what it answered before.
+//
+// The CONCURRENT claim is made where it is now true: through the dispatcher, over the
+// agent's mailbox, by integration/cpp/test/test_index_concurrent_merge.cpp. That fixture
+// also drives enough traffic to rotate and merge segments repeatedly, which this one
+// deliberately does not (its segment limit is set high so the mixture, not the merger, is
+// what is under test).
+TEST_CASE("services::index::bitcask_index_disk::randomized_insert_remove_find_stress", "[stress][long]") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_concurrent_stress"};
+    std::filesystem::path path{"/tmp/index_disk/bitcask_randomized_stress"};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
     constexpr size_t key_count = 64;
-    constexpr size_t thread_count = 8;
-    constexpr size_t operations_per_thread = 40000;
-    static_assert(key_count % thread_count == 0);
-    constexpr size_t keys_per_thread = key_count / thread_count;
+    constexpr size_t worker_count = 8;
+    constexpr size_t operations_per_worker = 40000;
+    static_assert(key_count % worker_count == 0);
+    constexpr size_t keys_per_worker = key_count / worker_count;
 
-    std::atomic<size_t> find_count{0};
-    // Catch2's RunContext is not thread-safe — REQUIRE must not run on
-    // worker threads (TSAN flags the shared assertion counters/message
-    // scopes). Workers record violations here; the main thread REQUIREs
-    // zero after join.
-    std::atomic<size_t> duplicate_row_violations{0};
+    size_t find_count = 0;
+    size_t duplicate_row_violations = 0;
     std::array<std::unordered_set<size_t>, key_count> expected_after_stress;
 
     auto snapshot = [&](bitcask_index_disk_t& from) {
@@ -80,15 +93,17 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
 
     {
         auto index = bitcask_index_disk_t(path, &resource, 128, 10'000'000, std::pmr::set<std::uint64_t>{});
-        auto worker = [&](size_t worker_id) {
+        // The eight "workers" are kept as eight independent random streams over disjoint
+        // key ranges -- the same eight sequences the threaded version produced, run one
+        // after another instead of at the same time.
+        for (size_t worker_id = 0; worker_id < worker_count; ++worker_id) {
             std::mt19937_64 rng(0xB17CA5ULL + worker_id * 7919ULL);
-            const size_t key_begin = worker_id * keys_per_thread;
-            const size_t key_end = key_begin + keys_per_thread - 1;
-            std::uniform_int_distribution<size_t> key_dist(key_begin, key_end);
+            const size_t key_begin = worker_id * keys_per_worker;
+            std::uniform_int_distribution<size_t> key_dist(key_begin, key_begin + keys_per_worker - 1);
             std::uniform_int_distribution<size_t> row_dist(0, 1999);
             std::uniform_int_distribution<int> op_dist(0, 99);
 
-            for (size_t i = 0; i < operations_per_thread; ++i) {
+            for (size_t i = 0; i < operations_per_worker; ++i) {
                 const auto key = key_dist(rng);
                 const auto row = worker_id * 100000 + row_dist(rng);
                 const auto op = op_dist(rng);
@@ -107,25 +122,16 @@ TEST_CASE("services::index::bitcask_index_disk::concurrent_insert_remove_find_st
                             seen.insert(r);
                         }
                         if (seen.size() != rows.size()) {
-                            duplicate_row_violations.fetch_add(1, std::memory_order_relaxed);
+                            ++duplicate_row_violations;
                         }
                     }
-                    find_count.fetch_add(1, std::memory_order_relaxed);
+                    ++find_count;
                 }
             }
-        };
-
-        std::vector<std::thread> threads;
-        threads.reserve(thread_count);
-        for (size_t t = 0; t < thread_count; ++t) {
-            threads.emplace_back(worker, t);
-        }
-        for (auto& thread : threads) {
-            thread.join();
         }
 
-        REQUIRE(duplicate_row_violations.load(std::memory_order_relaxed) == 0);
-        REQUIRE(find_count.load(std::memory_order_relaxed) > 0);
+        REQUIRE(duplicate_row_violations == 0);
+        REQUIRE(find_count > 0);
         REQUIRE(index.force_flush().type == core::error_code_t::none);
         expected_after_stress = snapshot(index);
     }

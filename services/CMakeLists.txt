@@ -31,7 +31,6 @@ set(${PROJECT_NAME}_SOURCES
        dispatcher/validation/resolve_expression.cpp
 
     # index
-        index/bitcask_task_executor.cpp
         index/bitcask_index_disk.cpp
         index/disk_hash_table.cpp
         index/btree_index_disk.cpp

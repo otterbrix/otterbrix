@@ -61,15 +61,41 @@ namespace components::operators {
             co_return;
         }
 
-        // If indices weren't resolved at plan time, skip cascade.
-        for (auto idx : par_indices) {
-            if (idx == absent) {
-                mark_executed();
-                co_return;
+        // A CASCADE THAT CANNOT BE EVALUATED IS NOT A CASCADE WITH NO CHILDREN. Both
+        // legs below used to `mark_executed(); co_return;` — success — which lets the
+        // DELETE underneath this operator stand: the parent row goes and every child
+        // row that referenced it stays behind, pointing at nothing. Under RESTRICT it
+        // is worse still, because the whole purpose of the operator is to STOP that
+        // delete and it reports that nothing referenced the parent.
+        //
+        // `absent` (std::numeric_limits<std::size_t>::max(), fk_info_t's own marker)
+        // is written by enrich_logical_plan when a name in parent_col_names matches no
+        // column of the parent's resolved schema; an empty list means the constraint
+        // named no referenced column at all. Neither is a fact about the DATA — they
+        // are both "the key this cascade keys on was never resolved", and the reply to
+        // that is words, not a silent success.
+        for (std::size_t i = 0; i < par_indices.size(); ++i) {
+            if (par_indices[i] != absent) {
+                continue;
             }
+            std::pmr::string what{"FK constraint: referenced column ", resource_};
+            if (i < fk_.parent_col_names.size()) {
+                what.append("\"");
+                what.append(fk_.parent_col_names[i].c_str());
+                what.append("\" ");
+            }
+            what.append("has no resolved position in the parent row — the ON DELETE action cannot be evaluated");
+            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+            mark_failed();
+            co_return;
         }
         if (par_indices.empty()) {
-            mark_executed();
+            set_error(core::error_t{
+                core::error_code_t::invalid_constraint,
+                std::pmr::string{"FK constraint: no referenced columns resolved — the ON DELETE action "
+                                 "cannot be evaluated",
+                                 resource_}});
+            mark_failed();
             co_return;
         }
 
@@ -102,10 +128,41 @@ namespace components::operators {
         // The ids are also already the reader's OWN view: the semi-join streams the child table
         // under exec_ctx's transaction, so a child row this transaction has itself deleted earlier
         // in the statement is filtered out of the buckets and never reaches any action below.
+
+        // AND THE INDEX HAS TO BE A POSITION IN THE ROW IT ADDRESSES. `absent` and an
+        // empty list are checked above; this is the third way par_indices can fail to
+        // name a column — a number that is not a column of the matched parent rows.
+        // chunk.data is a std::pmr::vector and operator[] does not check its bound, so
+        // the reply to that was not a refusal but a read PAST THE END of the chunk's
+        // column array: a type, and then a whole vector_t, taken from whatever follows
+        // it in memory. The CHILD side of this same operator refuses the same shape
+        // ("the child row batch has N column(s), too few to hold referencing column at
+        // position P"); a guard standing on one side of a pair hides what happens on
+        // the other, so the parent side answers the same way.
+        auto refuse_narrow_parent = [&](std::size_t width, std::size_t pidx, std::size_t slot) {
+            std::pmr::string what{"FK constraint: the matched parent rows have ", resource_};
+            what.append(std::to_string(width).c_str());
+            what.append(" column(s), too few to hold referenced column ");
+            if (slot < fk_.parent_col_names.size()) {
+                what.append("\"");
+                what.append(fk_.parent_col_names[slot].c_str());
+                what.append("\" ");
+            }
+            what.append("at position ");
+            what.append(std::to_string(pidx).c_str());
+            what.append(" — the ON DELETE action cannot be evaluated");
+            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+            mark_failed();
+        };
+
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
         key_types.reserve(par_indices.size());
-        for (auto pidx : par_indices) {
-            key_types.push_back(in_chunks.front().data[pidx].type());
+        for (std::size_t j = 0; j < par_indices.size(); ++j) {
+            if (par_indices[j] >= in_chunks.front().column_count()) {
+                refuse_narrow_parent(in_chunks.front().column_count(), par_indices[j], j);
+                co_return;
+            }
+            key_types.push_back(in_chunks.front().data[par_indices[j]].type());
         }
         std::pmr::vector<std::pmr::vector<std::int64_t>> per_row_child_ids(resource_);
         for (const auto& chunk : in_chunks) {
@@ -114,6 +171,12 @@ namespace components::operators {
             }
             components::vector::data_chunk_t keys(resource_, key_types, chunk.size());
             for (std::size_t j = 0; j < par_indices.size(); ++j) {
+                // Per chunk, not once for the front one: every chunk in the snapshot is
+                // read at this index, so every chunk has to be wide enough to hold it.
+                if (par_indices[j] >= chunk.column_count()) {
+                    refuse_narrow_parent(chunk.column_count(), par_indices[j], j);
+                    co_return;
+                }
                 components::vector::vector_ops::copy(chunk.data[par_indices[j]], keys.data[j], chunk.size(), 0, 0);
             }
             keys.set_cardinality(chunk.size());
@@ -278,8 +341,28 @@ namespace components::operators {
                 // Apply the uniform per-column transform to every fetched row in every chunk.
                 for (std::size_t ci = 0; ci < fk_.child_col_schema_indices.size(); ++ci) {
                     const auto schema_idx = fk_.child_col_schema_indices[ci];
-                    if (schema_idx == absent)
-                        continue;
+                    // THE COLUMN THIS ACTION IS ABOUT. Skipping it left the child row in
+                    // place with its foreign key still pointing at the parent row this
+                    // statement just deleted — which is precisely the dangling reference
+                    // SET NULL / SET DEFAULT exists to prevent — and said nothing. The
+                    // marker is written by operator_resolve_constraint_t when the column's
+                    // position could not be resolved (it now refuses there, so this is the
+                    // floor under a constraint that arrived by another road).
+                    if (schema_idx == absent) {
+                        std::pmr::string what{"FK constraint: referencing column ", resource_};
+                        if (ci < fk_.child_col_names.size()) {
+                            what.append("\"");
+                            what.append(fk_.child_col_names[ci].c_str());
+                            what.append("\" ");
+                        }
+                        what.append(is_set_null ? "has no resolved position in the child table — it cannot be "
+                                                  "set to NULL"
+                                                : "has no resolved position in the child table — it cannot be "
+                                                  "set to its default");
+                        set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                        mark_failed();
+                        co_return;
+                    }
                     // SET DEFAULT: decode attdefspec once; NULL default → same as SET NULL.
                     // The decode is type-directed, and the column's stored type is right
                     // here in the fetched chunk.
@@ -303,8 +386,22 @@ namespace components::operators {
                         }
                     }
                     for (auto& chunk : fetched) {
-                        if (schema_idx >= chunk.column_count())
-                            continue;
+                        // The fetch was issued WITHOUT a projection, so every chunk is the
+                        // child table's full width and schema_idx is a position in it. A
+                        // chunk too narrow to hold the column is a reply of a shape this
+                        // operator did not ask for; writing the other chunks and leaving
+                        // this one's rows untouched would clear the reference on some child
+                        // rows and leave it dangling on the rest, in silence.
+                        if (schema_idx >= chunk.column_count()) {
+                            std::pmr::string what{"FK constraint: the child row batch has ", resource_};
+                            what.append(std::to_string(chunk.column_count()).c_str());
+                            what.append(" column(s), too few to hold referencing column at position ");
+                            what.append(std::to_string(schema_idx).c_str());
+                            what.append(" — the ON DELETE action cannot be applied");
+                            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                            mark_failed();
+                            co_return;
+                        }
                         for (uint64_t r = 0; r < chunk.size(); ++r) {
                             if (!is_set_null && default_val.has_value()) {
                                 chunk.set_value(schema_idx, r, *default_val);
@@ -372,8 +469,27 @@ namespace components::operators {
                 }
                 break;
             }
-            default:
-                break;
+            default: {
+                // AN ACTION THIS BUILD HAS NO MEANING FOR IS NOT "NO CHILDREN". Falling
+                // out of the switch performed no cascade, reported SUCCESS, and let the
+                // DELETE underneath this operator stand — so the parent row went and every
+                // child row that referenced it stayed behind pointing at nothing, which is
+                // the exact outcome the operator exists to prevent, produced by the
+                // operator itself. It is the same silence the `absent` legs above were
+                // just cleaned of, in the same statement.
+                //
+                // confdeltype is written from the five SQL actions only (both transformer
+                // routes normalize it), so a char outside {'a','r','c','n','d'} is a
+                // catalog this engine did not produce: another build, or a writer that
+                // lost the field. Refusing names it instead of enforcing nothing.
+                std::pmr::string what{"FK constraint: ON DELETE action '", resource_};
+                what.append(std::pmr::string(1, fk_.del_action, resource_));
+                what.append("' in pg_constraint.confdeltype is not one of the actions this build can apply "
+                            "— the cascade cannot be evaluated");
+                set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                mark_failed();
+                co_return;
+            }
         }
         mark_executed();
     }

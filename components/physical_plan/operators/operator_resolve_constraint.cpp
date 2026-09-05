@@ -83,9 +83,49 @@ namespace components::operators {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         for (auto& entry : node_->entries()) {
-            if (ctx->disk_address == actor_zeta::address_t::empty_address() || tables_node_ == nullptr ||
-                entry.target >= tables_node_->entries().size()) {
+            // TOPOLOGY, and only topology: no disk to ask, or no tables node to read the
+            // target out of. Both are shapes of the WORLD this operator runs in, and both
+            // mean there is nothing to gather rather than something gathered wrongly.
+            if (ctx->disk_address == actor_zeta::address_t::empty_address() || tables_node_ == nullptr) {
                 continue;
+            }
+            // A TARGET THAT IS NOT AN INDEX INTO THE TABLES NODE IS A CORRUPT PLAN, not a
+            // shape of the world — and it used to share the topology skip above, which is
+            // why it was silent. `target` is a position, and there is no legal way for it
+            // to be out of range:
+            //
+            //   * every constraint entry in this engine is born in ONE place
+            //     (register_catalog_resolve_table, components/sql/transformer/utils.cpp),
+            //     which sets target to the value node_catalog_resolve_t::add just returned
+            //     for the TABLE entry — always < entries().size();
+            //   * a resolve node's entries vector only ever GROWS (add() push_backs; there
+            //     is no erase / clear / resize anywhere), so an index valid when it was
+            //     minted stays valid;
+            //   * merge_catalog_resolves copies constraint entries verbatim without
+            //     rebasing target, but no view body can carry one — constraint entries are
+            //     registered by INSERT / UPDATE / DELETE / CREATE TABLE / ALTER TABLE only,
+            //     never by a SELECT, and DML on a view is refused before expansion;
+            //   * resolve_entry_t is never serialized, so nothing reconstructs a target.
+            //
+            // So the default, no_target, is NEVER a legitimate marker on a constraint
+            // entry: it means the entry was built by something that did not name its
+            // table. Skipping it leaves fks / check_exprs / unique_constraints /
+            // pk_columns EMPTY all at once, which is indistinguishable from "this table
+            // declares no constraints" — enrich stamps nothing, the planner splices no
+            // constraint operator, and EVERY key, foreign key and CHECK on the table stops
+            // existing while the statement reports success. Same consequence as the
+            // unresolved-oid entry below, same answer.
+            if (entry.target >= tables_node_->entries().size()) {
+                std::string msg = "constraint resolution: entry names table #";
+                msg += entry.target == components::logical_plan::resolve_entry_t::no_target
+                           ? std::string{"(none)"}
+                           : std::to_string(entry.target);
+                msg += " of ";
+                msg += std::to_string(tables_node_->entries().size());
+                msg += " resolved — the constraints it was to gather cannot be read";
+                set_error(core::error_t{core::error_code_t::physical_plan_error,
+                                        std::pmr::string{std::move(msg), resource_}});
+                co_return;
             }
             // The entry's table comes from the tables node; the fixed resolve order
             // (tables before constraints) guarantees its table_md is stamped.
@@ -199,8 +239,40 @@ namespace components::operators {
             std::pmr::vector<pending_unique_t> pending_uniques(resource_);
 
             for (auto& con_chunk : con_batches) {
-                if (con_chunk.column_count() <= catalog::pg_constraint_col::confupdtype) {
-                    continue;
+                // A CHUNK NARROWER THAN pg_constraint'S SCHEMA IS A DIFFERENT ANSWER, NOT A
+                // MISS. The read above was issued with an EMPTY projection, which
+                // read_chunks_by_key_inner documents as "all columns", so the reply's width
+                // is the width of the pg_constraint STORAGE the disk agent holds. A narrow
+                // one therefore says the storage is not the schema this build compiles
+                // against — a catalog written by an older build, or a misrouted read — and
+                // every column from `conexpr` leftward is being read at an ordinal that
+                // means something else.
+                //
+                // THE THRESHOLD IS THE LARGEST ORDINAL READ BELOW, and that is `conexpr`
+                // (10), not `confupdtype` (9). Guarding on confupdtype admitted a chunk
+                // exactly 10 wide and then read conexpr out of it — data_chunk_t::is_null
+                // and get_value index `data` (a std::pmr::vector) with no bounds check, so
+                // the reply was not a refusal but a read PAST THE END of the column array,
+                // and the message announced a width the build does not in fact read to.
+                //
+                // Dropping the chunk had the same consequence as the corrupt target above,
+                // and for the same reason: the rows in it are the table's ENTIRE constraint
+                // set for this direction, so the entry ends up with empty fks /
+                // check_exprs / unique_constraints / pk_columns, which reads as "this table
+                // declares no constraints". The declared keys stop existing and the
+                // statement reports success. What the engine cannot read it must not
+                // pretend it read.
+                if (con_chunk.column_count() <= catalog::pg_constraint_col::conexpr) {
+                    std::string msg = "constraint resolution: pg_constraint answered with ";
+                    msg += std::to_string(con_chunk.column_count());
+                    msg += " column(s), fewer than the ";
+                    msg += std::to_string(static_cast<std::size_t>(catalog::pg_constraint_col::conexpr) + 1);
+                    msg += " this build reads — the constraints of table \"";
+                    msg += target_md->name;
+                    msg += "\" cannot be decoded";
+                    set_error(core::error_t{core::error_code_t::schema_error,
+                                            std::pmr::string{std::move(msg), resource_}});
+                    co_return;
                 }
                 for (uint64_t ci = 0; ci < con_chunk.size(); ++ci) {
                     // A ROW WHOSE contype CANNOT BE READ IS A CONSTRAINT OF UNKNOWN
@@ -249,19 +321,24 @@ namespace components::operators {
                                 con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::conrelid, ci));
                             fk.parent_table_oid = table_oid;
                         }
-                        fk.matchtype =
-                            con_chunk.is_null(catalog::pg_constraint_col::confmatchtype, ci)
-                                ? 's'
-                                : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confmatchtype,
-                                                                        ci)[0];
-                        fk.del_action =
-                            con_chunk.is_null(catalog::pg_constraint_col::confdeltype, ci)
-                                ? 'a'
-                                : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confdeltype, ci)[0];
-                        fk.upd_action =
-                            con_chunk.is_null(catalog::pg_constraint_col::confupdtype, ci)
-                                ? 'a'
-                                : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confupdtype, ci)[0];
+                        // The three one-char FK code columns. `[0]` was read straight off
+                        // the cell, which is a read PAST THE END of the string_view when
+                        // the cell is non-null and EMPTY — the same defect as a guard
+                        // narrower than the read it covers, one field over. Unlike
+                        // `contype`, these three carry a documented default when they say
+                        // nothing (system_table_schemas.cpp: 's' SIMPLE, 'a' NO ACTION,
+                        // written only for FK rows), so an absent value IS a value here and
+                        // only the out-of-range read has to go.
+                        auto code_or = [&](std::uint64_t col, char fallback) {
+                            if (con_chunk.is_null(col, ci)) {
+                                return fallback;
+                            }
+                            const std::string_view cell = con_chunk.get_value<std::string_view>(col, ci);
+                            return cell.empty() ? fallback : cell[0];
+                        };
+                        fk.matchtype = code_or(catalog::pg_constraint_col::confmatchtype, 's');
+                        fk.del_action = code_or(catalog::pg_constraint_col::confdeltype, 'a');
+                        fk.upd_action = code_or(catalog::pg_constraint_col::confupdtype, 'a');
 
                         bool conkey_ok = true;
                         bool confkey_ok = true;
@@ -287,18 +364,54 @@ namespace components::operators {
 
                         pending_fks.push_back(std::move(pending));
                     } else if (contype == 'c' && direction == direction_t::outgoing) {
-                        if (con_chunk.is_null(catalog::pg_constraint_col::conexpr, ci)) {
-                            continue;
-                        }
-                        const auto conexpr_sv =
-                            con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conexpr, ci);
-                        if (conexpr_sv.empty()) {
-                            continue;
-                        }
+                        const std::string_view conexpr_sv =
+                            con_chunk.is_null(catalog::pg_constraint_col::conexpr, ci)
+                                ? std::string_view{}
+                                : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conexpr, ci);
                         std::string name;
                         if (!con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
                             name = std::string(
                                 con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
+                        }
+                        // A CHECK WITH NOTHING TO CHECK IS NOT A TABLE WITHOUT A CHECK.
+                        // Both shapes — conexpr NULL and conexpr empty — used to `continue`,
+                        // and the row left the constraint set without a word: check_exprs
+                        // stayed empty, the planner spliced no operator_check_constraint,
+                        // and the table went back to taking every row while the statement
+                        // reported success. That is the same silence the unreadable
+                        // `contype` two branches up is refused for, with the same argument:
+                        // the engine knows a CHECK was declared and cannot know what it
+                        // says, so it can neither enforce it nor dismiss it. Two identical
+                        // cases must not be answered in opposite ways in one function.
+                        //
+                        // build_create_constraint_writes writes conexpr only `if (is_check
+                        // && !check_expr.empty())`, so an expressionless CHECK row is
+                        // exactly what a writer that lost the expression leaves behind.
+                        // Both live SQL routes now refuse it at the declaration
+                        // (transform_table for the inline form, executor_t for ALTER TABLE
+                        // ADD CONSTRAINT), so what reaches here is a catalog written before
+                        // those gates — which is what this floor is for.
+                        if (conexpr_sv.empty()) {
+                            // Named the way the two FK legs name theirs: by conname, and by
+                            // oid when the constraint was written without one. An oid cell
+                            // that is itself NULL is reported as such rather than read.
+                            std::string msg = "CHECK constraint \"";
+                            if (!name.empty()) {
+                                msg += name;
+                            } else if (con_chunk.is_null(catalog::pg_constraint_col::oid, ci)) {
+                                msg += "oid unreadable";
+                            } else {
+                                msg += "oid ";
+                                msg += std::to_string(static_cast<catalog::oid_t>(
+                                    con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci)));
+                            }
+                            msg += "\" on table \"";
+                            msg += target_md->name;
+                            msg += "\" has no expression in pg_constraint.conexpr — it cannot be enforced or "
+                                   "dismissed";
+                            set_error(core::error_t{core::error_code_t::schema_error,
+                                                    std::pmr::string{std::move(msg), resource_}});
+                            co_return;
                         }
                         check_exprs.emplace_back(std::move(name), std::string(conexpr_sv));
                     } else if ((contype == 'u' || contype == 'p') && direction == direction_t::outgoing) {
@@ -448,7 +561,17 @@ namespace components::operators {
                         names.reserve(child_attoids.size());
                         for (const auto& wanted_oid : child_attoids) {
                             for (auto& attr_chunk : child_attr) {
-                                if (attr_chunk.column_count() <= catalog::pg_attribute_col::attname) {
+                                // WIDE ENOUGH FOR THE TOMBSTONE FILTER, not just for the
+                                // name. attribute_row_is_dropped reads attisdropped (7),
+                                // the widest ordinal this loop reaches; guarding on
+                                // attname (2) let a chunk of width 3..7 through, and the
+                                // filter then answered "not dropped" for every row because
+                                // it could not see the column — silently binding the
+                                // constraint to a column DROP COLUMN had already removed
+                                // (a soft delete keeps attname AND attoid), to fail one
+                                // layer down as "keyed read: table has no column <name>".
+                                // Too narrow to filter is too narrow to read.
+                                if (attr_chunk.column_count() <= catalog::pg_attribute_col::attisdropped) {
                                     continue;
                                 }
                                 bool found = false;
@@ -505,7 +628,14 @@ namespace components::operators {
                         };
                         std::vector<row_meta_t> ordered;
                         for (auto& attr_chunk : child_attr) {
-                            if (attr_chunk.column_count() <= catalog::pg_attribute_col::attisdropped) {
+                            // attdefspec (9) is the widest ordinal read below, so it is the
+                            // threshold. On attisdropped (7) a chunk of width 8 or 9 passed
+                            // and the attdefspec read below was skipped by its own inner
+                            // width test — leaving the default spec EMPTY, which
+                            // operator_fk_cascade_t reads as "this column has no default"
+                            // and applies SET NULL where the constraint says SET DEFAULT.
+                            // A silent substitution of one referential action for another.
+                            if (attr_chunk.column_count() <= catalog::pg_attribute_col::attdefspec) {
                                 continue;
                             }
                             for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
@@ -522,8 +652,9 @@ namespace components::operators {
                                     attr_chunk.is_null(catalog::pg_attribute_col::attnum, ai)
                                         ? 0
                                         : attr_chunk.get_value<std::int32_t>(catalog::pg_attribute_col::attnum, ai);
-                                if (attr_chunk.column_count() > catalog::pg_attribute_col::attdefspec &&
-                                    !attr_chunk.is_null(catalog::pg_attribute_col::attdefspec, ai)) {
+                                // The width is guaranteed by the guard on the chunk above;
+                                // only the NULL cell (a column with no default) is left.
+                                if (!attr_chunk.is_null(catalog::pg_attribute_col::attdefspec, ai)) {
                                     row.attdefspec.assign(
                                         attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attdefspec,
                                                                                ai));
@@ -544,6 +675,28 @@ namespace components::operators {
                                     break;
                                 }
                             }
+                            // THIS IS WHERE `absent` WAS BORN. The name came out of the very
+                            // rows `ordered` was built from, so failing to find it again means
+                            // the two passes disagreed about the chunk — the name loop skips a
+                            // chunk narrower than `attname`, this one skips a chunk narrower
+                            // than `attisdropped`, so a reply of the wrong width contributes a
+                            // NAME and no POSITION. The max() this pushed then travelled all
+                            // the way to operator_fk_cascade_t, whose SET NULL / SET DEFAULT
+                            // branch skipped the column: the parent row went, the child row
+                            // stayed, and the column that was supposed to be cleared kept
+                            // pointing at a row that no longer exists. A position that could
+                            // not be resolved is refused where it is discovered, and named.
+                            if (pos == std::numeric_limits<std::size_t>::max()) {
+                                std::string msg = "foreign key constraint \"";
+                                msg += describe_constraint();
+                                msg += "\": referencing column \"";
+                                msg += col_name;
+                                msg += "\" has no position in the child table's schema — its "
+                                       "ON DELETE action cannot be applied";
+                                set_error(core::error_t{core::error_code_t::schema_error,
+                                                        std::pmr::string{std::move(msg), resource_}});
+                                co_return;
+                            }
                             fk.child_col_schema_indices.push_back(pos);
                             fk.child_col_default_specs.push_back(std::move(def_spec));
                         }
@@ -554,7 +707,17 @@ namespace components::operators {
                         names.reserve(parent_attoids.size());
                         for (const auto& wanted_oid : parent_attoids) {
                             for (auto& attr_chunk : parent_attr) {
-                                if (attr_chunk.column_count() <= catalog::pg_attribute_col::attname) {
+                                // WIDE ENOUGH FOR THE TOMBSTONE FILTER, not just for the
+                                // name. attribute_row_is_dropped reads attisdropped (7),
+                                // the widest ordinal this loop reaches; guarding on
+                                // attname (2) let a chunk of width 3..7 through, and the
+                                // filter then answered "not dropped" for every row because
+                                // it could not see the column — silently binding the
+                                // constraint to a column DROP COLUMN had already removed
+                                // (a soft delete keeps attname AND attoid), to fail one
+                                // layer down as "keyed read: table has no column <name>".
+                                // Too narrow to filter is too narrow to read.
+                                if (attr_chunk.column_count() <= catalog::pg_attribute_col::attisdropped) {
                                     continue;
                                 }
                                 bool found = false;
@@ -617,35 +780,76 @@ namespace components::operators {
                             co_return;
                         }
                         auto& cls_batches = cls_batches_r.value();
-                        if (!cls_batches.empty() && cls_batches[0].size() != 0 &&
-                            cls_batches[0].column_count() > catalog::pg_class_col::relname) {
-                            fk.child_collection_name = std::string(
-                                cls_batches[0].get_value<std::string_view>(catalog::pg_class_col::relname, 0));
-                            fk.child_database = "";
-                            const auto ns_oid = static_cast<catalog::oid_t>(
-                                cls_batches[0].get_value<std::uint32_t>(catalog::pg_class_col::relnamespace, 0));
-                            std::pmr::vector<std::uint64_t> ns_keys(resource_);
-                            ns_keys.emplace_back(catalog::pg_namespace_col::oid);
-                            auto [_ns, fut_ns] =
-                                actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::read_chunks_by_key,
-                                                 exec_ctx,
-                                                 kPgNamespace,
-                                                 std::move(ns_keys),
-                                                 components::operators::make_key_chunk(resource_, ns_oid),
-                                                 std::pmr::vector<std::uint64_t>{resource_});
-                            auto ns_batches_r = co_await std::move(fut_ns);
-                            if (ns_batches_r.has_error()) {
-                                set_error(ns_batches_r.error());
-                                co_return;
-                            }
-                            auto& ns_batches = ns_batches_r.value();
-                            if (!ns_batches.empty() && ns_batches[0].size() != 0 &&
-                                ns_batches[0].column_count() > catalog::pg_namespace_col::nspname) {
-                                fk.child_schema = std::string(
-                                    ns_batches[0].get_value<std::string_view>(catalog::pg_namespace_col::nspname, 0));
-                            }
+                        // A READ THAT ANSWERED NOTHING IS NOT A NAME. The `if` this used to
+                        // be had no `else` at all: when the pg_class row for the FK's CHILD
+                        // did not come back — no chunk, an empty chunk, or one narrower than
+                        // the ordinal being read — child_collection_name and child_schema
+                        // were LEFT EMPTY and the FK was pushed anyway, so the DELETE went on
+                        // to cascade against a child relation the catalog does not describe.
+                        // conrelid is the identity operator_fk_cascade_t scans by, and it is
+                        // exactly what this read is checking exists; DROP TABLE removes a
+                        // table's pg_constraint rows by BOTH conrelid and confrelid
+                        // (operator_dynamic_cascade_delete), so a live FK row whose child has
+                        // no pg_class row is a corrupt catalog and never a topology. Refusing
+                        // is the difference between "the parent could not be deleted, here is
+                        // why" and "the parent is gone and its children are orphans".
+                        // The width tested is the widest ordinal read below —
+                        // relnamespace (2), which the namespace hop keys on — and not
+                        // relname (1). On relname a chunk exactly 2 wide passed the guard
+                        // and relnamespace was then read past the end of the column array
+                        // (get_value indexes `data` unchecked), so the FK's schema came out
+                        // of whatever followed the chunk in memory.
+                        if (cls_batches.empty() || cls_batches[0].size() == 0 ||
+                            cls_batches[0].column_count() <= catalog::pg_class_col::relnamespace) {
+                            std::string msg = "foreign key constraint \"";
+                            msg += describe_constraint();
+                            msg += "\": the referencing table (oid ";
+                            msg += std::to_string(fk.child_table_oid);
+                            msg += ") has no readable pg_class row — the cascade it governs cannot be evaluated";
+                            set_error(core::error_t{core::error_code_t::schema_error,
+                                                    std::pmr::string{std::move(msg), resource_}});
+                            co_return;
                         }
+                        fk.child_collection_name = std::string(
+                            cls_batches[0].get_value<std::string_view>(catalog::pg_class_col::relname, 0));
+                        fk.child_database = "";
+                        const auto ns_oid = static_cast<catalog::oid_t>(
+                            cls_batches[0].get_value<std::uint32_t>(catalog::pg_class_col::relnamespace, 0));
+                        std::pmr::vector<std::uint64_t> ns_keys(resource_);
+                        ns_keys.emplace_back(catalog::pg_namespace_col::oid);
+                        auto [_ns, fut_ns] =
+                            actor_zeta::send(ctx->disk_address,
+                                             &services::disk::manager_disk_t::read_chunks_by_key,
+                                             exec_ctx,
+                                             kPgNamespace,
+                                             std::move(ns_keys),
+                                             components::operators::make_key_chunk(resource_, ns_oid),
+                                             std::pmr::vector<std::uint64_t>{resource_});
+                        auto ns_batches_r = co_await std::move(fut_ns);
+                        if (ns_batches_r.has_error()) {
+                            set_error(ns_batches_r.error());
+                            co_return;
+                        }
+                        auto& ns_batches = ns_batches_r.value();
+                        // Same read, same silence, one hop further down: the namespace
+                        // oid came OUT of the pg_class row just read, so a namespace that
+                        // does not answer is a broken edge inside the catalog and not a
+                        // relation the user might have dropped.
+                        if (ns_batches.empty() || ns_batches[0].size() == 0 ||
+                            ns_batches[0].column_count() <= catalog::pg_namespace_col::nspname) {
+                            std::string msg = "foreign key constraint \"";
+                            msg += describe_constraint();
+                            msg += "\": the referencing table \"";
+                            msg += fk.child_collection_name;
+                            msg += "\" names namespace oid ";
+                            msg += std::to_string(ns_oid);
+                            msg += ", which has no readable pg_namespace row";
+                            set_error(core::error_t{core::error_code_t::schema_error,
+                                                    std::pmr::string{std::move(msg), resource_}});
+                            co_return;
+                        }
+                        fk.child_schema = std::string(
+                            ns_batches[0].get_value<std::string_view>(catalog::pg_namespace_col::nspname, 0));
                     }
 
                     // UNCONDITIONAL. The gate that used to stand here — push only if
@@ -722,7 +926,11 @@ namespace components::operators {
                     names.reserve(attoids.size());
                     for (const auto& wanted_oid : attoids) {
                         for (auto& attr_chunk : attr_batches) {
-                            if (attr_chunk.column_count() <= catalog::pg_attribute_col::attname) {
+                            // Same width as the two FK name loops, for the same reason:
+                            // attribute_row_is_dropped below reads attisdropped (7), so a
+                            // chunk that stops short of it cannot filter tombstones and
+                            // would bind the key to a dropped column in silence.
+                            if (attr_chunk.column_count() <= catalog::pg_attribute_col::attisdropped) {
                                 continue;
                             }
                             bool found = false;

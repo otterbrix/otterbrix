@@ -67,6 +67,10 @@ set( ${PROJECT_NAME}_SOURCES
         test_fk_default_column.cpp
         test_check_expr_unenforceable.cpp
         test_inline_constraints.cpp
+        test_constraint_entry_lost_target.cpp
+        test_check_row_without_expression.cpp
+        test_fk_cascade_unknown_action.cpp
+        test_fk_cascade_parent_index_width.cpp
         test_constraint_unresolvable_target.cpp
         test_declared_key_conkey_loss.cpp
         test_resolve_constraint_unresolved_table.cpp

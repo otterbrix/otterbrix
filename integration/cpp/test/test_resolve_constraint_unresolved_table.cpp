@@ -57,7 +57,11 @@ namespace {
         logical_plan::node_catalog_resolve_ptr constraints;
     };
 
-    resolve_pair_t make_pair(std::pmr::memory_resource* resource, bool stamp_table_md, catalog::oid_t table_oid) {
+    resolve_pair_t make_pair(std::pmr::memory_resource* resource,
+                             bool stamp_table_md,
+                             catalog::oid_t table_oid,
+                             std::size_t override_target = 0,
+                             bool use_override = false) {
         resolve_pair_t pair{
             logical_plan::make_node_catalog_resolve(resource, logical_plan::resolve_kind::table),
             logical_plan::make_node_catalog_resolve(resource, logical_plan::resolve_kind::constraint)};
@@ -74,7 +78,7 @@ namespace {
         const auto target = pair.tables->add(std::move(table_entry));
 
         logical_plan::resolve_entry_t constraint_entry;
-        constraint_entry.target = target;
+        constraint_entry.target = use_override ? override_target : target;
         constraint_entry.direction = logical_plan::resolve_direction::outgoing;
         pair.constraints->add(std::move(constraint_entry));
         return pair;
@@ -128,4 +132,58 @@ TEST_CASE("resolve constraint: a table that was not found is not an error", "[re
     const bool errored = run_resolve(&resource, pair, &err);
     INFO("error: " << err);
     REQUIRE_FALSE(errored);
+}
+
+// ===========================================================================
+// AND A TARGET THAT IS NOT AN INDEX AT ALL IS THE SAME DEFECT ONE STEP EARLIER.
+//
+// `entry.target >= tables_node_->entries().size()` shared a `continue` with the
+// two TOPOLOGY facts on the same line — an empty disk address and a null tables
+// node — and it is not one of them. Those two are shapes of the world this
+// operator runs in; an index outside the tables node is a CORRUPT PLAN, and the
+// form of the world has nothing to do with it.
+//
+// resolve_entry_t::no_target (size_t(-1)) is the DEFAULT, so an entry nobody
+// filled in lands here. It is never a legitimate marker on a constraint entry:
+//
+//   * every constraint entry in this engine is created in one place,
+//     register_catalog_resolve_table (components/sql/transformer/utils.cpp),
+//     which sets target from the value node_catalog_resolve_t::add just returned
+//     for the TABLE entry — by construction < entries().size();
+//   * entries() only ever grows (add() push_backs; no erase / clear / resize
+//     exists anywhere), so a valid index cannot go stale;
+//   * merge_catalog_resolves copies constraint entries without rebasing target,
+//     but no view body can carry one: constraint entries come only from INSERT /
+//     UPDATE / DELETE / CREATE TABLE / ALTER TABLE, never from a SELECT;
+//   * resolve_entry_t is never serialized, so nothing reconstructs a target.
+//
+// The consequence of the skip is the WIDEST in this operator: fks, check_exprs,
+// unique_constraints and pk_columns are all left empty at once, which is exactly
+// what "this table declares no constraints" looks like.
+// ===========================================================================
+
+TEST_CASE("resolve constraint: an entry whose target is not an index is refused", "[resolve_constraint]") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    INFO("the default target — an entry that never named its table");
+    {
+        auto pair = make_pair(&resource,
+                              /*stamp_table_md=*/true,
+                              /*table_oid=*/42,
+                              logical_plan::resolve_entry_t::no_target,
+                              /*use_override=*/true);
+        std::string err;
+        REQUIRE(run_resolve(&resource, pair, &err));
+        INFO("error: " << err);
+        REQUIRE(err.find("table") != std::string::npos);
+    }
+
+    INFO("and an index past the end of the tables node — one entry, target 1");
+    {
+        auto pair = make_pair(&resource, /*stamp_table_md=*/true, /*table_oid=*/42, 1, /*use_override=*/true);
+        std::string err;
+        REQUIRE(run_resolve(&resource, pair, &err));
+        INFO("error: " << err);
+        REQUIRE(err.find("table") != std::string::npos);
+    }
 }

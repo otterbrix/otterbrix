@@ -60,21 +60,45 @@ namespace components::sql::transform {
                                std::make_move_iterator(table_level.end()));
         }
 
-        // B1a: every table is disk-backed; the WITH (storage = ...) option is gone.
-        // A user writing it believes it still selects a storage mode, so refuse it
-        // loudly (rule 6) instead of silently handing back a disk table.
+        // WITH (...) — NOT ONE OPTION IN THIS LIST IS IMPLEMENTED, so every one of
+        // them has to be refused, not just the one that used to be.
+        //
+        // B1a: every table is disk-backed, so `storage` is gone and keeps its own
+        // sentence. But this loop only ever LOOKED at `storage`: every other name —
+        // `fillfactor`, `autovacuum_enabled`, a typo of `storage`, anything the user
+        // invented — fell out of the bottom and the CREATE TABLE proceeded as if the
+        // clause had not been written. That is the same silence rule 6 exists to
+        // forbid: the user wrote a directive, we acknowledged the statement, and the
+        // directive had no effect anywhere. A misspelt `storag = 'memory'` was the
+        // worst shape of it — the user believed they had selected a storage mode AND
+        // got no refusal, which is precisely what the `storage` refusal above was
+        // added to prevent.
+        //
+        // An option with no defname cannot be named back to the user, but it is still
+        // an option this engine does not implement, so it is refused too rather than
+        // skipped.
+        // `storage` is looked for across the WHOLE list before anything else is
+        // refused, so the specific sentence wins wherever the user wrote it:
+        // `WITH (fillfactor = 1, storage = 'memory')` must still explain storage
+        // rather than stop at the first name it happens to meet.
         if (node.options) {
             for (auto data : node.options->lst) {
                 auto def = pg_ptr_cast<DefElem>(data.data);
-                if (!def->defname)
-                    continue;
-                if (std::string_view(def->defname) == "storage") {
+                if (def->defname && std::string_view(def->defname) == "storage") {
                     return core::error_t(
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"the WITH (storage = ...) option has been removed: "
                                          "tables are always disk-backed",
                                          resource_});
                 }
+            }
+            for (auto data : node.options->lst) {
+                auto def = pg_ptr_cast<DefElem>(data.data);
+                const std::string_view name = def->defname ? std::string_view(def->defname) : std::string_view{};
+                std::pmr::string msg{"CREATE TABLE ... WITH (", resource_};
+                msg.append(name.empty() ? std::string_view{"<unnamed option>"} : name);
+                msg.append(" = ...) is not implemented; no table was created");
+                return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
             }
         }
 
@@ -254,22 +278,21 @@ namespace components::sql::transform {
                         return wrap_one(database, collection, std::move(n));
                     }
                     case database_schema_table: {
+                        // The schema part is not modelled; SKIP the cell rather than
+                        // materialise a std::string only to (void)-cast it (rule 14).
                         auto it = drop_name.begin();
                         std::string database = strVal(it++->data);
-                        std::string /*schema*/ _ = strVal(it++->data);
+                        ++it; // schema
                         std::string collection = strVal(it->data);
-                        (void) _;
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::collection);
                         return wrap_one(database, collection, std::move(n));
                     }
                     case uuid_database_schema_table: {
                         auto it = drop_name.begin();
-                        std::string /*uuid*/ _u = strVal(it++->data);
+                        ++it; // uuid
                         std::string database = strVal(it++->data);
-                        std::string /*schema*/ _s = strVal(it++->data);
+                        ++it; // schema
                         std::string collection = strVal(it->data);
-                        (void) _u;
-                        (void) _s;
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::collection);
                         return wrap_one(database, collection, std::move(n));
                     }
@@ -313,24 +336,23 @@ namespace components::sql::transform {
                         return wrap_index(database, collection, name, std::move(n));
                     }
                     case database_schema_table: {
+                        // Unmodelled name parts are SKIPPED, not bound to a variable that
+                        // then needs a (void)-cast to stay quiet (rule 14).
                         auto it = drop_name.begin();
                         std::string database = strVal(it++->data);
-                        std::string /*schema*/ _ = strVal(it++->data);
+                        ++it; // schema
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
-                        (void) _;
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
                         return wrap_index(database, collection, name, std::move(n));
                     }
                     case uuid_database_schema_table: {
                         auto it = drop_name.begin();
-                        std::string /*uuid*/ _u = strVal(it++->data);
+                        ++it; // uuid
                         std::string database = strVal(it++->data);
-                        std::string /*schema*/ _s = strVal(it++->data);
+                        ++it; // schema
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
-                        (void) _u;
-                        (void) _s;
                         auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
                         return wrap_index(database, collection, name, std::move(n));
                     }

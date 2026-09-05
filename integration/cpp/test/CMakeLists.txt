@@ -101,6 +101,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_unique_constraint_operator.cpp
         test_create_index_backfill_batched.cpp
         test_create_index_catchup_refusal.cpp
+        test_create_index_backfill_addressing.cpp
+        test_index_stale_marker_crash.cpp
         test_correctness_bugs.cpp
         test_order_by_expressions.cpp
         test_order_by_nulls.cpp
@@ -171,6 +173,10 @@ set( ${PROJECT_NAME}_SOURCES
         test_pushed_reduce_scan_lateral.cpp
         test_jsonb_support.cpp
         test_select_intermediate.cpp
+        test_create_table_duplicate.cpp
+        test_create_table_with_options.cpp
+        test_drop_index_repeat.cpp
+        test_drop_restrict_deptype.cpp
 
         # TODO: casts for dynamic schema
         # stress tests with sanitizer are incredibly slow

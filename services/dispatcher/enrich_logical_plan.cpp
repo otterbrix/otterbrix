@@ -318,7 +318,31 @@ namespace services::catalog_resolve {
                 }
                 case node_type::create_collection_t: {
                     const auto* d = static_cast<const node_create_collection_t*>(node);
-                    return {d->dbname(), {}, {}};
+                    // THE NAME BEING CREATED IS A TARGET. Returning an empty relname
+                    // here made register_plan_targets skip it (its `if (relname.empty())
+                    // continue`), so the plan carried NO table demand for the relation
+                    // it was about to create — and the duplicate check that already
+                    // exists downstream (services/collection/executor.cpp, the
+                    // create_collection_t arm: check_collection_exists → either the
+                    // if_not_exists no-op or table_already_exists) reads ONLY the plan's
+                    // resolved entries. With nothing registered it always answered "does
+                    // not exist", so a second `CREATE TABLE t` wrote a SECOND pg_class
+                    // row under the same (relname, relnamespace) and reported success,
+                    // in one session and across processes alike. Two rows then made
+                    // `t` ambiguous: operator_resolve_table binds whichever the scan
+                    // reaches first, while the new storage was created under the other
+                    // oid.
+                    //
+                    // The asymmetry this leaves behind is the proof it is the right
+                    // place: an inline constraint hangs a create_constraint_t child off
+                    // this node, and THAT node's target_names_of does name the table —
+                    // so `CREATE TABLE t (id bigint PRIMARY KEY)` was already refused on
+                    // the second run while `CREATE TABLE t (id bigint)` was not.
+                    //
+                    // A miss on this demand is the NORMAL case (the name is free) and
+                    // refuses nothing — the same contract CREATE INDEX's name probe
+                    // relies on (components/sql/transformer/impl/transform_index.cpp:93-101).
+                    return {d->dbname(), d->relname(), {}};
                 }
                 case node_type::create_sequence_t: {
                     const auto* d = static_cast<const node_create_sequence_t*>(node);

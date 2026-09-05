@@ -3,14 +3,84 @@
 
 #include <components/configuration/configuration.hpp>
 #include <integration/cpp/otterbrix.hpp>
+#include <system_error>
 
 namespace otterbrix {
 
+    namespace {
+
+        // What an otterbrix database leaves behind in its base directory. Both names
+        // come from components/configuration/configuration.hpp: config_log puts the
+        // logger under `<base>/log`, and config_wal / config_disk BOTH put their
+        // trees under `<base>/wal` (the disk tree deliberately shares the WAL's
+        // directory — see the comment on config_disk). Seeing either one is what
+        // separates "a database of ours" from "somebody's folder".
+        //
+        // `log` counts on purpose: base_otterbrix_t opens the logger before anything
+        // else, so a run that died during bootstrap leaves `log` alone. Refusing to
+        // reopen that would strand the very directory the engine itself created.
+        bool looks_like_otterbrix_database(const std::filesystem::path& path) {
+            std::error_code ec;
+            if (std::filesystem::exists(path / "wal", ec)) {
+                return true;
+            }
+            return std::filesystem::exists(path / "log", ec);
+        }
+
+        bool directory_is_empty(const std::filesystem::path& path) {
+            std::error_code ec;
+            const bool empty = std::filesystem::is_empty(path, ec);
+            return !ec && empty;
+        }
+
+        // There is no engine resource to borrow here: the space is what this
+        // function is about to build. new_delete_resource() is the standing
+        // stand-in — never std::pmr::get_default_resource() (rule 14).
+        core::error_t path_error(core::error_code_t code, const std::string& what) {
+            return core::error_t{code, std::pmr::string{what, std::pmr::new_delete_resource()}};
+        }
+
+    } // namespace
+
     std::shared_ptr<python_import_cache_t> connection_environment_t::import_cache_ = nullptr;
 
-    boost::intrusive_ptr<otterbrix_t> connection_environment_t::make_space(const std::filesystem::path& path) {
-        std::filesystem::remove_all(path);
-        std::filesystem::create_directory(path);
+    core::result_wrapper_t<boost::intrusive_ptr<otterbrix_t>>
+    connection_environment_t::make_space(const std::filesystem::path& path) {
+        // Opening a database OPENS it. This used to be
+        //     std::filesystem::remove_all(path);
+        //     std::filesystem::create_directory(path);
+        // so `otterbrix.connect("/my/db")` destroyed /my/db before running a single
+        // statement — the user lost the database by connecting to it. Nothing asks
+        // for that: every Python test in integration/python/tests that wants a clean
+        // slate calls shutil.rmtree itself before opening. Wiping stays the caller's
+        // explicit act; it is not a side effect of a constructor.
+        //
+        // `status` reports "absent" through the returned type, not through `ec`
+        // (libc++ still fills `ec` with ENOENT in that case), so the not_found
+        // branch is taken FIRST and only a genuine stat failure is an io error.
+        std::error_code ec;
+        const auto status = std::filesystem::status(path, ec);
+        if (status.type() == std::filesystem::file_type::not_found) {
+            ec.clear();
+            std::filesystem::create_directories(path, ec);
+            if (ec) {
+                return path_error(core::error_code_t::io_error,
+                                  "cannot create database directory '" + path.string() + "': " + ec.message());
+            }
+        } else if (ec) {
+            return path_error(core::error_code_t::io_error,
+                              "cannot inspect '" + path.string() + "': " + ec.message());
+        } else if (!std::filesystem::is_directory(status)) {
+            return path_error(core::error_code_t::invalid_parameter,
+                              "'" + path.string() + "' exists and is not a directory");
+        } else if (!directory_is_empty(path) && !looks_like_otterbrix_database(path)) {
+            // Rule 6: a directory holding somebody else's files is a loud refusal,
+            // not something to delete and replace with a fresh database.
+            return path_error(core::error_code_t::invalid_parameter,
+                              "'" + path.string() +
+                                  "' is not empty and does not hold an otterbrix database; refusing to open it");
+        }
+
         return make_otterbrix(configuration::config::create_config(path));
     }
 

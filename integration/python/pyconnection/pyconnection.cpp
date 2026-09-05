@@ -23,12 +23,26 @@ namespace otterbrix {
     default_connection_holder_t::default_connection_holder_t() = default;
     default_connection_holder_t::~default_connection_holder_t() = default;
 
+    namespace {
+        // The single place where make_space's error channel meets Python's.
+        // Python has exactly one way to say "this failed" — an exception — so the
+        // engine's own message is carried into a RuntimeError verbatim rather than
+        // swallowed. Same shape list_tables uses below.
+        boost::intrusive_ptr<otterbrix_t> open_space_or_raise(const std::filesystem::path& path) {
+            auto space = connection_environment_t::make_space(path);
+            if (space.has_error()) {
+                const auto& err = space.error();
+                throw std::runtime_error("connect: " + std::string(err.what.begin(), err.what.end()));
+            }
+            return std::move(space.value());
+        }
+    } // namespace
+
     pyconnection_ptr default_connection_holder_t::get() {
         std::lock_guard<std::mutex> guard(l);
         if (!connection) {
             auto default_path = std::filesystem::absolute(connection_environment_t::DEFAULT_FOLDER);
-            auto space = connection_environment_t::make_space(default_path);
-            connection = std::make_shared<py_connection_t>(space);
+            connection = std::make_shared<py_connection_t>(open_space_or_raise(default_path));
         }
         return connection;
     }
@@ -93,8 +107,23 @@ namespace otterbrix {
         : expression_factory_t(space)
         , relation_factory_t(space)
         , space(space) {
+        // `tmp` is the scratch database relation_factory_t materialises DataFrame
+        // aggregates into. IF NOT EXISTS, because make_space no longer wipes the
+        // directory: on the second connect to the same database `tmp` is already
+        // there, and that is the normal case, not a failure. Anything else IS a
+        // failure and is raised — a connection whose scratch database is missing
+        // cannot serve from_df at all, and reporting success would only move the
+        // error to a later, less obvious statement.
         auto session = otterbrix::session_id_t();
-        space->dispatcher()->execute_sql(session, "CREATE DATABASE tmp;");
+        auto cursor = space->dispatcher()->execute_sql(session, "CREATE DATABASE IF NOT EXISTS tmp;");
+        if (!cursor) {
+            throw std::runtime_error("connect: creating the scratch database 'tmp' returned no cursor");
+        }
+        if (cursor->is_error()) {
+            const auto& err = cursor->get_error();
+            throw std::runtime_error("connect: creating the scratch database 'tmp' failed: " +
+                                     std::string(err.what.begin(), err.what.end()));
+        }
     }
 
     py_connection_t::py_connection_t(const py_connection_t& other)
@@ -104,13 +133,28 @@ namespace otterbrix {
         , space(other.space) {}
 
     pyconnection_ptr
-    py_connection_t::connect(const py::object& database_p, bool /*read_only*/, const py::dict& /*config_options*/) {
+    py_connection_t::connect(const py::object& database_p, bool read_only, const py::dict& config_options) {
         std::string db_str;
         if (py::isinstance<py::str>(database_p)) {
             db_str = py::str(database_p);
         } else {
             throw std::runtime_error("Please provide either a str or a pathlib.Path");
         }
+
+        // Rule 6. Both of these are advertised in integration/python/main.cpp's
+        // `connect` binding and neither is wired to anything, so accepting them
+        // told the caller their request had been honoured when it had not:
+        // `read_only=True` handed back a fully writable connection, and every key
+        // of `config` went into the bin. Until they are implemented, asking for
+        // them is refused out loud instead of silently ignored.
+        if (read_only) {
+            throw std::runtime_error("connect: read_only=True is not implemented; the connection would be writable");
+        }
+        if (!config_options.empty()) {
+            throw std::runtime_error("connect: config options are not implemented and would be ignored; "
+                                     "pass no config");
+        }
+
         std::filesystem::path path = db_str;
         if (path.is_relative()) {
             path = std::filesystem::absolute(path);
@@ -120,8 +164,7 @@ namespace otterbrix {
         if (db_str == connection_environment_t::DEFAULT_FOLDER) {
             con = default_connection_.get();
         } else {
-            auto space = connection_environment_t::make_space(path);
-            con = std::make_shared<py_connection_t>(space);
+            con = std::make_shared<py_connection_t>(open_space_or_raise(path));
         }
 
         return con;

@@ -263,6 +263,7 @@ benchmarks/bench_run.log
 /log/
 /wal/
 test_collection_*/
+test_connect_persistence_*/
 integration/python/**/log/
 integration/python/**/wal/
 /integration/python/.coverage

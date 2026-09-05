@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <string_view>
 
+#include <core/result_wrapper.hpp>
 #include <integration/cpp/otterbrix.hpp>
 
 namespace otterbrix {
@@ -23,7 +24,15 @@ namespace otterbrix {
     public:
         static constexpr std::string_view DEFAULT_FOLDER = "default";
 
-        static boost::intrusive_ptr<otterbrix_t>
+        // OPENS the database at `path`, creating it only when nothing is there.
+        // It does not erase what it finds — it used to, and that made connecting
+        // to an existing database destroy it.
+        //
+        // Refuses, via the error channel rather than an exception (rule 2), when
+        // `path` is a non-directory or a non-empty directory that is not an
+        // otterbrix database (rule 6). Callers at the pybind edge translate the
+        // error into a Python exception; nothing else calls this.
+        static core::result_wrapper_t<boost::intrusive_ptr<otterbrix_t>>
         make_space(const std::filesystem::path& path = std::filesystem::current_path() / DEFAULT_FOLDER);
 
         static void cleanup();

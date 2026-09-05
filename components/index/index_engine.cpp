@@ -41,10 +41,6 @@ namespace components::index {
         return ptr->matching(address);
     }
 
-    auto search_index(const index_engine_ptr& ptr, const std::string& name) -> index_t::pointer {
-        return ptr->matching(name);
-    }
-
     auto make_index_engine(std::pmr::memory_resource* resource) -> index_engine_ptr {
         auto size = sizeof(index_engine_t);
         auto align = alignof(index_engine_t);
@@ -92,7 +88,7 @@ namespace components::index {
         , mapper_(resource)
         , index_to_mapper_(resource)
         , index_to_address_(resource)
-        , index_to_name_(resource)
+        , relid_to_index_(resource)
         , storage_(resource) {}
 
     auto index_engine_t::add_index(const keys_base_storage_t& keys, index_ptr index) -> uint32_t {
@@ -101,7 +97,7 @@ namespace components::index {
         mapper_.emplace(keys, d->get());
         auto new_id = index_to_mapper_.size();
         index_to_mapper_.emplace(new_id, d->get());
-        index_to_name_.emplace(d->get()->name(), d->get());
+        relid_to_index_.emplace(d->get()->oid(), d->get());
         return uint32_t(new_id);
     }
 
@@ -114,7 +110,7 @@ namespace components::index {
         if (index->is_disk()) {
             index_to_address_.erase(index->disk_agent());
         }
-        index_to_name_.erase(index->name());
+        relid_to_index_.erase(index->oid());
         //index_to_mapper_.erase(index.id); //todo
         mapper_.erase(index->keys_);
         storage_.erase(std::remove_if(storage_.begin(), storage_.end(), equal), storage_.end());
@@ -151,15 +147,15 @@ namespace components::index {
         return nullptr;
     }
 
-    auto index_engine_t::matching(const std::string& name) -> index_t::pointer {
-        auto it = index_to_name_.find(name);
-        if (it != index_to_name_.end()) {
+    auto index_engine_t::matching_relid(catalog::oid_t relid) -> index_t::pointer {
+        auto it = relid_to_index_.find(relid);
+        if (it != relid_to_index_.end()) {
             return it->second;
         }
         return nullptr;
     }
 
-    auto index_engine_t::has_index(const std::string& name) -> bool { return matching(name) == nullptr ? false : true; }
+    auto index_engine_t::has_index(catalog::oid_t relid) -> bool { return matching_relid(relid) != nullptr; }
 
     index_engine_t::chunk_key_binding_t index_engine_t::bind_chunk(const vector::data_chunk_t& chunk) const {
         chunk_key_binding_t binding(resource_);
@@ -256,11 +252,11 @@ namespace components::index {
         return result;
     }
 
-    auto index_engine_t::indexes() -> std::vector<std::string> {
-        std::vector<std::string> res;
+    auto index_engine_t::indexes() -> std::pmr::vector<catalog::oid_t> {
+        std::pmr::vector<catalog::oid_t> res(resource_);
         res.reserve(storage_.size());
         for (const auto& index : storage_) {
-            res.emplace_back(index->name());
+            res.emplace_back(index->oid());
         }
         return res;
     }

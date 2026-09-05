@@ -20,7 +20,6 @@
 namespace services::index {
 
     using session_id_t = components::session::session_id_t;
-    using index_name_t = std::string;
     using transaction_data = components::table::transaction_data;
     using execution_context_t = components::execution_context_t;
 
@@ -73,28 +72,34 @@ namespace services::index {
         // just-compacted storage.
         unique_future<std::pmr::vector<components::catalog::oid_t>> all_indexed_oids(session_id_t session);
 
-        // Repopulate one table's indexes from a post-compact storage chunk.
+        // Repopulate one table's indexes from a post-compact storage scan.
         // (a) clears each disk-backed index's on-disk backing via the agent
         //     clear() fan-out (covers btree duplicate-growth and disk_hash
         //     wrong-row), (b) clears the in-memory engine, (c) re-inserts every
-        //     row with storage_row = i (0-based post-compact ids) under
-        //     txn_id=0 (committed-for-everyone, no commit needed). row_count==0
-        //     is valid: clear still runs, nothing re-inserted.
-        unique_future<void> repopulate_table(session_id_t session,
-                                             components::catalog::oid_t table_oid,
-                                             std::pmr::vector<components::vector::data_chunk_t> chunks,
-                                             uint64_t row_count,
-                                             core::date::timezone_offset_t session_tz);
+        //     row keyed by its PHYSICAL id from chunk.row_ids (the
+        //     visibility-filtered scan compacts positions, not ids — a
+        //     tombstone surviving a refused compact leaves gaps) under txn_id=0
+        //     (committed-for-everyone, no commit needed). Empty chunks are
+        //     valid: clear still runs, nothing re-inserted. Returns an error —
+        //     before any clearing — when a non-empty chunk carries no physical
+        //     row_ids (a producer defect; positional numbering is never used).
+        unique_future<core::error_t> repopulate_table(session_id_t session,
+                                                      components::catalog::oid_t table_oid,
+                                                      std::pmr::vector<components::vector::data_chunk_t> chunks,
+                                                      uint64_t row_count,
+                                                      core::date::timezone_offset_t session_tz);
 
-        // DDL: index management
+        // DDL: index management. index_oid = pg_index.indexrelid — the index's
+        // ONLY identity below the planner boundary (rule 16); the name is
+        // resolved to it exactly once, at plan time.
         unique_future<core::result_wrapper_t<uint32_t>> create_index(session_id_t session,
                                              components::catalog::oid_t table_oid,
-                                             index_name_t index_name,
+                                             components::catalog::oid_t index_oid,
                                              components::index::keys_base_storage_t keys,
                                              components::logical_plan::index_type type,
                                              core::date::timezone_offset_t session_tz);
         unique_future<void>
-        drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
+        drop_index(session_id_t session, components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
 
         // Query (txn-aware)
         unique_future<std::pmr::vector<int64_t>> search(session_id_t session,

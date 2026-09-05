@@ -16,6 +16,55 @@ namespace components::index::codec {
     using logical_type_t = components::types::logical_type;
     using physical_type_t = components::types::physical_type;
 
+    // THE index key-type list — the single authority on which logical key types an index can
+    // carry. The CREATE INDEX gate (services/dispatcher/validate_logical_plan.cpp,
+    // node_type::create_index_t) refuses every other type with index_create_fail BEFORE the
+    // statement executes, so no unrepresentable key ever reaches an encoder from user data.
+    // That gate is what makes every `default:` arm in this file — and in the ordered probe
+    // encoder services::index::convert() (services/index/btree_index_disk.cpp) and its decode
+    // mirror reverse_convert() (services/index/manager_index.cpp) — unreachable from user
+    // data, which is why those arms are hard assert+abort. When adding a type, extend the
+    // encoder switches FIRST and this function LAST; the other order re-opens the hole this
+    // gate closed.
+    //
+    // `ordered` picks the encoder family the index kind uses:
+    //   * ordered (b+tree) keys additionally round-trip through physical_value —
+    //     services::index::convert() encodes probes and read_logical_value_as_view() decodes
+    //     stored keys for in-tree comparison. physical_value carries no DECIMAL tag
+    //     (width/scale would be lost), so DECIMAL is refused for ordered indexes;
+    //   * hashed (bitcask / disk-hash) keys use only the logical codec below, which
+    //     round-trips DECIMAL via append_decimal_payload, so hashed indexes accept it.
+    //
+    // DATE / TIME / TIMESTAMP / TIMESTAMP_TZ are physically INT32/INT64 raw counters; both
+    // encoder families order and equal-compare them exactly like the column does.
+    // Refused (both kinds): HUGEINT/UHUGEINT/UUID (16-byte payloads the codec has no arm
+    // for), INTERVAL/TIME_TZ (physically STRUCT), BLOB/BIT, and every nested type.
+    inline constexpr bool is_representable_index_key_type(logical_type_t type, bool ordered) {
+        switch (type) {
+            case logical_type_t::BOOLEAN:
+            case logical_type_t::TINYINT:
+            case logical_type_t::UTINYINT:
+            case logical_type_t::SMALLINT:
+            case logical_type_t::USMALLINT:
+            case logical_type_t::INTEGER:
+            case logical_type_t::UINTEGER:
+            case logical_type_t::BIGINT:
+            case logical_type_t::UBIGINT:
+            case logical_type_t::FLOAT:
+            case logical_type_t::DOUBLE:
+            case logical_type_t::STRING_LITERAL:
+            case logical_type_t::DATE:
+            case logical_type_t::TIME:
+            case logical_type_t::TIMESTAMP:
+            case logical_type_t::TIMESTAMP_TZ:
+                return true;
+            case logical_type_t::DECIMAL:
+                return !ordered;
+            default:
+                return false;
+        }
+    }
+
     template<typename T>
     inline void append_le(std::pmr::string& out, T v) {
         unsigned char bytes[sizeof(T)];

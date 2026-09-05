@@ -3,9 +3,9 @@
 namespace components::index {
 
     hash_single_field_index_t::hash_single_field_index_t(std::pmr::memory_resource* resource,
-                                                         std::string name,
+                                                         catalog::oid_t oid,
                                                          const keys_base_storage_t& keys)
-        : index_t(resource, logical_plan::index_type::hashed, std::move(name), keys)
+        : index_t(resource, logical_plan::index_type::hashed, oid, keys)
         , storage_(resource) {}
 
     hash_single_field_index_t::~hash_single_field_index_t() = default;

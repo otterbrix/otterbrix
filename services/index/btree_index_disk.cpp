@@ -40,11 +40,31 @@ namespace services::index {
                 return components::types::physical_value(value.value<double>());
             case logical_type::STRING_LITERAL:
                 return components::types::physical_value(*value.value<std::string*>());
+            // The temporal types are raw counters physically: DATE an INT32 day count, the
+            // other three INT64 microsecond counts. Encoding the counter gives physical_value
+            // exactly the column's ordering, and read_logical_value_as_view decodes the stored
+            // keys to the same INT32/INT64, so tree comparison, probes and bounds all agree.
+            case logical_type::DATE:
+                return components::types::physical_value(value.value<int32_t>());
+            case logical_type::TIME:
+            case logical_type::TIMESTAMP:
+            case logical_type::TIMESTAMP_TZ:
+                return components::types::physical_value(value.value<int64_t>());
             case logical_type::NA:
                 return components::types::physical_value();
             default:
-                assert(false && "unsupported type");
-                return components::types::physical_value();
+                // Unreachable from user data: CREATE INDEX refuses every key type this switch
+                // does not carry (is_representable_index_key_type in
+                // components/index/logical_value_binary_codec.hpp — the ONE authoritative
+                // list) with index_create_fail before any row reaches an encoder. A key
+                // arriving here is a gate/encoder drift bug, and the old `return NA` answer
+                // was worse than a crash: under NDEBUG it collapsed every key of the column
+                // to one NA value and served wrong rows. Die loudly instead.
+                // NDEBUG coverage gap, stated plainly: the main suite builds Debug+DEV_MODE,
+                // where the assert aborts first — the std::abort() below (and the silent-NA
+                // behaviour it replaces) is NOT exercised by any test.
+                assert(false && "services::index::convert: key type not representable in physical_value");
+                std::abort();
         }
     }
 

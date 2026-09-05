@@ -69,11 +69,11 @@ namespace components::index {
 
     index_t::index_t(std::pmr::memory_resource* resource,
                      components::logical_plan::index_type type,
-                     std::string name,
+                     catalog::oid_t oid,
                      const keys_base_storage_t& keys)
         : resource_(resource)
         , type_(type)
-        , name_(std::move(name))
+        , oid_(oid)
         , keys_(keys) {
         assert(resource != nullptr);
     }
@@ -152,7 +152,7 @@ namespace components::index {
 
     logical_plan::index_type index_t::type() const noexcept { return type_; }
 
-    const std::string& index_t::name() const noexcept { return name_; }
+    catalog::oid_t index_t::oid() const noexcept { return oid_; }
 
     bool index_t::is_disk() const noexcept { return disk_agent_ != actor_zeta::address_t::empty_address(); }
 

@@ -96,7 +96,10 @@ namespace components::index {
         auto keys() -> std::pair<keys_base_storage_t::iterator, keys_base_storage_t::iterator>;
         std::pmr::memory_resource* resource() const noexcept;
         index_type type() const noexcept;
-        const std::string& name() const noexcept;
+        // pg_index.indexrelid — the index's ONLY identity below the planner
+        // boundary (rule 16). The human-readable name lives in pg_class and is
+        // resolved to this oid exactly once, at plan time.
+        catalog::oid_t oid() const noexcept;
 
         bool is_disk() const noexcept;
         const actor_zeta::address_t& disk_agent() const noexcept;
@@ -147,7 +150,7 @@ namespace components::index {
     protected:
         index_t(std::pmr::memory_resource* resource,
                 index_type type,
-                std::string name,
+                catalog::oid_t oid,
                 const keys_base_storage_t& keys);
 
         virtual void insert_impl(value_t, index_value_t, core::date::timezone_offset_t local_timezone) = 0;
@@ -179,7 +182,7 @@ namespace components::index {
     private:
         std::pmr::memory_resource* resource_;
         index_type type_;
-        std::string name_;
+        catalog::oid_t oid_;
         keys_base_storage_t keys_;
         actor_zeta::address_t disk_agent_{actor_zeta::address_t::empty_address()};
         actor_zeta::address_t disk_manager_{actor_zeta::address_t::empty_address()};

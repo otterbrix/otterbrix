@@ -11,7 +11,7 @@ using key = components::expressions::key_t;
 
 TEST_CASE("single_field_index:base") {
     auto resource = core::pmr::otterbrix_resource();
-    single_field_index_t index(&resource, "single_count", {key(&resource, "count")});
+    single_field_index_t index(&resource, 402u, {key(&resource, "count")});
 
     // Insert row indices with corresponding values
     // Values: 0, 1, 10, 5, 6, 2, 8, 13
@@ -105,7 +105,7 @@ TEST_CASE("single_field_index:base") {
 TEST_CASE("single_field_index:engine") {
     auto resource = core::pmr::otterbrix_resource();
     auto index_engine = make_index_engine(&resource);
-    auto id = make_index<single_field_index_t>(index_engine, "single_count", {key(&resource, "count")});
+    auto id = make_index<single_field_index_t>(index_engine, 401u, {key(&resource, "count")});
 
     // Get the index and insert values directly
     auto* idx = search_index(index_engine, id);

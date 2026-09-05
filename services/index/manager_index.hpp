@@ -36,10 +36,6 @@ namespace services::index {
     void reset_index_repopulations() noexcept;
 #endif
 
-    // INDEXES_METADATA_FILENAME retired. Index metadata lives in
-    // pg_catalog.pg_index now; this constant is kept as a comment so anyone reading
-    // legacy data dirs can still recognize the filename.
-
     // Bootstrap address bundle for sync() (plain named struct — no std::tuple,
     // mirrors services::wal::wal_sync_pack_t and manager_disk_t::disk_sync_pack_t).
     // Namespace-scope (not nested) so callers/tests use
@@ -121,11 +117,12 @@ namespace services::index {
         // Empty in-memory index_engine_t per live table oid from the catalog scan.
         void bootstrap_engine_sync(components::catalog::oid_t oid);
 
-        // Register one existing on-disk index (per alive pg_index row). The
-        // owning disk-agent pointer is passed in (spawn stays in base_spaces);
-        // its address is wired into engines_[oid] + disk_agents_per_oid_.
+        // Register one existing on-disk index (per alive pg_index row, keyed by
+        // its indexrelid). The owning disk-agent pointer is passed in (spawn
+        // stays in base_spaces); its address is wired into engines_[oid] +
+        // disk_agents_per_oid_.
         void bootstrap_index_sync(components::catalog::oid_t table_oid,
-                                  std::pmr::string name,
+                                  components::catalog::oid_t index_oid,
                                   components::logical_plan::index_type type,
                                   components::index::keys_base_storage_t keys,
                                   actor_zeta::address_t disk_agent_addr,
@@ -142,10 +139,14 @@ namespace services::index {
         // lookups return stale row_ids that no longer map to live rows. The
         // on-disk btree is deliberately left untouched — its stale entries are
         // harmless (collection_t::fetch skips out-of-bounds row_ids) and DML
-        // refreshes it over time.
-        void bootstrap_repopulate_sync(components::catalog::oid_t table_oid,
-                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
-                                       uint64_t row_count);
+        // refreshes it over time. Entries are keyed by the physical row ids in
+        // chunk.row_ids (the visibility-filtered scan compacts positions, not
+        // ids); a non-empty chunk without them is a producer defect returned as
+        // an error, before any engine state is touched.
+        [[nodiscard]] core::error_t
+        bootstrap_repopulate_sync(components::catalog::oid_t table_oid,
+                                  std::pmr::vector<components::vector::data_chunk_t> chunks,
+                                  uint64_t row_count);
 
         // Collection lifecycle
         unique_future<void> register_collection(session_id_t session, components::catalog::oid_t table_oid);
@@ -191,14 +192,16 @@ namespace services::index {
         // whose engine holds >= 1 index, EXCLUDING oids in dropped_table_agents_.
         unique_future<std::pmr::vector<components::catalog::oid_t>> all_indexed_oids(session_id_t session);
 
-        // Repopulate one table's indexes from a post-compact storage chunk: disk
+        // Repopulate one table's indexes from a post-compact storage scan: disk
         // agent clear() fan-out, in-memory engine clear, then txn_id=0 re-insert
-        // of every row (storage_row = i). See index_contract for details.
-        unique_future<void> repopulate_table(session_id_t session,
-                                             components::catalog::oid_t table_oid,
-                                             std::pmr::vector<components::vector::data_chunk_t> chunks,
-                                             uint64_t row_count,
-                                             core::date::timezone_offset_t session_tz);
+        // of every row keyed by its physical id from chunk.row_ids. Returns an
+        // error (before any clearing) when a non-empty chunk carries no physical
+        // row_ids — a producer defect. See index_contract for details.
+        unique_future<core::error_t> repopulate_table(session_id_t session,
+                                                      components::catalog::oid_t table_oid,
+                                                      std::pmr::vector<components::vector::data_chunk_t> chunks,
+                                                      uint64_t row_count,
+                                                      core::date::timezone_offset_t session_tz);
 
         // DDL: index management
         // Returns the new index id, or a core::error_t when the index cannot be
@@ -207,12 +210,12 @@ namespace services::index {
         // downgraded to an in-memory one.
         unique_future<core::result_wrapper_t<uint32_t>> create_index(session_id_t session,
                                              components::catalog::oid_t table_oid,
-                                             index_name_t index_name,
+                                             components::catalog::oid_t index_oid,
                                              components::index::keys_base_storage_t keys,
                                              components::logical_plan::index_type type,
                                              core::date::timezone_offset_t session_tz);
         unique_future<void>
-        drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name);
+        drop_index(session_id_t session, components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
 
         // Query (txn-aware)
         unique_future<std::pmr::vector<int64_t>> search(session_id_t session,

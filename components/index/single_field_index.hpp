@@ -16,7 +16,7 @@ namespace components::index {
         using storage_t = core::pmr::btree::multi_btree_t<value_t, index_value_t, comparator_t>;
         using const_iterator = storage_t::const_iterator;
 
-        single_field_index_t(std::pmr::memory_resource*, std::string name, const keys_base_storage_t&);
+        single_field_index_t(std::pmr::memory_resource*, catalog::oid_t oid, const keys_base_storage_t&);
         ~single_field_index_t() override;
 
     private:

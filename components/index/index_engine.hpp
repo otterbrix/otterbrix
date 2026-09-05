@@ -36,9 +36,11 @@ namespace components::index {
         auto matching(const keys_base_storage_t& query) -> index_t::pointer;
         auto matching(const keys_base_storage_t& query, index_type type) -> index_t::pointer;
         auto matching(const actor_zeta::address_t& address) -> index_t::pointer;
-        auto matching(const std::string& name) -> index_t::pointer;
-        auto has_index(const std::string& name)
-            -> bool; // TODO figure out how to make it faster (not using matching inside)
+        // Lookup by pg_index.indexrelid — the index's only identity below the
+        // planner (rule 16). Named (not an overload of matching) because
+        // catalog::oid_t and id_index are both uint32_t.
+        auto matching_relid(catalog::oid_t relid) -> index_t::pointer;
+        auto has_index(catalog::oid_t relid) -> bool;
         auto add_index(const keys_base_storage_t&, index_ptr) -> uint32_t;
         auto add_disk_agent(id_index id, actor_zeta::address_t address) -> void;
         auto drop_index(index_t::pointer index) -> void;
@@ -74,7 +76,8 @@ namespace components::index {
         void revert_delete(uint64_t txn_id);
         void cleanup_versions(uint64_t lowest_active);
 
-        auto indexes() -> std::vector<std::string>;
+        // indexrelids of every index in engine iteration order.
+        auto indexes() -> std::pmr::vector<catalog::oid_t>;
         auto all_indexed_keys() const -> std::pmr::vector<keys_base_storage_t>;
         auto all_indexed_descriptions() const -> std::pmr::vector<index_description_t>;
 
@@ -110,13 +113,13 @@ namespace components::index {
         using keys_to_doc_t = std::pmr::map<keys_base_storage_t, index_t::pointer, comparator_t>;
         using index_to_doc_t = std::pmr::unordered_map<id_index, index_t::pointer>;
         using index_to_address_t = std::pmr::map<actor_zeta::address_t, index_t::pointer>;
-        using index_to_name_t = std::pmr::unordered_map<std::string, index_t::pointer>;
+        using relid_to_index_t = std::pmr::unordered_map<catalog::oid_t, index_t::pointer>;
 
         std::pmr::memory_resource* resource_;
         keys_to_doc_t mapper_;
         index_to_doc_t index_to_mapper_;
         index_to_address_t index_to_address_;
-        index_to_name_t index_to_name_;
+        relid_to_index_t relid_to_index_;
         base_storage storage_;
     };
 
@@ -126,14 +129,13 @@ namespace components::index {
     auto search_index(const index_engine_ptr& ptr, id_index id) -> index_t::pointer;
     auto search_index(const index_engine_ptr& ptr, const keys_base_storage_t& query) -> index_t::pointer;
     auto search_index(const index_engine_ptr& ptr, const actor_zeta::address_t& address) -> index_t::pointer;
-    auto search_index(const index_engine_ptr& ptr, const std::string& name) -> index_t::pointer;
 
     template<class Target, class... Args>
-    auto make_index(index_engine_ptr& ptr, std::string name, const keys_base_storage_t& keys, Args&&... args)
+    auto make_index(index_engine_ptr& ptr, catalog::oid_t relid, const keys_base_storage_t& keys, Args&&... args)
         -> uint32_t {
         return ptr->add_index(keys,
                               core::pmr::make_polymorphic_unique<Target>(ptr->resource(),
-                                                                         std::move(name),
+                                                                         relid,
                                                                          keys,
                                                                          std::forward<Args>(args)...));
     }

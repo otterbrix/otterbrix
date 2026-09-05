@@ -23,11 +23,14 @@ namespace {
         on_disk
     };
 
+    // Indexes are oid-identified; `name` only labels the scratch file on disk.
+    constexpr components::catalog::oid_t test_index_oid = 501u;
+
     std::unique_ptr<index_t>
     make_hash_index(std::pmr::memory_resource* resource, const std::string& name, hash_index_mode mode) {
         if (mode == hash_index_mode::in_memory) {
             return std::make_unique<hash_single_field_index_t>(resource,
-                                                               name,
+                                                               test_index_oid,
                                                                keys_base_storage_t{key(resource, "count")});
         }
         const auto base = std::filesystem::path("/tmp/index_disk/components_hash_tests");
@@ -36,7 +39,7 @@ namespace {
         std::filesystem::remove(file);
         return std::make_unique<disk_hash_single_field_index_t>(
             resource,
-            name,
+            test_index_oid,
             keys_base_storage_t{key(resource, "count")},
             boost::intrusive_ptr(
                 new services::index::disk_hash_table_t(file,
@@ -102,7 +105,7 @@ namespace {
         auto index_engine = make_index_engine(&resource);
         uint32_t id = INDEX_ID_UNDEFINED;
         if (mode == hash_index_mode::in_memory) {
-            id = make_index<hash_single_field_index_t>(index_engine, "hash_count", {key(&resource, "count")});
+            id = make_index<hash_single_field_index_t>(index_engine, 201u, {key(&resource, "count")});
         } else {
             const auto base = std::filesystem::path("/tmp/index_disk/components_hash_engine_tests");
             std::filesystem::create_directories(base);
@@ -110,7 +113,7 @@ namespace {
             std::filesystem::remove(file);
             id =
                 make_index<disk_hash_single_field_index_t>(index_engine,
-                                                           "hash_count",
+                                                           201u,
                                                            {key(&resource, "count")},
                                                            boost::intrusive_ptr(new services::index::disk_hash_table_t(
                                                                file,
@@ -281,7 +284,7 @@ TEST_CASE("disk_single_field_index:find_reads_disk_and_normalizes_integer_keys")
                                                &resource));
     auto* table_raw = table.get();
     auto index = std::make_unique<disk_hash_single_field_index_t>(&resource,
-                                                                  "hash_count_disk_normalize",
+                                                                  502u,
                                                                   keys_base_storage_t{key(&resource, "count")},
                                                                   std::move(table));
 

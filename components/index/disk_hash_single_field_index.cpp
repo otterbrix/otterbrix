@@ -6,10 +6,10 @@
 namespace components::index {
 
     disk_hash_single_field_index_t::disk_hash_single_field_index_t(std::pmr::memory_resource* resource,
-                                                                   std::string name,
+                                                                   catalog::oid_t oid,
                                                                    const keys_base_storage_t& keys,
                                                                    disk_hash_storage_ptr storage)
-        : index_t(resource, logical_plan::index_type::hashed, std::move(name), keys)
+        : index_t(resource, logical_plan::index_type::hashed, oid, keys)
         , disk_table_(std::move(storage))
         , scratch_results_(resource)
         , pending_inserts_(resource)

@@ -26,7 +26,6 @@
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
-#include <core/btree/btree.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -34,8 +33,6 @@
 #include <set>
 
 namespace services::index {
-
-    using index_name_t = std::string;
 
     // Owns its bitcask + btree state exclusively; callers reach it only via
     // mailbox sends to its address (no shared mutable state across the actor
@@ -56,10 +53,13 @@ namespace services::index {
         // forwarded to the bitcask index txn-log recover gate (M1.1). Fresh,
         // post-bootstrap agents pass an EMPTY set (a fresh dir has no txn-log to
         // gate). The btree / disk_hash branches ignore it (no txn log).
+        //
+        // index_oid = pg_index.indexrelid; the agent's on-disk directory is
+        // ${path_db}/${table_oid}/${index_oid}/ — oid-keyed, never name-keyed.
         index_agent_disk_t(std::pmr::memory_resource* resource,
                            const path_t& path_db,
                            components::catalog::oid_t table_oid,
-                           const index_name_t& index_name,
+                           components::catalog::oid_t index_oid,
                            components::logical_plan::index_type type,
                            uint64_t bitcask_flush_threshold,
                            uint64_t bitcask_segment_record_limit,
@@ -106,6 +106,5 @@ namespace services::index {
     };
 
     using index_agent_disk_ptr = std::unique_ptr<index_agent_disk_t, actor_zeta::pmr::deleter_t>;
-    using index_agent_disk_storage_t = core::pmr::btree::btree_t<index_name_t, index_agent_disk_ptr>;
 
 } //namespace services::index

@@ -22,7 +22,7 @@ namespace components::index {
         using storage_t = std::pmr::unordered_multimap<value_t, index_value_t, value_hash_t, value_equal_t>;
         using const_iterator = storage_t::const_iterator;
 
-        hash_single_field_index_t(std::pmr::memory_resource*, std::string name, const keys_base_storage_t&);
+        hash_single_field_index_t(std::pmr::memory_resource*, catalog::oid_t oid, const keys_base_storage_t&);
         ~hash_single_field_index_t() override;
 
     private:

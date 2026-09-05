@@ -44,8 +44,45 @@ namespace {
         return core::error_t::no_error();
     }
 
+    // Rebuild feeds (bootstrap_repopulate_sync / repopulate_table) key every
+    // re-inserted entry by the PHYSICAL row id the scan stamped into
+    // chunk.row_ids — a visibility-filtered scan compacts POSITIONS, not ids,
+    // so counting positions would shift every entry after a surviving
+    // tombstone. A non-empty chunk without a readable FLAT row_ids buffer is
+    // therefore a PRODUCER defect: fail loudly (rule 6), never guess and never
+    // fall back to positional numbering.
+    [[nodiscard]] core::error_t
+    check_rebuild_chunks_have_row_ids(const std::pmr::vector<components::vector::data_chunk_t>& chunks,
+                                      std::pmr::memory_resource* resource) {
+        for (const auto& chunk : chunks) {
+            if (chunk.size() == 0) {
+                continue;
+            }
+            if (chunk.row_ids.data() == nullptr ||
+                chunk.row_ids.get_vector_type() != components::vector::vector_type::FLAT) {
+                return core::error_t{
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"index rebuild received a scan chunk without physical row_ids", resource}};
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    // Rehydrate decode: the b+tree hands stored keys back as physical_value (via
+    // item_key_getter), which carries only the PHYSICAL type — the logical tag was erased.
+    // A DATE key therefore comes back as INT32 and re-enters the in-memory index as
+    // INTEGER (TIME/TIMESTAMP/TIMESTAMP_TZ as BIGINT). That is deliberate, not a gap this
+    // switch could close: the raw counters order and equal-compare identically, and
+    // single_field_index_t casts every later probe into its locked key domain, so lookups
+    // stay exact. Restoring the true temporal type would need the logical tag, i.e.
+    // decoding the raw item bytes with codec::read_logical_value instead of going through
+    // physical_value at the full_scan call sites.
     value_t reverse_convert(std::pmr::memory_resource* r, const physical_value& pv) {
         switch (pv.type()) {
+            case physical_type::NA:
+                // NULL keys are indexed (convert() maps them to the NA physical_value), so a
+                // rehydrated tree legitimately hands them back.
+                return value_t(r, complex_logical_type{logical_type::NA});
             case physical_type::BOOL:
                 return value_t(r, pv.value<physical_type::BOOL>());
             case physical_type::UINT8:
@@ -73,7 +110,14 @@ namespace {
                 return value_t(r, std::string(sv));
             }
             default:
-                return value_t(r, complex_logical_type{logical_type::NA});
+                // Unreachable from user data: the CREATE INDEX gate
+                // (is_representable_index_key_type) refuses every logical type whose physical
+                // encoding this switch does not carry, so nothing else was ever written into
+                // the tree. The old `return NA` collapsed such keys silently; die loudly.
+                // NDEBUG coverage gap: the suite builds Debug+DEV_MODE (the assert aborts
+                // first) — the std::abort() below is NOT exercised by any test.
+                assert(false && "reverse_convert: physical key type not representable");
+                std::abort();
         }
     }
 } // anonymous namespace
@@ -431,7 +475,7 @@ namespace services::index {
     }
 
     void manager_index_t::bootstrap_index_sync(components::catalog::oid_t table_oid,
-                                               std::pmr::string name,
+                                               components::catalog::oid_t index_oid,
                                                components::logical_plan::index_type type,
                                                components::index::keys_base_storage_t keys,
                                                actor_zeta::address_t disk_agent_addr,
@@ -445,21 +489,20 @@ namespace services::index {
         if (it == engines_.end()) {
             trace(log_,
                   "manager_index_t::bootstrap_index_sync: missing engine for oid={} "
-                  "(index name={}), bootstrap order violated — skipping",
+                  "(index_oid={}), bootstrap order violated — skipping",
                   static_cast<unsigned>(table_oid),
-                  std::string_view(name.data(), name.size()));
+                  static_cast<unsigned>(index_oid));
             return;
         }
 
         auto& engine = it->second;
-        const std::string index_name(name.data(), name.size());
 
         // Refuse duplicate registration — base_spaces should only call once
         // per alive pg_index row, but be defensive against rescan paths.
-        if (engine->has_index(index_name)) {
+        if (engine->has_index(index_oid)) {
             trace(log_,
-                  "manager_index_t::bootstrap_index_sync: index {} already present on oid={}, skipping",
-                  index_name,
+                  "manager_index_t::bootstrap_index_sync: index_oid={} already present on oid={}, skipping",
+                  static_cast<unsigned>(index_oid),
                   static_cast<unsigned>(table_oid));
             return;
         }
@@ -468,22 +511,23 @@ namespace services::index {
         switch (type) {
             case components::logical_plan::index_type::single: {
                 id_index =
-                    components::index::make_index<components::index::single_field_index_t>(engine, index_name, keys);
+                    components::index::make_index<components::index::single_field_index_t>(engine, index_oid, keys);
                 break;
             }
             case components::logical_plan::index_type::hashed: {
                 if (path_db_.empty()) {
                     id_index = components::index::make_index<components::index::hash_single_field_index_t>(engine,
-                                                                                                           index_name,
+                                                                                                           index_oid,
                                                                                                            keys);
                 } else if (shared_hash_storage) {
                     id_index = components::index::make_index<components::index::disk_hash_single_field_index_t>(
                         engine,
-                        index_name,
+                        index_oid,
                         keys,
                         shared_hash_storage);
                 } else {
-                    const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
+                    const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) /
+                                      std::to_string(static_cast<unsigned>(index_oid));
                     std::filesystem::create_directories(base);
                     auto storage = services::index::disk_hash_table_t::create(
                         base / "hash_index.bin",
@@ -496,16 +540,16 @@ namespace services::index {
                         // standing in for a disk index answers from an empty
                         // structure, i.e. returns wrong rows, and reports nothing.
                         error(log_,
-                              "manager_index_t::bootstrap_index_sync: index {} on oid={} not restored, "
+                              "manager_index_t::bootstrap_index_sync: index_oid={} on oid={} not restored, "
                               "its disk storage could not be opened: {}",
-                              index_name,
+                              static_cast<unsigned>(index_oid),
                               static_cast<unsigned>(table_oid),
                               storage.error().what);
                         return;
                     }
                     id_index = components::index::make_index<components::index::disk_hash_single_field_index_t>(
                         engine,
-                        index_name,
+                        index_oid,
                         keys,
                         storage.value());
                 }
@@ -513,16 +557,16 @@ namespace services::index {
             }
             default:
                 trace(log_,
-                      "manager_index_t::bootstrap_index_sync: unsupported index type for {} on oid={}",
-                      index_name,
+                      "manager_index_t::bootstrap_index_sync: unsupported index type for index_oid={} on oid={}",
+                      static_cast<unsigned>(index_oid),
                       static_cast<unsigned>(table_oid));
                 return;
         }
 
         if (id_index == components::index::INDEX_ID_UNDEFINED) {
             trace(log_,
-                  "manager_index_t::bootstrap_index_sync: failed to construct index {} on oid={}",
-                  index_name,
+                  "manager_index_t::bootstrap_index_sync: failed to construct index_oid={} on oid={}",
+                  static_cast<unsigned>(index_oid),
                   static_cast<unsigned>(table_oid));
             return;
         }
@@ -539,7 +583,8 @@ namespace services::index {
         // equality predicates (routed through index_scan) return 0 rows even
         // though the on-disk btree is intact.
         if (!path_db_.empty() && type == components::logical_plan::index_type::single) {
-            auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
+            auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) /
+                              std::to_string(static_cast<unsigned>(index_oid));
             if (std::filesystem::exists(btree_path / "metadata")) {
                 core::filesystem::local_file_system_t fs;
                 auto db = std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, btree_path, item_key_getter);
@@ -581,8 +626,8 @@ namespace services::index {
         disk_agents_owned_.emplace_back(std::move(disk_agent_owned));
 
         trace(log_,
-              "manager_index_t::bootstrap_index_sync: wired index {} (id={}) on oid={} type={}",
-              index_name,
+              "manager_index_t::bootstrap_index_sync: wired index_oid={} (id={}) on oid={} type={}",
+              static_cast<unsigned>(index_oid),
               id_index,
               static_cast<unsigned>(table_oid),
               static_cast<unsigned>(type));
@@ -630,11 +675,14 @@ namespace services::index {
     manager_index_t::unique_future<core::result_wrapper_t<uint32_t>> manager_index_t::create_index(
         session_id_t /*session*/,
         components::catalog::oid_t table_oid,
-        index_name_t index_name,
+        components::catalog::oid_t index_oid,
         components::index::keys_base_storage_t keys,
         components::logical_plan::index_type type,
         core::date::timezone_offset_t session_tz) {
-        trace(log_, "manager_index_t::create_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
+        trace(log_,
+              "manager_index_t::create_index: index_oid={} on oid={}",
+              static_cast<unsigned>(index_oid),
+              static_cast<unsigned>(table_oid));
 
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
@@ -644,9 +692,13 @@ namespace services::index {
 
         auto& engine = it->second;
 
-        if (engine->has_index(index_name)) {
-            // index_create_fail, not already_exists: test_index pins this code for
-            // a duplicate CREATE INDEX.
+        // Duplicate detection. The engine holds at most ONE index per (keys, type)
+        // — mapper_ is keyed by the key set, and a colliding add_index would
+        // silently half-register the new index. A duplicate CREATE INDEX by NAME
+        // also lands here: the retry allocates a fresh indexrelid, but its keys
+        // collide with the live index. index_create_fail, not already_exists:
+        // test_index pins this code for a duplicate CREATE INDEX.
+        if (engine->has_index(index_oid) || engine->matching(keys, type) != nullptr) {
             co_return core::error_t{core::error_code_t::index_create_fail,
                                     std::pmr::string{"index already exists", resource_}};
         }
@@ -656,16 +708,17 @@ namespace services::index {
         switch (type) {
             case components::logical_plan::index_type::single: {
                 id_index =
-                    components::index::make_index<components::index::single_field_index_t>(engine, index_name, keys);
+                    components::index::make_index<components::index::single_field_index_t>(engine, index_oid, keys);
                 break;
             }
             case components::logical_plan::index_type::hashed: {
                 if (path_db_.empty()) {
                     id_index = components::index::make_index<components::index::hash_single_field_index_t>(engine,
-                                                                                                           index_name,
+                                                                                                           index_oid,
                                                                                                            keys);
                 } else {
-                    const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
+                    const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) /
+                                      std::to_string(static_cast<unsigned>(index_oid));
                     std::filesystem::create_directories(base);
                     auto storage = services::index::disk_hash_table_t::create(
                         base / "hash_index.bin",
@@ -677,9 +730,9 @@ namespace services::index {
                         // did not ask for and cannot see, so the failure goes back
                         // to the caller, which drops the half-built index.
                         error(log_,
-                              "manager_index_t::create_index: {} on oid={} failed, "
+                              "manager_index_t::create_index: index_oid={} on oid={} failed, "
                               "disk storage could not be opened: {}",
-                              index_name,
+                              static_cast<unsigned>(index_oid),
                               static_cast<unsigned>(table_oid),
                               storage.error().what);
                         co_return storage.error();
@@ -687,7 +740,7 @@ namespace services::index {
                     shared_hash_storage = storage.value();
                     id_index = components::index::make_index<components::index::disk_hash_single_field_index_t>(
                         engine,
-                        index_name,
+                        index_oid,
                         keys,
                         shared_hash_storage);
                 }
@@ -700,9 +753,10 @@ namespace services::index {
 
         if (id_index != components::index::INDEX_ID_UNDEFINED) {
             // Load index data from btree (persistent storage). Path layout
-            // mirrors disk-side ${path_db}/${table_oid}/${index_name}/.
+            // mirrors disk-side ${path_db}/${table_oid}/${index_oid}/.
             if (!path_db_.empty() && type == components::logical_plan::index_type::single) {
-                auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) / index_name;
+                auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) /
+                                  std::to_string(static_cast<unsigned>(index_oid));
                 if (std::filesystem::exists(btree_path / "metadata")) {
                     core::filesystem::local_file_system_t fs;
                     auto db =
@@ -745,7 +799,7 @@ namespace services::index {
                     actor_zeta::spawn<index_agent_disk_t>(resource_,
                                                           path_db_,
                                                           table_oid,
-                                                          std::string(index_name),
+                                                          index_oid,
                                                           type,
                                                           bitcask_index_disk_t::default_flush_threshold_,
                                                           bitcask_index_disk_t::default_segment_record_limit_,
@@ -775,16 +829,20 @@ namespace services::index {
         co_return id_index;
     }
 
-    manager_index_t::unique_future<void>
-    manager_index_t::drop_index(session_id_t session, components::catalog::oid_t table_oid, index_name_t index_name) {
-        trace(log_, "manager_index_t::drop_index: {} on oid={}", index_name, static_cast<unsigned>(table_oid));
+    manager_index_t::unique_future<void> manager_index_t::drop_index(session_id_t session,
+                                                                     components::catalog::oid_t table_oid,
+                                                                     components::catalog::oid_t index_oid) {
+        trace(log_,
+              "manager_index_t::drop_index: index_oid={} on oid={}",
+              static_cast<unsigned>(index_oid),
+              static_cast<unsigned>(table_oid));
 
         auto it = engines_.find(table_oid);
         if (it == engines_.end())
             co_return;
 
         auto& engine = it->second;
-        auto* index = components::index::search_index(engine, index_name);
+        auto* index = engine->matching_relid(index_oid);
 
         if (index) {
             // Drop disk agent if exists
@@ -823,36 +881,45 @@ namespace services::index {
 
     // --- Txn-aware DML ---
 
-    void manager_index_t::bootstrap_repopulate_sync(components::catalog::oid_t table_oid,
-                                                    std::pmr::vector<components::vector::data_chunk_t> chunks,
-                                                    uint64_t row_count) {
+    core::error_t manager_index_t::bootstrap_repopulate_sync(components::catalog::oid_t table_oid,
+                                                             std::pmr::vector<components::vector::data_chunk_t> chunks,
+                                                             uint64_t row_count) {
         if (chunks.empty() || row_count == 0) {
-            return;
+            return core::error_t::no_error();
         }
         auto it = engines_.find(table_oid);
         if (it == engines_.end()) {
-            return;
+            return core::error_t::no_error();
+        }
+        // Producer-defect gate BEFORE any mutation: a bad feed must not leave
+        // the engine half-cleared.
+        if (auto chunk_error = check_rebuild_chunks_have_row_ids(chunks, resource_); chunk_error.contains_error()) {
+            return chunk_error;
         }
         auto& engine = it->second;
         // Clear in-memory storage_ for every index on this oid: entries loaded
         // by bootstrap_index_sync's rehydration carry pre-compact row_ids.
-        for (auto& idx_name : engine->indexes()) {
-            auto* idx = components::index::search_index(engine, idx_name);
+        for (auto idx_oid : engine->indexes()) {
+            auto* idx = engine->matching_relid(idx_oid);
             if (idx) {
                 idx->clean_memory_to_new_elements(0);
             }
         }
-        // Re-insert each row with its current physical row_id. Post-checkpoint scan
-        // chunks are 0-based contiguous and concatenate in batch order, so the global
-        // row index (= row_id) runs continuously across the chunks.
+        // Re-insert each row with the PHYSICAL row id the scan stamped into
+        // chunk.row_ids. The rebuild scan is visibility-filtered, so it compacts
+        // POSITIONS, not ids: a tombstone that survived checkpoint (WAL-replayed
+        // DELETE after a crash, or a compact refused by an open snapshot/cursor)
+        // leaves a hole in the id sequence, and collection_t::fetch resolves ids
+        // physically — numbering by position would point every entry after the
+        // hole one row low.
         const core::date::timezone_offset_t bootstrap_tz{};
-        uint64_t global_row = 0;
         for (const auto& chunk : chunks) {
             // Key->column resolution is a property of the CHUNK, not of the row: bind once here
             // instead of walking the columns (and building a key string per comparison) per row.
             const auto binding = engine->bind_chunk(chunk);
-            for (uint64_t i = 0; i < chunk.size() && global_row < row_count; ++i, ++global_row) {
-                const auto row_id = static_cast<int64_t>(global_row);
+            const auto* chunk_row_ids = chunk.row_ids.data<int64_t>();
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                const auto row_id = chunk_row_ids[i];
                 auto index_error = guarded_index_row(log_, "bootstrap_repopulate", table_oid, row_id, resource_, [&] {
                     engine->insert_row(binding, chunk, i, row_id, /*txn_id=*/0, bootstrap_tz);
                 });
@@ -863,10 +930,23 @@ namespace services::index {
                 }
             }
         }
+        // Commit the txn-0 batch — the same tail repopulate_table runs. Without it
+        // the rows above stay PENDING(txn=0) forever; for a disk-hash facade that
+        // means every committed disk entry gains an in-memory twin and equality
+        // lookups return each row twice (the disk store is authoritative for the
+        // facade and already holds these rows, so no disk mirror fan-out is
+        // needed here — commit only flips/clears the in-memory side).
+        for (auto idx_oid : engine->indexes()) {
+            auto* idx = engine->matching_relid(idx_oid);
+            if (idx) {
+                idx->commit_insert(0, 0);
+            }
+        }
         trace(log_,
               "manager_index_t::bootstrap_repopulate_sync: oid={} rows={}",
               static_cast<unsigned>(table_oid),
               row_count);
+        return core::error_t::no_error();
     }
 
     manager_index_t::unique_future<core::error_t>
@@ -1244,7 +1324,7 @@ namespace services::index {
         co_return result;
     }
 
-    manager_index_t::unique_future<void>
+    manager_index_t::unique_future<core::error_t>
     manager_index_t::repopulate_table(session_id_t session,
                                       components::catalog::oid_t table_oid,
                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
@@ -1259,13 +1339,18 @@ namespace services::index {
         if (it == engines_.end()) {
             // Table dropped or never indexed — legal no-op (correct semantics,
             // not a fallback). row_count==0 with no engine: nothing to do.
-            co_return;
+            co_return core::error_t::no_error();
         }
         auto& engine = it->second;
         if (engine->size() == 0) {
             // Engine exists but holds zero indexes — nothing on disk to clear,
             // nothing in memory to rebuild. Legal no-op.
-            co_return;
+            co_return core::error_t::no_error();
+        }
+        // Producer-defect gate BEFORE any mutation: a bad feed must fail the
+        // statement, not leave the index cleared-but-unrebuilt.
+        if (auto chunk_error = check_rebuild_chunks_have_row_ids(chunks, resource_); chunk_error.contains_error()) {
+            co_return chunk_error;
         }
 
         // (a) Clear each disk-backed index's on-disk backing FIRST: two-phase
@@ -1293,36 +1378,40 @@ namespace services::index {
         // died with it, so skipping the rebuild is correct).
         it = engines_.find(table_oid);
         if (it == engines_.end()) {
-            co_return;
+            co_return core::error_t::no_error();
         }
         auto& engine_after = it->second;
 
         // (b) Clear the in-memory engine — the same clean_memory_to_new_elements(0)
         //     bootstrap_repopulate_sync uses. Entries carry pre-compact row_ids.
-        for (auto& idx_name : engine_after->indexes()) {
-            auto* idx = components::index::search_index(engine_after, idx_name);
+        for (auto idx_oid : engine_after->indexes()) {
+            auto* idx = engine_after->matching_relid(idx_oid);
             if (idx) {
                 idx->clean_memory_to_new_elements(0);
             }
         }
 
-        // (c) Re-insert every chunk row with its post-compact 0-based id under
-        //     txn_id=0 (committed-for-everyone — no commit needed). row_count==0
-        //     (empty table after compact) is valid: the clears above ran,
-        //     nothing is re-inserted here.
-        if (row_count != 0) {
-            uint64_t global = 0;
+        // (c) Re-insert every chunk row with the PHYSICAL row id the scan stamped
+        //     into chunk.row_ids, under txn_id=0 (committed-for-everyone — no
+        //     commit needed). The rebuild stream is visibility-filtered
+        //     (storage_fetch_next_batch under the statement's snapshot), so it
+        //     compacts POSITIONS while ids keep their gaps whenever compact()
+        //     was refused (open snapshot or active scan cursor on this oid) —
+        //     counting positions would point every post-tombstone key one row
+        //     low. Empty chunks (table emptied by compact, or nothing visible)
+        //     are valid: the clears above ran, nothing is re-inserted here.
+        if (!chunks.empty()) {
             for (const auto& chunk : chunks) {
                 const auto binding = engine_after->bind_chunk(chunk);
-                for (uint64_t i = 0; i < chunk.size() && global < row_count; ++i) {
-                    const auto row_id = static_cast<int64_t>(global);
+                const auto* chunk_row_ids = chunk.row_ids.data<int64_t>();
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    const auto row_id = chunk_row_ids[i];
                     auto index_error = guarded_index_row(log_, "repopulate_table", table_oid, row_id, resource_, [&] {
                         engine_after->insert_row(binding, chunk, i, row_id, /*txn_id=*/0, session_tz);
                     });
                     if (index_error.contains_error()) {
                         trace(log_, "manager_index_t::repopulate_table: row {} left unindexed", row_id);
                     }
-                    ++global;
                 }
             }
 
@@ -1358,15 +1447,15 @@ namespace services::index {
                 }
             }
 
-            for (auto& idx_name : engine_after->indexes()) {
-                auto* idx = components::index::search_index(engine_after, idx_name);
+            for (auto idx_oid : engine_after->indexes()) {
+                auto* idx = engine_after->matching_relid(idx_oid);
                 if (idx) {
                     idx->commit_insert(0, 0);
                 }
             }
         }
 
-        co_return;
+        co_return core::error_t::no_error();
     }
 
     // --- Txn-aware Query ---

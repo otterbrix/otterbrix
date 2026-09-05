@@ -3,6 +3,7 @@
 #include "index_disk.hpp"
 
 #include <components/types/logical_value.hpp>
+#include <components/types/physical_value.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 
 #include <cstdint>
@@ -10,6 +11,12 @@
 #include <memory_resource>
 
 namespace services::index {
+
+    // Ordered-index probe encoder: logical key -> the physical_value the on-disk b+tree
+    // compares with. Carries exactly the ordered half of
+    // components::index::codec::is_representable_index_key_type (the CREATE INDEX gate);
+    // any other type is a gate/encoder drift bug and aborts.
+    [[nodiscard]] components::types::physical_value convert(const components::types::logical_value_t& value);
 
     // TODO: add checkpoints to avoid flushing b+tree after each call
     class btree_index_disk_t final : public index_disk_t {

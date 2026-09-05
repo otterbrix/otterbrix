@@ -23,13 +23,16 @@ namespace {
         on_disk
     };
 
+    // Indexes are oid-identified; the file_name only labels the scratch file.
+    constexpr components::catalog::oid_t mvcc_test_index_oid = 601u;
+
     std::unique_ptr<index_t> make_hash_mvcc_index(std::pmr::memory_resource* resource,
-                                                  const std::string& name,
+                                                  const std::string& /*name*/,
                                                   const std::string& file_name,
                                                   hash_index_mode mode) {
         if (mode == hash_index_mode::in_memory) {
             return std::make_unique<hash_single_field_index_t>(resource,
-                                                               name,
+                                                               mvcc_test_index_oid,
                                                                keys_base_storage_t{key(resource, "val")});
         }
         const auto base = std::filesystem::path("/tmp/index_disk/components_hash_mvcc_tests");
@@ -38,7 +41,7 @@ namespace {
         std::filesystem::remove(file);
         return std::make_unique<disk_hash_single_field_index_t>(
             resource,
-            name,
+            mvcc_test_index_oid,
             keys_base_storage_t{key(resource, "val")},
             boost::intrusive_ptr(
                 new services::index::disk_hash_table_t(file,
@@ -298,7 +301,7 @@ TEST_CASE("index_entry_visible:see_all_committed") {
 
 TEST_CASE("single_field_index:txn_insert_search") {
     auto resource = core::pmr::otterbrix_resource();
-    single_field_index_t index(&resource, "test_idx", {key(&resource, "val")});
+    single_field_index_t index(&resource, 602u, {key(&resource, "val")});
 
     uint64_t txn1 = TRANSACTION_ID_START + 1;
     uint64_t txn2 = TRANSACTION_ID_START + 2;
@@ -334,7 +337,7 @@ TEST_CASE("single_field_index:txn_insert_search") {
 
 TEST_CASE("single_field_index:full_lifecycle") {
     auto resource = core::pmr::otterbrix_resource();
-    single_field_index_t index(&resource, "test_idx", {key(&resource, "val")});
+    single_field_index_t index(&resource, 602u, {key(&resource, "val")});
 
     uint64_t txn1 = TRANSACTION_ID_START + 1;
     uint64_t txn2 = TRANSACTION_ID_START + 2;
@@ -387,12 +390,13 @@ TEST_CASE("disk_single_field_index:revert_insert_contract") { run_revert_insert_
 TEST_CASE("index_engine:txn_methods") {
     auto resource = core::pmr::otterbrix_resource();
     auto engine = make_index_engine(&resource);
-    make_index<single_field_index_t>(engine, "idx1", {key(&resource, "val")});
+    constexpr components::catalog::oid_t idx1_oid = 301u;
+    make_index<single_field_index_t>(engine, idx1_oid, {key(&resource, "val")});
 
     uint64_t txn1 = TRANSACTION_ID_START + 1;
     uint64_t commit1 = 10;
 
-    auto* idx = search_index(engine, std::string("idx1"));
+    auto* idx = engine->matching_relid(idx1_oid);
     REQUIRE(idx != nullptr);
 
     components::types::logical_value_t val(&resource, int64_t(99));

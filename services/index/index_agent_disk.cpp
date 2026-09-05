@@ -34,7 +34,7 @@ namespace services::index {
     index_agent_disk_t::index_agent_disk_t(std::pmr::memory_resource* resource,
                                            const path_t& path_db,
                                            components::catalog::oid_t table_oid,
-                                           const index_name_t& index_name,
+                                           components::catalog::oid_t index_oid,
                                            components::logical_plan::index_type type,
                                            uint64_t bitcask_flush_threshold,
                                            uint64_t bitcask_segment_record_limit,
@@ -44,7 +44,8 @@ namespace services::index {
                                            disk_hash_table_ptr shared_hash_index)
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
-        , index_disk_(make_index_disk(path_db / std::to_string(static_cast<unsigned>(table_oid)) / index_name,
+        , index_disk_(make_index_disk(path_db / std::to_string(static_cast<unsigned>(table_oid)) /
+                                          std::to_string(static_cast<unsigned>(index_oid)),
                                       this->resource(),
                                       type,
                                       bitcask_flush_threshold,
@@ -53,7 +54,10 @@ namespace services::index {
                                       std::move(committed_txn_ids),
                                       std::move(shared_hash_index)))
         , table_oid_(table_oid) {
-        trace(log_, "index_agent_disk::create {} (table_oid={})", index_name, static_cast<unsigned>(table_oid));
+        trace(log_,
+              "index_agent_disk::create index_oid={} (table_oid={})",
+              static_cast<unsigned>(index_oid),
+              static_cast<unsigned>(table_oid));
     }
 
     index_agent_disk_t::~index_agent_disk_t() { trace(log_, "delete index_agent_disk_t"); }

@@ -24,7 +24,7 @@ namespace components::index {
         using const_iterator = result_storage_t::const_iterator;
 
         disk_hash_single_field_index_t(std::pmr::memory_resource* resource,
-                                       std::string name,
+                                       catalog::oid_t oid,
                                        const keys_base_storage_t& keys,
                                        disk_hash_storage_ptr storage);
         ~disk_hash_single_field_index_t() override;

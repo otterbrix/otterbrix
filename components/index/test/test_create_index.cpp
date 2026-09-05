@@ -11,8 +11,8 @@ public:
     using storage_t = std::vector<value_t>;
     using const_iterator = storage_t::const_iterator;
 
-    explicit dummy(std::pmr::memory_resource* resource, const std::string& name, const keys_base_storage_t& keys)
-        : index_t(resource, components::logical_plan::index_type::single, name, keys) {}
+    explicit dummy(std::pmr::memory_resource* resource, components::catalog::oid_t oid, const keys_base_storage_t& keys)
+        : index_t(resource, components::logical_plan::index_type::single, oid, keys) {}
 
 private:
     void insert_impl(value_t, index_value_t, core::date::timezone_offset_t) override {}
@@ -58,17 +58,40 @@ private:
 TEST_CASE("components::index::base_index_created") {
     auto resource = core::pmr::otterbrix_resource();
     auto index_engine = make_index_engine(&resource);
-    auto one_id = make_index<dummy>(index_engine, "dummy_one", {components::expressions::key_t{&resource, "1"}});
+    // Indexes are identified by pg_index.indexrelid (oid), not by name.
+    auto one_id = make_index<dummy>(index_engine, 101u, {components::expressions::key_t{&resource, "1"}});
     auto two_id = make_index<dummy>(
         index_engine,
-        "dummy_two",
+        102u,
         {components::expressions::key_t{&resource, "1"}, components::expressions::key_t{&resource, "2"}});
     auto two_1_id = make_index<dummy>(
         index_engine,
-        "dummy_two_1",
+        103u,
         {components::expressions::key_t{&resource, "2"}, components::expressions::key_t{&resource, "1"}});
     REQUIRE(index_engine->size() == 3);
     REQUIRE(search_index(index_engine, one_id) != nullptr);
     REQUIRE(search_index(index_engine, two_id) != nullptr);
     REQUIRE(search_index(index_engine, two_1_id) != nullptr);
+}
+
+// pg_index.indtype code alphabet: every writable index_type round-trips through its
+// single-char catalog code; an unknown code decodes to no_valid (the bootstrap reader
+// treats that as catalog corruption and fails LOUDLY — error log + abort — instead of
+// guessing a backend); no_valid itself has no writable code (the encoder returns 0).
+TEST_CASE("components::index::indtype_code_roundtrip") {
+    using components::logical_plan::index_type;
+    using components::logical_plan::index_type_from_indtype_code;
+    using components::logical_plan::index_type_to_indtype_code;
+    for (auto t : {index_type::single,
+                   index_type::composite,
+                   index_type::multikey,
+                   index_type::hashed,
+                   index_type::wildcard}) {
+        const char code = index_type_to_indtype_code(t);
+        REQUIRE(code != 0);
+        REQUIRE(index_type_from_indtype_code(code) == t);
+    }
+    REQUIRE(index_type_from_indtype_code('x') == index_type::no_valid);
+    REQUIRE(index_type_from_indtype_code('\0') == index_type::no_valid);
+    REQUIRE(index_type_to_indtype_code(index_type::no_valid) == 0);
 }

@@ -22,6 +22,7 @@
 #include <components/catalog/oid_batch.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/compute/function.hpp>
+#include <components/context/context.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/session/session.hpp>
@@ -118,11 +119,6 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
         , disk_path_(scrubbed(disk_path))
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
-        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
-                                                                      scheduler_,
-                                                                      log_,
-                                                                      &services::planner::no_custom_lowering,
-                                                                      optimizer_pass))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , wal_config_([&]() {
@@ -140,12 +136,20 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
                                                                             disk_config_.path,
                                                                             disk_config_.bitcask_flush_threshold,
                                                                             disk_config_.bitcask_segment_record_limit,
-                                                                            disk_config_.btree_flush_threshold)) {
+                                                                            disk_config_.btree_flush_threshold))
+        // wire_index=false names the deliberately missing index mailbox (the mis-wired seam).
+        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(
+              resource,
+              scheduler_,
+              log_,
+              manager_wal_->address(),
+              manager_disk_->address(),
+              wire_index ? manager_index_->address() : components::pipeline::no_mailbox(),
+              0,
+              &services::planner::no_custom_lowering,
+              optimizer_pass)) {
         const auto index_address =
-            wire_index ? manager_index_->address() : actor_zeta::address_t::empty_address();
-        manager_dispatcher_->sync(manager_dispatcher_t::sync_pack{manager_wal_->address(),
-                                                                  manager_disk_->address(),
-                                                                  index_address});
+            wire_index ? manager_index_->address() : components::pipeline::no_mailbox();
         manager_wal_->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(manager_disk_->address()),
                                                           manager_dispatcher_->address(),
                                                           index_address});
@@ -250,12 +254,13 @@ private:
     std::string disk_path_;
     log_t log_;
     core::non_thread_scheduler::scheduler_test_t* scheduler_{nullptr};
-    std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
     configuration::config_disk disk_config_;
     std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
     configuration::config_wal wal_config_;
     std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_wal_;
     std::unique_ptr<services::index::manager_index_t, actor_zeta::pmr::deleter_t> manager_index_;
+    // Declared after the managers: the dispatcher is spawned with their addresses.
+    std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
     std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;
 };
 

@@ -374,10 +374,11 @@ namespace services::collection::executor {
                                                              bool ddl_mode);
 
     private:
-        actor_zeta::address_t parent_address_ = actor_zeta::address_t::empty_address();
-        actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
-        actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
-        actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
+        // Constructor arguments, never defaults: forgetting one in the init-list does not compile.
+        actor_zeta::address_t parent_address_;
+        actor_zeta::address_t wal_address_;
+        actor_zeta::address_t disk_address_;
+        actor_zeta::address_t index_address_;
         log_t log_;
         components::compute::function_registry_t function_registry_;
         components::casts::cast_registry_t cast_registry_;

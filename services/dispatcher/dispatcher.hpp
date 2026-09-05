@@ -79,16 +79,6 @@ namespace services::dispatcher {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        // Bootstrap address bundle (plain named struct — no std::tuple).
-        struct sync_pack {
-            actor_zeta::address_t wal = actor_zeta::address_t::empty_address();
-            actor_zeta::address_t disk = actor_zeta::address_t::empty_address();
-            actor_zeta::address_t index = actor_zeta::address_t::empty_address();
-            // Config-gated DML flush bound (0 = disabled).
-            // Trailing so existing 3-field aggregate inits (tests) stay valid.
-            uint64_t dml_flush_row_threshold = 0;
-        };
-
         // One in-flight message in the event loop. behavior is created lazily;
         // pending_msg holds the message until the loop calls behavior(msg.get()).
         // stale_ticks counts consecutive passes the slot stayed busy-but-not-
@@ -105,13 +95,20 @@ namespace services::dispatcher {
             uint32_t poke_rounds{0};
         };
 
-        // Host-injected customization hooks (create_plan rule + optimizer pass) arrive
-        // through THIS constructor (not sync_pack, which carries only late-wired actor
-        // addresses) and are forwarded to every executor spawned in sync(). Both plain
-        // fn-ptrs, defaulting to their Null Objects so they are never null.
+        // Fully wired at birth — there is no later sync step to forget. The three mailboxes are
+        // required arguments (address_t is not default-constructible, so an unnamed one does not
+        // compile); wal is components::pipeline::no_mailbox() exactly when the WAL is off.
+        // dml_flush_row_threshold is the config-gated DML flush bound (0 = disabled). The two
+        // host-customization hooks are plain fn-ptrs defaulting to their Null Objects, never
+        // null. The executor pool is spawned in the constructor body, before the event loop
+        // starts, with all of the above forwarded to each executor.
         manager_dispatcher_t(std::pmr::memory_resource*,
                              actor_zeta::scheduler_raw,
                              log_t& log,
+                             actor_zeta::address_t wal_address,
+                             actor_zeta::address_t disk_address,
+                             actor_zeta::address_t index_address,
+                             uint64_t dml_flush_row_threshold = 0,
                              planner::create_plan_rule_t create_plan_rule = &planner::no_custom_lowering,
                              components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass);
         ~manager_dispatcher_t();
@@ -122,8 +119,6 @@ namespace services::dispatcher {
 
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
-
-        void sync(sync_pack pack);
 
         // Bootstrap hook: restore the MVCC commit clock from the combined durable
         // frontier (max of the persisted pg_attribute commit-ids and the max WAL
@@ -286,9 +281,10 @@ namespace services::dispatcher {
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;
 
-        actor_zeta::address_t wal_address_ = actor_zeta::address_t::empty_address();
-        actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
-        actor_zeta::address_t index_address_ = actor_zeta::address_t::empty_address();
+        // Constructor arguments, never defaults; wal_address_ is empty exactly when the WAL is off.
+        actor_zeta::address_t wal_address_;
+        actor_zeta::address_t disk_address_;
+        actor_zeta::address_t index_address_;
 
         // Selective broadcast flags. Set when DROP TABLE / DROP INDEX marks
         // a resource dropped (via on_drop_resource_marked); cleared by the

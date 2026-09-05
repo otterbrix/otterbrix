@@ -109,6 +109,10 @@ namespace services::dispatcher {
     manager_dispatcher_t::manager_dispatcher_t(std::pmr::memory_resource* resource_ptr,
                                                actor_zeta::scheduler_raw scheduler,
                                                log_t& log,
+                                               actor_zeta::address_t wal_address,
+                                               actor_zeta::address_t disk_address,
+                                               actor_zeta::address_t index_address,
+                                               uint64_t dml_flush_row_threshold,
                                                planner::create_plan_rule_t create_plan_rule,
                                                components::planner::optimizer_pass_t optimizer_pass)
         : actor_zeta::actor::actor_mixin<manager_dispatcher_t>()
@@ -119,12 +123,34 @@ namespace services::dispatcher {
         , optimizer_pass_(optimizer_pass)
         , executors_(resource_ptr)
         , executor_addresses_(resource_ptr)
+        , wal_address_(std::move(wal_address))
+        , disk_address_(std::move(disk_address))
+        , index_address_(std::move(index_address))
         , txn_manager_(resource_ptr)
         , cast_registry_(resource_ptr)
         , pending_void_(resource_ptr) {
         ZoneScoped;
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
         components::casts::register_default_casts(cast_registry_);
+
+        // Spawned before the event loop starts, so the loop thread never observes a
+        // half-populated pool.
+        executors_.reserve(executor_pool_size_);
+        executor_addresses_.reserve(executor_pool_size_);
+        for (std::size_t i = 0; i < executor_pool_size_; ++i) {
+            auto exec = actor_zeta::spawn<collection::executor::executor_t>(resource(),
+                                                                            address(),
+                                                                            wal_address_,
+                                                                            disk_address_,
+                                                                            index_address_,
+                                                                            log_.clone(),
+                                                                            dml_flush_row_threshold,
+                                                                            create_plan_rule_,
+                                                                            optimizer_pass_);
+            executor_addresses_.push_back(exec->address());
+            executors_.push_back(std::move(exec));
+        }
+        trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses", executor_pool_size_);
 
         // Event-loop-in-thread model. enqueue_impl (any sender thread) only
         // pushes into the lock-free inbox_ and notifies pump_cv_; this thread
@@ -407,29 +433,6 @@ namespace services::dispatcher {
             default:
                 break;
         }
-    }
-
-    void manager_dispatcher_t::sync(sync_pack pack) {
-        wal_address_ = pack.wal;
-        disk_address_ = pack.disk;
-        index_address_ = pack.index;
-
-        executors_.reserve(executor_pool_size_);
-        executor_addresses_.reserve(executor_pool_size_);
-        for (std::size_t i = 0; i < executor_pool_size_; ++i) {
-            auto exec = actor_zeta::spawn<collection::executor::executor_t>(resource(),
-                                                                            address(),
-                                                                            wal_address_,
-                                                                            disk_address_,
-                                                                            index_address_,
-                                                                            log_.clone(),
-                                                                            pack.dml_flush_row_threshold,
-                                                                            create_plan_rule_,
-                                                                            optimizer_pass_);
-            executor_addresses_.push_back(exec->address());
-            executors_.push_back(std::move(exec));
-        }
-        trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses", executor_pool_size_);
     }
 
     void manager_dispatcher_t::try_trigger_cleanup_if_horizon_advanced() noexcept {

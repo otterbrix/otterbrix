@@ -14,6 +14,7 @@
 #include <actor-zeta/spawn.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/helpers.hpp>
+#include <components/context/context.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -57,7 +58,6 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         , disk_path_(scrubbed(disk_path))
         , log_(initialization_logger("python", "/tmp/docker_logs/"))
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
-        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource, scheduler_, log_))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
         , wal_config_([&]() {
@@ -65,11 +65,14 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
             c.on = false;
             return c;
         }())
-        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_)) {
-        manager_dispatcher_->sync(
-            services::dispatcher::manager_dispatcher_t::sync_pack{manager_wal_->address(),
-                                                                  manager_disk_->address(),
-                                                                  actor_zeta::address_t::empty_address()});
+        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_))
+        // No index manager in this fixture — its absence is named, not defaulted away.
+        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
+                                                                      scheduler_,
+                                                                      log_,
+                                                                      manager_wal_->address(),
+                                                                      manager_disk_->address(),
+                                                                      components::pipeline::no_mailbox())) {
         manager_wal_->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(manager_disk_->address()),
                                                           manager_dispatcher_->address(),
                                                           actor_zeta::address_t::empty_address()});
@@ -193,11 +196,12 @@ private:
     std::string disk_path_;
     log_t log_;
     core::non_thread_scheduler::scheduler_test_t* scheduler_{nullptr};
-    std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
     configuration::config_disk disk_config_;
     std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
     configuration::config_wal wal_config_;
     std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_wal_;
+    // Declared after the managers: the dispatcher is spawned with their addresses.
+    std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
     std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;
     std::unique_ptr<actor_zeta::unique_future<cursor_t_ptr>> pending_future_;
 };

@@ -41,7 +41,6 @@ namespace services::disk {
 #endif
 
     using path_t = std::filesystem::path;
-    using file_ptr = std::unique_ptr<core::filesystem::file_handle_t>;
 
     using session_id_t = ::components::session::session_id_t;
     // Catalog-DDL _inner handlers take the same by-value context the manager routers do.
@@ -104,7 +103,7 @@ namespace services::disk {
     };
 
     /// Agent role / storages_ partition. agent 0 = CATALOG (pg_* tables + oid_gen_ +
-    /// stored_catalog_ + file_wal_id_); agents 1..N-1 = USER_POOL (user tables hashed
+    /// stored_catalog_); agents 1..N-1 = USER_POOL (user tables hashed
     /// by table_oid). MUST align with manager_disk_t::pool_idx_for_oid: idx 0 ↔ CATALOG.
     enum class agent_role_t : std::uint8_t
     {
@@ -220,8 +219,6 @@ namespace services::disk {
         // local slice ahead of the dependent PHYSICAL_INSERT. Idempotent by column name.
         void direct_add_column_sync(components::catalog::oid_t table_oid,
                                     const components::vector::data_chunk_t& schema_chunk);
-
-        unique_future<void> fix_wal_id(wal::id_t wal_id);
 
         // Mutation handlers: these inner bodies are the SOLE owner of each mutation;
         // manager-side bodies are pure routers. Not-owned OIDs no-op.
@@ -579,8 +576,7 @@ namespace services::disk {
         // mailbox handler; single-threaded at the bootstrap call site.
         void set_manager_wal_sync(actor_zeta::address_t address);
 
-        using dispatch_traits = actor_zeta::dispatch_traits<&agent_disk_t::fix_wal_id,
-                                                            &agent_disk_t::storage_append_inner,
+        using dispatch_traits = actor_zeta::dispatch_traits<&agent_disk_t::storage_append_inner,
                                                             &agent_disk_t::storage_publish_commits_inner,
                                                             &agent_disk_t::storage_publish_deletes_inner,
                                                             &agent_disk_t::storage_revert_deletes_inner,
@@ -640,8 +636,6 @@ namespace services::disk {
 
         log_t log_;
         path_t path_;
-        core::filesystem::local_file_system_t fs_;
-        file_ptr file_wal_id_;
 
         // The agent's role is not stored: it is `pool_idx_ == 0` by construction (idx 0 is the
         // CATALOG agent — see agent_role_t and manager_disk_t::pool_idx_for_oid), and the ctor

@@ -1005,7 +1005,7 @@ namespace services::disk {
         configuration::config_disk config_;
         // Storage ownership shape (manager has NO storages_ map — pure router):
         //   - agent_disk_0 (CATALOG): all pg_* system tables, oid_gen_,
-        //     stored_catalog_, file_wal_id_.
+        //     stored_catalog_.
         //   - agents_[1..N-1] (USER_POOL): user tables hash-routed by table_oid.
         // Routing via pool_idx_for_oid below.
         std::pmr::vector<agent_disk_ptr> agents_{resource_};
@@ -1019,7 +1019,6 @@ namespace services::disk {
         // `agents_[pool_idx_for_oid(oid)]->storage_entry_sync(oid)`; all other
         // access goes through agent storage_*_inner mailbox handlers.
         void create_agent(int count_agents);
-        auto agent() -> actor_zeta::address_t;
 
         // Single manager-side scan funnel over the owning agent's
         // storage_scan_inner, so there is ONE place that issues a catalog

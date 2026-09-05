@@ -628,6 +628,4 @@ namespace services::disk {
         co_return;
     }
 
-    auto manager_disk_t::agent() -> actor_zeta::address_t { return agents_[0]->address(); }
-
 } //namespace services::disk

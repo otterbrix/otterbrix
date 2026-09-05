@@ -1,5 +1,6 @@
 #include "test_config.hpp"
 
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <components/catalog/catalog_oids.hpp>
@@ -2956,5 +2957,148 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.B1aDefault;", 3);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.B1aDefault WHERE count = 2;", 1);
+    }
+}
+
+// B2 — WAL SEALING, end to end. A checkpoint truncates the WAL by DELETING whole segment
+// files at or below the floor checkpoint_all reports, and the restart that follows replays
+// what is left on top of the checkpointed files. Two ways for that to be wrong, and this
+// test fails on either:
+//   * the floor reached too far and a segment still holding un-checkpointed rows was
+//     deleted  -> the restart comes back with FEWER rows;
+//   * a segment describing rows already folded into table.otbx survived and was replayed
+//     on top of them -> the restart comes back with MORE rows.
+// Both are "!= exactly what was inserted", so the row counts below are the whole assertion.
+//
+// Truncation only happens on the SECOND checkpoint: the floor is min(prev_checkpoint_wal_id)
+// and prev is 0 for every table until a round supersedes a root. Segments are also never
+// deleted while the writer is still on them, hence the deliberately small max_segment_size —
+// without it the whole test fits in one live segment and nothing is retired.
+TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_replay") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/wal_truncate_no_double_replay");
+    test_clear_directory(config);
+    config.wal.max_segment_size = 8 * 1024;
+
+    // Segment files are `<wal path>/<db oid>/wal_<db oid>_<index>`.
+    auto count_wal_segments = [&]() {
+        std::size_t n = 0;
+        if (!std::filesystem::exists(config.wal.path)) {
+            return n;
+        }
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(config.wal.path)) {
+            if (entry.is_regular_file() && entry.path().filename().string().rfind("wal_", 0) == 0) {
+                ++n;
+            }
+        }
+        return n;
+    };
+
+    constexpr int kBatch = 50;
+    constexpr int kBeforeCheckpoint = 200; // rows 0..199
+    constexpr int kAfterCheckpoint = 200;  // rows 200..399
+    constexpr int kAfterTruncate = 50;     // rows 400..449
+
+    std::size_t segments_before_truncate = 0;
+    std::size_t segments_after_truncate = 0;
+
+    INFO("phase 1: fill several WAL segments, checkpoint twice so the second one truncates");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.TruncCollection (name string, count bigint);");
+            REQUIRE(cur->is_success());
+        }
+
+        auto insert_range = [&](int from, int to) {
+            for (int base = from; base < to; base += kBatch) {
+                auto session = otterbrix::session_id_t();
+                std::stringstream query;
+                query << "INSERT INTO TestDatabase.TruncCollection (name, count) VALUES ";
+                const int last = std::min(base + kBatch, to) - 1;
+                for (int i = base; i <= last; ++i) {
+                    query << "('row_" << i << "', " << i << ")" << (i == last ? ";" : ", ");
+                }
+                auto cur = dispatcher->execute_sql(session, query.str());
+                REQUIRE(cur->is_success());
+            }
+        };
+
+        insert_range(0, kBeforeCheckpoint);
+
+        // Checkpoint #1: every table's prev_checkpoint_wal_id is still 0, so the reported
+        // floor is 0 and nothing is truncated. This is the round that gives the tables a
+        // superseded root for the next one to seal against.
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
+        }
+
+        insert_range(kBeforeCheckpoint, kBeforeCheckpoint + kAfterCheckpoint);
+
+        segments_before_truncate = count_wal_segments();
+        REQUIRE(segments_before_truncate > 1);
+
+        // Checkpoint #2: the floor is now the wal id checkpoint #1 was taken at, and the
+        // segments lying entirely below it are removed.
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
+        }
+
+        segments_after_truncate = count_wal_segments();
+        INFO("segments before truncate: " << segments_before_truncate
+                                          << ", after: " << segments_after_truncate);
+        REQUIRE(segments_after_truncate < segments_before_truncate);
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection;", kBeforeCheckpoint + kAfterCheckpoint);
+    }
+
+    INFO("phase 2: restart on the truncated WAL — every row exactly once");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection;", kBeforeCheckpoint + kAfterCheckpoint);
+        // One row per key: a replayed-twice segment shows up here as 2.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection WHERE count = 0;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection WHERE count = 199;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection WHERE count = 200;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection WHERE count = 399;", 1);
+
+        // Write past the truncation point without checkpointing: these rows live only in the
+        // segments that survived, so the next restart has to replay them.
+        {
+            auto session = otterbrix::session_id_t();
+            std::stringstream query;
+            query << "INSERT INTO TestDatabase.TruncCollection (name, count) VALUES ";
+            const int first = kBeforeCheckpoint + kAfterCheckpoint;
+            const int last = first + kAfterTruncate - 1;
+            for (int i = first; i <= last; ++i) {
+                query << "('row_" << i << "', " << i << ")" << (i == last ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, query.str());
+            REQUIRE(cur->is_success());
+        }
+    }
+
+    INFO("phase 3: restart again — checkpointed rows plus the WAL-only tail, still exactly once");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection;",
+                       kBeforeCheckpoint + kAfterCheckpoint + kAfterTruncate);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection WHERE count = 0;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection WHERE count = 400;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection WHERE count = 449;", 1);
     }
 }

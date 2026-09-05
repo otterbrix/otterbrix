@@ -53,8 +53,6 @@ namespace services::disk {
         : actor_zeta::basic_actor<agent_disk_t>(resource)
         , log_(log.clone())
         , path_(path_db)
-        , fs_(core::filesystem::local_file_system_t())
-        , file_wal_id_(nullptr)
         , pool_idx_(pool_idx)
         , storages_(resource)
         , active_scans_(resource)
@@ -64,10 +62,6 @@ namespace services::disk {
               role == agent_role_t::CATALOG ? "CATALOG" : "USER_POOL",
               pool_idx);
         create_directories(path_);
-        file_wal_id_ = open_file(fs_,
-                                 path_ / "WAL_ID",
-                                 file_flags::WRITE | file_flags::READ | file_flags::FILE_CREATE,
-                                 file_lock_type::NO_LOCK);
     }
 
     agent_disk_t::~agent_disk_t() { trace(log_, "delete agent_disk_t"); }
@@ -322,10 +316,6 @@ namespace services::disk {
 
     actor_zeta::behavior_t agent_disk_t::behavior(actor_zeta::mailbox::message* msg) {
         switch (msg->command()) {
-            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::fix_wal_id>: {
-                co_await actor_zeta::dispatch(this, &agent_disk_t::fix_wal_id, msg);
-                break;
-            }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_append_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_append_inner, msg);
                 break;
@@ -1818,14 +1808,6 @@ namespace services::disk {
         co_return entry->storage->total_rows();
     }
 
-    agent_disk_t::unique_future<void> agent_disk_t::fix_wal_id(wal::id_t wal_id) {
-        trace(log_, "agent_disk::fix_wal_id : {}", wal_id);
-        auto id = std::to_string(wal_id);
-        file_wal_id_->write(id.data(), id.size(), 0);
-        file_wal_id_->truncate(static_cast<int64_t>(id.size()));
-        co_return;
-    }
-
     agent_disk_t::unique_future<checkpoint_result_t>
     agent_disk_t::checkpoint_inner(session_id_t /*session*/, wal::id_t current_wal_id, uint64_t compact_watermark) {
         trace(log_, "agent_disk[{}]::checkpoint_inner: {} entries in local slice", pool_idx_, storages_.size());
@@ -1867,14 +1849,17 @@ namespace services::disk {
                 continue;
             }
 
-            // Cursor gate: skip compact while a streaming fetch-next cursor is open on this oid —
-            // its stored absolute position indexes the un-swapped collection, so the atomic
-            // row_groups_ swap would shift rows out from under it (R17). The entry is still
-            // checkpointed below WITHOUT the rebuild; the WAL keeps its replay records, so a later
-            // checkpoint round compacts it once the cursor drains.
+            // Cursor gate: defer the WHOLE round for this oid while a streaming fetch-next
+            // cursor is open on it — its stored absolute position indexes the un-swapped
+            // collection, so the atomic row_groups_ swap a compact performs would shift rows out
+            // from under it (R17). The entry is NOT checkpointed either (the `continue` below
+            // skips it): it keeps its old file and sidecar, and feeds its UNCHANGED
+            // prev_checkpoint_wal_id into the min so the WAL keeps every record it would need
+            // for replay. A later round compacts and checkpoints it once the cursor drains.
             if (has_active_scan_for_oid(tbl_oid)) {
                 trace(log_,
-                      "agent_disk[{}]::checkpoint_inner oid={} has an active scan cursor — skipping compact this round",
+                      "agent_disk[{}]::checkpoint_inner oid={} has an active scan cursor — deferring the whole entry "
+                      "this round (no compact, no checkpoint); its WAL floor is unchanged",
                       pool_idx_,
                       static_cast<unsigned>(tbl_oid));
                 min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());

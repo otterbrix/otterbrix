@@ -69,23 +69,25 @@ namespace services::disk {
         }
 
         if (!agents_.empty()) {
-            // Seal only when some agent actually checkpointed an entry (min_prev_id still
-            // max() => none did). The second conjunct this used to carry — "and no in-memory
-            // twin exists anywhere" — is gone with the mode it guarded: every table is a file,
-            // so no table can still be owed its replay records.
-            const bool all_disk_checkpointed = (min_prev_id != std::numeric_limits<wal::id_t>::max());
-            const bool safe_to_seal = all_disk_checkpointed;
-            if (current_wal_id > 0 && safe_to_seal) {
-                auto [needs_sched2, future2] =
-                    actor_zeta::otterbrix::send(agent(), &agent_disk_t::fix_wal_id, wal::id_t{current_wal_id});
-                if (needs_sched2) {
-                    scheduler_->enqueue(agents_[0].get());
-                }
-                co_await std::move(future2);
-            }
+            // The sentinel means "no entry reported a WAL floor", NOT "no entry was
+            // checkpointed" — the predicate used to be called `all_disk_checkpointed`, and that
+            // name was wrong in both halves. EVERY entry an agent owns contributes its
+            // prev_checkpoint_wal_id to the min: the ones that committed a new root and, just as
+            // importantly, the ones checkpoint_inner DEFERRED (degraded storage, open cursor,
+            // version stamps above the watermark, a failed checkpoint) with their prev
+            // UNCHANGED. A deferred table therefore pins the floor at the id its still-durable
+            // root was taken at, which is exactly what keeps the records it would need for
+            // replay out of truncate_before's reach.
+            // So min_prev_id survives as max() only when the agents own nothing checkpointable
+            // at all. Sealing then would hand truncate_before max(), i.e. delete the whole WAL —
+            // report id 0 ("do not truncate") instead.
+            // (The second conjunct this guard used to carry — "and no in-memory twin exists
+            // anywhere" — is gone with the mode it guarded: every table is a file now, so no
+            // table can still be owed its replay records for that reason.)
+            const bool wal_floor_reported = (min_prev_id != std::numeric_limits<wal::id_t>::max());
 
             trace(log_, "manager_disk_t::checkpoint_all complete");
-            if (!safe_to_seal) {
+            if (!wal_floor_reported) {
                 co_return wal::id_t{0};
             }
             co_return min_prev_id;

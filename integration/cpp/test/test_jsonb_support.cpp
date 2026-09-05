@@ -617,21 +617,21 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
     seed(d);
 
     const char* rejected[] = {
-        // navigation is not accepted as a sort / group key
-        "SELECT id FROM jp.t ORDER BY t #>> 'a.b' DESC;",
+        // navigation is not accepted as a GROUP key. It IS accepted as a sort key —
+        // see the pins below; the group branch keeps its own hand-written gate.
         "SELECT t #>> 'a.b' AS k, COUNT(*) FROM jp.t GROUP BY t #>> 'a.b';",
         // nor as an index expression
         "CREATE INDEX ix ON jp.t (t #>> 'a.b');",
         // nor on the left of IN / LIKE
         "SELECT id FROM jp.t WHERE t #>> 'a.b' IN (10, 30);",
         "SELECT id FROM jp.t WHERE t ->> 'x' LIKE 'p%';",
-        // functions cannot take a navigated argument
+        // NOT a pin on navigated arguments -- those work now, see the pins below.
+        // This one is refused because `upper` is not a registered function at all
+        // ("unrecognized function 'upper'"), which is why it still belongs here.
         "SELECT upper(t ->> 'x') AS v FROM jp.t;",
-        "SELECT SUM(t #>> 'a.b') FROM jp.t;",
         // the delete operators are SELECT-list only
         "SELECT id FROM jp.t WHERE t #- 'a.b' = 1;",
-        // no navigation or deletion in a RETURNING clause
-        "DELETE FROM jp.t WHERE id = 3 RETURNING t ->> 'x';",
+        // no deletion in a RETURNING clause (navigation there works — see the pins below)
         "DELETE FROM jp.t WHERE id = 3 RETURNING t - 'x';",
         // UNION over expansions is only as valid as the two arities happen to be
         "SELECT t -> 'a' FROM jp.t UNION SELECT t -> 'nokey' FROM jp.t;",
@@ -668,6 +668,67 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
     auto after = exec(d, "SELECT id, x FROM jp.t WHERE id = 1;");
     REQUIRE(after->is_success());
     CHECK(str(after, "x", 0) == "p");
+
+    // BEHAVIOR CHANGE, upstream #634: collapsing four duplicated resolvers into one
+    // transform_expression removed three hand-written closed switches that used to refuse
+    // -- ORDER BY (transform_select.cpp, "not an arithmetic operator"), an aggregate's
+    // argument (the A_Expr fell into add_param_value, "unable to parse value") and
+    // RETURNING (transform_returning.cpp, case T_A_Expr -> unimplemented_yet).
+    //
+    // The three moved out of the rejected list above, and are pinned by VALUE here rather
+    // than by is_success(): a navigation that starts executing and answers WRONGLY would
+    // pass a success check. Nothing on origin/main pins any of this -- the file is
+    // commented out of that build -- so these are the only guard the new behaviour has.
+    {
+        INFO("ORDER BY over a navigated key sorts by the physical column it names");
+        auto desc = exec(d, "SELECT id FROM jp.t ORDER BY t #>> 'a.b' DESC;");
+        REQUIRE(desc->is_success());
+        REQUIRE(desc->size() == 4);
+        // a/b is 10, 30, 50 for ids 1..3 and absent for id 4; a NULL key sorts first on DESC.
+        CHECK(i64(desc, "id", 0) == 4);
+        CHECK(i64(desc, "id", 1) == 3);
+        CHECK(i64(desc, "id", 2) == 2);
+        CHECK(i64(desc, "id", 3) == 1);
+
+        auto asc = exec(d, "SELECT id FROM jp.t ORDER BY t #>> 'a.b' ASC;");
+        REQUIRE(asc->is_success());
+        REQUIRE(asc->size() == 4);
+        CHECK(i64(asc, "id", 0) == 1);
+        CHECK(i64(asc, "id", 3) == 4);
+    }
+    {
+        INFO("an aggregate over a navigated argument reduces the same values the column holds");
+        auto sum = exec(d, "SELECT SUM(t #>> 'a.b') AS s FROM jp.t;");
+        REQUIRE(sum->is_success());
+        REQUIRE(sum->size() == 1);
+        CHECK(i64(sum, "s", 0) == 90); // 10 + 30 + 50; the row without a/b contributes nothing
+    }
+    {
+        INFO("RETURNING over a navigated key answers for the row it removed, and removes it");
+        auto ret = exec(d, "DELETE FROM jp.t WHERE id = 3 RETURNING t ->> 'x';");
+        REQUIRE(ret->is_success());
+        REQUIRE(ret->size() == 1);
+        auto gone = exec(d, "SELECT id FROM jp.t WHERE id = 3;");
+        REQUIRE(gone->is_success());
+        CHECK(gone->size() == 0);
+    }
+
+    // THE REFUSALS THAT SURVIVED, pinned so the widening above cannot quietly grow further.
+    // A path matching no column is still a hard error on each of the three new sites, and a
+    // table-valued operator still cannot stand where a scalar is required.
+    CHECK_FALSE(exec(d, "SELECT id FROM jp.t ORDER BY t #>> 'nokey' DESC;")->is_success());
+    CHECK_FALSE(exec(d, "SELECT SUM(t #>> 'nokey') FROM jp.t;")->is_success());
+    CHECK_FALSE(exec(d, "SELECT id FROM jp.t ORDER BY t -> 'a' DESC;")->is_success());
+    CHECK_FALSE(exec(d, "SELECT SUM(t -> 'a') FROM jp.t;")->is_success());
+    {
+        // The refusal must come BEFORE the delete, not after: a RETURNING clause the
+        // planner cannot lower may not take the row with it.
+        INFO("a RETURNING over an unknown path refuses without deleting");
+        CHECK_FALSE(exec(d, "DELETE FROM jp.t WHERE id = 4 RETURNING t ->> 'nokey';")->is_success());
+        auto still = exec(d, "SELECT id FROM jp.t WHERE id = 4;");
+        REQUIRE(still->is_success());
+        CHECK(still->size() == 1);
+    }
 }
 
 // A table-valued operator (expand '->'/'#>', delete '-'/'#-') is lowered to

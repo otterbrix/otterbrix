@@ -26,6 +26,13 @@ namespace components::expressions {
                 const std::pmr::vector<types::complex_logical_type>& input_types,
                 size_t right_offset = 0);
 
+    [[nodiscard]] core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
+    build_graph(std::pmr::memory_resource* resource,
+                const types::parameter_map_t& parameters,
+                core::span<const param_storage> values,
+                const std::pmr::vector<types::complex_logical_type>& input_types,
+                size_t right_offset = 0);
+
     // N+1 outputs (one per SET value, then a trailing bool 'is_modified')
     [[nodiscard]] core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
     build_update_graph(std::pmr::memory_resource* resource,

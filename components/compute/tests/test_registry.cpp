@@ -88,7 +88,7 @@ TEST_CASE("components::compute::registry::shifted_builtin_table_never_serves") {
 
     // Occupy uid 0 before the builtins arrive.
     auto added = registry.add_function(
-        std::make_unique<row_function>("stray", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
+        std::make_unique<vector_function>("stray", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
     REQUIRE_FALSE(added.has_error());
     REQUIRE(added.value() == 0);
 
@@ -109,7 +109,7 @@ TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_
     function_registry_t registry(&resource);
 
     auto added = registry.add_function(
-        std::make_unique<row_function>("stray", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
+        std::make_unique<vector_function>("stray", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
     REQUIRE_FALSE(added.has_error());
 
     register_default_functions(registry);
@@ -129,7 +129,7 @@ TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_
 
     // and refuses every further add with the recorded error
     auto after = registry.add_function(
-        std::make_unique<row_function>("late", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
+        std::make_unique<vector_function>("late", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
     REQUIRE(after.has_error());
     CHECK(after.error().type == core::error_code_t::function_registry_error);
 }

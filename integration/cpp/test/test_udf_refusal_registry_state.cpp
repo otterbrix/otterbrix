@@ -150,20 +150,24 @@ namespace {
         services::disk::manager_disk_t* disk() noexcept { return manager_disk_.get(); }
     };
 
-    core::error_t probe_exec_unary(compute::kernel_context& ctx,
-                                   const std::pmr::vector<types::logical_value_t>& in,
-                                   std::pmr::vector<types::logical_value_t>& out) {
-        out.emplace_back(ctx.exec_context().resource(), in[0].value<int64_t>() + 1);
+    core::error_t probe_exec_unary(compute::kernel_context&,
+                                   const vector::data_chunk_t& in,
+                                   vector::vector_t& out) {
+        const auto* source = in.data[0].data<int64_t>();
+        auto* destination = out.data<int64_t>();
+        for (uint64_t row = 0; row < in.size(); ++row) {
+            destination[row] = source[row] + 1;
+        }
         return core::error_t::no_error();
     }
 
     compute::function_ptr make_probe_unary(std::pmr::memory_resource* resource) {
         compute::function_doc doc{"short_doc", "full_doc", {"arg"}, false};
-        auto fn = std::make_unique<compute::row_function>(kFuncName, compute::arity::unary(), doc, 1);
-        compute::kernel_signature_t sig(compute::function_type_t::row,
+        auto fn = std::make_unique<compute::vector_function>(kFuncName, compute::arity::unary(), doc, 1);
+        compute::kernel_signature_t sig(compute::function_type_t::vector,
                                         {compute::parameter_type::exact(types::logical_type::BIGINT)},
                                         {compute::output_type::fixed(types::logical_type::BIGINT)});
-        compute::row_kernel k{std::move(sig), probe_exec_unary};
+        compute::vector_kernel k{std::move(sig), probe_exec_unary};
         auto added = fn->add_kernel(resource, std::move(k));
         REQUIRE_FALSE(added.contains_error());
         return fn;

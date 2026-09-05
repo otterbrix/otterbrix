@@ -46,8 +46,7 @@ namespace {
     }
 
     components::compute::function_types_mask any_kind() {
-        return components::compute::create_mask(components::compute::function_type_t::row,
-                                                components::compute::function_type_t::vector,
+        return components::compute::create_mask(components::compute::function_type_t::vector,
                                                 components::compute::function_type_t::aggregate,
                                                 components::compute::function_type_t::expand);
     }
@@ -200,8 +199,7 @@ TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's par
 // evaluated before grouping, so WHERE takes only scalar functions; the aggregate slot of a
 // GROUP BY is the mirror image and takes nothing else.
 TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds are allowed") {
-    const auto scalar_only = components::compute::create_mask(components::compute::function_type_t::row,
-                                                              components::compute::function_type_t::vector);
+    const auto scalar_only = components::compute::create_mask(components::compute::function_type_t::vector);
     const auto aggregate_only = components::compute::create_mask(components::compute::function_type_t::aggregate);
 
     auto integer = args({logical_type::BIGINT});

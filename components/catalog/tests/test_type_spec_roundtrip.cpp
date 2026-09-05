@@ -2,6 +2,8 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/types/types.hpp>
 
+#include <set>
+
 using namespace components::catalog;
 using namespace components::types;
 
@@ -54,43 +56,31 @@ TEST_CASE("catalog::type_spec::empty_spec_scalars_must_have_oid_mapping") {
     // read-back — so builtin_type_to_oid MUST map it, else a persisted column
     // of that type silently rehydrates as UNKNOWN (the BLOB/UUID bug).
     const logical_type empty_spec_scalars[] = {
-        logical_type::BOOLEAN,
-        logical_type::TINYINT,
-        logical_type::SMALLINT,
-        logical_type::INTEGER,
-        logical_type::BIGINT,
-        logical_type::FLOAT,
-        logical_type::DOUBLE,
-        logical_type::STRING_LITERAL,
-        logical_type::TIMESTAMP,
-        logical_type::TIMESTAMP_TZ,
-        logical_type::DATE,
-        logical_type::TIME,
-        logical_type::TIME_TZ,
-        logical_type::INTERVAL,
-        logical_type::BLOB,
-        logical_type::UUID,
+        logical_type::BOOLEAN,   logical_type::TINYINT,        logical_type::UTINYINT,  logical_type::SMALLINT,
+        logical_type::USMALLINT, logical_type::INTEGER,        logical_type::UINTEGER,  logical_type::BIGINT,
+        logical_type::UBIGINT,   logical_type::HUGEINT,        logical_type::UHUGEINT,  logical_type::FLOAT,
+        logical_type::DOUBLE,    logical_type::STRING_LITERAL, logical_type::TIMESTAMP, logical_type::TIMESTAMP_TZ,
+        logical_type::DATE,      logical_type::TIME,           logical_type::TIME_TZ,   logical_type::INTERVAL,
+        logical_type::BLOB,      logical_type::UUID,
     };
+    std::set<oid_t> seen;
     for (auto lt : empty_spec_scalars) {
         INFO("logical_type = " << static_cast<int>(lt));
         REQUIRE(encode_type_spec(complex_logical_type{lt}) == "");
         REQUIRE(builtin_type_to_oid(lt) != INVALID_OID);
         REQUIRE(oid_to_builtin_type(builtin_type_to_oid(lt)) == lt);
         REQUIRE(persisted_readback(complex_logical_type{lt}) == lt);
+        // Two types sharing one oid makes a column rehydrate as the other type.
+        REQUIRE(seen.insert(builtin_type_to_oid(lt)).second);
     }
 }
 
-TEST_CASE("catalog::type_spec::unsigned_ints_roundtrip_via_spec") {
-    // Unsigned ints have no well-known pg_type oid — they must encode a
-    // NON-empty flat-text spec ("uint1".."uint8") and decode back exactly.
-    REQUIRE(encode_type_spec(complex_logical_type{logical_type::UTINYINT}) == "uint1");
-    REQUIRE(encode_type_spec(complex_logical_type{logical_type::USMALLINT}) == "uint2");
-    REQUIRE(encode_type_spec(complex_logical_type{logical_type::UINTEGER}) == "uint4");
-    REQUIRE(encode_type_spec(complex_logical_type{logical_type::UBIGINT}) == "uint8");
-    for (auto lt : {logical_type::UTINYINT, logical_type::USMALLINT, logical_type::UINTEGER, logical_type::UBIGINT}) {
-        INFO("logical_type = " << static_cast<int>(lt));
-        REQUIRE(persisted_readback(complex_logical_type{lt}) == lt);
-    }
+TEST_CASE("catalog::type_spec::unsigned_ints_have_their_own_oids") {
+    REQUIRE(builtin_type_to_oid(logical_type::UTINYINT) != builtin_type_to_oid(logical_type::TINYINT));
+    REQUIRE(builtin_type_to_oid(logical_type::USMALLINT) != builtin_type_to_oid(logical_type::SMALLINT));
+    REQUIRE(builtin_type_to_oid(logical_type::UINTEGER) != builtin_type_to_oid(logical_type::INTEGER));
+    REQUIRE(builtin_type_to_oid(logical_type::UBIGINT) != builtin_type_to_oid(logical_type::BIGINT));
+    REQUIRE(builtin_type_to_oid(logical_type::UHUGEINT) != builtin_type_to_oid(logical_type::HUGEINT));
 }
 
 TEST_CASE("catalog::type_spec::blob_uuid_oid_roundtrip") {

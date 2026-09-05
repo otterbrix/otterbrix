@@ -52,9 +52,9 @@ namespace components::sql::transform {
         // differ only in where the constrained column name is spelled; everything
         // downstream — the node, the enrich guards, the pg_constraint row — is the same.
         // Column-level first, in declaration order, then the table-level ones.
-        VALUE_OR_RETURN(auto constraints, extract_column_constraints(resource_, *coldefs));
+        VALUE_OR_RETURN(auto constraints, extract_column_constraints(resource_, *coldefs, raw_sql_));
         {
-            VALUE_OR_RETURN(auto table_level, extract_table_constraints(resource_, *coldefs));
+            VALUE_OR_RETURN(auto table_level, extract_table_constraints(resource_, *coldefs, raw_sql_));
             constraints.insert(constraints.end(),
                                std::make_move_iterator(table_level.begin()),
                                std::make_move_iterator(table_level.end()));
@@ -132,7 +132,7 @@ namespace components::sql::transform {
                 cstr->set_inline_with_table(true);
                 cstr->set_local_col_names(tc.columns);
                 if (kind == logical_plan::constraint_kind::check) {
-                    cstr->set_check_expr(tc.check_expression);
+                    cstr->set_check_expression_sql(tc.check_expression);
                 }
                 if (kind == logical_plan::constraint_kind::foreign_key) {
                     cstr->set_ref_relname(tc.ref_collection);

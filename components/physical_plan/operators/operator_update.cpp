@@ -29,7 +29,7 @@ namespace components::operators {
                                      components::catalog::oid_t table_oid,
                                      std::pmr::vector<expressions::expression_ptr> updates,
                                      bool upsert,
-                                     std::pmr::vector<select_column_t> returning,
+                                     std::pmr::vector<projected_column_t> returning,
                                      expressions::expression_ptr expr,
                                      std::int64_t affected_bound)
         : read_write_operator_t(resource, log, operator_type::update)

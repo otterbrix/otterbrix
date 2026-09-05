@@ -4,6 +4,8 @@
 
 #include <components/casts/cast_function.hpp>
 #include <components/catalog/fk_info.hpp>
+#include <components/expressions/expression.hpp>
+#include <components/logical_plan/param_storage.hpp>
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 
@@ -61,6 +63,21 @@ namespace components::logical_plan {
         void set_check_exprs(std::vector<std::pair<std::string, std::string>> v) { check_exprs_ = std::move(v); }
         const std::vector<std::pair<std::string, std::string>>& check_exprs() const { return check_exprs_; }
 
+        // The CHECK predicates of the target table, parsed from the SQL the catalog stores. The
+        // text is the record
+        void set_check_predicates(std::vector<std::pair<std::string, expressions::expression_ptr>> v) {
+            check_predicates_ = std::move(v);
+        }
+        const std::vector<std::pair<std::string, expressions::expression_ptr>>& check_predicates() const {
+            return check_predicates_;
+        }
+        std::vector<std::pair<std::string, expressions::expression_ptr>>& check_predicates() {
+            return check_predicates_;
+        }
+
+        void set_check_params(parameter_node_ptr v) { check_params_ = std::move(v); }
+        const parameter_node_ptr& check_params() const { return check_params_; }
+
         // Fixed-ARRAY columns that are NOT NULL and have no DEFAULT: (column, declared size).
         // A value shorter than the size cannot fill the array and has no default to pad
         // from, so it must be rejected with an error before the append rather than silently
@@ -96,7 +113,9 @@ namespace components::logical_plan {
 
         std::vector<std::string> not_null_cols_;
         std::vector<catalog::fk_info_t> outgoing_fks_;
-        std::vector<std::pair<std::string, std::string>> check_exprs_;                // (name, expr)
+        std::vector<std::pair<std::string, std::string>> check_exprs_; // (name, expr)
+        std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;
+        parameter_node_ptr check_params_;
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;               // (name, declared array size)
         std::vector<std::vector<std::string>> unique_groups_; // UNIQUE / PK column groups
         insert_column_bindings_t column_bindings_;

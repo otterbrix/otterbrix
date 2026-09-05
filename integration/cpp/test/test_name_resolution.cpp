@@ -97,7 +97,7 @@ namespace {
                 break;
             }
             case expressions::expression_group::sort: {
-                take_key(static_cast<const expressions::sort_expression_t*>(expr.get())->key(), out);
+                collect_param(static_cast<const expressions::sort_expression_t*>(expr.get())->operand(), out);
                 break;
             }
             case expressions::expression_group::function: {

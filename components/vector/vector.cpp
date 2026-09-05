@@ -177,6 +177,28 @@ namespace components::vector {
         }
     }
 
+    void vector_t::reset_string_heap() {
+        if (!auxiliary_ || auxiliary_.use_count() != 1) {
+            return;
+        }
+        switch (auxiliary_->type()) {
+            case vector_buffer_type::STRING:
+                static_cast<string_vector_buffer_t*>(auxiliary_.get())->reset();
+                break;
+            case vector_buffer_type::STRUCT:
+                for (auto& child : entries()) {
+                    child->reset_string_heap();
+                }
+                break;
+            case vector_buffer_type::LIST:
+            case vector_buffer_type::ARRAY:
+                entry().reset_string_heap();
+                break;
+            default:
+                break;
+        }
+    }
+
     void vector_t::reference(const vector_t& other) {
         assert(other.type_ == type_ && "vector_t reference to incorrect type");
         reinterpret(other);

@@ -4,6 +4,7 @@
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <core/operations_helper.hpp>
+#include <cstring>
 #include <services/collection/executor.hpp>
 
 namespace {
@@ -1557,4 +1558,230 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_over_array_subscript") 
     REQUIRE(cur->size() == 2);
     CHECK(cur->value(1, 0).value<int64_t>() == 300);
     CHECK(cur->value(1, 1).value<int64_t>() == 300);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::cross_signed_128bit_comparison") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/cross_signed_128");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.small (v UHUGEINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.large (v UHUGEINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.small (v) VALUES (5);")->is_success());
+    // parsed values are signed by default
+    // 2^127: one past hugeint::max() should be processed as uhugeint without an error
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.large (v) VALUES (170141183460469231731687303715884105728);")
+                ->is_success());
+
+    // A literal is signed, so this compares uhugeint against hugeint. The two meet at the signed type
+    auto matched = test_helpers::exec(dispatcher, "SELECT v FROM db.small WHERE v = 5;");
+    REQUIRE(matched->is_success());
+    CHECK(matched->size() == 1);
+    auto missed = test_helpers::exec(dispatcher, "SELECT v FROM db.small WHERE v = 4;");
+    REQUIRE(missed->is_success());
+    CHECK(missed->size() == 0);
+
+    // implicitly cast to hugeint, but fails, because it is out of range
+    // casting to double will eliminate that problem, but with that comparisons will be non-strict
+    // so we pick integer type over floating point
+    auto refused =
+        test_helpers::exec(dispatcher, "SELECT v FROM db.large WHERE v = 170141183460469231731687303715884105727;");
+    CHECK(refused->is_error());
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::nested_element_null_assignment") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/nested_element_null");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id BIGINT, arr INT[3], lst INT[]);")->is_success());
+    REQUIRE(
+        test_helpers::exec(dispatcher, "INSERT INTO db.t (id, arr, lst) VALUES (1, ARRAY[10,20,30], ARRAY[10,20,30]);")
+            ->is_success());
+    REQUIRE(
+        test_helpers::exec(dispatcher, "INSERT INTO db.t (id, arr, lst) VALUES (2, ARRAY[40,50,60], ARRAY[40,50,60]);")
+            ->is_success());
+
+    // Reading one element of the array/list column of the row with the given id.
+    auto element = [&](const char* column, size_t index, int64_t id) {
+        auto cur =
+            test_helpers::exec(dispatcher,
+                               "SELECT " + std::string(column) + " FROM db.t WHERE id = " + std::to_string(id) + ";");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        return cur->value(0, 0).children()[index];
+    };
+
+    // same behavior
+    CHECK(test_helpers::exec(dispatcher, "UPDATE db.t SET arr[1] = NULL WHERE id = 1;")->is_success());
+    CHECK(test_helpers::exec(dispatcher, "UPDATE db.t SET arr[2] = NULL::int4 WHERE id = 2;")->is_success());
+    CHECK(test_helpers::exec(dispatcher, "UPDATE db.t SET lst[3] = CAST(NULL AS int4) WHERE id = 1;")->is_success());
+
+    CHECK(element("arr", 0, 1).is_null());
+    CHECK(element("arr", 1, 2).is_null());
+    CHECK(element("lst", 2, 1).is_null());
+
+    // Only the addressed element of the addressed row goes NULL.
+    CHECK(element("arr", 1, 1).value<int32_t>() == 20);
+    CHECK(element("arr", 2, 1).value<int32_t>() == 30);
+    CHECK(element("arr", 0, 2).value<int32_t>() == 40);
+    CHECK(element("arr", 2, 2).value<int32_t>() == 60);
+    CHECK(element("lst", 0, 1).value<int32_t>() == 10);
+    CHECK(element("lst", 2, 2).value<int32_t>() == 60);
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::operator_spelling_fixity") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/operator_fixity");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x BIGINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (4);")->is_success());
+
+    auto assign = [&](const char* value_expr) {
+        auto cur = test_helpers::exec(dispatcher, "UPDATE db.t SET x = " + std::string(value_expr) + ";");
+        const bool success = cur->is_success();
+        REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.t SET x = 4;")->is_success());
+        return success;
+    };
+    auto assigned_value = [&](const char* value_expr) {
+        REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.t SET x = " + std::string(value_expr) + ";")->is_success());
+        auto cur = test_helpers::exec(dispatcher, "SELECT x FROM db.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        auto value = cur->value(0, 0).value<int64_t>();
+        REQUIRE(test_helpers::exec(dispatcher, "UPDATE db.t SET x = 4;")->is_success());
+        return value;
+    };
+
+    CHECK(assigned_value("x !") == 24);   // postfix factorial
+    CHECK(assigned_value("!! x") == 24);  // prefix factorial
+    CHECK(assigned_value("|/ x") == 2);   // prefix sqrt
+    CHECK(assigned_value("||/ x") == 2);  // prefix cbrt: 1.587 rounded on the store to BIGINT
+    CHECK(assigned_value("@ x") == 4);    // prefix abs
+    CHECK(assigned_value("x ^ 2") == 16); // infix pow
+
+    CHECK_FALSE(assign("! x"));    // no prefix '!' -- that spelling is '!!'
+    CHECK_FALSE(assign("x !!"));   // no postfix '!!' -- that spelling is '!'
+    CHECK_FALSE(assign("x |/"));   // no postfix '|/'
+    CHECK_FALSE(assign("x ||/"));  // no postfix '||/'
+    CHECK_FALSE(assign("x @"));    // no postfix '@'
+    CHECK_FALSE(assign("^ x"));    // no prefix '^'
+    CHECK_FALSE(assign("x ^"));    // no postfix '^'
+    CHECK_FALSE(assign("x |/ 2")); // no infix '|/'
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::operator_spelling_is_its_function_call") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/operator_as_function");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x BIGINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (4);")->is_success());
+
+    // These operators are lowered to the function whose name they denote. Which
+    // expressions a clause admits is validation's business, so the transformer owes every
+    // clause the same lowering: the operator spelling and the written-out call have to be
+    // one expression in a SELECT target, in a predicate and in an UPDATE SET value alike.
+    // Each used to be reachable only from an UPDATE SET operand, because the operand
+    // resolvers each have their own T_A_Expr arm and only one of them knew this family.
+    auto projected_double = [&](const std::string& expr) {
+        auto cur = test_helpers::exec(dispatcher, "SELECT " + expr + " FROM db.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).type().type() == components::types::logical_type::DOUBLE);
+        return cur->value(0, 0).value<double>();
+    };
+    auto projected_bigint = [&](const std::string& expr) {
+        auto cur = test_helpers::exec(dispatcher, "SELECT " + expr + " FROM db.t;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).type().type() == components::types::logical_type::BIGINT);
+        return cur->value(0, 0).value<int64_t>();
+    };
+    auto matched_rows = [&](const std::string& predicate) {
+        auto cur = test_helpers::exec(dispatcher, "SELECT x FROM db.t WHERE " + predicate + ";");
+        REQUIRE(cur->is_success());
+        return cur->size();
+    };
+    // The two spellings are the same computation, so the doubles must come back
+    // bit-identical -- not merely close.
+    auto same_double = [](double lhs, double rhs) { return std::memcmp(&lhs, &rhs, sizeof(double)) == 0; };
+
+    // Projected: same type (asserted above) and same value as the call.
+    CHECK(same_double(projected_double("|/ x"), projected_double("sqrt(x)")));
+    CHECK(same_double(projected_double("||/ x"), projected_double("cbrt(x)")));
+    CHECK(same_double(projected_double("x ^ 2"), projected_double("pow(x, 2)")));
+    CHECK(projected_bigint("@ x") == projected_bigint("abs(x)"));
+    CHECK(projected_bigint("!! x") == projected_bigint("factorial(x)"));
+    CHECK(projected_bigint("x !") == projected_bigint("factorial(x)"));
+    // Both factorial spellings are the same function, so they agree with each other too.
+    CHECK(projected_bigint("!! x") == projected_bigint("x !"));
+    // An alias names the column just as it would on the written-out call.
+    CHECK(same_double(projected_double("|/ x AS r"), projected_double("sqrt(x) AS r")));
+
+    // In a predicate, and nested inside arithmetic.
+    CHECK(matched_rows("(|/ x) > 1") == matched_rows("sqrt(x) > 1"));
+    CHECK(matched_rows("(!! x) > 20") == matched_rows("factorial(x) > 20"));
+    CHECK(matched_rows("(x !) > 20") == matched_rows("factorial(x) > 20"));
+    CHECK(same_double(projected_double("x + (|/ x)"), projected_double("x + sqrt(x)")));
+
+    // The fixity rejection is the same everywhere too -- a spelling that names no
+    // operator is refused in a projection and a predicate, not only in an UPDATE.
+    CHECK(test_helpers::exec(dispatcher, "SELECT ! x FROM db.t;")->is_error());
+    CHECK(test_helpers::exec(dispatcher, "SELECT x |/ FROM db.t;")->is_error());
+    CHECK(test_helpers::exec(dispatcher, "SELECT x FROM db.t WHERE (! x) > 20;")->is_error());
+    CHECK(test_helpers::exec(dispatcher, "SELECT x FROM db.t WHERE (x |/) > 1;")->is_error());
+}
+
+TEST_CASE("integration::cpp::correctness_bugs::expression_syntax_is_clause_independent") {
+    auto config = test_helpers::make_test_config("/tmp/test_correctness_bugs/clause_independent");
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(
+        test_helpers::exec(dispatcher, "CREATE TABLE db.t (g BIGINT, x BIGINT, y BIGINT, v INT[3]);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (g, x, y, v) VALUES (1, 4, 2, ARRAY[10,20,30]);")
+                ->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.u (k BIGINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.u (k) VALUES (7);")->is_success());
+
+    // Which expressions a clause admits is validation's job; the transformer owes every
+    // clause the same reading of the same syntax. There used to be one operand resolver
+    // per clause, each with its own switch over node tags, so a construct was supported
+    // exactly where someone had written its arm -- a sub-query worked in WHERE but not in
+    // an UPDATE SET value, a CASE in SELECT but not in WHERE, a subscript everywhere but
+    // HAVING. All four now go through one transform_expression.
+    CHECK(test_helpers::exec(dispatcher, "UPDATE db.t SET x = (SELECT max(k) FROM db.u);")->is_success());
+    auto after_subquery_set = test_helpers::exec(dispatcher, "SELECT x FROM db.t;");
+    REQUIRE(after_subquery_set->is_success());
+    REQUIRE(after_subquery_set->size() == 1);
+    CHECK(after_subquery_set->value(0, 0).value<int64_t>() == 7);
+
+    CHECK(test_helpers::exec(dispatcher, "UPDATE db.t SET x = CASE WHEN y > 1 THEN 9 ELSE 0 END;")->is_success());
+    auto after_case_set = test_helpers::exec(dispatcher, "SELECT x FROM db.t;");
+    REQUIRE(after_case_set->is_success());
+    REQUIRE(after_case_set->size() == 1);
+    CHECK(after_case_set->value(0, 0).value<int64_t>() == 9);
+
+    // CASE in a predicate, and a subscript under an aggregate in HAVING.
+    auto case_predicate =
+        test_helpers::exec(dispatcher, "SELECT g FROM db.t WHERE (CASE WHEN y > 1 THEN 1 ELSE 0 END) = 1;");
+    REQUIRE(case_predicate->is_success());
+    CHECK(case_predicate->size() == 1);
+
+    auto having_subscript = test_helpers::exec(dispatcher, "SELECT g FROM db.t GROUP BY g HAVING sum(v[2]) > 1;");
+    REQUIRE(having_subscript->is_success());
+    CHECK(having_subscript->size() == 1);
+
+    // A scalar sub-query reads the same in a projection as in the SET value above.
+    auto subquery_projection = test_helpers::exec(dispatcher, "SELECT (SELECT max(k) FROM db.u) FROM db.t;");
+    REQUIRE(subquery_projection->is_success());
+    REQUIRE(subquery_projection->size() == 1);
+    CHECK(subquery_projection->value(0, 0).value<int64_t>() == 7);
 }

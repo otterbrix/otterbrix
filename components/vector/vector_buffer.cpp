@@ -39,6 +39,11 @@ namespace components::vector {
         refs_.push_back(std::move(heap));
     }
 
+    void string_vector_buffer_t::reset() {
+        string_buffer_.reset();
+        refs_.clear();
+    }
+
     dictionary_vector_buffer_t::dictionary_vector_buffer_t(const indexing_vector_t& select)
         : vector_buffer_t(select.resource(), vector_buffer_type::DICTIONARY)
         , indexing_vector_(select) {}

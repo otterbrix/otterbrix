@@ -14,21 +14,13 @@ namespace components::sql::transform {
     core::result_wrapper_t<expressions::expression_ptr>
     transformer::transform_update_expr(Node* node,
                                        const name_collection_t& names,
-                                       logical_plan::parameter_node_t* params) {
-        VALUE_OR_RETURN(auto operand, transform_a_expr_operand(node, names, params));
-        if (std::holds_alternative<expression_ptr>(operand)) {
-            auto expr = std::get<expression_ptr>(operand);
-            if (!expr) {
-                return core::error_t(core::error_code_t::sql_parse_error,
-                                     std::pmr::string{"unsupported expression in SET", resource_});
-            }
-            return expr;
+                                       logical_plan::execution_plan_t* plan) {
+        VALUE_OR_RETURN(auto operand, transform_expression(node, expression_context_t{names, plan}));
+        if (std::holds_alternative<expression_ptr>(operand) && !std::get<expression_ptr>(operand)) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"unsupported expression in SET", resource_});
         }
-        auto value = make_scalar_expression(
-            resource_,
-            std::holds_alternative<expressions::key_t>(operand) ? scalar_type::get_field : scalar_type::constant);
-        value->append_param(std::move(operand));
-        return value;
+        return as_expression(std::move(operand));
     }
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_update(UpdateStmt& node,
@@ -61,13 +53,6 @@ namespace components::sql::transform {
                 auto res = pg_ptr_cast<ResTarget>(target.data);
                 expressions::key_t target_key{resource_, res->name, side_t::left};
                 if (!res->indirection->lst.empty()) {
-                    // The write path nulls whole columns for a NULL literal but has
-                    // no NA cast kernel for element writes — reject those here.
-                    if (nodeTag(res->val) == T_A_Const && nodeTag(&pg_ptr_cast<A_Const>(res->val)->val) == T_Null) {
-                        return core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"setting a nested element to NULL is not supported", resource_});
-                    }
                     std::pmr::vector<std::pmr::string> path{resource_};
                     path.emplace_back(std::pmr::string{res->name, resource_});
                     for (const auto& val : res->indirection->lst) {
@@ -81,7 +66,7 @@ namespace components::sql::transform {
                     }
                     target_key = expressions::key_t{std::move(path), side_t::left};
                 }
-                VALUE_OR_RETURN(auto value, transform_update_expr(res->val, names, plan->parameters.get()));
+                VALUE_OR_RETURN(auto value, transform_update_expr(res->val, names, plan));
                 value->key() = std::move(target_key);
                 updates.emplace_back(std::move(value));
             }

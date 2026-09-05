@@ -134,6 +134,44 @@ TEST_CASE("default casts: find_best_common_type over the numeric tower") {
     REQUIRE(cross->right_cast);
 }
 
+TEST_CASE("default casts: the integer ladder meets at the narrowest type that holds both") {
+    cast_registry_t registry{std::pmr::get_default_resource()};
+    register_default_casts(registry);
+
+    const complex_logical_type tinyint_type{logical_type::TINYINT};
+    const complex_logical_type smallint_type{logical_type::SMALLINT};
+    const complex_logical_type usmallint_type{logical_type::USMALLINT};
+    const complex_logical_type uinteger_type{logical_type::UINTEGER};
+    const complex_logical_type uhugeint_type{logical_type::UHUGEINT};
+
+    auto meets_at = [&](const complex_logical_type& left, const complex_logical_type& right, logical_type expected) {
+        auto found = common(registry, left, right);
+        INFO("left " << static_cast<int>(left.type()) << " right " << static_cast<int>(right.type()));
+        REQUIRE(found.has_value());
+        CHECK(found->type.type() == expected);
+        // Order cannot change where two types meet.
+        auto swapped = common(registry, right, left);
+        REQUIRE(swapped.has_value());
+        CHECK(swapped->type.type() == expected);
+    };
+
+    // Same signedness: the wider one, and no further — nothing is promoted higher than max width
+    meets_at(tinyint_type, smallint_type, logical_type::SMALLINT);
+
+    // Mixed: the narrowest SIGNED type that holds every value of the unsigned side.
+    meets_at(usmallint_type, integer_type, logical_type::INTEGER);
+    meets_at(uinteger_type, integer_type, logical_type::BIGINT);
+    meets_at(ubigint_type, bigint_type, logical_type::HUGEINT);
+
+    // since we do not have infinite integer types, we have to stop somewhere
+    meets_at(uhugeint_type, hugeint_type, logical_type::HUGEINT);
+
+    // A sign change is never free, so it cannot displace an exact widening.
+    CHECK(precision_loss(registry, uhugeint_type, hugeint_type) <
+          precision_loss(registry, hugeint_type, uhugeint_type));
+    CHECK(precision_loss(registry, uhugeint_type, hugeint_type) > 0);
+}
+
 TEST_CASE("default casts: DOUBLE -> INTEGER is fallible and assignment, so it never wins a search") {
     auto* resource = std::pmr::get_default_resource();
     cast_registry_t registry{resource};

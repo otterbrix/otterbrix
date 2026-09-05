@@ -1,82 +1,99 @@
 #include "../function.hpp"
-#include <components/types/logical_value.hpp>
+
+#include <components/vector/vector_operations.hpp>
 
 #include <cmath>
 
 using namespace components::compute;
 using namespace components::types;
+using namespace components::vector;
 
 namespace {
 
-    inline bool has_null_input(const std::pmr::vector<logical_value_t>& inputs) {
-        for (const auto& v : inputs) {
-            if (v.type().type() == logical_type::NA) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     template<typename T>
-    logical_value_t absolute(std::pmr::memory_resource* resource, const logical_value_t& value) {
-        auto raw = value.value<T>();
-        return logical_value_t{resource, raw < T{0} ? static_cast<T>(-raw) : raw};
-    }
-
-    logical_value_t absolute_decimal(std::pmr::memory_resource* resource, const logical_value_t& value) {
-        const auto* extension = value.type().extension_as<decimal_logical_type_extension>();
-        if (extension->stored_as() == physical_type::INT128) {
-            auto raw = value.value<int128_t>();
-            return logical_value_t::create_decimal(resource, value.type(), raw < 0 ? -raw : raw);
+    void absolute_into(const vector_t& input, vector_t& output, uint64_t count, bool all_valid) {
+        const auto* src = input.data<T>();
+        auto* dst = output.data<T>();
+        for (uint64_t row = 0; row < count; row++) {
+            if (!all_valid && input.is_null(row)) {
+                output.set_null(row, true);
+                continue;
+            }
+            const auto value = src[row];
+            dst[row] = value < T{0} ? static_cast<T>(-value) : value;
         }
-        auto raw = value.value<int64_t>();
-        return logical_value_t::create_decimal(resource, value.type(), raw < 0 ? -raw : raw);
     }
 
-    core::error_t row_abs(kernel_context& ctx,
-                          const std::pmr::vector<logical_value_t>& inputs,
-                          std::pmr::vector<logical_value_t>& output) {
-        auto* resource = ctx.exec_context().resource();
-        if (has_null_input(inputs)) {
-            output.emplace_back(resource, logical_type::NA);
+    core::error_t absolute_decimal_into(const vector_t& input,
+                                        vector_t& output,
+                                        uint64_t count,
+                                        bool all_valid,
+                                        exec_context_t& ctx) {
+        const auto* extension = input.type().extension_as<decimal_logical_type_extension>();
+        switch (extension->stored_as()) {
+            case physical_type::INT16:
+                absolute_into<int16_t>(input, output, count, all_valid);
+                return core::error_t::no_error();
+            case physical_type::INT32:
+                absolute_into<int32_t>(input, output, count, all_valid);
+                return core::error_t::no_error();
+            case physical_type::INT64:
+                absolute_into<int64_t>(input, output, count, all_valid);
+                return core::error_t::no_error();
+            case physical_type::INT128:
+                absolute_into<int128_t>(input, output, count, all_valid);
+                return core::error_t::no_error();
+            default:
+                return core::error_t(core::error_code_t::kernel_error,
+                                     std::pmr::string{"abs: unsupported decimal storage width", ctx.resource()});
+        }
+    }
+
+    core::error_t vector_abs(kernel_context& ctx, const data_chunk_t& inputs, vector_t& output) {
+        auto& exec_ctx = ctx.exec_context();
+        const auto& input = inputs.data.front();
+        const uint64_t count = inputs.size();
+
+        // For NULL input result will be all NULLs
+        if (input.type().type() == logical_type::NA) {
             return core::error_t::no_error();
         }
-        const auto& value = inputs[0];
-        switch (value.type().type()) {
+        const bool all_valid = all_inputs_valid(inputs);
+
+        switch (input.type().type()) {
             case logical_type::TINYINT:
-                output.emplace_back(absolute<int8_t>(resource, value));
+                absolute_into<int8_t>(input, output, count, all_valid);
                 break;
             case logical_type::SMALLINT:
-                output.emplace_back(absolute<int16_t>(resource, value));
+                absolute_into<int16_t>(input, output, count, all_valid);
                 break;
             case logical_type::INTEGER:
-                output.emplace_back(absolute<int32_t>(resource, value));
+                absolute_into<int32_t>(input, output, count, all_valid);
                 break;
             case logical_type::BIGINT:
-                output.emplace_back(absolute<int64_t>(resource, value));
+                absolute_into<int64_t>(input, output, count, all_valid);
                 break;
             case logical_type::HUGEINT:
-                output.emplace_back(absolute<int128_t>(resource, value));
+                absolute_into<int128_t>(input, output, count, all_valid);
                 break;
             case logical_type::FLOAT:
-                output.emplace_back(absolute<float>(resource, value));
+                absolute_into<float>(input, output, count, all_valid);
                 break;
             case logical_type::DOUBLE:
-                output.emplace_back(absolute<double>(resource, value));
+                absolute_into<double>(input, output, count, all_valid);
                 break;
             case logical_type::DECIMAL:
-                output.emplace_back(absolute_decimal(resource, value));
-                break;
+                return absolute_decimal_into(input, output, count, all_valid, exec_ctx);
             case logical_type::UTINYINT:
             case logical_type::USMALLINT:
             case logical_type::UINTEGER:
             case logical_type::UBIGINT:
             case logical_type::UHUGEINT:
-                output.emplace_back(value);
+                vector_ops::copy(input, output, count, 0, 0);
                 break;
             default:
                 return core::error_t(core::error_code_t::kernel_error,
-                                     std::pmr::string{"abs is not defined for this type", resource});
+                                     std::pmr::string{"abs is not defined for this type", exec_ctx.resource()});
         }
         return core::error_t::no_error();
     }
@@ -102,103 +119,120 @@ namespace {
         return types;
     }
 
-    core::error_t row_pow(kernel_context& ctx,
-                          const std::pmr::vector<logical_value_t>& inputs,
-                          std::pmr::vector<logical_value_t>& output) {
-        auto* resource = ctx.exec_context().resource();
-        if (has_null_input(inputs)) {
-            output.emplace_back(resource, logical_type::NA);
-            return core::error_t::no_error();
+    core::error_t vector_pow(kernel_context&, const data_chunk_t& inputs, vector_t& output) {
+        const auto& base = inputs.data[0];
+        const auto& exponent = inputs.data[1];
+        const auto* base_data = base.data<double>();
+        const auto* exponent_data = exponent.data<double>();
+        auto* dst = output.data<double>();
+        const bool all_valid = all_inputs_valid(inputs);
+        for (uint64_t row = 0; row < inputs.size(); row++) {
+            if (!all_valid && row_contains_null(inputs, row)) {
+                output.set_null(row, true);
+                continue;
+            }
+            dst[row] = std::pow(base_data[row], exponent_data[row]);
         }
-        output.emplace_back(resource, std::pow(inputs[0].value<double>(), inputs[1].value<double>()));
         return core::error_t::no_error();
     }
 
-    core::error_t row_sqrt(kernel_context& ctx,
-                           const std::pmr::vector<logical_value_t>& inputs,
-                           std::pmr::vector<logical_value_t>& output) {
-        auto* resource = ctx.exec_context().resource();
-        if (has_null_input(inputs)) {
-            output.emplace_back(resource, logical_type::NA);
-            return core::error_t::no_error();
+    core::error_t vector_sqrt(kernel_context&, const data_chunk_t& inputs, vector_t& output) {
+        const auto& input = inputs.data.front();
+        const auto* src = input.data<double>();
+        auto* dst = output.data<double>();
+        const bool all_valid = all_inputs_valid(inputs);
+        for (uint64_t row = 0; row < inputs.size(); row++) {
+            if (!all_valid && input.is_null(row)) {
+                output.set_null(row, true);
+                continue;
+            }
+            dst[row] = std::sqrt(src[row]);
         }
-        output.emplace_back(resource, std::sqrt(inputs[0].value<double>()));
         return core::error_t::no_error();
     }
 
-    core::error_t row_cbrt(kernel_context& ctx,
-                           const std::pmr::vector<logical_value_t>& inputs,
-                           std::pmr::vector<logical_value_t>& output) {
-        auto* resource = ctx.exec_context().resource();
-        if (has_null_input(inputs)) {
-            output.emplace_back(resource, logical_type::NA);
-            return core::error_t::no_error();
+    core::error_t vector_cbrt(kernel_context&, const data_chunk_t& inputs, vector_t& output) {
+        const auto& input = inputs.data.front();
+        const auto* src = input.data<double>();
+        auto* dst = output.data<double>();
+        const bool all_valid = all_inputs_valid(inputs);
+        for (uint64_t row = 0; row < inputs.size(); row++) {
+            if (!all_valid && input.is_null(row)) {
+                output.set_null(row, true);
+                continue;
+            }
+            dst[row] = std::cbrt(src[row]);
         }
-        output.emplace_back(resource, std::cbrt(inputs[0].value<double>()));
         return core::error_t::no_error();
     }
 
     // 20! is the largest factorial representable in int64
     constexpr int64_t max_factorial_argument = 20;
-    core::error_t row_factorial(kernel_context& ctx,
-                                const std::pmr::vector<logical_value_t>& inputs,
-                                std::pmr::vector<logical_value_t>& output) {
+
+    core::error_t vector_factorial(kernel_context& ctx, const data_chunk_t& inputs, vector_t& output) {
         auto* resource = ctx.exec_context().resource();
-        if (has_null_input(inputs)) {
-            output.emplace_back(resource, logical_type::NA);
-            return core::error_t::no_error();
+        const auto& input = inputs.data.front();
+        const auto* src = input.data<int64_t>();
+        auto* dst = output.data<int64_t>();
+        const bool all_valid = all_inputs_valid(inputs);
+        for (uint64_t row = 0; row < inputs.size(); row++) {
+            if (!all_valid && input.is_null(row)) {
+                output.set_null(row, true);
+                continue;
+            }
+            const auto argument = src[row];
+            if (argument < 0) {
+                return core::error_t(core::error_code_t::kernel_error,
+                                     std::pmr::string{"factorial of a negative number is undefined", resource});
+            }
+            if (argument > max_factorial_argument) {
+                return core::error_t(core::error_code_t::kernel_error,
+                                     std::pmr::string{"factorial argument is too large for bigint", resource});
+            }
+            int64_t result = 1;
+            for (int64_t factor = 2; factor <= argument; factor++) {
+                result *= factor;
+            }
+            dst[row] = result;
         }
-        const auto argument = inputs[0].value<int64_t>();
-        if (argument < 0) {
-            return core::error_t(core::error_code_t::kernel_error,
-                                 std::pmr::string{"factorial of a negative number is undefined", resource});
-        }
-        if (argument > max_factorial_argument) {
-            return core::error_t(core::error_code_t::kernel_error,
-                                 std::pmr::string{"factorial argument is too large for bigint", resource});
-        }
-        int64_t result = 1;
-        for (int64_t factor = 2; factor <= argument; factor++) {
-            result *= factor;
-        }
-        output.emplace_back(resource, result);
         return core::error_t::no_error();
     }
 
-    std::unique_ptr<row_function> make_fixed_type_func(std::pmr::memory_resource* resource,
-                                                       const std::string& name,
-                                                       const std::string& short_doc,
-                                                       const std::string& full_doc,
-                                                       logical_type type,
-                                                       size_t num_args,
-                                                       row_exec_fn kernel) {
+    std::unique_ptr<vector_function> make_fixed_type_func(std::pmr::memory_resource* resource,
+                                                          const std::string& name,
+                                                          const std::string& short_doc,
+                                                          const std::string& full_doc,
+                                                          logical_type type,
+                                                          size_t num_args,
+                                                          vector_exec_fn kernel) {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
-        auto fn = std::make_unique<row_function>(name, arity::fixed_num(num_args), doc, /*available_kernel_slots=*/1);
+        auto fn =
+            std::make_unique<vector_function>(name, arity::fixed_num(num_args), doc, /*available_kernel_slots=*/1);
 
         std::pmr::vector<parameter_type> parameters(resource);
         for (size_t i = 0; i < num_args; i++) {
             parameters.push_back(parameter_type::exact(complex_logical_type{type}));
         }
-        kernel_signature_t sig(function_type_t::row,
+        kernel_signature_t sig(function_type_t::vector,
                                std::move(parameters),
                                {output_type::fixed(complex_logical_type{type})});
-        (void) fn->add_kernel(resource, row_kernel(std::move(sig), kernel));
+        (void) fn->add_kernel(resource, vector_kernel(std::move(sig), kernel));
 
         return fn;
     }
 
-    std::unique_ptr<row_function> make_abs_func(std::pmr::memory_resource* resource,
-                                                const std::string& name,
-                                                const std::string& short_doc,
-                                                const std::string& full_doc) {
+    std::unique_ptr<vector_function> make_abs_func(std::pmr::memory_resource* resource,
+                                                   const std::string& name,
+                                                   const std::string& short_doc,
+                                                   const std::string& full_doc) {
         function_doc doc{short_doc, full_doc, {"arg"}, false};
 
-        auto fn = std::make_unique<row_function>(name, arity::unary(), doc, /*available_kernel_slots=*/1);
+        auto fn = std::make_unique<vector_function>(name, arity::unary(), doc, /*available_kernel_slots=*/1);
 
-        kernel_signature_t sig(function_type_t::row,
+        kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::variable(0, absolute_parameters(resource))},
                                {output_type::same_type_at(0)});
-        row_kernel k(std::move(sig), row_abs);
+        vector_kernel k(std::move(sig), vector_abs);
         (void) fn->add_kernel(resource, std::move(k));
 
         return fn;
@@ -218,28 +252,28 @@ namespace components::compute {
                                                    "POW(x, y) -> x raised to the power y",
                                                    logical_type::DOUBLE,
                                                    2,
-                                                   row_pow));
+                                                   vector_pow));
         r.add_builtin(make_fixed_type_func(r.resource(),
                                                    "sqrt",
                                                    "Square root",
                                                    "SQRT(x) -> the square root of x",
                                                    logical_type::DOUBLE,
                                                    1,
-                                                   row_sqrt));
+                                                   vector_sqrt));
         r.add_builtin(make_fixed_type_func(r.resource(),
                                                    "cbrt",
                                                    "Cube root",
                                                    "CBRT(x) -> the cube root of x",
                                                    logical_type::DOUBLE,
                                                    1,
-                                                   row_cbrt));
+                                                   vector_cbrt));
         r.add_builtin(make_fixed_type_func(r.resource(),
                                                    "factorial",
                                                    "Factorial",
                                                    "FACTORIAL(x) -> the product of the integers 1..x",
                                                    logical_type::BIGINT,
                                                    1,
-                                                   row_factorial));
+                                                   vector_factorial));
     }
 
 } // namespace components::compute

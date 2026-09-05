@@ -237,7 +237,7 @@ namespace components::sql::transform {
             case T_AlterTableStmt:
                 // TODO: ALTER TABLE needs target table resolution — read the
                 // AlterTableStmt.relation RangeVar and wrap.
-                log_node = transform_alter_table(pg_cast<AlterTableStmt>(node));
+                log_node = transform_alter_table(pg_cast<AlterTableStmt>(node), plan);
                 break;
             case T_RenameStmt:
                 log_node = transform_rename(pg_cast<RenameStmt>(node));

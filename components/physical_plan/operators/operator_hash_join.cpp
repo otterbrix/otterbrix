@@ -13,7 +13,6 @@ namespace components::operators {
 
     using hash_join_detail::right_index_t;
     using hash_join_detail::row_ref;
-    using join_detail::join_builder;
 
     namespace {
 
@@ -50,12 +49,12 @@ namespace components::operators {
 
         // Vectorized typed hash of the key columns of one chunk into `out_hashes`
         // (one uint64 per row), via data_chunk_t::hash (per physical_type +
-        // combine_hash for multi-column). data_chunk_t::hash is non-const, but the hash
-        // is a pure read, hence the const_cast.
+        // combine_hash for multi-column). data_chunk_t::hash is non-const, but the
+        // hash is a pure read; the const_cast mirrors operator_group's fast path.
+        // `col_ids` is owned by the operator so the call allocates nothing.
         void hash_key_columns(const vector::data_chunk_t& chunk,
-                              const std::pmr::vector<uint64_t>& key_cols,
+                              std::vector<uint64_t>& col_ids,
                               vector::vector_t& out_hashes) {
-            std::vector<uint64_t> col_ids(key_cols.begin(), key_cols.end());
             const_cast<vector::data_chunk_t&>(chunk).hash(col_ids, out_hashes);
         }
     } // namespace
@@ -73,6 +72,8 @@ namespace components::operators {
         // stored as one-element lists so the build/probe path is arity-agnostic.
         probe_key_cols_.push_back(static_cast<uint64_t>(left_col));
         build_key_cols_.push_back(static_cast<uint64_t>(right_col));
+        probe_hash_cols_.assign(probe_key_cols_.begin(), probe_key_cols_.end());
+        build_hash_cols_.assign(build_key_cols_.begin(), build_key_cols_.end());
     }
 
     void operator_hash_join_t::build_index_() {
@@ -103,9 +104,8 @@ namespace components::operators {
             if (B.size() == 0) {
                 continue;
             }
-            vector::vector_t hashes(resource_, types::logical_type::UBIGINT, B.size());
-            hash_key_columns(B, build_key_cols_, hashes);
-            const auto* h = hashes.data<uint64_t>();
+            hash_key_columns(B, build_hash_cols_, hashes_);
+            const auto* h = hashes_.data<uint64_t>();
             for (uint64_t rj = 0; rj < B.size(); ++rj) {
                 // Skip NULL build keys — they never equi-join.
                 if (!keys_all_valid(B, build_key_cols_, rj)) {
@@ -123,17 +123,15 @@ namespace components::operators {
         const bool left_outer = (join_type_ == type::left || join_type_ == type::full);
         const bool mark_matched = (join_type_ == type::right || join_type_ == type::full);
 
-        join_builder builder(resource_, res_types_, indices_left_, indices_right_, out);
+        builder_.set_output(&out);
 
         const uint64_t n = probe.size();
         if (n == 0) {
-            builder.flush();
             return;
         }
 
-        vector::vector_t hashes(resource_, types::logical_type::UBIGINT, n);
-        hash_key_columns(probe, probe_key_cols_, hashes);
-        const auto* h = hashes.data<uint64_t>();
+        hash_key_columns(probe, probe_hash_cols_, hashes_);
+        const auto* h = hashes_.data<uint64_t>();
 
         for (uint64_t li = 0; li < n; ++li) {
             bool matched = false;
@@ -147,7 +145,7 @@ namespace components::operators {
                     if (!keys_verify(probe, probe_key_cols_, li, B, build_key_cols_, ref.row_index)) {
                         continue;
                     }
-                    builder.emit_matched(probe, li, B, ref.row_index);
+                    builder_.emit_matched(probe, li, B, ref.row_index);
                     matched = true;
                     if (mark_matched) {
                         build_matched_[build_chunk_offsets_[ref.chunk_index] + ref.row_index] = 1;
@@ -155,10 +153,10 @@ namespace components::operators {
                 }
             }
             if (!matched && left_outer) {
-                builder.emit_left_only(probe, li);
+                builder_.emit_left_only(probe, li);
             }
         }
-        builder.flush();
+        builder_.gather();
     }
 
     void operator_hash_join_t::emit_unmatched_build_(chunks_vector_t& out) {
@@ -169,7 +167,7 @@ namespace components::operators {
             return;
         }
         const auto& build_chunks = right_->output()->chunks();
-        join_builder builder(resource_, res_types_, indices_left_, indices_right_, out);
+        builder_.set_output(&out);
         for (size_t ci = 0; ci < build_chunks.size(); ++ci) {
             const auto& B = build_chunks[ci];
             const uint64_t base = build_chunk_offsets_[ci];
@@ -177,11 +175,10 @@ namespace components::operators {
                 // A NULL-key build row is never marked matched, so it is correctly
                 // emitted here (right/full preserve every build row).
                 if (build_matched_[base + rj] == 0) {
-                    builder.emit_right_only(B, rj);
+                    builder_.emit_right_only(B, rj);
                 }
             }
         }
-        builder.flush();
     }
 
     core::error_t operator_hash_join_t::push(pipeline::context_t*, vector::data_chunk_t&& input, chunks_vector_t& out) {
@@ -213,6 +210,11 @@ namespace components::operators {
                                              res_types_,
                                              indices_left_,
                                              indices_right_);
+            join_detail::compute_active_indices(input,
+                                                build_chunks.front(),
+                                                indices_left_,
+                                                indices_right_,
+                                                &active_indices_);
             build_index_();
             index_built_ = true;
         }
@@ -222,8 +224,9 @@ namespace components::operators {
     }
 
     core::error_t operator_hash_join_t::finalize(pipeline::context_t*, chunks_vector_t& out) {
-        // Right/full: drain build rows that no probe row matched, NULL-padded on the
-        // left side. Other join types finalize to a no-op.
+        // The builder holds its output chunk ACROSS probe batches, so finalize() is
+        // where the last partial chunk is emitted — for EVERY join type, not only the
+        // right/full drain below.
         //
         // If push() never ran (the probe source emitted its drain sentinel before
         // any schema'd batch), the index is unbuilt and res_types_ is empty. With no
@@ -240,6 +243,8 @@ namespace components::operators {
             return core::error_t::no_error();
         }
         emit_unmatched_build_(out);
+        builder_.set_output(&out);
+        builder_.flush();
         return core::error_t::no_error();
     }
 

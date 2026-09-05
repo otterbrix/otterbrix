@@ -89,7 +89,7 @@ namespace services::planner {
             case node_type::group_t:
                 return impl::create_plan_group(context, function_registry, node, params);
             case node_type::select_t:
-                return impl::create_plan_select(context, node, params);
+                return impl::create_plan_select(context, node);
             case node_type::sort_t:
                 return impl::create_plan_sort(context, node);
             case node_type::update_t:

@@ -67,6 +67,80 @@ namespace services::dispatcher {
     using namespace components::catalog;
     using namespace validation;
 
+    components::compute::function_types_mask check_expr_allowed_functions() {
+        return components::compute::create_mask(components::compute::function_type_t::vector);
+    }
+
+    // Bind a table's CHECK predicates to the schema of the rows they will judge: column references
+    // become resolved paths, casts and function calls get their implementations.
+    //
+    // This runs after enrich rather than inside validate_schema, because enrich is where the
+    // predicates come into being — it parses them out of the catalog, and validate_schema has
+    // already been and gone by then. DDL proved each one sound against this table, so a refusal
+    // here means the stored form and the schema have drifted apart.
+    namespace {
+        template<typename Node>
+        [[nodiscard]] core::error_t bind_predicates(const validation::validation_context_t& context,
+                                                    Node* node,
+                                                    const storage_parameters& parameters) {
+            if (node->check_predicates().empty()) {
+                return core::error_t::no_error();
+            }
+            const auto* target = node->table_metadata();
+            if (target == nullptr) {
+                return core::error_t::no_error();
+            }
+            // A CHECK judges the STORED row, so it resolves against the table's own columns —
+            // not against whatever subset of them this statement happens to supply.
+            named_schema stored_row_schema{context.resource};
+            for (const auto& column : target->columns) {
+                stored_row_schema.emplace_back(type_from_t{target->name, column.type});
+            }
+            // A predicate's constants are its own: enrich bound them into the map that came with
+            // it, not into the statement's. Resolving against the statement's map would look for
+            // ids that were never put there.
+            const auto& predicate_parameters = node->check_params() ? node->check_params()->parameters() : parameters;
+            const validation::expression_context_t predicate_context{context.resource,
+                                                                     stored_row_schema,
+                                                                     predicate_parameters,
+                                                                     context.cast_registry,
+                                                                     context.function_registry,
+                                                                     context.execution_context,
+                                                                     check_expr_allowed_functions()};
+            for (auto& [name, predicate] : node->check_predicates()) {
+                if (auto error = validation::resolve_expression(predicate, predicate_context); error.contains_error()) {
+                    return error;
+                }
+            }
+            return core::error_t::no_error();
+        }
+    } // namespace
+
+    core::error_t resolve_constraint_predicates(const validation::validation_context_t& context,
+                                                node_t* root,
+                                                const storage_parameters& parameters) {
+        if (root == nullptr) {
+            return core::error_t::no_error();
+        }
+        if (root->type() == node_type::insert_t) {
+            if (auto error = bind_predicates(context, reinterpret_cast<node_insert_t*>(root), parameters);
+                error.contains_error()) {
+                return error;
+            }
+        } else if (root->type() == node_type::update_t) {
+            if (auto error = bind_predicates(context, reinterpret_cast<node_update_t*>(root), parameters);
+                error.contains_error()) {
+                return error;
+            }
+        }
+        for (const auto& child : root->children()) {
+            if (auto error = resolve_constraint_predicates(context, child.get(), parameters); error.contains_error()) {
+                return error;
+            }
+        }
+        return core::error_t::no_error();
+    }
+
     namespace impl {
 
         // Rewrite an is_not_null / is_null predicate on a multi-type field into
@@ -280,8 +354,7 @@ namespace services::dispatcher {
                 context.cast_registry,
                 context.function_registry,
                 context.execution_context,
-                components::compute::create_mask(components::compute::function_type_t::row,
-                                                 components::compute::function_type_t::vector),
+                components::compute::create_mask(components::compute::function_type_t::vector),
                 schema_right};
             expression_ptr expression{expr};
             if (auto error = validation::resolve_expression(expression, expression_context); error.contains_error()) {
@@ -330,30 +403,26 @@ namespace services::dispatcher {
                 if (node->expressions()[0]->group() == expression_group::compare) {
                     auto* expr = reinterpret_cast<compare_expression_t*>(node->expressions()[0].get());
                     return validate_schema(context, expr, parameters, schema_left, schema_right);
-                } else if (node->expressions()[0]->group() == expression_group::function) {
-                    auto* expr = reinterpret_cast<function_expression_t*>(node->expressions()[0].get());
-                    auto allowed_function_types =
-                        components::compute::create_mask(components::compute::function_type_t::row,
-                                                         components::compute::function_type_t::vector);
-                    auto expr_res =
-                        validate_schema(context, expr, parameters, schema_left, schema_right, allowed_function_types);
-                    if (expr_res.has_error()) {
-                        return expr_res;
-                    }
-                    if (expr_res.value().size() == 1 && expr_res.value().front().type.type() == logical_type::BOOLEAN) {
-                        return expr_res;
-                    } else {
-                        return core::error_t(
-                            core::error_code_t::incorrect_function_return_type,
-                            std::pmr::string{"function: \'" + expr->name() +
-                                                 "(...)\' was found but can not be used in WHERE clause, "
-                                                 "because return type is not a boolean",
-                                             resource});
-                    }
                 } else {
-                    assert(false);
-                    return core::error_t(core::error_code_t::schema_error,
-                                         std::pmr::string{"incorrect expr type in node_group", resource});
+                    validation::expression_context_t predicate_context{
+                        resource,
+                        *schema_left,
+                        parameters,
+                        context.cast_registry,
+                        context.function_registry,
+                        context.execution_context,
+                        components::compute::create_mask(components::compute::function_type_t::vector),
+                        schema_right};
+                    predicate_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
+                    if (auto error = validation::resolve_expression(node->expressions()[0], predicate_context);
+                        error.contains_error()) {
+                        return error;
+                    }
+                    named_schema predicate_schema{resource};
+                    predicate_schema.emplace_back(
+                        type_from_t{node->result_alias(),
+                                    components::types::complex_logical_type{logical_type::BOOLEAN}});
+                    return predicate_schema;
                 }
             }
         }
@@ -367,9 +436,25 @@ namespace services::dispatcher {
             for (auto& expr : node->expressions()) {
                 if (expr->group() == expression_group::sort) {
                     auto* sort_expr = static_cast<sort_expression_t*>(expr.get());
-                    auto res = find_types(resource, sort_expr->key(), schema);
-                    if (res.has_error()) {
-                        return res.convert_error<named_schema>();
+                    if (components::expressions::is_key(sort_expr->operand())) {
+                        auto res = find_types(resource, components::expressions::as_key(sort_expr->operand()), schema);
+                        if (res.has_error()) {
+                            return res.convert_error<named_schema>();
+                        }
+                        continue;
+                    }
+                    const validation::expression_context_t expression_context{
+                        resource,
+                        schema,
+                        parameters,
+                        context.cast_registry,
+                        context.function_registry,
+                        context.execution_context,
+                        components::compute::create_mask(components::compute::function_type_t::vector)};
+                    auto& operand = std::get<components::expressions::expression_ptr>(sort_expr->operand());
+                    if (auto error = validation::resolve_expression(operand, expression_context);
+                        error.contains_error()) {
+                        return error;
                     }
                 } else if (expr->group() == expression_group::scalar) {
                     auto* scalar_expr = static_cast<scalar_expression_t*>(expr.get());
@@ -378,8 +463,7 @@ namespace services::dispatcher {
                         scalar_expr,
                         schema,
                         parameters,
-                        components::compute::create_mask(components::compute::function_type_t::row,
-                                                         components::compute::function_type_t::vector));
+                        components::compute::create_mask(components::compute::function_type_t::vector));
                     if (resolve_error.contains_error()) {
                         return resolve_error;
                     }
@@ -402,7 +486,24 @@ namespace services::dispatcher {
             auto* resource = context.resource;
             auto& exprs = *returning;
             for (size_t idx = 0; idx < exprs.size();) {
-                if (!exprs[idx] || exprs[idx]->group() != expression_group::scalar) {
+                if (!exprs[idx]) {
+                    idx++;
+                    continue;
+                }
+                if (exprs[idx]->group() != expression_group::scalar) {
+                    const validation::expression_context_t expression_context{
+                        resource,
+                        *schema_left,
+                        parameters,
+                        context.cast_registry,
+                        context.function_registry,
+                        context.execution_context,
+                        components::compute::create_mask(components::compute::function_type_t::vector),
+                        schema_right};
+                    if (auto error = validation::resolve_expression(exprs[idx], expression_context);
+                        error.contains_error()) {
+                        return error;
+                    }
                     idx++;
                     continue;
                 }
@@ -472,8 +573,7 @@ namespace services::dispatcher {
                             scalar_expr,
                             *schema_left,
                             parameters,
-                            components::compute::create_mask(components::compute::function_type_t::row,
-                                                             components::compute::function_type_t::vector),
+                            components::compute::create_mask(components::compute::function_type_t::vector),
                             schema_right,
                             nullptr);
                         if (resolve_error.contains_error()) {
@@ -1064,8 +1164,7 @@ namespace services::dispatcher {
                             context.cast_registry,
                             context.function_registry,
                             context.execution_context,
-                            components::compute::create_mask(components::compute::function_type_t::row,
-                                                             components::compute::function_type_t::vector,
+                            components::compute::create_mask(components::compute::function_type_t::vector,
                                                              components::compute::function_type_t::aggregate)};
                         for (auto& expr : node_group->expressions()) {
                             if (expr->group() == expression_group::aggregate) {
@@ -1478,8 +1577,7 @@ namespace services::dispatcher {
                                     scalar_expr,
                                     incoming_schema,
                                     parameters,
-                                    components::compute::create_mask(components::compute::function_type_t::row,
-                                                                     components::compute::function_type_t::vector,
+                                    components::compute::create_mask(components::compute::function_type_t::vector,
                                                                      components::compute::function_type_t::aggregate));
                                 if (resolve_error.contains_error()) {
                                     return resolve_error;
@@ -1610,8 +1708,7 @@ namespace services::dispatcher {
                             context.cast_registry,
                             context.function_registry,
                             context.execution_context,
-                            components::compute::create_mask(components::compute::function_type_t::row,
-                                                             components::compute::function_type_t::vector),
+                            components::compute::create_mask(components::compute::function_type_t::vector),
                             nullptr,
                             group_keys};
                         expression_ptr expression{scalar_expr};
@@ -1637,8 +1734,7 @@ namespace services::dispatcher {
                             context.cast_registry,
                             context.function_registry,
                             context.execution_context,
-                            components::compute::create_mask(components::compute::function_type_t::row,
-                                                             components::compute::function_type_t::vector,
+                            components::compute::create_mask(components::compute::function_type_t::vector,
                                                              components::compute::function_type_t::aggregate,
                                                              components::compute::function_type_t::expand),
                             nullptr,
@@ -1846,8 +1942,7 @@ namespace services::dispatcher {
                                     scalar_expr,
                                     result,
                                     parameters,
-                                    components::compute::create_mask(components::compute::function_type_t::row,
-                                                                     components::compute::function_type_t::vector));
+                                    components::compute::create_mask(components::compute::function_type_t::vector));
                                 if (resolve_error.contains_error()) {
                                     return resolve_error;
                                 }
@@ -1870,13 +1965,15 @@ namespace services::dispatcher {
                     // Add hidden columns for sort keys not in the GROUP output
                     for (auto& sort_child : node_sort->expressions()) {
                         if (sort_child->group() != expression_group::sort) {
-                            // A computed (scalar) sort key has no column of its own — its key
-                            // carries the direction encoding, not a name. Its operands are
-                            // resolved against the GROUP output by validate_schema below.
                             continue;
                         }
                         auto* sort_expr = static_cast<sort_expression_t*>(sort_child.get());
-                        auto& skey = sort_expr->key();
+                        if (!components::expressions::is_key(sort_expr->operand())) {
+                            // Ordering by a computed value promotes no column of its own; its
+                            // operands are resolved against the GROUP output by validate_schema.
+                            continue;
+                        }
+                        auto& skey = components::expressions::as_key(sort_expr->operand());
                         // Try resolving in the GROUP result schema first
                         auto field_in_result = validation::find_types(resource, skey, result);
                         if (!field_in_result.has_error() && !field_in_result.value().empty()) {
@@ -1963,8 +2060,7 @@ namespace services::dispatcher {
                                      context.function_registry,
                                      function_node->name(),
                                      function_input,
-                                     components::compute::create_mask(components::compute::function_type_t::row,
-                                                                      components::compute::function_type_t::vector,
+                                     components::compute::create_mask(components::compute::function_type_t::vector,
                                                                       components::compute::function_type_t::expand));
                 if (fn_resolved.has_error()) {
                     return fn_resolved.convert_error<named_schema>();
@@ -2448,9 +2544,6 @@ namespace services::dispatcher {
                 }
                 if (node->type() == node_type::update_t) {
                     auto* node_update = reinterpret_cast<node_update_t*>(node);
-                    auto allowed_function_types =
-                        components::compute::create_mask(components::compute::function_type_t::row,
-                                                         components::compute::function_type_t::vector);
                     for (auto& expr : node_update->updates()) {
                         auto target_res = validation::find_types(resource, expr->key(), table_schema);
                         if (target_res.has_error()) {
@@ -2459,30 +2552,19 @@ namespace services::dispatcher {
                         expr->key().set_side(side_t::left);
                         expr->key().set_path(target_res.value().front().path);
 
-                        if (expr->group() == expression_group::scalar) {
-                            auto* scalar = static_cast<scalar_expression_t*>(expr.get());
-                            // An assigned value is computed per affected row.
-                            auto resolve_error = impl::resolve_scalar_output_type(
-                                context,
-                                scalar,
-                                table_schema,
-                                parameters,
-                                components::compute::create_mask(components::compute::function_type_t::row,
-                                                                 components::compute::function_type_t::vector),
-                                source_schema);
-                            if (resolve_error.contains_error()) {
-                                return resolve_error;
-                            }
-                        } else if (expr->group() == expression_group::function) {
-                            auto function_res = impl::validate_schema(context,
-                                                                      static_cast<function_expression_t*>(expr.get()),
-                                                                      parameters,
-                                                                      &table_schema,
-                                                                      source_schema,
-                                                                      allowed_function_types);
-                            if (function_res.has_error()) {
-                                return function_res;
-                            }
+                        // An assigned value is computed per affected row
+                        const validation::expression_context_t assignment_context{
+                            resource,
+                            table_schema,
+                            parameters,
+                            context.cast_registry,
+                            context.function_registry,
+                            context.execution_context,
+                            components::compute::create_mask(components::compute::function_type_t::vector),
+                            source_schema};
+                        if (auto error = validation::resolve_expression(expr, assignment_context);
+                            error.contains_error()) {
+                            return error;
                         }
 
                         // get type of where expression value will be placed
@@ -2598,6 +2680,57 @@ namespace services::dispatcher {
                                              std::pmr::string{message.c_str(), resource}};
                     }
                 }
+                return named_schema{resource};
+            }
+            case node_type::create_constraint_t: {
+                auto* constraint_node = static_cast<node_create_constraint_t*>(node);
+                if (constraint_node->kind() != constraint_kind::check) {
+                    // Key and foreign-key constraints name columns rather than carrying an
+                    // expression; enrich resolves those names to attoids.
+                    break;
+                }
+                const auto* constrained = constraint_node->table_metadata();
+                if (!constrained) {
+                    return core::error_t(
+                        core::error_code_t::table_not_exists,
+                        std::pmr::string{"CHECK constraint target collection does not exist", resource});
+                }
+                auto expression = constraint_node->check_expression();
+                if (!expression) {
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"CHECK constraint carries no expression", resource});
+                }
+
+                // The predicate sees exactly the constrained table's columns.
+                named_schema constraint_schema{resource};
+                for (const auto& column : constrained->columns) {
+                    constraint_schema.emplace_back(type_from_t{constrained->name, column.type});
+                }
+
+                validation::expression_context_t constraint_context{resource,
+                                                                    constraint_schema,
+                                                                    parameters,
+                                                                    context.cast_registry,
+                                                                    context.function_registry,
+                                                                    context.execution_context,
+                                                                    check_expr_allowed_functions()};
+                // A CHECK is a condition, so it states the same requirement WHERE does.
+                constraint_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
+                bool saw_reduction = false;
+                if (auto error = validation::resolve_expression(expression, constraint_context, &saw_reduction);
+                    error.contains_error()) {
+                    return error;
+                }
+                // A CHECK is answered per row, so a call that folds many rows into one has no row
+                // to answer for.
+                if (saw_reduction) {
+                    return core::error_t(
+                        core::error_code_t::invalid_constraint,
+                        std::pmr::string{"CHECK constraint \"" + constraint_node->name() +
+                                             "\" uses an aggregate; a CHECK is evaluated for one row at a time",
+                                         resource});
+                }
+                constraint_node->set_check_expression(std::move(expression));
                 return named_schema{resource};
             }
             case node_type::drop_t:

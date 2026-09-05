@@ -25,7 +25,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_insert_scaling.cpp
         test_scan_pin_scope.cpp
         test_string_projection.cpp
-        test_check_on_update.cpp
+        test_constraint_write_paths.cpp
+        test_check_constraint_ddl.cpp
         test_index_bootstrap_failure.cpp
         test_catalog_write_refusal.cpp
         test_catalog_delete_refusal.cpp
@@ -64,7 +65,6 @@ set( ${PROJECT_NAME}_SOURCES
         test_pump_hops.cpp
         test_append_pin_lifetime.cpp
         test_gather_string_lifetime.cpp
-        test_fk_check_on_update.cpp
         test_fk_cascade_row_identity.cpp
         test_fk_arity_mismatch.cpp
         test_fk_omitted_ref_columns.cpp
@@ -150,6 +150,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_hash_join.cpp
         test_star_join_e2e.cpp
         test_returning.cpp
+        test_expression_matrix.cpp
         test_parser_extension.cpp
         test_engine_lifecycle.cpp
         test_parameterized_queries.cpp

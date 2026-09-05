@@ -116,15 +116,15 @@ TEST_CASE("components::planner::sort") {
     auto resource = core::pmr::otterbrix_resource();
     {
         std::vector<expression_ptr> expressions;
-        expressions.emplace_back(new sort_expression_t{key(&resource, "key"), sort_order::asc});
+        expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "key"), sort_order::asc});
         auto node_sort =
             make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
         REQUIRE(node_sort->to_string() == R"_($sort: {key: 1})_");
     }
     {
         std::vector<expression_ptr> expressions;
-        expressions.emplace_back(new sort_expression_t{key(&resource, "key1"), sort_order::asc});
-        expressions.emplace_back(new sort_expression_t{key(&resource, "key2"), sort_order::desc});
+        expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "key1"), sort_order::asc});
+        expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "key2"), sort_order::desc});
         auto node_sort =
             make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions);
         REQUIRE(node_sort->to_string() == R"_($sort: {key1: 1, key2: -1})_");
@@ -157,8 +157,8 @@ TEST_CASE("components::planner::aggregate") {
     }
     {
         std::vector<expression_ptr> expressions;
-        expressions.emplace_back(new sort_expression_t{key(&resource, "name"), sort_order::asc});
-        expressions.emplace_back(new sort_expression_t{key(&resource, "count"), sort_order::desc});
+        expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "name"), sort_order::asc});
+        expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "count"), sort_order::desc});
         aggregate->append_child(
             make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions));
     }
@@ -205,7 +205,7 @@ TEST_CASE("components::planner::aggregate_having") {
     // $sort: ORDER BY k
     {
         std::vector<expression_ptr> expressions;
-        expressions.emplace_back(new sort_expression_t{key(&resource, "k"), sort_order::asc});
+        expressions.emplace_back(new sort_expression_t{&resource, key(&resource, "k"), sort_order::asc});
         aggregate->append_child(
             make_node_sort(&resource, core::dbname_t{database_name}, core::relname_t{collection_name}, expressions));
     }

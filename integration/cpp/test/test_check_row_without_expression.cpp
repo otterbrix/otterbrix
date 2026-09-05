@@ -90,7 +90,7 @@ namespace {
                                                                   components::logical_plan::constraint_kind::check);
         cstr->set_inline_with_table(true);
         if (!expr.empty()) {
-            cstr->set_check_expr(expr);
+            cstr->set_check_expression_sql(expr);
         }
         created->append_child(components::logical_plan::node_ptr{std::move(cstr)});
 

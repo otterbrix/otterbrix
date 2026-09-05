@@ -77,24 +77,28 @@ namespace {
     const complex_logical_type kCastSource{logical_type::BOOLEAN};
     const complex_logical_type kCastTarget{logical_type::DATE};
 
-    core::error_t probe_exec(components::compute::kernel_context& ctx,
-                             const std::pmr::vector<components::types::logical_value_t>& in,
-                             std::pmr::vector<components::types::logical_value_t>& out) {
-        out.emplace_back(ctx.exec_context().resource(), in[0].value<int64_t>() * 2);
+    core::error_t probe_exec(components::compute::kernel_context&,
+                             const components::vector::data_chunk_t& in,
+                             components::vector::vector_t& out) {
+        const auto* source = in.data[0].data<int64_t>();
+        auto* destination = out.data<int64_t>();
+        for (uint64_t row = 0; row < in.size(); ++row) {
+            destination[row] = source[row] * 2;
+        }
         return core::error_t::no_error();
     }
 
-    // One-arg BIGINT -> BIGINT row UDF. The name is a parameter so each test owns its own
+    // One-arg BIGINT -> BIGINT vector UDF. The name is a parameter so each test owns its own
     // entry in the process-global default registry.
-    std::unique_ptr<components::compute::row_function> make_probe_func(std::pmr::memory_resource* resource,
-                                                                       const std::string& name) {
+    std::unique_ptr<components::compute::vector_function> make_probe_func(std::pmr::memory_resource* resource,
+                                                                          const std::string& name) {
         using namespace components::compute;
         function_doc doc{"short_doc", "full_doc", {"arg"}, false};
-        auto fn = std::make_unique<row_function>(name, arity::unary(), doc, 1);
-        kernel_signature_t sig(function_type_t::row,
+        auto fn = std::make_unique<vector_function>(name, arity::unary(), doc, 1);
+        kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::BIGINT)},
                                {output_type::fixed(logical_type::BIGINT)});
-        row_kernel k{std::move(sig), probe_exec};
+        vector_kernel k{std::move(sig), probe_exec};
         auto add_err = fn->add_kernel(resource, std::move(k));
         REQUIRE_FALSE(add_err.contains_error());
         return fn;

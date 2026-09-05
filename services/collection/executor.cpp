@@ -1371,6 +1371,22 @@ namespace services::collection::executor {
                                                   "schema first.",
                                                   resource()}});
                         }
+                        // CHECK expression is not a part of the query, and requires its own pass
+                        // to fill in casts, functions and other runtime data
+                        if (!error && cstr->kind() == constraint_kind::check) {
+                            services::dispatcher::validation::validation_context_t validation_context{
+                                resource(),
+                                &plan.catalog_resolves,
+                                cast_registry_,
+                                function_registry_,
+                                context_storage.execution_context};
+                            auto schema_res = services::dispatcher::validate_schema(validation_context,
+                                                                                    plan.sub_queries.back().get(),
+                                                                                    plan.parameters->parameters());
+                            if (schema_res.has_error()) {
+                                error = make_cursor(resource(), schema_res.error());
+                            }
+                        }
                     }
                 }
                 break;
@@ -1473,6 +1489,22 @@ namespace services::collection::executor {
             if (enrich_err.contains_error()) {
                 trace(log_, "executor::execute_plan_full: enrich error: {}", enrich_err.what);
                 co_return execute_result_t{make_cursor(resource(), std::move(enrich_err))};
+            }
+            // Enrich has just parsed the target's CHECK predicates out of the catalog. Resolve them
+            // against the table they guard before the planner hands them to a constraint operator
+            {
+                services::dispatcher::validation::validation_context_t constraint_context{
+                    resource(),
+                    &plan.catalog_resolves,
+                    cast_registry_,
+                    function_registry_,
+                    context_storage.execution_context};
+                if (auto bind_err = services::dispatcher::resolve_constraint_predicates(constraint_context,
+                                                                                        plan.sub_queries.back().get(),
+                                                                                        plan.parameters->parameters());
+                    bind_err.contains_error()) {
+                    co_return execute_result_t{make_cursor(resource(), std::move(bind_err))};
+                }
             }
             // Logical plan rewrite: insert constraint wrapper nodes driven
             // by enriched fields.
@@ -1726,7 +1758,7 @@ namespace services::collection::executor {
                 // CREATE CONSTRAINT: reject an empty/invalid CHECK before allocating an OID.
                 if (original_type == node_type::create_constraint_t) {
                     auto* cstr = static_cast<node_create_constraint_t*>(eff);
-                    if (cstr->kind() == constraint_kind::check && cstr->check_expr().empty()) {
+                    if (cstr->kind() == constraint_kind::check && cstr->check_expression_sql().empty()) {
                         co_return execute_result_t{make_cursor(
                             resource(),
                             core::error_t{

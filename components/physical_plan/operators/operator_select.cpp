@@ -1,9 +1,10 @@
 #include "operator_select.hpp"
 
-#include <components/expressions/compare_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/vector/vector_operations.hpp>
 
 #include <algorithm>
+#include <optional>
 
 namespace components::operators {
 
@@ -28,22 +29,32 @@ namespace components::operators {
 
     } // anonymous namespace
 
+    bool projected_column_t::is_star() const noexcept {
+        const auto* nested = std::get_if<expressions::expression_ptr>(&value);
+        if (nested == nullptr || *nested == nullptr) {
+            return false;
+        }
+        const auto& expression = *nested;
+        return expression->group() == expressions::expression_group::scalar &&
+               static_cast<const expressions::scalar_expression_t*>(expression.get())->type() ==
+                   expressions::scalar_type::star_expand;
+    }
+
     core::error_t build_projection_graph(std::pmr::memory_resource* resource,
-                                         const std::pmr::vector<select_column_t>& columns,
+                                         const std::pmr::vector<projected_column_t>& columns,
                                          const logical_plan::storage_parameters& parameters,
                                          const vector::data_chunk_t& input,
                                          size_t right_offset,
                                          std::unique_ptr<execution_dag::execution_dag_t>* graph) {
-        // star_expand copies its columns straight from the input chunk, so it contributes
+        // A star copies its columns straight from the input chunk, so it contributes
         // no output slot and the graph's slots line up with the projected columns only.
-        std::pmr::vector<const expressions::expression_i*> projected(resource);
+        std::pmr::vector<expressions::param_storage> projected(resource);
         projected.reserve(columns.size());
         for (const auto& column : columns) {
-            if (column.type == select_column_t::kind::star_expand) {
+            if (column.is_star()) {
                 continue;
             }
-            assert(column.expression && "a projected column reached the graph without its expression");
-            projected.push_back(column.expression.get());
+            projected.push_back(column.value);
         }
 
         auto built = expressions::build_graph(resource, parameters.parameters, projected, input.types(), right_offset);
@@ -58,13 +69,7 @@ namespace components::operators {
         : read_write_operator_t(resource, log, operator_type::select)
         , columns_(resource) {}
 
-    void operator_select_t::add_column(select_column_t&& col) { columns_.push_back(std::move(col)); }
-
-    void operator_select_t::set_output_types(const std::pmr::vector<types::complex_logical_type>& types) {
-        for (size_t i = 0; i < columns_.size() && i < types.size(); ++i) {
-            columns_[i].result_type = types[i];
-        }
-    }
+    void operator_select_t::add_column(projected_column_t&& col) { columns_.push_back(std::move(col)); }
 
     core::error_t
     operator_select_t::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& out) {
@@ -84,7 +89,7 @@ namespace components::operators {
 
     core::result_wrapper_t<vector::data_chunk_t>
     evaluate_projection(std::pmr::memory_resource* resource,
-                        const std::pmr::vector<select_column_t>& columns,
+                        const std::pmr::vector<projected_column_t>& columns,
                         vector::data_chunk_t* input,
                         const logical_plan::storage_parameters& parameters,
                         const components::graph_execution_context& context,
@@ -99,8 +104,8 @@ namespace components::operators {
         }
         const vector::data_chunk_t& source = merged.has_value() ? *merged : *input;
 
-        const bool computes = std::any_of(columns.begin(), columns.end(), [](const select_column_t& column) {
-            return column.type != select_column_t::kind::star_expand;
+        const bool computes = std::any_of(columns.begin(), columns.end(), [](const projected_column_t& column) {
+            return !column.is_star();
         });
         std::optional<vector::data_chunk_t> computed;
         if (computes) {
@@ -128,7 +133,7 @@ namespace components::operators {
         vector::data_chunk_t result(resource, {}, cap);
         size_t output_index = 0;
         for (const auto& col : columns) {
-            if (col.type == select_column_t::kind::star_expand) {
+            if (col.is_star()) {
                 // Bare '*' — hand through the columns of the projected side. Qualified 'table.*'
                 // is pre-expanded to get_field columns at validation, so it never reaches here.
                 for (size_t column = 0; column < input->column_count(); ++column) {
@@ -148,7 +153,7 @@ namespace components::operators {
                 // A computed slot is overwritten by the next chunk, so its value is copied out.
                 vector::vector_ops::copy(source_vec, vec, num_rows, 0, 0);
             }
-            vec.set_type_alias(std::string{col.key.name});
+            vec.set_type_alias(std::string{col.name});
             result.data.push_back(std::move(vec));
             ++output_index;
         }

@@ -14,10 +14,9 @@ namespace components::compute {
     enum class function_type_t : uint8_t
     {
         invalid = 0,
-        row = 1,
-        vector = 2,
-        aggregate = 4,
-        expand = 8
+        vector = 1,
+        aggregate = 2,
+        expand = 4
     };
 
     using function_types_mask = std::underlying_type_t<function_type_t>;

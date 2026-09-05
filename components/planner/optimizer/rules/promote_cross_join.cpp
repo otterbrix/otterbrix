@@ -399,7 +399,7 @@ namespace components::planner::optimizer {
                         continue;
                     }
                     if (expr->group() == expression_group::sort) {
-                        remap_key(static_cast<sort_expression_t*>(expr.get())->key());
+                        walk_operand(static_cast<sort_expression_t*>(expr.get())->operand());
                     } else if (expr->group() == expression_group::scalar) {
                         walk_params(static_cast<scalar_expression_t*>(expr.get())->params());
                     }

@@ -189,8 +189,10 @@ namespace components::vector {
         // reloaded multi-row-group table reading back the union of two row groups' NULL
         // patterns). Dropping the mask is cheap — all-valid is represented by NO allocated
         // mask — and recurses into nested children, whose masks accumulate the same way.
+        // The string heap is the other leftover a refill would otherwise keep growing.
         for (auto& vec : data) {
             reset_validity_recursive(vec);
+            vec.reset_string_heap();
         }
     }
 

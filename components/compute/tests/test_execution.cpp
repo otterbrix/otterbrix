@@ -110,16 +110,15 @@ static core::result_wrapper_t<std::pmr::vector<int>> run_aggregate(std::pmr::mem
     return values;
 }
 
-static core::error_t row_double(kernel_context&,
-                                const std::pmr::vector<logical_value_t>& inputs,
-                                std::pmr::vector<logical_value_t>& output) {
-    output.emplace_back(inputs[0].resource(), inputs[0].value<int>() * 2);
+// A plain elementwise kernel: no options, no init, no finalize. The kernels above carry all
+// three, so this one covers the bare vector_kernel shape a scalar function actually uses.
+static core::error_t vec_double(kernel_context&, const data_chunk_t& inputs, vector_t& output) {
+    const auto* source = inputs.data[0].data<int>();
+    auto* destination = output.data<int>();
+    for (uint64_t row = 0; row < inputs.size(); ++row) {
+        destination[row] = source[row] * 2;
+    }
     return core::error_t::no_error();
-}
-
-static core::error_t
-row_exec_fail(kernel_context&, const std::pmr::vector<logical_value_t>&, std::pmr::vector<logical_value_t>&) {
-    return TEST_ERROR;
 }
 
 inline function_doc function_doc_with_options() { return function_doc{"", "", {}, true}; }
@@ -144,7 +143,7 @@ TEST_CASE("components::compute::vector::single") {
 
     auto res = fn->execute(chunk, &opts, ctx);
     REQUIRE_FALSE(res.has_error());
-    REQUIRE(std::get<data_chunk_t>(res.value()).data[0].data<int>()[0] == MAGIC_MULTIPLIER * 10);
+    REQUIRE(res.value().data[0].data<int>()[0] == MAGIC_MULTIPLIER * 10);
 }
 
 TEST_CASE("components::compute::vector::batch") {
@@ -175,9 +174,9 @@ TEST_CASE("components::compute::vector::batch") {
 
     auto res = fn->execute(batch, &opts, ctx);
     REQUIRE_FALSE(res.has_error());
-    REQUIRE(std::get<data_chunk_t>(res.value()).data.size() == 2);
-    REQUIRE(std::get<data_chunk_t>(res.value()).data[0].data<int>()[0] == MAGIC_MULTIPLIER);
-    REQUIRE(std::get<data_chunk_t>(res.value()).data[1].data<int>()[0] == MAGIC_MULTIPLIER * 10);
+    REQUIRE(res.value().data.size() == 2);
+    REQUIRE(res.value().data[0].data<int>()[0] == MAGIC_MULTIPLIER);
+    REQUIRE(res.value().data[1].data<int>()[0] == MAGIC_MULTIPLIER * 10);
 }
 
 TEST_CASE("components::compute::vector::output_resolver_refusal_reaches_the_caller") {
@@ -265,15 +264,15 @@ TEST_CASE("components::compute::aggregate::per_group") {
     REQUIRE(res.value()[1] == 15); // 10 (init) + 2 + 3
 }
 
-TEST_CASE("components::compute::row::single") {
+TEST_CASE("components::compute::vector::plain::chunk") {
     core::pmr::otterbrix_resource resource;
     exec_context_t ctx(&resource);
-    auto fn = std::make_unique<row_function>("row_single", arity::unary(), function_doc{}, 1);
+    auto fn = std::make_unique<vector_function>("plain_chunk", arity::unary(), function_doc{}, 1);
 
-    kernel_signature_t sig(function_type_t::row,
+    kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
                            {output_type::fixed(logical_type::INTEGER)});
-    row_kernel k(std::move(sig), row_double);
+    vector_kernel k(std::move(sig), vec_double);
     REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
     data_chunk_t chunk(&resource, {logical_type::INTEGER}, 3);
@@ -284,22 +283,22 @@ TEST_CASE("components::compute::row::single") {
 
     auto res = fn->execute(chunk, nullptr, ctx);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 3);
-    REQUIRE(vals[0].value<int>() == 2);
-    REQUIRE(vals[1].value<int>() == 4);
-    REQUIRE(vals[2].value<int>() == 6);
+    auto& out = res.value();
+    REQUIRE(out.size() == 3);
+    REQUIRE(out.data[0].data<int>()[0] == 2);
+    REQUIRE(out.data[0].data<int>()[1] == 4);
+    REQUIRE(out.data[0].data<int>()[2] == 6);
 }
 
-TEST_CASE("components::compute::row::batch") {
+TEST_CASE("components::compute::vector::plain::batch") {
     core::pmr::otterbrix_resource resource;
     exec_context_t ctx(&resource);
-    auto fn = std::make_unique<row_function>("row_batch", arity::unary(), function_doc{}, 1);
+    auto fn = std::make_unique<vector_function>("plain_batch", arity::unary(), function_doc{}, 1);
 
-    kernel_signature_t sig(function_type_t::row,
+    kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
                            {output_type::fixed(logical_type::INTEGER)});
-    row_kernel k(std::move(sig), row_double);
+    vector_kernel k(std::move(sig), vec_double);
     REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
     data_chunk_t c1(&resource, {logical_type::INTEGER}, 2);
@@ -307,43 +306,30 @@ TEST_CASE("components::compute::row::batch") {
     c1.set_value(0, 1, 7);
     c1.set_cardinality(2);
 
-    data_chunk_t c2(&resource, {logical_type::INTEGER}, 1);
+    // The two chunks are the SAME height on purpose. The fused result carries one column per
+    // input chunk and ONE row count for all of them, so a ragged batch has no honest count and
+    // is refused -- that refusal has its own case, vector::batch_refuses_chunks_of_unequal_height.
+    // This case is about the fuse, so it feeds the shape the fuse is defined for.
+    data_chunk_t c2(&resource, {logical_type::INTEGER}, 2);
     c2.set_value(0, 0, 10);
-    c2.set_cardinality(1);
+    c2.set_value(0, 1, 11);
+    c2.set_cardinality(2);
 
     std::vector<data_chunk_t> batch;
     batch.emplace_back(std::move(c1));
     batch.emplace_back(std::move(c2));
 
+    // One vector per input chunk, fused into the result chunk's columns, and the fused chunk
+    // reports the height every input shared.
     auto res = fn->execute(batch, nullptr, ctx);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 3);
-    REQUIRE(vals[0].value<int>() == 10);
-    REQUIRE(vals[1].value<int>() == 14);
-    REQUIRE(vals[2].value<int>() == 20);
-}
-
-TEST_CASE("components::compute::row::values") {
-    core::pmr::otterbrix_resource resource;
-    exec_context_t ctx(&resource);
-    // Direct pmr::vector path — single scalar call
-    auto fn = std::make_unique<row_function>("row_vals", arity::unary(), function_doc{}, 1);
-
-    kernel_signature_t sig(function_type_t::row,
-                           {parameter_type::exact(logical_type::INTEGER)},
-                           {output_type::fixed(logical_type::INTEGER)});
-    row_kernel k(std::move(sig), row_double);
-    REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
-
-    std::pmr::vector<logical_value_t> inputs(&resource);
-    inputs.emplace_back(&resource, 21);
-
-    auto res = fn->execute(inputs, nullptr, ctx);
-    REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 1);
-    REQUIRE(vals[0].value<int>() == 42);
+    auto& out = res.value();
+    REQUIRE(out.column_count() == 2);
+    REQUIRE(out.size() == 2);
+    REQUIRE(out.data[0].data<int>()[0] == 10);
+    REQUIRE(out.data[0].data<int>()[1] == 14);
+    REQUIRE(out.data[1].data<int>()[0] == 20);
+    REQUIRE(out.data[1].data<int>()[1] == 22);
 }
 
 TEST_CASE("components::compute::expand::generate_series") {
@@ -470,26 +456,10 @@ TEST_CASE("components::compute::errors") {
         auto status = run_aggregate(&resource, *fn, chunks, {{0, 0}}, 1).error().type;
         REQUIRE(status == core::error_code_t::kernel_error);
     }
-
-    SECTION("faulty row exec") {
-        auto fn = std::make_unique<row_function>("row", arity::unary(), function_doc{}, 1);
-
-        kernel_signature_t sig(function_type_t::row,
-                               {parameter_type::exact(logical_type::INTEGER)},
-                               {output_type::fixed(logical_type::INTEGER)});
-        row_kernel k(std::move(sig), row_exec_fail);
-        REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
-
-        std::pmr::vector<logical_value_t> inputs(&resource);
-        inputs.emplace_back(&resource, 1);
-
-        auto status = fn->execute(inputs, nullptr, ctx).error().type;
-        REQUIRE(status == core::error_code_t::kernel_error);
-    }
 }
 
 // ---------------------------------------------------------------------------
-// SUBSTRING / LENGTH / REGEXP_REPLACE — string row-kernel execution tests
+// SUBSTRING / LENGTH / REGEXP_REPLACE — string kernel execution tests
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -516,6 +486,60 @@ namespace {
             return nullptr;
         }
     };
+
+    // One scalar argument of a one-row argument chunk. A NULL argument is an NA-typed column —
+    // the shape the engine hands a kernel when a whole input column is null, and the one that
+    // carries no data buffer to read from.
+    struct arg_t {
+        enum class kind_t
+        {
+            text,
+            integer,
+            null
+        };
+
+        kind_t kind;
+        std::string text_value;
+        int64_t integer_value;
+
+        static arg_t text(std::string_view value) { return {kind_t::text, std::string(value), 0}; }
+        static arg_t integer(int64_t value) { return {kind_t::integer, {}, value}; }
+        static arg_t null() { return {kind_t::null, {}, 0}; }
+    };
+
+    data_chunk_t one_row_chunk(std::pmr::memory_resource* resource, const std::vector<arg_t>& args) {
+        std::pmr::vector<complex_logical_type> types(resource);
+        for (const auto& arg : args) {
+            switch (arg.kind) {
+                case arg_t::kind_t::text:
+                    types.emplace_back(logical_type::STRING_LITERAL);
+                    break;
+                case arg_t::kind_t::integer:
+                    types.emplace_back(logical_type::BIGINT);
+                    break;
+                case arg_t::kind_t::null:
+                    types.emplace_back(logical_type::NA);
+                    break;
+            }
+        }
+
+        data_chunk_t chunk(resource, types, uint64_t{1});
+        for (size_t column = 0; column < args.size(); ++column) {
+            switch (args[column].kind) {
+                case arg_t::kind_t::text:
+                    chunk.data[column].set_value(0, std::string_view{args[column].text_value});
+                    break;
+                case arg_t::kind_t::integer:
+                    chunk.data[column].set_value(0, args[column].integer_value);
+                    break;
+                case arg_t::kind_t::null:
+                    // An NA column is null by construction and owns no data.
+                    break;
+            }
+        }
+        chunk.set_cardinality(1);
+        return chunk;
+    }
 } // namespace
 
 TEST_CASE("components::compute::string::substring_basic") {
@@ -523,16 +547,11 @@ TEST_CASE("components::compute::string::substring_basic") {
     auto* fn = fx.get("substring");
     REQUIRE(fn != nullptr);
 
-    std::pmr::vector<logical_value_t> inputs(&fx.resource);
-    inputs.emplace_back(&fx.resource, std::string("hello world"));
-    inputs.emplace_back(&fx.resource, static_cast<int64_t>(7));
-    inputs.emplace_back(&fx.resource, static_cast<int64_t>(5));
+    auto args = one_row_chunk(&fx.resource, {arg_t::text("hello world"), arg_t::integer(7), arg_t::integer(5)});
 
-    auto res = fn->execute(inputs, nullptr, fx.ctx);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 1);
-    REQUIRE(vals[0].value<std::string_view>() == "world");
+    REQUIRE(res.value().data[0].data<std::string_view>()[0] == "world");
 }
 
 TEST_CASE("components::compute::string::substring_omit_len") {
@@ -540,15 +559,11 @@ TEST_CASE("components::compute::string::substring_omit_len") {
     auto* fn = fx.get("substring");
     REQUIRE(fn != nullptr);
 
-    std::pmr::vector<logical_value_t> inputs(&fx.resource);
-    inputs.emplace_back(&fx.resource, std::string("abcdefgh"));
-    inputs.emplace_back(&fx.resource, static_cast<int64_t>(3));
+    auto args = one_row_chunk(&fx.resource, {arg_t::text("abcdefgh"), arg_t::integer(3)});
 
-    auto res = fn->execute(inputs, nullptr, fx.ctx);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 1);
-    REQUIRE(vals[0].value<std::string_view>() == "cdefgh");
+    REQUIRE(res.value().data[0].data<std::string_view>()[0] == "cdefgh");
 }
 
 TEST_CASE("components::compute::string::substring_out_of_range") {
@@ -556,16 +571,11 @@ TEST_CASE("components::compute::string::substring_out_of_range") {
     auto* fn = fx.get("substring");
     REQUIRE(fn != nullptr);
 
-    std::pmr::vector<logical_value_t> inputs(&fx.resource);
-    inputs.emplace_back(&fx.resource, std::string("abc"));
-    inputs.emplace_back(&fx.resource, static_cast<int64_t>(99));
-    inputs.emplace_back(&fx.resource, static_cast<int64_t>(5));
+    auto args = one_row_chunk(&fx.resource, {arg_t::text("abc"), arg_t::integer(99), arg_t::integer(5)});
 
-    auto res = fn->execute(inputs, nullptr, fx.ctx);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 1);
-    REQUIRE(vals[0].value<std::string_view>().empty());
+    REQUIRE(res.value().data[0].data<std::string_view>()[0].empty());
 }
 
 TEST_CASE("components::compute::string::substring_null") {
@@ -573,16 +583,11 @@ TEST_CASE("components::compute::string::substring_null") {
     auto* fn = fx.get("substring");
     REQUIRE(fn != nullptr);
 
-    std::pmr::vector<logical_value_t> inputs(&fx.resource);
-    inputs.emplace_back(&fx.resource, logical_type::NA);
-    inputs.emplace_back(&fx.resource, static_cast<int64_t>(1));
-    inputs.emplace_back(&fx.resource, static_cast<int64_t>(2));
+    auto args = one_row_chunk(&fx.resource, {arg_t::null(), arg_t::integer(1), arg_t::integer(2)});
 
-    auto res = fn->execute(inputs, nullptr, fx.ctx);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 1);
-    REQUIRE(vals[0].type().type() == logical_type::NA);
+    REQUIRE(res.value().data[0].is_null(0));
 }
 
 TEST_CASE("components::compute::string::length_basic") {
@@ -590,14 +595,11 @@ TEST_CASE("components::compute::string::length_basic") {
     auto* fn = fx.get("length");
     REQUIRE(fn != nullptr);
 
-    std::pmr::vector<logical_value_t> inputs(&fx.resource);
-    inputs.emplace_back(&fx.resource, std::string("hello"));
+    auto args = one_row_chunk(&fx.resource, {arg_t::text("hello")});
 
-    auto res = fn->execute(inputs, nullptr, fx.ctx);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 1);
-    REQUIRE(vals[0].value<int64_t>() == 5);
+    REQUIRE(res.value().data[0].data<int64_t>()[0] == 5);
 }
 
 TEST_CASE("components::compute::string::length_empty") {
@@ -605,14 +607,11 @@ TEST_CASE("components::compute::string::length_empty") {
     auto* fn = fx.get("length");
     REQUIRE(fn != nullptr);
 
-    std::pmr::vector<logical_value_t> inputs(&fx.resource);
-    inputs.emplace_back(&fx.resource, std::string(""));
+    auto args = one_row_chunk(&fx.resource, {arg_t::text("")});
 
-    auto res = fn->execute(inputs, nullptr, fx.ctx);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 1);
-    REQUIRE(vals[0].value<int64_t>() == 0);
+    REQUIRE(res.value().data[0].data<int64_t>()[0] == 0);
 }
 
 TEST_CASE("components::compute::string::length_null") {
@@ -620,14 +619,31 @@ TEST_CASE("components::compute::string::length_null") {
     auto* fn = fx.get("length");
     REQUIRE(fn != nullptr);
 
-    std::pmr::vector<logical_value_t> inputs(&fx.resource);
-    inputs.emplace_back(&fx.resource, logical_type::NA);
+    auto args = one_row_chunk(&fx.resource, {arg_t::null()});
 
-    auto res = fn->execute(inputs, nullptr, fx.ctx);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 1);
-    REQUIRE(vals[0].type().type() == logical_type::NA);
+    REQUIRE(res.value().data[0].is_null(0));
+}
+
+// A whole column of NULLs is typed NA and owns no data buffer, while its validity mask reads
+// as all-valid. The kernel has to notice that by type, or it reads a buffer that was never
+// allocated.
+TEST_CASE("components::compute::string::length_null_column") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("length");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<complex_logical_type> types(&fx.resource);
+    types.emplace_back(logical_type::NA);
+    data_chunk_t args(&fx.resource, types, uint64_t{4});
+    args.set_cardinality(4);
+
+    auto res = fn->execute(args, nullptr, fx.ctx);
+    REQUIRE_FALSE(res.has_error());
+    for (uint64_t row = 0; row < 4; ++row) {
+        REQUIRE(res.value().data[0].is_null(row));
+    }
 }
 
 TEST_CASE("components::compute::string::regexp_replace_basic") {
@@ -635,16 +651,12 @@ TEST_CASE("components::compute::string::regexp_replace_basic") {
     auto* fn = fx.get("regexp_replace");
     REQUIRE(fn != nullptr);
 
-    std::pmr::vector<logical_value_t> inputs(&fx.resource);
-    inputs.emplace_back(&fx.resource, std::string("hello 123 world 456"));
-    inputs.emplace_back(&fx.resource, std::string("[0-9]+"));
-    inputs.emplace_back(&fx.resource, std::string("#"));
+    auto args =
+        one_row_chunk(&fx.resource, {arg_t::text("hello 123 world 456"), arg_t::text("[0-9]+"), arg_t::text("#")});
 
-    auto res = fn->execute(inputs, nullptr, fx.ctx);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 1);
-    REQUIRE(vals[0].value<std::string_view>() == "hello # world #");
+    REQUIRE(res.value().data[0].data<std::string_view>()[0] == "hello # world #");
 }
 
 TEST_CASE("components::compute::string::regexp_replace_no_match") {
@@ -652,16 +664,11 @@ TEST_CASE("components::compute::string::regexp_replace_no_match") {
     auto* fn = fx.get("regexp_replace");
     REQUIRE(fn != nullptr);
 
-    std::pmr::vector<logical_value_t> inputs(&fx.resource);
-    inputs.emplace_back(&fx.resource, std::string("abcdef"));
-    inputs.emplace_back(&fx.resource, std::string("[0-9]+"));
-    inputs.emplace_back(&fx.resource, std::string("#"));
+    auto args = one_row_chunk(&fx.resource, {arg_t::text("abcdef"), arg_t::text("[0-9]+"), arg_t::text("#")});
 
-    auto res = fn->execute(inputs, nullptr, fx.ctx);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 1);
-    REQUIRE(vals[0].value<std::string_view>() == "abcdef");
+    REQUIRE(res.value().data[0].data<std::string_view>()[0] == "abcdef");
 }
 
 TEST_CASE("components::compute::string::regexp_replace_null") {
@@ -669,16 +676,86 @@ TEST_CASE("components::compute::string::regexp_replace_null") {
     auto* fn = fx.get("regexp_replace");
     REQUIRE(fn != nullptr);
 
-    std::pmr::vector<logical_value_t> inputs(&fx.resource);
-    inputs.emplace_back(&fx.resource, logical_type::NA);
-    inputs.emplace_back(&fx.resource, std::string("x"));
-    inputs.emplace_back(&fx.resource, std::string("y"));
+    auto args = one_row_chunk(&fx.resource, {arg_t::null(), arg_t::text("x"), arg_t::text("y")});
 
-    auto res = fn->execute(inputs, nullptr, fx.ctx);
+    auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
-    auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-    REQUIRE(vals.size() == 1);
-    REQUIRE(vals[0].type().type() == logical_type::NA);
+    REQUIRE(res.value().data[0].is_null(0));
+}
+
+// The graph builds one executor per function node and drives every chunk through it, so an
+// executor must not carry a produced vector between calls — the second chunk would come back
+// holding the first chunk's output.
+TEST_CASE("components::compute::string::one_executor_over_several_chunks") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("length");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<complex_logical_type> in_types(&fx.resource);
+    in_types.emplace_back(logical_type::STRING_LITERAL);
+    auto executor = fn->make_executor(&fx.resource, in_types, nullptr, fx.ctx);
+    REQUIRE_FALSE(executor.has_error());
+
+    auto chunk_of = [&](std::string_view first, std::string_view second) {
+        data_chunk_t chunk(&fx.resource, in_types, uint64_t{2});
+        chunk.data[0].set_value(0, first);
+        chunk.data[0].set_value(1, second);
+        chunk.set_cardinality(2);
+        return chunk;
+    };
+
+    auto first = executor.value()->execute(chunk_of("a", "bb"));
+    REQUIRE_FALSE(first.has_error());
+    REQUIRE(first.value().data[0].data<int64_t>()[0] == 1);
+    REQUIRE(first.value().data[0].data<int64_t>()[1] == 2);
+
+    auto second = executor.value()->execute(chunk_of("cccc", "ddddd"));
+    REQUIRE_FALSE(second.has_error());
+    REQUIRE(second.value().data[0].data<int64_t>()[0] == 4);
+    REQUIRE(second.value().data[0].data<int64_t>()[1] == 5);
+}
+
+// Several rows in one call: the whole point of a vector kernel, and the case the row path
+// could not express.
+TEST_CASE("components::compute::string::length_over_a_chunk") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("length");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<complex_logical_type> types(&fx.resource);
+    types.emplace_back(logical_type::STRING_LITERAL);
+    data_chunk_t args(&fx.resource, types, uint64_t{3});
+    args.data[0].set_value(0, std::string_view{"a"});
+    args.data[0].set_value(1, std::string_view{"bb"});
+    args.data[0].set_value(2, std::string_view{"ccc"});
+    args.set_cardinality(3);
+
+    auto res = fn->execute(args, nullptr, fx.ctx);
+    REQUIRE_FALSE(res.has_error());
+    REQUIRE(res.value().data[0].data<int64_t>()[0] == 1);
+    REQUIRE(res.value().data[0].data<int64_t>()[1] == 2);
+    REQUIRE(res.value().data[0].data<int64_t>()[2] == 3);
+}
+
+// One null row among valid ones: the validity mask carries it, the valid rows still compute.
+TEST_CASE("components::compute::string::length_null_row_within_chunk") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("length");
+    REQUIRE(fn != nullptr);
+
+    std::pmr::vector<complex_logical_type> types(&fx.resource);
+    types.emplace_back(logical_type::STRING_LITERAL);
+    data_chunk_t args(&fx.resource, types, uint64_t{3});
+    args.data[0].set_value(0, std::string_view{"ab"});
+    args.data[0].set_null(1, true);
+    args.data[0].set_value(2, std::string_view{"cdef"});
+    args.set_cardinality(3);
+
+    auto res = fn->execute(args, nullptr, fx.ctx);
+    REQUIRE_FALSE(res.has_error());
+    REQUIRE(res.value().data[0].data<int64_t>()[0] == 2);
+    REQUIRE(res.value().data[0].is_null(1));
+    REQUIRE(res.value().data[0].data<int64_t>()[2] == 4);
 }
 
 // Builds the one-slot INTEGER->INTEGER vector function the cases below drive.
@@ -716,7 +793,7 @@ TEST_CASE("components::compute::vector::batch_reports_the_rows_it_carries") {
 
     auto res = fn->execute(batch, &opts, ctx);
     REQUIRE_FALSE(res.has_error());
-    const auto& out = std::get<data_chunk_t>(res.value());
+    const auto& out = res.value();
     REQUIRE(out.data.size() == 2);
     REQUIRE(out.size() == 1);
 }
@@ -762,121 +839,12 @@ TEST_CASE("components::compute::vector::a_reused_executor_answers_the_current_ch
     auto first_chunk = one_int(&resource, 3);
     auto first = executor.value()->execute(first_chunk);
     REQUIRE_FALSE(first.has_error());
-    REQUIRE(std::get<data_chunk_t>(first.value()).data[0].data<int>()[0] == MAGIC_MULTIPLIER * 3);
+    REQUIRE(first.value().data[0].data<int>()[0] == MAGIC_MULTIPLIER * 3);
 
     auto second_chunk = one_int(&resource, 7);
     auto second = executor.value()->execute(second_chunk);
     REQUIRE_FALSE(second.has_error());
-    const auto& out = std::get<data_chunk_t>(second.value());
+    const auto& out = second.value();
     REQUIRE(out.size() == 1);
     REQUIRE(out.data[0].data<int>()[0] == MAGIC_MULTIPLIER * 7);
-}
-
-// UDFs in this project are row_function objects carrying a user-supplied row_exec_fn (see
-// integration/cpp/test/test_udfs.cpp), so foreign code decides what lands in `output`. A kernel
-// that reports success and writes nothing is ordinary foreign-code behaviour, not a fiction.
-static core::error_t row_double_silent_on_two(kernel_context&,
-                                              const std::pmr::vector<logical_value_t>& inputs,
-                                              std::pmr::vector<logical_value_t>& output) {
-    if (inputs[0].value<int>() == 2) {
-        return core::error_t::no_error();
-    }
-    output.emplace_back(inputs[0].resource(), inputs[0].value<int>() * 2);
-    return core::error_t::no_error();
-}
-
-// The other side of the same contract: a kernel that writes more than one value for one row.
-static core::error_t row_double_and_triple(kernel_context&,
-                                           const std::pmr::vector<logical_value_t>& inputs,
-                                           std::pmr::vector<logical_value_t>& output) {
-    output.emplace_back(inputs[0].resource(), inputs[0].value<int>() * 2);
-    output.emplace_back(inputs[0].resource(), inputs[0].value<int>() * 3);
-    return core::error_t::no_error();
-}
-
-static std::unique_ptr<row_function>
-unary_row_function(std::pmr::memory_resource* resource, const std::string& name, row_exec_fn exec) {
-    auto fn = std::make_unique<row_function>(name, arity::unary(), function_doc{}, 1);
-    kernel_signature_t sig(function_type_t::row,
-                           {parameter_type::exact(logical_type::INTEGER)},
-                           {output_type::fixed(logical_type::INTEGER)});
-    row_kernel k(std::move(sig), exec);
-    REQUIRE_FALSE(fn->add_kernel(resource, std::move(k)).contains_error());
-    return fn;
-}
-
-static data_chunk_t three_ints(std::pmr::memory_resource* resource, int first, int second, int third) {
-    data_chunk_t chunk(resource, {logical_type::INTEGER}, 3);
-    chunk.set_value(0, 0, first);
-    chunk.set_value(0, 1, second);
-    chunk.set_value(0, 2, third);
-    chunk.set_cardinality(3);
-    return chunk;
-}
-
-// The row executor declared "one scalar output per call" in a comment and then, on seeing the
-// contract broken, silently skipped the row: `results` came back SHORTER than the chunk.
-// components/execution_dag/execution_dag.cpp only catches that with an assert() and then walks
-// `values` by row index, so under -DNDEBUG the rows the kernel never answered keep whatever the
-// output vector held before. The claim is therefore about what the caller receives, not merely
-// about the return code, so the length is checked first and the refusal second.
-TEST_CASE("components::compute::row::a_row_the_kernel_left_empty_is_refused_not_skipped") {
-    core::pmr::otterbrix_resource resource;
-    exec_context_t ctx(&resource);
-    auto fn = unary_row_function(&resource, "row_silent", row_double_silent_on_two);
-
-    auto chunk = three_ints(&resource, 1, 2, 3);
-    auto res = fn->execute(chunk, nullptr, ctx);
-
-    if (!res.has_error()) {
-        const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-        INFO("execute() succeeded with " << vals.size() << " values for " << chunk.size() << " rows");
-        REQUIRE(vals.size() == chunk.size());
-    }
-    REQUIRE(res.has_error());
-    REQUIRE(res.error().type == core::error_code_t::kernel_error);
-    // The refusal has to say WHICH row broke the contract and what it produced instead.
-    const std::string refusal(res.error().what.data(), res.error().what.size());
-    INFO("refusal reads: " << refusal);
-    REQUIRE(res.error().what.find("row 1") != std::pmr::string::npos);
-}
-
-// The same skip discarded surplus values: everything past front() was dropped and the call
-// still reported success, so a kernel returning two values per row looked exactly like a
-// well-behaved one.
-TEST_CASE("components::compute::row::a_row_with_several_outputs_is_refused") {
-    core::pmr::otterbrix_resource resource;
-    exec_context_t ctx(&resource);
-    auto fn = unary_row_function(&resource, "row_two_outputs", row_double_and_triple);
-
-    auto chunk = three_ints(&resource, 1, 2, 3);
-    auto res = fn->execute(chunk, nullptr, ctx);
-
-    REQUIRE(res.has_error());
-    REQUIRE(res.error().type == core::error_code_t::kernel_error);
-    const std::string refusal(res.error().what.data(), res.error().what.size());
-    INFO("refusal reads: " << refusal);
-    REQUIRE(res.error().what.find("row 0") != std::pmr::string::npos);
-}
-
-// The multi-chunk overload walks the same per-row loop, so a contract break in a later chunk
-// must reach the caller too rather than shortening the concatenated result.
-TEST_CASE("components::compute::row::a_broken_contract_in_a_later_chunk_still_refuses") {
-    core::pmr::otterbrix_resource resource;
-    exec_context_t ctx(&resource);
-    auto fn = unary_row_function(&resource, "row_silent_batch", row_double_silent_on_two);
-
-    std::vector<data_chunk_t> batch;
-    batch.emplace_back(three_ints(&resource, 1, 3, 5));
-    batch.emplace_back(three_ints(&resource, 7, 2, 9));
-
-    auto res = fn->execute(batch, nullptr, ctx);
-
-    if (!res.has_error()) {
-        const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
-        INFO("execute() succeeded with " << vals.size() << " values for 6 rows");
-        REQUIRE(vals.size() == 6);
-    }
-    REQUIRE(res.has_error());
-    REQUIRE(res.error().type == core::error_code_t::kernel_error);
 }

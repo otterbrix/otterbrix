@@ -24,39 +24,44 @@ constexpr auto JOIN_RIGHT_SIZE = 5;
 static auto update_calls = 0;
 static auto finalize_calls = 0;
 
-static core::error_t double_val_exec(kernel_context& ctx,
-                                     const std::pmr::vector<types::logical_value_t>& in,
-                                     std::pmr::vector<types::logical_value_t>& out) {
-    out.emplace_back(ctx.exec_context().resource(), in[0].value<int64_t>() * 2);
+static core::error_t double_val_exec(kernel_context&, const vector::data_chunk_t& in, vector::vector_t& out) {
+    const auto* source = in.data[0].data<int64_t>();
+    auto* destination = out.data<int64_t>();
+    for (uint64_t row = 0; row < in.size(); ++row) {
+        destination[row] = source[row] * 2;
+    }
     return core::error_t::no_error();
 }
 
-std::unique_ptr<row_function> make_double_val_func(std::pmr::memory_resource* resource) {
+std::unique_ptr<vector_function> make_double_val_func(std::pmr::memory_resource* resource) {
     function_doc doc{"double_val", "multiplies by 2", {"arg"}, false};
-    auto fn = std::make_unique<row_function>("double_val", arity::unary(), doc, 1);
-    kernel_signature_t sig(function_type_t::row,
+    auto fn = std::make_unique<vector_function>("double_val", arity::unary(), doc, 1);
+    kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BIGINT)});
-    row_kernel k{std::move(sig), double_val_exec};
+    vector_kernel k{std::move(sig), double_val_exec};
     std::ignore = fn->add_kernel(resource, std::move(k));
     return fn;
 }
 
-static core::error_t gt_threshold_exec(kernel_context&,
-                                       const std::pmr::vector<types::logical_value_t>& in,
-                                       std::pmr::vector<types::logical_value_t>& out) {
-    out.emplace_back(out.get_allocator().resource(), in[0].value<int64_t>() > in[1].value<int64_t>());
+static core::error_t gt_threshold_exec(kernel_context&, const vector::data_chunk_t& in, vector::vector_t& out) {
+    const auto* left = in.data[0].data<int64_t>();
+    const auto* right = in.data[1].data<int64_t>();
+    auto* destination = out.data<bool>();
+    for (uint64_t row = 0; row < in.size(); ++row) {
+        destination[row] = left[row] > right[row];
+    }
     return core::error_t::no_error();
 }
 
-std::unique_ptr<row_function> make_gt_threshold_func(std::pmr::memory_resource* resource) {
+std::unique_ptr<vector_function> make_gt_threshold_func(std::pmr::memory_resource* resource) {
     function_doc doc{"gt_threshold", "x > y", {"arg1", "arg2"}, false};
-    auto fn = std::make_unique<row_function>("gt_threshold", arity::binary(), doc, 1);
+    auto fn = std::make_unique<vector_function>("gt_threshold", arity::binary(), doc, 1);
     kernel_signature_t sig(
-        function_type_t::row,
+        function_type_t::vector,
         {parameter_type::exact(types::logical_type::BIGINT), parameter_type::exact(types::logical_type::BIGINT)},
         {output_type::fixed(types::logical_type::BOOLEAN)});
-    row_kernel k{std::move(sig), gt_threshold_exec};
+    vector_kernel k{std::move(sig), gt_threshold_exec};
     std::ignore = fn->add_kernel(resource, std::move(k));
     return fn;
 }

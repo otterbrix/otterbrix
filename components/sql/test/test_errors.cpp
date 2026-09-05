@@ -23,14 +23,16 @@ using namespace components::sql;
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
     SECTION(QUERY) {                                                                                                   \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        auto result = transformer.transform(transform::pg_cell_to_node_cast(select));                                  \
+        transform::transformer local(&resource, QUERY);                                                                \
+        auto result = local.transform(transform::pg_cell_to_node_cast(select));                                        \
         REQUIRE(std::string_view{result.get_error().what} == RESULT);                                                  \
     }
 
 #define TEST_TRANSFORMER_OK(QUERY)                                                                                     \
     SECTION(QUERY) {                                                                                                   \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
-        auto result = transformer.transform(transform::pg_cell_to_node_cast(select));                                  \
+        transform::transformer local(&resource, QUERY);                                                                \
+        auto result = local.transform(transform::pg_cell_to_node_cast(select));                                        \
         REQUIRE_FALSE(result.get_error().contains_error());                                                            \
     }
 
@@ -189,16 +191,15 @@ TEST_CASE("components::sql::errors") {
                            R"_(CASE operand must be a column reference)_");
 
     // ARRAY(SELECT ...) projected in the SELECT list is not supported yet (deferred, #559): a clear
-    // error, not a crash and not a misleading "unknown node type".
+    // error, not a crash and not a misleading "unknown node type". It is refused wherever nothing
+    // expects an array, so the message no longer names the SELECT list.
     TEST_TRANSFORMER_ERROR("SELECT ARRAY(SELECT count FROM TEST_DATABASE.TEST_COLLECTION) FROM "
                            "TEST_DATABASE.TEST_COLLECTION;",
-                           R"_(unsupported subquery in the SELECT list; only a scalar subquery is supported)_");
+                           R"_(ARRAY(SELECT ...) is supported only as a comparison operand)_");
 
-    // #563 finding 6b: node_tag_to_string must name the node tag ("T_SubLink"), not print "unknown".
-    // A SubLink in ORDER BY still reports through node_tag_to_string.
-    TEST_TRANSFORMER_ERROR("SELECT count FROM TEST_DATABASE.TEST_COLLECTION ORDER BY (SELECT count FROM "
-                           "TEST_DATABASE.TEST_COLLECTION);",
-                           R"_(Unknown node type in ORDER BY: T_SubLink)_");
+    // A scalar sub-query is an ordinary value, so it sorts like one.
+    TEST_TRANSFORMER_OK("SELECT count FROM TEST_DATABASE.TEST_COLLECTION ORDER BY (SELECT count FROM "
+                        "TEST_DATABASE.TEST_COLLECTION);");
 
     TEST_TRANSFORMER_ERROR("SAVEPOINT sp1;", R"_(unsupported transaction statement)_");
     TEST_TRANSFORMER_ERROR("RELEASE SAVEPOINT sp1;", R"_(unsupported transaction statement)_");
@@ -221,18 +222,17 @@ TEST_CASE("components::sql::errors") {
     }
 
     TEST_TRANSFORMER_ERROR("CREATE TYPE ty AS (a VARCHAR(10));", R"_(string length modifier is not supported)_");
-    TEST_TRANSFORMER_ERROR("ALTER TABLE d.t ADD COLUMN c VARCHAR(10);",
-                           R"_(string length modifier is not supported)_");
-    TEST_TRANSFORMER_ERROR("ALTER TABLE d.t ADD CONSTRAINT ck CHECK (lower(a) = 'x');",
-                           R"_(CHECK constraint contains unsupported expression type T_FuncCall where a column or a )_"
-                           R"_(constant is required; allowed: a column compared (= <> < > <= >=) with a constant, )_"
-                           R"_(IS NULL / IS NOT NULL, and AND/OR/NOT of those)_");
+    TEST_TRANSFORMER_ERROR("ALTER TABLE d.t ADD COLUMN c VARCHAR(10);", R"_(string length modifier is not supported)_");
+    // A function call in a CHECK used to be refused at the declaration, because the
+    // DML-time recogniser read only `column OP constant` and compiled anything else to
+    // TRUE. A CHECK is lowered as a general expression now, so this one is enforced
+    // rather than rejected — the refusal went with its cause, not with the rule.
+    TEST_TRANSFORMER_OK("ALTER TABLE d.t ADD CONSTRAINT ck CHECK (lower(a) = 'x');");
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE ((5 + 1) -> 'a') ? 'b';",
                            R"_(unsupported left operand in jsonb operator chain)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE (5 -> 'a') ? 'b';",
                            R"_(unsupported base operand for jsonb operator)_");
-    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE 5 ? 'a';",
-                           R"_(unsupported base operand for jsonb operator)_");
+    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE 5 ? 'a';", R"_(unsupported base operand for jsonb operator)_");
 }
 
 // Every table is disk-backed and the WITH (storage = ...) option is gone.
@@ -287,7 +287,10 @@ namespace {
 
     alter_probe_t probe_alter(std::pmr::memory_resource* resource, const char* query) {
         std::pmr::monotonic_buffer_resource arena(resource);
-        transform::transformer t(resource);
+        // The statement TEXT, not just the parse tree: a CHECK constraint's expression is
+        // sliced out of it (slice_check_expression), so a transformer built without it
+        // refuses every ADD CONSTRAINT ... CHECK — including the ones probed as ACCEPTED.
+        transform::transformer t(resource, query);
         auto stmt = linitial(raw_parser(&arena, query));
         auto result = t.transform(transform::pg_cell_to_node_cast(stmt));
         if (result.has_error()) {

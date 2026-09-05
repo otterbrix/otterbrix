@@ -58,14 +58,13 @@ namespace components::planner {
                 cur = fk_node;
             }
 
-            if (!ins->not_null_cols().empty() || !ins->check_exprs().empty() || !ins->array_size_reqs().empty() ||
+            if (!ins->not_null_cols().empty() || !ins->check_predicates().empty() || !ins->array_size_reqs().empty() ||
                 !ins->unique_groups().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r,
                     core::dbname_t{},
                     core::relname_t{},
                     std::vector<std::string>(ins->not_null_cols()),
-                    std::vector<std::pair<std::string, std::string>>(ins->check_exprs()),
                     std::vector<std::pair<std::string, uint64_t>>(ins->array_size_reqs())));
                 // UNIQUE / PK groups: create_plan_check_constraint splices an
                 // operator_unique_constraint_t below the check sink. table_oid feeds
@@ -73,6 +72,12 @@ namespace components::planner {
                 // NOT NULL / CHECK) still gets the wrapper via the guard above.
                 cc->set_unique_groups(ins->unique_groups());
                 cc->set_table_oid(ins->table_oid());
+                // The CHECK predicates as RESOLVED EXPRESSIONS, with the constants they
+                // reference. No DEFAULTs travel with them: the rows the constraint op
+                // judges are materialised, so it reads the column instead of a plan-side
+                // copy of what the column was going to become.
+                cc->set_check_predicates(ins->check_predicates());
+                cc->set_check_params(ins->check_params());
                 cc->append_child(cur);
                 cur = cc;
             }
@@ -111,16 +116,21 @@ namespace components::planner {
                 }
             }
 
-            if (!upd->not_null_cols().empty() || !live_unique_groups.empty() || !upd->check_exprs().empty()) {
+            if (!upd->not_null_cols().empty() || !live_unique_groups.empty() || !upd->check_predicates().empty() ||
+                !upd->array_size_reqs().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r,
                     core::dbname_t{},
                     core::relname_t{},
                     std::vector<std::string>(upd->not_null_cols()),
-                    std::vector<std::pair<std::string, std::string>>(upd->check_exprs())));
+                    std::vector<std::pair<std::string, uint64_t>>(upd->array_size_reqs())));
                 // UNIQUE / PK enforcement on the UPDATE write-set (see rewrite_insert).
                 cc->set_unique_groups(std::move(live_unique_groups));
                 cc->set_table_oid(upd->table_oid());
+                // See rewrite_insert: predicates and their constants, and nothing about
+                // DEFAULTs — an UPDATE write-set IS the gathered storage row.
+                cc->set_check_predicates(upd->check_predicates());
+                cc->set_check_params(upd->check_params());
                 cc->append_child(cur);
                 cur = cc;
             }
@@ -258,7 +268,7 @@ namespace components::planner {
                                                                        cstr->match_type(),
                                                                        cstr->del_action(),
                                                                        cstr->upd_action(),
-                                                                       std::string(cstr->check_expr()));
+                                                                       std::string(cstr->check_expression_sql()));
                 if (cwrites.has_error()) {
                     // A constraint column without an attoid — the builder refuses to
                     // write a conkey that claims a column with no dependency edge.
@@ -302,7 +312,7 @@ namespace components::planner {
                                                                   cstr->match_type(),
                                                                   cstr->del_action(),
                                                                   cstr->upd_action(),
-                                                                  std::string(cstr->check_expr()));
+                                                                  std::string(cstr->check_expression_sql()));
             if (writes.has_error()) {
                 // A constraint column without an attoid — refused before a conkey that
                 // claims a column with no dependency edge can reach the catalog.

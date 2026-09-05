@@ -297,19 +297,11 @@ namespace services::dispatcher::validation {
                         if (error_.contains_error()) {
                             return;
                         }
-                        if (operand_type.type() != logical_type::BOOLEAN) {
-                            auto cast = context_.cast_registry.resolve(operand_type,
-                                                                       boolean_type,
-                                                                       components::casts::cast_type::implicit);
-                            if (!cast.has_value()) {
-                                fail(core::error_code_t::schema_error,
-                                     message(context_.resource,
-                                             "operand of ",
-                                             to_string(comparison->type()),
-                                             " must be BOOLEAN"));
-                                return;
-                            }
-                            splice_cast(context_.resource, nested, boolean_type, *cast);
+                        if (!require_type(nested,
+                                          operand_type,
+                                          boolean_type,
+                                          message(context_.resource, "operand of ", to_string(comparison->type())))) {
+                            return;
                         }
                         combined = combine(combined, last_cardinality_);
                         child = std::get<expression_ptr>(nested);
@@ -440,13 +432,20 @@ namespace services::dispatcher::validation {
                     return;
                 }
 
+                // An aggregate's argument is row-wise, so a call inside one is a vector function
+                // however the surrounding clause was masked. Aggregates stay admissible so a
+                // nested reduction is reported as nesting below, not as a masked-out name.
+                const auto allowed_functions =
+                    inside_aggregate ? components::compute::create_mask(components::compute::function_type_t::vector,
+                                                                        components::compute::function_type_t::aggregate)
+                                     : context_.allowed_functions;
                 auto resolved = resolve_function(context_.resource,
                                                  context_.cast_registry,
                                                  context_.execution_context,
                                                  context_.function_registry,
                                                  call->name(),
                                                  argument_types,
-                                                 context_.allowed_functions);
+                                                 allowed_functions);
                 if (resolved.has_error()) {
                     error_ = resolved.error();
                     return;
@@ -597,8 +596,7 @@ namespace services::dispatcher::validation {
                     }
                     // An even position that is not the trailing ELSE is a WHEN condition. It takes
                     // no part in the common type below; it only has to answer BOOLEAN.
-                    if (param_type.type() != logical_type::BOOLEAN) {
-                        fail(core::error_code_t::schema_error, "CASE WHEN condition must be BOOLEAN");
+                    if (!require_type(scalar->params()[position], param_type, boolean_type, "CASE WHEN condition")) {
                         return;
                     }
                 }
@@ -687,6 +685,29 @@ namespace services::dispatcher::validation {
             // Cardinality of the operand most recently resolved. Set by every path that resolves
             // one, read by the parent before it resolves the next.
             cardinality_t last_cardinality_{cardinality_t::constant};
+
+        public:
+            bool require_type(param_storage& operand,
+                              const complex_logical_type& actual,
+                              const complex_logical_type& wanted,
+                              std::string_view what) {
+                if (wanted.type() == logical_type::ANY || actual.type() == wanted.type()) {
+                    return true;
+                }
+                auto cast = context_.cast_registry.resolve(actual, wanted, components::casts::cast_type::implicit);
+                if (!cast.has_value()) {
+                    fail(core::error_code_t::schema_error,
+                         message(context_.resource,
+                                 what,
+                                 " must be ",
+                                 describe_type(wanted),
+                                 ", not ",
+                                 describe_type(actual)));
+                    return false;
+                }
+                splice_cast(context_.resource, operand, wanted, *cast);
+                return true;
+            }
         };
 
     } // namespace
@@ -707,6 +728,11 @@ namespace services::dispatcher::validation {
                 core::error_code_t::schema_error,
                 std::pmr::string{"could not resolve a concrete type for expression", context.resource});
         }
+        param_storage required{expression};
+        if (!resolver.require_type(required, result_type, context.required_type, "argument of the clause")) {
+            return resolver.take_error();
+        }
+        expression = std::get<expression_ptr>(required);
         return core::error_t::no_error();
     }
 

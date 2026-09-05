@@ -51,27 +51,33 @@ namespace components::catalog {
         // Built-in scalar types (pg_type.oid) — subset, see catalog-migration doc §4.
         inline constexpr oid_t boolean_type = 20;
         inline constexpr oid_t int8_type = 21;
-        inline constexpr oid_t int16_type = 22;
-        inline constexpr oid_t int32_type = 23;
-        inline constexpr oid_t int64_type = 24;
-        inline constexpr oid_t float32_type = 25;
-        inline constexpr oid_t float64_type = 26;
-        inline constexpr oid_t string_type = 27;
-        inline constexpr oid_t timestamp_type = 28;
-        inline constexpr oid_t timestamp_tz_type = 29;
-        inline constexpr oid_t date_type = 30;
-        inline constexpr oid_t time_type = 31;
-        inline constexpr oid_t time_tz_type = 32;
-        inline constexpr oid_t interval_type = 33;
-        inline constexpr oid_t blob_type = 34;
-        inline constexpr oid_t numeric_type = 35;
-        inline constexpr oid_t uuid_type = 36;
+        inline constexpr oid_t uint8_type = 22;
+        inline constexpr oid_t int16_type = 23;
+        inline constexpr oid_t uint16_type = 24;
+        inline constexpr oid_t int32_type = 25;
+        inline constexpr oid_t uint32_type = 26;
+        inline constexpr oid_t int64_type = 27;
+        inline constexpr oid_t uint64_type = 28;
+        inline constexpr oid_t int128_type = 29;
+        inline constexpr oid_t uint128_type = 30;
+        inline constexpr oid_t float32_type = 31;
+        inline constexpr oid_t float64_type = 32;
+        inline constexpr oid_t string_type = 33;
+        inline constexpr oid_t timestamp_type = 34;
+        inline constexpr oid_t timestamp_tz_type = 35;
+        inline constexpr oid_t date_type = 36;
+        inline constexpr oid_t time_type = 37;
+        inline constexpr oid_t time_tz_type = 38;
+        inline constexpr oid_t interval_type = 39;
+        inline constexpr oid_t blob_type = 40;
+        inline constexpr oid_t numeric_type = 41;
+        inline constexpr oid_t uuid_type = 42;
 
         // System tables added beyond the initial 10.
-        inline constexpr oid_t pg_sequence_table = 37;
-        inline constexpr oid_t pg_rewrite_table = 38;
-        inline constexpr oid_t pg_settings_table = 39;
-        inline constexpr oid_t pg_cast_table = 40;
+        inline constexpr oid_t pg_sequence_table = 43;
+        inline constexpr oid_t pg_rewrite_table = 44;
+        inline constexpr oid_t pg_settings_table = 45;
+        inline constexpr oid_t pg_cast_table = 46;
 
         // Built-in functions (pg_proc.oid) — subset.
         inline constexpr oid_t fn_count = 101;

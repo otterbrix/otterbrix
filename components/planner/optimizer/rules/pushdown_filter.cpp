@@ -103,7 +103,7 @@ namespace components::planner::optimizer {
                     break;
                 }
                 case expression_group::sort: {
-                    fn(static_cast<sort_expression_t*>(expr.get())->key());
+                    for_each_key_in_param(static_cast<sort_expression_t*>(expr.get())->operand(), fn);
                     break;
                 }
                 case expression_group::function: {

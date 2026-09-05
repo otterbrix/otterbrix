@@ -99,18 +99,46 @@ namespace components::casts {
             assert(!error.contains_error() && "duplicate default cast registration");
         }
 
+        template<typename T>
+        inline constexpr bool is_signed_int = std::is_same_v<T, types::int128_t> ||
+                                              (std::is_integral_v<T> && std::is_signed_v<T>);
+
+        template<typename T>
+        inline constexpr bool is_unsigned_int = std::is_same_v<T, types::uint128_t> ||
+                                                (std::is_integral_v<T> && std::is_unsigned_v<T> &&
+                                                 !std::is_same_v<T, bool>);
+
+        template<typename Source, typename Target>
+        constexpr bool is_same_width_sign_change() {
+            return sizeof(Source) == sizeof(Target) && ((is_signed_int<Source> && is_unsigned_int<Target>) ||
+                                                        (is_unsigned_int<Source> && is_signed_int<Target>) );
+        }
+
+        // slight bias to signess change to favour signed types over unsigned (with equal width)
+        constexpr uint32_t unsigned_to_signed_loss = 1;
+        constexpr uint32_t signed_to_unsigned_loss = 2;
+
         template<typename Source, typename Target>
         void add_integer_narrowing(cast_registry_t& registry) {
             if constexpr (!std::is_same_v<Source, Target> &&
                           !kernels::is_lossless_integer_conversion<Source, Target>()) {
                 complex_logical_type source{types::to_logical_type<Source>()};
                 complex_logical_type target{types::to_logical_type<Target>()};
-                cast_entry entry{cast_function_t{&kernels::integer_narrow_cast<Source, Target>,
-                                                 &kernels::integer_narrow_try_cast<Source, Target>},
-                                 cast_type::assignment,
-                                 /*convertable_inplace*/ false};
-                [[maybe_unused]] auto error = registry.add(source, target, std::move(entry));
-                assert(!error.contains_error() && "duplicate default cast registration");
+                cast_function_t fn{&kernels::integer_narrow_cast<Source, Target>,
+                                   &kernels::integer_narrow_try_cast<Source, Target>};
+                if constexpr (is_same_width_sign_change<Source, Target>()) {
+                    cast_entry entry{fn,
+                                     cast_cost{.precision_loss = is_unsigned_int<Source> ? unsigned_to_signed_loss
+                                                                                         : signed_to_unsigned_loss,
+                                               .footprint = static_cast<uint32_t>(target.size())},
+                                     /*convertable_inplace*/ false};
+                    [[maybe_unused]] auto error = registry.add(source, target, std::move(entry));
+                    assert(!error.contains_error() && "duplicate default cast registration");
+                } else {
+                    cast_entry entry{fn, cast_type::assignment, /*convertable_inplace*/ false};
+                    [[maybe_unused]] auto error = registry.add(source, target, std::move(entry));
+                    assert(!error.contains_error() && "duplicate default cast registration");
+                }
             }
         }
 

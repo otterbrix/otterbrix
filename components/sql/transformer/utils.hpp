@@ -284,21 +284,23 @@ namespace components::sql::transform {
         return expressions::scalar_type::invalid;
     }
 
-    // Prefix/postfix operators that are spelled as function calls internally:
-    //   ^ -> pow   |/ -> sqrt   ||/ -> cbrt   ! -> factorial   @ -> abs
-    inline std::string_view operator_function_name(std::string_view op) {
-        if (op == "^")
-            return "pow";
-        if (op == "|/")
-            return "sqrt";
-        if (op == "||/")
-            return "cbrt";
-        if (op == "!")
-            return "factorial";
-        if (op == "@")
-            return "abs";
-        return {};
-    }
+    enum class operator_fixity_t
+    {
+        infix,
+        prefix,
+        postfix
+    };
+
+    struct operator_function_t {
+        std::string_view name;
+        operator_fixity_t fixity;
+    };
+
+    // Operators that are spelled as function calls internally:
+    //   ^ -> pow   |/ -> sqrt   ||/ -> cbrt   @ -> abs
+    //   ! -> factorial (postfix)   !! -> factorial (prefix)
+
+    operator_function_t operator_function(std::string_view op);
 
     // --- JSONB operators -------------------------------------------------
     // Path-navigation jsonb operators. On a computing table (relkind='g')
@@ -319,20 +321,20 @@ namespace components::sql::transform {
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
 
-    // Deparse a CHECK constraint raw expression node back to SQL text, in the ONE
-    // shape the DML-time recogniser (operator_check_constraint) can evaluate:
+    // The source text of a CHECK constraint's expression, sliced out of the statement it was
+    // written in. `check_location` is the Constraint node's own location — the CHECK keyword — and
+    // the expression is what sits between the '(' that follows it and the matching ')'.
     //
-    //     column OP constant   (OP one of  =  <>  <  >  <=  >= )
-    //     column IS [NOT] NULL
-    //     (A) AND (B) / (A) OR (B) / NOT (A) of those
-    //
-    // Anything else is REFUSED here, at the declaration. It has to be refused
-    // somewhere: what the recogniser cannot read compiles to the constant TRUE, so an
-    // arithmetic operand or a column-against-column comparison becomes a constraint
-    // the catalog holds and no row is ever judged by. A rejected
-    // CREATE TABLE / ALTER TABLE costs the user one statement; an unenforced
-    // constraint in the catalog cannot be recovered from at all.
-    core::result_wrapper_t<std::string> deparse_check_expr(std::pmr::memory_resource* resource, Node* node);
+    // Taking the text the user wrote, rather than rebuilding it from the parse tree, is what makes
+    // the round trip exact: the stored bytes parse back to the same expression because they are the
+    // same bytes, and a construct the grammar learns later needs no work here. It also replaces a
+    // deparser that could only spell one shape (`column OP constant` and boolean combinations of
+    // it) and had to REFUSE everything else at the declaration, because whatever it could not
+    // spell compiled to the constant TRUE at DML time. That refusal is gone with its cause: a
+    // CHECK is lowered as a general expression now, so `a + b > 0` and `lo <= hi` are enforced
+    // rather than rejected. Every failure below is still a loud refusal, never an empty string.
+    core::result_wrapper_t<std::string>
+    slice_check_expression(std::pmr::memory_resource* resource, const char* raw_sql, int check_location);
 
     core::result_wrapper_t<types::complex_logical_type> get_type(std::pmr::memory_resource* resource, TypeName* type);
     core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
@@ -357,6 +359,11 @@ namespace components::sql::transform {
     // == 38 comes from.
     integer_text_t parse_exact_integer(std::string_view text, types::int128_t& out);
 
+    // The same reading in the UNSIGNED domain, for the one range the signed reader cannot
+    // reach: 2^127 .. 2^128-1, which is the top half of a UHUGEINT column. A literal with a
+    // '-' sign has no unsigned reading and reports out_of_range rather than a wrapped value.
+    integer_text_t parse_exact_unsigned_integer(std::string_view text, types::uint128_t& out);
+
     // Reads `text` (optional sign, decimal digits, optional '.' + digits; surrounding
     // spaces allowed, no exponent) as the EXACT scaled integer of a DECIMAL(width,
     // scale): the value times 10^scale, digit for digit, rounding only the digits past
@@ -370,10 +377,11 @@ namespace components::sql::transform {
     parse_exact_decimal(std::pmr::memory_resource* resource, std::string_view text, uint8_t width, uint8_t scale);
 
     // The value a numeric literal (T_Integer or T_Float Value node) denotes, exactly.
-    // BIGINT when it fits int64, HUGEINT when it needs the full 128 bits, DOUBLE only for
-    // literals that are genuinely fractional, and a refusal for a plain integer too wide
-    // for either — silently rounding that one into a double is the wrong answer this path
-    // exists to remove.
+    // BIGINT when it fits int64, HUGEINT when it needs the full signed 128 bits, UHUGEINT for
+    // the unsigned half above that (a `uhugeint` column's top half is reachable no other way),
+    // DOUBLE only for literals that are genuinely fractional, and a refusal for a plain integer
+    // wider than all of them — silently rounding that one into a double is the wrong answer
+    // this path exists to remove.
     core::result_wrapper_t<types::logical_value_t> numeric_literal_value(std::pmr::memory_resource* resource,
                                                                          Value* value);
 
@@ -389,7 +397,7 @@ namespace components::sql::transform {
     // Constraints written as a separate element of the CREATE TABLE column list
     // (`PRIMARY KEY (id)`, `UNIQUE (code)`, `CHECK (...)`, `FOREIGN KEY (...) REFERENCES ...`).
     core::result_wrapper_t<std::vector<table::table_constraint_t>>
-    extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts);
+    extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts, const char* raw_sql);
 
     // Constraints written ON a column (`code bigint UNIQUE`, `pid bigint REFERENCES p (id)`).
     // Same result shape as extract_table_constraints — the two syntaxes differ only in where
@@ -397,7 +405,7 @@ namespace components::sql::transform {
     // NOT NULL / DEFAULT / PRIMARY-KEY-implies-NOT-NULL stay with get_column_definitions:
     // they are properties of the column, not rows in pg_constraint.
     core::result_wrapper_t<std::vector<table::table_constraint_t>>
-    extract_column_constraints(std::pmr::memory_resource* resource, PGList& table_elts);
+    extract_column_constraints(std::pmr::memory_resource* resource, PGList& table_elts, const char* raw_sql);
 
     // Transformer catalog-resolve emission.
     //

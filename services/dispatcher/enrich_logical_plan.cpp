@@ -178,6 +178,50 @@ namespace services::dispatcher { namespace {
         return names;
     }
 
+    // A too-short value for a fixed ARRAY reconciles by padding NULL, which a NOT NULL column
+    // cannot accept, so such values must error before the append (see
+    // node_insert_t::array_size_reqs). A DEFAULT does not exempt the column: a default fills an
+    // ABSENT column, never the missing tail of a value that was supplied. INSERT and UPDATE
+    // reconcile a short value identically, so both write paths carry the same requirement.
+    std::vector<std::pair<std::string, uint64_t>>
+    collect_array_size_reqs(const components::logical_plan::resolved_table_metadata_t& md) {
+        std::vector<std::pair<std::string, uint64_t>> array_reqs;
+        for (const auto& col : md.columns) {
+            if (col.type.type() == components::types::logical_type::ARRAY && col.attnotnull) {
+                const auto size =
+                    static_cast<const components::types::array_logical_type_extension*>(col.type.extension())->size();
+                array_reqs.emplace_back(col.attname, size);
+            }
+        }
+        return array_reqs;
+    }
+
+    // CHECK expressions recored in catalog as plain SQL, to avoid explicit expr (de)serialization
+    // so they have to be reparsed
+    [[nodiscard]] core::error_t
+    parse_check_predicates(std::pmr::memory_resource* resource,
+                           const std::vector<std::pair<std::string, std::string>>& stored,
+                           std::vector<std::pair<std::string, components::expressions::expression_ptr>>* predicates,
+                           components::logical_plan::parameter_node_ptr* params) {
+        predicates->clear();
+        if (stored.empty()) {
+            return core::error_t::no_error();
+        }
+        // One parameter map for every CHECK on the table, so their constants get distinct ids.
+        *params = components::logical_plan::make_parameter_node(resource);
+        components::sql::transform::transformer local(resource);
+        for (const auto& [name, text] : stored) {
+            auto parsed = local.parse_where_expr(text, *params);
+            if (parsed.has_error()) {
+                return core::error_t{
+                    core::error_code_t::invalid_constraint,
+                    std::pmr::string{"stored CHECK constraint \"" + name + "\" no longer parses: " + text, resource}};
+            }
+            predicates->emplace_back(name, std::move(parsed.value().expr));
+        }
+        return core::error_t::no_error();
+    }
+
     void enrich_insert_sync(components::logical_plan::node_insert_t* node) {
         // bind_catalog_data already pasted the target's metadata onto the node.
         const auto* md = node->table_metadata();
@@ -187,19 +231,7 @@ namespace services::dispatcher { namespace {
         fill_not_null(*md, nn);
         node->set_not_null_cols(std::move(nn));
 
-        // A too-short value for a fixed ARRAY reconciles by padding NULL, which a NOT NULL column
-        // cannot accept, so such values must error before the append (see
-        // node_insert_t::array_size_reqs). A DEFAULT does not exempt the column: a default fills an
-        // ABSENT column, never the missing tail of a value that was supplied.
-        std::vector<std::pair<std::string, uint64_t>> array_reqs;
-        for (const auto& col : md->columns) {
-            if (col.type.type() == components::types::logical_type::ARRAY && col.attnotnull) {
-                const auto size =
-                    static_cast<const components::types::array_logical_type_extension*>(col.type.extension())->size();
-                array_reqs.emplace_back(col.attname, size);
-            }
-        }
-        node->set_array_size_reqs(std::move(array_reqs));
+        node->set_array_size_reqs(collect_array_size_reqs(*md));
     }
 
     void enrich_update_sync(components::logical_plan::node_update_t* node) {
@@ -209,6 +241,7 @@ namespace services::dispatcher { namespace {
         std::vector<std::string> nn;
         fill_not_null(*md, nn);
         node->set_not_null_cols(std::move(nn));
+        node->set_array_size_reqs(collect_array_size_reqs(*md));
     }
 
 }} // namespace services::dispatcher::
@@ -1104,6 +1137,17 @@ namespace services::dispatcher { namespace {
                     }
                     node->set_outgoing_fks(std::move(fks));
                     node->set_check_exprs(constraints->check_exprs);
+                    {
+                        std::vector<std::pair<std::string, components::expressions::expression_ptr>> predicates;
+                        components::logical_plan::parameter_node_ptr check_params;
+                        if (auto error =
+                                parse_check_predicates(resource, constraints->check_exprs, &predicates, &check_params);
+                            error.contains_error()) {
+                            co_return error;
+                        }
+                        node->set_check_predicates(std::move(predicates));
+                        node->set_check_params(std::move(check_params));
+                    }
                     node->set_unique_groups(constraints->unique_constraints);
                     if (!constraints->pk_columns.empty()) {
                         auto nn = node->not_null_cols();
@@ -1146,6 +1190,17 @@ namespace services::dispatcher { namespace {
                     }
                     node->set_outgoing_fks(std::move(fks));
                     node->set_check_exprs(constraints->check_exprs);
+                    {
+                        std::vector<std::pair<std::string, components::expressions::expression_ptr>> predicates;
+                        components::logical_plan::parameter_node_ptr check_params;
+                        if (auto error =
+                                parse_check_predicates(resource, constraints->check_exprs, &predicates, &check_params);
+                            error.contains_error()) {
+                            co_return error;
+                        }
+                        node->set_check_predicates(std::move(predicates));
+                        node->set_check_params(std::move(check_params));
+                    }
                     node->set_unique_groups(constraints->unique_constraints);
                     if (!constraints->pk_columns.empty()) {
                         auto nn = node->not_null_cols();

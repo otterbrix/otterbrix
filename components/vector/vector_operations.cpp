@@ -690,7 +690,8 @@ namespace components::vector::vector_ops {
             return;
         }
 
-        indexing_vector_t owned_indexing(source.resource(), 0, copy_count);
+        // Not allocated if not needed
+        indexing_vector_t owned_indexing(source.resource());
         const indexing_vector_t* indexing_ptr = &indexing;
 
         const vector_t* source_ptr = &source;
@@ -1011,12 +1012,7 @@ namespace components::vector::vector_ops {
               uint64_t source_count,
               uint64_t source_offset,
               uint64_t target_offset) {
-        copy(source,
-             target,
-             indexing_vector_t(source.resource(), 0, source_count),
-             source_count,
-             source_offset,
-             target_offset);
+        copy(source, target, indexing_vector_t(source.resource()), source_count, source_offset, target_offset);
     }
 
     template<typename T = void>

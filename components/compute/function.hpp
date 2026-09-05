@@ -12,7 +12,6 @@
 #include <vector>
 
 namespace components::compute {
-    class row_function;
     class vector_function;
     class aggregate_function;
     class expand_function;
@@ -50,7 +49,6 @@ namespace components::compute {
 
         virtual core::result_wrapper_t<datum_t> execute(const vector::data_chunk_t& args) = 0;
         virtual core::result_wrapper_t<datum_t> execute(const std::vector<vector::data_chunk_t>& inputs) = 0;
-        virtual core::result_wrapper_t<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs) = 0;
 
         // Aggregates only: fold a chunk into one accumulator per group, then emit one value per
         // group. The caller owns the accumulators and says how big one is by asking state_layout.
@@ -67,7 +65,6 @@ namespace components::compute {
 
         virtual void visit(const vector_function& func) = 0;
         virtual void visit(const aggregate_function& func) = 0;
-        virtual void visit(const row_function& func) = 0;
         virtual void visit(const expand_function& func) = 0;
     };
 
@@ -102,10 +99,6 @@ namespace components::compute {
                                                         const function_options* options,
                                                         exec_context_t& ctx) const;
 
-        virtual core::result_wrapper_t<datum_t> execute(const std::pmr::vector<types::logical_value_t>& inputs,
-                                                        const function_options* options,
-                                                        exec_context_t& ctx) const;
-
         const function_options* default_options() const;
 
         virtual core::result_wrapper_t<std::reference_wrapper<const compute_kernel>>
@@ -134,7 +127,7 @@ namespace components::compute {
 
         // Whether partial results of this function can be combined by a fragment-
         // merge kernel (SUM/COUNT/MIN/MAX/AVG). Resolved as a capability here rather
-        // than by a hardcoded name list; row/expand functions inherit the false
+        // than by a hardcoded name list; vector/expand functions inherit the false
         // default, only algebraically-mergeable aggregates override it.
         [[nodiscard]] virtual bool is_mergeable() const { return false; }
 
@@ -220,7 +213,6 @@ namespace components::compute {
 
             void visit(const vector_function& func) override;
             void visit(const aggregate_function& func) override;
-            void visit(const row_function& func) override;
             void visit(const expand_function& func) override;
 
         private:
@@ -236,7 +228,6 @@ namespace components::compute {
 
             void visit(const vector_function& func) override;
             void visit(const aggregate_function& func) override;
-            void visit(const row_function& func) override;
             void visit(const expand_function& func) override;
 
         private:
@@ -270,14 +261,6 @@ namespace components::compute {
 
     private:
         bool mergeable_;
-    };
-
-    class row_function : public detail::function_impl<row_kernel> {
-    public:
-        row_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
-        void accept_visitor(function_visitor& visitor) const override;
-
-        [[nodiscard]] std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const override;
     };
 
     class expand_function : public detail::function_impl<expand_kernel> {

@@ -155,7 +155,7 @@ TEST_CASE("logical_plan::pushdown_filter_under_sort") {
     node_aggregate_ptr inner = make_node_aggregate(&resource, db, rel);
     inner->append_child(data);
     std::vector<components::expressions::expression_ptr> sort_exprs;
-    sort_exprs.emplace_back(make_sort_expression(key(&resource, "b"), sort_order::asc));
+    sort_exprs.emplace_back(make_sort_expression(&resource, key(&resource, "b"), sort_order::asc));
     inner->append_child(make_node_sort(&resource, db, rel, sort_exprs));
 
     auto cmp = make_compare_expression(&resource, compare_type::gt, key(&resource, "a", side_t::left), id_par{1});
@@ -718,7 +718,7 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch_under_group_and_sort")
     group->append_expression(std::move(sum_expr));
 
     std::vector<components::expressions::expression_ptr> sort_exprs;
-    sort_exprs.emplace_back(make_sort_expression(key(&resource, "a"), sort_order::asc));
+    sort_exprs.emplace_back(make_sort_expression(&resource, key(&resource, "a"), sort_order::asc));
     auto sort = make_node_sort(&resource, db, rel, sort_exprs);
 
     node_aggregate_ptr outer = make_node_aggregate(&resource, db, rel);

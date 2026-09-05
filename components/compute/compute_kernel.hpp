@@ -14,9 +14,7 @@
 namespace components::compute {
     class compute_kernel;
 
-    // originally, arrow-compute's datum is a variant<scalar, vector<T>, data_chunk>.
-    // in our implementation it is a little bit simplified
-    using datum_t = std::variant<std::pmr::vector<types::logical_value_t>, vector::data_chunk_t>;
+    using datum_t = vector::data_chunk_t;
 
     // opaque kernel-specific state, for example, if there is some kind of initialization required
     class kernel_state {
@@ -125,22 +123,6 @@ namespace components::compute {
         aggregate_layout_fn layout_;
         aggregate_update_fn update_;
         aggregate_finalize_fn finalize_;
-    };
-
-    using row_exec_fn = core::error_t (*)(kernel_context& ctx,
-                                          const std::pmr::vector<types::logical_value_t>& inputs,
-                                          std::pmr::vector<types::logical_value_t>& output);
-
-    class row_kernel : public compute_kernel {
-    public:
-        row_kernel(kernel_signature_t signature, row_exec_fn exec, kernel_init_fn init = nullptr);
-
-        core::error_t execute(kernel_context& ctx,
-                              const std::pmr::vector<types::logical_value_t>& inputs,
-                              std::pmr::vector<types::logical_value_t>& output) const;
-
-    private:
-        row_exec_fn exec_;
     };
 
     using expand_exec_fn = core::error_t (*)(kernel_context& ctx,

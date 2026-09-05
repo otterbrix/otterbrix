@@ -177,7 +177,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
         // Sort by count_bool ascending so false comes first, true second
         {
             std::vector<expressions::expression_ptr> sort = {
-                expressions::make_sort_expression(key(dispatcher->resource(), "count_bool"),
+                expressions::make_sort_expression(dispatcher->resource(),
+                                                  key(dispatcher->resource(), "count_bool"),
                                                   expressions::sort_order::asc)};
             aggregate->append_child(logical_plan::make_node_sort(dispatcher->resource(),
                                                                  core::dbname_t{},
@@ -888,7 +889,8 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
             {
                 {
                     std::vector<expressions::expression_ptr> sort = {
-                        expressions::make_sort_expression(key(dispatcher->resource(), "avg"),
+                        expressions::make_sort_expression(dispatcher->resource(),
+                                                          key(dispatcher->resource(), "avg"),
                                                           expressions::sort_order::desc)};
                     aggregate->append_child(logical_plan::make_node_sort(dispatcher->resource(),
                                                                          core::dbname_t{},

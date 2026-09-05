@@ -20,7 +20,7 @@ namespace components::operators {
         operator_delete(std::pmr::memory_resource* resource,
                         log_t log,
                         components::catalog::oid_t table_oid,
-                        std::pmr::vector<select_column_t> returning,
+                        std::pmr::vector<projected_column_t> returning,
                         expressions::expression_ptr expr = nullptr,
                         // Affected-row bound for the DELETE ... USING source path
                         // (DELETE ... LIMIT n). -1 = unbounded. The no-source path
@@ -107,7 +107,7 @@ namespace components::operators {
         expressions::expression_ptr expression_;
         expressions::condition_kind condition_{expressions::condition_kind::always};
         std::unique_ptr<execution_dag::execution_dag_t> graph_;
-        std::pmr::vector<select_column_t> returning_;
+        std::pmr::vector<projected_column_t> returning_;
         bool table_has_indexes_{true};
         // separate from evaluation graph
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;

@@ -1,43 +1,32 @@
 // ============================================================================
-// A CHECK THE ENGINE CANNOT EVALUATE MUST NOT BE ACCEPTED AS IF IT COULD.
+// A CHECK MUST BE EVALUATED, OR REFUSED -- NEVER ACCEPTED AND IGNORED.
 //
-// The CHECK text stored in pg_constraint is compiled at DML time by a small
-// recogniser in operator_check_constraint that understands exactly four shapes:
+// HISTORY, because it explains the shape of these cases. The CHECK text stored in
+// pg_constraint used to be compiled at DML time by a small recogniser that understood
+// exactly four shapes -- `column OP constant`, `column IS [NOT] NULL`, `(A) AND/OR (B)`,
+// `NOT (A)`. Everything else compiled to the constant TRUE: the constraint sat in the
+// catalog, the declaration reported success, and no row was ever judged by it. Three
+// forms below survived deparsing and reached that fate, one of them inverted -- a
+// column-against-column CHECK read the second column as the number 0 and REJECTED rows
+// that satisfied the declared constraint.
 //
-//     column OP constant        (OP one of  =  <>  <  >  <=  >= )
-//     column IS [NOT] NULL
-//     (A) AND (B) / (A) OR (B)
-//     NOT (A)
+// This branch answered that with a refusal at declaration. Upstream #629 answered it
+// properly: those forms are now EVALUATED. The refusal is therefore obsolete, and these
+// cases assert the stronger property in its place -- the declaration is accepted AND
+// the constraint is enforced on the write. Owner's per-case consent, 2026-09-05.
 //
-// Everything else used to compile to the constant TRUE — constraint in the
-// catalog, declaration reported successful, no row ever judged by it. The forms
-// below all survive deparsing (so they are accepted today) and all fail to reach
-// that recogniser:
+// The invariant each case carries has not moved: a declaration that reported success
+// must not admit the row it forbids, and must not reject the row it permits. What
+// changed is that the first half of the pair is now reachable, so it is asserted
+// directly instead of being guarded behind `if (declared->is_success())`.
 //
-//   * an arithmetic operand      CHECK (a + b > 0)   — "a + b" is not a column
-//                                                      name, so the predicate is
-//                                                      TRUE;
-//   * an arithmetic constant     CHECK (a > 1 + 1)   — the constant parser reads
-//                                                      "1 + 1" as 1, so a > 1 is
-//                                                      enforced instead;
-//   * column against column      CHECK (lo <= hi)    — "hi" is not a number, so
-//                                                      the constant parser reads 0
-//                                                      and lo <= 0 is enforced:
-//                                                      rows that SATISFY the
-//                                                      declared constraint are
-//                                                      rejected.
-//
-// Each case is written as the pair that must never happen, so it states the
-// invariant rather than where the refusal is made: it is satisfied by a refusal
-// at declaration (what this branch does — a rejected CREATE/ALTER TABLE is
-// recoverable, an unenforced constraint in the catalog is not) and equally by a
-// refusal at the first write.
-//
-// The last case is the opposite shape: `name = 'a > b'` IS one of the four
-// recognised forms and must keep being accepted AND enforced. The operator used
-// to scan for its comparison operator without regard for quoting, so the " > "
-// INSIDE the string literal was taken for the predicate's operator and the whole
-// CHECK collapsed to TRUE.
+// Two cases keep their original meaning unchanged. `name = 'a > b'` IS one of the
+// recognised forms and must be accepted AND enforced: the operator used to scan for its
+// comparison operator without regard for quoting, so the " > " INSIDE the string
+// literal was taken for the predicate's operator and the whole CHECK collapsed to TRUE.
+// And a CHECK naming a column that does not exist is refused -- upstream resolves the
+// names against the schema at DDL time, which is where an unenforceable constraint
+// should die.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -79,13 +68,15 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::arithmetic_operand", "[ch
     REQUIRE(exec("CREATE TABLE c.t (a bigint, b bigint);")->is_success());
 
     auto declared = exec("ALTER TABLE c.t ADD CONSTRAINT chk_sum CHECK (a + b > 0);");
-    INFO("declaring a CHECK the engine cannot evaluate must be refused AT THE DECLARATION");
-    CHECK(declared->is_error());
+    INFO("an arithmetic operand is evaluated, not collapsed to TRUE");
+    CHECK(declared->is_success());
 
-    // The invariant, independent of where the refusal is made: a declaration that
-    // reported success must not admit the row it forbids.
+    // -5 + -5 is not > 0. The invariant is unchanged -- a declaration that reported
+    // success must not admit the row it forbids -- but the refusal now comes from the
+    // write, which is where a constraint the engine CAN evaluate belongs.
     const bool admitted = exec("INSERT INTO c.t (a, b) VALUES (-5, -5);")->is_success();
     INFO("declared=" << declared->is_success() << " admitted=" << admitted);
+    CHECK_FALSE(admitted);
     CHECK_FALSE((declared->is_success() && admitted));
 }
 
@@ -94,12 +85,14 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::arithmetic_constant", "[c
     REQUIRE(exec("CREATE TABLE c.t (a bigint);")->is_success());
 
     auto declared = exec("ALTER TABLE c.t ADD CONSTRAINT chk_gt CHECK (a > 1 + 1);");
-    INFO("a constant the engine folds wrongly is a constraint it does not enforce");
-    CHECK(declared->is_error());
+    INFO("the bound is folded to 2, not read as 1");
+    CHECK(declared->is_success());
 
-    // a = 2 violates `a > 1 + 1`; a recogniser that reads the bound as 1 lets it in.
+    // a = 2 violates `a > 1 + 1`. A recogniser that read the bound as 1 let it in; that
+    // is the exact value this case exists to keep out.
     const bool admitted = exec("INSERT INTO c.t (a) VALUES (2);")->is_success();
     INFO("declared=" << declared->is_success() << " admitted=" << admitted);
+    CHECK_FALSE(admitted);
     CHECK_FALSE((declared->is_success() && admitted));
 }
 
@@ -108,15 +101,20 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::column_against_column", "
     REQUIRE(exec("CREATE TABLE c.t (lo bigint, hi bigint);")->is_success());
 
     auto declared = exec("ALTER TABLE c.t ADD CONSTRAINT chk_range CHECK (lo <= hi);");
-    INFO("comparing two columns is not one of the shapes the engine can evaluate");
-    CHECK(declared->is_error());
+    INFO("two columns compare against each other, not against a mis-read 0");
+    CHECK(declared->is_success());
 
-    // (1, 10) SATISFIES `lo <= hi`. The mis-read constraint (lo <= 0) rejects it, so
-    // here the damage runs the other way: a declaration that reported success must not
+    // (1, 10) SATISFIES `lo <= hi`. The mis-read constraint (lo <= 0) rejected it, so
+    // here the damage ran the other way: a declaration that reported success must not
     // reject a row it permits.
     const bool rejected = exec("INSERT INTO c.t (lo, hi) VALUES (1, 10);")->is_error();
     INFO("declared=" << declared->is_success() << " rejected=" << rejected);
+    CHECK_FALSE(rejected);
     CHECK_FALSE((declared->is_success() && rejected));
+
+    // And the violating pair is still kept out, so the case cannot pass by the
+    // constraint having quietly become TRUE again.
+    CHECK(exec("INSERT INTO c.t (lo, hi) VALUES (10, 1);")->is_error());
 }
 
 // The inline forms of CREATE TABLE reach the same deparser, so they must refuse the
@@ -124,25 +122,23 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::column_against_column", "
 TEST_CASE("integration::cpp::check_expr_unenforceable::inline_table_level", "[checkexpr]") {
     MAKE_ENV("inline_table");
     auto declared = exec("CREATE TABLE c.t (a bigint, b bigint, CHECK (a + b > 0));");
-    INFO("a table-level inline CHECK goes through the same guard");
-    CHECK(declared->is_error());
+    INFO("a table-level inline CHECK reaches the same evaluator");
+    CHECK(declared->is_success());
 
-    if (declared->is_success()) {
-        const bool admitted = exec("INSERT INTO c.t (a, b) VALUES (-5, -5);")->is_success();
-        CHECK_FALSE(admitted);
-    }
+    const bool admitted = exec("INSERT INTO c.t (a, b) VALUES (-5, -5);")->is_success();
+    CHECK_FALSE(admitted);
+    CHECK_FALSE((declared->is_success() && admitted));
 }
 
 TEST_CASE("integration::cpp::check_expr_unenforceable::inline_column_level", "[checkexpr]") {
     MAKE_ENV("inline_column");
     auto declared = exec("CREATE TABLE c.t (a bigint, b bigint CHECK (b + 1 > 0));");
-    INFO("a column-level inline CHECK goes through the same guard");
-    CHECK(declared->is_error());
+    INFO("a column-level inline CHECK reaches the same evaluator; it is a separate extractor");
+    CHECK(declared->is_success());
 
-    if (declared->is_success()) {
-        const bool admitted = exec("INSERT INTO c.t (a, b) VALUES (1, -5);")->is_success();
-        CHECK_FALSE(admitted);
-    }
+    const bool admitted = exec("INSERT INTO c.t (a, b) VALUES (1, -5);")->is_success();
+    CHECK_FALSE(admitted);
+    CHECK_FALSE((declared->is_success() && admitted));
 }
 
 // A recognised form that the operator used to misread: the string literal contains
@@ -182,15 +178,26 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::unknown_column_alter_refu
     MAKE_ENV("unknown_col_alter");
     REQUIRE(exec("CREATE TABLE c.t (a bigint);")->is_success());
     // Declaration is accepted (there is no DDL-level refusal); the floor is at the write.
-    exec("ALTER TABLE c.t ADD CONSTRAINT chk_typo CHECK (nosuchcol > 0);");
+    // UPSTREAM #629 MOVED THE REFUSAL TO THE RIGHT PLACE. The names in a CHECK are now
+    // resolved against the schema at DDL time, so a typo dies at the declaration instead
+    // of surviving in the catalog as a constraint nothing can evaluate. That closes the
+    // recorded gap "a typo in a column name inside CHECK is still not enforced" -- the
+    // declaration, not the first write, is where an unenforceable constraint should die.
+    auto declared = exec("ALTER TABLE c.t ADD CONSTRAINT chk_typo CHECK (nosuchcol > 0);");
+    INFO("a CHECK naming a column the table does not have must not be accepted");
+    REQUIRE(declared->is_error());
+    const std::string ddl_what{declared->get_error().what};
+    INFO("ddl error: " << ddl_what);
+    CHECK(ddl_what.find("nosuchcol") != std::string::npos);
 
-    auto ins = exec("INSERT INTO c.t (a) VALUES (-1);");
-    INFO("a CHECK naming a column the table does not have must not silently admit the row");
-    REQUIRE(ins->is_error());
-    const std::string what{ins->get_error().what};
-    INFO("error: " << what);
-    CHECK(what.find("nosuchcol") != std::string::npos);
-    CHECK(count_of("SELECT COUNT(*) FROM c.t;") == 0);
+    // The invariant this case has always carried: whatever the engine decides about the
+    // declaration, the table must not end up holding a row that a live constraint forbids.
+    // With the constraint refused there is no constraint, so the write is judged only by
+    // the column list -- and the row lands. Assert the state, not a guessed refusal.
+    const bool admitted = exec("INSERT INTO c.t (a) VALUES (-1);")->is_success();
+    INFO("declared=" << declared->is_success() << " admitted=" << admitted);
+    CHECK_FALSE((declared->is_success() && admitted));
+    CHECK(count_of("SELECT COUNT(*) FROM c.t;") == (admitted ? 1u : 0u));
 }
 
 TEST_CASE("integration::cpp::check_expr_unenforceable::unknown_column_inline_table_level_refuses_at_write",

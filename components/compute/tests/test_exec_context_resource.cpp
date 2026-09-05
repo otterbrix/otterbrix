@@ -89,7 +89,7 @@ TEST_CASE("components::compute::exec_context::executing_a_function_never_touches
     std::pmr::set_default_resource(std::pmr::new_delete_resource());
 
     REQUIRE_FALSE(res.has_error());
-    REQUIRE(std::get<data_chunk_t>(res.value()).data[0].data<int>()[0] == 42);
+    REQUIRE(res.value().data[0].data<int>()[0] == 42);
 
     INFO("allocations taken from the process-global default resource: "
          << probe.allocations.load() << " (" << probe.bytes.load() << " bytes)");

@@ -70,16 +70,48 @@ namespace components {
             dropped_at,
             storage_rename
         };
+
+        // What the storage needs in order to ANSWER a column pg_attribute publishes and no row
+        // group holds yet. It is a PAIR, not a type, because PostgreSQL parity makes it one:
+        // since PG 11, ALTER TABLE ADD COLUMN ... DEFAULT does not rewrite the table — the
+        // constant is filed next to the type (pg_attribute.attmissingval beside atttypid) and
+        // every row that predates the column reads it from there. atttypid <-> `type`,
+        // attmissingval <-> `default_spec`, and the two travel together for the same reason PG
+        // stores them in one row: a reader that has one and not the other answers the column
+        // WRONG (NULL instead of the default) rather than not at all.
+        //
+        // `default_spec` is the encoded form catalog::encode_default_spec produces and
+        // catalog::decode_default_spec reads back — the SAME text pg_attribute.attdefspec holds,
+        // so the value that crosses to the agent and the value the catalog persisted are one
+        // string, not two encodings that can drift. Empty = the column has no DEFAULT.
+        struct added_column_type_t {
+            types::complex_logical_type type;
+            std::string default_spec;
+
+            added_column_type_t() = default;
+            // IMPLICIT on purpose, and it is what keeps the pair from being a burden on the two
+            // kinds that create no column: a bare type IS this pair for a column with no DEFAULT,
+            // so `... , types::complex_logical_type{}}` at a dropped_at / storage_rename call site
+            // goes on meaning exactly what it meant.
+            added_column_type_t(types::complex_logical_type t)
+                : type(std::move(t)) {}
+            added_column_type_t(types::complex_logical_type t, std::string spec)
+                : type(std::move(t))
+                , default_spec(std::move(spec)) {}
+        };
         catalog::oid_t attoid{catalog::INVALID_OID};
         kind_t kind{kind_t::added_at};
         catalog::oid_t release_table_oid{catalog::INVALID_OID};
         std::string release_attname;
         std::string rename_to_attname;
-        // added_at only: the type of the column the ALTER created. It travels with the identity
-        // to the owning agent, because the storage that has not materialised the column yet has
-        // to be able to ANSWER it — as NULLs of this type — until an INSERT does
-        // (table_storage_adapter_t). Unset for the other two kinds.
-        types::complex_logical_type added_column_type;
+        // added_at only: the type of the column the ALTER created, and the DEFAULT that goes with
+        // it (see added_column_type_t). It travels with the identity to the owning agent, because
+        // the storage that has not materialised the column yet has to be able to ANSWER it — with
+        // the default where there is one, with NULLs of this type where there is not — until an
+        // INSERT does (table_storage_adapter_t), and then to BACKFILL the rows that predate the
+        // column with the same constant when that INSERT materialises it (row_group_t::add_column).
+        // Unset for the other two kinds.
+        added_column_type_t added_column_type;
     };
 
 } // namespace components

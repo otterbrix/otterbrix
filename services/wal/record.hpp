@@ -23,10 +23,30 @@ namespace services::wal {
     };
 
     struct record_t final {
-        size_tt size;
-        crc32_t crc32;
-        crc32_t last_crc32;
-        id_t id;
+        // THE RESOURCE ARRIVES AT CONSTRUCTION, AND THERE IS NO WAY TO SKIP IT.
+        //
+        // physical_data / physical_row_ids used to carry default member initialisers naming
+        // std::pmr::get_default_resource() — rule 14's forbidden resource, written out. That was
+        // not merely a spelling problem: a pmr move-assignment does NOT adopt the source's
+        // allocator (propagate_on_container_move_assignment is false), so decode_record's
+        // `rec.physical_data = deserialize_chunk_batch(..., resource, ...)` allocated with the
+        // TARGET's allocator and put every replayed WAL payload on the process-global arena, no
+        // matter which resource the caller named. Assigning a correctly-placed payload in could
+        // not repair it; only constructing the record on the right resource can, which is why
+        // the default constructor is gone rather than merely discouraged.
+        //
+        // The header scalars are zeroed here for a second reason: decode_record fills last_crc32
+        // and id only AFTER the CRC check, so a record refused for a bad CRC left them
+        // INDETERMINATE, and every reader that logs or compares a corrupt record's id read
+        // uninitialised memory. Zero is the value a corrupt record reports.
+        explicit record_t(std::pmr::memory_resource* resource)
+            : physical_data(resource)
+            , physical_row_ids(resource) {}
+
+        size_tt size{0};
+        crc32_t crc32{0};
+        crc32_t last_crc32{0};
+        id_t id{0};
         uint64_t transaction_id{0};
         // MVCC commit_id from txn_manager_->commit(); lets snapshot-aware
         // replay restore published_horizon_ and the in_flight set. 0 on
@@ -37,8 +57,8 @@ namespace services::wal {
         // Physical WAL fields. physical_data holds the record's payload as a batch of
         // ≤DEFAULT_VECTOR_CAPACITY chunks (empty for DELETE / no-payload records).
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
-        std::pmr::vector<components::vector::data_chunk_t> physical_data{std::pmr::get_default_resource()};
-        std::pmr::vector<int64_t> physical_row_ids{std::pmr::get_default_resource()};
+        std::pmr::vector<components::vector::data_chunk_t> physical_data;
+        std::pmr::vector<int64_t> physical_row_ids;
         uint64_t physical_row_start{0};
         uint64_t physical_row_count{0};
         core::date::timezone_offset_t session_tz{};

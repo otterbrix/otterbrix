@@ -387,7 +387,7 @@ namespace services::wal {
     }
 
     record_t decode_record(const char* data, size_t len, std::pmr::memory_resource* resource) {
-        record_t rec;
+        record_t rec{resource};
         rec.is_corrupt = false;
 
         // Minimum valid record is a COMMIT at 37 bytes.
@@ -492,7 +492,6 @@ namespace services::wal {
                     return rec;
                 }
                 uint64_t count = payload_size / sizeof(int64_t);
-                rec.physical_row_ids = std::pmr::vector<int64_t>(resource);
                 rec.physical_row_ids.resize(count);
                 std::memcpy(rec.physical_row_ids.data(), payload, payload_size);
                 break;
@@ -513,7 +512,6 @@ namespace services::wal {
                     return rec;
                 }
                 uint64_t id_count = row_ids_bytes / sizeof(int64_t);
-                rec.physical_row_ids = std::pmr::vector<int64_t>(resource);
                 rec.physical_row_ids.resize(id_count);
                 std::memcpy(rec.physical_row_ids.data(), row_ids_data, row_ids_bytes);
 

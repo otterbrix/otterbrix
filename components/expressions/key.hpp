@@ -27,7 +27,48 @@ namespace components::expressions {
             , variant_select_{key.variant_select_}
             , absent_ok_{key.absent_ok_} {}
 
+        // STANDARD pmr copy semantics, on purpose: a copy made without naming an arena does NOT
+        // inherit the source's. polymorphic_allocator::select_on_container_copy_construction()
+        // hands each member a default-constructed allocator, so the copy lands on the process
+        // default — a resource that outlives every arena in this process, which is the ONE
+        // property that makes an un-placed copy safe.
+        //
+        // The tidier-looking alternative — copy each member with the SOURCE's allocator, "a copy
+        // stands where the original did" — is a use-after-free, and it is not hypothetical.
+        // key_t crosses arena boundaries all the way down the pipeline: a key built on a logical
+        // node's arena is copied into an operator living on context.resource (index_scan.cpp),
+        // into a cloned expression on the clone target's arena (clone_expression.cpp), into a
+        // rewritten node on an optimizer rule's arena (eager_aggregation.cpp). The node's arena
+        // is the SHORTER-lived side, and core/pmr.hpp's otterbrix_resource is a pooled resource
+        // whose destructor releases everything it ever handed out. A copy wearing the source's
+        // allocator therefore reads freed bytes the moment that arena goes — measured in
+        // components/context/tests/test_context_pmr_residency.cpp: the 43-character column name
+        // came back as 90 bytes of poison.
+        //
+        // A copy that must sit on a particular arena SAYS SO, via the allocator-extended
+        // constructor below, and the arena it names is the DESTINATION's — the one the caller
+        // has proven outlives the copy. That is what every cross-arena site now passes, so the
+        // pipeline's keys are on named arenas because the sites name them, not because a copy
+        // constructor guessed.
         key_t(const key_t& key) = default;
+
+        // Allocator-extended copy: `resource` is the arena the COPY lives on, and the caller
+        // guarantees it outlives the copy. Deliberately NO check of `resource` in a constructor
+        // body — the member-initialiser list below allocates first, so a body-level guard would
+        // run after the very crash it claims to catch; a null resource faults here, loudly, at
+        // the first member.
+        key_t(const key_t& key, std::pmr::memory_resource* resource)
+            : side_{key.side_}
+            , storage_{key.storage_, resource}
+            , qualifier_{key.qualifier_, resource}
+            , path_{key.path_, resource}
+            , cast_type_{key.cast_type_}
+            , variant_select_{key.variant_select_}
+            , absent_ok_{key.absent_ok_} {}
+
+        // Copy-ASSIGNMENT keeps each member's existing allocator (propagate_on_container_copy_-
+        // assignment is false for polymorphic_allocator), so the destination's arena wins and no
+        // default resource is consulted. That is already the right rule; nothing to hand-write.
         key_t& operator=(const key_t& key) = default;
 
         explicit key_t(std::pmr::vector<std::pmr::string> str_vector, side_t side = side_t::undefined)

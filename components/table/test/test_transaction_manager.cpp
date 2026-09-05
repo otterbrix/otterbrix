@@ -277,3 +277,86 @@ TEST_CASE("components::table::transaction_manager::out_of_order_publish_floor") 
 
     mgr.abort(s3);
 }
+
+// AN ORPHANED commit_id PINS THE HORIZON FOR THE LIFE OF THE PROCESS.
+//
+// commit() allocates the id into in_flight_commits_ and publish() is the only thing
+// that takes it out. Every early exit of operator_commit_transaction_t between those
+// two hops leaves the id there with nobody left to remove it: commit() has ALREADY
+// erased the txn from active_ (see :41-42 there), so find_transaction() answers
+// nullptr and neither a ROLLBACK nor the dispatcher's failure-release net can reach
+// it. It was documented on the spot as a "KNOWN leak ... accepted".
+//
+// WHAT THAT COSTS IS ONE TERM: visible_to_all_locked() floors the watermark on
+// min(in_flight_commits_) - 1, and that ONE number is what data_table_t::compact(),
+// the DROP-GC tombstone sweep and the deferred index-delete sweep all read. The
+// orphan therefore freezes the horizon at c_lost - 1 forever, WITH NO TRANSACTION
+// ANYWHERE IN THE SYSTEM — has_active_transactions() is false and every later commit
+// publishes normally, and still nothing is ever reclaimed again.
+//
+// The window is laid out by hand with four public calls — no threads, no sleeps, no
+// timing. begin, begin, commit, commit, publish(the second one) IS the leak.
+//
+// WHY THE CURE IS AN ERASE AND NOT A SECOND SET. A "discarded" set that snapshots
+// UNION into their in-flight vector is correct for READERS (an insert stamped with a
+// discarded id stays hidden, a delete stamped with one leaves its row alive), but the
+// parties pinned here are not readers: compact() and both sweeps take a single
+// horizon NUMBER and never see a snapshot. To keep them safe, the floor above would
+// have to include min(discarded) - 1 as well — which is this defect, verbatim. So the
+// id has to leave in_flight_commits_ outright, and what makes that safe is not a
+// reader rule but an ORDERING rule in the operator: no step that can fail may run
+// after the first step that stamps the commit_id, so a discarded id is stamped
+// nowhere. discard() is publish() minus the CAS for exactly that reason — it must
+// raise the floor without advancing published_horizon_ by even one.
+TEST_CASE("components::table::transaction_manager::orphaned_commit_pins_horizon_forever") {
+    using namespace components::table;
+    using namespace components::session;
+
+    transaction_manager_t mgr(std::pmr::new_delete_resource());
+
+    auto s_lost = session_id_t::generate_uid();
+    auto s_ok = session_id_t::generate_uid();
+    mgr.begin_transaction(s_lost);
+    mgr.begin_transaction(s_ok);
+
+    // s_lost reaches an early exit of the commit pipeline: its id is allocated and it
+    // is already out of active_, but publish() will never run for it.
+    const auto c_lost = mgr.commit(s_lost);
+    // s_ok runs its whole pipeline and publishes.
+    const auto c_ok = mgr.commit(s_ok);
+    REQUIRE(c_ok > c_lost);
+    mgr.publish(c_ok);
+
+    // NOT VACUOUS: nothing is left to release the pin. No active transaction, no
+    // pending publish anyone could still send.
+    REQUIRE_FALSE(mgr.has_active_transactions());
+
+    // THE DEFECT, stated as the state it leaves behind. Both public horizon names
+    // answer visible_to_all_locked(), so both are stuck one below the orphan — c_ok is
+    // published and reclaimable, and neither number will ever say so.
+    REQUIRE(mgr.compact_watermark() == c_lost - 1);
+    REQUIRE(mgr.lowest_active_snapshot_horizon() == c_lost - 1);
+
+    // THE CURE. One erase, no CAS: the floor rises to the highest published id and
+    // published_horizon_ is untouched, so the discarded transaction is not published
+    // by the act of forgetting it.
+    const auto horizon_before = mgr.published_horizon();
+    mgr.discard(c_lost);
+    REQUIRE(mgr.published_horizon() == horizon_before);
+    REQUIRE(mgr.compact_watermark() == c_ok);
+    REQUIRE(mgr.lowest_active_snapshot_horizon() == c_ok);
+
+    // Idempotent: a second discard of the same id changes nothing, and discarding an
+    // id that was never in flight is a no-op rather than a horizon move.
+    mgr.discard(c_lost);
+    REQUIRE(mgr.compact_watermark() == c_ok);
+
+    // A reader opened after the discard must not see the discarded id in its
+    // in-flight set — there is nothing left to hide, because after the operator's
+    // ordering rule no row anywhere carries it.
+    auto s_read = session_id_t::generate_uid();
+    auto& reader = mgr.begin_transaction(s_read);
+    REQUIRE(reader.data().in_flight_snapshot.empty());
+    REQUIRE(reader.data().snapshot_horizon == c_ok);
+    mgr.abort(s_read);
+}

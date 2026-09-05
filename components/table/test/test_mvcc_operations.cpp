@@ -1511,3 +1511,95 @@ TEST_CASE("components::table::mvcc::index_sweep_floor_in_publish_window") {
     mgr.abort(s_after);
     REQUIRE(c_del <= mgr.lowest_active_snapshot_horizon());
 }
+
+// AN ORPHANED commit_id BLOCKS COMPACTION OF A TABLE IT NEVER TOUCHED.
+//
+// This is the CONSEQUENCE of the pin proved as state in
+// components/table/test/test_transaction_manager.cpp
+// ("orphaned_commit_pins_horizon_forever"), measured where it is actually paid.
+// operator_commit_transaction_t has early exits between the hop that ALLOCATES the
+// commit_id (the dispatcher's drain -> transaction_manager_t::commit()) and the hop
+// that removes it (txn_publish_msg -> publish()). An exit in between leaves the id in
+// in_flight_commits_ with the transaction already gone from active_, so nothing can
+// ever take it out again.
+//
+// compact() is gated on compact_watermark(), whose only floor for a system with no
+// live transactions is min(in_flight_commits_) - 1. One dead COMMIT therefore stops
+// the reclaim of EVERY table in the process from its own id onward — including tables
+// the dead transaction never wrote a row to, which is the case built below.
+//
+// THE ORPHAN WRITES NOTHING HERE, AND THAT IS FAITHFUL, NOT A SHORTCUT. Under the
+// operator's ordering rule — no step that can fail may run after the first step that
+// stamps the commit_id — a transaction that dies at an early exit has stamped the id
+// on nothing: not on a row version, not on a pg_attribute column, not on a deferred
+// index-delete entry. All it leaves behind is the id itself. (Rows it wrote to its
+// OWN table still carry insert_id == transaction_id and block THAT table's compaction
+// on a separate, pre-existing ground: there is no undo under MVCC. Keeping the two
+// tables apart is what makes this case about the horizon alone.)
+//
+// ORDER MATTERS: the real DELETE must commit AFTER the orphan, or its id would sit
+// below the pinned floor and the compact would succeed for the wrong reason.
+TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
+    test_env env;
+    auto table = make_int_table(env);
+    transaction_manager_t mgr(&env.resource);
+
+    // Rows 0..9, committed, published, storage-stamped.
+    auto s1 = components::session::session_id_t::generate_uid();
+    auto& txn1 = mgr.begin_transaction(s1);
+    append_rows_txn(*table, env, 0, 10, txn1.data());
+    auto c1 = mgr.commit(s1);
+    mgr.publish(c1);
+    table->commit_append(c1, 0, 10);
+
+    // The orphan: a session that takes a commit_id and dies at an early exit of the
+    // commit pipeline. commit() has already dropped it from active_.
+    auto s_lost = components::session::session_id_t::generate_uid();
+    mgr.begin_transaction(s_lost);
+    const auto c_lost = mgr.commit(s_lost);
+
+    // A REAL delete, committed and published, entirely after the orphan.
+    auto s_del = components::session::session_id_t::generate_uid();
+    auto& txn_del = mgr.begin_transaction(s_del);
+    auto txn_del_id = txn_del.data().transaction_id;
+    delete_row0_txn(*table, env, txn_del_id);
+    const auto c_del = mgr.commit(s_del);
+    REQUIRE(c_del > c_lost);
+    table->commit_all_deletes(txn_del_id, c_del);
+    mgr.publish(c_del);
+
+    // NOT VACUOUS: no transaction is left anywhere to release the pin, and the delete
+    // is fully published — every condition for a reclaim is met except the horizon.
+    REQUIRE_FALSE(mgr.has_active_transactions());
+
+    // What a fresh snapshot is entitled to read, before anything is reclaimed.
+    auto s_before = components::session::session_id_t::generate_uid();
+    auto& before = mgr.begin_transaction(s_before);
+    const auto expected = make_range(1, 9);
+    REQUIRE(scan_values_txn(*table, env, before.data()) == expected);
+    mgr.abort(s_before);
+
+    // THE DEFECT. The watermark is stuck one below the orphan, so the DELETE's own
+    // stamp is above it and the rebuild is refused — permanently, for the life of the
+    // process, with nothing left that could ever change the answer.
+    REQUIRE(mgr.compact_watermark() == c_lost - 1);
+    REQUIRE_FALSE(table->compact(mgr.compact_watermark()));
+    REQUIRE(table->row_group()->total_rows() == 10);
+
+    // THE CURE. One erase; published_horizon_ does not move, so nothing is published
+    // by the act of forgetting the orphan.
+    const auto horizon_before = mgr.published_horizon();
+    mgr.discard(c_lost);
+    REQUIRE(mgr.published_horizon() == horizon_before);
+    REQUIRE(mgr.compact_watermark() == c_del);
+
+    REQUIRE(table->compact(mgr.compact_watermark()));
+    REQUIRE(table->row_group()->total_rows() == 9);
+
+    // The compaction published nothing and lost nothing: the same rows, one dead
+    // version fewer.
+    auto s_after = components::session::session_id_t::generate_uid();
+    auto& after = mgr.begin_transaction(s_after);
+    REQUIRE(scan_values_txn(*table, env, after.data()) == expected);
+    mgr.abort(s_after);
+}

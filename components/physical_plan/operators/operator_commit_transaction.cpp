@@ -116,7 +116,154 @@ namespace components::operators {
         // executor tail (e.g. inline CREATE INDEX commit) via the pipeline ctx.
         ctx->committed_id = commit_id_;
 
-        // DROP-GC value-space remap. DDL that drops a storage/index registers a
+        // ===================================================================
+        // THE ORDER OF EVERYTHING BELOW IS THE INVARIANT, NOT A CONVENIENCE.
+        //
+        //   NO STEP THAT CAN FAIL MAY RUN AFTER THE FIRST STEP THAT STAMPS THE
+        //   COMMIT_ID.
+        //
+        // The commit_id is allocated by the drain above (the dispatcher's
+        // transaction_manager_t::commit() inserts it into in_flight_commits_) and is
+        // removed only by the ProcArray barrier at the bottom. Every co_return in
+        // between used to leave it in that set with nobody left to take it out — the
+        // txn is already gone from active_, so find_transaction() answers nullptr and
+        // neither a ROLLBACK nor the dispatcher's failure-release net can reach it. The
+        // orphan then floors visible_to_all_locked() at commit_id - 1 for the life of
+        // the process, stopping data_table_t::compact(), the DROP-GC tombstone sweep
+        // and the deferred index-delete sweep — a queue that is UNBOUNDED BY
+        // CONSTRUCTION, because evicting from it is the very defect it exists to
+        // prevent. It was documented here as a "KNOWN leak ... accepted".
+        //
+        // The cure is txn_discard_msg, and what makes THAT safe is this ordering.
+        // Erasing the id would publish the commit if anything already carried it, so
+        // the two steps that can fail — the index insert-commit and the WAL commit
+        // marker — are hoisted ABOVE every step that stamps it:
+        //
+        //   CAN FAIL   1. commit_inserts        (index; publishes by txn_id, not by cid)
+        //   CAN FAIL   2. WAL commit marker     (the single durable commit point)
+        //   ---------- the commit is now durable; nothing below may refuse it ---------
+        //   stamps     3. DROP-GC tombstone remap        (txn-id space -> commit-id space)
+        //   stamps     4. pg_attribute commit_id backfill
+        //   stamps     5. commit_deletes                 (queues deferred_delete{.., cid})
+        //   stamps     6. storage_publish_commits / _deletes
+        //   barrier    7. txn_publish_msg
+        //
+        // WHY commit_inserts MAY MOVE UP: services/index/manager_index.cpp:1239-1246
+        // takes the commit id as an UNNAMED parameter and says so — "the commit id is
+        // no longer carried down" — and publishes by ctx.txn.transaction_id. It stamps
+        // nothing with the cid, so its position relative to the stamping steps is free.
+        //
+        // WHY THE WAL MARKER MAY MOVE UP, above the storage publishes: replay
+        // (services/wal/wal_reader.cpp:154-181) is a TWO-PASS scan — pass 1 collects
+        // the committed transaction ids from every COMMIT marker in the log, pass 2
+        // keeps every record whose transaction_id is in that set. Record order relative
+        // to the marker is irrelevant, so moving the marker above the in-memory flip
+        // (and the pg_attribute physical_update below it) is replay-neutral. It is also
+        // strictly safer than the old order: the durable commit point now precedes
+        // every reader-visible effect instead of following it.
+        //
+        // WHY commit_deletes MUST NOT move up with commit_inserts: it queues a
+        // deferred_delete_t stamped with the cid, and the horizon sweep later turns
+        // that entry into a physical index erase. Left above a marker that then failed,
+        // the entry would outlive a transaction that never committed, and the discard
+        // would raise the horizon right past it — erasing index entries for rows the
+        // table still holds alive. That is the silent-short-answer defect the deferred
+        // queue exists to prevent, arrived at from the other side.
+        // ===================================================================
+
+        // Materialize the UNIQUE base-table oids touched by appends / deletes
+        // ONCE, here, before any consumer. base_appends / base_delete_tables are
+        // moved out by the storage_publish_* block further down, so these unique
+        // sets must be captured first. They serve THREE consumers — the per-table
+        // index commits, the storage publishes, and the MVCC-compact fan-out —
+        // each of which builds its own per-send pmr-vector copy (the sends move
+        // their argument, these masters stay intact). Single dedup pass via a
+        // std::pmr::set; resource from the operator (resource_).
+        std::pmr::set<components::catalog::oid_t> append_oid_set{resource_};
+        for (const auto& r : base_appends) {
+            append_oid_set.insert(r.table_oid);
+        }
+        std::pmr::vector<components::catalog::oid_t> base_append_oids{append_oid_set.begin(),
+                                                                      append_oid_set.end(),
+                                                                      resource_};
+        std::pmr::vector<components::catalog::oid_t> base_delete_table_oids{base_delete_tables.begin(),
+                                                                            base_delete_tables.end(),
+                                                                            resource_};
+
+        // STEP 1 — the per-table index insert-commits, the FIRST of the two steps that
+        // can fail and therefore the first thing after the drain. They flip every
+        // touched table's index entries from PENDING to committed; on error we discard
+        // the commit_id and co_return with NOTHING durable and NOTHING reader-visible:
+        // the rows stay txn-pending (insert_id == transaction_id), invisible to every
+        // snapshot; the WAL commit marker has not been written, so replay drops the
+        // physicals; and the discard below means the allocated id no longer pins the
+        // horizon. base_append_oids / base_delete_table_oids are the masters; copy into
+        // per-send pmr-vectors so the masters survive for the publish + compact
+        // consumers below.
+        if (ctx->index_address != actor_zeta::address_t::empty_address() && txn_data.transaction_id != 0 &&
+            commit_id_ > 0 && !base_append_oids.empty()) {
+            std::pmr::vector<components::catalog::oid_t> append_oids{base_append_oids.begin(),
+                                                                     base_append_oids.end(),
+                                                                     resource_};
+            auto [_ic, icf] = actor_zeta::send(
+                ctx->index_address,
+                &services::index::manager_index_t::commit_inserts,
+                components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
+                std::move(append_oids),
+                commit_id_);
+            core::error_t result = co_await std::move(icf);
+            if (result.contains_error()) {
+                // Clean abort: the commit_id is stamped NOWHERE (nothing above this
+                // point writes it anywhere), so releasing it cannot publish anything.
+                if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
+                    auto [_dx, dxf] = actor_zeta::send(ctx->current_message_sender,
+                                                       &services::dispatcher::manager_dispatcher_t::txn_discard_msg,
+                                                       commit_id_);
+                    co_await std::move(dxf);
+                }
+                set_error(std::move(result));
+                co_return;
+            }
+        }
+
+        // STEP 2 — durability. The WAL commit_txn marker is the SINGLE durable commit
+        // point and the LAST step that can fail; everything below it is either void or
+        // contractually infallible, which is what lets the discard above be a plain
+        // erase. It precedes the in-memory MVCC flip AND the ProcArray barrier, so a
+        // crash at any point after it replays into the same commit, and a crash before
+        // it drops the transaction whole. Skip when the DDL-commit branch at the top
+        // already emitted one.
+        if (!is_ddl_commit_ && ctx->wal_address != actor_zeta::address_t::empty_address() &&
+            txn_data.transaction_id != 0 && commit_id_ > 0) {
+            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+            auto [_w, wf] = actor_zeta::send(ctx->wal_address,
+                                             &services::wal::manager_wal_replicate_t::commit_txn,
+                                             ctx->session,
+                                             txn_data.transaction_id,
+                                             services::wal::wal_sync_mode::FULL,
+                                             db_oid,
+                                             commit_id_);
+            // FULL means "this marker is on the device". Discarding this reply is what let
+            // a failed fsync be followed by the barrier anyway: readers would see a commit
+            // that a crash one instant later would take back. Refusing HERE is now a clean
+            // abort in the full sense — under the old order the storage publishes had
+            // already run and the commit_id was already stamped on live row versions, so
+            // the exit could only leave the txn unpublished-but-stamped and pin the horizon
+            // forever. Nothing has been stamped at this point any more, so the discard is
+            // sound and the transaction leaves no trace at all.
+            if (auto commit_result = co_await std::move(wf); commit_result.has_error()) {
+                if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
+                    auto [_dx, dxf] = actor_zeta::send(ctx->current_message_sender,
+                                                       &services::dispatcher::manager_dispatcher_t::txn_discard_msg,
+                                                       commit_id_);
+                    co_await std::move(dxf);
+                }
+                set_error(commit_result.error());
+                co_return;
+            }
+        }
+
+        // STEP 3 — DROP-GC value-space remap. DDL that drops a storage/index registers a
         // tombstone keyed by transaction_id at DROP time; the horizon-advance GC
         // compares against commit_id, so the tombstone must be remapped from
         // txn-id space into commit-id space once the real commit_id is known.
@@ -125,7 +272,9 @@ namespace components::operators {
         // decoupled from is_ddl_commit_, i.e. from which mode lowered the
         // statement: a txn that ran no DROP has an empty vector and pays nothing,
         // and a DROP that arrived through any lowering path remaps correctly.
-        // Placed right after the drain so commit_id_ is final.
+        // Its ONE ordering constraint is "before the horizon broadcast", and that is
+        // still satisfied: it is awaited here and the broadcast happens inside
+        // txn_publish_msg at the bottom.
         if (!dropped_storage_oids.empty() && txn_data.transaction_id != 0 && commit_id_ > 0) {
             if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
                 auto [_sd, sdf] = actor_zeta::send(ctx->disk_address,
@@ -145,14 +294,16 @@ namespace components::operators {
             }
         }
 
-        // Patch the placeholder commit_id columns on the ALTER's pg_attribute
-        // rows (swap_backfills names the (attoid, kind) pairs). Safe to do here
-        // BEFORE storage_publish_commits: the rows still carry insert_id ==
-        // transaction_id and are invisible to every concurrent snapshot, so this
-        // is a metadata-only update nobody else can observe. WAL safety:
+        // STEP 4 — patch the placeholder commit_id columns on the ALTER's pg_attribute
+        // rows (swap_backfills names the (attoid, kind) pairs). Its real constraint is
+        // "before storage_publish_commits", which still holds: the rows still carry
+        // insert_id == transaction_id and are invisible to every concurrent snapshot,
+        // so this is a metadata-only update nobody else can observe. WAL safety:
         // update_pg_attribute_commit_id_fields emits a physical_update per marker
         // paired with the matching physical_insert, so replay materializes them
-        // together.
+        // together — and it now sits BELOW this txn's commit marker, which is
+        // replay-neutral because replay gates on transaction_id, not on record order
+        // relative to the marker (wal_reader.cpp's two-pass scan).
         //
         // B3c1: a dropped_at marker carries a second, later piece of the same unfinished
         // business — the physical column release. Copy those out HERE, before the move below
@@ -206,81 +357,43 @@ namespace components::operators {
                   commit_id_);
         }
 
-        // Materialize the UNIQUE base-table oids touched by appends / deletes
-        // ONCE, here, before any consumer. base_appends / base_delete_tables are
-        // moved out by the storage_publish_* block further down, so these unique
-        // sets must be captured first. They serve THREE consumers — the per-table
-        // index commits, the storage publishes, and the MVCC-compact fan-out —
-        // each of which builds its own per-send pmr-vector copy (the sends move
-        // their argument, these masters stay intact). Single dedup pass via a
-        // std::pmr::set; resource from the operator (resource_).
-        std::pmr::set<components::catalog::oid_t> append_oid_set{resource_};
-        for (const auto& r : base_appends) {
-            append_oid_set.insert(r.table_oid);
-        }
-        std::pmr::vector<components::catalog::oid_t> base_append_oids{append_oid_set.begin(),
-                                                                      append_oid_set.end(),
-                                                                      resource_};
-        std::pmr::vector<components::catalog::oid_t> base_delete_table_oids{base_delete_tables.begin(),
-                                                                            base_delete_tables.end(),
-                                                                            resource_};
-
-        // Per-table index commits run BEFORE the storage publishes. Reason:
-        // an index-commit IO failure must be able to abort the whole commit with
-        // NOTHING reader-visible. commit_inserts / commit_deletes flip every
-        // touched table's index entries from PENDING to the real commit_id; on
-        // error we set_error + co_return BEFORE any storage_publish_* / WAL marker
-        // runs — so the rows stay txn-pending (insert_id == transaction_id),
-        // invisible to every snapshot; the WAL commit marker is never written, so
-        // replay drops the physicals; only the already-allocated commit_id stays
-        // in the dispatcher's in_flight_commits_ unpublished. That is a KNOWN
-        // leak: under pure MVCC there is no undo, so an aborted-after-allocation
-        // commit_id can never be reclaimed; it is bounded by process lifetime and
-        // accepted as the no-undo tradeoff. base_append_oids / base_delete_table_oids
-        // are the masters; copy into per-send pmr-vectors so the masters survive
-        // for the publish + compact consumers below.
+        // STEP 5 — the per-table index delete-commits. NOT the mirror of commit_inserts
+        // and deliberately not hoisted with it: this handler PUBLISHES NOTHING, it
+        // records (table, index, txn, commit) on manager_index_t's deferred_deletes_
+        // and hands the physical erase to the horizon sweep. That queued entry carries
+        // the commit_id, so it belongs strictly below the durable marker — see the
+        // ordering note at the top of this block for what an orphaned entry would cost.
+        //
+        // The reply is awaited (rule 6) but there is no early exit behind it, and that
+        // is the contract talking, not an oversight: manager_index.cpp:1314-1362 has
+        // ZERO cross-actor awaits and exactly one `co_return no_error()` — restated at
+        // manager_index.hpp:327-332 — because there is no IO here left to fail. Below a
+        // durable commit marker an early return would be the wrong answer anyway: the
+        // commit is already on the device and replay will re-derive it, so refusing to
+        // publish would only make this process disagree with its own journal.
         if (ctx->index_address != actor_zeta::address_t::empty_address() && txn_data.transaction_id != 0 &&
-            commit_id_ > 0) {
-            if (!base_append_oids.empty()) {
-                std::pmr::vector<components::catalog::oid_t> append_oids{base_append_oids.begin(),
-                                                                         base_append_oids.end(),
-                                                                         resource_};
-                auto [_ic, icf] = actor_zeta::send(
-                    ctx->index_address,
-                    &services::index::manager_index_t::commit_inserts,
-                    components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
-                    std::move(append_oids),
-                    commit_id_);
-                core::error_t result = co_await std::move(icf);
-                if (result.contains_error()) {
-                    // Clean abort: nothing published yet (this block runs before
-                    // storage_publish_* and the WAL marker). Rows stay txn-pending
-                    // and invisible; replay drops them; the commit_id leaks in
-                    // in_flight_commits_ (no-undo-under-MVCC tradeoff, see above).
-                    set_error(std::move(result));
-                    co_return;
-                }
-            }
-            if (!base_delete_table_oids.empty()) {
-                std::pmr::vector<components::catalog::oid_t> delete_oids{base_delete_table_oids.begin(),
-                                                                         base_delete_table_oids.end(),
-                                                                         resource_};
-                auto [_dc, dcf] = actor_zeta::send(
-                    ctx->index_address,
-                    &services::index::manager_index_t::commit_deletes,
-                    components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
-                    std::move(delete_oids),
-                    commit_id_);
-                core::error_t result = co_await std::move(dcf);
-                if (result.contains_error()) {
-                    // Clean abort BEFORE any publish — see commit_inserts note above.
-                    set_error(std::move(result));
-                    co_return;
-                }
+            commit_id_ > 0 && !base_delete_table_oids.empty()) {
+            std::pmr::vector<components::catalog::oid_t> delete_oids{base_delete_table_oids.begin(),
+                                                                     base_delete_table_oids.end(),
+                                                                     resource_};
+            auto [_dc, dcf] = actor_zeta::send(
+                ctx->index_address,
+                &services::index::manager_index_t::commit_deletes,
+                components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
+                std::move(delete_oids),
+                commit_id_);
+            if (core::error_t result = co_await std::move(dcf); result.contains_error()) {
+                error(log_,
+                      "operator_commit_transaction: commit_deletes reported an error for txn {} commit_id {} — "
+                      "the contract says it cannot ({}); the commit marker is already durable, so the publish "
+                      "below proceeds and the deferred index erase is the thing that was lost",
+                      txn_data.transaction_id,
+                      commit_id_,
+                      result.what);
             }
         }
 
-        // Flip MVCC state on the pg_catalog rows AND the base-table DML ranges
+        // STEP 6 — flip MVCC state on the pg_catalog rows AND the base-table DML ranges
         // drained above: ONE publish_commits + ONE publish_deletes cover every
         // table touched between BEGIN and COMMIT. The swap (pg_catalog) and base
         // (user-table DML) sets are merged into a single send each: the manager's
@@ -288,14 +401,11 @@ namespace components::operators {
         // argument by pool_idx_for_oid internally and the per-agent inner handlers
         // are idempotent for not-owned oids, so concatenation is value-correct and
         // order-independent within one call (4 awaited sends → 2).
-        // This in-memory MVCC flip happens BEFORE the WAL commit marker, yet
-        // is crash-safe — durability of the flip comes from the WAL physical
-        // records (already written by the DML operators) plus checkpoint, NOT from
-        // this in-memory publish. A crash before the WAL commit marker discards
-        // the flip and the txn TOGETHER: replay sees no commit marker, so it never
-        // re-publishes these ranges and the rows stay txn-pending (dropped). The
-        // marker is the single durable commit point; this flip is purely the
-        // in-process reader-visibility step.
+        // Both are void: nothing here can refuse, which is why this is the step that
+        // may stamp the commit_id on live row versions. It runs AFTER the WAL commit
+        // marker now, so the in-memory flip can no longer outlive a commit the journal
+        // never accepted; durability of the flip still comes from the WAL physical
+        // records plus checkpoint, and replay re-derives it from the marker.
         if (txn_data.transaction_id != 0 && commit_id_ > 0 &&
             ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t swap_ctx{ctx->session, txn_data, {}};
@@ -327,32 +437,6 @@ namespace components::operators {
                                                  commit_id_,
                                                  std::move(all_deletes));
                 co_await std::move(df);
-            }
-        }
-
-        // Durability: emit the WAL commit_txn marker BEFORE the ProcArray
-        // publish barrier. The marker must be durable first so a crash between
-        // it and the barrier cannot lose a reader-visible commit. Skip when the
-        // DDL-commit branch above already emitted one.
-        if (!is_ddl_commit_ && ctx->wal_address != actor_zeta::address_t::empty_address() &&
-            txn_data.transaction_id != 0 && commit_id_ > 0) {
-            constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-            auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                             &services::wal::manager_wal_replicate_t::commit_txn,
-                                             ctx->session,
-                                             txn_data.transaction_id,
-                                             services::wal::wal_sync_mode::FULL,
-                                             db_oid,
-                                             commit_id_);
-            // The marker MUST be durable before the ProcArray barrier below, which is the
-            // step that makes this commit reader-visible. Discarding this reply is what let a
-            // failed fsync be followed by the barrier anyway: readers would see a commit that
-            // a crash one instant later would take back. Refuse BEFORE the barrier — the
-            // storage publishes above are already done, but they stay invisible until the
-            // barrier, so stopping here leaves the txn unpublished rather than half-published.
-            if (auto commit_result = co_await std::move(wf); commit_result.has_error()) {
-                set_error(commit_result.error());
-                co_return;
             }
         }
 

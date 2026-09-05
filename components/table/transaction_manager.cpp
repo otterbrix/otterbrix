@@ -89,6 +89,16 @@ namespace components::table {
         }
     }
 
+    void transaction_manager_t::discard(uint64_t commit_id) {
+        // ONE member erased under the ONE existing lock_ (rule 12): no second lock, no
+        // new edge in the lock order, no wait, no spin, and deliberately no CAS —
+        // published_horizon_ must not move, or the discarded transaction would be
+        // published by the act of forgetting it. See the header for why the erase is
+        // sound at all (nothing durable or reader-visible carries a discarded id).
+        std::lock_guard guard(lock_);
+        in_flight_commits_.erase(commit_id);
+    }
+
     transaction_manager_t::snapshot_t transaction_manager_t::take_snapshot(std::pmr::memory_resource* resource) const {
         std::lock_guard guard(lock_);
         snapshot_t snap{resource};

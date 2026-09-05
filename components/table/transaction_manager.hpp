@@ -53,6 +53,33 @@ namespace components::table {
         // so a fresh snapshot captures the txn as visible.
         void publish(uint64_t commit_id);
 
+        // publish() MINUS THE CAS — and the missing CAS is the whole of it.
+        //
+        // A commit pipeline that dies after commit() allocated the id but before the
+        // barrier leaves that id in in_flight_commits_ with nobody left to remove it:
+        // commit() has already erased the txn from active_, so find_transaction()
+        // answers nullptr and neither ROLLBACK nor the dispatcher's failure-release
+        // net can reach it. The id then floors visible_to_all_locked() at
+        // commit_id - 1 for the life of the process, which stops
+        // data_table_t::compact(), the DROP-GC tombstone sweep and the deferred
+        // index-delete sweep — all three read that one number and none of them ever
+        // sees a snapshot.
+        //
+        // WHY IT CANNOT PUBLISH ANYTHING. published_horizon_ is NOT advanced here, so
+        // no commit becomes visible by being forgotten. What makes the erase itself
+        // safe is an ordering rule enforced by operator_commit_transaction_t — no step
+        // that can fail may run after the first step that stamps the commit_id — so a
+        // discarded id is stamped on nothing: no row version, no pg_attribute column,
+        // no deferred index-delete entry, no WAL marker. There is nothing left for a
+        // reader to have to hide, which is why the id may leave the set outright
+        // instead of moving into a second "discarded" set that the floor would then
+        // have to honour anyway (that set gives back exactly what it took).
+        //
+        // Monotone in the safe direction, the property every horizon reader rests on:
+        // erasing a member of in_flight_commits_ only RAISES min(), never lowers it.
+        // Idempotent, and a no-op for an id that was never in flight.
+        void discard(uint64_t commit_id);
+
         // Capture an MVCC snapshot atomically. Caller supplies the resource for
         // the in_flight_snapshot vector so the result can be moved without dangling.
         struct snapshot_t {

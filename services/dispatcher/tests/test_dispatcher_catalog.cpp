@@ -370,18 +370,20 @@ namespace {
                                             {}};
         auto oids = test.disk_invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         REQUIRE_FALSE(oids.empty());
-        auto writes = components::catalog::build_create_constraint_writes(resource,
-                                                                          con_name,
-                                                                          table_oid,
-                                                                          oids.front(),
-                                                                          /*contype=*/'u',
-                                                                          components::catalog::INVALID_OID,
-                                                                          key_attoids,
-                                                                          /*ref_column_attoids=*/{},
-                                                                          /*fk_matchtype=*/'s',
-                                                                          /*fk_del_action=*/'a',
-                                                                          /*fk_upd_action=*/'a',
-                                                                          /*check_expr=*/"");
+        auto writes_r = components::catalog::build_create_constraint_writes(resource,
+                                                                            con_name,
+                                                                            table_oid,
+                                                                            oids.front(),
+                                                                            /*contype=*/'u',
+                                                                            components::catalog::INVALID_OID,
+                                                                            key_attoids,
+                                                                            /*ref_column_attoids=*/{},
+                                                                            /*fk_matchtype=*/'s',
+                                                                            /*fk_del_action=*/'a',
+                                                                            /*fk_upd_action=*/'a',
+                                                                            /*check_expr=*/"");
+        REQUIRE_FALSE(writes_r.has_error());
+        auto writes = std::move(writes_r.value());
         for (auto& w : writes) {
             if (w.table_oid == well_known_oid::pg_constraint_table) {
                 w.row.set_value(components::catalog::pg_constraint_col::conkey,

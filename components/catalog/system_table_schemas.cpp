@@ -131,7 +131,8 @@ namespace components::catalog {
             // (mirrors pg_attribute's atttypspec). Empty for built-in scalar pg_type entries;
             // STRUCT/ENUM/UDT rows carry the full child-type tree so readers can
             // reconstruct the rich definition after restart. Optional column; rows missing
-            // this field round-trip as UNKNOWN per decode_type_spec's empty-string fallback.
+            // this field round-trip as UNKNOWN — decode_type_spec's legitimate empty-spec
+            // answer (not an error: the oid alone reconstructs builtin scalars).
             c.emplace_back("typdefspec", str_col(), false);
             return c;
         }
@@ -428,7 +429,11 @@ namespace components::catalog {
             return LT::BLOB;
         if (n == "uuid")
             return LT::UUID;
-        // Legacy aliases written by older builds (before PostgreSQL-style names)
+        // Canonical otterbrix typnames. NOT a compatibility shim: these exact strings are
+        // seeded into pg_type by THIS build's bootstrap (manager_disk_bootstrap.cpp,
+        // builtin_type_rows — "int16"/"int32"/"int64"/"float32"/"float64"/"string"/...),
+        // live in every database, and are resolved through pg_name_to_logical_type by the
+        // planner/executor whenever the user writes one of them as a type name.
         if (n == "int16")
             return LT::SMALLINT;
         if (n == "int32")
@@ -529,9 +534,53 @@ namespace components::catalog {
         return "UNKNOWN(" + std::to_string(static_cast<int>(t.type())) + ")";
     }
 
-    // Recursive descent parser for the flat-text format.
+    // Recursive-descent parser for the flat-text format. The parse context owns the
+    // error channel (rule 2 — no exceptions): the FIRST failure wins, every later step
+    // short-circuits, and decode_type_spec turns the failure into a core::error_t.
+    // The old parser had no channel at all — everything unreadable collapsed into
+    // logical_type::UNKNOWN, the very value that also means "named user-type reference",
+    // so corruption was indistinguishable from a legitimate answer.
+
+    // THE DEPTH WINDOW IS SHARED with the binary codec: components/types/
+    // type_spec_codec.cpp refuses nesting beyond MAX_SPEC_DEPTH = 64 on BOTH encode and
+    // decode, and the dispatcher's write gate (gate_persistable_type in
+    // services/dispatcher/validate_logical_plan.cpp) runs that encoder over every
+    // plan-level column/type before this codec's text is written — so a flat spec deeper
+    // than the window is not something this engine wrote. Before the limit existed here
+    // the parser recursed unbounded: a 2^20-deep LIST(...) walked it off the stack.
+    static constexpr uint32_t MAX_FLAT_SPEC_DEPTH = 64;
+
+    struct flat_parse_ctx_t {
+        std::string_view s;
+        size_t pos = 0;
+        bool failed = false;
+        std::string what;
+
+        void fail(std::string reason) {
+            if (!failed) {
+                failed = true;
+                what = std::move(reason);
+                what += " (at offset ";
+                what += std::to_string(pos);
+                what += ")";
+            }
+        }
+        // Consume exactly `c` or fail; short-circuits after a previous failure.
+        bool expect(char c, const char* inside) {
+            if (failed) {
+                return false;
+            }
+            if (pos >= s.size() || s[pos] != c) {
+                fail(std::string{"type spec: expected '"} + c + "' in " + inside);
+                return false;
+            }
+            ++pos;
+            return true;
+        }
+    };
+
     static types::complex_logical_type
-    parse_flat_type(std::pmr::memory_resource* resource, std::string_view s, size_t& pos);
+    parse_flat_type(std::pmr::memory_resource* resource, flat_parse_ctx_t& ctx, uint32_t depth);
 
     // Read characters until one of the stop chars (at depth 0).
     static std::string read_token(std::string_view s, size_t& pos) {
@@ -542,123 +591,166 @@ namespace components::catalog {
         return std::string{s.substr(start, pos - start)};
     }
 
-    static types::complex_logical_type
-    parse_flat_type(std::pmr::memory_resource* resource, std::string_view s, size_t& pos) {
-        using LT = types::logical_type;
-        std::string name = read_token(s, pos);
+    // Whole-token integer read (mirrors parse_oid_csv): from_chars stops at the first
+    // character it cannot use and still reports success, so "12x" used to read as 12.
+    template<typename Int>
+    static bool read_whole_int(const std::string& tok, Int& out) {
+        const auto [ptr, ec] = std::from_chars(tok.data(), tok.data() + tok.size(), out);
+        return ec == std::errc{} && ptr == tok.data() + tok.size();
+    }
 
-        if (pos >= s.size() || s[pos] != '(') {
-            if (name == "VARIANT")
-                return types::complex_logical_type::create_variant(resource);
-            auto lt = scalar_name_to_type(name);
-            if (lt != LT::UNKNOWN)
-                return types::complex_logical_type{lt};
-            return types::complex_logical_type::create_unknown(name);
+    static types::complex_logical_type
+    parse_flat_type(std::pmr::memory_resource* resource, flat_parse_ctx_t& ctx, uint32_t depth) {
+        using LT = types::logical_type;
+        const auto unknown = [] { return types::complex_logical_type{LT::UNKNOWN}; };
+        if (ctx.failed) {
+            return unknown();
         }
-        ++pos; // consume '('
+        if (depth > MAX_FLAT_SPEC_DEPTH) {
+            ctx.fail("type spec: nesting exceeds the depth window shared with the binary codec");
+            return unknown();
+        }
+        std::string name = read_token(ctx.s, ctx.pos);
+
+        if (ctx.pos >= ctx.s.size() || ctx.s[ctx.pos] != '(') {
+            if (name == "VARIANT") {
+                return types::complex_logical_type::create_variant(resource);
+            }
+            auto lt = scalar_name_to_type(name);
+            if (lt != LT::UNKNOWN) {
+                return types::complex_logical_type{lt};
+            }
+            // A bare name outside the scalar table is NOT in the encoder's language:
+            // named user-type references are written as "UNKNOWN(name)", never bare.
+            ctx.fail("type spec: unrecognised type name '" + name + "'");
+            return unknown();
+        }
+        ++ctx.pos; // consume '('
 
         if (name == "numeric" || name == "DECIMAL") {
-            std::string w = read_token(s, pos);
-            ++pos; // ','
-            std::string sc = read_token(s, pos);
-            ++pos; // ')'
+            // Both spellings of the decimal head are READ ("numeric" is what the encoder
+            // writes; "DECIMAL" is pinned by catalog::type_spec::decimal_with_old_name_compat).
+            const std::string w = read_token(ctx.s, ctx.pos);
+            if (!ctx.expect(',', "numeric(width,scale)")) {
+                return unknown();
+            }
+            const std::string sc = read_token(ctx.s, ctx.pos);
+            if (!ctx.expect(')', "numeric(width,scale)")) {
+                return unknown();
+            }
             int wv{};
             int scv{};
-            auto [wp, wec] = std::from_chars(w.data(), w.data() + w.size(), wv);
-            auto [scp, scec] = std::from_chars(sc.data(), sc.data() + sc.size(), scv);
-            if (wec != std::errc{} || scec != std::errc{}) {
-                return types::complex_logical_type{LT::UNKNOWN};
+            if (!read_whole_int(w, wv) || !read_whole_int(sc, scv)) {
+                ctx.fail("type spec: numeric width/scale is not a number");
+                return unknown();
             }
             // Range-check BEFORE narrowing: "numeric(256,0)" would otherwise wrap to
-            // DECIMAL(0,0). An out-of-window pair reads back as UNKNOWN, the same answer
-            // this parser already gives every other unparsable spec, and the callers that
-            // care refuse an UNKNOWN column type loudly.
+            // DECIMAL(0,0). An out-of-window pair is refused HERE, through the decode
+            // error channel — the refusal no longer leans on callers treating UNKNOWN
+            // as a rejection (none of them ever did).
             if (wv < 0 || scv < 0 || wv > types::DECIMAL_MAX_WIDTH || scv > types::DECIMAL_MAX_WIDTH) {
-                return types::complex_logical_type{LT::UNKNOWN};
+                ctx.fail("type spec: numeric(" + w + "," + sc + ") is outside the DECIMAL window");
+                return unknown();
             }
             auto decimal = types::complex_logical_type::create_decimal(static_cast<uint8_t>(wv),
                                                                        static_cast<uint8_t>(scv));
             if (decimal.has_error()) {
-                return types::complex_logical_type{LT::UNKNOWN};
+                ctx.fail(std::string{"type spec: "} + decimal.error().what.c_str());
+                return unknown();
             }
             return std::move(decimal.value());
         }
         if (name == "UNKNOWN") {
-            std::string tname = read_token(s, pos);
-            ++pos; // ')'
+            std::string tname = read_token(ctx.s, ctx.pos);
+            if (!ctx.expect(')', "UNKNOWN(name)")) {
+                return unknown();
+            }
             return types::complex_logical_type::create_unknown(tname);
         }
         if (name == "LIST") {
-            auto inner = parse_flat_type(resource, s, pos);
-            ++pos; // ')'
+            auto inner = parse_flat_type(resource, ctx, depth + 1);
+            if (!ctx.expect(')', "LIST(inner)")) {
+                return unknown();
+            }
             return types::complex_logical_type::create_list(inner);
         }
         if (name == "ARRAY") {
-            auto inner = parse_flat_type(resource, s, pos);
-            ++pos; // ','
-            std::string sz = read_token(s, pos);
-            ++pos; // ')'
+            auto inner = parse_flat_type(resource, ctx, depth + 1);
+            if (!ctx.expect(',', "ARRAY(inner,size)")) {
+                return unknown();
+            }
+            const std::string sz = read_token(ctx.s, ctx.pos);
+            if (!ctx.expect(')', "ARRAY(inner,size)")) {
+                return unknown();
+            }
             unsigned long long sv{};
-            auto [sp, sec] = std::from_chars(sz.data(), sz.data() + sz.size(), sv);
-            if (sec != std::errc{}) {
-                return types::complex_logical_type{LT::UNKNOWN};
+            if (!read_whole_int(sz, sv)) {
+                ctx.fail("type spec: ARRAY size is not a number");
+                return unknown();
             }
             return types::complex_logical_type::create_array(inner, sv);
         }
         if (name == "MAP") {
-            auto key = parse_flat_type(resource, s, pos);
-            ++pos; // ','
-            auto val = parse_flat_type(resource, s, pos);
-            ++pos; // ')'
+            auto key = parse_flat_type(resource, ctx, depth + 1);
+            if (!ctx.expect(',', "MAP(key,value)")) {
+                return unknown();
+            }
+            auto val = parse_flat_type(resource, ctx, depth + 1);
+            if (!ctx.expect(')', "MAP(key,value)")) {
+                return unknown();
+            }
             return types::complex_logical_type::create_map(resource, key, val);
         }
         if (name == "STRUCT") {
-            std::string struct_name = read_token(s, pos);
+            std::string struct_name = read_token(ctx.s, ctx.pos);
             std::pmr::vector<types::complex_logical_type> fields(resource);
-            while (pos < s.size() && s[pos] == ',') {
-                ++pos; // ','
-                std::string fname = read_token(s, pos);
-                ++pos; // ':'
-                auto ftype = parse_flat_type(resource, s, pos);
+            while (!ctx.failed && ctx.pos < ctx.s.size() && ctx.s[ctx.pos] == ',') {
+                ++ctx.pos; // ','
+                std::string fname = read_token(ctx.s, ctx.pos);
+                if (!ctx.expect(':', "STRUCT field")) {
+                    return unknown();
+                }
+                auto ftype = parse_flat_type(resource, ctx, depth + 1);
                 ftype.set_alias(fname);
                 fields.push_back(std::move(ftype));
             }
-            if (pos < s.size() && s[pos] == ')')
-                ++pos;
+            if (!ctx.expect(')', "STRUCT(name,fields...)")) {
+                return unknown();
+            }
             return types::complex_logical_type::create_struct(struct_name, fields);
         }
         if (name == "UNION") {
             std::pmr::vector<types::complex_logical_type> fields(resource);
             // First member
-            if (pos < s.size() && s[pos] != ')') {
-                std::string fname = read_token(s, pos);
-                ++pos; // ':'
-                auto ftype = parse_flat_type(resource, s, pos);
+            if (ctx.pos < ctx.s.size() && ctx.s[ctx.pos] != ')') {
+                std::string fname = read_token(ctx.s, ctx.pos);
+                if (!ctx.expect(':', "UNION member")) {
+                    return unknown();
+                }
+                auto ftype = parse_flat_type(resource, ctx, depth + 1);
                 ftype.set_alias(fname);
                 fields.push_back(std::move(ftype));
             }
-            while (pos < s.size() && s[pos] == ',') {
-                ++pos; // ','
-                std::string fname = read_token(s, pos);
-                ++pos; // ':'
-                auto ftype = parse_flat_type(resource, s, pos);
+            while (!ctx.failed && ctx.pos < ctx.s.size() && ctx.s[ctx.pos] == ',') {
+                ++ctx.pos; // ','
+                std::string fname = read_token(ctx.s, ctx.pos);
+                if (!ctx.expect(':', "UNION member")) {
+                    return unknown();
+                }
+                auto ftype = parse_flat_type(resource, ctx, depth + 1);
                 ftype.set_alias(fname);
                 fields.push_back(std::move(ftype));
             }
-            if (pos < s.size() && s[pos] == ')')
-                ++pos;
+            if (!ctx.expect(')', "UNION(members...)")) {
+                return unknown();
+            }
             return types::complex_logical_type::create_union(std::move(fields));
         }
-        // Unknown keyword with args — skip to matching ')'
-        int depth = 1;
-        while (pos < s.size() && depth > 0) {
-            if (s[pos] == '(')
-                ++depth;
-            else if (s[pos] == ')')
-                --depth;
-            ++pos;
-        }
-        return types::complex_logical_type::create_unknown(name);
+        // An unrecognised keyword WITH arguments used to be silently consumed to the
+        // matching ')' and answered as a named UNKNOWN — a spec this build cannot parse
+        // round-tripped as a plausible user-type reference. It is a refusal now.
+        ctx.fail("type spec: unrecognised type keyword '" + name + "'");
+        return unknown();
     }
 
     std::string encode_type_spec(const types::complex_logical_type& t) {
@@ -693,52 +785,74 @@ namespace components::catalog {
         return encode_type_nested(t);
     }
 
-    types::complex_logical_type decode_type_spec(std::pmr::memory_resource* resource, std::string_view spec) {
+    core::result_wrapper_t<types::complex_logical_type> decode_type_spec(std::pmr::memory_resource* resource,
+                                                                         std::string_view spec) {
         using LT = types::logical_type;
         if (spec.empty()) {
+            // No spec at all — a builtin scalar stored without one; the caller
+            // reconstructs the type from atttypid. A legitimate answer, not an error.
             return types::complex_logical_type{LT::UNKNOWN};
         }
-        // ENUM flat format (pre-existing; kept for backward compat)
+        const auto corrupt = [resource](const std::string& what) {
+            return core::error_t{core::error_code_t::data_corruption, std::pmr::string{what.c_str(), resource}};
+        };
+        // ENUM flat format: "ENUM:type_name:label0=val0,...". Actively WRITTEN by
+        // encode_type_spec above — a live format, not a compatibility shim.
         if (spec.size() >= 5 && spec.compare(0, 5, "ENUM:") == 0) {
             auto rest = spec.substr(5);
             auto colon = rest.find(':');
-            std::string name =
-                (colon == std::string_view::npos) ? std::string{rest} : std::string{rest.substr(0, colon)};
+            if (colon == std::string_view::npos) {
+                // The encoder always writes the second ':', even for zero entries.
+                return corrupt("type spec: ENUM without an entry-list separator");
+            }
+            std::string name{rest.substr(0, colon)};
             std::vector<components::types::logical_value_t> entries;
-            if (colon != std::string::npos) {
-                auto entries_str = rest.substr(colon + 1);
+            auto entries_str = rest.substr(colon + 1);
+            if (!entries_str.empty()) {
                 std::size_t i = 0;
-                while (i < entries_str.size()) {
-                    std::size_t comma = entries_str.find(',', i);
-                    std::string token{
-                        entries_str.substr(i, comma == std::string_view::npos ? std::string_view::npos : comma - i)};
-                    std::size_t eq = token.find('=');
-                    if (eq != std::string::npos) {
-                        std::string label = token.substr(0, eq);
-                        const auto val_str = token.substr(eq + 1);
-                        int v{};
-                        auto [vp, vec_] = std::from_chars(val_str.data(), val_str.data() + val_str.size(), v);
-                        if (vec_ != std::errc{}) {
-                            return types::complex_logical_type{LT::UNKNOWN};
-                        }
-                        components::types::logical_value_t lv(resource, v);
-                        lv.set_alias(label);
-                        entries.push_back(std::move(lv));
+                // for(;;) so the empty token behind a trailing ',' is visited too — the
+                // same truncation trace parse_oid_csv learned to keep (helpers.cpp).
+                for (;;) {
+                    const std::size_t comma = entries_str.find(',', i);
+                    const std::string_view token =
+                        entries_str.substr(i, (comma == std::string_view::npos ? entries_str.size() : comma) - i);
+                    const std::size_t eq = token.find('=');
+                    if (eq == std::string_view::npos) {
+                        // Covers the empty token as well: the encoder writes label=value
+                        // pairs and nothing else.
+                        return corrupt("type spec: ENUM entry without '='");
                     }
-                    if (comma == std::string::npos)
+                    std::string label{token.substr(0, eq)};
+                    const auto val_str = token.substr(eq + 1);
+                    int v{};
+                    const auto [vp, vec_] = std::from_chars(val_str.data(), val_str.data() + val_str.size(), v);
+                    if (vec_ != std::errc{} || vp != val_str.data() + val_str.size()) {
+                        return corrupt("type spec: ENUM entry value is not a number");
+                    }
+                    components::types::logical_value_t lv(resource, v);
+                    lv.set_alias(label);
+                    entries.push_back(std::move(lv));
+                    if (comma == std::string_view::npos) {
                         break;
+                    }
                     i = comma + 1;
                 }
             }
             return components::types::complex_logical_type::create_enum(name, std::move(entries));
         }
-        // Flat-text format for all other types.
-        try {
-            size_t pos = 0;
-            return parse_flat_type(resource, spec, pos);
-        } catch (...) {
-            return types::complex_logical_type{LT::UNKNOWN};
+        // Flat-text format for all other types. No catch(...) any more: the old arm
+        // swallowed EVERYTHING (bad_alloc included) into UNKNOWN; the parser reports
+        // through its context instead of throwing.
+        flat_parse_ctx_t ctx{spec, 0, false, std::string{}};
+        auto parsed = parse_flat_type(resource, ctx, 0);
+        if (ctx.failed) {
+            return corrupt(ctx.what);
         }
+        if (ctx.pos != spec.size()) {
+            return corrupt("type spec: trailing bytes after a complete type (at offset " +
+                           std::to_string(ctx.pos) + ")");
+        }
+        return parsed;
     }
 
     std::string encode_proargmatchers(const std::vector<components::compute::parameter_type>& parameters) {
@@ -780,9 +894,14 @@ namespace components::catalog {
                     out += std::to_string(o.input_index());
                     break;
                 case K::custom:
-                    // Lossy fallback for raw resolver closures: persist as
-                    // same_type_at_index(0).
-                    out += "s:0";
+                    // A raw resolver closure has no introspectable form; its runtime
+                    // shape comes back through prouid → compute::function_registry,
+                    // never by parsing this column. The old arm wrote "s:0" here — a
+                    // same-type-as-argument-0 contract the function never declared.
+                    // "c" states the truth instead of guessing a contract. Refusing is
+                    // not an option either: registering a computed(...) output is
+                    // pinned legal behaviour (integration test_udfs does exactly that).
+                    out += 'c';
                     break;
             }
         }

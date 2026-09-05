@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <memory_resource>
 #include <string>
@@ -110,6 +111,22 @@ namespace components::catalog {
             return {target_oid, std::move(chunk)};
         }
 
+        // Every builder in this file addresses system tables by their well-known oids,
+        // and every well-known oid is present in all_system_tables() by construction —
+        // find_system_table over one of them CANNOT miss. The old per-builder arms
+        // answered the impossible miss with ROWS anyway: an empty chunk from the row
+        // builders (which no caller checked — the poisoned chunk travelled on), or a
+        // silently SKIPPED catalog write from the build_create_*_writes functions. The
+        // builder's contract is rows, so the impossible state is loud instead — same
+        // pattern as oid_generator::allocate (catalog_oids.hpp).
+        const system_table_def_t& system_table(oid_t relation_oid) {
+            const auto* def = find_system_table(relation_oid);
+            if (def == nullptr) [[unlikely]] {
+                std::abort();
+            }
+            return *def;
+        }
+
     } // anonymous namespace
 
     std::vector<catalog_write_t>
@@ -126,14 +143,15 @@ namespace components::catalog {
         const oid_t table_oid = oid_batch.allocate();
 
         // pg_class row (always exactly one).
-        if (const auto* def = find_system_table(pg_class_oid)) {
+        {
+            const auto& def = system_table(pg_class_oid);
             // B1a: every table is disk-backed; relstoragemode stays as a write-only
             // column and is always 'd'.
             const std::string relkind_str(1, relkind_char);
             const std::string storagemode_str(1, relstoragemode::disk);
 
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, table_oid);
                     set_str(c, 1, 0, table_name, r);
                     set_oid(c, 2, 0, namespace_oid);
@@ -199,9 +217,10 @@ namespace components::catalog {
 
         // pg_attribute: one chunk, N rows.
         if (!attrs.empty()) {
-            if (const auto* def = find_system_table(pg_attribute_oid)) {
+            {
+                const auto& def = system_table(pg_attribute_oid);
                 auto chunk = make_pg_rows(resource,
-                                          def->columns,
+                                          def.columns,
                                           attrs.size(),
                                           [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                                               for (std::size_t i = 0; i < attrs.size(); ++i) {
@@ -233,14 +252,15 @@ namespace components::catalog {
 
         // pg_depend: per-column type deps (skip atttypid==INVALID_OID) + the
         // table→namespace dep, all in one chunk in stable iteration order.
-        if (const auto* dep_def = find_system_table(pg_depend_oid)) {
+        {
+            const auto& dep_def = system_table(pg_depend_oid);
             std::size_t dep_count = 1; // table → namespace
             for (const auto& a : attrs) {
                 if (a.atttypid != INVALID_OID)
                     ++dep_count;
             }
             auto chunk = make_pg_rows(resource,
-                                      dep_def->columns,
+                                      dep_def.columns,
                                       dep_count,
                                       [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                                           std::size_t i = 0;
@@ -271,9 +291,10 @@ namespace components::catalog {
     build_create_namespace_writes(std::pmr::memory_resource* resource, const std::string& name, oid_t namespace_oid) {
         std::vector<catalog_write_t> result;
 
-        if (const auto* def = find_system_table(pg_namespace_oid)) {
+        {
+            const auto& def = system_table(pg_namespace_oid);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, namespace_oid);
                     set_str(c, 1, 0, name, r);
                 });
@@ -295,11 +316,12 @@ namespace components::catalog {
         std::vector<catalog_write_t> result;
 
         // pg_class row (relkind='S', relstoragemode='d')
-        if (const auto* def = find_system_table(pg_class_oid)) {
+        {
+            const auto& def = system_table(pg_class_oid);
             const std::string relkind_str(1, relkind::sequence);
             const std::string storagemode_str(1, relstoragemode::disk);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, seq_oid);
                     set_str(c, 1, 0, name, r);
                     set_oid(c, 2, 0, namespace_oid);
@@ -310,9 +332,10 @@ namespace components::catalog {
         }
 
         // pg_depend row: pg_class_table, seq_oid → pg_namespace_table, ns_oid, 'n'
-        if (const auto* def = find_system_table(pg_depend_oid)) {
+        {
+            const auto& def = system_table(pg_depend_oid);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, well_known_oid::pg_class_table);
                     set_oid(c, 1, 0, seq_oid);
                     set_oid(c, 2, 0, well_known_oid::pg_namespace_table);
@@ -323,9 +346,10 @@ namespace components::catalog {
         }
 
         // pg_sequence row
-        if (const auto* def = find_system_table(pg_sequence_oid)) {
+        {
+            const auto& def = system_table(pg_sequence_oid);
             auto chunk = make_pg_rows(resource,
-                                      def->columns,
+                                      def.columns,
                                       1,
                                       [&](vector::data_chunk_t& c, [[maybe_unused]] std::pmr::memory_resource* r) {
                                           set_oid(c, 0, 0, seq_oid);   // seqrelid
@@ -351,11 +375,12 @@ namespace components::catalog {
         std::vector<catalog_write_t> result;
 
         // pg_class row (relkind='v')
-        if (const auto* def = find_system_table(pg_class_oid)) {
+        {
+            const auto& def = system_table(pg_class_oid);
             const std::string relkind_str(1, relkind::view);
             const std::string storagemode_str(1, relstoragemode::disk);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, view_oid);
                     set_str(c, 1, 0, name, r);
                     set_oid(c, 2, 0, namespace_oid);
@@ -366,9 +391,10 @@ namespace components::catalog {
         }
 
         // pg_depend row: pg_class_table, view_oid → pg_namespace_table, ns_oid, 'n'
-        if (const auto* def = find_system_table(pg_depend_oid)) {
+        {
+            const auto& def = system_table(pg_depend_oid);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, well_known_oid::pg_class_table);
                     set_oid(c, 1, 0, view_oid);
                     set_oid(c, 2, 0, well_known_oid::pg_namespace_table);
@@ -379,10 +405,11 @@ namespace components::catalog {
         }
 
         // pg_rewrite row
-        if (const auto* def = find_system_table(pg_rewrite_oid)) {
+        {
+            const auto& def = system_table(pg_rewrite_oid);
             const std::string ev_type_str(1, 'v');
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, rule_oid);
                     set_str(c, 1, 0, name, r);
                     set_oid(c, 2, 0, view_oid);
@@ -404,11 +431,12 @@ namespace components::catalog {
         std::vector<catalog_write_t> result;
 
         // pg_class row (relkind='m')
-        if (const auto* def = find_system_table(pg_class_oid)) {
+        {
+            const auto& def = system_table(pg_class_oid);
             const std::string relkind_str(1, relkind::macro);
             const std::string storagemode_str(1, relstoragemode::disk);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, macro_oid);
                     set_str(c, 1, 0, name, r);
                     set_oid(c, 2, 0, namespace_oid);
@@ -419,9 +447,10 @@ namespace components::catalog {
         }
 
         // pg_depend row: pg_class_table, macro_oid → pg_namespace_table, ns_oid, 'n'
-        if (const auto* def = find_system_table(pg_depend_oid)) {
+        {
+            const auto& def = system_table(pg_depend_oid);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, well_known_oid::pg_class_table);
                     set_oid(c, 1, 0, macro_oid);
                     set_oid(c, 2, 0, well_known_oid::pg_namespace_table);
@@ -432,10 +461,11 @@ namespace components::catalog {
         }
 
         // pg_rewrite row (ev_type='F' — matches macro relkind)
-        if (const auto* def = find_system_table(pg_rewrite_oid)) {
+        {
+            const auto& def = system_table(pg_rewrite_oid);
             const std::string ev_type_str(1, relkind::macro);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, rule_oid);
                     set_str(c, 1, 0, name, r);
                     set_oid(c, 2, 0, macro_oid);
@@ -459,10 +489,11 @@ namespace components::catalog {
         // pg_rewrite row (ev_class=mv_oid, ev_type='m', ev_action=body_sql) —
         // mirror build_create_view_writes pattern but ev_type='m' for matview.
         // REFRESH MATERIALIZED VIEW reads this row to re-execute the body.
-        if (const auto* def = find_system_table(pg_rewrite_oid)) {
+        {
+            const auto& def = system_table(pg_rewrite_oid);
             const std::string ev_type_str(1, relkind::materialized_view);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, rule_oid);
                     set_str(c, 1, 0, mv_name, r);
                     set_oid(c, 2, 0, mv_oid);
@@ -475,9 +506,10 @@ namespace components::catalog {
         // pg_depend row: matview depends on source table ('n' = normal).
         // Allows future DROP TABLE source to detect a dangling matview.
         if (source_table_oid != INVALID_OID) {
-            if (const auto* def = find_system_table(pg_depend_oid)) {
+            {
+            const auto& def = system_table(pg_depend_oid);
                 auto chunk =
-                    make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                    make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                         set_oid(c, 0, 0, well_known_oid::pg_class_table);
                         set_oid(c, 1, 0, mv_oid);
                         set_oid(c, 2, 0, well_known_oid::pg_class_table);
@@ -501,11 +533,12 @@ namespace components::catalog {
         std::vector<catalog_write_t> result;
 
         // pg_class row (relkind='i')
-        if (const auto* def = find_system_table(pg_class_oid)) {
+        {
+            const auto& def = system_table(pg_class_oid);
             const std::string relkind_str(1, relkind::index);
             const std::string storagemode_str(1, relstoragemode::disk);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, index_oid);
                     set_str(c, 1, 0, index_name, r);
                     set_oid(c, 2, 0, namespace_oid);
@@ -516,12 +549,13 @@ namespace components::catalog {
         }
 
         // pg_index row (indisvalid=false — set to true after backfill)
-        if (const auto* def = find_system_table(pg_index_oid)) {
+        {
+            const auto& def = system_table(pg_index_oid);
             // indkey: CSV of attoids, already resolved by caller
             const std::string indkey = encode_oid_csv(column_attoids);
             const std::string indtype_str(1, indtype);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, index_oid);
                     set_oid(c, 1, 0, table_oid);
                     set_str(c, 2, 0, indkey, r);
@@ -533,7 +567,8 @@ namespace components::catalog {
 
         // pg_depend: index→table 'a' auto-cascade, followed by per-column 'i'
         // deps — all in one chunk in the same order as before.
-        if (const auto* dep_def = find_system_table(pg_depend_oid)) {
+        {
+            const auto& dep_def = system_table(pg_depend_oid);
             std::size_t dep_count = 1; // index → table
             for (const oid_t col_attoid : column_attoids) {
                 if (col_attoid != INVALID_OID)
@@ -541,7 +576,7 @@ namespace components::catalog {
             }
             const std::string auto_dep_str(1, deptype::auto_dep);
             auto chunk = make_pg_rows(resource,
-                                      dep_def->columns,
+                                      dep_def.columns,
                                       dep_count,
                                       [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                                           std::size_t i = 0;
@@ -577,9 +612,10 @@ namespace components::catalog {
         std::vector<catalog_write_t> result;
 
         // pg_type row
-        if (const auto* def = find_system_table(pg_type_oid)) {
+        {
+            const auto& def = system_table(pg_type_oid);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, type_oid);
                     set_str(c, 1, 0, type_name, r);
                     set_oid(c, 2, 0, namespace_oid);
@@ -591,9 +627,10 @@ namespace components::catalog {
         }
 
         // pg_depend row: pg_type_table, type_oid → pg_namespace_table, ns_oid, 'n'
-        if (const auto* def = find_system_table(pg_depend_oid)) {
+        {
+            const auto& def = system_table(pg_depend_oid);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, well_known_oid::pg_type_table);
                     set_oid(c, 1, 0, type_oid);
                     set_oid(c, 2, 0, well_known_oid::pg_namespace_table);
@@ -617,9 +654,10 @@ namespace components::catalog {
         std::vector<catalog_write_t> result;
 
         // pg_proc row
-        if (const auto* def = find_system_table(pg_proc_oid)) {
+        {
+            const auto& def = system_table(pg_proc_oid);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, fn_oid);
                     set_str(c, 1, 0, function_name, r);
                     set_oid(c, 2, 0, namespace_oid);
@@ -632,9 +670,10 @@ namespace components::catalog {
         }
 
         // pg_depend row: pg_proc_table, fn_oid → pg_namespace_table, ns_oid, 'n'
-        if (const auto* def = find_system_table(pg_depend_oid)) {
+        {
+            const auto& def = system_table(pg_depend_oid);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, well_known_oid::pg_proc_table);
                     set_oid(c, 1, 0, fn_oid);
                     set_oid(c, 2, 0, well_known_oid::pg_namespace_table);
@@ -654,9 +693,10 @@ namespace components::catalog {
         std::vector<catalog_write_t> result;
 
         // pg_cast row
-        if (const auto* def = find_system_table(pg_cast_oid)) {
+        {
+            const auto& def = system_table(pg_cast_oid);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource*) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource*) {
                     set_oid(c, 0, 0, cast_oid);
                     set_oid(c, 1, 0, source_type_oid);
                     set_oid(c, 2, 0, target_type_oid);
@@ -665,10 +705,11 @@ namespace components::catalog {
         }
 
         // pg_depend rows: pg_cast_table, cast_oid → pg_type_table, {source,target}, 'n'
-        if (const auto* def = find_system_table(pg_depend_oid)) {
+        {
+            const auto& def = system_table(pg_depend_oid);
             for (const oid_t ref_type_oid : {source_type_oid, target_type_oid}) {
                 auto chunk =
-                    make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                    make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                         set_oid(c, 0, 0, well_known_oid::pg_cast_table);
                         set_oid(c, 1, 0, cast_oid);
                         set_oid(c, 2, 0, well_known_oid::pg_type_table);
@@ -682,18 +723,41 @@ namespace components::catalog {
         return result;
     }
 
-    std::vector<catalog_write_t> build_create_constraint_writes(std::pmr::memory_resource* resource,
-                                                                const std::string& constraint_name,
-                                                                oid_t table_oid,
-                                                                oid_t constraint_oid,
-                                                                char contype,
-                                                                oid_t ref_table_oid,
-                                                                const std::vector<oid_t>& fk_column_attoids,
-                                                                const std::vector<oid_t>& ref_column_attoids,
-                                                                char fk_matchtype,
-                                                                char fk_del_action,
-                                                                char fk_upd_action,
-                                                                const std::string& check_expr) {
+    core::result_wrapper_t<std::vector<catalog_write_t>>
+    build_create_constraint_writes(std::pmr::memory_resource* resource,
+                                   const std::string& constraint_name,
+                                   oid_t table_oid,
+                                   oid_t constraint_oid,
+                                   char contype,
+                                   oid_t ref_table_oid,
+                                   const std::vector<oid_t>& fk_column_attoids,
+                                   const std::vector<oid_t>& ref_column_attoids,
+                                   char fk_matchtype,
+                                   char fk_del_action,
+                                   char fk_upd_action,
+                                   const std::string& check_expr) {
+        // WRITER-SIDE GATE: an INVALID_OID inside either column list means the caller
+        // lost a column identity. The old code wrote the token into the conkey/confkey
+        // CSV anyway and silently SKIPPED that column's pg_depend edge, so the
+        // constraint claimed a column no dependency walk could see — ALTER TABLE DROP
+        // COLUMN dropped a parent column out from under a live FK. Refuse the statement
+        // instead (rule 6; the refusal costs one DDL). An EMPTY list stays legal here:
+        // its floor is the read side (see test_declared_key_conkey_loss.cpp).
+        for (const auto* list : {&fk_column_attoids, &ref_column_attoids}) {
+            for (std::size_t i = 0; i < list->size(); ++i) {
+                if ((*list)[i] == INVALID_OID) {
+                    const bool own = (list == &fk_column_attoids);
+                    return core::error_t{
+                        core::error_code_t::invalid_constraint,
+                        std::pmr::string{"constraint '" + constraint_name + "': " +
+                                             (own ? "conkey" : "confkey") + " column #" + std::to_string(i) +
+                                             " has no attoid; the row would claim a column without a "
+                                             "dependency edge",
+                                         resource}};
+                }
+            }
+        }
+
         std::vector<catalog_write_t> result;
 
         // Encode column lists as CSV of attoids
@@ -703,13 +767,14 @@ namespace components::catalog {
         const bool is_check = (contype == components::catalog::contype::check);
 
         // pg_constraint row
-        if (const auto* def = find_system_table(pg_constraint_oid)) {
+        {
+            const auto& def = system_table(pg_constraint_oid);
             const std::string contype_str(1, contype);
             const std::string fk_matchtype_str(1, fk_matchtype);
             const std::string fk_del_action_str(1, fk_del_action);
             const std::string fk_upd_action_str(1, fk_upd_action);
             auto chunk =
-                make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, constraint_oid);
                     set_str(c, 1, 0, constraint_name, r);
                     set_oid(c, 2, 0, table_oid);
@@ -751,23 +816,18 @@ namespace components::catalog {
         // are 'n' (normal): the constraint belongs to another table and is not implied
         // by them, so dropping one is refused instead of silently repealing the
         // constraint. operator_alter_column_drop_t reads that char to tell the two apart.
-        if (const auto* dep_def = find_system_table(pg_depend_oid)) {
-            std::size_t dep_count = 1; // constraint → table
-            for (const oid_t col_attoid : fk_column_attoids) {
-                if (col_attoid != INVALID_OID)
-                    ++dep_count;
-            }
+        {
+            const auto& dep_def = system_table(pg_depend_oid);
+            // The gate above refused any INVALID_OID entry, so every listed column
+            // gets its edge — conkey/confkey and pg_depend agree by construction.
+            std::size_t dep_count = 1 + fk_column_attoids.size(); // constraint → table + per-column
             const bool emit_fk_ref = (is_fk && ref_table_oid != INVALID_OID);
             if (emit_fk_ref) {
-                ++dep_count;
-                for (const oid_t ref_attoid : ref_column_attoids) {
-                    if (ref_attoid != INVALID_OID)
-                        ++dep_count;
-                }
+                dep_count += 1 + ref_column_attoids.size();
             }
 
             auto chunk = make_pg_rows(resource,
-                                      dep_def->columns,
+                                      dep_def.columns,
                                       dep_count,
                                       [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                                           std::size_t i = 0;
@@ -780,8 +840,6 @@ namespace components::catalog {
                                           ++i;
                                           // Per-column 'i' deps
                                           for (const oid_t col_attoid : fk_column_attoids) {
-                                              if (col_attoid == INVALID_OID)
-                                                  continue;
                                               set_oid(c, 0, i, well_known_oid::pg_constraint_table);
                                               set_oid(c, 1, i, constraint_oid);
                                               set_oid(c, 2, i, well_known_oid::pg_attribute_table);
@@ -799,8 +857,6 @@ namespace components::catalog {
                                               ++i;
                                               // FK only: per-confkey-column 'n' normal deps.
                                               for (const oid_t ref_attoid : ref_column_attoids) {
-                                                  if (ref_attoid == INVALID_OID)
-                                                      continue;
                                                   set_oid(c, 0, i, well_known_oid::pg_constraint_table);
                                                   set_oid(c, 1, i, constraint_oid);
                                                   set_oid(c, 2, i, well_known_oid::pg_attribute_table);
@@ -829,13 +885,8 @@ namespace components::catalog {
                                                 const std::string& defspec,
                                                 std::int64_t added_at_commit_id,
                                                 std::int64_t dropped_at_commit_id) {
-        const auto* def = find_system_table(pg_attribute_oid);
-        if (!def) {
-            // Return an empty chunk — caller must check column count before use
-            std::pmr::vector<types::complex_logical_type> empty_types(resource);
-            return vector::data_chunk_t(resource, empty_types, 1);
-        }
-        return make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+        const auto& def = system_table(pg_attribute_oid);
+        return make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
             set_oid(c, 0, 0, attoid);
             set_oid(c, 1, 0, table_oid);
             set_str(c, 2, 0, name, r);
@@ -857,13 +908,9 @@ namespace components::catalog {
                                             const std::string& indkey,
                                             bool indisvalid,
                                             char indtype) {
-        const auto* def = find_system_table(pg_index_oid);
-        if (!def) {
-            std::pmr::vector<types::complex_logical_type> empty_types(resource);
-            return vector::data_chunk_t(resource, empty_types, 1);
-        }
+        const auto& def = system_table(pg_index_oid);
         const std::string indtype_str(1, indtype);
-        return make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+        return make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
             set_oid(c, 0, 0, index_oid);
             set_oid(c, 1, 0, indrelid);
             set_str(c, 2, 0, indkey, r);
@@ -880,12 +927,8 @@ namespace components::catalog {
                                                       std::int64_t attversion,
                                                       std::int64_t attrefcount,
                                                       const std::string& atttypspec) {
-        const auto* def = find_system_table(pg_computed_column_oid);
-        if (!def) {
-            std::pmr::vector<types::complex_logical_type> empty_types(resource);
-            return vector::data_chunk_t(resource, empty_types, 1);
-        }
-        return make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+        const auto& def = system_table(pg_computed_column_oid);
+        return make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
             set_oid(c, 0, 0, table_oid);
             set_oid(c, 1, 0, attoid);
             set_str(c, 2, 0, attname, r);
@@ -902,13 +945,9 @@ namespace components::catalog {
                                              oid_t refclassid,
                                              oid_t refobjid,
                                              char deptype) {
-        const auto* def = find_system_table(pg_depend_oid);
-        if (!def) {
-            std::pmr::vector<types::complex_logical_type> empty_types(resource);
-            return vector::data_chunk_t(resource, empty_types, 1);
-        }
+        const auto& def = system_table(pg_depend_oid);
         const std::string deptype_str(1, deptype);
-        return make_pg_rows(resource, def->columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+        return make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
             set_oid(c, 0, 0, classid);
             set_oid(c, 1, 0, objid);
             set_oid(c, 2, 0, refclassid);

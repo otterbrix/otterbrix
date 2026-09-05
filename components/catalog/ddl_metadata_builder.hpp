@@ -9,6 +9,8 @@
 #include <components/table/column_definition.hpp>
 #include <components/vector/data_chunk.hpp>
 
+#include <core/result_wrapper.hpp>
+
 #include <cstdint>
 #include <memory_resource>
 #include <string>
@@ -138,18 +140,25 @@ namespace components::catalog {
     // conkey columns are 'i' (the constraint dies with them), confkey columns are
     // 'n' (the constraint lives in another table, so dropping one is refused —
     // see operator_alter_column_drop_t).
-    std::vector<catalog_write_t> build_create_constraint_writes(std::pmr::memory_resource* resource,
-                                                                const std::string& constraint_name,
-                                                                oid_t table_oid,
-                                                                oid_t constraint_oid,
-                                                                char contype,
-                                                                oid_t ref_table_oid,
-                                                                const std::vector<oid_t>& fk_column_attoids,
-                                                                const std::vector<oid_t>& ref_column_attoids,
-                                                                char fk_matchtype,
-                                                                char fk_del_action,
-                                                                char fk_upd_action,
-                                                                const std::string& check_expr);
+    //
+    // REFUSES (invalid_constraint) any INVALID_OID inside fk_column_attoids /
+    // ref_column_attoids: such an entry used to be written into the conkey/confkey CSV
+    // while its pg_depend edge was silently omitted, so the constraint claimed a column
+    // that no dependency walk could see. An EMPTY list stays legal — its floor is the
+    // read side (test_declared_key_conkey_loss.cpp).
+    [[nodiscard]] core::result_wrapper_t<std::vector<catalog_write_t>>
+    build_create_constraint_writes(std::pmr::memory_resource* resource,
+                                   const std::string& constraint_name,
+                                   oid_t table_oid,
+                                   oid_t constraint_oid,
+                                   char contype,
+                                   oid_t ref_table_oid,
+                                   const std::vector<oid_t>& fk_column_attoids,
+                                   const std::vector<oid_t>& ref_column_attoids,
+                                   char fk_matchtype,
+                                   char fk_del_action,
+                                   char fk_upd_action,
+                                   const std::string& check_expr);
 
     // Row-builder helpers for update-operations (rename_column, drop_column tombstone,
     // index_set_valid). Return a single data_chunk_t, not a catalog_write_t vector.

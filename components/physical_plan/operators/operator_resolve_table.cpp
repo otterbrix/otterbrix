@@ -378,9 +378,19 @@ namespace components::operators {
                 // answer NULL for it.
                 std::vector<bool> claimed(storage_types.size(), false);
                 for (auto& row : rows) {
-                    const types::complex_logical_type row_type =
-                        row.atttypspec.empty() ? types::complex_logical_type(catalog::oid_to_builtin_type(row.atttypid))
-                                               : catalog::decode_type_spec(resource_, row.atttypspec);
+                    types::complex_logical_type row_type{types::logical_type::UNKNOWN};
+                    if (row.atttypspec.empty()) {
+                        row_type = types::complex_logical_type(catalog::oid_to_builtin_type(row.atttypid));
+                    } else {
+                        auto row_type_r = catalog::decode_type_spec(resource_, row.atttypspec);
+                        if (row_type_r.has_error()) {
+                            // An unreadable atttypspec is catalog corruption; binding the
+                            // column by guesswork would reinterpret stored bytes silently.
+                            set_error(row_type_r.error());
+                            co_return;
+                        }
+                        row_type = std::move(row_type_r.value());
+                    }
                     std::int32_t sole_name_candidate = -1;
                     std::size_t name_candidates = 0;
                     for (std::size_t i = 0; i < storage_types.size(); ++i) {
@@ -540,7 +550,12 @@ namespace components::operators {
                 cm.attdefspec = row.attdefspec;
                 cm.atttypspec = row.atttypspec;
                 if (!row.atttypspec.empty()) {
-                    cm.type = catalog::decode_type_spec(resource_, row.atttypspec);
+                    auto cm_type_r = catalog::decode_type_spec(resource_, row.atttypspec);
+                    if (cm_type_r.has_error()) {
+                        set_error(cm_type_r.error());
+                        co_return;
+                    }
+                    cm.type = std::move(cm_type_r.value());
                 } else if (row.atttypid != catalog::INVALID_OID) {
                     cm.type = types::complex_logical_type(catalog::oid_to_builtin_type(row.atttypid));
                 }

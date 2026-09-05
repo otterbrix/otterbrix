@@ -303,18 +303,22 @@ namespace disk_test_helpers {
                                           const std::string& check_expr = "") {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const catalog::oid_t con_oid = oids[0];
-        auto writes = catalog::build_create_constraint_writes(&fx.resource,
-                                                              name,
-                                                              table_oid,
-                                                              con_oid,
-                                                              contype,
-                                                              ref_table_oid,
-                                                              fk_attoids,
-                                                              ref_attoids,
-                                                              fk_matchtype,
-                                                              fk_del_action,
-                                                              fk_upd_action,
-                                                              check_expr);
+        auto writes_r = catalog::build_create_constraint_writes(&fx.resource,
+                                                                name,
+                                                                table_oid,
+                                                                con_oid,
+                                                                contype,
+                                                                ref_table_oid,
+                                                                fk_attoids,
+                                                                ref_attoids,
+                                                                fk_matchtype,
+                                                                fk_del_action,
+                                                                fk_upd_action,
+                                                                check_expr);
+        // The builder refuses INVALID_OID attoids now; every fixture here passes
+        // stamped lists, so a refusal is a broken test setup.
+        assert(!writes_r.has_error());
+        auto writes = std::move(writes_r.value());
         std::vector<components::pg_catalog_append_range_t> appends_local;
         append_writes(fx, auto_ctx(), writes, appends_local);
         fx.invoke(&manager_disk_t::storage_publish_commits,

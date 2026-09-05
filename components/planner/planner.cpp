@@ -189,7 +189,8 @@ namespace components::planner {
         // The original node is kept as first child so execute_ddl can create physical
         // storage; the catalog-write children carry the pg_catalog rows to insert.
         // Column types must already be resolved (done by enrich_plan).
-        node_ptr rewrite_create_table(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
+        core::result_wrapper_t<node_ptr>
+        rewrite_create_table(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cc = static_cast<logical_plan::node_create_collection_t*>(node.get());
             const catalog::oid_t ns_oid = cc->namespace_oid();
 
@@ -262,7 +263,12 @@ namespace components::planner {
                                                                        cstr->del_action(),
                                                                        cstr->upd_action(),
                                                                        std::string(cstr->check_expr()));
-                for (auto& w : cwrites) {
+                if (cwrites.has_error()) {
+                    // A constraint column without an attoid — the builder refuses to
+                    // write a conkey that claims a column with no dependency edge.
+                    return cwrites.error();
+                }
+                for (auto& w : cwrites.value()) {
                     constraint_writes.push_back(std::move(w));
                 }
             }
@@ -284,7 +290,7 @@ namespace components::planner {
         // CREATE CONSTRAINT → sequence_t(catalog-write node_insert_t × N) over pg_constraint + pg_depend.
         // Resolved fields (table_oid, ref_table_oid, fk/ref attoids) are populated by
         // enrich_logical_plan before the planner runs, so the rewrite is purely synchronous.
-        node_ptr
+        core::result_wrapper_t<node_ptr>
         rewrite_create_constraint(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cstr = static_cast<logical_plan::node_create_constraint_t*>(node.get());
             const catalog::oid_t constraint_oid = oid_batch.allocate();
@@ -301,12 +307,17 @@ namespace components::planner {
                                                                   cstr->del_action(),
                                                                   cstr->upd_action(),
                                                                   std::string(cstr->check_expr()));
+            if (writes.has_error()) {
+                // A constraint column without an attoid — refused before a conkey that
+                // claims a column with no dependency edge can reach the catalog.
+                return writes.error();
+            }
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
-            for (auto& w : writes) {
+            for (auto& w : writes.value()) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
-            return seq;
+            return node_ptr{std::move(seq)};
         }
 
         // CREATE SEQUENCE → sequence_t(catalog-write node_insert_t × N) over pg_class + pg_sequence

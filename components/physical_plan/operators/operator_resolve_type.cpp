@@ -112,7 +112,14 @@ namespace components::operators {
                 md.typdefspec = std::string(batch.get_value<std::string_view>(3, 0));
             }
             if (!md.typdefspec.empty()) {
-                md.type = catalog::decode_type_spec(resource_, md.typdefspec);
+                auto md_type_r = catalog::decode_type_spec(resource_, md.typdefspec);
+                if (md_type_r.has_error()) {
+                    // An unreadable typdefspec is catalog corruption; answering a guessed
+                    // type would let every use of this UDT reinterpret bytes silently.
+                    set_error(md_type_r.error());
+                    co_return;
+                }
+                md.type = std::move(md_type_r.value());
             } else {
                 const auto lt = catalog::oid_to_builtin_type(md.type_oid);
                 if (lt != types::logical_type::UNKNOWN) {

@@ -19,6 +19,14 @@ namespace {
 
 namespace {
     auto* g_resource = std::pmr::new_delete_resource();
+
+    // decode_type_spec answers through core::result_wrapper_t now; every spec in this
+    // file is well-formed, so the helper unwraps and lets a refusal fail the test.
+    components::types::complex_logical_type decode_ok(std::string_view spec) {
+        auto decoded = decode_type_spec(g_resource, spec);
+        REQUIRE_FALSE(decoded.has_error());
+        return std::move(decoded.value());
+    }
 } // namespace
 
 TEST_CASE("catalog::type_spec::scalars_encode_empty") {
@@ -36,7 +44,7 @@ TEST_CASE("catalog::type_spec::scalars_encode_empty") {
 static logical_type persisted_readback(const complex_logical_type& t) {
     auto spec = encode_type_spec(t);
     if (!spec.empty()) {
-        return decode_type_spec(g_resource, spec).type();
+        return decode_ok(spec).type();
     }
     return oid_to_builtin_type(builtin_type_to_oid(t.type()));
 }
@@ -97,7 +105,7 @@ TEST_CASE("catalog::type_spec::decimal_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "numeric(10,2)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::DECIMAL);
     const auto* ext = static_cast<const decimal_logical_type_extension*>(t2.extension());
     REQUIRE(ext->width() == 10);
@@ -109,7 +117,7 @@ TEST_CASE("catalog::type_spec::unknown_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "UNKNOWN(myudt)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::UNKNOWN);
     REQUIRE(t2.type_name() == "myudt");
 }
@@ -120,7 +128,7 @@ TEST_CASE("catalog::type_spec::list_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "LIST(int4)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::LIST);
     REQUIRE(t2.child_type().type() == logical_type::INTEGER);
 }
@@ -131,7 +139,7 @@ TEST_CASE("catalog::type_spec::array_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "ARRAY(float8,100)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::ARRAY);
     REQUIRE(t2.child_type().type() == logical_type::DOUBLE);
     const auto* ext = static_cast<const array_logical_type_extension*>(t2.extension());
@@ -145,7 +153,7 @@ TEST_CASE("catalog::type_spec::map_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "MAP(text,int8)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::MAP);
     const auto* ext = static_cast<const map_logical_type_extension*>(t2.extension());
     REQUIRE(ext->key().type() == logical_type::STRING_LITERAL);
@@ -164,7 +172,7 @@ TEST_CASE("catalog::type_spec::struct_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "STRUCT(point,x:int4,y:text)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::STRUCT);
     const auto& fields = t2.child_types();
     REQUIRE(fields.size() == 2);
@@ -186,7 +194,7 @@ TEST_CASE("catalog::type_spec::union_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "UNION(i:int4,s:text)");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::UNION);
     // child_types()[0] is the hidden tag; real members start at [1]
     const auto& ch = t2.child_types();
@@ -200,7 +208,7 @@ TEST_CASE("catalog::type_spec::variant_roundtrip") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "VARIANT");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::VARIANT);
 }
 
@@ -217,7 +225,7 @@ TEST_CASE("catalog::type_spec::nested_list_of_struct") {
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "LIST(STRUCT(coord,lat:float4,lon:float4))");
 
-    auto t2 = decode_type_spec(g_resource, spec);
+    auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::LIST);
     REQUIRE(t2.child_type().type() == logical_type::STRUCT);
     const auto& fields = t2.child_type().child_types();
@@ -226,9 +234,10 @@ TEST_CASE("catalog::type_spec::nested_list_of_struct") {
 }
 
 TEST_CASE("catalog::type_spec::decimal_with_old_name_compat") {
-    // Files written before the pg-style rename used "DECIMAL(w,s)".
-    // decode must still accept that form.
-    auto t = decode_type_spec(g_resource, "DECIMAL(18,6)");
+    // The decoder reads both spellings of the decimal head: "numeric" (what the
+    // encoder writes) and "DECIMAL". This pins the second so no writer rename can
+    // silently orphan a spec that spells it this way.
+    auto t = decode_ok("DECIMAL(18,6)");
     REQUIRE(t.type() == logical_type::DECIMAL);
     const auto* ext = static_cast<const decimal_logical_type_extension*>(t.extension());
     REQUIRE(ext->width() == 18);
@@ -236,13 +245,14 @@ TEST_CASE("catalog::type_spec::decimal_with_old_name_compat") {
 }
 
 TEST_CASE("catalog::type_spec::empty_returns_unknown") {
-    auto t = decode_type_spec(g_resource, "");
+    auto t = decode_ok("");
     REQUIRE(t.type() == logical_type::UNKNOWN);
 }
 
 TEST_CASE("catalog::type_spec::unknown_prefix_no_crash") {
-    // Garbage input must not crash. The flat-text decoder may return any type for
-    // accidentally-valid input — we only verify no exception is thrown.
-    auto t = decode_type_spec(g_resource, "garbage_that_is_not_valid_type_spec");
-    (void) t; // result type is implementation-defined for garbage input
+    // Garbage input must not crash — and it must not become a type either. A bare
+    // name outside the encoder's language is a data_corruption refusal.
+    auto decoded = decode_type_spec(g_resource, "garbage_that_is_not_valid_type_spec");
+    REQUIRE(decoded.has_error());
+    REQUIRE(decoded.error().type == core::error_code_t::data_corruption);
 }

@@ -112,12 +112,22 @@ namespace components::catalog {
     // (typdefspec). For built-in scalar types `encode_type_spec` returns "" — atttypid /
     // typdefspec=NULL is sufficient for round-trip. For complex types (DECIMAL, ARRAY,
     // LIST, ENUM, STRUCT, MAP, UNKNOWN) the full complex_logical_type tree is serialized
-    // as flat-text (e.g. "DECIMAL(18,6)") so readers can reconstruct precision/scale,
+    // as flat-text (e.g. "numeric(18,6)") so readers can reconstruct precision/scale,
     // element types, child fields, enum entries, etc. across restart.
-    // `decode_type_spec` returns logical_type::UNKNOWN on empty/malformed input —
-    // non-throwing best-effort.
+    //
+    // `decode_type_spec` is fail-loud (rule 6): every spec outside the encoder's exact
+    // language — an unrecognised name or keyword, malformed or out-of-window DECIMAL
+    // width/scale, a missing separator, trailing bytes after a complete type, nesting
+    // beyond the depth window shared with the binary codec — is a data_corruption error,
+    // never a guessed type. Two UNKNOWN answers remain LEGITIMATE values, not errors:
+    // the empty spec (builtin scalars store no spec; atttypid alone reconstructs them)
+    // and the explicit "UNKNOWN(name)" form (a named user-type reference the resolver
+    // chases by name). The refusal reaches the reader's statement, where it costs one
+    // resolve — the callers no longer need to treat UNKNOWN as a refusal channel
+    // (none of them ever did).
     std::string encode_type_spec(const types::complex_logical_type& t);
-    types::complex_logical_type decode_type_spec(std::pmr::memory_resource* resource, std::string_view spec);
+    [[nodiscard]] core::result_wrapper_t<types::complex_logical_type>
+    decode_type_spec(std::pmr::memory_resource* resource, std::string_view spec);
 
     // Encode the per-arg `parameter_type` to a flat text format suitable for
     // pg_proc.proargmatchers. Format per arg: "e:N" a concrete type, "v:I" a variable with
@@ -129,9 +139,15 @@ namespace components::catalog {
     std::string encode_proargmatchers(const std::vector<components::compute::parameter_type>& parameters);
 
     // Encode output_type list to a flat text format. Per output: "f:N" fixed type
-    // (N = logical_type id), "s:N" same_type_at_index N. Multiple outputs are comma-
-    // separated. computed_fn outputs are encoded as "s:0" — lossy but the common case is
-    // identity, and the resolver isn't reproducible across persistence anyway.
+    // (N = logical_type id), "s:N" same_type_at_index N, "c" a custom resolver
+    // (output_type::computed). Multiple outputs are comma-separated. "c" is an EXPLICIT
+    // non-introspectable marker: the old code persisted a custom resolver as "s:0" — a
+    // same-type-as-argument-0 contract the function never declared, silently. A custom
+    // resolver cannot be refused outright: registering one is pinned legal behaviour
+    // (test_udfs registers computed(same_type_resolver(0))), and its runtime form is
+    // reconstructed through pg_proc.prouid → compute::function_registry, never by
+    // parsing this column — so the honest answer is a truthful tag, not a guessed
+    // contract and not a refusal.
     std::string encode_prorettype(const std::vector<components::compute::output_type>& outputs);
 
     // Return the canonical pg_type.typname for a built-in logical_type (e.g. INTEGER →

@@ -127,14 +127,15 @@ TEST_CASE("test_column_oid_assignment") {
 }
 
 // 9. OIDs are immutable after first non-INVALID assignment: re-stamping the same value is
-//    idempotent, but assigning a different value raises std::logic_error. Covers Design Rule 1
-//    by the design rule "OIDs are immutable after assignment".
+//    idempotent. For table_id::set_oid a DIFFERENT value now ABORTS in every build —
+//    there is no exception channel under rule 2, and the pre-fix "assert in debug,
+//    silent no-op under NDEBUG" let two identities of one table diverge unseen (the
+//    header even promised a std::logic_error nobody threw). The abort itself is not
+//    exercised here — a death test would take the whole binary with it; only the legal
+//    idempotent path is. column_definition_t::set_attoid (components/table — outside
+//    this component) still carries the old assert-only guard.
 TEST_CASE("test_oid_immutability") {
     core::pmr::otterbrix_resource resource;
-
-    // set_oid / set_attoid are programmer-error precondition guards: assert in
-    // debug, silent no-op in release. The original value MUST survive a stray
-    // reassignment attempt with a different value.
     SECTION("table_id::set_oid") {
         qualified_name_t cfn("main", "users");
         table_id tid(&resource, cfn);

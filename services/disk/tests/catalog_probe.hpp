@@ -517,15 +517,23 @@ namespace services::disk::test_probe {
         std::pmr::vector<components::types::complex_logical_type> child_types(&fx.resource);
         child_types.reserve(fields.size());
         for (auto& f : fields) {
-            components::types::complex_logical_type ft =
-                f.atttypspec.empty() ? components::types::complex_logical_type{catalog::oid_to_builtin_type(f.atttypid)}
-                                     : catalog::decode_type_spec(&fx.resource, f.atttypspec);
+            components::types::complex_logical_type ft{components::types::logical_type::UNKNOWN};
+            if (f.atttypspec.empty()) {
+                ft = components::types::complex_logical_type{catalog::oid_to_builtin_type(f.atttypid)};
+            } else {
+                auto ft_r = catalog::decode_type_spec(&fx.resource, f.atttypspec);
+                assert(!ft_r.has_error());
+                ft = std::move(ft_r.value());
+            }
             if (ft.type() == components::types::logical_type::UNKNOWN) {
                 std::string ref_name(ft.type_name());
                 if (!ref_name.empty()) {
                     auto nested = probe_type(fx, ctx, namespace_oid, ref_name);
-                    if (nested.found && !nested.typdefspec.empty())
-                        ft = catalog::decode_type_spec(&fx.resource, nested.typdefspec);
+                    if (nested.found && !nested.typdefspec.empty()) {
+                        auto nested_r = catalog::decode_type_spec(&fx.resource, nested.typdefspec);
+                        assert(!nested_r.has_error());
+                        ft = std::move(nested_r.value());
+                    }
                 }
             }
             ft.set_alias(f.attname);

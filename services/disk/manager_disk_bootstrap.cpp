@@ -1297,7 +1297,24 @@ namespace services::disk {
                         typspec.assign(typspec_v.data(), typspec_v.size());
                     }
                     if (!typspec.empty()) {
-                        rc.type = catalog::decode_type_spec(resource_, typspec);
+                        auto rc_type_r = catalog::decode_type_spec(resource_, typspec);
+                        if (rc_type_r.has_error()) {
+                            // DB-open path: a refusal here would brick the database, so the
+                            // failure is loud in the log and the column keeps an UNKNOWN
+                            // placeholder that every typed read refuses per-statement.
+                            // (const method — log through a local handle, log_t is a
+                            // shared_ptr-backed value.)
+                            auto log = log_;
+                            error(log,
+                                  "manager_disk_t::collect_catalog_columns_sync: relid={} column '{}' "
+                                  "atttypspec is unreadable: {}",
+                                  static_cast<unsigned>(relid),
+                                  rc.name,
+                                  rc_type_r.error().what);
+                            rc.type = components::types::complex_logical_type{components::types::logical_type::UNKNOWN};
+                        } else {
+                            rc.type = std::move(rc_type_r.value());
+                        }
                     } else {
                         const auto atttypid = chunk.is_null(3, i)
                                                   ? catalog::INVALID_OID

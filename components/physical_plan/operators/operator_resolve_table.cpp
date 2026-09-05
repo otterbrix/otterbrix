@@ -286,8 +286,27 @@ namespace components::operators {
                 std::unordered_map<std::string, cc_candidate_t> latest_any;
 
                 for (auto& chunk : cc_batches) {
-                    if (chunk.column_count() < 7) {
-                        continue;
+                    // A CHUNK NARROWER THAN pg_computed_column'S SCHEMA IS A DIFFERENT
+                    // ANSWER, NOT A MISS. The read above was issued with an empty
+                    // projection ("all columns"), so the reply's width is the width of
+                    // the pg_computed_column storage itself; every row this build writes
+                    // has all 7 columns (build_pg_computed_column_row). Skipping a
+                    // narrow chunk dropped EVERY variant it carried — the fields simply
+                    // vanished from the resolved schema, silently. The threshold is the
+                    // largest ordinal read below: attrefcount (6). Same refusal, same
+                    // reason, as the pg_attribute floor in the static-schema branch.
+                    if (chunk.column_count() <= catalog::pg_computed_column_col::attrefcount) {
+                        std::string msg = "table resolution: pg_computed_column answered with ";
+                        msg += std::to_string(chunk.column_count());
+                        msg += " column(s), fewer than the ";
+                        msg += std::to_string(
+                            static_cast<std::size_t>(catalog::pg_computed_column_col::attrefcount) + 1);
+                        msg += " this build reads — the columns of table \"";
+                        msg += entry.relname;
+                        msg += "\" cannot be decoded";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
                     }
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
                         if (chunk.is_null(2, i) || chunk.is_null(5, i)) {
@@ -355,27 +374,34 @@ namespace components::operators {
                 // a name, so the type disambiguates. `claimed` prevents two variants
                 // from binding to the same physical column.
                 //
-                // NO first-unclaimed GUESS UNDER AMBIGUITY. When the exact type
-                // matches nothing, two shapes remain and they are opposites:
-                //   * exactly ONE unclaimed storage column carries the name — that
-                //     IS the column, written by the same statement that wrote the
-                //     catalog row; the two sides merely normalised the type
-                //     differently (measured on this branch: a NUMERIC-typed field
-                //     registers the encoded spec while the storage column
-                //     materialises under its own reading of the same value). An
-                //     unambiguous candidate is bound, not refused — refusing it
-                //     made the column unreadable one statement after a successful
-                //     INSERT.
-                //   * SEVERAL unclaimed columns carry the name — the type was the
-                //     only thing that could say which one is meant, and it said
-                //     none. This is where the old code took the FIRST one, i.e. a
-                //     column of a DIFFERENT type chosen by storage order, and every
-                //     read through that binding reinterpreted the stored bytes in
-                //     silence. What the engine cannot disambiguate it must not
-                //     guess.
-                // A name with NO storage column at all keeps chunk_position = -1:
-                // that is the legal not-yet-materialised window, and the readers
-                // answer NULL for it.
+                // NO first-unclaimed GUESS UNDER AMBIGUITY — and the type comparison
+                // is a ladder, because "the type" has two precisions. The variant key
+                // in pg_computed_column is (attname, atttypid, atttypspec): two
+                // variants of one name may share the OUTER type enum and differ only
+                // in the extension (a DECIMAL's width/scale, a STRUCT's shape), and
+                // attoid order does not have to match storage column order — so an
+                // enum-only comparison could bind variant A to variant B's bytes in
+                // silence. The ladder, per variant:
+                //   1. exactly ONE unclaimed column matches the FULL type (extension
+                //      included) — that is the column; bind it.
+                //   2. several match the full type — indistinguishable duplicates
+                //      (storage keeps tombstoned columns until VACUUM); refuse.
+                //   3. none match fully but exactly ONE shares the outer enum — the
+                //      two sides merely normalised the extension differently
+                //      (measured on this branch: a NUMERIC-typed field registers the
+                //      encoded spec while the storage column materialises under its
+                //      own reading of the same value); bind it.
+                //   4. several share the outer enum and none the full type — the
+                //      extension was the only thing that could say which one is
+                //      meant, and it said none; the old code took the FIRST by
+                //      storage order and every read through that binding reinterpreted
+                //      the stored bytes in silence. Refuse.
+                //   5. no type overlap at all: a SOLE name candidate is bound (it was
+                //      written by the same statement that wrote the catalog row —
+                //      refusing it made the column unreadable one statement after a
+                //      successful INSERT); several name candidates refuse; none keeps
+                //      chunk_position = -1, the legal not-yet-materialised window the
+                //      readers answer NULL for.
                 std::vector<bool> claimed(storage_types.size(), false);
                 for (auto& row : rows) {
                     types::complex_logical_type row_type{types::logical_type::UNKNOWN};
@@ -393,6 +419,10 @@ namespace components::operators {
                     }
                     std::int32_t sole_name_candidate = -1;
                     std::size_t name_candidates = 0;
+                    std::int32_t exact_candidate = -1;
+                    std::size_t exact_matches = 0;
+                    std::int32_t enum_candidate = -1;
+                    std::size_t enum_matches = 0;
                     for (std::size_t i = 0; i < storage_types.size(); ++i) {
                         if (claimed[i] || !storage_types[i].has_alias() || storage_types[i].alias() != row.attname) {
                             continue;
@@ -401,28 +431,50 @@ namespace components::operators {
                         if (name_candidates == 1) {
                             sole_name_candidate = static_cast<std::int32_t>(i);
                         }
-                        if (storage_types[i].type() == row_type.type()) {
-                            row.chunk_position = static_cast<std::int32_t>(i);
-                            claimed[i] = true;
-                            break;
+                        if (storage_types[i] == row_type) {
+                            ++exact_matches;
+                            if (exact_matches == 1) {
+                                exact_candidate = static_cast<std::int32_t>(i);
+                            }
+                        } else if (storage_types[i].type() == row_type.type()) {
+                            ++enum_matches;
+                            if (enum_matches == 1) {
+                                enum_candidate = static_cast<std::int32_t>(i);
+                            }
                         }
                     }
-                    if (row.chunk_position < 0 && name_candidates == 1) {
-                        row.chunk_position = sole_name_candidate;
-                        claimed[static_cast<std::size_t>(sole_name_candidate)] = true;
-                    } else if (row.chunk_position < 0 && name_candidates > 1) {
+                    const auto refuse_ambiguous = [&](std::size_t candidates, const char* how) {
                         std::string msg = "table resolution: column \"";
                         msg += row.attname;
                         msg += "\" of computed table \"";
                         msg += entry.relname;
                         msg += "\" is typed ";
                         msg += row_type.type_name();
-                        msg += " in pg_computed_column, and none of the ";
-                        msg += std::to_string(name_candidates);
-                        msg += " storage columns of that name holds that type — picking one by storage order "
-                               "would misread its data";
+                        msg += " in pg_computed_column, and ";
+                        msg += std::to_string(candidates);
+                        msg += " storage columns of that name ";
+                        msg += how;
+                        msg += " — picking one by storage order would misread its data";
                         set_error(core::error_t{core::error_code_t::schema_error,
                                                 std::pmr::string{std::move(msg), resource_}});
+                    };
+                    if (exact_matches == 1) {
+                        row.chunk_position = exact_candidate;
+                        claimed[static_cast<std::size_t>(exact_candidate)] = true;
+                    } else if (exact_matches > 1) {
+                        refuse_ambiguous(exact_matches, "hold that exact type");
+                        co_return;
+                    } else if (enum_matches == 1) {
+                        row.chunk_position = enum_candidate;
+                        claimed[static_cast<std::size_t>(enum_candidate)] = true;
+                    } else if (enum_matches > 1) {
+                        refuse_ambiguous(enum_matches, "share its outer type while none matches its exact shape");
+                        co_return;
+                    } else if (name_candidates == 1) {
+                        row.chunk_position = sole_name_candidate;
+                        claimed[static_cast<std::size_t>(sole_name_candidate)] = true;
+                    } else if (name_candidates > 1) {
+                        refuse_ambiguous(name_candidates, "hold neither that type nor its outer type");
                         co_return;
                     }
                 }

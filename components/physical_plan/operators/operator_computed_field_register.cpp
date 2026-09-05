@@ -6,9 +6,11 @@
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
+#include <components/types/type_spec_codec.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -156,8 +158,30 @@ namespace components::operators {
             // relkind='g' can reconstruct ARRAY/STRUCT/UNION/DECIMAL etc.
             // exactly. Builtin scalars leave atttypspec empty — atttypid
             // alone reconstructs them via oid_to_builtin_type.
+            //
+            // THE WRITER VALIDATES THE READER'S WINDOW (the F4/F5 invariant on this
+            // branch). Plan-level DDL runs every column type through the binary codec
+            // (gate_persistable_type) before anything durable is written, but this
+            // registration is fed by an INSERT into a computing table and encodes the
+            // flat atttypspec PAST that gate — while its reader, decode_type_spec in
+            // resolve_table, refuses nesting beyond the depth window shared with the
+            // binary codec (data_corruption, permanently). Probing the binary codec
+            // here — the real encoder, not a copy of its rules — keeps the two windows
+            // the same window: a type it refuses would register a spec that unresolves
+            // the whole table one statement after a successful INSERT.
             std::string atttypspec;
             if (atttypid == catalog::INVALID_OID && col.type().type() != types::logical_type::UNKNOWN) {
+                std::pmr::vector<std::byte> persist_probe(resource_);
+                auto persistable = types::encode_type_spec(col.type(), persist_probe);
+                if (persistable.has_error()) {
+                    std::string msg = "computed field \"";
+                    msg += col.name();
+                    msg += "\" cannot be persisted: ";
+                    msg += persistable.error().what.c_str();
+                    set_error(core::error_t{core::error_code_t::schema_error,
+                                            std::pmr::string{std::move(msg), resource_}});
+                    co_return;
+                }
                 atttypspec = catalog::encode_type_spec(col.type());
             }
 

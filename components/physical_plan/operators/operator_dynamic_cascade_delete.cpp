@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -192,6 +193,25 @@ namespace components::operators {
             co_return;
         }
 
+        // ONE STEP PER OBJECT. topological_drop_order pushes a dependent once per edge
+        // that reaches it (its order.push_back sits outside the black-set re-visit
+        // check), so a diamond — an FK constraint reachable from BOTH its table and its
+        // referenced table — appears in plan.steps twice. The catalog deletes are
+        // idempotent, so duplicates only cost over-generated specs; but the own-row
+        // zero judgement below is NOT duplicate-proof (the second occurrence's own row
+        // legitimately deletes 0 rows), so the plan is deduplicated by (classid, objid)
+        // first, keeping the first — dependents-first — occurrence.
+        std::pmr::vector<catalog::drop_step_t> steps(resource_);
+        steps.reserve(plan.steps.size());
+        {
+            std::pmr::unordered_set<std::uint64_t> seen(resource_);
+            for (const auto& step : plan.steps) {
+                if (seen.insert(encode_key(step.classid, step.objid)).second) {
+                    steps.push_back(step);
+                }
+            }
+        }
+
         // Record table_oids of storage-backed (relkind 'r'/'g') pg_class objects
         // BEFORE deleting their pg_class rows: once a row is gone we can no longer
         // tell storage-backed objects from pure-catalog ones (sequence/view/macro/type).
@@ -204,12 +224,12 @@ namespace components::operators {
 
         // pg_class relkind probe: each storage step's read is keyed by its own
         // step.objid and only decides whether the oid is storage-backed, so no read
-        // feeds another iteration's read (probes are independent). plan.steps is fixed
+        // feeds another iteration's read (probes are independent). `steps` is fixed
         // before this loop, so the probe oids are all known up front — gather the
         // pg_class-keyed step oids in step order and run ONE batched read_chunks_by_keys
         // keyed on "oid", then map result[i] back to the i-th probed step.
         std::pmr::vector<catalog::oid_t> probe_oids(resource_);
-        for (const auto& step : plan.steps) {
+        for (const auto& step : steps) {
             if (step.classid != catalog::well_known_oid::pg_class_table)
                 continue;
             probe_oids.push_back(step.objid);
@@ -257,33 +277,78 @@ namespace components::operators {
         // Over-deletion is safe: scans that find no matching rows for a
         // given (table, col, oid) tuple are silent no-ops. This matches
         // build_drop_sequence's behaviour in the old dispatcher path.
-        // deletes_for_classid is a pure local helper and plan.steps is fixed
+        // deletes_for_classid is a pure local helper and `steps` is fixed
         // before this loop, so no spec depends on an intervening read; collect
         // every (table, col, oid) delete into one batched call.
+        //
+        // ONE spec per step is NOT over-generation: the step's OWN row,
+        // {step.classid, col 0, step.objid} — the row whose existence is the object.
+        // Its index is recorded so the per-spec counts can be judged below; every
+        // other spec of the template stays judgement-free (a plain table really has
+        // no pg_sequence or pg_rewrite rows, and that zero says nothing).
+        struct own_row_spec_t {
+            std::size_t spec_idx;
+            catalog::oid_t classid;
+            catalog::oid_t objid;
+        };
+        std::pmr::vector<own_row_spec_t> own_rows(resource_);
         std::pmr::vector<services::disk::pg_catalog_delete_spec_t> catalog_specs(resource_);
-        for (const auto& step : plan.steps) {
+        for (const auto& step : steps) {
             for (auto& d : deletes_for_classid(resource_, step.classid)) {
+                if (d.catalog_table_oid == step.classid && d.oid_col_idx == 0) {
+                    own_rows.push_back({catalog_specs.size(), step.classid, step.objid});
+                }
                 catalog_specs.push_back({d.catalog_table_oid, d.oid_col_idx, step.objid});
                 if (ctx->txn.transaction_id != 0)
                     ctx->pg_catalog_delete_tables.insert(d.catalog_table_oid);
             }
         }
         if (!catalog_specs.empty()) {
+            const std::size_t spec_count = catalog_specs.size();
             auto [_d, df] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
                                              exec_ctx,
                                              std::move(catalog_specs));
             auto deleted_r = co_await std::move(df);
-            // WHICH ZERO IS AN ERROR HERE — none of them, and the comment above says why: the
-            // spec list is deliberately OVER-GENERATED (deletes_for_classid re-issues the whole
-            // per-classid template for every step, e.g. pg_sequence and pg_rewrite rows for a
-            // plain table), so a count of 0 is the template over-reaching and carries no
-            // information about the object being dropped. The REFUSAL does, and it is read
-            // BEFORE the storage/index marks below: those marks are what a COMMIT turns into an
-            // irreversible teardown, and taking them over a catalog that still describes the
-            // table is the half-applied DROP this operator exists to avoid.
+            // WHICH ZERO IS AN ERROR HERE — exactly one per step: the step's own row.
+            // The rest of the spec list is deliberately OVER-GENERATED (deletes_for_classid
+            // re-issues the whole per-classid template for every step, e.g. pg_sequence and
+            // pg_rewrite rows for a plain table), so a zero there is the template
+            // over-reaching and carries no information. But the own row IS the object the
+            // pg_depend walk planned; deleting it 0 times means the catalog never held (or
+            // no longer holds) that object, and reporting success over it is the DROP that
+            // "dropped" something the catalog cannot account for. Both the refusal and the
+            // zero are read BEFORE the storage/index marks below: those marks are what a
+            // COMMIT turns into an irreversible teardown, and taking them over a catalog
+            // that disagrees with the plan is the half-applied DROP this operator exists
+            // to avoid.
             if (deleted_r.has_error()) {
                 set_error(deleted_r.error());
+                co_return;
+            }
+            const auto& deleted_counts = deleted_r.value();
+            if (deleted_counts.size() != spec_count) {
+                std::string msg = "DROP cascade: the catalog delete answered ";
+                msg += std::to_string(deleted_counts.size());
+                msg += " count(s) for ";
+                msg += std::to_string(spec_count);
+                msg += " spec(s) — the reply cannot be matched to the plan";
+                set_error(core::error_t{core::error_code_t::other_error,
+                                        std::pmr::string{std::move(msg), resource_}});
+                co_return;
+            }
+            for (const auto& own : own_rows) {
+                if (deleted_counts[own.spec_idx] != 0) {
+                    continue;
+                }
+                std::string msg = "DROP cascade: planned object (catalog table oid ";
+                msg += std::to_string(static_cast<unsigned>(own.classid));
+                msg += ", oid ";
+                msg += std::to_string(static_cast<unsigned>(own.objid));
+                msg += ") has no catalog row to delete — the pg_depend graph names an object "
+                       "the catalog does not hold";
+                set_error(
+                    core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
                 co_return;
             }
         }

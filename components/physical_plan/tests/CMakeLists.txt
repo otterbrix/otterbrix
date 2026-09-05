@@ -9,8 +9,10 @@ add_definitions(-DDEV_MODE)
 # operator_t holds intrusive pointers to them.
 set(${PROJECT_NAME}_SOURCES
         test_operator_error_residency.cpp
+        test_operator_raw_data_resource.cpp
         ../operators/operator.cpp
         ../operators/operator_data.cpp
+        ../operators/operator_raw_data.cpp
         ../operators/operator_write_data.cpp
 )
 

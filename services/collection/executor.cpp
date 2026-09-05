@@ -1254,10 +1254,42 @@ namespace services::collection::executor {
             case node_type::alter_table_t: {
                 // ADD COLUMN writes a column type into the durable catalog exactly like
                 // CREATE TABLE does — gate it on the same persistable-type predicate. The
-                // SQL surface cannot spell a non-encodable type today (CREATE TYPE gates
+                // SQL surface cannot spell a non-encodable TYPE today (CREATE TYPE gates
                 // its own depth), so this is the last line of defence for host-built
                 // plans: without it the statement reported SUCCESS over a type the
-                // durable form refuses.
+                // durable form refuses. Nothing downstream can say it either: the operator
+                // writes only the flat-text catalog spec (catalog::encode_type_spec returns
+                // a string and owns no error channel), and the binary form that does refuse
+                // — types::encode_type_spec, the checkpoint and WAL-header codec this gate
+                // asks — is not reached until long after the statement answered SUCCESS. So
+                // this loop is the only place that can refuse, and it walks EVERY
+                // subcommand, not subcommands().front().
+                //
+                // THE TYPE, AND ONLY THE TYPE — and unlike the type, the DEFAULT half is
+                // spelled by ordinary SQL every day. The create_collection_t arm above
+                // pairs its gate_persistable_type loop with convert_column_defaults, which
+                // CASTS each DEFAULT to its column's type and rewrites the value in place;
+                // there is no such leg here, so `ADD COLUMN c integer DEFAULT 7` still
+                // carries the BIGINT that numeric_literal_value's T_Integer arm produced.
+                // Casting it would mean rewriting the subcommand, and
+                // node_alter_table_t::subcommands() hands out a const reference
+                // (components/logical_plan/node_alter_table.hpp:60).
+                //
+                // What keeps that divergence out of the catalog is therefore NOT here but
+                // one layer down, per clause: rewrite_alter_table lowers every subcommand
+                // into its own operator_alter_column_add_t, and that operator refuses on
+                // default-vs-column type inequality before its first catalog write
+                // (alter_column_validators::validate_default_value_type, called from
+                // components/physical_plan/operators/operator_alter_column_add.cpp:51).
+                // That refusal is load-bearing rather than a duplicate of the codec check
+                // below it: attdefspec is type-directed and carries no type tag, so decode
+                // catches a WIDTH divergence (a BIGINT default read back as INTEGER is
+                // data_corruption) and silently accepts a same-width one (BIGINT read back
+                // as TIMESTAMP). Restating the rule here would be a second authority free
+                // to drift from it, so what is left standing is a PARITY gap — a DEFAULT
+                // spelling CREATE TABLE accepts is refused by ALTER — pinned by
+                // services/dispatcher/tests/test_wave_exec_dispatcher.cpp,
+                // "alter_add_column_default_type_divergence_is_refused".
                 const auto* alter_node =
                     static_cast<const components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
                 for (const auto& cmd : alter_node->subcommands()) {

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -18,6 +19,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/oid_batch.hpp>
+#include <components/catalog/system_table_schemas.hpp>
 #include <components/compute/function.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
@@ -542,4 +544,107 @@ TEST_CASE("services::dispatcher::wave4::create_index_refuses_a_taken_name") {
     }
     // A fresh name still works.
     REQUIRE(test.execute_sql("CREATE INDEX idx2 ON cdi.t (b);")->is_success());
+}
+
+// ===== ЗАПИСЬ: DEFAULT У ALTER TABLE ... ADD COLUMN =====
+// CHARACTERIZATION, not a repair. The entry read: "ALTER ADD COLUMN does not run its
+// DEFAULT through a cast to the column's type, while CREATE TABLE does". Half of that is
+// true and the harmful half is not, and the split is what this test pins by EXECUTION:
+//
+//   * CREATE TABLE really does cast. `c integer DEFAULT 7` writes INTEGER 7 although the
+//     literal 7 is BIGINT (numeric_literal_value's T_Integer arm), because
+//     executor.cpp:1093-1102 hands the column list to convert_column_defaults, which
+//     resolves an assignment cast and REPLACES the stored value.
+//   * ALTER TABLE ADD COLUMN really has no such leg — executor.cpp:1254-1306 gates the
+//     column TYPE and nothing else. BUT the divergence is not accepted either: it is
+//     REFUSED, loudly and before the first catalog write, by
+//     catalog::alter_column_validators::validate_default_value_type, called from
+//     operator_alter_column_add.cpp:51. So a divergently-typed default is never
+//     persisted, and there is no wrong answer to read back. The entry's DEFECT does not
+//     exist; what remains is a PARITY gap between two spellings of the same DEFAULT.
+//
+// Closing that gap means casting the subcommand's default IN PLACE, which needs mutating
+// access to node_alter_table_t::subcommands() (node_alter_table.hpp:60) — not a line of
+// this PR, so the gap is pinned here rather than closed.
+//
+// The last section is why the refusal has to survive any future cast: attdefspec is a
+// TYPE-DIRECTED codec with no type tag of its own (logical_value_binary_codec.hpp:928,
+// read_typed_value), so it catches a WIDTH divergence and cannot catch a SAME-WIDTH one.
+// Neither arm asserts, so Debug and NDEBUG give the same answer.
+TEST_CASE("services::dispatcher::wave4::alter_add_column_default_type_divergence_is_refused") {
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    wave_fixture test(mr.get(), wave_dir("alter_add_default_type"));
+
+    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+
+    // --- CREATE TABLE leg: the cast happens, and the stored default is the COLUMN's type.
+    REQUIRE(test.execute_sql("CREATE TABLE db.created (a bigint, c integer DEFAULT 7);")->is_success());
+    REQUIRE(test.execute_sql("INSERT INTO db.created (a) VALUES (1);")->is_success());
+    {
+        auto cur = test.execute_sql("SELECT c FROM db.created;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const auto v = cur->value(0, 0);
+        REQUIRE_FALSE(v.is_null());
+        // INTEGER, not the BIGINT the literal started as: convert_column_defaults ran.
+        CHECK(v.type().type() == logical_type::INTEGER);
+        CHECK(v.value<int32_t>() == 7);
+    }
+
+    // --- ALTER leg, TYPES AGREE: this is the control. ADD COLUMN with a DEFAULT is not
+    // refused as such — the write path expands it for a row inserted without the column.
+    REQUIRE(test.execute_sql("CREATE TABLE db.agree (a bigint);")->is_success());
+    REQUIRE(test.execute_sql("ALTER TABLE db.agree ADD COLUMN c bigint DEFAULT 7;")->is_success());
+    REQUIRE(test.execute_sql("INSERT INTO db.agree (a) VALUES (1);")->is_success());
+    {
+        auto cur = test.execute_sql("SELECT a, c FROM db.agree;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const auto v = cur->value(1, 0);
+        REQUIRE_FALSE(v.is_null());
+        CHECK(v.type().type() == logical_type::BIGINT);
+        CHECK(v.value<int64_t>() == 7);
+    }
+
+    // --- ALTER leg, TYPES DIVERGE: the ONLY difference from the control above is the
+    // declared column type. Refused, and nothing is written.
+    REQUIRE(test.execute_sql("CREATE TABLE db.diverge (a bigint);")->is_success());
+    {
+        auto cur = test.execute_sql("ALTER TABLE db.diverge ADD COLUMN c integer DEFAULT 7;");
+        REQUIRE(cur->is_error());
+        CHECK(mentions(cur->get_error(), "default value type mismatch"));
+    }
+    {
+        // The refusal landed before the first catalog mutation: no half-added column.
+        auto cur = test.execute_sql("SELECT c FROM db.diverge;");
+        CHECK(cur->is_error());
+    }
+
+    // --- Why the refusal cannot be dropped in favour of "the codec will notice".
+    // attdefspec carries no type tag; decode reads the payload AGAINST the column type.
+    {
+        const components::types::logical_value_t bigint_seven{mr.get(), static_cast<int64_t>(7)};
+        std::string spec;
+        REQUIRE_FALSE(components::catalog::encode_default_spec(mr.get(), bigint_seven, spec).contains_error());
+
+        // Widths differ (8 vs 4) — the trailing bytes are what gives it away.
+        std::optional<components::types::logical_value_t> as_integer;
+        auto ec_int = components::catalog::decode_default_spec(mr.get(),
+                                                               complex_logical_type{logical_type::INTEGER},
+                                                               spec,
+                                                               as_integer);
+        CHECK(ec_int.contains_error());
+
+        // Widths AGREE (int64 both) — the codec reads it happily as the wrong type, with
+        // no assert to lose under NDEBUG. Only validate_default_value_type stands between
+        // this and a persisted `timestamp DEFAULT 7`.
+        std::optional<components::types::logical_value_t> as_timestamp;
+        auto ec_ts = components::catalog::decode_default_spec(mr.get(),
+                                                              complex_logical_type{logical_type::TIMESTAMP},
+                                                              spec,
+                                                              as_timestamp);
+        REQUIRE_FALSE(ec_ts.contains_error());
+        REQUIRE(as_timestamp.has_value());
+        CHECK(as_timestamp->type().type() == logical_type::TIMESTAMP);
+    }
 }

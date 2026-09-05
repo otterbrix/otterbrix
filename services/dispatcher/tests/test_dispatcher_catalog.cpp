@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include <services/dispatcher/dispatcher.hpp>
@@ -355,6 +356,12 @@ TEST_CASE("services::dispatcher::computed_operations") {
 
 namespace {
 
+    // Same shape as test_wave_exec_dispatcher.cpp's wave_dir: ::getpid() in the path so two
+    // ctest shards (or two build directories) never boot a catalog out of each other's files.
+    std::string catalog_dir(const char* leaf) {
+        return "/tmp/test_dispatcher_catalog_" + std::to_string(::getpid()) + "/" + leaf;
+    }
+
     // Write one pg_constraint row (+ its pg_depend rows) for a UNIQUE constraint
     // on `key_attoids` of `table_oid`. `conkey_text` replaces the encoded column
     // list, and a non-null `contype_text` replaces the constraint-kind code.
@@ -441,7 +448,7 @@ namespace {
 // enforcing a constraint the user never wrote, and saying so in the user's face.
 TEST_CASE("services::dispatcher::conkey_csv::a_conkey_truncated_at_a_comma_is_not_a_narrower_key") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_conkey_truncated");
+    test_dispatcher test(mr.get(), catalog_dir("conkey_truncated"));
     const auto planted = create_two_column_table(test);
 
     plant_unique_constraint_row(test,
@@ -475,7 +482,7 @@ TEST_CASE("services::dispatcher::conkey_csv::a_conkey_truncated_at_a_comma_is_no
 // silently becomes a key on the neighbouring column, and duplicate `id`s walk in.
 TEST_CASE("services::dispatcher::conkey_csv::an_out_of_range_conkey_does_not_bind_the_key_to_another_column") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_conkey_out_of_range");
+    test_dispatcher test(mr.get(), catalog_dir("conkey_out_of_range"));
     const auto planted = create_two_column_table(test);
 
     const std::string shifted =
@@ -508,7 +515,7 @@ TEST_CASE("services::dispatcher::conkey_csv::an_out_of_range_conkey_does_not_bin
 // silence as a dropped conkey group, one step earlier in the same loop.
 TEST_CASE("services::dispatcher::conkey_csv::a_constraint_row_of_unknown_kind_is_not_skipped") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_conkey_unknown_kind");
+    test_dispatcher test(mr.get(), catalog_dir("conkey_unknown_kind"));
     const auto planted = create_two_column_table(test);
 
     // A perfectly readable key column list — only the KIND of the constraint is

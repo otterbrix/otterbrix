@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <unistd.h>
 
 #include <services/dispatcher/dispatcher.hpp>
 
@@ -46,6 +47,12 @@ using components::types::complex_logical_type;
 using components::types::logical_type;
 
 namespace {
+
+    // Same shape as test_wave_exec_dispatcher.cpp's wave_dir: ::getpid() in the path so two
+    // ctest shards (or two build directories) never boot a catalog out of each other's files.
+    std::string admin_dir(const char* leaf) {
+        return "/tmp/test_dispatcher_admin_errors_" + std::to_string(::getpid()) + "/" + leaf;
+    }
 
     const std::string& scrubbed(const std::string& path) {
         std::error_code ec;
@@ -228,7 +235,7 @@ private:
 TEST_CASE("services::dispatcher::admin_errors::register_udf_duplicate_keeps_executor_error") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    admin_fixture test(mr.get(), "/tmp/test_dispatcher_admin_udf_dup");
+    admin_fixture test(mr.get(), admin_dir("udf_dup"));
 
     const std::string fname = "admin_probe_dup";
     {
@@ -254,7 +261,7 @@ TEST_CASE("services::dispatcher::admin_errors::register_udf_duplicate_keeps_exec
 TEST_CASE("services::dispatcher::admin_errors::cast_refusals_are_distinguishable") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    admin_fixture test(mr.get(), "/tmp/test_dispatcher_admin_cast_reasons");
+    admin_fixture test(mr.get(), admin_dir("cast_reasons"));
 
     // (a) unregistering a cast that was never registered.
     {
@@ -303,7 +310,7 @@ TEST_CASE("services::dispatcher::admin_errors::cast_refusals_are_distinguishable
 TEST_CASE("services::dispatcher::admin_errors::set_explain_renderer_refusals_named") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    admin_fixture test(mr.get(), "/tmp/test_dispatcher_admin_renderer");
+    admin_fixture test(mr.get(), admin_dir("renderer"));
 
     // A slot id past the registry limit and a null renderer are both refused by every
     // executor; the dispatcher must say which door closed instead of answering `false`.
@@ -337,7 +344,7 @@ TEST_CASE("services::dispatcher::admin_errors::set_explain_renderer_refusals_nam
 TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_keeps_pg_proc") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    admin_fixture test(mr.get(), "/tmp/test_dispatcher_admin_unreg_refusal");
+    admin_fixture test(mr.get(), admin_dir("unreg_refusal"));
 
     const std::string fname = "admin_probe_orphan";
     // The process-global default registry (what operator_unregister_udf_t probes) knows the
@@ -373,7 +380,7 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_k
 TEST_CASE("services::dispatcher::admin_errors::unregister_cast_success_removes_pg_cast_row") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    admin_fixture test(mr.get(), "/tmp/test_dispatcher_admin_unreg_cast");
+    admin_fixture test(mr.get(), admin_dir("unreg_cast"));
 
     {
         auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_cast,
@@ -401,7 +408,7 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_cast_success_removes_p
 TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transaction_is_refused") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    admin_fixture test(mr.get(), "/tmp/test_dispatcher_admin_accumulate");
+    admin_fixture test(mr.get(), admin_dir("accumulate"));
 
     // A session that never began a transaction. The payload below is a whole statement's
     // worth of parked work: base-table insert and delete ranges, catalog row ranges, storage

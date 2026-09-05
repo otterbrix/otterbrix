@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include <services/dispatcher/dispatcher.hpp>
@@ -78,6 +79,12 @@ using components::types::logical_type;
 namespace {
 
     namespace catalog = components::catalog;
+
+    // Same shape as test_wave_exec_dispatcher.cpp's wave_dir: ::getpid() in the path so two
+    // ctest shards (or two build directories) never boot a catalog out of each other's files.
+    std::string oid_alloc_dir(const char* leaf) {
+        return "/tmp/test_oid_alloc_operator_refusal_" + std::to_string(::getpid()) + "/" + leaf;
+    }
 
     // A run that dies before its destructor leaves its disk directory behind, and the next run
     // would boot its catalog from those files. Clearing on the way IN as well as OUT makes the
@@ -384,7 +391,7 @@ namespace {
 TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_udf_refuses_when_the_round_delivers_nothing") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    oid_round_fixture test(mr.get(), "/tmp/test_oid_round_register_udf");
+    oid_round_fixture test(mr.get(), oid_alloc_dir("register_udf"));
 
     oid_alloc_fault_scope_t fault;
 
@@ -448,7 +455,7 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_udf_refuse
 TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refuses_when_the_round_delivers_nothing") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    oid_round_fixture test(mr.get(), "/tmp/test_oid_round_register_cast");
+    oid_round_fixture test(mr.get(), oid_alloc_dir("register_cast"));
 
     constexpr auto source_oid = catalog::well_known_oid::boolean_type;
     constexpr auto target_ok_oid = catalog::well_known_oid::date_type;
@@ -523,7 +530,7 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refus
 TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::alter_add_column_refuses_when_the_round_delivers_nothing") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    oid_round_fixture test(mr.get(), "/tmp/test_oid_round_alter_add_column");
+    oid_round_fixture test(mr.get(), oid_alloc_dir("alter_add_column"));
 
     // CREATE DATABASE answers an empty cursor rather than a success one, so it is asserted
     // for the absence of an error; CREATE TABLE does report success.

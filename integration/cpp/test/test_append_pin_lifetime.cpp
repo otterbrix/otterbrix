@@ -3,27 +3,21 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_data.hpp>
+#include <components/vector/indexing_vector.hpp>
 #include <string>
 
-// The append state's pin outlives the block it points at.
+// No segment may be swapped for its disk-backed twin while anybody still pins its block.
 //
-// While a column is being appended to, column_append_state holds a buffer_handle_t pinning the
-// current segment's block. When that segment fills, column_data_t::append_data creates the next
-// segment and then calls transition_segment_to_disk on the filled one, which ends with
-// replace_segment_at_index — dropping the old column_segment_t and with it the block_handle_t the
-// append state is still pointing at. The stale buffer_handle_t is only replaced a few lines later by
-// initialize_append, and its destructor unpins through the freed pointer.
-//
-// transition_segment_to_disk releases its OWN pin before the swap for exactly this reason. It
-// cannot release the caller's, and nothing else does.
-//
-// It survives today only because the freed block_handle_t is not immediately reused: luck, not a
-// guarantee, and the more eagerly the pool reclaims memory the less of that luck is left.
+// transition_segment_to_disk ends with replace_segment_at_index: the old column_segment_t dies, and
+// with it the block_handle_t that a still-live buffer_handle_t (an append state's, a scan's) would
+// unpin through. The function releases its OWN pin before the swap; the DEV_MODE counter pair sits
+// at the swap itself and watches for everybody else's — every transition, whether from the append
+// fill path or from the row-group-close write-through, funnels through that one swap.
 //
 // The counter is checked instead of relying on a sanitizer: the DEV_MODE build is what CI runs, and
 // ASAN on macOS is blind inside the pmr pool anyway.
 //
-// Hidden by default ([.]) because it writes enough rows to fill and transition several segments.
+// Hidden by default ([.]) because it writes enough rows to close many row groups.
 // Run it with [appendpin].
 
 TEST_CASE("integration::cpp::test_append_pin_lifetime::no_transition_happens_under_a_live_pin", "[.][appendpin]") {
@@ -62,9 +56,12 @@ TEST_CASE("integration::cpp::test_append_pin_lifetime::no_transition_happens_und
 
     const auto offending = components::table::transitions_with_live_pin();
     const auto total = components::table::segment_transitions();
-    WARN("on-fill transitions: " << total << ", of them under a live append pin: " << offending);
-    // Positive control: zero offending transitions out of zero transitions proves nothing.
-    REQUIRE(total > 0);
+    WARN("transitions to disk: " << total << ", of them under a live pin: " << offending);
+    // Positive control: zero offending transitions out of zero transitions proves nothing. Row
+    // groups default to DEFAULT_VECTOR_CAPACITY rows; all but perhaps the last have closed, and
+    // each close re-points at least the three data-column segments.
+    constexpr uint64_t kClosedGroupsFloor = kRows / components::vector::DEFAULT_VECTOR_CAPACITY - 1;
+    REQUIRE(total >= kClosedGroupsFloor * 3);
     CHECK(offending == 0);
 
     // The data must be intact either way — this is a lifetime defect, not a data one, so a green

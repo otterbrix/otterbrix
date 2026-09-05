@@ -368,17 +368,6 @@ namespace components::table {
                 // Write the now-complete segment through to the data file and swap it for a disk-backed,
                 // evictable+reloadable segment (disk tables only; no-op for in-memory). A write/alloc failure
                 // surfaces as io_error/out_of_memory and aborts the append cleanly.
-#ifdef DEV_MODE
-                // Does the append state's pin on the filled segment's block outlive the handoff to
-                // the swap below? See transition_segment_to_disk for why that is fatal.
-                {
-                    auto* filled = data_.segment_at(l, static_cast<int64_t>(filled_index));
-                    g_segment_transitions.fetch_add(1, std::memory_order_relaxed);
-                    if (filled && filled->block && filled->block->readers() > 0) {
-                        g_transitions_with_live_pin.fetch_add(1, std::memory_order_relaxed);
-                    }
-                }
-#endif
                 auto transitioned = transition_segment_to_disk(l, filled_index, pbm);
                 if (transitioned.has_error()) {
                     return transitioned;
@@ -747,6 +736,13 @@ namespace components::table {
         // Releasing our own pin above does not cover anybody else's: the append state holds a
         // buffer_handle_t on this same block across the whole call, and the swap below frees the
         // block_handle_t it points at.
+#ifdef DEV_MODE
+        // Every transition funnels through this swap; a reader still on the block dies with it.
+        g_segment_transitions.fetch_add(1, std::memory_order_relaxed);
+        if (segment->block && segment->block->readers() > 0) {
+            g_transitions_with_live_pin.fetch_add(1, std::memory_order_relaxed);
+        }
+#endif
         data_.replace_segment_at_index(l, segment_index, std::move(new_segment));
         return true;
     }

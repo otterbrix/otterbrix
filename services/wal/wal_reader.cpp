@@ -23,7 +23,9 @@ namespace services::wal {
     // 2. For each, read all segment files via wal_page_reader_t.
     // 3. filter_committed_records: keep a physical record only when a COMMIT marker for
     //    its txn id sits at a STRICTLY GREATER wal id (txn ids are recycled across restarts).
-    // 4. Merge all databases, sort by wal_id ascending.
+    // 4. Export the surviving markers' COMMIT IDS into committed_out (the index txn-log
+    //    recover gate's set -- see the declaration for why it is commit ids and not txn ids).
+    // 5. Merge all databases, sort by wal_id ascending.
     // -----------------------------------------------------------------------
 
     core::result_wrapper_t<std::vector<record_t>>
@@ -58,7 +60,7 @@ namespace services::wal {
             }
             trace(log_, "wal_reader::read_committed_records , scanning database '{}'", db_name);
 
-            // committed_out collects the union of committed txn ids across all
+            // committed_out collects the union of committed COMMIT IDS across all
             // databases (read_database_segments inserts this db's ids into it).
             auto db_records = read_database_segments(entry.path(), after_wal_id, committed_out);
             if (db_records.has_error()) {
@@ -169,14 +171,35 @@ namespace services::wal {
             }
         }
 
-        // Keep only records belonging to committed transactions, and export this
-        // database's committed txn ids into the caller's union set. Both are done by the
-        // SHARED filter (filter_committed_records, wal.hpp) that wal_worker_t::load also
-        // applies — a second, independently written copy of the rule here drifts into
-        // testing membership in an unordered set of committed txn ids. Txn ids are
-        // recycled across restarts, so that test promotes uncommitted records of the
-        // CURRENT incarnation on the strength of a COMMIT marker from a PREVIOUS one.
-        return filter_committed_records(std::move(all_records), committed_out);
+        // Keep only records belonging to committed transactions. The rule is the SHARED
+        // filter (filter_committed_records, wal.hpp) that wal_worker_t::load also applies — a
+        // second, independently written copy of it here drifts into testing membership in an
+        // unordered set of committed txn ids. Txn ids are recycled across restarts, so that
+        // test promotes uncommitted records of the CURRENT incarnation on the strength of a
+        // COMMIT marker from a PREVIOUS one.
+        auto committed = filter_committed_records(std::move(all_records), nullptr);
+
+        // AND THE EXPORT IS TAKEN FROM THE FILTERED RESULT, NOT FROM THE FILTER'S OWN
+        // committed_out. That parameter answers in TXN IDS, and a txn id cannot identify a
+        // transaction across a restart — the index txn-log recover gate that consumes this set
+        // was applying frames of the CURRENT incarnation's uncommitted transactions on the
+        // strength of a marker an EARLIER one wrote under the recycled id. So nullptr is passed
+        // above and the COMMIT IDS are read off the markers here: filter_committed_records keeps
+        // every valid COMMIT marker in its result, and a marker's commit_id is issued at most
+        // once in the life of the database (restore_commit_clock re-derives the clock from the
+        // durable frontier at every reopen, unlike next_transaction_id_).
+        //
+        // ZERO IS NOT A COMMIT ID — the clock starts at 1 — so a marker carrying zero says
+        // nothing about any transaction and is not exported; the gate refuses a zero-stamped
+        // frame on its own side as well, so neither half depends on the other for it.
+        if (committed_out != nullptr) {
+            for (const auto& r : committed) {
+                if (r.is_commit_marker() && r.commit_id != 0) {
+                    committed_out->insert(r.commit_id);
+                }
+            }
+        }
+        return std::move(committed);
     }
 
 } // namespace services::wal

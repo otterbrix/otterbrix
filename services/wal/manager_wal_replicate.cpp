@@ -537,7 +537,7 @@ namespace services::wal {
                     auto_checkpoint_in_flight_ = true;
                     reset_auto_checkpoint_bytes();
                     auto [_ac, ac_fut] =
-                        actor_zeta::send(address(), &manager_wal_replicate_t::run_auto_checkpoint, session);
+                        actor_zeta::otterbrix::send(address(), &manager_wal_replicate_t::run_auto_checkpoint, session);
                     // needs_sched is always false: enqueue_impl only pushes to inbox_ and
                     // wakes the loop (no scheduler hop). Park the [[nodiscard]] future;
                     // the loop drains it once ready (poll_auto_checkpoint_).
@@ -670,8 +670,9 @@ namespace services::wal {
         //         taken before step (c2)'s rebuild clears and re-creates the stores (see
         //         operator_checkpoint.cpp for the measurement).
         if (manager_index_ != actor_zeta::address_t::empty_address()) {
-            auto [_fi, fi_fut] =
-                actor_zeta::send(manager_index_, &services::index::manager_index_t::flush_all_indexes, session);
+            auto [_fi, fi_fut] = actor_zeta::otterbrix::send(manager_index_,
+                                                             &services::index::manager_index_t::flush_all_indexes,
+                                                             session);
             // A refusal is logged rather than propagated, for the same reason the rebuild
             // refusal below is: nothing above this frame is a statement that could carry it.
             // But the round STOPS here — the truncate in (d) would otherwise drop the WAL
@@ -709,17 +710,17 @@ namespace services::wal {
         uint64_t compact_watermark = 0;
         if (manager_dispatcher_ != actor_zeta::address_t::empty_address()) {
             auto [_wm, wm_fut] =
-                actor_zeta::send(manager_dispatcher_,
-                                 &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
+                actor_zeta::otterbrix::send(manager_dispatcher_,
+                                            &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
             compact_watermark = co_await std::move(wm_fut);
         }
 
         // (c) checkpoint_all returns the wal id up to which storage is now durable.
-        auto [_cp, cp_fut] = actor_zeta::send(manager_disk_,
-                                              &services::disk::manager_disk_t::checkpoint_all,
-                                              session,
-                                              wal_max_id,
-                                              compact_watermark);
+        auto [_cp, cp_fut] = actor_zeta::otterbrix::send(manager_disk_,
+                                                         &services::disk::manager_disk_t::checkpoint_all,
+                                                         session,
+                                                         wal_max_id,
+                                                         compact_watermark);
         const wal::id_t checkpoint_wal_id = co_await std::move(cp_fut);
 
         // (c2) INDEX REBUILD, without which the round silently invalidates every index of every

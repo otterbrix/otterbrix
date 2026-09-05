@@ -324,8 +324,10 @@ namespace components::operators {
         }
         void clear(); //todo: replace by copy
 
+        // One entry point, by const reference: it rebuilds the message on this operator's
+        // resource (core::error_on), so handing it an rvalue would save nothing and an
+        // &&-overload could only reintroduce the producer-arena adoption it exists to stop.
         void set_error(const core::error_t& error);
-        void set_error(core::error_t&& error);
         bool has_error() const noexcept;
         const core::error_t& get_error() const noexcept;
 

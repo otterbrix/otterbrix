@@ -100,6 +100,16 @@ namespace core {
                    "no error state of error_t can only be created using no_error() constructor");
         }
 
+        // NB (allocator residency): neither assignment decides WHERE the message lives, and
+        // neither can — an error_t carries no resource beyond its string's own allocator, and
+        // the destination may still be a no_error() anchored on null_memory_resource, which is
+        // why both reconstruct instead of assigning. The consequences are therefore fixed:
+        //   - copy  -> std::pmr::string's copy constructor, which does NOT propagate the
+        //              allocator, so the new buffer lands on the DEFAULT resource;
+        //   - move  -> std::pmr::string's move constructor, which keeps the SOURCE allocator,
+        //              so this object starts pointing into an arena it does not own.
+        // An owner that HAS a resource (cursor_t, operator_t) must therefore never assign a
+        // foreign error_t directly: it rebuilds through error_on() below. See its comment.
         error_t& operator=(const error_t& other) {
             type = other.type;
             reconstruct_string(other.what);
@@ -137,6 +147,26 @@ namespace core {
         }
     };
 
+    // THE one place that decides where an error message lives.
+    //
+    // Every owner that has a resource of its own — a cursor, an operator — funnels a foreign
+    // error_t through here instead of copying or moving it, because neither of error_t's own
+    // paths puts the message on the owner's arena: a copy lands on the default resource, a
+    // move keeps the producer's (see the note on error_t's assignments). Both are a lie in the
+    // same contract, in opposite directions; this rebuilds the string on `resource` so the
+    // answer is simply "the owner's".
+    [[nodiscard]] inline error_t error_on(std::pmr::memory_resource* resource, const error_t& error) {
+        assert(resource != nullptr && "an error message needs a resource to live on");
+        if (!error.contains_error()) {
+            return error_t::no_error();
+        }
+        error_t rebuilt{error.type, std::pmr::string{error.what, resource}};
+#if not defined(NDEBUG)
+        rebuilt.error_origin = error.error_origin;
+#endif
+        return rebuilt;
+    }
+
     // has implicit constructors to simplify usage
     template<typename T>
     requires(!std::is_same_v<std::decay<T>, error_t> && !std::is_same_v<T, void>) class [[nodiscard]] result_wrapper_t {
@@ -150,6 +180,13 @@ namespace core {
             : value_(std::forward<Args>(args)...)
             , error_(error_t::no_error()) {}
 
+        // DEBT (allocator residency): these two cannot call error_on() — a result_wrapper_t
+        // has no resource of its own, only a value and an error, so there is no arena here to
+        // name. The first therefore leaves the message on the DEFAULT resource and the second
+        // keeps the producer's. Both are corrected at the first owner that does have a
+        // resource: cursor_t's error constructors and operator_t::set_error rebuild through
+        // core::error_on. Giving result_wrapper_t a resource of its own is the real fix and is
+        // a separate change — it touches every construction site of every result_wrapper_t.
         result_wrapper_t(const error_t& error)
             : error_(error) {}
         result_wrapper_t(error_t&& error)
@@ -173,7 +210,12 @@ namespace core {
 
         result_wrapper_t& operator=(result_wrapper_t&& other) noexcept requires(std::is_move_assignable_v<T>) {
             value_ = std::move(other.value_);
-            error_ = other.error_;
+            // MOVE the error, do not copy it: `other` is being consumed, and a copy here
+            // reallocates the message onto the default resource, which is neither wrapper's
+            // arena. The NDEBUG branch below is `= default` and has always moved; this line
+            // read `other.error_` and so made Debug and Release disagree on where the message
+            // of a moved-from result lives.
+            error_ = std::move(other.error_);
             error_checked_ = false;
             other.error_checked_ = true;
             return *this;

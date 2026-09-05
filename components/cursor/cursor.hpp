@@ -49,7 +49,10 @@ namespace components::cursor {
 
         bool is_success() const noexcept;
         bool is_error() const noexcept;
-        core::error_t get_error() const;
+        // A reference, not a copy: callers read the error more than once in a single
+        // expression (begin() from one read, end() from another). Handing back a fresh
+        // error_t per call made those two reads land on two unrelated buffers.
+        const core::error_t& get_error() const noexcept;
 
     private:
         // Result rows as a batch of ≤DEFAULT_VECTOR_CAPACITY chunks (never combined into

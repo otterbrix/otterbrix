@@ -47,8 +47,11 @@ namespace components::operators {
 
     void operator_t::set_output(operator_data_ptr data) { output_ = std::move(data); }
 
-    void operator_t::set_error(const core::error_t& error) { error_ = error; }
-    void operator_t::set_error(core::error_t&& error) { error_ = std::move(error); }
+    // An operator's error message lives on the operator's resource, exactly like every other
+    // buffer it owns. `error_ = error` would have left it on the default resource and
+    // `error_ = std::move(error)` inside the producer's arena; there is one entry point and it
+    // rebuilds, so an rvalue argument gains nothing and the &&-overload is gone.
+    void operator_t::set_error(const core::error_t& error) { error_ = core::error_on(resource_, error); }
     bool operator_t::has_error() const noexcept { return error_.contains_error(); }
     const core::error_t& operator_t::get_error() const noexcept { return error_; }
 

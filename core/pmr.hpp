@@ -7,7 +7,23 @@
 
 namespace core::pmr {
 
+// Under ASAN the pool has to go: a pooled resource hands out sub-blocks of one big
+// allocation, so an overflow from one object into the next stays inside a block ASAN
+// considers live and is never reported. resource_tracer_t forwards every request to
+// new_delete_resource, which gives ASAN one redzoned block per object.
+//
+// __SANITIZE_ADDRESS__ is GCC's spelling and _ADDRESS_SANITIZER is MSVC's; clang defines
+// neither and answers __has_feature(address_sanitizer) instead. Without that arm an ASAN
+// build on clang silently kept the pool, and a clean run there proved nothing.
 #if defined(__SANITIZE_ADDRESS__) || defined(_ADDRESS_SANITIZER)
+#    define OTTERBRIX_ADDRESS_SANITIZER 1
+#elif defined(__has_feature)
+#    if __has_feature(address_sanitizer)
+#        define OTTERBRIX_ADDRESS_SANITIZER 1
+#    endif
+#endif
+
+#if defined(OTTERBRIX_ADDRESS_SANITIZER)
     using otterbrix_resource = resource_tracer_t;
 #else
     using otterbrix_resource = std::pmr::synchronized_pool_resource;

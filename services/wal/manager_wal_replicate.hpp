@@ -241,7 +241,14 @@ namespace services::wal {
         // Retention guard: build_start_wal_position of every in-flight CREATE
         // INDEX backfill. truncate_before clamps to min(this set) so concurrent
         // catchup never misses a truncated record. Empty => no clamp.
-        std::pmr::set<wal::id_t> active_build_start_positions_{resource_};
+        //
+        // A MULTISET, and that is load-bearing: register/unregister arrive in PAIRS, one per
+        // build, and two concurrent builds can legitimately start at the SAME wal position. A
+        // deduplicating set collapsed those into one entry — the first unregister released the
+        // clamp while the second build still needed it (truncate could then unlink the very
+        // segments its catchup reads), and the second unregister found nothing to erase and
+        // aborted the process.
+        std::pmr::multiset<wal::id_t> active_build_start_positions_{resource_};
 
         // Parks the fire-and-forget future of the commit_txn -> run_auto_checkpoint
         // self-send. The loop drains ready entries (poll_auto_checkpoint_). Mirrors

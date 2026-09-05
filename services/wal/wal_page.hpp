@@ -95,19 +95,13 @@ namespace services::wal {
         /// Compute CRC32 over the full page (PAGE_SIZE bytes starting at page_data).
         /// The checksum field within the header is zeroed during computation.
         void compute_checksum(char* page_data) {
-            // Zero the checksum field before computing.
-            // checksum lives at offset 24 within the header (8+8+4+4+2 = 26... let's compute).
-            // Actually we store checksum in this struct, which is at the start of the page.
-            // Offset of checksum within wal_page_header_t:
-            //   page_lsn(8) + page_end_lsn(8) + num_records(4) + data_size(4) + flags(2) = 26
-            uint32_t saved = checksum;
+            // The CRC covers the whole page with the checksum field zeroed, so zero it, copy
+            // the header into the page, compute, and write the final value into both the
+            // struct and the page buffer.
             checksum = 0;
-            // Write header to page buffer so CRC covers the zeroed checksum
             std::memcpy(page_data, this, PAGE_HEADER_SIZE);
             checksum = compute_page_crc(page_data);
-            // Write final checksum back to page buffer
             std::memcpy(page_data + offsetof(wal_page_header_t, checksum), &checksum, sizeof(checksum));
-            (void) saved;
         }
 
         /// Verify the checksum of the full page.
@@ -127,10 +121,5 @@ namespace services::wal {
     };
 
     static_assert(sizeof(wal_page_header_t) == 32, "page header must be 32 bytes");
-
-    /// Result of seek_to_lsn.
-    struct wal_page_position_t {
-        size_t page_index{0};
-    };
 
 } // namespace services::wal

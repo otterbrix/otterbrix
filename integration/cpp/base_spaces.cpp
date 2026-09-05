@@ -783,6 +783,24 @@ namespace otterbrix {
         // they are never mis-judged invisible. Mirror restore_oid_generator_sync:
         // single-threaded bootstrap (schedulers not started), a one-time direct
         // call, not ongoing cross-actor sharing.
+        // THE MAX OVER *REPLAYED* MARKERS IS THE RIGHT BOUND, AND THE PARALLEL WITH THE ID
+        // ALLOCATOR IS FALSE. The wal-id allocator had to be re-derived from the FILES
+        // (page headers past a CRC break) because ids past a break are durable and
+        // reachable — reissuing one collides with a record still on disk. A commit id past
+        // a break is the opposite: it is OBSERVABLE NOWHERE in the reopened state. The
+        // reopened state's commit ids live in exactly three places, and each is covered:
+        //   * pg_attribute added_at/dropped_at — scanned DIRECTLY from the checkpointed
+        //     catalog by max_persisted_commit_id_sync(), break-independent;
+        //   * rows re-applied by replay — stamped transaction_data{0,0} (committed-for-
+        //     everyone; see the bypass note above), they carry NO commit id;
+        //   * checkpointed .otbx rows — row-group version info is NOT persisted (a loaded
+        //     row group starts with null version_info, visible-to-all), so they carry none
+        //     either.
+        // Records past a break are applied nowhere (STOP-A), and their txn ids are equally
+        // absent from committed_txn_ids, so the index recover gate agrees. Raising the
+        // clock over ids that exist in no observable row would also be unfounded: reading
+        // them means decoding past the break, which no reader does. If the segment is later
+        // repaired, THAT start replays the markers and raises the clock then.
         if (disk_ptr) {
             uint64_t reopen_frontier = disk_ptr->max_persisted_commit_id_sync();
             for (const auto& r : wal_records) {
@@ -884,12 +902,31 @@ namespace otterbrix {
             try {
                 auto session = components::session::session_id_t();
                 auto checkpoint_node = components::logical_plan::make_node_checkpoint(&resource);
-                wrapper_dispatcher_->execute_plan(
+                // THE CURSOR IS THE STATEMENT'S ERROR CHANNEL, and it used to be dropped on
+                // the floor here — with the catch below swallowing whatever threw instead. A
+                // failed final checkpoint is the difference between "the next start replays a
+                // journal" and "the next start replays nothing"; a destructor has no caller
+                // to answer, so the error log is the loudest honest channel it has.
+                auto cursor = wrapper_dispatcher_->execute_plan(
                     session,
                     components::logical_plan::execution_plan_t{&resource, checkpoint_node, nullptr});
-                trace(log_, "delete spaces: checkpoint complete");
+                if (!cursor) {
+                    error(log_,
+                          "delete spaces , the shutdown checkpoint answered NO cursor , whether the journal "
+                          "was folded into storage is unknown");
+                } else if (cursor->is_error()) {
+                    error(log_,
+                          "delete spaces , the shutdown checkpoint FAILED , the journal is NOT folded into "
+                          "storage and the next start replays it: {}",
+                          cursor->get_error().what);
+                } else {
+                    trace(log_, "delete spaces: checkpoint complete");
+                }
             } catch (...) {
-                // Best-effort: don't throw from destructor
+                // A destructor must not throw — but it must not be silent either.
+                error(log_,
+                      "delete spaces , the shutdown checkpoint THREW , whether the journal was folded into "
+                      "storage is unknown");
             }
         }
         scheduler_->stop();
@@ -912,13 +949,23 @@ namespace otterbrix {
 
         std::size_t indexes_wired = 0;
         std::size_t indexes_skipped_unfinished = 0;
+        std::size_t indexes_skipped_unopenable = 0;
         auto index_rows = manager_disk_->scan_alive_pg_index_sync();
         for (auto& row : index_rows) {
             if (row.ready_since == 0) {
-                // pg_index row exists but the backfill never committed —
-                // no fallback, the operator must re-issue CREATE INDEX.
-                // Drop the half-built artefact silently here; the
-                // post-bootstrap catalog scan picks it up by oid.
+                // pg_index row exists but the backfill never committed — no fallback, the
+                // operator must re-issue CREATE INDEX. The DECISION is right; the SILENCE
+                // was not: this used to drop the half-built artefact with nothing but an
+                // aggregate count at trace level, shared with the unrelated "unopenable
+                // storage" case below — so a table that quietly answers every query by full
+                // scan was indistinguishable from a start with nothing wrong. Say WHICH
+                // index, WHOSE table, and WHAT to do, at the level an absent index deserves.
+                error(log_,
+                      "bootstrap_indexes_sync: pg_index row (indexrelid={}, indrelid={}) has an uncommitted "
+                      "backfill (indisvalid=false) — the index is NOT wired, queries on the table fall back "
+                      "to full scans; re-issue CREATE INDEX (or DROP INDEX the leftover)",
+                      static_cast<unsigned>(row.oid),
+                      static_cast<unsigned>(row.table_oid));
                 ++indexes_skipped_unfinished;
                 continue;
             }
@@ -957,7 +1004,7 @@ namespace otterbrix {
                       "bootstrap_indexes_sync: index_oid={} left unregistered: {}",
                       static_cast<unsigned>(row.oid),
                       wire_error.what);
-                ++indexes_skipped_unfinished;
+                ++indexes_skipped_unopenable;
                 continue;
             }
             ++indexes_wired;
@@ -986,12 +1033,15 @@ namespace otterbrix {
         // runs before the scheduler starts. It belongs to the runtime repopulate path
         // (manager_index_t::repopulate_table), not to bootstrap.
 
+        // The two skip reasons are DIFFERENT EVENTS (an unfinished build the operator must
+        // re-issue vs a storage that would not open and may heal) and no longer share a count.
         trace(log_,
               "spaces::PHASE 4 bootstrap_indexes_sync: {} engines, {} indexes wired "
-              "({} skipped: unfinished build or unopenable storage), {} dropped tombstones restored",
+              "({} skipped: unfinished build; {} skipped: unopenable storage), {} dropped tombstones restored",
               live_tables.size(),
               indexes_wired,
               indexes_skipped_unfinished,
+              indexes_skipped_unopenable,
               dropped.size());
     }
 

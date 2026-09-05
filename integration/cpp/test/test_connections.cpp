@@ -1,6 +1,9 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <filesystem>
 #include <integration/cpp/connection.hpp>
+#include <stdexcept>
+#include <unistd.h>
 
 static const database_name_t database_name = "testdatabase";
 static const collection_name_t collection_name = "testcollection";
@@ -154,4 +157,28 @@ TEST_CASE("integration::cpp::test_connectors") {
             REQUIRE(cur->size() == doc_num - 90 - 1);
         }
     }
+}
+// ===========================================================================
+// EXECUTE AFTER CLOSE IS A REFUSAL, NOT A NULL DEREFERENCE.
+//
+// close() nulls the instance pointer that execute() then guards with a bare assert — an
+// abort in Debug and a straight null dereference in Release. A use-after-close is an
+// embedder bug, and the loud, catchable answer at this API boundary is an exception (the
+// same channel base_spaces uses for its startup refusals), never undefined behaviour.
+//
+// BEFORE: this test died on the assert (Debug) / crashed on nullptr (Release).
+// ===========================================================================
+TEST_CASE("integration::cpp::connection::execute_after_close_refuses_loudly") {
+    auto config = test_create_config(std::filesystem::path("/tmp/test_connection_after_close") /
+                                     std::to_string(::getpid()));
+    test_clear_directory(config);
+    config.wal.on = false;
+    auto otterbrix = otterbrix::make_otterbrix(config);
+
+    otterbrix::connection_t connection(otterbrix);
+    REQUIRE(connection.execute("SELECT 1;") != nullptr);
+
+    connection.close();
+
+    REQUIRE_THROWS_AS(connection.execute("SELECT 1;"), std::runtime_error);
 }

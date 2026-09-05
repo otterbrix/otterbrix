@@ -12,6 +12,9 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_write_refusal.cpp
         test_wal_crc_reissue.cpp
         test_wal_load_hole.cpp
+        test_wal_chain_refusal.cpp
+        test_wal_retention_guard.cpp
+        test_wal_truncate_header_race.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

@@ -156,3 +156,82 @@ TEST_CASE("integration::cpp::list_tables::two_tables_never_read_as_empty") {
         REQUIRE(names.value().size() == 2);
     }
 }
+
+namespace {
+
+    using namespace components;
+
+    // A pg_class projection with one cell forced NULL — the shape a corrupt catalog row
+    // takes. Both relname and relkind are NOT NULL in the schema, so a NULL there is not a
+    // row to be filtered, it is a catalog that cannot be trusted.
+    enum class null_cell_t
+    {
+        relname,
+        relkind
+    };
+
+    components::cursor::cursor_t_ptr make_pg_class_cursor_with_null(std::pmr::memory_resource* resource,
+                                                                    null_cell_t which) {
+        using namespace components;
+        std::pmr::vector<types::complex_logical_type> types{resource};
+        types.emplace_back(types::logical_type::UINTEGER);
+        types.emplace_back(types::logical_type::STRING_LITERAL);
+        types.emplace_back(types::logical_type::STRING_LITERAL);
+        types[0].set_alias("oid");
+        types[1].set_alias("relname");
+        types[2].set_alias("relkind");
+
+        vector::data_chunk_t chunk{resource, types, vector::DEFAULT_VECTOR_CAPACITY};
+        // Row 0: a healthy user table, so a wrongly-tolerant decoder still answers a list.
+        chunk.set_value(0, 0, std::uint32_t{catalog::FIRST_USER_OID + 1});
+        chunk.set_value(1, 0, std::string_view{"alpha"});
+        const char regular = catalog::relkind::regular;
+        chunk.set_value(2, 0, std::string_view{&regular, 1});
+        // Row 1: the corrupt row.
+        chunk.set_value(0, 1, std::uint32_t{catalog::FIRST_USER_OID + 2});
+        if (which == null_cell_t::relname) {
+            chunk.set_value(2, 1, std::string_view{&regular, 1});
+            chunk.data[1].set_null(1, true);
+        } else {
+            chunk.set_value(1, 1, std::string_view{"beta"});
+            chunk.data[2].set_null(1, true);
+        }
+        chunk.set_cardinality(2);
+        return cursor::make_cursor(resource, std::move(chunk));
+    }
+
+} // namespace
+
+// ===========================================================================
+// A NULL IN A NOT-NULL CATALOG COLUMN IS AN ERROR, NOT A ROW TO SKIP.
+//
+// relname is declared NOT NULL. A row without a name is a catalog defect, and OMITTING it
+// hands the caller a list that silently misses a table that exists.
+//
+// BEFORE: the row was skipped and the list came back "successful" without it.
+// ===========================================================================
+TEST_CASE("integration::cpp::list_tables::a_null_relname_is_a_catalog_error_not_an_omission") {
+    core::pmr::otterbrix_resource resource;
+    auto cursor = make_pg_class_cursor_with_null(&resource, null_cell_t::relname);
+
+    auto names = otterbrix::user_table_names_from_pg_class(&resource, cursor);
+    INFO("a pg_class row with NULL relname violates the schema; the read must refuse");
+    REQUIRE(names.has_error());
+}
+
+// ===========================================================================
+// THE SAME FOR relkind — AND "NULL MEANS REGULAR TABLE" IS THE WORSE HALF.
+//
+// relkind is declared NOT NULL. A row whose kind is NULL (or empty) used to be ACCEPTED as a
+// regular table, so an index or view with a corrupted kind byte showed up in listTables.
+//
+// BEFORE: the corrupt row was listed as a table.
+// ===========================================================================
+TEST_CASE("integration::cpp::list_tables::a_null_relkind_is_a_catalog_error_not_a_table") {
+    core::pmr::otterbrix_resource resource;
+    auto cursor = make_pg_class_cursor_with_null(&resource, null_cell_t::relkind);
+
+    auto names = otterbrix::user_table_names_from_pg_class(&resource, cursor);
+    INFO("a pg_class row with NULL relkind violates the schema; the read must refuse");
+    REQUIRE(names.has_error());
+}

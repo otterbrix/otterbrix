@@ -48,16 +48,39 @@ namespace otterbrix {
             if (oid_cell.is_null() || oid_cell.value<std::uint32_t>() < components::catalog::FIRST_USER_OID) {
                 continue; // system catalog object
             }
+            // relname AND relkind ARE NOT NULL IN THE SCHEMA (system_table_schemas.cpp), so a
+            // NULL — or empty relkind — here is a corrupt catalog row, not a row to filter.
+            // Both used to pass in silence, each the wrong way around: a NULL-relkind row was
+            // ACCEPTED as a regular table (an index with a corrupted kind byte showed up in
+            // the listing) and a NULL-relname row was OMITTED (a table that exists silently
+            // missing from the answer). Rule 6: a catalog that cannot be trusted refuses.
+            const auto oid_value = oid_cell.value<std::uint32_t>();
             auto relkind_cell = cursor->value(static_cast<uint64_t>(relkind_col));
-            if (!relkind_cell.is_null()) {
-                auto relkind = relkind_cell.value<std::string_view>();
-                if (!relkind.empty() && relkind.front() != components::catalog::relkind::regular) {
-                    continue; // not a regular table (view / matview / sequence / ...)
-                }
+            if (relkind_cell.is_null()) {
+                return core::error_t{core::error_code_t::schema_error,
+                                     std::pmr::string{"listTables: pg_class row oid=" + std::to_string(oid_value) +
+                                                          " has NULL relkind (declared NOT NULL) — the catalog "
+                                                          "cannot be trusted",
+                                                      resource}};
+            }
+            auto relkind = relkind_cell.value<std::string_view>();
+            if (relkind.empty()) {
+                return core::error_t{core::error_code_t::schema_error,
+                                     std::pmr::string{"listTables: pg_class row oid=" + std::to_string(oid_value) +
+                                                          " has an EMPTY relkind (declared NOT NULL) — the catalog "
+                                                          "cannot be trusted",
+                                                      resource}};
+            }
+            if (relkind.front() != components::catalog::relkind::regular) {
+                continue; // not a regular table (view / matview / sequence / index / ...)
             }
             auto relname_cell = cursor->value(static_cast<uint64_t>(relname_col));
             if (relname_cell.is_null()) {
-                continue;
+                return core::error_t{core::error_code_t::schema_error,
+                                     std::pmr::string{"listTables: pg_class row oid=" + std::to_string(oid_value) +
+                                                          " has NULL relname (declared NOT NULL) — the catalog "
+                                                          "cannot be trusted",
+                                                      resource}};
             }
             auto relname = relname_cell.value<std::string_view>();
             names.emplace_back(relname.data(), relname.size());

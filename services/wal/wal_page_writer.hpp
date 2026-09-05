@@ -64,6 +64,14 @@ namespace services::wal {
         /// teardown and rotation, which leaves this flush with nothing to write.
         [[nodiscard]] const core::error_t& last_error() const noexcept { return last_error_; }
 
+        /// True when a refused mid-record flush left an ORPHAN SPAN on the disk: at least one
+        /// page of a record that was then refused is in the file, flagged PARTIAL_CONT, and
+        /// nothing will ever complete it. The next page appended to THIS segment would be read
+        /// as that span's continuation bytes, so the owner must rotate to a fresh segment
+        /// before writing anything else (wal_worker_t::ensure_writer does). The buffered page
+        /// itself is already discarded — only the on-disk tail is unusable.
+        [[nodiscard]] bool torn_tail() const noexcept { return torn_tail_; }
+
     private:
         [[nodiscard]] core::error_t write_file_header();
         [[nodiscard]] core::error_t flush_page();
@@ -86,7 +94,8 @@ namespace services::wal {
         id_t page_end_lsn_{0};
         uint16_t page_flags_{PAGE_NORMAL};
         size_t file_size_{0};  // total bytes written to file so far
-        bool has_data_{false}; // whether current page has any data
+        bool has_data_{false};   // whether current page has any data
+        bool torn_tail_{false};  // an orphan PARTIAL_CONT span sits at the end of the file
         core::error_t open_error_;
         core::error_t last_error_;
     };

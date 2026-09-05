@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cassert>
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <mutex>
 #include <thread>
 
@@ -74,14 +76,29 @@ namespace services::wal {
                     continue;
                 }
                 auto db_dir_name = entry.path().filename().string();
-                // Parse directory name as database_oid. Skip non-numeric directories
-                // (legacy / unrelated content).
+                // A DATABASE DIRECTORY IS NAMED std::to_string(oid) AND NOTHING ELSE — the
+                // worker's own constructor is the only writer of these names. std::stoul under
+                // catch (...) both used exceptions as control flow and HALF-PARSED foreign
+                // names: "9zz" answered 9, and a worker was spawned over directory "9" — a
+                // DIFFERENT path from the one the files are in, splitting the journal in two.
+                // from_chars over the whole name, round-tripped through to_string, accepts
+                // exactly the names the engine writes; everything else is foreign content and
+                // is skipped LOUDLY (nothing the engine wrote is ever skipped by this).
                 components::catalog::oid_t db_oid;
-                try {
-                    db_oid = static_cast<components::catalog::oid_t>(std::stoul(db_dir_name));
-                } catch (...) {
-                    trace(log_, "manager_wal_replicate: skip non-oid directory '{}'", db_dir_name);
-                    continue;
+                {
+                    unsigned long parsed = 0;
+                    const char* first = db_dir_name.data();
+                    const char* last = first + db_dir_name.size();
+                    auto [ptr, ec] = std::from_chars(first, last, parsed);
+                    if (ec != std::errc{} || ptr != last || std::to_string(parsed) != db_dir_name ||
+                        parsed > std::numeric_limits<components::catalog::oid_t>::max()) {
+                        warn(log_,
+                             "manager_wal_replicate: '{}' under the WAL root is not a database oid directory , "
+                             "skipping it (the engine never writes this name)",
+                             db_dir_name);
+                        continue;
+                    }
+                    db_oid = static_cast<components::catalog::oid_t>(parsed);
                 }
                 trace(log_, "manager_wal_replicate: recovering database_oid={}", static_cast<unsigned>(db_oid));
 
@@ -340,13 +357,23 @@ namespace services::wal {
     }
 
     void manager_wal_replicate_t::unregister_active_build_sync(wal::id_t build_start_wal_position) {
-        auto erased = active_build_start_positions_.erase(build_start_wal_position);
         // Invariant: every unregister matches a prior register; a mismatch is an
-        // operator_create_index lifecycle bug that would silently leak retention.
-        assert(erased == 1 && "unregister_active_build_sync called without matching register");
-        if (erased != 1) {
-            std::abort();
+        // operator_create_index lifecycle bug. IT IS REPORTED, NOT EXECUTED: this path is fed
+        // by messages from ANOTHER actor, and aborting here turned a bookkeeping bug into a
+        // process death. The harm an unmatched unregister could actually do — releasing a
+        // clamp some other build still holds — is prevented structurally: exactly ONE entry
+        // is erased (never every entry at the value; the container is a multiset so paired
+        // register/unregister at the same position stay balanced), and an unmatched one
+        // erases nothing at all.
+        auto it = active_build_start_positions_.find(build_start_wal_position);
+        if (it == active_build_start_positions_.end()) {
+            error(log_,
+                  "manager_wal_replicate::unregister_active_build_sync wal_id={} has NO matching register , "
+                  "ignored — a create-index lifecycle bug, and the retention set is left as it stands",
+                  build_start_wal_position);
+            return;
         }
+        active_build_start_positions_.erase(it);
         trace(log_,
               "manager_wal_replicate::unregister_active_build_sync wal_id={} active_builds={}",
               build_start_wal_position,
@@ -561,6 +588,13 @@ namespace services::wal {
                 }
                 if (!seg.is_regular_file(ec)) {
                     ec.clear();
+                    continue;
+                }
+                // SEGMENTS ONLY, same prefix filter as discover_segments and the startup
+                // scan: the journal and the table tree share this root on purpose, so a
+                // neighbour that is not wal_* must not widen the auto-checkpoint window.
+                const auto seg_name = seg.path().filename().string();
+                if (seg_name.size() < 4 || seg_name.compare(0, 4, "wal_") != 0) {
                     continue;
                 }
                 auto sz = std::filesystem::file_size(seg.path(), ec);

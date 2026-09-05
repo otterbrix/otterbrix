@@ -34,6 +34,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_oid_alloc_refusal.cpp
         test_accumulate_refusal.cpp
         test_wal_write_refusal.cpp
+        test_shutdown_checkpoint_refusal.cpp
+        test_index_unfinished_bootstrap.cpp
         test_index_flush_refusal.cpp
         test_index_type_persistence.cpp
         test_index_threshold_config.cpp
@@ -84,6 +86,9 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_nested_payload_replay.cpp
         test_type_spec_write_gate.cpp
         test_wide_integer_literal.cpp
+        test_update_upsert_refusal.cpp
+        test_fk_cascade_set_default_specs.cpp
+        test_delete_affected_count.cpp
         test_tinyint_numeric_cast.cpp
         test_alter_add_column_unmaterialized.cpp
         test_computed_drop_complex_type.cpp

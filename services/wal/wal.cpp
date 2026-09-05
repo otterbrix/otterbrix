@@ -168,15 +168,20 @@ namespace services::wal {
               row_count);
 
         encode_buf_.clear();
-        last_crc_ = encode_insert(encode_buf_,
-                                  this->resource(),
-                                  last_crc_,
-                                  wal_id,
-                                  txn_id,
-                                  table_oid,
-                                  chunks,
-                                  row_start,
-                                  row_count);
+        // THE CHAIN MOVES WHEN THE JOURNAL DOES. encode_* answers the crc THIS record will
+        // carry; last_crc_ takes it only after append() accepts the record. Advancing it at
+        // encode time left the chain naming a record that a refused write never put in the
+        // journal — and recover_from_disk() re-derives the chain from the last DECODABLE
+        // record, so a restart disagreed with the running process about where the chain is.
+        const auto record_crc = encode_insert(encode_buf_,
+                                              this->resource(),
+                                              last_crc_,
+                                              wal_id,
+                                              txn_id,
+                                              table_oid,
+                                              chunks,
+                                              row_start,
+                                              row_count);
 
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};
@@ -191,6 +196,7 @@ namespace services::wal {
                   append_error.what);
             co_return core::result_wrapper_t<wal::id_t>{std::move(append_error)};
         }
+        last_crc_ = record_crc;
 
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
@@ -214,7 +220,9 @@ namespace services::wal {
         trace(log_, "wal_worker::write_physical_delete , wal_id : {} , txn : {} , count : {}", wal_id, txn_id, count);
 
         encode_buf_.clear();
-        last_crc_ = encode_delete(encode_buf_, last_crc_, wal_id, txn_id, table_oid, row_ids.data(), count);
+        // Chain discipline: see write_physical_insert — the crc is committed to last_crc_
+        // only after append() accepts the record.
+        const auto record_crc = encode_delete(encode_buf_, last_crc_, wal_id, txn_id, table_oid, row_ids.data(), count);
 
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};
@@ -229,6 +237,7 @@ namespace services::wal {
                   append_error.what);
             co_return core::result_wrapper_t<wal::id_t>{std::move(append_error)};
         }
+        last_crc_ = record_crc;
 
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
@@ -253,15 +262,16 @@ namespace services::wal {
         trace(log_, "wal_worker::write_physical_update , wal_id : {} , txn : {} , count : {}", wal_id, txn_id, count);
 
         encode_buf_.clear();
-        last_crc_ = encode_update(encode_buf_,
-                                  this->resource(),
-                                  last_crc_,
-                                  wal_id,
-                                  txn_id,
-                                  table_oid,
-                                  row_ids.data(),
-                                  new_chunks,
-                                  count);
+        // Chain discipline: see write_physical_insert.
+        const auto record_crc = encode_update(encode_buf_,
+                                              this->resource(),
+                                              last_crc_,
+                                              wal_id,
+                                              txn_id,
+                                              table_oid,
+                                              row_ids.data(),
+                                              new_chunks,
+                                              count);
 
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};
@@ -276,6 +286,7 @@ namespace services::wal {
                   append_error.what);
             co_return core::result_wrapper_t<wal::id_t>{std::move(append_error)};
         }
+        last_crc_ = record_crc;
 
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
@@ -303,7 +314,9 @@ namespace services::wal {
               column_count);
 
         encode_buf_.clear();
-        last_crc_ = encode_add_column(encode_buf_, last_crc_, wal_id, txn_id, table_oid, *schema_chunk, column_count);
+        // Chain discipline: see write_physical_insert.
+        const auto record_crc =
+            encode_add_column(encode_buf_, last_crc_, wal_id, txn_id, table_oid, *schema_chunk, column_count);
 
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};
@@ -318,6 +331,7 @@ namespace services::wal {
                   append_error.what);
             co_return core::result_wrapper_t<wal::id_t>{std::move(append_error)};
         }
+        last_crc_ = record_crc;
 
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }
@@ -344,15 +358,20 @@ namespace services::wal {
               static_cast<int>(sync_mode));
 
         if (sync_mode == wal_sync_mode::OFF) {
-            // OFF mode: encode but don't write — keeps last_crc_ chain continuity
-            // in case sync mode is turned on later.
-            encode_buf_.clear();
-            last_crc_ = encode_commit(encode_buf_, last_crc_, wal_id, transaction_id, commit_id);
+            // OFF mode writes nothing, so the chain must not move either: last_crc_ names the
+            // last record IN the journal, and a marker that never lands is not one. This used
+            // to encode the marker and advance the chain "for continuity" — continuity with a
+            // phantom, and a restart (which re-derives the chain from the last decodable
+            // record) would never have agreed with it.
             co_return core::result_wrapper_t<wal::id_t>{wal_id};
         }
 
         encode_buf_.clear();
-        last_crc_ = encode_commit(encode_buf_, last_crc_, wal_id, transaction_id, commit_id);
+        // Chain discipline: see write_physical_insert. The chain takes the marker's crc once
+        // append() accepts it — buffered is "in the journal" (the same claim every DML write
+        // above makes); DURABLE is the flush below, whose refusal fails the commit without
+        // un-writing the marker: the page stays buffered and the next flush retries it.
+        const auto record_crc = encode_commit(encode_buf_, last_crc_, wal_id, transaction_id, commit_id);
 
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};
@@ -366,6 +385,7 @@ namespace services::wal {
                   append_error.what);
             co_return core::result_wrapper_t<wal::id_t>{std::move(append_error)};
         }
+        last_crc_ = record_crc;
 
         // THE DURABILITY CLAIM IS THIS CALL, and its answer used to be dropped. Under
         // wal_sync_mode::FULL a failed fsync still returned the wal_id, i.e. the transaction
@@ -669,19 +689,25 @@ namespace services::wal {
             // if the bound is at or below the checkpoint the file is entirely superseded by
             // storage — removing it is not merely safe, it is what un-pins replay, which would
             // otherwise stop at that break on every startup for a segment nobody needs.
-            if (!reader.verify_page_checksum(pc)) {
+            // ONE READ decides both halves. This used to be verify_page_checksum(pc) followed
+            // by read_page_header(pc) — a SECOND read of the same page, whose failure was
+            // swallowed into a ZEROED header: page_end_lsn == 0 is <= every checkpoint id, so
+            // a read that succeeded once and failed once unlinked a segment whose records sit
+            // ABOVE the checkpoint. The verified header comes from the same bytes the
+            // checksum vouched for, and a page that cannot answer keeps its file.
+            wal_page_header_t last_hdr{};
+            if (!reader.read_verified_page_header(pc, last_hdr)) {
                 // SKIP THIS FILE, do not refuse the whole truncation: unlike the unopenable
                 // case above, the other segments are still perfectly accountable, so they can
                 // be reclaimed correctly. Keeping this one costs disk and nothing else —
                 // replay is filtered per table by the checkpoint wal_id sidecar, so re-reading
                 // it changes nothing.
                 error(log_,
-                      "wal_worker::truncate_before , the last data page of segment '{}' does not verify , "
-                      "REFUSING to remove it (its own page_end_lsn is what the checksum failed to vouch for)",
+                      "wal_worker::truncate_before , the last data page of segment '{}' cannot vouch for its "
+                      "own bound (unreadable or failing its checksum) , REFUSING to remove it",
                       seg_path.filename().string());
                 continue;
             }
-            const auto last_hdr = reader.read_page_header(pc); // last data page index
             if (last_hdr.page_end_lsn <= checkpoint_wal_id) {
                 trace(log_, "wal_worker::truncate_before , removing segment : {}", seg_path.filename().string());
                 remove_segment(seg_path);
@@ -885,6 +911,21 @@ namespace services::wal {
     // -----------------------------------------------------------------------
 
     core::error_t wal_worker_t::ensure_writer() {
+        if (writer_ && writer_->torn_tail()) {
+            // A refused mid-record flush left an ORPHAN PARTIAL_CONT span at the end of this
+            // segment. Any page appended after it would be read as that span's continuation
+            // bytes, not as records — the same "append behind the corruption point" hazard
+            // recover_from_disk rotates away from at startup. The writer's buffer is already
+            // empty (append discarded the continuation page), so nothing buffered is lost by
+            // rotating here.
+            warn(log_,
+                 "wal_worker::ensure_writer , db_oid={} , segment '{}' ends in an orphan span left by a "
+                 "refused write , writing continues in a NEW segment",
+                 static_cast<unsigned>(database_oid_),
+                 writer_->current_segment_path().filename().string());
+            writer_.reset();
+            ++current_segment_index_;
+        }
         if (writer_) {
             // Check if the current segment file has exceeded max size.
             auto seg = writer_->current_segment_path();

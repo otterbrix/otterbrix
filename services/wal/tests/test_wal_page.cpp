@@ -303,41 +303,10 @@ TEST_CASE("read_back_all_records") {
     }
 }
 
-TEST_CASE("binary_search_by_lsn") {
-    tmp_dir_t dir("test_wal_page_binary_search");
-    auto filepath = dir.file("wal_segment_0");
-
-    // Write 100 COMMIT records with wal_ids 1..100.
-    {
-        wal_page_writer_t writer(&test_resource, filepath, "testdb", 0);
-        crc32_t last_crc = 0;
-
-        for (uint64_t i = 1; i <= 100; ++i) {
-            auto rec = encode_commit_rec(i, /*txn_id=*/1000 + i, last_crc);
-            REQUIRE_FALSE(writer.append(rec.data.data(), rec.data.size(), i).contains_error());
-            last_crc = extract_crc(rec.data.data(), rec.data.size());
-        }
-        REQUIRE_FALSE(writer.flush().contains_error());
-    }
-
-    // Seek to LSN 50.
-    {
-        wal_page_reader_t reader(&test_resource, filepath);
-        auto position = reader.seek_to_lsn(50);
-
-        // The position should point to a page whose page_lsn <= 50 and page_end_lsn >= 50.
-        auto header = reader.read_page_header(position.page_index);
-        REQUIRE(header.page_lsn <= 50);
-        REQUIRE(header.page_end_lsn >= 50);
-
-        // Read records from that position -- the first record with wal_id >= 50 should be found.
-        auto records_result = reader.read_all_records(49);
-        REQUIRE_FALSE(records_result.has_error());
-        auto& records = records_result.value(); // read records after wal_id 49
-        REQUIRE(!records.empty());
-        REQUIRE(records.front().id == 50);
-    }
-}
+// seek_to_lsn (and its binary_search_by_lsn case) are GONE: the function had no production
+// caller, and its binary search read page headers through the unverified observer — a failed
+// read's zeroed header silently skewed the answer (the same defect family truncate_before
+// was fixed for; see read_verified_page_header).
 
 TEST_CASE("page_checksum_corruption") {
     tmp_dir_t dir("test_wal_page_checksum_corrupt");

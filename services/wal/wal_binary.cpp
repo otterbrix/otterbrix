@@ -483,6 +483,14 @@ namespace services::wal {
                 break;
             }
             case wal_record_type::PHYSICAL_DELETE: {
+                // A row-id payload is WHOLE row ids. Sizing the vector as size/8 and then
+                // memcpy'ing size BYTES wrote up to 7 bytes past the allocation on any ragged
+                // length — and a ragged length under a valid CRC is corruption (or a crafted
+                // journal), not arithmetic to round: encode_delete only ever writes count*8.
+                if (payload_size % sizeof(int64_t) != 0) {
+                    rec.is_corrupt = true;
+                    return rec;
+                }
                 uint64_t count = payload_size / sizeof(int64_t);
                 rec.physical_row_ids = std::pmr::vector<int64_t>(resource);
                 rec.physical_row_ids.resize(count);
@@ -496,7 +504,11 @@ namespace services::wal {
                 }
                 uint32_t row_ids_bytes = read_le32(payload);
                 const char* row_ids_data = payload + 4;
-                if (4 + row_ids_bytes > payload_size) {
+                // Wrap-safe form: `4 + row_ids_bytes` overflowed 32-bit arithmetic near
+                // UINT32_MAX and let a multi-gigabyte "length" through the old check
+                // (payload_size >= 4 is guaranteed just above). And the same whole-row-ids
+                // rule as PHYSICAL_DELETE: a ragged length is corruption, not rounding.
+                if (row_ids_bytes > payload_size - 4 || row_ids_bytes % sizeof(int64_t) != 0) {
                     rec.is_corrupt = true;
                     return rec;
                 }

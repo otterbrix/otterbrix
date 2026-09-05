@@ -695,3 +695,100 @@ TEST_CASE("wal_binary::encode_decode_insert_carries_nested_payload") {
         }
     }
 }
+
+// ===========================================================================
+// ROW-ID LENGTHS THAT ARE NOT WHOLE ROW IDS ARE CORRUPTION, NOT ARITHMETIC.
+//
+// decode_record used to size the row-id vector as payload_size / 8 and then memcpy
+// payload_size BYTES into it — for any length that is not a multiple of 8 that writes up to
+// 7 bytes past the heap allocation, silently, on both the PHYSICAL_DELETE payload and the
+// row-id half of PHYSICAL_UPDATE. The UPDATE bounds check `4 + row_ids_bytes > payload_size`
+// additionally wrapped in 32-bit arithmetic, so a row_ids_bytes near UINT32_MAX slipped past
+// the check and drove a multi-gigabyte resize+memcpy from a 16-byte buffer.
+//
+// The records below are byte-crafted with VALID CRCs: the checksum is precisely the guard
+// that does NOT protect against these lengths, because a legitimately-CRC'd record with a
+// ragged length is exactly what a flipped length byte upstream of the CRC computation — or a
+// crafted journal — produces. A ragged length must come back is_corrupt.
+// ===========================================================================
+
+#include <absl/crc/crc32c.h>
+
+namespace {
+
+    void put_le32(std::vector<char>& out, uint32_t v) {
+        char b[4];
+        std::memcpy(b, &v, 4);
+        out.insert(out.end(), b, b + 4);
+    }
+    void put_le64(std::vector<char>& out, uint64_t v) {
+        char b[8];
+        std::memcpy(b, &v, 8);
+        out.insert(out.end(), b, b + 8);
+    }
+
+    // Craft a whole DML record with a correct trailing CRC over the body.
+    std::vector<char> craft_dml_record(wal_record_type type, const std::vector<char>& payload) {
+        std::vector<char> body;
+        put_le32(body, 0);                     // last_crc32
+        put_le64(body, 7);                     // wal_id
+        put_le64(body, 100);                   // txn_id
+        body.push_back(static_cast<char>(type));
+        put_le32(body, static_cast<uint32_t>(kTestTableOid)); // table_oid
+        put_le64(body, 0);                     // row_start
+        put_le64(body, payload.size());        // row_count (decode does not cross-check it)
+        put_le32(body, static_cast<uint32_t>(payload.size())); // payload_size
+        body.insert(body.end(), payload.begin(), payload.end());
+
+        std::vector<char> record;
+        put_le32(record, static_cast<uint32_t>(body.size())); // size field
+        record.insert(record.end(), body.begin(), body.end());
+        const auto crc = static_cast<uint32_t>(absl::ComputeCrc32c(absl::string_view(body.data(), body.size())));
+        put_le32(record, crc);
+        return record;
+    }
+
+} // namespace
+
+TEST_CASE("wal_binary::a_delete_payload_that_is_not_whole_row_ids_is_corrupt") {
+    core::pmr::otterbrix_resource resource;
+
+    // 12 bytes: one and a half row ids. count = 12/8 = 1 allocates 8 bytes; the memcpy of 12
+    // bytes used to overrun the allocation by 4.
+    std::vector<char> payload(12, '\x5a');
+    auto record_bytes = craft_dml_record(wal_record_type::PHYSICAL_DELETE, payload);
+
+    auto rec = decode_record(record_bytes.data(), record_bytes.size(), &resource);
+    INFO("a PHYSICAL_DELETE payload of 12 bytes is not a row-id array; it must be corrupt");
+    REQUIRE(rec.is_corrupt);
+}
+
+TEST_CASE("wal_binary::an_update_row_id_block_that_is_not_whole_row_ids_is_corrupt") {
+    core::pmr::otterbrix_resource resource;
+
+    // UPDATE payload: [row_ids_bytes = 12][12 bytes], no chunk batch behind it.
+    std::vector<char> payload;
+    put_le32(payload, 12);
+    payload.insert(payload.end(), 12, '\x5a');
+    auto record_bytes = craft_dml_record(wal_record_type::PHYSICAL_UPDATE, payload);
+
+    auto rec = decode_record(record_bytes.data(), record_bytes.size(), &resource);
+    INFO("a PHYSICAL_UPDATE row-id block of 12 bytes is not a row-id array; it must be corrupt");
+    REQUIRE(rec.is_corrupt);
+}
+
+TEST_CASE("wal_binary::an_update_row_id_length_near_uint32_max_is_corrupt_not_a_giant_copy") {
+    core::pmr::otterbrix_resource resource;
+
+    // row_ids_bytes = 0xFFFFFFFC: `4 + row_ids_bytes` wraps to 0 in 32-bit arithmetic, so the
+    // old bounds check passed and the decoder resized to half a billion row ids and memcpy'd
+    // 4 GiB from a 16-byte buffer.
+    std::vector<char> payload;
+    put_le32(payload, 0xFFFFFFFCu);
+    payload.insert(payload.end(), 12, '\x5a');
+    auto record_bytes = craft_dml_record(wal_record_type::PHYSICAL_UPDATE, payload);
+
+    auto rec = decode_record(record_bytes.data(), record_bytes.size(), &resource);
+    INFO("a row-id length the payload cannot hold must be corrupt, whatever 32-bit addition says");
+    REQUIRE(rec.is_corrupt);
+}

@@ -83,6 +83,22 @@ namespace services::wal {
             return core::error_t::no_error();
         }
 
+        // SNAPSHOT FOR THE ROLLBACK BELOW. A record whose page flush is refused is a record
+        // the caller is told did NOT reach the journal — so nothing of it may stay in the
+        // buffered page either. Before this, the refused record's prefix (and the CONT flag
+        // it set) stayed in the buffer, the NEXT record was appended behind those bytes, and
+        // every reader parses the page from the front: the next record was swallowed into a
+        // span that never completes. The snapshot restores the page to its pre-append state;
+        // it is only valid while nothing of THIS record has been flushed (the first-chunk
+        // case) — past that point the buffered page holds nothing but this record's
+        // continuation, and discarding it outright is the rollback (see below).
+        const auto saved_offset = current_offset_;
+        const auto saved_flags = page_flags_;
+        const auto saved_page_lsn = page_lsn_;
+        const auto saved_page_end_lsn = page_end_lsn_;
+        const auto saved_num_records = num_records_;
+        const auto saved_has_data = has_data_;
+
         // Track the first LSN in the current page.
         if (page_lsn_ == 0) {
             page_lsn_ = wal_id;
@@ -128,6 +144,30 @@ namespace services::wal {
 
                 // Flush the full page.
                 if (auto page_error = flush_page(); page_error.contains_error()) {
+                    // THE RECORD IS REFUSED; THE BUFFER MUST NOT KEEP ITS BYTES.
+                    //
+                    //   * First chunk: nothing of this record reached the disk, and the
+                    //     buffered page may still hold EARLIER accepted records — restore the
+                    //     snapshot, so those records stay buffered (their durability claim is
+                    //     the commit's flush, which retries this very page) and this record
+                    //     vanishes without trace.
+                    //   * Later chunk: at least one page of this record is already on disk,
+                    //     and the buffered page holds nothing but its continuation — discard
+                    //     the page. The flushed prefix stays behind as an orphan span that no
+                    //     reader completes; torn_tail_ tells the owner to rotate away so the
+                    //     next record does not land on a page still flagged PARTIAL_CONT,
+                    //     where a reader would take it for continuation bytes.
+                    if (is_first_chunk) {
+                        current_offset_ = saved_offset;
+                        page_flags_ = saved_flags;
+                        page_lsn_ = saved_page_lsn;
+                        page_end_lsn_ = saved_page_end_lsn;
+                        num_records_ = saved_num_records;
+                        has_data_ = saved_has_data;
+                    } else {
+                        start_new_page();
+                        torn_tail_ = true;
+                    }
                     return page_error;
                 }
 

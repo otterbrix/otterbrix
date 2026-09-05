@@ -45,12 +45,16 @@ namespace services::wal {
 
         /// Read the page header at a given page index.
         /// Page 0 is the file header; data pages start at index 1.
+        /// TEST-ONLY OBSERVER: answers a ZEROED header for an unreadable page. Production
+        /// decisions go through read_verified_page_header, which cannot answer zeros.
         wal_page_header_t read_page_header(size_t page_index);
 
-        /// Binary search: find the page containing target_lsn.
-        /// Returns a position whose page_index satisfies:
-        ///   header.page_lsn <= target_lsn <= header.page_end_lsn
-        wal_page_position_t seek_to_lsn(id_t target_lsn);
+        /// Read ONE page and answer its header only when the page's checksum vouches for it —
+        /// the header comes from the same bytes the checksum verified, so there is no window
+        /// between "the page verifies" and "here is its header" in which a failed re-read can
+        /// substitute zeros. False covers both "unreadable" and "does not verify"; either way
+        /// the page's fields are unknown and the caller must not act on a guess.
+        [[nodiscard]] bool read_verified_page_header(size_t page_index, wal_page_header_t& out);
 
         /// What one physical pass over every data page says about this segment.
         ///

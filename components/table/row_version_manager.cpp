@@ -415,12 +415,19 @@ namespace components::table {
     }
 
     bool row_version_manager_t::fetch(const transaction_data& transaction, uint64_t row) {
-        uint64_t vector_index = row / vector::DEFAULT_VECTOR_CAPACITY;
+        // `row` is collection-ABSOLUTE — the point-fetch convention (the disk agent
+        // hands out absolute row ids). vector_info_ slots are GROUP-LOCAL, so rebase
+        // by start_ at entry; start_ moves with the group via
+        // row_group_t::move_to_collection → set_start.
+        assert(row >= static_cast<uint64_t>(start_));
+        const uint64_t local_row = row - static_cast<uint64_t>(start_);
+        uint64_t vector_index = local_row / vector::DEFAULT_VECTOR_CAPACITY;
         auto info = get_chunk_info(vector_index);
         if (!info) {
             return true;
         }
-        return info->fetch(transaction, static_cast<int64_t>(row - vector_index * vector::DEFAULT_VECTOR_CAPACITY));
+        return info->fetch(transaction,
+                           static_cast<int64_t>(local_row - vector_index * vector::DEFAULT_VECTOR_CAPACITY));
     }
 
     void row_version_manager_t::fill_vector_info(uint64_t vector_idx) {

@@ -881,3 +881,108 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
         REQUIRE(v.value<std::string_view>() == "renamed");
     }
 }
+
+// ---------------------------------------------------------------------------
+// A6: mixed addressing in row_version_manager_t::vector_info_.
+//
+// The append path (append_version_info / commit_append / revert_append /
+// cleanup_append and the counters committed_deleted_count / has_version_above)
+// addresses vector_info_ with GROUP-LOCAL vector indices (slot 0 = the group's
+// first vector), while the scan path (collection_scan_state::vector_index),
+// the delete path (version_delete_state::delete_row) and point-fetch
+// (row_version_manager_t::fetch) address it with collection-ABSOLUTE indices
+// (slot N for the group starting at row N*1024). With the default
+// row_group_size == DEFAULT_VECTOR_CAPACITY every row group past the first
+// reads/writes a DIFFERENT slot than the append path wrote. The existing MVCC
+// tests run on 10..100 rows — one row group — and are structurally blind to
+// this. The three tests below drive the same operations past row 1024.
+// ---------------------------------------------------------------------------
+
+// txn1 appends 10 rows into the SECOND row group (rows 1024..1033) and does not
+// commit. A concurrent snapshot (txn2) must still count exactly the 1024
+// committed rows: the uncommitted rows' insert stamps must be consulted, not
+// bypassed because the scan asked a vector_info_ slot the append never wrote.
+TEST_CASE("components::table::mvcc::uncommitted_rows_invisible_in_second_row_group") {
+    test_env env;
+    auto table = make_int_table(env);
+
+    // Fill row group 0 exactly (row_group_size == DEFAULT_VECTOR_CAPACITY).
+    append_rows(*table, env, 0, 1024);
+    REQUIRE(scan_count(*table, env) == 1024);
+
+    transaction_manager_t mgr(&env.resource);
+    auto session1 = components::session::session_id_t::generate_uid();
+    auto& txn1 = mgr.begin_transaction(session1);
+    // Lands in row group 1 (start = 1024). NOT committed.
+    append_rows_txn(*table, env, 1024, 10, txn1.data());
+
+    auto session2 = components::session::session_id_t::generate_uid();
+    auto& txn2 = mgr.begin_transaction(session2);
+    REQUIRE(scan_count_txn(*table, env, txn2.data()) == 1024);
+
+    mgr.abort(session2);
+    mgr.abort(session1);
+}
+
+// A committed DELETE of a row past 1024 must be reflected by
+// committed_row_count exactly as the scan reflects it. The tombstone lands in
+// the slot the (absolute-addressed) delete path picked; the counter walks the
+// group-local slots and must find it there.
+TEST_CASE("components::table::mvcc::committed_row_count_after_delete_past_1024") {
+    test_env env;
+    auto table = make_int_table(env);
+
+    append_rows(*table, env, 0, 1024);
+    append_rows(*table, env, 1024, 10);
+    REQUIRE(scan_count(*table, env) == 1034);
+    REQUIRE(table->row_group()->committed_row_count() == 1034);
+
+    transaction_manager_t mgr(&env.resource);
+    auto session = components::session::session_id_t::generate_uid();
+    auto& txn = mgr.begin_transaction(session);
+    auto txn_id = txn.data().transaction_id;
+
+    // Row id 1030 lives in row group 1 (start = 1024).
+    auto del_state = table->initialize_delete({});
+    auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
+    row_ids.set_value(0, logical_value_t(&env.resource, int64_t(1030)));
+    REQUIRE(table->delete_rows(*del_state, row_ids, 1, txn_id) == 1);
+
+    auto commit_id = mgr.commit(session);
+    mgr.publish(commit_id);
+    table->commit_all_deletes(txn_id, commit_id);
+
+    // Scan and counter must agree on the committed tombstone.
+    REQUIRE(scan_count(*table, env) == 1033);
+    REQUIRE(table->row_group()->committed_row_count() == 1033);
+}
+
+// A PENDING (uncommitted) DELETE of a row past 1024 must refuse compact():
+// the pending stamp is above any watermark, and has_version_above must see it
+// in whatever slot the delete path wrote it to.
+TEST_CASE("components::table::mvcc::compact_refused_while_delete_past_1024_pending") {
+    test_env env;
+    auto table = make_int_table(env);
+
+    append_rows(*table, env, 0, 1024);
+    append_rows(*table, env, 1024, 10);
+    REQUIRE(scan_count(*table, env) == 1034);
+
+    transaction_manager_t mgr(&env.resource);
+    auto session = components::session::session_id_t::generate_uid();
+    auto& txn = mgr.begin_transaction(session);
+    auto txn_id = txn.data().transaction_id;
+
+    // Pending delete of row 1030 (row group 1) — no commit.
+    auto del_state = table->initialize_delete({});
+    auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
+    row_ids.set_value(0, logical_value_t(&env.resource, int64_t(1030)));
+    REQUIRE(table->delete_rows(*del_state, row_ids, 1, txn_id) == 1);
+
+    REQUIRE_FALSE(table->compact(mgr.compact_watermark()));
+
+    // Abort path: un-stamp and verify everything is visible again.
+    mgr.abort(session);
+    table->revert_all_deletes(txn_id);
+    REQUIRE(scan_count(*table, env) == 1034);
+}

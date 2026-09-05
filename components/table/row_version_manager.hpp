@@ -216,11 +216,24 @@ namespace components::table {
         uint16_t rows[1] = {};
     };
 
+    // Addressing contract: every vector_idx / row-offset parameter below is
+    // GROUP-LOCAL — slot 0 of vector_info_ is the first vector of the owning row
+    // group, and append/commit/revert/cleanup, delete_rows/commit_delete, the
+    // committed_deleted_count / has_version_above walks and indexing_vector all
+    // address the same group-local slots. Callers holding collection-absolute
+    // coordinates rebase at the row_group_t boundary, where `start` is
+    // authoritative (row_group_t::indexing_vector, version_delete_state).
+    // The single exception is fetch(): it takes a collection-ABSOLUTE row (the
+    // disk agent's point-fetch convention) and rebases internally via start_.
     class row_version_manager_t {
     public:
         explicit row_version_manager_t(int64_t start) noexcept;
 
         int64_t start() const { return start_; }
+        // Re-anchors start_ (and the chunk_info start labels) when the owning row
+        // group moves — called by row_group_t::move_to_collection. Slot addressing
+        // is group-local and does not change on a move; only fetch()'s
+        // absolute→local rebase and the labels depend on start_.
         void set_start(int64_t start);
         uint64_t committed_deleted_count(uint64_t count);
         // True when any stamp in the first `count` rows is above `watermark`

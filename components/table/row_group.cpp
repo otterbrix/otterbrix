@@ -60,6 +60,14 @@ namespace components::table {
         for (auto& column : columns()) {
             column->set_start(new_start);
         }
+        // Version slots are group-local, so a move never re-slots them — but the
+        // manager's start_ feeds fetch()'s absolute→local rebase and the chunk_info
+        // start labels, so it must move with the group. (Only merge_storage reaches
+        // this; without the rebase the manager would keep answering point-fetches
+        // for the group's OLD position.)
+        if (auto* vinfo = version_info_.load()) {
+            vinfo->set_start(new_start);
+        }
     }
 
     std::vector<std::shared_ptr<column_data_t>>& row_group_t::columns() {
@@ -825,7 +833,14 @@ namespace components::table {
         // in_flight set is a see-all snapshot covering every committed row.
         transaction_data td(0, 0);
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
-        return indexing_vector(td, index, temp_indexing, count);
+        // indexing_vector takes the scan state's collection-ABSOLUTE vector index;
+        // this group's first vector sits at start / CAPACITY. (The old `index`
+        // argument — the segment ordinal — only coincided with it while every
+        // group held exactly one vector.)
+        return indexing_vector(td,
+                               static_cast<uint64_t>(start) / vector::DEFAULT_VECTOR_CAPACITY,
+                               temp_indexing,
+                               count);
     }
 
     uint64_t row_group_t::indexing_vector(transaction_data txn,
@@ -836,7 +851,16 @@ namespace components::table {
         if (!vinfo) {
             return max_count;
         }
-        return vinfo->indexing_vector(txn, vector_idx, indexing_vector, max_count);
+        // `vector_idx` arrives collection-ABSOLUTE (the scan state's convention, see
+        // initialize_scan_with_offset); version slots are GROUP-LOCAL. Convert here,
+        // where `start` is authoritative, so the reader consults the same slot the
+        // append path wrote — for any group past the first the absolute index used
+        // to fall off the end of vector_info_ and every row (committed or not)
+        // scanned as visible.
+        assert(start % static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY) == 0);
+        const uint64_t base_vector_idx = static_cast<uint64_t>(start) / vector::DEFAULT_VECTOR_CAPACITY;
+        assert(vector_idx >= base_vector_idx);
+        return vinfo->indexing_vector(txn, vector_idx - base_vector_idx, indexing_vector, max_count);
     }
 
     std::shared_ptr<row_version_manager_t> row_group_t::get_or_create_version_info_internal() {
@@ -865,9 +889,14 @@ namespace components::table {
     }
 
     void version_delete_state::delete_row(int64_t row_id) {
-        assert(row_id >= 0);
-        uint64_t vector_idx = static_cast<uint64_t>(row_id) / vector::DEFAULT_VECTOR_CAPACITY;
-        uint64_t idx_in_vector = static_cast<uint64_t>(row_id) - vector_idx * vector::DEFAULT_VECTOR_CAPACITY;
+        assert(row_id >= base_row);
+        // row_id is collection-ABSOLUTE; row_version_manager_t slots are GROUP-LOCAL
+        // (slot 0 = the group's first vector). Rebase by the group's start (base_row)
+        // before slicing into vectors, so the tombstone lands in the slot the scan
+        // and the committed_deleted_count / has_version_above walks actually read.
+        const uint64_t local_row = static_cast<uint64_t>(row_id - base_row);
+        uint64_t vector_idx = local_row / vector::DEFAULT_VECTOR_CAPACITY;
+        uint64_t idx_in_vector = local_row - vector_idx * vector::DEFAULT_VECTOR_CAPACITY;
         if (current_chunk != vector_idx) {
             flush();
 

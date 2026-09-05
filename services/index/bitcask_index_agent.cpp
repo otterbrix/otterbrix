@@ -229,8 +229,22 @@ namespace services::index {
         // produced -- and keeping them BECAUSE the store refused is worse still: the
         // repopulate that follows this call in the same FIFO would have commit_inserts
         // publish a bucket belonging to the index this call failed to empty.
-        pending_inserts_.clear();
-        pending_deletes_.clear();
+        //
+        // ONLY THE REBUILD'S OWN BUCKET, and that bound is the whole point. The rebuild
+        // stages and commits under txn id 0 (manager_index.cpp, repopulate_table: the
+        // stage_inserts/commit_inserts pair is sent with `uint64_t{0}`), so bucket 0 is the
+        // one this call is a part of. Taking EVERY transaction's bucket instead was a defect:
+        // a writer that staged before a rebuild's burst and commits after it lost its batch
+        // here, and its commit then took the empty-journal road and reported success over
+        // nothing -- the heap kept the row, the index did not. That is a SHORT index answer,
+        // the one direction the design forbids outright, since a row the index never names is
+        // never fetched and never filtered. The mirror cost a staged delete that never landed.
+        // Both are pinned per family by test_index_agent_rebuild_clear.cpp.
+        //
+        // The staged row ids survive the round: a pending txn id is above every compact
+        // watermark, so has_versions_above defers the compaction that would renumber them.
+        pending_inserts_.erase(0);
+        pending_deletes_.erase(0);
         // THE STORE'S ANSWER IS THE HANDLER'S ANSWER. Replacing it with no_error would have
         // manager_index_t::repopulate_table -- which awaits this future and folds it into its
         // first_error -- folding a constant.

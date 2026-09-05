@@ -1718,6 +1718,13 @@ namespace services::index {
     // so the gate APPLIES a frame only when its txn_id is in committed_txn_ids_; every frame,
     // applied or skipped, still advances write_applied_log_offset(frame_end) so the log is consumed
     // monotonically. There is no txn_id==0 frame class -- both writers are guarded txn_id!=0.
+    //
+    // AND MEMBERSHIP DOES NOT ACTUALLY CLOSE THAT WINDOW. Txn ids are recycled across restarts, so
+    // the set can hold an id an EARLIER incarnation committed and vouch for the frame of a LATER
+    // one that never did -- an index entry with no heap row behind it, since the WAL's own filter
+    // is ordered by wal id and correctly refuses that transaction's rows. Read this paragraph as
+    // the mechanism only; the gate body below carries what the residue costs, why the frame header
+    // cannot tell the two incarnations apart, and what closing it needs.
     core::error_t bitcask_index_disk_t::recover_txn_log() {
         const auto log_path = txn_log_file_path();
         // NOTHING WALKED YET, so nothing to say about where the frames end -- set on every

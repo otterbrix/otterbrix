@@ -223,12 +223,14 @@ namespace services::index {
                 std::pmr::string{"btree_index_agent_t::clear: the index has been dropped", resource()}};
         }
         auto clear_error = store_.clear();
-        // BOTH HALVES, AND THE BUCKETS GO EVEN WHEN THE STORE REFUSED -- for the reason
-        // bitcask_index_agent_t::clear states at the same point: the repopulate that follows
-        // in the same FIFO would otherwise publish a bucket into an index this call failed
-        // to empty.
-        pending_inserts_.clear();
-        pending_deletes_.clear();
+        // BOTH HALVES, AND THE REBUILD'S BUCKET GOES EVEN WHEN THE STORE REFUSED -- for the
+        // reason bitcask_index_agent_t::clear states at the same point: the repopulate that
+        // follows in the same FIFO would otherwise publish a bucket into an index this call
+        // failed to empty. Bucket 0 only: every other transaction's staged keys are its own,
+        // and taking them here made a live writer's commit report success over nothing. The
+        // full argument is recorded at the sibling.
+        pending_inserts_.erase(0);
+        pending_deletes_.erase(0);
         co_return clear_error;
     }
 

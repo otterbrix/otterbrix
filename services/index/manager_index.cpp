@@ -1604,6 +1604,21 @@ namespace services::index {
         // AND THE HELD-BACK ERASES GO WITH THE CLEAR. clear() wipes every pending bucket along with
         // the store, so the rows a deferred entry would publish stop existing here; the rebuild
         // feed below already reflects the deletes, because it is a scan of what survived them.
+        //
+        // THAT "EVERY" IS WIDER THAN THIS ROUND OWNS, and it is an open defect rather than a
+        // property to rely on: a transaction that staged before this burst and commits after it
+        // loses its batch to a clear that was never about it. The account, the reproduction and
+        // why the narrowing is the owner's call are in bitcask_index_agent_t::clear and
+        // test_index_agent_rebuild_clear.cpp.
+        //
+        // WHAT "NOTHING IS AWAITED" COSTS, SAID PLAINLY: a clear that REFUSED still gets the two
+        // sends behind it, because they were posted before its verdict could exist. The statement
+        // does fail -- every future is folded into first_error below and returned -- but the store
+        // is then a correct SUPERSET rather than untouched: it kept what the clear could not
+        // remove and received the rebuild feed on top. "The round refused" and "the index is
+        // broken" are not the same sentence here, and the superset is the safe side of the two.
+        // Awaiting the clear before staging would trade that for the wiped-and-not-yet-refilled
+        // window this design exists to close, so the ordering stands as written.
         forget_deferred_deletes(table_oid);
         std::pmr::vector<unique_future<core::error_t>> futures(resource_);
         futures.reserve(it->second.size() * 3);

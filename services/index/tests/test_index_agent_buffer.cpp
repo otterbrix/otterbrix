@@ -215,7 +215,7 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
         CHECK(read(txn1, compare_type::eq).empty());
     }
 
-    SECTION("clear() wipes the buckets as well as the tree") {
+    SECTION("clear() wipes the tree and the REBUILD's bucket, and nobody else's") {
         REQUIRE_FALSE(
             ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 1}}))
                 .contains_error());
@@ -226,8 +226,23 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
         REQUIRE(read(txn2, compare_type::eq).size() == 2);
 
         REQUIRE_FALSE(ask<&index_agent_contract::clear>(agent, session).contains_error());
-        INFO("a clear that wiped only the durable half would leave a rebuilt index reporting phantom rows");
-        CHECK(read(txn2, compare_type::eq).empty());
+
+        // The durable half is gone: the committed row txn1 published is no longer there, so a
+        // clear that wiped only the buckets would leave a rebuilt index reporting phantom rows.
+        INFO("the committed row must not survive the clear");
+        CHECK(read(txn1, compare_type::eq).empty());
+
+        // But txn2's OWN staged row does survive, and that is the contract, not an oversight.
+        // clear() is the opening step of repopulate_table, which stages and commits under txn
+        // id 0; bucket 0 is therefore the only one this call is a part of. Taking txn2's
+        // bucket too made its later commit_inserts take the empty-journal road and report
+        // success over nothing -- the heap keeping a row the index does not name is a SHORT
+        // answer, the one direction that cannot be corrected downstream. Owner's decision,
+        // 2026-09-05; the defect is pinned per family by test_index_agent_rebuild_clear.cpp.
+        INFO("a live writer's staged keys are its own and must outlive a rebuild's clear");
+        auto own = read(txn2, compare_type::eq);
+        REQUIRE(own.size() == 1);
+        CHECK(own.front() == 2);
     }
 
     std::filesystem::remove_all(path);

@@ -24,10 +24,13 @@ namespace components::sql::transform {
     //
     // `query_end_location` is the offset of the first token of the trailing clause
     // that follows the body (WITH CHECK OPTION / WITH [NO] DATA / DISTRIBUTED BY),
-    // or -1 when there is none. -1 means "to the end of the statement", which is
-    // exact here because only the FIRST statement of a parse is ever executed (see
-    // wrapper_dispatcher_t::execute_sql, which takes linitial(raw_parser(...))).
-    // Trailing whitespace and statement terminators are trimmed.
+    // or -1 when there is none. -1 means "to the end of the raw text", which is
+    // exact here because a statement that reaches the transformer is the ONLY
+    // statement of its parse: wrapper_dispatcher_t::execute_sql refuses a
+    // multi-statement query outright (it used to take the first statement and drop
+    // the rest — under which "to the end" would have swallowed the NEXT statement's
+    // text into the view body). Trailing whitespace and statement terminators are
+    // trimmed.
     //
     // Refuses LOUDLY (rule 6) when the text is unavailable: no raw SQL at all, a
     // location the grammar never recorded (0) or deliberately disowned (-1, e.g.

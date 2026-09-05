@@ -98,6 +98,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_unary_plus.cpp
         test_multi_database_isolation.cpp
         test_view_expansion.cpp
+        test_statement_shape_refusal.cpp
         test_list_tables.cpp
         test_index_null_correctness.cpp
         test_aggregate_filter.cpp

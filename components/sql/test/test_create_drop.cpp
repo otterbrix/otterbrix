@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_create_index.hpp>
+#include <components/logical_plan/node_create_macro.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -323,4 +325,258 @@ TEST_CASE("components::sql::types") {
     // INSERT is wrapped in sequence_t(resolve_table, resolve_constraint,
     // insert) — no dbname so no resolve_namespace.
     TEST_TRANSFORMER_OK("INSERT INTO table_ (custom_type_name) VALUES (ROW('text', 42))", node_type::insert_t, 0, 1);
+}
+
+// A statement that names several objects must not report success after touching
+// one of them. `transform_drop` read `objects->lst.front()` and never looked at
+// the rest, so `DROP TABLE a, b` planned a single drop of `a`, executed cleanly,
+// and left `b` exactly where it was — with nothing in the answer to say so.
+TEST_CASE("components::sql::drop_names_every_object_or_refuses") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto refusal_of = [&](const char* query) {
+        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(result.has_error());
+        return std::string{result.error().what};
+    };
+
+    SECTION("DROP TABLE a, b") {
+        // BEFORE: no error at all; the plan was one drop_t naming only `first_table`.
+        const std::string what = refusal_of("DROP TABLE db_name.first_table, db_name.second_table");
+        CHECK(what.find("second_table") != std::string::npos);
+    }
+
+    SECTION("DROP SEQUENCE a, b") {
+        const std::string what = refusal_of("DROP SEQUENCE db_name.seq_a, db_name.seq_b");
+        CHECK(what.find("seq_b") != std::string::npos);
+    }
+
+    SECTION("DROP VIEW a, b, c") {
+        const std::string what = refusal_of("DROP VIEW db_name.v1, db_name.v2, db_name.v3");
+        CHECK(what.find("v2") != std::string::npos);
+        CHECK(what.find("v3") != std::string::npos);
+    }
+
+    SECTION("DROP INDEX a, b") {
+        const std::string what = refusal_of("DROP INDEX db_name.tbl.idx_a, db_name.tbl.idx_b");
+        CHECK(what.find("idx_b") != std::string::npos);
+    }
+
+    SECTION("DROP TYPE a, b") {
+        const std::string what = refusal_of("DROP TYPE type_a, type_b");
+        CHECK(what.find("type_b") != std::string::npos);
+    }
+
+    // One object per statement stays exactly as it was.
+    SECTION("a single object is still planned") {
+        auto stmt = raw_parser(&arena_resource, "DROP TABLE db_name.only_one")->lst.front().data;
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE_FALSE(result.has_error());
+        REQUIRE(result.value().sub_queries.back()->type() == node_type::drop_t);
+    }
+}
+
+// CREATE INDEX ... USING <method> collapsed every method that was not the literal
+// "hash" into index_type::single. `USING gin`, `USING brin`, `USING spgist` and a
+// plain typo all built a btree-shaped single index, reported success, and wrote
+// that into the catalog under the name the user asked for.
+TEST_CASE("components::sql::create_index_access_method") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto plan_of = [&](const char* query) {
+        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+    };
+
+    SECTION("USING gin is refused, and the refusal names gin") {
+        // BEFORE: success, and the node carried index_type::single.
+        auto result = plan_of("CREATE INDEX gin_idx ON db.tbl USING gin (field);");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("gin") != std::string::npos);
+    }
+
+    SECTION("a misspelled method is refused, and the refusal names it") {
+        auto result = plan_of("CREATE INDEX typo_idx ON db.tbl USING hsah (field);");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("hsah") != std::string::npos);
+    }
+
+    SECTION("USING brin is refused") {
+        REQUIRE(plan_of("CREATE INDEX brin_idx ON db.tbl USING brin (field);").has_error());
+    }
+
+    SECTION("USING spgist is refused") {
+        REQUIRE(plan_of("CREATE INDEX sp_idx ON db.tbl USING spgist (field);").has_error());
+    }
+
+    SECTION("USING hash still builds a hashed index") {
+        auto result = plan_of("CREATE INDEX h_idx ON db.tbl USING hash (field);");
+        REQUIRE_FALSE(result.has_error());
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::create_index_t);
+        CHECK(reinterpret_cast<node_create_index_ptr&>(node)->type() == index_type::hashed);
+    }
+
+    SECTION("USING btree, and the omitted clause, still build a single index") {
+        for (const char* query : {"CREATE INDEX b_idx ON db.tbl USING btree (field);",
+                                  "CREATE INDEX d_idx ON db.tbl (field);"}) {
+            auto result = plan_of(query);
+            REQUIRE_FALSE(result.has_error());
+            auto node = result.value().sub_queries.back();
+            REQUIRE(node->type() == node_type::create_index_t);
+            CHECK(reinterpret_cast<node_create_index_ptr&>(node)->type() == index_type::single);
+        }
+    }
+}
+
+// A clause the node cannot carry must be refused, not dropped. IndexStmt arrives
+// with `unique`, `whereClause`, `options` and `tableSpace` filled by the grammar
+// (gram.y: `CREATE opt_unique INDEX ... opt_reloptions OptTableSpace where_clause`),
+// and transform_create_index read NONE of them: `CREATE UNIQUE INDEX` built an
+// ordinary index that admits duplicates, a partial-index WHERE built a full index,
+// WITH options and TABLESPACE vanished — every one of them reported success while
+// doing something other than what was declared.
+TEST_CASE("components::sql::create_index_declared_clauses_are_not_dropped") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto plan_of = [&](const char* query) {
+        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+    };
+
+    SECTION("CREATE UNIQUE INDEX is refused, and the refusal says UNIQUE") {
+        // BEFORE: success — a plain (non-unique) index under the name the user asked
+        // for. The declared uniqueness was never enforced by anything.
+        auto result = plan_of("CREATE UNIQUE INDEX u_idx ON db.tbl (field);");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("UNIQUE") != std::string::npos);
+    }
+
+    SECTION("a partial-index WHERE is refused, not silently widened to a full index") {
+        auto result = plan_of("CREATE INDEX p_idx ON db.tbl (field) WHERE field > 0;");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("WHERE") != std::string::npos);
+    }
+
+    SECTION("WITH options are refused, not dropped") {
+        auto result = plan_of("CREATE INDEX w_idx ON db.tbl (field) WITH (fillfactor = 70);");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("WITH") != std::string::npos);
+    }
+
+    SECTION("TABLESPACE is refused, not dropped") {
+        auto result = plan_of("CREATE INDEX t_idx ON db.tbl (field) TABLESPACE fast_disk;");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("TABLESPACE") != std::string::npos);
+    }
+}
+
+// CREATE FUNCTION is lowered to a macro, and a macro is addressed by ONE name,
+// carries NAMED parameters and expands to its AS body — nothing else. Every
+// piece of the statement that cannot be carried used to be dropped without a
+// word, and the worst of them dropped the NAME itself: transform_create_function
+// read a one-part and a two-part funcname and had no else, so a three-part name
+// (`CREATE FUNCTION a.b.c(...)`) left BOTH dbname and relname empty — the macro
+// was registered under the empty string and the statement reported success.
+TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto plan_of = [&](const char* query) {
+        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+    };
+
+    SECTION("a three-part name is refused, and the refusal spells the name out") {
+        // BEFORE: success — a macro registered under the EMPTY name.
+        auto result = plan_of("CREATE FUNCTION cat.sch.fn(x INT) RETURNS INT AS 'x -> x';");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("cat.sch.fn") != std::string::npos);
+    }
+
+    SECTION("an unnamed parameter is refused: a macro parameter is addressed by name") {
+        // BEFORE: success — the parameter was skipped and the macro's arity lied.
+        auto result = plan_of("CREATE FUNCTION db.f(INT) RETURNS INT AS 'x -> x';");
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("a parameter DEFAULT is refused, not dropped") {
+        auto result = plan_of("CREATE FUNCTION db.f(x INT DEFAULT 5) RETURNS INT AS 'x -> x';");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("x") != std::string::npos);
+    }
+
+    SECTION("an OUT parameter is refused: a macro has no output parameters") {
+        auto result = plan_of("CREATE FUNCTION db.f(OUT x INT) RETURNS INT AS 'x -> x';");
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("RETURNS TABLE is refused: its columns are not input parameters") {
+        // BEFORE: success — the TABLE columns were merged into `parameters` by the
+        // grammar and became macro parameters, so the macro's arity was wrong.
+        auto result = plan_of("CREATE FUNCTION db.f(x INT) RETURNS TABLE (y INT) AS 'x -> x';");
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("an option other than AS is refused, and the refusal names it") {
+        // BEFORE: success with an EMPTY body — there is no AS clause here at all.
+        auto result = plan_of("CREATE FUNCTION db.f(x INT) RETURNS INT LANGUAGE sql;");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("language") != std::string::npos);
+    }
+
+    SECTION("an empty AS body is refused") {
+        auto result = plan_of("CREATE FUNCTION db.f(x INT) RETURNS INT AS '';");
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("a two-part AS clause is refused: an object file is not a macro body") {
+        auto result = plan_of("CREATE FUNCTION db.f(x INT) RETURNS INT AS 'obj_file', 'link_symbol';");
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("OR REPLACE is refused, not silently degraded to plain CREATE") {
+        // BEFORE: the replace flag was never read; against an existing function the
+        // statement failed as a duplicate instead of replacing, and nothing said why.
+        auto result = plan_of("CREATE OR REPLACE FUNCTION db.f(x INT) RETURNS INT AS 'x -> x';");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("OR REPLACE") != std::string::npos);
+    }
+
+    SECTION("a WITH definition is refused, not dropped") {
+        auto result = plan_of("CREATE FUNCTION db.f(x INT) RETURNS INT AS 'x -> x' WITH (isStrict);");
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("the supported shape still comes through whole") {
+        auto result = plan_of("CREATE FUNCTION db.add2(x INT, y INT) RETURNS INT AS 'x, y -> x + y';");
+        REQUIRE_FALSE(result.has_error());
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::create_macro_t);
+        auto& macro = reinterpret_cast<node_create_macro_ptr&>(node);
+        CHECK(macro->macroname() == "add2");
+        CHECK(macro->dbname() == "db");
+        REQUIRE(macro->parameters().size() == 2);
+        CHECK(macro->parameters()[0] == "x");
+        CHECK(macro->parameters()[1] == "y");
+        CHECK(macro->body_sql() == "x, y -> x + y");
+    }
+
+    SECTION("a one-part name still lands on relname, not on dbname") {
+        auto result = plan_of("CREATE FUNCTION solo(x INT) RETURNS INT AS 'x -> x';");
+        REQUIRE_FALSE(result.has_error());
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::create_macro_t);
+        auto& macro = reinterpret_cast<node_create_macro_ptr&>(node);
+        CHECK(macro->macroname() == "solo");
+        CHECK(macro->dbname().empty());
+    }
 }

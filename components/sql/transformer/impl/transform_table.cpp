@@ -169,6 +169,61 @@ namespace components::sql::transform {
     }
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_drop(DropStmt& node) {
+        // THE defect. Every arm below reads `node.objects->lst.front()` and never looks
+        // at the rest, so `DROP TABLE a, b, c` planned one drop of `a`, executed
+        // cleanly, reported SUCCESS — and left `b` and `c` exactly where they were,
+        // with nothing in the answer to say so. `any_name_list` (gram.y) accepts the
+        // comma list for every drop_type, so this reaches all six arms.
+        //
+        // One node_drop_t names one object, and execution_plan_t::sub_queries is a
+        // sub-query chain feeding parameters into a single consumer — not a statement
+        // list — so there is no channel here that could carry N independent drops.
+        // Rule 6: refuse, and name the objects that would have been skipped.
+        if (!node.objects || node.objects->lst.empty()) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"DROP names no object", resource_});
+        }
+        // `any_name_list` is a List of `any_name`, and every `any_name` is itself a
+        // non-empty List of T_String cells (gram.y: any_name / attrs both build through
+        // makeString). Checked once, here, for EVERY object and EVERY name part —
+        // because the six arms below reinterpret_cast the front cell to List* and then
+        // strVal() its parts, and strVal on a node that is not a T_String reads the
+        // integer half of the Value union AS A char*. This guard therefore covers the
+        // widest read in the function, not just its own.
+        for (const auto& object : node.objects->lst) {
+            if (!object.data || nodeTag(object.data) != T_List || pg_ptr_cast<List>(object.data)->lst.empty()) {
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"incorrect drop: malformed object name", resource_});
+            }
+            for (const auto& part : pg_ptr_cast<List>(object.data)->lst) {
+                if (!part.data || nodeTag(part.data) != T_String) {
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"incorrect drop: malformed object name", resource_});
+                }
+            }
+        }
+        if (node.objects->lst.size() > 1) {
+            std::pmr::string msg{"DROP names ", resource_};
+            msg += std::to_string(node.objects->lst.size());
+            msg += " objects in one statement (";
+            bool first = true;
+            for (const auto& object : node.objects->lst) {
+                if (!first) {
+                    msg += ", ";
+                }
+                first = false;
+                bool first_part = true;
+                for (const auto& part : pg_ptr_cast<List>(object.data)->lst) {
+                    if (!first_part) {
+                        msg += '.';
+                    }
+                    first_part = false;
+                    msg += strVal(part.data);
+                }
+            }
+            msg += "); only one object per DROP is supported — nothing was dropped";
+            return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
+        }
         auto wrap_one = [&](const std::string& db, const std::string& rel, logical_plan::node_ptr n) {
             auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
             drop->set_dbname(db);

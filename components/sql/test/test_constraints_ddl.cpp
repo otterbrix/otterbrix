@@ -506,3 +506,71 @@ TEST_CASE("components::sql::if_not_exists") {
         REQUIRE_FALSE(cc->if_not_exists());
     }
 }
+
+// A sequence bound is an int64, but the parse tree does not always keep it in the
+// integer slot. `NumericOnly` builds a T_Float for FCONST, and scan.l's
+// process_integer_literal sends EVERY literal outside int32 out as FCONST carrying
+// the original digits — so `MAXVALUE 9223372036854775807` arrives as a T_Float too.
+// transform_create_sequence called intVal() without looking at the tag, which reads
+// the `char*` half of the Value union AS A NUMBER: the bound persisted into the
+// catalog was the bit pattern of a pointer, different on every run.
+TEST_CASE("components::sql::sequence_bounds_are_read_by_node_tag") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto plan_of = [&](const char* query) {
+        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+    };
+    auto sequence_of = [&](const char* query) {
+        auto result = plan_of(query);
+        REQUIRE_FALSE(result.has_error());
+        auto node = ddl_consumer(result.value().sub_queries.back());
+        REQUIRE(node->type() == node_type::create_sequence_t);
+        return reinterpret_cast<node_create_sequence_ptr&>(node);
+    };
+
+    SECTION("a bound outside int32 is the value that was written, not a pointer") {
+        // BEFORE: start() was the bit pattern of the char* holding "5000000000".
+        auto seq = sequence_of("CREATE SEQUENCE db.big_seq START WITH 5000000000");
+        CHECK(seq->start() == 5000000000LL);
+    }
+
+    SECTION("the int64 ceiling round-trips exactly") {
+        auto seq = sequence_of("CREATE SEQUENCE db.max_seq MAXVALUE 9223372036854775807");
+        CHECK(seq->max_value() == std::numeric_limits<int64_t>::max());
+    }
+
+    SECTION("a negative bound outside int32 keeps its sign") {
+        auto seq = sequence_of("CREATE SEQUENCE db.neg_seq MINVALUE -5000000000 START WITH -4000000000");
+        CHECK(seq->min_value() == -5000000000LL);
+        CHECK(seq->start() == -4000000000LL);
+    }
+
+    SECTION("a fractional bound is refused, not rounded or read as a pointer") {
+        // PostgreSQL runs the FCONST text through int8in and rejects "1.5"; so do we.
+        auto result = plan_of("CREATE SEQUENCE db.frac_seq START WITH 1.5");
+        REQUIRE(result.has_error());
+        CHECK(std::string{result.error().what}.find("1.5") != std::string::npos);
+        CHECK(std::string{result.error().what}.find("start") != std::string::npos);
+    }
+
+    SECTION("every bound option is checked, not just START") {
+        REQUIRE(plan_of("CREATE SEQUENCE db.s1 INCREMENT BY 2.5").has_error());
+        REQUIRE(plan_of("CREATE SEQUENCE db.s2 MINVALUE 0.5").has_error());
+        REQUIRE(plan_of("CREATE SEQUENCE db.s3 MAXVALUE 1e6").has_error());
+    }
+
+    SECTION("a bound wider than int64 is refused rather than truncated") {
+        REQUIRE(plan_of("CREATE SEQUENCE db.huge_seq MAXVALUE 99999999999999999999").has_error());
+    }
+
+    SECTION("plain int32 bounds are unchanged") {
+        auto seq = sequence_of("CREATE SEQUENCE db.small_seq START 10 INCREMENT 2 MINVALUE 5 MAXVALUE 100");
+        CHECK(seq->start() == 10);
+        CHECK(seq->increment() == 2);
+        CHECK(seq->min_value() == 5);
+        CHECK(seq->max_value() == 100);
+    }
+}

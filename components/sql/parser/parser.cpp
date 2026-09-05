@@ -61,9 +61,20 @@ static List* base_raw_parser(std::pmr::memory_resource* resource, const char* st
     /* Clean up (release memory) */
     scanner_finish(yyscanner);
 
-    if (yyresult) /* error */
-        return NIL;
+    if (yyresult) {
+        // A grammar failure is NOT "there was nothing to parse", and this arm used to
+        // answer with the same empty list that an empty query produces — leaving the
+        // caller no way to tell the two apart. Everything the scanner and the grammar
+        // reject leaves through scanner_yyerror -> ereport, which throws; what is left
+        // here is bison's own abort (YYABORT, or its parser stack exhausted). Refuse in
+        // the channel the rest of this file already uses, so the empty list keeps
+        // exactly one meaning.
+        throw parser_exception_t("the parser aborted before a statement was built", "");
+    }
 
+    // May be an EMPTY list: the grammar discards "empty" statements (stmtmulti in
+    // gram.y), so empty input, a lone comment and a bare `;` all parse successfully
+    // into no statement at all. That is a legal answer, not a failure.
     return yyextra.parsetree;
 }
 
@@ -81,6 +92,12 @@ List* raw_parser(std::pmr::memory_resource* resource, const char* str) {
 *		Primary entry point. The core bison/flex parser runs first, only
 *		syntax the core rejects is offered to `extensions`. If no extension
 *		claims it, the original core-parser error is surfaced.
+*
+* Two outcomes, and they are different values:
+*   - a statement list, possibly EMPTY. Empty means the grammar accepted the text
+*     and found no statement in it (empty input, a lone comment, a bare `;`).
+*     Callers must therefore test list_length() before reaching for linitial();
+*   - a thrown parser_exception_t. That, and only that, means "did not parse".
 */
 List* raw_parser(std::pmr::memory_resource* resource,
                  const char* str,
@@ -89,10 +106,12 @@ List* raw_parser(std::pmr::memory_resource* resource,
 
     std::optional<parser_exception_t> base_error_opt;
     try {
-        List* tree = base_raw_parser(resource, str);
-        if (list_length(tree) > 0) {
-            return tree;
-        }
+        // The core grammar accepted the text, and that settles it either way. A tree
+        // with no statement in it is "nothing to parse", not "did not parse": there is
+        // no failure for an extension to rescue, so none is consulted. This used to
+        // fall through to the dispatch below, which handed every registered extension a
+        // query the core parser had already answered.
+        return base_raw_parser(resource, str);
     } catch (const parser_exception_t& error) {
         base_error_opt = error;
     }
@@ -101,14 +120,27 @@ List* raw_parser(std::pmr::memory_resource* resource,
     if (ext_result.has_error()) {
         throw parser_exception_t(ext_result.error().what.c_str(), "");
     }
-    if (ext_result.value() != NIL) {
+    // A claim is a tree with a statement in it. This used to be `!= NIL`, a POINTER
+    // test against the one shared empty-list sentinel — so an extension that declined
+    // with an empty list it had allocated itself passed the test, and raw_parser
+    // returned that empty tree: the core parser's syntax error went on the floor,
+    // `SELECT FROM` came back as success-with-no-statement, and the caller's linitial()
+    // reached for an element that does not exist. Emptiness is a property of the list,
+    // not of its address.
+    if (list_length(ext_result.value()) > 0) {
         return ext_result.value();
     }
 
+    // Reached only through the catch above, so the core parser's own diagnostic is
+    // always the one to surface.
     if (base_error_opt) {
         throw *base_error_opt;
     }
-    return NIL;
+    // Unreachable: the try either returns or records a parser_exception_t, and any other
+    // exception propagates past this function. Kept as a guard that fails LOUDLY —
+    // the one thing this tail must never do again is answer with an empty list, which
+    // is what made "did not parse" and "nothing to parse" the same value.
+    throw parser_exception_t("the parser produced neither a statement nor a diagnostic", "");
 }
 
 /*

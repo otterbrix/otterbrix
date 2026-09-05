@@ -133,19 +133,41 @@ namespace otterbrix {
 
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
         std::pmr::monotonic_buffer_resource parser_arena(resource());
-        void* parse_result;
+        List* parse_tree;
         try {
-            parse_result = linitial(raw_parser(&parser_arena, query.c_str(), parser_extensions_));
+            parse_tree = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
         } catch (const std::exception& exception) {
             return make_cursor(
                 resource(),
                 core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
         }
 
+        // parser.h's contract on this exact seam: the returned list may be EMPTY —
+        // the grammar accepted the text and found no statement in it — and it may
+        // hold MORE than one statement. linitial() alone answered both with the
+        // FRONT cell: on an empty list that is a read past the end of the pmr::list
+        // (the old "unknown parser error" arm only ever fired because that read
+        // happens to land on a zero), and on a multi-statement query it silently
+        // executed the FIRST statement, dropped the rest, and reported success.
+        if (list_length(parse_tree) == 0) {
+            return make_cursor(resource(),
+                               core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"the query contains no statement to execute (empty "
+                                                              "input, a comment, or a bare ';') — nothing was executed",
+                                                              resource()}));
+        }
+        if (list_length(parse_tree) > 1) {
+            std::pmr::string msg{"the query contains ", resource()};
+            msg += std::to_string(list_length(parse_tree));
+            msg += " statements; one statement per call is supported — nothing was executed";
+            return make_cursor(resource(), core::error_t(core::error_code_t::unimplemented_yet, std::move(msg)));
+        }
+        void* parse_result = linitial(parse_tree);
         if (!parse_result) {
             return make_cursor(resource(),
                                core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"unknown parser error", resource()}));
+                                             std::pmr::string{"the parser produced a statement with no node in it",
+                                                              resource()}));
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
         if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
@@ -169,19 +191,37 @@ namespace otterbrix {
 
         trace(log_, "wrapper_dispatcher_t::execute sql (params) session: {}", session.data());
         std::pmr::monotonic_buffer_resource parser_arena(resource());
-        void* parse_result;
+        List* parse_tree;
         try {
-            parse_result = linitial(raw_parser(&parser_arena, query.c_str(), parser_extensions_));
+            parse_tree = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
         } catch (const std::exception& exception) {
             return make_cursor(
                 resource(),
                 core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
         }
 
+        // Same seam and same contract as execute_sql above: an empty list is
+        // success-with-no-statement, a longer list is more statements than this
+        // call can honestly execute. Both used to fall into linitial().
+        if (list_length(parse_tree) == 0) {
+            return make_cursor(resource(),
+                               core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"the query contains no statement to execute (empty "
+                                                              "input, a comment, or a bare ';') — nothing was executed",
+                                                              resource()}));
+        }
+        if (list_length(parse_tree) > 1) {
+            std::pmr::string msg{"the query contains ", resource()};
+            msg += std::to_string(list_length(parse_tree));
+            msg += " statements; one statement per call is supported — nothing was executed";
+            return make_cursor(resource(), core::error_t(core::error_code_t::unimplemented_yet, std::move(msg)));
+        }
+        void* parse_result = linitial(parse_tree);
         if (!parse_result) {
             return make_cursor(resource(),
                                core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"unknown parser error", resource()}));
+                                             std::pmr::string{"the parser produced a statement with no node in it",
+                                                              resource()}));
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
         auto binder = local_transformer.transform(pg_cell_to_node_cast(parse_result));

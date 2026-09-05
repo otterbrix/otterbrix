@@ -130,8 +130,21 @@ namespace components::planner {
         // would let an exception escape into an actor coroutine (rule 9).
         try {
             auto* parsed = raw_parser(&parser_arena, view_sql.c_str());
-            if (!parsed) {
-                out.error = schema_error(resource, "view body re-parse returned null");
+            // parser.h's contract: the list is never null (the old `!parsed` arm
+            // proved nothing), but it may be EMPTY — the grammar accepted the text
+            // and found no statement in it — and it may hold several statements.
+            // linitial() alone read the FRONT cell either way: past the end of the
+            // pmr::list for an empty body, and silently discarding every statement
+            // after the first otherwise — the discarded half of a stored view body
+            // never came back, and the splice reported success.
+            if (list_length(parsed) == 0) {
+                out.error = schema_error(resource, "the view body re-parsed into no statement");
+                return out;
+            }
+            if (list_length(parsed) > 1) {
+                out.error = schema_error(resource,
+                                         "the view body re-parsed into " + std::to_string(list_length(parsed)) +
+                                             " statements; a view body is exactly one SELECT");
                 return out;
             }
             parse_cell = linitial(parsed);

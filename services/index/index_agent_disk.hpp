@@ -23,6 +23,7 @@
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/expressions/compare_expression.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
@@ -83,13 +84,25 @@ namespace services::index {
         unique_future<core::error_t>
         remove_many(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
 
-        // Equality read: every row id stored under `key`, duplicates included.
+        // THE read: every row id whose key satisfies `compare` against `key`, duplicates
+        // included.
         //
-        // This is the ONLY way a committed hashed-index row reaches a reader. It goes
-        // through index_disk_t::find, which reads the bitcask SNAPSHOT RECORD and
-        // unrolls the whole row list. The keydir cannot answer this question: it keeps
-        // one entry per key whose payload field is `rows.back()` (append_snapshot), so a
-        // reader that consults it silently drops every duplicate.
+        // This is the ONLY way a committed row of ANY disk-backed index reaches a reader
+        // — the hashed one since C1, the ordered one since C2b, which is why the message
+        // carries the predicate instead of meaning equality by name. The split below is
+        // the contract index_disk.hpp draws, not a type test:
+        //   eq            -> find(), which every backend answers. For bitcask that means
+        //                    reading the SNAPSHOT RECORD and unrolling the whole row
+        //                    list; its keydir cannot answer the question, keeping one
+        //                    entry per key whose payload field is `rows.back()`
+        //                    (append_snapshot), so a reader that consults it silently
+        //                    drops every duplicate.
+        //   lt/lte/gt/gte/ne -> scan_range(), the ORDERED contract. Only an ordered
+        //                    backend answers it; a hashed one has no ordering to scan and
+        //                    fails LOUDLY rather than returning an empty range. The guard
+        //                    that keeps a range off a hashed index is upstream, in
+        //                    manager_index_t, which asks the index whether it supports an
+        //                    ordered probe before dispatching anything.
         //
         // ONE STEP, no cursor. The whole matched set comes back in this single reply
         // (owner decision 4: parity with the pre-mailbox read; a cursor was weighed and
@@ -101,8 +114,9 @@ namespace services::index {
         // index that answers with a SUBSET is a wrong answer, not a fast one.
         //
         // Answered on THIS actor's resource(), and wrapped: an empty vector means "no
-        // row carries this key", never "the read did not happen".
-        unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>> find_rows(session_id_t session, value_t key);
+        // row satisfies the predicate", never "the read did not happen".
+        unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
+        read_rows(session_id_t session, components::expressions::compare_type compare, value_t key);
 
         // Mailbox flush handler — fanned out by manager_index_t::flush_all_indexes.
         // Guards on is_dropped_ internally (a dropped agent has no backing), then
@@ -114,7 +128,7 @@ namespace services::index {
                                                             &index_agent_disk_t::clear,
                                                             &index_agent_disk_t::insert_many,
                                                             &index_agent_disk_t::remove_many,
-                                                            &index_agent_disk_t::find_rows,
+                                                            &index_agent_disk_t::read_rows,
                                                             &index_agent_disk_t::force_flush>;
 
         auto make_type() const noexcept -> const char*;

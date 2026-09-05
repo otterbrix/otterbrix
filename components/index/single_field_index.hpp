@@ -37,6 +37,10 @@ namespace components::index {
         // An ordered b-tree: every predicate is answerable, so both bounds are real.
         [[nodiscard]] bool supports_ordered_probe_impl() const noexcept final { return true; }
 
+        // Committed and pending entries alike are in storage_, so a read is answered
+        // here and never travels a mailbox.
+        [[nodiscard]] bool reads_through_disk_agent_impl() const noexcept final { return false; }
+
         auto insert_impl(value_t, index_value_t value, core::date::timezone_offset_t local_timezone) -> void final;
         auto remove_impl(value_t key, core::date::timezone_offset_t local_timezone) -> void final;
         range find_impl(const value_t& value, core::date::timezone_offset_t local_timezone) const final;
@@ -64,7 +68,8 @@ namespace components::index {
         // in-memory index holds its committed and pending entries in one structure and
         // answers both from find_impl, so it is never read through a disk agent and
         // never has a txn-local half to fold back in.
-        void merge_uncommitted_rows_impl(const value_t& key,
+        void merge_uncommitted_rows_impl(expressions::compare_type compare,
+                                         const value_t& key,
                                          uint64_t txn_id,
                                          core::date::timezone_offset_t local_timezone,
                                          std::pmr::vector<int64_t>& rows) const final;

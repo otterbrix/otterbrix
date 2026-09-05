@@ -80,7 +80,7 @@ namespace components::index {
     auto disk_hash_single_field_index_t::remove_impl(value_t, core::date::timezone_offset_t) -> void {}
 
     // NO LONGER THE PRODUCTION READ PATH. A SELECT reaches this index's committed rows
-    // through its disk agent (index_agent_disk_t::find_rows, routed by
+    // through its disk agent (index_agent_disk_t::read_rows, routed by
     // manager_index_t::search) and folds the txn-local half back in through
     // merge_uncommitted_rows_impl below. This override still exists because index_t
     // requires it and the component's own unit tests exercise it directly; it reads the
@@ -208,10 +208,24 @@ namespace components::index {
         return out;
     }
 
-    void disk_hash_single_field_index_t::merge_uncommitted_rows_impl(const value_t& key,
+    void disk_hash_single_field_index_t::merge_uncommitted_rows_impl(expressions::compare_type compare,
+                                                                     const value_t& key,
                                                                      uint64_t txn_id,
                                                                      core::date::timezone_offset_t local_timezone,
                                                                      std::pmr::vector<int64_t>& rows) const {
+        // The predicate can only be eq here, and this is where that is checked rather
+        // than assumed. A hash bucket has no ordering (supports_ordered_probe() answers
+        // false and manager_index_t refuses a range on this index before dispatching any
+        // read), so a range arriving here means the guard was bypassed -- and byte
+        // equality below would then answer a range predicate with an equality, which is a
+        // wrong answer that no row count would look wrong enough to catch. Same shape as
+        // lower_bound_impl above. Unconditional -- std::abort() runs under NDEBUG too.
+        if (compare != expressions::compare_type::eq) {
+            assert(false &&
+                   "disk_hash_single_field_index_t::merge_uncommitted_rows_impl: a hash index answers only eq");
+            std::abort();
+        }
+
         // `rows` already holds the committed half, read out of this index's disk agent.
         // Add what has not reached disk yet, and only what the ASKING transaction is
         // entitled to see.

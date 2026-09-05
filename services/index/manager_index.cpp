@@ -2,16 +2,14 @@
 
 #include "bitcask_index_disk.hpp"
 #include "btree_index_disk.hpp"
-#include "btree_record_codec.hpp"
 #include "disk_hash_table.hpp"
 
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
 #include <components/index/disk_hash_single_field_index.hpp>
+#include <components/index/disk_ordered_single_field_index.hpp>
 #include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
-#include <components/index/single_field_index.hpp>
-#include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/executor.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/wal/record.hpp>
@@ -19,8 +17,6 @@
 #include <unordered_map>
 
 namespace {
-    using namespace core::b_plus_tree;
-
     using value_t = components::types::logical_value_t;
     using namespace components::types;
 
@@ -64,58 +60,6 @@ namespace {
         return core::error_t::no_error();
     }
 
-    // Rehydrate decode: the b+tree hands stored keys back as physical_value (via
-    // item_key_getter), which carries only the PHYSICAL type — the logical tag was erased.
-    // A DATE key therefore comes back as INT32 and re-enters the in-memory index as
-    // INTEGER (TIME/TIMESTAMP/TIMESTAMP_TZ as BIGINT). That is deliberate, not a gap this
-    // switch could close: the raw counters order and equal-compare identically, and
-    // single_field_index_t casts every later probe into its locked key domain, so lookups
-    // stay exact. Restoring the true temporal type would need the logical tag, i.e.
-    // decoding the raw item bytes with codec::read_logical_value instead of going through
-    // physical_value at the full_scan call sites.
-    value_t reverse_convert(std::pmr::memory_resource* r, const physical_value& pv) {
-        switch (pv.type()) {
-            case physical_type::NA:
-                // NULL keys are indexed (convert() maps them to the NA physical_value), so a
-                // rehydrated tree legitimately hands them back.
-                return value_t(r, complex_logical_type{logical_type::NA});
-            case physical_type::BOOL:
-                return value_t(r, pv.value<physical_type::BOOL>());
-            case physical_type::UINT8:
-                return value_t(r, pv.value<physical_type::UINT8>());
-            case physical_type::INT8:
-                return value_t(r, pv.value<physical_type::INT8>());
-            case physical_type::UINT16:
-                return value_t(r, pv.value<physical_type::UINT16>());
-            case physical_type::INT16:
-                return value_t(r, pv.value<physical_type::INT16>());
-            case physical_type::UINT32:
-                return value_t(r, pv.value<physical_type::UINT32>());
-            case physical_type::INT32:
-                return value_t(r, pv.value<physical_type::INT32>());
-            case physical_type::UINT64:
-                return value_t(r, pv.value<physical_type::UINT64>());
-            case physical_type::INT64:
-                return value_t(r, pv.value<physical_type::INT64>());
-            case physical_type::FLOAT:
-                return value_t(r, pv.value<physical_type::FLOAT>());
-            case physical_type::DOUBLE:
-                return value_t(r, pv.value<physical_type::DOUBLE>());
-            case physical_type::STRING: {
-                auto sv = pv.value<physical_type::STRING>();
-                return value_t(r, std::string(sv));
-            }
-            default:
-                // Unreachable from user data: the CREATE INDEX gate
-                // (is_representable_index_key_type) refuses every logical type whose physical
-                // encoding this switch does not carry, so nothing else was ever written into
-                // the tree. The old `return NA` collapsed such keys silently; die loudly.
-                // NDEBUG coverage gap: the suite builds Debug+DEV_MODE (the assert aborts
-                // first) — the std::abort() below is NOT exercised by any test.
-                assert(false && "reverse_convert: physical key type not representable");
-                std::abort();
-        }
-    }
 } // anonymous namespace
 
 namespace {
@@ -130,9 +74,13 @@ namespace services::index {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_index_repopulations{0};
+        std::atomic<uint64_t> g_index_agent_reads{0};
     } // namespace
     uint64_t index_repopulations() noexcept { return g_index_repopulations.load(std::memory_order_relaxed); }
     void reset_index_repopulations() noexcept { g_index_repopulations.store(0, std::memory_order_relaxed); }
+
+    uint64_t index_agent_reads() noexcept { return g_index_agent_reads.load(std::memory_order_relaxed); }
+    void reset_index_agent_reads() noexcept { g_index_agent_reads.store(0, std::memory_order_relaxed); }
 #endif
     manager_index_t::manager_index_t(std::pmr::memory_resource* resource,
                                      actor_zeta::scheduler_raw scheduler,
@@ -506,8 +454,11 @@ namespace services::index {
         uint32_t id_index = components::index::INDEX_ID_UNDEFINED;
         switch (type) {
             case components::logical_plan::index_type::single: {
-                id_index =
-                    components::index::make_index<components::index::single_field_index_t>(engine, index_oid, keys);
+                // The DEFAULT `CREATE INDEX` (see the note in create_index below).
+                id_index = components::index::make_index<components::index::disk_ordered_single_field_index_t>(
+                    engine,
+                    index_oid,
+                    keys);
                 break;
             }
             case components::logical_plan::index_type::hashed: {
@@ -567,50 +518,27 @@ namespace services::index {
             return;
         }
 
-        // Wire the in-memory index_t to its disk-persistence actor address
-        // (mirrors create_index below).
-        if (auto* idx = components::index::search_index(engine, keys); idx) {
+        // Wire the index_t to its disk-persistence actor address (mirrors create_index
+        // below). Looked up by INDEXRELID, not by keys: mapper_ is keyed by the key set
+        // alone, so on a table carrying both an ordered and a hashed index over the SAME
+        // column — which the planner expects, since it only routes a range predicate when
+        // a NON-hashed index also covers the key — a keys lookup answers whichever was
+        // registered first and would hand the second index's agent to the first. That is
+        // harmless while both indexes answer from their own memory and fatal once the
+        // address IS the read path: the ordered facade would be reading the bitcask store.
+        if (auto* idx = engine->matching_relid(index_oid); idx) {
             idx->set_disk_agent(disk_agent_addr, address());
             engine->add_disk_agent(id_index, disk_agent_addr);
         }
 
-        // Rehydrate the in-memory btree from the on-disk b+tree. Without this the
-        // engine is wired but its in-memory storage_ is empty, so post-restart
-        // equality predicates (routed through index_scan) return 0 rows even
-        // though the on-disk btree is intact.
-        if (!path_db_.empty() && type == components::logical_plan::index_type::single) {
-            auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) /
-                              std::to_string(static_cast<unsigned>(index_oid));
-            if (std::filesystem::exists(btree_path / "metadata")) {
-                core::filesystem::local_file_system_t fs;
-                auto db = std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, btree_path, item_key_getter);
-                db->load();
-                if (db->size() > 0) {
-                    struct pv_entry {
-                        components::types::physical_value key;
-                        int64_t row_id;
-                    };
-                    std::pmr::vector<pv_entry> raw(resource_);
-                    db->full_scan<pv_entry>(&raw, [](void* data, size_t sz) -> pv_entry {
-                        auto item =
-                            core::b_plus_tree::btree_t::item_data{static_cast<core::b_plus_tree::data_ptr_t>(data),
-                                                                  static_cast<uint32_t>(sz)};
-                        return {
-                            item_key_getter(item),
-                            static_cast<int64_t>(id_getter(item).value<components::types::physical_type::UINT64>())};
-                    });
-                    if (auto* idx = components::index::search_index(engine, keys); idx) {
-                        // Bootstrap has no session — default-construct tz (UTC).
-                        const core::date::timezone_offset_t bootstrap_tz{};
-                        for (auto& e : raw) {
-                            idx->insert(reverse_convert(resource_, e.key), e.row_id, bootstrap_tz);
-                        }
-                        trace(log_, "bootstrap_index_sync: loaded {} entries from btree", raw.size());
-                    }
-                }
-            }
-        }
-
+        // NOTHING IS REHYDRATED HERE, and the absence is the change. What stood in this
+        // spot opened a SECOND core::b_plus_tree::btree_t on ${path_db}/${table}/${index}
+        // — the very directory this agent's btree_index_disk_t has open — from the
+        // manager's own thread, and replayed every entry into an in-memory twin, because
+        // reads were answered from that twin. Reads now go to the agent that owns the
+        // tree (search_with_preferred_type -> index_agent_disk_t::read_rows), so the twin
+        // is gone and with it the second owner of those files (rule 10).
+        //
         // Per-oid fan-out registration (used by commit_* and on_horizon_advanced
         // GC). Insertion order matches create_index for runtime/bootstrap parity.
         auto oid_it =
@@ -674,7 +602,10 @@ namespace services::index {
         components::catalog::oid_t index_oid,
         components::index::keys_base_storage_t keys,
         components::logical_plan::index_type type,
-        core::date::timezone_offset_t session_tz) {
+        // Unused since the btree replay below it was removed: nothing in CREATE INDEX
+        // interprets a key any more. It stays in the signature because it is part of
+        // index_contract::create_index, which every caller sends.
+        core::date::timezone_offset_t /*session_tz*/) {
         trace(log_,
               "manager_index_t::create_index: index_oid={} on oid={}",
               static_cast<unsigned>(index_oid),
@@ -703,8 +634,22 @@ namespace services::index {
         services::index::disk_hash_table_ptr shared_hash_storage;
         switch (type) {
             case components::logical_plan::index_type::single: {
-                id_index =
-                    components::index::make_index<components::index::single_field_index_t>(engine, index_oid, keys);
+                // THE DEFAULT `CREATE INDEX`. SQL has one explicit spelling, `USING hash`;
+                // everything else — including no USING clause at all — arrives here
+                // (transform_index.cpp, detect_index_type). So this line decides the engine
+                // under the statement almost every user writes.
+                //
+                // No `path_db_.empty()` branch, unlike the hashed case below, and that is a
+                // property of this facade rather than an oversight: it holds neither a
+                // handle nor a path, so there is nothing for an empty path to change in its
+                // construction. What an empty path WOULD change is whether an agent gets
+                // spawned at all, and the read path refuses to guess about that — see
+                // search_with_preferred_type, which fails loudly on a facade with no agent
+                // wired instead of answering an empty result set.
+                id_index = components::index::make_index<components::index::disk_ordered_single_field_index_t>(
+                    engine,
+                    index_oid,
+                    keys);
                 break;
             }
             case components::logical_plan::index_type::hashed: {
@@ -748,42 +693,11 @@ namespace services::index {
         }
 
         if (id_index != components::index::INDEX_ID_UNDEFINED) {
-            // Load index data from btree (persistent storage). Path layout
-            // mirrors disk-side ${path_db}/${table_oid}/${index_oid}/.
-            if (!path_db_.empty() && type == components::logical_plan::index_type::single) {
-                auto btree_path = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) /
-                                  std::to_string(static_cast<unsigned>(index_oid));
-                if (std::filesystem::exists(btree_path / "metadata")) {
-                    core::filesystem::local_file_system_t fs;
-                    auto db = std::make_unique<core::b_plus_tree::btree_t>(resource_, fs, btree_path, item_key_getter);
-                    db->load();
-
-                    if (db->size() > 0) {
-                        struct pv_entry {
-                            components::types::physical_value key;
-                            int64_t row_id;
-                        };
-                        std::pmr::vector<pv_entry> raw(resource_);
-                        db->full_scan<pv_entry>(&raw, [](void* data, size_t sz) -> pv_entry {
-                            auto item =
-                                core::b_plus_tree::btree_t::item_data{static_cast<core::b_plus_tree::data_ptr_t>(data),
-                                                                      static_cast<uint32_t>(sz)};
-                            return {item_key_getter(item),
-                                    static_cast<int64_t>(
-                                        id_getter(item).value<components::types::physical_type::UINT64>())};
-                        });
-
-                        auto* idx = components::index::search_index(engine, keys);
-                        if (idx) {
-                            for (auto& e : raw) {
-                                idx->insert(reverse_convert(resource_, e.key), e.row_id, session_tz);
-                            }
-                            trace(log_, "create_index: loaded {} entries from btree", raw.size());
-                        }
-                    }
-                }
-            }
-
+            // No btree replay into an in-memory twin here either — see the note in
+            // bootstrap_index_sync. Whatever a pre-existing tree at this oid pair holds is
+            // already loaded by the agent's own btree_index_disk_t constructor, which is
+            // the only owner of those files.
+            //
             // Create disk agent for persistent storage
             if (!path_db_.empty()) {
                 // Runtime DDL path: a fresh index dir with no txn-log to
@@ -803,9 +717,10 @@ namespace services::index {
                                                           std::pmr::set<std::uint64_t>(resource_),
                                                           shared_hash_storage);
 
-                // Link disk agent with in-memory index
-                auto* idx = components::index::search_index(engine, keys);
-                if (idx) {
+                // Link the disk agent to the index it belongs to, BY INDEXRELID — see
+                // bootstrap_index_sync for why a keys lookup misroutes a second index over
+                // an already-indexed column.
+                if (auto* idx = engine->matching_relid(index_oid); idx) {
                     idx->set_disk_agent(agent->address(), address());
                     engine->add_disk_agent(id_index, agent->address());
                 }
@@ -1527,26 +1442,43 @@ namespace services::index {
                                  resource_}};
         }
 
-        // Disk-backed HASHED index: the committed rows live in the agent and are read by
-        // message. Everything else still answers from its in-memory structure. The
-        // ordered b+tree backend now speaks the whole predicate set honestly
-        // (btree_index_disk_t::scan_range — C2a), but ROUTING index_type::single onto it
-        // is C2b: today that index is still constructed as an in-memory
-        // single_field_index_t, whose own storage holds the answer.
-        const bool read_through_agent =
-            index->is_disk() && index->type() == components::logical_plan::index_type::hashed;
-        if (!read_through_agent) {
+        // A DISK-BACKED index keeps its committed rows in its agent and is read by
+        // message; an in-memory one answers from its own structure. BOTH disk facades take
+        // this road now — the hashed one since C1, the ordered one (the engine behind a
+        // plain CREATE INDEX) since C2b, which is why the question is no longer
+        // "is_disk() and hashed?" but one the index answers about itself.
+        if (!index->reads_through_disk_agent()) {
             co_return index->search(compare, value, start_time, txn_id, session_tz);
+        }
+        if (!index->is_disk()) {
+            // Registered as a disk facade but never wired to an agent — so its committed
+            // rows have no reachable home. Both wiring sites (create_index,
+            // bootstrap_index_sync) can skip set_disk_agent when the index they just
+            // registered cannot be looked up again, and an unwired facade would otherwise
+            // send this read to the empty address. An error, not an empty vector: the
+            // rows exist, we simply cannot reach them.
+            co_return core::error_t{
+                core::error_code_t::index_not_exists,
+                std::pmr::string{"index search: the index reads through a disk agent, but none is wired to it",
+                                 resource_}};
         }
 
         // Remember the index's OWN oid before the await. The address is enough to send,
         // but not to come back to: see the re-lookup below.
         const auto index_oid = index->oid();
         auto agent_addr = index->disk_agent();
+#ifdef DEV_MODE
+        g_index_agent_reads.fetch_add(1, std::memory_order_relaxed);
+#endif
+        // The PREDICATE travels with the key. An ordered backend answers all six of them
+        // (btree_index_disk_t::scan_range, C2a); a hashed one answers eq and refuses the
+        // rest loudly, which the supports_ordered_probe() guard above keeps it from ever
+        // having to do.
         auto [needs_sched, agent_future] =
             actor_zeta::otterbrix::send(agent_addr,
-                                        &index_agent_disk_t::find_rows,
+                                        &index_agent_disk_t::read_rows,
                                         session,
+                                        compare,
                                         components::types::logical_value_t(resource_, value));
         schedule_agent(agent_addr, needs_sched);
         auto agent_result = co_await std::move(agent_future);
@@ -1576,7 +1508,7 @@ namespace services::index {
         // deliberately a SUPERSET filter, not a visibility one: which committed rows a
         // reader may SEE is the table's decision, and storage_fetch applies it.
         auto rows = std::move(agent_result.value());
-        index_after->merge_uncommitted_rows(value, txn_id, session_tz, rows);
+        index_after->merge_uncommitted_rows(compare, value, txn_id, session_tz, rows);
         co_return std::move(rows);
     }
 

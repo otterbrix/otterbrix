@@ -76,8 +76,8 @@ namespace services::index {
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::remove_many>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::remove_many, msg);
                 break;
-            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::find_rows>:
-                co_await actor_zeta::dispatch(this, &index_agent_disk_t::find_rows, msg);
+            case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::read_rows>:
+                co_await actor_zeta::dispatch(this, &index_agent_disk_t::read_rows, msg);
                 break;
             case actor_zeta::msg_id<index_agent_disk_t, &index_agent_disk_t::force_flush>:
                 co_await actor_zeta::dispatch(this, &index_agent_disk_t::force_flush, msg);
@@ -167,8 +167,8 @@ namespace services::index {
     }
 
     index_agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
-    index_agent_disk_t::find_rows(session_id_t session, value_t key) {
-        trace(log_, "index_agent_disk_t::find_rows, session: {}", session.data());
+    index_agent_disk_t::read_rows(session_id_t session, components::expressions::compare_type compare, value_t key) {
+        trace(log_, "index_agent_disk_t::read_rows, session: {}", session.data());
         if (is_dropped_) {
             // drop() released the backing (bitcask resets its store, the btree its
             // tree), so there is nothing left to read and reading it would touch freed
@@ -177,12 +177,22 @@ namespace services::index {
             // Say so; an empty answer would read as "no such row".
             co_return core::error_t{
                 core::error_code_t::index_not_exists,
-                std::pmr::string{"index_agent_disk_t::find_rows: the index has been dropped", resource()}};
+                std::pmr::string{"index_agent_disk_t::read_rows: the index has been dropped", resource()}};
         }
         // index_disk_t::result is size_t-wide; row ids are int64_t everywhere above this
         // actor. Convert once, here, so the reply carries the type the reader uses.
+        //
+        // Equality goes to find() and the other five to scan_range() because that is the
+        // split index_disk_t draws: find() is the contract EVERY backend answers,
+        // scan_range() the ordered one only an ordered backend answers. Routing eq
+        // through scan_range instead would send it into bitcask's abort, and routing a
+        // range through find() would silently answer it as an equality.
         index_disk_t::result found(resource());
-        index_disk_->find(key, found);
+        if (compare == components::expressions::compare_type::eq) {
+            index_disk_->find(key, found);
+        } else {
+            index_disk_->scan_range(compare, key, found);
+        }
         std::pmr::vector<int64_t> rows(resource());
         rows.reserve(found.size());
         for (auto row : found) {

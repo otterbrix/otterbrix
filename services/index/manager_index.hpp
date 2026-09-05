@@ -34,6 +34,15 @@ namespace services::index {
     // apart from "the shutdown checkpoint did", which a profile cannot.
     uint64_t index_repopulations() noexcept;
     void reset_index_repopulations() noexcept;
+
+    // Test-observable count of index reads DISPATCHED TO A DISK AGENT (one per
+    // index_agent_disk_t::read_rows send). It is what separates "the SELECT returned the
+    // right rows" from "the SELECT returned the right rows FROM THE INDEX ENGINE THIS
+    // BRANCH BUILT": a facade that registers, is chosen by the planner, and answers out
+    // of some in-memory twin returns exactly the same rows, and no row assertion
+    // anywhere can tell the two apart. Zero means every read was answered locally.
+    uint64_t index_agent_reads() noexcept;
+    void reset_index_agent_reads() noexcept;
 #endif
 
     // Bootstrap address bundle for sync() (plain named struct — no std::tuple,

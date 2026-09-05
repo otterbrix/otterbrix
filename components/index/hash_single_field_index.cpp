@@ -220,7 +220,8 @@ namespace components::index {
         pending_deletes_.clear();
     }
 
-    void hash_single_field_index_t::merge_uncommitted_rows_impl(const value_t&,
+    void hash_single_field_index_t::merge_uncommitted_rows_impl(expressions::compare_type,
+                                                                const value_t&,
                                                                 uint64_t,
                                                                 core::date::timezone_offset_t,
                                                                 std::pmr::vector<int64_t>&) const {

@@ -145,6 +145,18 @@ namespace components::index {
         // them: manager_index_t consults it before dispatching any read.
         [[nodiscard]] bool supports_ordered_probe() const noexcept;
 
+        // Where do this index's COMMITTED rows live -- in its own memory, or in the
+        // b+tree / bitcask store owned by its disk agent, reachable only by message?
+        //
+        // Asked OF the index for the same reason supports_ordered_probe() is: the answer
+        // is a property of the implementation. The caller used to guess it from
+        // `is_disk() && type() == hashed`, which is two guesses -- an address that happens
+        // to be wired, and an enumerator -- standing in for one fact the class knows.
+        // A wrong guess is silent both ways round: reading a disk facade locally answers
+        // from an empty structure, and sending an in-memory index's rows through an agent
+        // that holds none answers nothing.
+        [[nodiscard]] bool reads_through_disk_agent() const noexcept;
+
         bool is_disk() const noexcept;
         const actor_zeta::address_t& disk_agent() const noexcept;
         const actor_zeta::address_t& disk_manager() const noexcept;
@@ -189,7 +201,7 @@ namespace components::index {
         pending_entries_t pending_inserts(uint64_t txn_id) const;
         pending_entries_t pending_deletes(uint64_t txn_id) const;
 
-        // Fold the txn-local half of an equality lookup into `rows`.
+        // Fold the txn-local half of a lookup into `rows`.
         //
         // For a disk-backed index the two halves of an answer live in two different
         // places. The COMMITTED half is on disk and is read out of the index's own
@@ -205,10 +217,18 @@ namespace components::index {
         // pending transaction with two map lookups, which is also why nothing here
         // needs an insert_id / delete_id stamp.
         //
+        // `compare` is the SAME predicate the agent answered, and it is a parameter
+        // rather than an assumption because an ORDERED index can be asked all six. A
+        // pending row keyed 3 belongs in the answer to `x < 5` and not in the answer to
+        // `x = 5`; a merge that only knew how to test equality would silently drop the
+        // first, which is a transaction failing to see its own write. A hashed index is
+        // only ever asked eq, and its implementation says so.
+        //
         // NOT called for an in-memory index: it keeps committed and pending entries in
         // one structure and answers both from find(). The implementations there say so
         // loudly rather than inheriting a no-op.
-        void merge_uncommitted_rows(const value_t& key,
+        void merge_uncommitted_rows(expressions::compare_type compare,
+                                    const value_t& key,
                                     uint64_t txn_id,
                                     core::date::timezone_offset_t local_timezone,
                                     std::pmr::vector<int64_t>& rows) const;
@@ -248,7 +268,8 @@ namespace components::index {
         // there is no default to fall into. A do-nothing default would let an index
         // whose committed rows come from a disk agent inherit "nothing pending", and a
         // transaction would stop seeing its own writes with nothing reporting it.
-        virtual void merge_uncommitted_rows_impl(const value_t& key,
+        virtual void merge_uncommitted_rows_impl(expressions::compare_type compare,
+                                                 const value_t& key,
                                                  uint64_t txn_id,
                                                  core::date::timezone_offset_t local_timezone,
                                                  std::pmr::vector<int64_t>& rows) const = 0;
@@ -261,6 +282,12 @@ namespace components::index {
         // default `true` would put an unordered index back on the path that crashes and a
         // default `false` would silently strip range predicates off an ordered one.
         [[nodiscard]] virtual bool supports_ordered_probe_impl() const noexcept = 0;
+
+        // Same NVI shape, same reason there is no default: `false` would route a disk
+        // facade's read into an in-memory structure it does not have, and `true` would
+        // send an in-memory index's read to an agent that holds none of its rows. Both
+        // answer zero rows and report success.
+        [[nodiscard]] virtual bool reads_through_disk_agent_impl() const noexcept = 0;
 
         std::pmr::memory_resource* resource_;
         index_type type_;

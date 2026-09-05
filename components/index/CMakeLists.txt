@@ -6,6 +6,7 @@ set(${PROJECT_NAME}_SOURCES
         single_field_index.cpp
         hash_single_field_index.cpp
         disk_hash_single_field_index.cpp
+        disk_ordered_single_field_index.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

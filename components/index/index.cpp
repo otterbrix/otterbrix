@@ -159,6 +159,8 @@ namespace components::index {
 
     bool index_t::supports_ordered_probe() const noexcept { return supports_ordered_probe_impl(); }
 
+    bool index_t::reads_through_disk_agent() const noexcept { return reads_through_disk_agent_impl(); }
+
     bool index_t::is_disk() const noexcept { return disk_agent_ != actor_zeta::address_t::empty_address(); }
 
     const actor_zeta::address_t& index_t::disk_agent() const noexcept { return disk_agent_; }
@@ -278,17 +280,19 @@ namespace components::index {
 
     index_t::pending_entries_t index_t::pending_deletes(uint64_t txn_id) const { return pending_deletes_impl(txn_id); }
 
-    void index_t::merge_uncommitted_rows(const value_t& key,
+    void index_t::merge_uncommitted_rows(expressions::compare_type compare,
+                                         const value_t& key,
                                          uint64_t txn_id,
                                          core::date::timezone_offset_t local_timezone,
                                          std::pmr::vector<int64_t>& rows) const {
         // Same NULL rule as find/insert above, enforced in the ONE place that owns the
         // invariant: a NULL key is never stored, so no pending bucket can hold it and
-        // there is nothing to fold in.
+        // there is nothing to fold in. It also holds for every predicate, not only eq:
+        // `col <op> NULL` is UNKNOWN for every row, so the committed half is empty too.
         if (is_null_key(key)) {
             return;
         }
-        merge_uncommitted_rows_impl(key, txn_id, local_timezone, rows);
+        merge_uncommitted_rows_impl(compare, key, txn_id, local_timezone, rows);
     }
 
     void index_t::clean_memory_to_new_elements(std::size_t count) noexcept { clean_memory_to_new_elements_impl(count); }

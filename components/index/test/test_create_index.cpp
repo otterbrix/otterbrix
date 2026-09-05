@@ -18,6 +18,9 @@ private:
     // The fake stands in for an ordered index (index_type::single) and hands back real
     // ranges from both bounds, so it answers yes.
     [[nodiscard]] bool supports_ordered_probe_impl() const noexcept override { return true; }
+    // The fake keeps its (empty) storage in memory and answers from it, exactly as the
+    // in-memory indexes do, so no read of it travels a mailbox.
+    [[nodiscard]] bool reads_through_disk_agent_impl() const noexcept override { return false; }
     void insert_impl(value_t, index_value_t, core::date::timezone_offset_t) override {}
     void remove_impl(value_t, core::date::timezone_offset_t) override {}
     range find_impl(const value_t&, core::date::timezone_offset_t) const override {
@@ -46,7 +49,8 @@ private:
     // The fake holds no pending state and is never read through a disk agent, so this
     // hook has nothing to fold in. Stated explicitly because index_t leaves no default
     // to inherit (see index.hpp).
-    void merge_uncommitted_rows_impl(const value_t&,
+    void merge_uncommitted_rows_impl(components::expressions::compare_type,
+                                     const value_t&,
                                      uint64_t,
                                      core::date::timezone_offset_t,
                                      std::pmr::vector<int64_t>&) const override {}

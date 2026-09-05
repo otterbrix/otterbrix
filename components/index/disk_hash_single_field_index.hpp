@@ -58,6 +58,11 @@ namespace components::index {
         // unreachable-and-terminal, and this is what keeps callers away from them.
         [[nodiscard]] bool supports_ordered_probe_impl() const noexcept final { return false; }
 
+        // The committed rows are in the bitcask store this index's disk agent owns; only
+        // the txn-local half is here. Stated by the class, not inferred by the caller
+        // from a wired address (see index.hpp).
+        [[nodiscard]] bool reads_through_disk_agent_impl() const noexcept final { return true; }
+
         auto insert_impl(value_t, index_value_t, core::date::timezone_offset_t local_timezone) -> void final;
         auto remove_impl(value_t, core::date::timezone_offset_t local_timezone) -> void final;
         range find_impl(const value_t&, core::date::timezone_offset_t local_timezone) const final;
@@ -81,7 +86,8 @@ namespace components::index {
         void cleanup_versions_impl(uint64_t lowest_active) final;
         index_t::pending_entries_t pending_inserts_impl(uint64_t txn_id) const final;
         index_t::pending_entries_t pending_deletes_impl(uint64_t txn_id) const final;
-        void merge_uncommitted_rows_impl(const value_t& key,
+        void merge_uncommitted_rows_impl(expressions::compare_type compare,
+                                         const value_t& key,
                                          uint64_t txn_id,
                                          core::date::timezone_offset_t local_timezone,
                                          std::pmr::vector<int64_t>& rows) const final;

@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/casts/cast_registry.hpp>
+#include <core/pmr.hpp>
 
 #include <algorithm>
 
@@ -10,12 +11,20 @@ using types::complex_logical_type;
 using types::logical_type;
 
 namespace {
+    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
+    // path, and that message belongs to the caller, so the caller has to name an arena it owns
+    // rather than reach for the process-global one (rule 14).
+    std::pmr::memory_resource* decimal_resource() {
+        static core::pmr::otterbrix_resource arena;
+        return &arena;
+    }
+
     // create_decimal reports an out-of-window (width, scale) through core::error_t. Every
     // literal these tests use is inside the window, so the helper checks the result and
     // hands back the type.
     components::types::complex_logical_type
     make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
-        auto created = components::types::complex_logical_type::create_decimal(width, scale, std::move(alias));
+        auto created = components::types::complex_logical_type::create_decimal(decimal_resource(), width, scale, std::move(alias));
         REQUIRE_FALSE(created.has_error());
         return std::move(created.value());
     }

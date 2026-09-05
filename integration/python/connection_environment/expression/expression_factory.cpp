@@ -16,8 +16,8 @@ using namespace components::expressions;
 namespace otterbrix {
 
     expression_factory_t::expression_factory_t(const boost::intrusive_ptr<otterbrix_t>& space)
-        : counter(0)
-        , space(space) {}
+        : space(space)
+        , counter(0) {}
 
     expression_factory_t::~expression_factory_t() = default;
 

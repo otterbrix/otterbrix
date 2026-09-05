@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cstdint>
 #include <limits>
+#include <memory_resource>
 #include <string_view>
 #include <type_traits>
 
@@ -163,8 +164,15 @@ namespace components::casts {
         // (18, 0) is inside the DECIMAL window by inspection, so create_decimal cannot
         // refuse it; the check is here because the compiler cannot know that and rule 6
         // forbids reading a result without looking at its error.
+        //
+        // The resource is null_memory_resource() BECAUSE the refusal is unreachable: the pair
+        // is a literal, so the only allocation create_decimal could make never happens. This
+        // helper has no arena of its own (it is a free function building a constant key), and
+        // rule 14 leaves no process-global to borrow; naming null states the invariant the
+        // assert below states, and makes a future edit that breaks it fail loudly instead of
+        // quietly allocating on whatever arena happens to be the process default.
         [[nodiscard]] complex_logical_type decimal_key() {
-            auto created = complex_logical_type::create_decimal(18, 0);
+            auto created = complex_logical_type::create_decimal(std::pmr::null_memory_resource(), 18, 0);
             assert(!created.has_error() && "decimal_key: DECIMAL(18,0) is inside the window");
             return std::move(created.value());
         }

@@ -20,6 +20,21 @@ using namespace components;
 namespace otterbrix {
 
     namespace {
+        // The chaining input a factory call takes. Spelling the aggregate inline would
+        // copy-construct the schema vector, and a std::pmr::vector's copy constructor does NOT
+        // propagate the source's allocator -- a whole column schema would be rebuilt on the
+        // process-wide default resource on every project/filter/sort/group/join/limit hop, while
+        // the relation it was copied from keeps its arena alive through space_. Naming the source
+        // vector's own resource is what makes the copy stay where the original lives.
+        built_relation_t
+        relation_input(const components::logical_plan::node_ptr& node,
+                       const std::pmr::vector<components::table::column_definition_t>& schema) {
+            return built_relation_t{node,
+                                    std::pmr::vector<components::table::column_definition_t>(
+                                        schema,
+                                        schema.get_allocator().resource())};
+        }
+
         std::optional<logical_plan::join_type> parse_join_type(const std::string& name) {
             if (name == "inner") {
                 return logical_plan::join_type::inner;
@@ -116,7 +131,9 @@ namespace otterbrix {
             }
             fields.push_back(py_expr->get_expression());
         }
-        return std::make_unique<py_relation_t>(env, conn.select_relation({node_, schema_}, std::move(fields)));
+        return std::make_unique<py_relation_t>(env,
+                                              conn.select_relation(relation_input(node_, schema_),
+                                                                   std::move(fields)));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::filter(const py::object& condition) {
@@ -131,7 +148,7 @@ namespace otterbrix {
         }
 
         const auto& expr = py_expr->get_expression();
-        return std::make_unique<py_relation_t>(env, conn.filter_relation({node_, schema_}, expr));
+        return std::make_unique<py_relation_t>(env, conn.filter_relation(relation_input(node_, schema_), expr));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::order(const std::string& arg) {
@@ -140,7 +157,7 @@ namespace otterbrix {
         auto& conn = live_env();
         auto* factory = get_expression_factory();
         auto expr = factory->sort_expression(arg);
-        return std::make_unique<py_relation_t>(env, conn.sort_relation({node_, schema_}, {expr}));
+        return std::make_unique<py_relation_t>(env, conn.sort_relation(relation_input(node_, schema_), {expr}));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::sort(const py::args& args) {
@@ -163,7 +180,9 @@ namespace otterbrix {
                 order_nodes.push_back(std::move(sorted.value()));
             }
         }
-        return std::make_unique<py_relation_t>(env, conn.sort_relation({node_, schema_}, std::move(order_nodes)));
+        return std::make_unique<py_relation_t>(env,
+                                              conn.sort_relation(relation_input(node_, schema_),
+                                                                 std::move(order_nodes)));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::group(const py::args& args) {
@@ -180,7 +199,9 @@ namespace otterbrix {
                 fields.push_back(expr);
             }
         }
-        return std::make_unique<py_relation_t>(env, conn.group_relation({node_, schema_}, std::move(fields)));
+        return std::make_unique<py_relation_t>(env,
+                                              conn.group_relation(relation_input(node_, schema_),
+                                                                  std::move(fields)));
     }
 
     std::unique_ptr<py_relation_t>
@@ -213,7 +234,10 @@ namespace otterbrix {
         }
         return std::make_unique<py_relation_t>(
             env,
-            conn.join_relation({node_, schema_}, {other.node_, other.schema_}, exprs, dtype));
+            conn.join_relation(relation_input(node_, schema_),
+                               relation_input(other.node_, other.schema_),
+                               exprs,
+                               dtype));
     }
 
     std::unique_ptr<py_relation_t> py_relation_t::cross(const py_relation_t& other) {
@@ -224,7 +248,7 @@ namespace otterbrix {
         if (!node_)
             return nullptr;
         auto& conn = live_env();
-        return std::make_unique<py_relation_t>(env, conn.limit_relation({node_, schema_}, count));
+        return std::make_unique<py_relation_t>(env, conn.limit_relation(relation_input(node_, schema_), count));
     }
 
     cursor::cursor_t_ptr py_relation_t::execute_internal(bool /*stream_result*/) {
@@ -323,7 +347,12 @@ namespace otterbrix {
         assert_relation();
         py::list res;
         for (const auto& col : schema_) {
-            res.append(otterbrix_py_type_t(col.type()));
+            // The type handed to Python is a COPY of a schema type, and a copy of a nested
+            // complex_logical_type keeps the SOURCE's allocator -- so a STRUCT / MAP column
+            // hands out a child vector that still lives in this space's pool. The object
+            // therefore has to hold the space, exactly as this relation does; built with no
+            // owner at all, `rel.types` outlived the connection and read a released pool.
+            res.append(otterbrix_py_type_t(space_, col.type()));
         }
         return res;
     }

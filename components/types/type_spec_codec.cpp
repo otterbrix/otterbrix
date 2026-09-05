@@ -334,7 +334,7 @@ namespace components::types {
                     if (!is_valid_decimal_spec(width, scale)) {
                         return corrupt(resource, "type spec decode: DECIMAL width/scale out of range");
                     }
-                    return complex_logical_type::create_decimal(width, scale, std::move(alias));
+                    return complex_logical_type::create_decimal(resource, width, scale, std::move(alias));
                 }
                 case logical_type::LIST: {
                     const auto field_id = in.pod<uint64_t>();

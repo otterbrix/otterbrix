@@ -1,4 +1,5 @@
 #include "pyconnection.hpp"
+#include <cassert>
 #include <common/string_util/string_util.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/planner/optimizer.hpp>
@@ -25,8 +26,12 @@ namespace otterbrix {
         // Python has exactly one way to say "this failed" — an exception — so the
         // engine's own message is carried into a RuntimeError verbatim rather than
         // swallowed. Same shape list_tables uses below.
-        boost::intrusive_ptr<otterbrix_t> open_space_or_raise(const std::filesystem::path& path) {
-            auto space = connection_environment_t::make_space(path);
+        boost::intrusive_ptr<otterbrix_t> open_space_or_raise(const module_arena_ptr& arena,
+                                                              const std::filesystem::path& path) {
+            // The refusal message is built on the module's arena and read right here, on the
+            // next line: `space.error().what` is copied into the std::string the exception
+            // carries, so nothing allocated from the arena leaves this frame.
+            auto space = connection_environment_t::make_space(&arena->resource, path);
             if (space.has_error()) {
                 const auto& err = space.error();
                 throw std::runtime_error("connect: " + std::string(err.what.begin(), err.what.end()));
@@ -48,11 +53,11 @@ namespace otterbrix {
         }
     } // namespace
 
-    pyconnection_ptr default_connection_holder_t::get() {
+    pyconnection_ptr default_connection_holder_t::get(const module_arena_ptr& arena) {
         std::lock_guard<std::mutex> guard(l);
         if (!connection) {
             auto default_path = std::filesystem::absolute(connection_environment_t::DEFAULT_FOLDER);
-            connection = std::make_shared<py_connection_t>(open_space_or_raise(default_path));
+            connection = std::make_shared<py_connection_t>(open_space_or_raise(arena, default_path));
         }
         return connection;
     }
@@ -107,15 +112,17 @@ namespace otterbrix {
 
     default_connection_holder_t py_connection_t::default_connection_;
 
-    pyconnection_ptr py_connection_t::default_connection() { return default_connection_.get(); }
+    pyconnection_ptr py_connection_t::default_connection(const module_arena_ptr& arena) {
+        return default_connection_.get(arena);
+    }
 
     void py_connection_t::set_default_connection(pyconnection_ptr conn) {
         return default_connection_.set(std::move(conn));
     }
 
     py_connection_t::py_connection_t(const boost::intrusive_ptr<otterbrix_t>& space)
-        : expression_factory_t(space)
-        , relation_factory_t(space)
+        : relation_factory_t(space)
+        , expression_factory_t(space)
         , space(space) {
         // `tmp` is the scratch database relation_factory_t materialises DataFrame
         // aggregates into. IF NOT EXISTS, because make_space no longer wipes the
@@ -137,13 +144,21 @@ namespace otterbrix {
     }
 
     py_connection_t::py_connection_t(const py_connection_t& other)
-        : expression_factory_t(other)
-        , relation_factory_t(other)
+        : relation_factory_t(other)
+        , expression_factory_t(other)
         , std::enable_shared_from_this<py_connection_t>(other)
         , space(other.space) {}
 
-    pyconnection_ptr
-    py_connection_t::connect(const py::object& database_p, bool read_only, const py::dict& config_options) {
+    pyconnection_ptr py_connection_t::connect(const module_arena_ptr& arena,
+                                             const py::object& database_p,
+                                             bool read_only,
+                                             const py::dict& config_options) {
+        // Rule 6: without an arena the refusals below have nowhere to put their message, and
+        // a refusal that cannot speak is worse than the one it replaces. A throw, not an
+        // assert: NDEBUG deletes the assert and leaves open_space_or_raise dereferencing null.
+        if (!arena) {
+            throw std::runtime_error("connect needs the module's arena");
+        }
         std::string db_str;
         if (py::isinstance<py::str>(database_p)) {
             db_str = py::str(database_p);
@@ -172,9 +187,9 @@ namespace otterbrix {
 
         pyconnection_ptr con = nullptr;
         if (db_str == connection_environment_t::DEFAULT_FOLDER) {
-            con = default_connection_.get();
+            con = default_connection_.get(arena);
         } else {
-            con = std::make_shared<py_connection_t>(open_space_or_raise(path));
+            con = std::make_shared<py_connection_t>(open_space_or_raise(arena, path));
         }
 
         return con;
@@ -322,7 +337,9 @@ namespace otterbrix {
         // its arena, and the interpreter died freeing it at shutdown.
         refuse_if_closed();
         std::string name = "df_no_idea";
-        auto tableref = scan_t::replacement_object(value, name);
+        // The ref is built on the SPACE's arena, the same one create_df_relation consumes it
+        // with a line later. refuse_if_closed() above is what makes that arena live.
+        auto tableref = scan_t::replacement_object(space->dispatcher()->resource(), value, name);
 
         return std::make_unique<py_relation_t>(shared_from_this(),
                                               relation_factory_t::create_df_relation(std::move(tableref)));
@@ -332,7 +349,7 @@ namespace otterbrix {
         // Same road as from_df above, same refusal.
         refuse_if_closed();
         std::string name = "object_no_idea";
-        auto tableref = scan_t::try_replacement_object(value, name);
+        auto tableref = scan_t::try_replacement_object(space->dispatcher()->resource(), value, name);
         assert(tableref);
 
         return std::make_unique<py_relation_t>(shared_from_this(),

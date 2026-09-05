@@ -6,6 +6,7 @@
 #include <memory>
 
 #include <filesystem>
+#include <memory_resource>
 #include <string_view>
 
 #include <core/result_wrapper.hpp>
@@ -31,8 +32,17 @@ namespace otterbrix {
         // `path` is a non-directory or a non-empty directory that is not an
         // otterbrix database (rule 6). Callers at the pybind edge translate the
         // error into a Python exception; nothing else calls this.
+        //
+        // `resource` is where a REFUSAL MESSAGE lives, and it is read on no other path: a
+        // successful open allocates nothing from it (the engine builds its own arena as a
+        // member of the space it returns). It comes in as an argument because every refusal
+        // below returns BEFORE make_otterbrix builds that member, so borrowing the engine's
+        // arena would mean constructing the engine inside the very directory the refusal
+        // exists to leave alone. The arena passed in is the module's own -- see the note in
+        // integration/python/main.cpp.
         static core::result_wrapper_t<boost::intrusive_ptr<otterbrix_t>>
-        make_space(const std::filesystem::path& path = std::filesystem::current_path() / DEFAULT_FOLDER);
+        make_space(std::pmr::memory_resource* resource,
+                   const std::filesystem::path& path = std::filesystem::current_path() / DEFAULT_FOLDER);
 
         static void cleanup();
         static void throw_connection_exception();

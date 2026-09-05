@@ -469,8 +469,82 @@ namespace components::catalog {
         return LT::UNKNOWN;
     }
 
+    // THE DEPTH WINDOW IS SHARED with the binary codec: components/types/
+    // type_spec_codec.cpp refuses nesting beyond MAX_SPEC_DEPTH = 64 on BOTH encode and
+    // decode, and the dispatcher's write gate (gate_persistable_type in
+    // services/dispatcher/validate_logical_plan.cpp) runs that encoder over every
+    // plan-level column/type before this codec's text is written — so a flat spec deeper
+    // than the window is not something this engine wrote. Without the limit the parser
+    // recurses unbounded: a 2^20-deep LIST(...) walks it off the stack. encode_type_nested
+    // carries the same counter, because a writer that accepts more than the reader does
+    // manufactures a catalog row that can never be read back.
+    static constexpr uint32_t MAX_FLAT_SPEC_DEPTH = 64;
+
     // Forward declaration for mutual recursion.
-    static std::string encode_type_nested(const types::complex_logical_type& t);
+    static std::string encode_type_nested(const types::complex_logical_type& t, uint32_t depth);
+
+    // TWO ENCODERS WRITE THE SAME COLUMN TYPE, AND THE WRITE GATE ASKS ONLY THE OTHER ONE.
+    //
+    // gate_persistable_type (services/dispatcher/validate_logical_plan.cpp) runs the BINARY
+    // codec — components::types::encode_type_spec — over every plan-level type and refuses
+    // the statement when it says no. The row that lands in pg_attribute.atttypspec /
+    // pg_type.typdefspec is written by THIS codec, which returns a plain std::string and so
+    // cannot say no at all. The gate is sound only while the two domains coincide, and this
+    // file is the half that has to make them coincide, since it is the half with no channel.
+    //
+    // So every place the binary codec REFUSES, this one emits a spec the strict decoder
+    // refuses (kFlatUnpersistable) instead of a plausible type — the same shape as
+    // encode_type_spec_or_poison in components/vector/data_chunk_binary.cpp. And every
+    // place the binary codec ACCEPTS, this one has to have a spelling, or a column that
+    // passed the gate rehydrates as a DIFFERENT type in silence.
+    //
+    // The marker is deliberately outside the format's language: read_token stops at '(',
+    // the keyword chain in parse_flat_type matches nothing, and the parse fails with
+    // data_corruption. "" cannot serve as the marker — it already means "a builtin scalar
+    // stored with atttypid alone", a legitimate answer.
+    static constexpr std::string_view kFlatUnpersistable = "!unpersistable";
+
+    static std::string flat_unpersistable(types::logical_type lt) {
+        return std::string{kFlatUnpersistable} + "(" + std::to_string(static_cast<int>(lt)) + ")";
+    }
+
+    // The extension fetch the binary codec makes (checked_extension in
+    // components/types/type_spec_codec.cpp) and this one used not to: a type tagged DECIMAL
+    // whose extension is absent, or GENERIC because set_alias() ran on a bare tag, is
+    // in-memory corruption. Reading width/scale out of an object that has none is a
+    // SIGSEGV or two garbage bytes written to the catalog; both were live here.
+    static const types::logical_type_extension* checked_flat_extension(
+        const types::complex_logical_type& t,
+        types::logical_type_extension::extension_type expected) {
+        const auto* ext = t.extension();
+        return (ext != nullptr && ext->type() == expected) ? ext : nullptr;
+    }
+
+    // Plain scalars the binary codec persists (is_plain_scalar in type_spec_codec.cpp) that
+    // have NO pg_type name, so scalar_type_to_name cannot spell them and the empty-spec /
+    // atttypid leg cannot carry them either. Without a spelling they fell through to
+    // "UNKNOWN(<enum number>)" — which decodes back as a NAMED user-type reference, i.e. a
+    // gate-approved column rehydrating as a different type without a word.
+    //
+    // They get the one form that cannot be confused with a name: BUILTIN(<logical_type>),
+    // the flat mirror of the binary codec's leading type byte. The list is a WHITELIST on
+    // both sides — decoding BUILTIN(105) back into FUNCTION would reopen the very hole this
+    // closes. catalog::encoder_domains::every_plain_scalar_the_gate_blesses_survives_the_
+    // flat_writer walks is_plain_scalar's full contents and pins the correspondence.
+    static bool is_nameless_flat_builtin(types::logical_type lt) {
+        using LT = types::logical_type;
+        switch (lt) {
+            case LT::NA:
+            case LT::ANY:
+            case LT::BIT:
+            case LT::INTEGER_LITERAL:
+            case LT::POINTER:
+            case LT::VALIDITY:
+                return true;
+            default:
+                return false;
+        }
+    }
 
     // Names written AS IS produce a spec the strict decoder refuses whenever a struct
     // field, union member, enum name/label or user-type name carries one of the format's
@@ -495,46 +569,100 @@ namespace components::catalog {
         return out;
     }
 
-    static std::string encode_type_nested(const types::complex_logical_type& t) {
+    static std::string encode_type_nested(const types::complex_logical_type& t, uint32_t depth) {
         using LT = types::logical_type;
+        // The depth window the decoder enforces, enforced on the way OUT too. The binary
+        // codec refuses past MAX_SPEC_DEPTH on BOTH sides for the same reason; this encoder
+        // used to have no limit at all, so a type past the window was written happily and
+        // then refused forever by the reader.
+        if (depth > MAX_FLAT_SPEC_DEPTH) {
+            return flat_unpersistable(t.type());
+        }
         auto sn = scalar_type_to_name(t.type());
         if (!sn.empty())
             return std::string(sn);
+        if (is_nameless_flat_builtin(t.type())) {
+            return "BUILTIN(" + std::to_string(static_cast<int>(t.type())) + ")";
+        }
 
         if (t.type() == LT::DECIMAL) {
-            const auto* ext = static_cast<const types::decimal_logical_type_extension*>(t.extension());
-            return "numeric(" + std::to_string(static_cast<unsigned>(ext->width())) + "," +
-                   std::to_string(static_cast<unsigned>(ext->scale())) + ")";
+            const auto* ext = checked_flat_extension(t, types::logical_type_extension::extension_type::DECIMAL);
+            if (ext == nullptr) {
+                return flat_unpersistable(t.type());
+            }
+            const auto* dec = static_cast<const types::decimal_logical_type_extension*>(ext);
+            return "numeric(" + std::to_string(static_cast<unsigned>(dec->width())) + "," +
+                   std::to_string(static_cast<unsigned>(dec->scale())) + ")";
         }
         if (t.type() == LT::UNKNOWN) {
-            return "UNKNOWN(" + escape_flat_name(t.type_name()) + ")";
+            // Mirrors the binary codec's has_type_name byte exactly: a bare UNKNOWN (the
+            // value decode_type_spec("") and oid_to_builtin_type() hand a reader back) has
+            // NO name and must not acquire one here. A GENERIC extension is a bare tag that
+            // was merely aliased — its alias() is a COLUMN name, not a type name, and
+            // type_name() would hand it over as one.
+            const auto* ext = checked_flat_extension(t, types::logical_type_extension::extension_type::UNKNOWN);
+            if (ext == nullptr) {
+                return "UNKNOWN()";
+            }
+            return "UNKNOWN(" +
+                   escape_flat_name(static_cast<const types::unknown_logical_type_extension*>(ext)->type_name()) + ")";
         }
         if (t.type() == LT::LIST) {
-            return "LIST(" + encode_type_nested(t.child_type()) + ")";
+            const auto* ext = checked_flat_extension(t, types::logical_type_extension::extension_type::LIST);
+            if (ext == nullptr) {
+                return flat_unpersistable(t.type());
+            }
+            return "LIST(" +
+                   encode_type_nested(static_cast<const types::list_logical_type_extension*>(ext)->node(), depth + 1) +
+                   ")";
         }
         if (t.type() == LT::ARRAY) {
-            const auto* ext = static_cast<const types::array_logical_type_extension*>(t.extension());
-            return "ARRAY(" + encode_type_nested(ext->internal_type()) + "," + std::to_string(ext->size()) + ")";
+            const auto* raw = checked_flat_extension(t, types::logical_type_extension::extension_type::ARRAY);
+            if (raw == nullptr) {
+                return flat_unpersistable(t.type());
+            }
+            const auto* ext = static_cast<const types::array_logical_type_extension*>(raw);
+            return "ARRAY(" + encode_type_nested(ext->internal_type(), depth + 1) + "," +
+                   std::to_string(ext->size()) + ")";
         }
         if (t.type() == LT::MAP) {
-            const auto* ext = static_cast<const types::map_logical_type_extension*>(t.extension());
-            return "MAP(" + encode_type_nested(ext->key()) + "," + encode_type_nested(ext->value()) + ")";
+            const auto* raw = checked_flat_extension(t, types::logical_type_extension::extension_type::MAP);
+            if (raw == nullptr) {
+                return flat_unpersistable(t.type());
+            }
+            const auto* ext = static_cast<const types::map_logical_type_extension*>(raw);
+            return "MAP(" + encode_type_nested(ext->key(), depth + 1) + "," +
+                   encode_type_nested(ext->value(), depth + 1) + ")";
         }
         if (t.type() == LT::STRUCT) {
-            const auto* ext = static_cast<const types::struct_logical_type_extension*>(t.extension());
+            const auto* raw = checked_flat_extension(t, types::logical_type_extension::extension_type::STRUCT);
+            if (raw == nullptr) {
+                return flat_unpersistable(t.type());
+            }
+            const auto* ext = static_cast<const types::struct_logical_type_extension*>(raw);
             std::string out = "STRUCT(" + escape_flat_name(ext->type_name());
             for (const auto& f : ext->child_types()) {
                 out += ',';
                 out += escape_flat_name(f.alias());
                 out += ':';
-                out += encode_type_nested(f);
+                out += encode_type_nested(f, depth + 1);
             }
             out += ')';
             return out;
         }
         if (t.type() == LT::UNION) {
-            // child_types()[0] is the hidden tag (UTINYINT); real members start at [1]
-            const auto& children = t.child_types();
+            // UNION reuses struct_logical_type_extension; child_types()[0] is the hidden
+            // UTINYINT tag create_union() prepends, and real members start at [1]. The
+            // binary codec refuses a UNION whose tag child is missing rather than writing a
+            // member list that means something else — same refusal here.
+            const auto* raw = checked_flat_extension(t, types::logical_type_extension::extension_type::STRUCT);
+            if (raw == nullptr) {
+                return flat_unpersistable(t.type());
+            }
+            const auto& children = static_cast<const types::struct_logical_type_extension*>(raw)->child_types();
+            if (children.empty() || children.front().type() != LT::UTINYINT) {
+                return flat_unpersistable(t.type());
+            }
             std::string out = "UNION(";
             bool first = true;
             for (size_t i = 1; i < children.size(); ++i) {
@@ -543,16 +671,27 @@ namespace components::catalog {
                 first = false;
                 out += escape_flat_name(children[i].alias());
                 out += ':';
-                out += encode_type_nested(children[i]);
+                out += encode_type_nested(children[i], depth + 1);
             }
             out += ')';
             return out;
         }
         if (t.type() == LT::VARIANT) {
+            // The internal struct layout is fixed and create_variant() rebuilds it on
+            // decode, so no payload is written — but a VARIANT that never got that struct
+            // is not a VARIANT, and the binary codec refuses it.
+            if (checked_flat_extension(t, types::logical_type_extension::extension_type::STRUCT) == nullptr) {
+                return flat_unpersistable(t.type());
+            }
             return "VARIANT";
         }
-        // Enum handled by the outer encode_type_spec; shouldn't reach here.
-        return "UNKNOWN(" + std::to_string(static_cast<int>(t.type())) + ")";
+        // ENUM is handled by the outer encode_type_spec; reaching here means either a
+        // malformed ENUM or one of USER / TABLE / FUNCTION / LAMBDA / INVALID, which the
+        // binary codec refuses outright ("these never describe stored data"). Writing
+        // "UNKNOWN(<number>)" for them — the previous behaviour — produced the exact shape
+        // of a legitimate named user-type reference, so the one type the gate exists to
+        // stop travelled on as something a resolver would chase by name.
+        return flat_unpersistable(t.type());
     }
 
     // Recursive-descent parser for the flat-text format. The parse context owns the
@@ -561,15 +700,6 @@ namespace components::catalog {
     // Without a channel everything unreadable collapses into logical_type::UNKNOWN, the
     // very value that also means "named user-type reference" — corruption indistinguishable
     // from a legitimate answer.
-
-    // THE DEPTH WINDOW IS SHARED with the binary codec: components/types/
-    // type_spec_codec.cpp refuses nesting beyond MAX_SPEC_DEPTH = 64 on BOTH encode and
-    // decode, and the dispatcher's write gate (gate_persistable_type in
-    // services/dispatcher/validate_logical_plan.cpp) runs that encoder over every
-    // plan-level column/type before this codec's text is written — so a flat spec deeper
-    // than the window is not something this engine wrote. Without the limit the parser
-    // recurses unbounded: a 2^20-deep LIST(...) walks it off the stack.
-    static constexpr uint32_t MAX_FLAT_SPEC_DEPTH = 64;
 
     struct flat_parse_ctx_t {
         std::string_view s;
@@ -729,7 +859,8 @@ namespace components::catalog {
                 ctx.fail("type spec: numeric(" + w + "," + sc + ") is outside the DECIMAL window");
                 return unknown();
             }
-            auto decimal = types::complex_logical_type::create_decimal(static_cast<uint8_t>(wv),
+            auto decimal = types::complex_logical_type::create_decimal(resource,
+                                                                       static_cast<uint8_t>(wv),
                                                                        static_cast<uint8_t>(scv));
             if (decimal.has_error()) {
                 ctx.fail(std::string{"type spec: "} + decimal.error().what.c_str());
@@ -742,7 +873,35 @@ namespace components::catalog {
             if (!ctx.expect(')', "UNKNOWN(name)")) {
                 return unknown();
             }
+            // "UNKNOWN()" is the bare form — the mirror of the binary codec's
+            // has_type_name = 0. create_unknown("") would attach an UNKNOWN extension
+            // holding an empty name, which is a DIFFERENT value (operator== tells them
+            // apart) and would not round-trip.
+            if (tname.empty()) {
+                return unknown();
+            }
             return types::complex_logical_type::create_unknown(tname);
+        }
+        // The flat mirror of the binary codec's leading type byte, for the plain scalars
+        // that have no pg_type name (see is_nameless_flat_builtin). WHITELISTED on the way
+        // in as well as on the way out: reading an arbitrary number back would hand a
+        // reader FUNCTION or INVALID out of a catalog column.
+        if (name == "BUILTIN") {
+            const std::string tok = read_token(ctx.s, ctx.pos);
+            if (!ctx.expect(')', "BUILTIN(type)")) {
+                return unknown();
+            }
+            unsigned int raw{};
+            if (!read_whole_int(tok, raw) || raw > 255) {
+                ctx.fail("type spec: BUILTIN(" + tok + ") is not a logical_type number");
+                return unknown();
+            }
+            const auto lt = static_cast<LT>(static_cast<uint8_t>(raw));
+            if (!is_nameless_flat_builtin(lt)) {
+                ctx.fail("type spec: BUILTIN(" + tok + ") is not one this codec writes");
+                return unknown();
+            }
+            return types::complex_logical_type{lt};
         }
         if (name == "LIST") {
             auto inner = parse_flat_type(resource, ctx, depth + 1);
@@ -841,26 +1000,32 @@ namespace components::catalog {
         // ENUM: flat text "ENUM:type_name:label0=val0,label1=val1,..."
         // Name and labels are escape_flat_name-escaped — see the note above it.
         if (t.type() == LT::ENUM) {
+            // An ENUM whose extension is absent, or GENERIC because set_alias() ran on a
+            // bare tag, is what the binary codec calls in-memory corruption and refuses.
+            // The old `if (ext != nullptr)` was two mistakes: a non-null GENERIC extension
+            // was static_cast to an enum one and walked for entries, and type_name() on a
+            // bare tag asserted (or, under NDEBUG, dereferenced null).
+            const auto* ext = checked_flat_extension(t, types::logical_type_extension::extension_type::ENUM);
+            if (ext == nullptr) {
+                return flat_unpersistable(t.type());
+            }
+            const auto* enum_ext = static_cast<const types::enum_logical_type_extension*>(ext);
             std::string out = "ENUM:";
-            out += escape_flat_name(t.type_name());
+            out += escape_flat_name(enum_ext->type_name());
             out += ':';
-            const auto* ext = t.extension();
-            if (ext != nullptr) {
-                const auto* enum_ext = static_cast<const components::types::enum_logical_type_extension*>(ext);
-                bool first = true;
-                for (const auto& entry : enum_ext->entries()) {
-                    if (!first)
-                        out += ',';
-                    first = false;
-                    const auto& etype = entry.type();
-                    out += escape_flat_name(etype.has_alias() ? etype.alias() : std::string{});
-                    out += '=';
-                    out += std::to_string(entry.value<std::int32_t>());
-                }
+            bool first = true;
+            for (const auto& entry : enum_ext->entries()) {
+                if (!first)
+                    out += ',';
+                first = false;
+                const auto& etype = entry.type();
+                out += escape_flat_name(etype.has_alias() ? etype.alias() : std::string{});
+                out += '=';
+                out += std::to_string(entry.value<std::int32_t>());
             }
             return out;
         }
-        return encode_type_nested(t);
+        return encode_type_nested(t, 0);
     }
 
     core::result_wrapper_t<types::complex_logical_type> decode_type_spec(std::pmr::memory_resource* resource,

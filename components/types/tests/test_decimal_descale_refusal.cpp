@@ -10,13 +10,22 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
+#include <core/pmr.hpp>
 #include <memory_resource>
 
 using namespace components::types;
 
 namespace {
+    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
+    // path, and that message belongs to the caller, so the caller has to name an arena it owns
+    // rather than reach for the process-global one (rule 14).
+    std::pmr::memory_resource* decimal_resource() {
+        static core::pmr::otterbrix_resource arena;
+        return &arena;
+    }
+
     complex_logical_type decimal_type(uint8_t width, uint8_t scale) {
-        auto created = complex_logical_type::create_decimal(width, scale);
+        auto created = complex_logical_type::create_decimal(decimal_resource(), width, scale);
         REQUIRE_FALSE(created.has_error());
         return std::move(created.value());
     }

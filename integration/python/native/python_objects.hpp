@@ -134,7 +134,9 @@ namespace otterbrix {
         bool exponent_recognized = true;
 
     public:
-        bool try_get_type(components::types::complex_logical_type& type);
+        //! `resource` carries only the refusal message create_decimal may build: the (width,
+        //! scale) come from the python Decimal, so an out-of-window pair is DATA and reachable.
+        bool try_get_type(std::pmr::memory_resource* resource, components::types::complex_logical_type& type);
         core::result_wrapper_t<components::types::logical_value_t> to_logical_value(std::pmr::memory_resource* r);
 
     private:

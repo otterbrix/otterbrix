@@ -7,6 +7,7 @@
 #include <components/types/types.hpp>
 #include <connection_environment/connection_environment.hpp>
 #include <core/result_wrapper.hpp>
+#include <memory_resource>
 #include <string>
 
 using namespace components::types;
@@ -133,8 +134,33 @@ namespace otterbrix {
         return false;
     }
 
-    otterbrix_py_type_t::otterbrix_py_type_t(complex_logical_type value)
-        : type_(std::move(value)) {}
+    otterbrix_py_type_t::otterbrix_py_type_t(module_arena_ptr arena, complex_logical_type value)
+        : arena_(std::move(arena))
+        , type_(std::move(value)) {
+        // Rule 6: the owner is a PRECONDITION, not a hint. `type_` may already hold pmr bytes
+        // out of it, and a null reference here means the object is standing on an arena
+        // nobody holds -- say it now, at construction, not much later inside a read.
+        if (!arena_) {
+            throw std::runtime_error("OtterBrixPyType: the module's arena is missing");
+        }
+    }
+
+    otterbrix_py_type_t::otterbrix_py_type_t(boost::intrusive_ptr<otterbrix_t> space, complex_logical_type value)
+        : space_(std::move(space))
+        , type_(std::move(value)) {
+        // Same rule, other arena: a schema type's child vector lives in the space's pool.
+        if (!space_) {
+            throw std::runtime_error("OtterBrixPyType: the connection is closed");
+        }
+    }
+
+    // A derived type stands on the SAME arena as the one it was derived from -- a child of a
+    // STRUCT is a copy that keeps the parent's allocator -- so it inherits BOTH owner slots
+    // verbatim and exactly one of them is set, as in the parent.
+    std::shared_ptr<otterbrix_py_type_t> otterbrix_py_type_t::derive(complex_logical_type value) const {
+        return arena_ ? std::make_shared<otterbrix_py_type_t>(arena_, std::move(value))
+                      : std::make_shared<otterbrix_py_type_t>(space_, std::move(value));
+    }
 
     bool otterbrix_py_type_t::equals(const std::shared_ptr<otterbrix_py_type_t>& other) const {
         if (!other) {
@@ -149,21 +175,21 @@ namespace otterbrix {
             for (idx_t i = 0; i < children.size(); i++) {
                 const auto& child = children[i];
                 if (string_utils::ci_equals(child.alias(), name)) {
-                    return std::make_shared<otterbrix_py_type_t>(child);
+                    return derive(child);
                 }
             }
         }
         if (type_.type() == logical_type::LIST && string_utils::ci_equals(name, "child")) {
-            return std::make_shared<otterbrix_py_type_t>(type_.child_type());
+            return derive(type_.child_type());
         }
         if (type_.type() == logical_type::MAP) {
             auto* extension = static_cast<map_logical_type_extension*>(type_.extension());
             auto is_key = string_utils::ci_equals(name, "key");
             auto is_value = string_utils::ci_equals(name, "value");
             if (is_key) {
-                return std::make_shared<otterbrix_py_type_t>(extension->key());
+                return derive(extension->key());
             } else if (is_value) {
-                return std::make_shared<otterbrix_py_type_t>(extension->value());
+                return derive(extension->value());
             } else {
                 throw py::attribute_error("Tried to get a child from a map by the name of " + name +
                                           ", but this type only has 'key' and 'value' children");
@@ -392,7 +418,13 @@ namespace otterbrix {
 
     static core::result_wrapper_t<complex_logical_type> from_dictionary(const py::object& obj,
                                                                         std::pmr::memory_resource* resource) {
-        auto dict = py::reinterpret_steal<py::dict>(obj);
+        // BORROW, never steal: `obj` is the caller's, handed in by const reference. A steal
+        // claims ownership WITHOUT an incref, so the temporary below decrefs a reference this
+        // function never took, and `OtterBrixPyType({...})` leaves the caller's dict one
+        // reference short -- freed underneath a variable that still names it. That was a
+        // segfault at interpreter shutdown in 10 runs out of 10; see
+        // tests/test_module_arena.py::test_type_from_dict_does_not_steal_the_caller_s_reference.
+        auto dict = py::reinterpret_borrow<py::dict>(obj);
         std::pmr::vector<complex_logical_type> children(resource);
         if (dict.size() == 0) {
             return core::error_t(core::error_code_t::invalid_parameter,
@@ -443,7 +475,18 @@ namespace otterbrix {
         }
     }
 
-    void otterbrix_py_type_t::initialize(py::handle& m) {
+    void otterbrix_py_type_t::initialize(py::handle& m, const module_arena_ptr& arena) {
+        // The arena arrives as an ARGUMENT now, and as a COUNTED one. It used to be a
+        // file-local module_arena() returning std::pmr::get_default_resource(), with a note
+        // saying the exit was a module-owned arena passed in here. This is that exit.
+        //
+        // A THROW AND NOT AN assert: NDEBUG deletes an assert, and what is left in the build
+        // that ships is `&arena->resource` inside every lambda below -- a null dereference on
+        // the first call from Python instead of a refused import. Rule 6.
+        if (!arena) {
+            throw std::runtime_error("otterbrix_py_type_t::initialize needs the module's arena");
+        }
+
         auto type_module = py::class_<otterbrix_py_type_t, std::shared_ptr<otterbrix_py_type_t>>(m,
                                                                                                  "OtterBrixPyType",
                                                                                                  py::module_local());
@@ -452,19 +495,21 @@ namespace otterbrix {
         type_module.def("__eq__", &otterbrix_py_type_t::equals, "Compare two types for equality", py::arg("other"));
         type_module.def_property_readonly("id", &otterbrix_py_type_t::get_id);
         type_module.def_property_readonly("children", &otterbrix_py_type_t::children);
-        type_module.def(py::init<>([](const std::string& type_str) {
-            auto ltype = from_string(type_str, std::pmr::get_default_resource());
+        // Each lambda CAPTURES the arena by value, so the bound factory is itself an owner:
+        // the entry point cannot outlive the arena the type it builds is allocated from.
+        type_module.def(py::init<>([arena](const std::string& type_str) {
+            auto ltype = from_string(type_str, &arena->resource);
             if (ltype.has_error()) {
                 throw std::runtime_error(ltype.error().what.c_str());
             }
-            return std::make_shared<otterbrix_py_type_t>(ltype.value());
+            return std::make_shared<otterbrix_py_type_t>(arena, ltype.value());
         }));
-        type_module.def(py::init<>([](const py::object& obj) {
-            auto ltype = from_object(obj, std::pmr::get_default_resource());
+        type_module.def(py::init<>([arena](const py::object& obj) {
+            auto ltype = from_object(obj, &arena->resource);
             if (ltype.has_error()) {
                 throw std::runtime_error(ltype.error().what.c_str());
             }
-            return std::make_shared<otterbrix_py_type_t>(ltype.value());
+            return std::make_shared<otterbrix_py_type_t>(arena, ltype.value());
         }));
         type_module.def("__getattr__",
                         &otterbrix_py_type_t::get_attribute,
@@ -498,11 +543,11 @@ namespace otterbrix {
         py::list children;
         auto id = type_.type();
         if (id == logical_type::LIST) {
-            children.append(py::make_tuple("child", std::make_shared<otterbrix_py_type_t>(type_.child_type())));
+            children.append(py::make_tuple("child", derive(type_.child_type())));
             return children;
         }
         if (id == logical_type::ARRAY) {
-            children.append(py::make_tuple("child", std::make_shared<otterbrix_py_type_t>(type_.child_type())));
+            children.append(py::make_tuple("child", derive(type_.child_type())));
             auto* extension = static_cast<array_logical_type_extension*>(type_.extension());
             children.append(py::make_tuple("size", extension->size()));
             return children;
@@ -514,14 +559,14 @@ namespace otterbrix {
             const auto& struct_children = type_.child_types();
             for (idx_t i = 0; i < struct_children.size(); i++) {
                 auto& child = struct_children[i];
-                children.append(py::make_tuple(child.alias(), std::make_shared<otterbrix_py_type_t>(child)));
+                children.append(py::make_tuple(child.alias(), derive(child)));
             }
             return children;
         }
         if (id == logical_type::MAP) {
             auto* extension = static_cast<map_logical_type_extension*>(type_.extension());
-            children.append(py::make_tuple("key", std::make_shared<otterbrix_py_type_t>(extension->key())));
-            children.append(py::make_tuple("value", std::make_shared<otterbrix_py_type_t>(extension->value())));
+            children.append(py::make_tuple("key", derive(extension->key())));
+            children.append(py::make_tuple("value", derive(extension->value())));
             return children;
         }
         if (id == logical_type::DECIMAL) {

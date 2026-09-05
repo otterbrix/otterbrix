@@ -46,7 +46,7 @@ namespace otterbrix {
         }
     }
 
-    bool py_decimal_t::try_get_type(complex_logical_type& type) {
+    bool py_decimal_t::try_get_type(std::pmr::memory_resource* resource, complex_logical_type& type) {
         int32_t width = digits.size();
 
         if (!exponent_recognized) {
@@ -70,7 +70,8 @@ namespace otterbrix {
                         type = logical_type::DOUBLE;
                         return true;
                     }
-                    auto decimal = complex_logical_type::create_decimal(static_cast<uint8_t>(width),
+                    auto decimal = complex_logical_type::create_decimal(resource,
+                                                                        static_cast<uint8_t>(width),
                                                                         static_cast<uint8_t>(scale));
                     if (decimal.has_error()) {
                         // A python Decimal whose (width, scale) falls outside the engine's
@@ -164,7 +165,7 @@ namespace otterbrix {
                     return cast_to_double(r, obj);
                 }
                 VALUE_OR_RETURN(auto scale_type,
-                                complex_logical_type::create_decimal(static_cast<uint8_t>(width), scale));
+                                complex_logical_type::create_decimal(r, static_cast<uint8_t>(width), scale));
                 return PyDecimalCastSwitch<py_decimal_scale_converter_t>(r, *this, scale_type, scale);
             }
             case py_decimal_exponent_type_t::EXPONENT_POWER: {
@@ -174,7 +175,7 @@ namespace otterbrix {
                     return cast_to_double(r, obj);
                 }
                 VALUE_OR_RETURN(auto power_type,
-                                complex_logical_type::create_decimal(static_cast<uint8_t>(width), scale));
+                                complex_logical_type::create_decimal(r, static_cast<uint8_t>(width), scale));
                 return PyDecimalCastSwitch<py_decimal_power_converter_t>(r, *this, power_type, scale);
             }
             case py_decimal_exponent_type_t::EXPONENT_NAN: {

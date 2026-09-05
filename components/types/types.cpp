@@ -6,6 +6,13 @@
 namespace components::types {
 
     namespace {
+        // The answer the name accessors give for a type that carries no name. A single
+        // immortal empty string, so the accessors can keep returning a reference.
+        const std::string& no_name() {
+            static const std::string empty{};
+            return empty;
+        }
+
         std::array<physical_type, 256> make_physical_type_table() {
             std::array<physical_type, 256> t{};
             for (auto& v : t) v = physical_type::INVALID;
@@ -333,13 +340,38 @@ namespace components::types {
         return false;
     }
 
+    // THE THREE NAME ACCESSORS ARE TOTAL FUNCTIONS, AND THEY HAVE TO BE.
+    //
+    // A type with no extension_ is not a broken object: it is what the DEFAULT constructor
+    // builds, what `complex_logical_type{logical_type::UINTEGER}` builds, what
+    // components/catalog/system_table_schemas.cpp builds for every system-table column
+    // before column_definition_t names it, and what catalog::decode_type_spec("") and
+    // catalog::oid_to_builtin_type() hand a READER back. has_alias() already answers "no
+    // name" for that state without complaining, and 18 production sites already spell the
+    // answer by hand as `has_alias() ? alias() : std::string{}` — the other 76 call alias()
+    // straight, correct only while somebody upstream remembered to name the type.
+    //
+    // These three used to claim the state impossible — assert(extension_) in alias() and
+    // type_name(), and in is_unnamed() no check at all. That is wrong twice over. It is a
+    // Debug ABORT on a READ path (`SELECT * FROM pg_class` died in alias(); rule 6 — loud
+    // is required, fatal is not, and an abort while reading leaves a database nobody can
+    // open), and under NDEBUG the assert simply vanishes and leaves a null unique_ptr
+    // dereference in its place — the same wrong answer with no message at all. is_unnamed()
+    // was already in that second state in every build.
+    //
+    // The empty name is the honest answer for a nameless type, not a fallback: nothing is
+    // being guessed, and nothing that HAS a name is affected.
     const std::string& complex_logical_type::alias() const {
-        assert(extension_);
+        if (!extension_) {
+            return no_name();
+        }
         return extension_->alias();
     }
 
     const std::string& complex_logical_type::type_name() const {
-        assert(extension_);
+        if (!extension_) {
+            return no_name();
+        }
         if (extension_->type() == logical_type_extension::extension_type::UNKNOWN) {
             return static_cast<unknown_logical_type_extension*>(extension_.get())->type_name();
         } else if (extension_->type() == logical_type_extension::extension_type::STRUCT) {
@@ -350,12 +382,22 @@ namespace components::types {
         return extension_->alias();
     }
 
+    // Same rule, plus the two checks the static_cast never made: a STRUCT-tagged type that
+    // never went through create_struct carries no struct extension (or a GENERIC one, from
+    // set_alias on a bare tag), and the field vector has a size.
     const std::string& complex_logical_type::child_name(uint64_t index) const {
         assert(type_ == logical_type::STRUCT);
-        return static_cast<struct_logical_type_extension*>(extension_.get())->child_types()[index].alias();
+        if (!extension_ || extension_->type() != logical_type_extension::extension_type::STRUCT) {
+            return no_name();
+        }
+        const auto& children = static_cast<struct_logical_type_extension*>(extension_.get())->child_types();
+        if (index >= children.size()) {
+            return no_name();
+        }
+        return children[index].alias();
     }
 
-    bool complex_logical_type::is_unnamed() const { return extension_->alias().empty(); }
+    bool complex_logical_type::is_unnamed() const { return !extension_ || extension_->alias().empty(); }
 
     bool complex_logical_type::is_nested() const {
         switch (type_) {
@@ -540,29 +582,37 @@ namespace components::types {
     }
 
     core::result_wrapper_t<complex_logical_type>
-    complex_logical_type::create_decimal(uint8_t width, uint8_t scale, std::string alias) {
+    complex_logical_type::create_decimal(std::pmr::memory_resource* resource,
+                                         uint8_t width,
+                                         uint8_t scale,
+                                         std::string alias) {
+        // The resource is the CALLER'S, and it is touched only on the refusal path below: an
+        // in-window DECIMAL builds its extension without allocating from it at all.
+        //
+        // This used to read std::pmr::new_delete_resource() and carry a note calling that a
+        // rule-14 debt held up by the signature. The signature is now the one the note asked
+        // for, and the callers it named all pass the arena they already held:
+        // type_spec_codec.cpp (decode_one), base_statistics.cpp,
+        // logical_value_binary_codec.hpp (read_decimal_payload), sql/transformer/utils.cpp
+        // (get_type), system_table_schemas.cpp (parse_flat_type),
+        // vector/arrow/scaner/arrow_type.cpp (type_from_format) and cast_registry.cpp, whose
+        // enclosing cast_registry_t carries resource_ and now gets asked for it.
+        //
+        // Two call sites hand over std::pmr::null_memory_resource() on purpose. Both build a
+        // DECIMAL from LITERAL constants that is_valid_decimal_spec accepts (default_casts.cpp's
+        // DECIMAL(18,0) registry key and the cast benchmark's DECIMAL(10,2)), so the branch
+        // below is unreachable there by construction; null turns a future edit that breaks that
+        // into an immediate, loud failure instead of a silent process-global allocation. Never
+        // pass null from a site whose (width, scale) come from data.
+        assert(resource != nullptr && "create_decimal needs a resource for its refusal message");
         if (!is_valid_decimal_spec(width, scale)) {
-            // RULE 14 DEBT, AND THE REASON IT STANDS IS THE SIGNATURE, NOT A MISSING
-            // RESOURCE. No resource reaches this factory, so the refusal message is built on
-            // the explicitly named new/delete resource — never std::pmr::get_default_resource()
-            // — and only on the refusal path.
-            //
-            // What is NOT true is that a resource would have to be invented for the callers:
-            // most of them already hold one where they stand — type_spec_codec.cpp (decode_one),
-            // base_statistics.cpp, logical_value_binary_codec.hpp (read_decimal_payload),
-            // sql/transformer/utils.cpp (get_type), system_table_schemas.cpp (parse_flat_type),
-            // arrow/scaner/arrow_type.cpp (type_from_format), and cast_registry.cpp, whose
-            // enclosing cast_registry_t carries resource_ and simply is not asked. The sibling
-            // factories create_map and create_variant already take a resource, so the shape is
-            // precedented. What is left is a signature change on the declaration plus its call
-            // sites — a mechanical edit, not an absent arena.
             return core::error_t(core::error_code_t::invalid_parameter,
                                  std::pmr::string{"DECIMAL(" + std::to_string(static_cast<unsigned>(width)) + "," +
                                                       std::to_string(static_cast<unsigned>(scale)) +
                                                       ") is out of range: width must be between 1 and " +
                                                       std::to_string(static_cast<unsigned>(DECIMAL_MAX_WIDTH)) +
                                                       " and scale must not exceed width",
-                                                  std::pmr::new_delete_resource()});
+                                                  resource});
         }
         return complex_logical_type(logical_type::DECIMAL,
                                     std::make_unique<decimal_logical_type_extension>(width, scale),

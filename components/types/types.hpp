@@ -488,8 +488,14 @@ namespace components::types {
         // vanishes under NDEBUG — exactly the build users ship — and lets a DECIMAL(0,0) /
         // DECIMAL(39,0) / DECIMAL(5,7) reach the checkpoint, which writes it happily and
         // then refuses to read it back forever. See is_valid_decimal_spec.
+        //
+        // `resource` is where the refusal message lives, and it is read ONLY on the refusal
+        // path: a well-formed DECIMAL allocates nothing from it. It is a parameter and not a
+        // process-global because rule 14 leaves no global to reach for, and because the callers
+        // already hold an arena where they stand. create_map and create_variant below take one
+        // for the same reason.
         [[nodiscard]] static core::result_wrapper_t<complex_logical_type>
-        create_decimal(uint8_t width, uint8_t scale, std::string alias = "");
+        create_decimal(std::pmr::memory_resource* resource, uint8_t width, uint8_t scale, std::string alias = "");
         static complex_logical_type
         create_enum(std::string name, std::vector<logical_value_t> entries, std::string alias = "");
         static complex_logical_type create_list(const complex_logical_type& internal_type, std::string alias = "");

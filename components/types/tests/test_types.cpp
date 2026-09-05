@@ -3,18 +3,43 @@
 #include <components/types/logical_value.hpp>
 #include <components/types/physical_value.hpp>
 #include <core/operations_helper.hpp>
+#include <core/pmr.hpp>
+#include <array>
+#include <cstddef>
 #include <memory_resource>
 #include <random>
+#include <string_view>
 
 using namespace components::types;
 
 namespace {
+    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
+    // path, and that message belongs to the caller, so the caller has to name an arena it owns
+    // rather than reach for the process-global one (rule 14). Named through an accessor so the
+    // helper below and the test that pins it cannot drift onto two different arenas.
+    std::pmr::memory_resource* decimal_resource() {
+        static core::pmr::otterbrix_resource arena;
+        return &arena;
+    }
+
+    // The ONE create_decimal call this file makes. make_decimal() below is exactly this plus the
+    // REQUIRE, so a test that drives THIS to refuse observes the arena make_decimal itself hands
+    // over -- not merely an arena the file also happens to name. Without the split, a helper that
+    // kept the accessor but passed something else stayed green.
+    core::result_wrapper_t<components::types::complex_logical_type>
+    try_make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        return components::types::complex_logical_type::create_decimal(decimal_resource(),
+                                                                       width,
+                                                                       scale,
+                                                                       std::move(alias));
+    }
+
     // create_decimal reports an out-of-window (width, scale) through core::error_t. Every
     // literal these tests use is inside the window, so the helper checks the result and
     // hands back the type.
     components::types::complex_logical_type
     make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
-        auto created = components::types::complex_logical_type::create_decimal(width, scale, std::move(alias));
+        auto created = try_make_decimal(width, scale, std::move(alias));
         REQUIRE_FALSE(created.has_error());
         return std::move(created.value());
     }
@@ -648,4 +673,117 @@ TEST_CASE("components::types::logical_value::mixed_operand_arithmetic_refuses") 
         REQUIRE_FALSE(r.has_error());
         CHECK(r.value().value<int64_t>() == 3);
     }
+}
+
+namespace {
+    // Counts what is asked of it and forwards the rest. `allocations` is the number that tells
+    // an arena that was USED apart from one that was merely named.
+    struct counting_resource_t final : std::pmr::memory_resource {
+        explicit counting_resource_t(std::pmr::memory_resource* upstream) noexcept
+            : upstream_(upstream) {}
+
+        size_t allocations = 0;
+        size_t bytes = 0;
+
+    private:
+        void* do_allocate(size_t b, size_t a) override {
+            ++allocations;
+            bytes += b;
+            return upstream_->allocate(b, a);
+        }
+        void do_deallocate(void* p, size_t b, size_t a) override { upstream_->deallocate(p, b, a); }
+        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
+
+        std::pmr::memory_resource* upstream_;
+    };
+} // namespace
+
+TEST_CASE("components::types::complex_logical_type::create_decimal_reports_on_the_caller_arena") {
+    // Rule 14: no process-global arena in production code. create_decimal makes exactly ONE
+    // allocation in its whole body -- the refusal message for an out-of-window (width, scale) --
+    // so that message is the only place the caller's arena is observable at all, and it is
+    // precisely where this factory used to reach for std::pmr::new_delete_resource() because no
+    // resource reached it. Anchoring the message is therefore the whole of "the factory holds
+    // the arena it was given".
+    //
+    // Two questions, and the second does not follow from the first: was the message BUILT on the
+    // named arena (the counter), and does it still LIVE there once the result_wrapper_t has been
+    // returned and moved (the allocator identity)? error_t's copy assignment re-anchors a message
+    // onto the default resource, so a factory that allocated correctly and then handed the error
+    // out through a copy would pass the first check and fail the second.
+    //
+    // The arena is a stack buffer over null_memory_resource: this test names one arena and only
+    // one, so a message that lands anywhere else cannot be mistaken for a pass.
+    std::array<std::byte, 4096> storage{};
+    std::pmr::monotonic_buffer_resource stack_arena{storage.data(),
+                                                   storage.size(),
+                                                   std::pmr::null_memory_resource()};
+    counting_resource_t arena{&stack_arena};
+
+    INFO("an out-of-window DECIMAL reports on the arena it was handed");
+    auto refused = complex_logical_type::create_decimal(&arena, 39, 0);
+    REQUIRE(refused.has_error());
+    CHECK(refused.error().type == core::error_code_t::invalid_parameter);
+    CHECK(arena.allocations >= 1);
+    CHECK(refused.error().what.get_allocator().resource() == &arena);
+    CHECK(std::string_view{refused.error().what}.find("DECIMAL(39,0)") != std::string_view::npos);
+
+    INFO("a second refusal on a second arena does not drift back to the first");
+    std::array<std::byte, 4096> other_storage{};
+    std::pmr::monotonic_buffer_resource other_stack{other_storage.data(),
+                                                    other_storage.size(),
+                                                    std::pmr::null_memory_resource()};
+    counting_resource_t other{&other_stack};
+    const size_t first_arena_allocations = arena.allocations;
+    auto refused_elsewhere = complex_logical_type::create_decimal(&other, 5, 7);
+    REQUIRE(refused_elsewhere.has_error());
+    CHECK(other.allocations >= 1);
+    CHECK(refused_elsewhere.error().what.get_allocator().resource() == &other);
+    CHECK(arena.allocations == first_arena_allocations);
+
+    INFO("an in-window DECIMAL costs the arena nothing");
+    const size_t before = arena.allocations;
+    auto built = complex_logical_type::create_decimal(&arena, 18, 4);
+    REQUIRE_FALSE(built.has_error());
+    CHECK(built.value().type() == logical_type::DECIMAL);
+    CHECK(arena.allocations == before);
+}
+
+TEST_CASE("components::types::complex_logical_type::decimal_helpers_name_an_arena_of_their_own") {
+    // The case above proves the FACTORY reports on whatever arena it is handed. It says nothing
+    // about what its CALLERS hand it, and that is the half that went wrong: seventeen test
+    // helpers reached straight for the process-global arena -- the very call rule 14 forbids by
+    // name -- so every refusal message they could ever produce was built there.
+    // A test that only ever names one arena cannot see this, because "the message is where I put
+    // it" and "the message is on the process arena" are the same green when the two are the same
+    // resource. So this case names TWO and requires them to differ.
+    //
+    // decimal_resource() is the single source make_decimal() draws from, so pinning it pins the
+    // helper.
+    auto* helper_arena = decimal_resource();
+
+    INFO("the helper's arena is not the process-global one");
+    // A default-constructed std::pmr::string is anchored on the process default resource, which
+    // is what a helper reaching for the forbidden literal would land on. Naming it this way
+    // rather than by calling the forbidden function keeps the check itself rule-14 clean.
+    const std::pmr::string process_anchored;
+    CHECK(helper_arena != process_anchored.get_allocator().resource());
+
+    INFO("and a refusal routed through the HELPER's own call lands there and stays there");
+    // try_make_decimal, not create_decimal: this is the call make_decimal makes, so the arena
+    // under test is the one the helper really passes.
+    auto refused = try_make_decimal(39, 0);
+    REQUIRE(refused.has_error());
+    CHECK(refused.error().type == core::error_code_t::invalid_parameter);
+    CHECK(refused.error().what.get_allocator().resource() == helper_arena);
+    CHECK(std::string_view{refused.error().what}.find("DECIMAL(39,0)") != std::string_view::npos);
+
+    INFO("the same arena is the one the in-window helper path actually uses");
+    const auto built = make_decimal(38, 20, "d");
+    REQUIRE(built.type() == logical_type::DECIMAL);
+    const auto* ext = built.extension_as<decimal_logical_type_extension>();
+    REQUIRE(ext != nullptr);
+    CHECK(ext->width() == 38);
+    CHECK(ext->scale() == 20);
+    CHECK(decimal_resource() == helper_arena);
 }

@@ -1,4 +1,5 @@
 #include "connection_environment.hpp"
+#include <cassert>
 #include <memory>
 
 #include <components/configuration/configuration.hpp>
@@ -33,19 +34,20 @@ namespace otterbrix {
             return !ec && empty;
         }
 
-        // There is no engine resource to borrow here, and this one is checkable: the
-        // engine's arena is a MEMBER of the space (base_otterbrix_t::resource,
-        // integration/cpp/base_spaces.hpp:85), and every refusal below returns before
-        // make_otterbrix builds one — borrowing it would mean constructing the engine
-        // inside the very directory the refusal exists to leave alone. So
-        // new_delete_resource() is the standing stand-in — never
-        // std::pmr::get_default_resource() (rule 14).
+        // There is no engine resource to borrow here: the engine's arena is a MEMBER of the
+        // space (base_otterbrix_t::resource, integration/cpp/base_spaces.hpp), and every
+        // refusal below returns before make_otterbrix builds one — borrowing it would mean
+        // constructing the engine inside the very directory the refusal exists to leave
+        // alone. This used to end in std::pmr::new_delete_resource() with a note saying the
+        // only real exit was a resource ARGUMENT owned one level further up again.
         //
-        // The only real exit is a resource ARGUMENT, and it cannot start here: make_space's
-        // caller (open_space_or_raise in pyconnection.cpp) holds no arena of its own either,
-        // so the arena would have to be owned one level further up again.
-        core::error_t path_error(core::error_code_t code, const std::string& what) {
-            return core::error_t{code, std::pmr::string{what, std::pmr::new_delete_resource()}};
+        // It is owned one level further up now: the module owns an arena (main.cpp's
+        // PYBIND11_MODULE body), `connect` carries it in, and the refusal message is built
+        // on it. Nothing on the success path touches it.
+        core::error_t path_error(std::pmr::memory_resource* resource,
+                                 core::error_code_t code,
+                                 const std::string& what) {
+            return core::error_t{code, std::pmr::string{what, resource}};
         }
 
     } // namespace
@@ -53,7 +55,11 @@ namespace otterbrix {
     std::shared_ptr<python_import_cache_t> connection_environment_t::import_cache_ = nullptr;
 
     core::result_wrapper_t<boost::intrusive_ptr<otterbrix_t>>
-    connection_environment_t::make_space(const std::filesystem::path& path) {
+    connection_environment_t::make_space(std::pmr::memory_resource* resource, const std::filesystem::path& path) {
+        // Rule 6: without an arena the refusals below have nowhere to put their message, and
+        // a refusal that cannot speak is worse than the one it replaces.
+        assert(resource != nullptr && "make_space needs an arena for its refusal messages");
+
         // Opening a database OPENS it. Never
         //     std::filesystem::remove_all(path);
         //     std::filesystem::create_directory(path);
@@ -72,19 +78,23 @@ namespace otterbrix {
             ec.clear();
             std::filesystem::create_directories(path, ec);
             if (ec) {
-                return path_error(core::error_code_t::io_error,
+                return path_error(resource,
+                                  core::error_code_t::io_error,
                                   "cannot create database directory '" + path.string() + "': " + ec.message());
             }
         } else if (ec) {
-            return path_error(core::error_code_t::io_error,
+            return path_error(resource,
+                              core::error_code_t::io_error,
                               "cannot inspect '" + path.string() + "': " + ec.message());
         } else if (!std::filesystem::is_directory(status)) {
-            return path_error(core::error_code_t::invalid_parameter,
+            return path_error(resource,
+                              core::error_code_t::invalid_parameter,
                               "'" + path.string() + "' exists and is not a directory");
         } else if (!directory_is_empty(path) && !looks_like_otterbrix_database(path)) {
             // Rule 6: a directory holding somebody else's files is a loud refusal,
             // not something to delete and replace with a fresh database.
-            return path_error(core::error_code_t::invalid_parameter,
+            return path_error(resource,
+                              core::error_code_t::invalid_parameter,
                               "'" + path.string() +
                                   "' is not empty and does not hold an otterbrix database; refusing to open it");
         }

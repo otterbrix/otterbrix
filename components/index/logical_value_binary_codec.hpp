@@ -170,7 +170,7 @@ namespace components::index::codec {
         // throw or assert here: width 18 is 0b010010 and one flipped bit makes it 50, so an
         // ordinary NUMERIC(18,2) key would kill the process. It refuses like everything else
         // in this file.
-        auto decimal_result = components::types::complex_logical_type::create_decimal(width, scale);
+        auto decimal_result = components::types::complex_logical_type::create_decimal(resource, width, scale);
         if (decimal_result.has_error()) {
             return refuse();
         }
@@ -766,10 +766,11 @@ namespace components::index::codec {
     // refuses at ALTER time, before the first catalog write, so the divergence never reaches disk and the
     // statement fails with "default value type mismatch", while the tag guarantees only that a divergence
     // which somehow DID reach disk is refused on the way back out, as data_corruption. Drop the validator and
-    // a rejected statement becomes a persisted row nobody can read. That holds all the more if the ALTER path
-    // ever grows the DEFAULT-to-column cast CREATE TABLE already has (the parity gap pinned by the same test
-    // file, "alter_add_column_default_type_divergence_is_refused"): the refusal has to keep standing beside
-    // the cast.
+    // a rejected statement becomes a persisted row nobody can read. The ALTER path GREW that DEFAULT-to-column
+    // cast on 2026-09-05 (services/collection/executor.cpp calls the same convert_column_defaults CREATE TABLE
+    // does; pinned by "alter_add_column_default_is_coerced_like_create_table" in the same test file), and the
+    // refusal kept standing beside it: the cast handles a divergence an ASSIGNMENT cast can carry, the
+    // validator and this tag handle the one it cannot.
     //
     // The tag costs one byte per present value in the persisted attdefspec bytes; the format carries no
     // version and no length that is computed anywhere else, so nothing outside this file needed adjusting.

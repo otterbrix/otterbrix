@@ -62,8 +62,7 @@ namespace components::operators {
             auto [_rfbn, rfbnf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::resolve_function_by_name,
                                                               exec_ctx,
-                                                              func_name,
-                                                              std::uint64_t{0});
+                                                              func_name);
             auto matches_r = co_await std::move(rfbnf);
             if (matches_r.has_error()) {
                 // A pg_proc read that FAILED is not "the name is free". Reporting it as one is
@@ -154,8 +153,7 @@ namespace components::operators {
                             actor_zeta::otterbrix::send(ctx->disk_address,
                                                         &services::disk::manager_disk_t::resolve_namespace,
                                                         exec_ctx,
-                                                        std::string(nname),
-                                                        std::uint64_t{0});
+                                                        std::string(nname));
                         auto rns_r = co_await std::move(rnf);
                         if (rns_r.has_error()) {
                             set_error(rns_r.error());

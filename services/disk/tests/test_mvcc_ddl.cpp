@@ -105,7 +105,7 @@ namespace {
 TEST_CASE("services::disk::mvcc::auto_commit_create_namespace_visible") {
     fixture fx;
     disk_test_helpers::test_create_namespace(fx, std::string("ns_a"));
-    auto rr = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_a"), std::uint64_t{0});
+    auto rr = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_a"));
     REQUIRE_FALSE(rr.has_error());
     auto& r = rr.value();
     REQUIRE(r.found);
@@ -130,8 +130,7 @@ TEST_CASE("services::disk::mvcc::uncommitted_insert_invisible_to_other_sessions"
         // Intentionally no MVCC swap (no storage_publish_commits call).
     }
     // auto_ctx() uses transaction_id=0, so it must NOT see the uncommitted row.
-    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_uncommitted"),
-                       std::uint64_t{0});
+    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_uncommitted"));
     REQUIRE_FALSE(r.has_error());
     REQUIRE_FALSE(r.value().found);
 }
@@ -214,11 +213,11 @@ TEST_CASE("services::disk::mvcc::resolve_includes_uncommitted_deletes") {
         // Intentionally no MVCC swap (no storage_publish_commits call).
     }
 
-    auto kept = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("kept_ns"), std::uint64_t{0});
+    auto kept = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("kept_ns"));
     REQUIRE_FALSE(kept.has_error());
     REQUIRE(kept.value().found);
     auto dropped =
-        fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("dropped_ns"), std::uint64_t{0});
+        fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("dropped_ns"));
     REQUIRE_FALSE(dropped.has_error());
     REQUIRE(dropped.value().found);
 }
@@ -652,14 +651,13 @@ TEST_CASE("services::disk::mvcc::resolve_namespace_sees_its_own_uncommitted_row"
     INFO("the creating transaction must see its own pg_namespace row");
     auto own = fx.invoke(&manager_disk_t::resolve_namespace,
                          fx.txn_ctx(uncommitted),
-                         std::string("ns_own_txn"),
-                         std::uint64_t{0});
+                         std::string("ns_own_txn"));
     REQUIRE_FALSE(own.has_error());
     REQUIRE(own.value().found);
 
     INFO("other sessions still do not (case 2's half must keep holding)");
     auto other =
-        fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_own_txn"), std::uint64_t{0});
+        fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_own_txn"));
     REQUIRE_FALSE(other.has_error());
     REQUIRE_FALSE(other.value().found);
 }

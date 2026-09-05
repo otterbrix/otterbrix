@@ -90,7 +90,7 @@ namespace {
 // 1. resolve_namespace on unknown name returns found=false, no error.
 TEST_CASE("services::disk::error::resolve_unknown_namespace") {
     fixture fx;
-    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"), std::uint64_t{0});
+    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"));
     REQUIRE_FALSE(r.has_error());
     REQUIRE_FALSE(r.value().found);
 }
@@ -120,7 +120,7 @@ TEST_CASE("services::disk::error::duplicate_namespace_name_two_rows") {
     auto b = test_create_namespace(fx, "dup");
     REQUIRE(a != b);
     // resolve_namespace returns the first match by scan order — non-deterministic but found.
-    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("dup"), std::uint64_t{0});
+    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("dup"));
     REQUIRE_FALSE(r.has_error());
     REQUIRE(r.value().found);
 }
@@ -144,7 +144,7 @@ TEST_CASE("services::disk::error::long_namespace_name_accepted") {
     std::string long_name(200, 'x');
     auto ns_oid = test_create_namespace(fx, long_name);
     REQUIRE(ns_oid >= FIRST_USER_OID);
-    auto rs = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), long_name, std::uint64_t{0});
+    auto rs = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), long_name);
     REQUIRE_FALSE(rs.has_error());
     REQUIRE(rs.value().found);
 }

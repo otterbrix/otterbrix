@@ -187,8 +187,7 @@ namespace {
         auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
                                                     &services::disk::manager_disk_t::resolve_function_by_name,
                                                     exec_ctx,
-                                                    name,
-                                                    std::uint64_t{0});
+                                                    name);
         for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
             std::this_thread::yield();
         }

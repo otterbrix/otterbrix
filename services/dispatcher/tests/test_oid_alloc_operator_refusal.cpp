@@ -298,7 +298,7 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
     // Every pg_proc row carrying this name, as (oid) — an EMPTY answer means the catalog has
     // no such function at all, which is what a refused registration must leave behind.
     std::vector<catalog::oid_t> pg_proc_oids(const std::string& fname) {
-        auto matches = disk_invoke(&manager_disk_t::resolve_function_by_name, read_ctx(), fname, std::uint64_t{0});
+        auto matches = disk_invoke(&manager_disk_t::resolve_function_by_name, read_ctx(), fname);
         REQUIRE_FALSE(matches.has_error());
         std::vector<catalog::oid_t> out;
         out.reserve(matches.value().size());
@@ -337,7 +337,7 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
     }
 
     catalog::oid_t namespace_oid(const std::string& name) {
-        auto r = disk_invoke(&manager_disk_t::resolve_namespace, read_ctx(), name, std::uint64_t{0});
+        auto r = disk_invoke(&manager_disk_t::resolve_namespace, read_ctx(), name);
         REQUIRE_FALSE(r.has_error());
         REQUIRE(r.value().found);
         return r.value().oid;

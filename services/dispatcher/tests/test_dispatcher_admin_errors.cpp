@@ -185,7 +185,7 @@ struct admin_fixture : actor_zeta::actor::actor_mixin<admin_fixture> {
     }
 
     std::size_t pg_proc_rows(const std::string& fname) {
-        auto matches = disk_invoke(&manager_disk_t::resolve_function_by_name, read_ctx(), fname, std::uint64_t{0});
+        auto matches = disk_invoke(&manager_disk_t::resolve_function_by_name, read_ctx(), fname);
         REQUIRE_FALSE(matches.has_error());
         return matches.value().size();
     }

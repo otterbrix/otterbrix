@@ -901,37 +901,18 @@ namespace services::disk {
         // Per-item resolve methods. Each method scans the corresponding pg_* table
         // on the disk actor thread and returns the found object (or {found=false}).
         //
-        // `since_version` IS RETIRED AND IGNORED: both implementations name it
-        // `std::uint64_t /*since_version*/` (manager_disk_resolve.cpp) and versioning is gone.
-        // IT IS NOT KEPT FOR MESSAGE DISPATCH, whatever the note that stood here used to say —
-        // that reason was invented, and the code says the opposite in three places. A message
-        // id is the INDEX of the method POINTER inside dispatch_traits::methods
-        // (actor_zeta::msg_id -> action_id_impl -> find_method_index), so dropping a PARAMETER
-        // moves no method and renumbers nothing; actor_zeta::implements<> requires the
-        // contract's and the actor's signatures to match element by element, so a one-sided
-        // edit is a COMPILE error; and send() static_asserts the argument count, so a missed
-        // sender cannot pass a silent zero either.
-        //
-        // What actually keeps the parameter is the SHAPE of its removal, not dispatch: it is
-        // one atomic edit over 6 declarations (here, disk_contract.hpp, manager_disk_resolve.cpp)
-        // plus every caller, and the callers live outside this component —
-        // components/physical_plan/operators/operator_register_udf.cpp and
-        // operator_unregister_udf.cpp, plus the tests under services/disk/tests,
-        // services/dispatcher/tests and integration/cpp/test, all passing std::uint64_t{0}.
-        // A rule-6 debt with an owner, then, and not a constraint of the mailbox.
-        //
         // All four carry core::result_wrapper_t because the SCAN can fail, and "the read
         // failed" is not "the catalog does not have it". {found=false} / an empty vector /
         // INVALID_OID stay the honest NEGATIVE answers, inside the wrapper.
         unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
-        resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t since_version);
+        resolve_namespace(execution_context_t ctx, std::string name);
 
         // Cross-namespace function lookup: returns ALL pg_proc rows whose proname matches
         // `name`, regardless of pronamespace. Used by the UDF admin paths (#41 Path 2/4):
         // register_udf needs to detect cross-namespace conflicts; drop_udf needs to purge
         // every row sharing the name. Admin-scope (register/drop UDF); may return an empty vector.
         unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
-        resolve_function_by_name(execution_context_t ctx, std::string name, std::uint64_t since_version);
+        resolve_function_by_name(execution_context_t ctx, std::string name);
 
         // Bookkeeping lookup (NOT query-time cast resolution — that is the in-memory
         // cast_registry_). Finds the pg_cast row identified by its (castsource,

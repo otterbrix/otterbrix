@@ -60,7 +60,7 @@ namespace services::disk {
     // namespace" collision checks, follow-up DDL in the txn) then reads a lie.
     // A zero-txn ctx carries transaction_data{0,...}, which sees exactly the committed state.
     manager_disk_t::unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
-    manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t /*since_version*/) {
+    manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name) {
         resolve_namespace_result_t out(resource());
 
         auto batches_r = co_await scan_table(pg_namespace_oid_tbl,
@@ -97,9 +97,7 @@ namespace services::disk {
     // rows this transaction has already deleted, and the scrub of a row that is gone would be
     // reported as a catalog that refused to give it up.
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
-    manager_disk_t::resolve_function_by_name(execution_context_t ctx,
-                                             std::string name,
-                                             std::uint64_t /*since_version*/) {
+    manager_disk_t::resolve_function_by_name(execution_context_t ctx, std::string name) {
         std::pmr::vector<resolve_function_result_t> out(resource());
         auto batches_r = co_await scan_table(pg_proc_oid,
                                              std::unique_ptr<components::table::table_filter_t>{},

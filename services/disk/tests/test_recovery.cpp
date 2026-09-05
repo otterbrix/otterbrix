@@ -228,7 +228,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
         // ns_name_to_oid_ is rebuilt by rebuild_lookup_indexes via inline_scan →
         // scan_committed. The uncommitted row (txn_id=1) must not appear.
         auto res =
-            fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("orphaned_ns"), std::uint64_t{0});
+            fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("orphaned_ns"));
         REQUIRE_FALSE(res.has_error());
         REQUIRE_FALSE(res.value().found);
     }

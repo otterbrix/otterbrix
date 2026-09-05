@@ -159,7 +159,7 @@ TEST_CASE("services::disk::pg_depend::function_cascades_with_namespace") {
     const auto ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("ns_e"));
     REQUIRE(ns_oid >= FIRST_USER_OID);
     disk_test_helpers::test_drop_namespace(fx, ns_oid);
-    auto rr = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("ns_e"), std::uint64_t{0});
+    auto rr = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("ns_e"));
     REQUIRE_FALSE(rr.has_error());
     REQUIRE_FALSE(rr.value().found);
 }

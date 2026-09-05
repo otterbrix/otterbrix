@@ -321,7 +321,7 @@ TEST_CASE("services::disk::open::an_unreadable_sidecar_is_not_never_checkpointed
         REQUIRE_FALSE(unclosed.has_error());
         CHECK(unclosed.value() == 0);
 
-        auto ns = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("ns_sidecar"), std::uint64_t{0});
+        auto ns = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("ns_sidecar"));
         REQUIRE_FALSE(ns.has_error());
         CHECK(ns.value().found);
 
@@ -654,7 +654,7 @@ TEST_CASE("services::disk::open::an_unreadable_system_table_sidecar_is_not_a_bri
         // And the catalog answers: the namespace written before the corruption is still there,
         // which is the difference between a degraded start and an empty pg_catalog over live
         // storage.
-        auto ns = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("ns_sys"), std::uint64_t{0});
+        auto ns = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("ns_sys"));
         REQUIRE_FALSE(ns.has_error());
         CHECK(ns.value().found);
 

@@ -148,8 +148,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(),
                                                     &manager_disk_t::resolve_namespace,
                                                     ctx,
-                                                    name,
-                                                    std::uint64_t{0});
+                                                    name);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
             scheduler_->run(1000);

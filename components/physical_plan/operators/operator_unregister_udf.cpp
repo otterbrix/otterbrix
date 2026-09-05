@@ -69,8 +69,7 @@ namespace components::operators {
             auto [_rfbn, rfbnf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::resolve_function_by_name,
                                                               exec_ctx,
-                                                              function_name_,
-                                                              std::uint64_t{0});
+                                                              function_name_);
             auto matches_r = co_await std::move(rfbnf);
             if (matches_r.has_error()) {
                 // A pg_proc read that FAILED is not "there are no rows to purge": acting on it

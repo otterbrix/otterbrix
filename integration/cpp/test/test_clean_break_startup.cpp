@@ -184,8 +184,7 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
         auto [_, fut] = actor_zeta::otterbrix::send(fd2.manager->address(),
                                                     &manager_disk_t::resolve_namespace,
                                                     ctx,
-                                                    std::string("durable_ns"),
-                                                    std::uint64_t{0});
+                                                    std::string("durable_ns"));
         poll_ready(fd2.scheduler, fut);
         auto rr = std::move(fut).take_ready();
         REQUIRE_FALSE(rr.has_error());
@@ -227,8 +226,7 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
         auto [_, nfut] = actor_zeta::otterbrix::send(fd2.manager->address(),
                                                      &manager_disk_t::resolve_namespace,
                                                      ctx,
-                                                     std::string("ns"),
-                                                     std::uint64_t{0});
+                                                     std::string("ns"));
         poll_ready(fd2.scheduler, nfut);
         auto rns_r = std::move(nfut).take_ready();
         REQUIRE_FALSE(rns_r.has_error());
@@ -315,8 +313,7 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
         auto [_, fut] = actor_zeta::otterbrix::send(fd2.manager->address(),
                                                     &manager_disk_t::resolve_namespace,
                                                     ctx,
-                                                    std::string("post_restart"),
-                                                    std::uint64_t{0});
+                                                    std::string("post_restart"));
         poll_ready(fd2.scheduler, fut);
         auto rns = std::move(fut).take_ready();
         REQUIRE_FALSE(rns.has_error());

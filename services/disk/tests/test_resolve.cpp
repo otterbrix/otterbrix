@@ -106,7 +106,7 @@ namespace {
 // 1. After bootstrap, resolve_namespace finds the well-known "public" namespace.
 TEST_CASE("services::disk::resolve::namespace_finds_bootstrap") {
     fixture fx;
-    auto rr = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("public"), std::uint64_t{0});
+    auto rr = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("public"));
     REQUIRE_FALSE(rr.has_error());
     auto& r = rr.value();
     REQUIRE(r.found);
@@ -117,7 +117,7 @@ TEST_CASE("services::disk::resolve::namespace_finds_bootstrap") {
 TEST_CASE("services::disk::resolve::namespace_misses_unknown") {
     fixture fx;
     auto rr =
-        fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"), std::uint64_t{0});
+        fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"));
     REQUIRE_FALSE(rr.has_error());
     REQUIRE_FALSE(rr.value().found);
 }
@@ -607,7 +607,7 @@ TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
 
     plan.crashed = true;
     auto poisoned =
-        fd2.invoke(&manager_disk_t::resolve_function_by_name, fd2.ctx(), std::string("count"), std::uint64_t{0});
+        fd2.invoke(&manager_disk_t::resolve_function_by_name, fd2.ctx(), std::string("count"));
     INFO("a pg_proc scan that failed must not answer 'there is no function named count'");
     // Before the funnel carried an error channel this was an EMPTY vector, indistinguishable
     // from the honest negative answer — while the row was on the platter.
@@ -617,7 +617,7 @@ TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
     // poison and the same call over the same file answers with the row.
     plan.crashed = false;
     auto healthy =
-        fd2.invoke(&manager_disk_t::resolve_function_by_name, fd2.ctx(), std::string("count"), std::uint64_t{0});
+        fd2.invoke(&manager_disk_t::resolve_function_by_name, fd2.ctx(), std::string("count"));
     REQUIRE_FALSE(healthy.has_error());
     REQUIRE(healthy.value().size() == 1);
     CHECK(healthy.value()[0].found);

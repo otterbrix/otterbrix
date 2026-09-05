@@ -387,7 +387,7 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
         REQUIRE_NOTHROW(fd3.manager->bootstrap_system_tables_sync());
         fd3.manager->restore_oid_generator_sync();
         fd3.manager->load_user_table_storages_sync();
-        auto ns = fd3.invoke(&manager_disk_t::resolve_namespace, fd3.ctx(), std::string("ns_one"), std::uint64_t{0});
+        auto ns = fd3.invoke(&manager_disk_t::resolve_namespace, fd3.ctx(), std::string("ns_one"));
         REQUIRE_FALSE(ns.has_error());
         CHECK(ns.value().found);
         auto rows = disk_test_helpers::read_ok(
@@ -477,7 +477,7 @@ TEST_CASE("services::disk::sysboot::uncreatable_system_table_refuses_the_start")
     if (!refused) {
         // The content the silent start actually produced: a pg_namespace with no "public".
         plan.fail_writes_from = 0;
-        auto ns = fd.invoke(&manager_disk_t::resolve_namespace, fd.ctx(), std::string("public"), std::uint64_t{0});
+        auto ns = fd.invoke(&manager_disk_t::resolve_namespace, fd.ctx(), std::string("public"));
         INFO("a start that came up over a pg_namespace it could not create has no 'public'");
         CHECK((!ns.has_error() && ns.value().found));
     }
@@ -522,7 +522,7 @@ TEST_CASE("services::disk::sysboot::a_system_table_that_loads_empty_is_seeded_ag
 
     disk_only_fixture fd2(base);
     REQUIRE_NOTHROW(fd2.manager->bootstrap_system_tables_sync());
-    auto ns = fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("public"), std::uint64_t{0});
+    auto ns = fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("public"));
     REQUIRE_FALSE(ns.has_error());
     INFO("a system table that loaded with zero rows must be seeded, not left silently empty");
     CHECK(ns.value().found);

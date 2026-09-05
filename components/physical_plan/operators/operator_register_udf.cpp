@@ -40,6 +40,20 @@ namespace components::operators {
         const std::string func_name = function_->name();
         const auto func_signatures = function_->get_signatures();
 
+        // The deep copy the default-registry mirror will consume is taken HERE, ahead of every
+        // disk step, because taking it is the only part of that mirror which can refuse. With it
+        // in hand the mirror at the end of this coroutine cannot fail, so there is no window in
+        // which the pg_proc row is already durable and the registry then refuses to hold it.
+        components::compute::function_ptr registry_copy = function_->get_copy(resource_);
+        if (!registry_copy) {
+            set_error(core::error_t{
+                core::error_code_t::function_registry_error,
+                std::pmr::string{"register_udf: the function payload could not be copied for the default registry",
+                                 resource_}});
+            mark_failed();
+            co_return;
+        }
+
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         // 1. Cross-namespace conflict detection: bail on any pre-existing pg_proc
@@ -95,48 +109,37 @@ namespace components::operators {
             }
         }
 
-        // 3. Mint the pg_proc identity. THIS RUNS BEFORE THE REGISTRY MIRROR BELOW, and the
-        //    order is the point: the mirror is this operator's first MUTATION, and a refusal
-        //    discovered after it would leave the default registry answering for a function
-        //    the catalog never got a row for. A round that delivered nothing used to be
-        //    consumed anyway — allocate() answers INVALID_OID — and the pg_proc row went out
-        //    stamped with 0, so CREATE FUNCTION reported success over a durable function with
-        //    no identity, which is what pg_depend and every later lookup key on.
-        catalog::oid_t fn_oid = catalog::INVALID_OID;
+        // 3. THE WHOLE DISK PROLOGUE RUNS HERE, AHEAD OF THE ONLY MUTATION THIS OPERATOR MAKES.
+        //    Everything below that can refuse — the oid round, the namespace enumeration, the
+        //    namespace resolve, the pg_proc/pg_depend appends — happens while nothing has been
+        //    changed yet, so a refusal leaves the process exactly as it found it. Hoisting only
+        //    the oid round (which is where this started) was not enough: list_namespaces and
+        //    resolve_namespace stayed BEHIND the mirror, and scan_table can now refuse a catalog
+        //    read outright, so an unreadable pg_namespace left the default registry answering for
+        //    a function the catalog has no row for — visible to every plan-validation lookup in
+        //    this process, absent from every durable record of what exists.
+        //
+        //    The oid round itself: a round that delivered nothing used to be consumed anyway —
+        //    allocate() answers INVALID_OID — and the pg_proc row went out stamped with 0, so
+        //    CREATE FUNCTION reported success over a durable function with no identity, which is
+        //    what pg_depend and every later lookup key on.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            auto [_oa, oaf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::allocate_oids_batch,
-                                               std::size_t{1});
-            auto allocated = co_await std::move(oaf);
-            if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "register_udf", fn_oid);
-                ec_oid.contains_error()) {
-                set_error(std::move(ec_oid));
-                mark_failed();
-                co_return;
+            catalog::oid_t fn_oid = catalog::INVALID_OID;
+            {
+                auto [_oa, oaf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::allocate_oids_batch,
+                                                   std::size_t{1});
+                auto allocated = co_await std::move(oaf);
+                if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "register_udf", fn_oid);
+                    ec_oid.contains_error()) {
+                    set_error(std::move(ec_oid));
+                    mark_failed();
+                    co_return;
+                }
             }
-        }
 
-        // 4. Mirror into the global default registry so validate_logical_plan
-        //    lookups (which probe get_default()) see the UDF. MUST reuse the
-        //    LOCAL uid (uids.front()): otherwise the global counter (which keeps
-        //    growing across tests) and the per-executor counters diverge, so a
-        //    plan's function_uid() set from global matches no local entry and the
-        //    predicate gets a null function pointer at runtime.
-        if (auto* def_reg = components::compute::function_registry_t::get_default()) {
-            auto res = uids.empty() ? def_reg->add_function(function_->get_copy(resource_))
-                                    : def_reg->add_function_with_uid(uids.front(), function_->get_copy(resource_));
-            if (res.has_error()) {
-                // The default registry already carries its own typed reason — pass it through
-                // rather than minting a second, vaguer one.
-                set_error(res.error());
-                mark_failed();
-                co_return;
-            }
-        }
-
-        // 5. Persist to pg_proc, attached to the first existing user namespace;
-        //    if none exists, the row lives in pg_catalog.
-        if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            // 4. Persist to pg_proc, attached to the first existing user namespace;
+            //    if none exists, the row lives in pg_catalog.
             catalog::oid_t target_ns = catalog::well_known_oid::pg_catalog_namespace;
             {
                 auto [_ln, lnf] =
@@ -231,6 +234,29 @@ namespace components::operators {
             }
             if (append_error.contains_error()) {
                 set_error(std::move(append_error));
+                mark_failed();
+                co_return;
+            }
+        }
+
+        // 5. Mirror into the global default registry so validate_logical_plan lookups (which
+        //    probe get_default()) see the UDF. MUST reuse the LOCAL uid (uids.front()):
+        //    otherwise the global counter (which keeps growing across tests) and the
+        //    per-executor counters diverge, so a plan's function_uid() set from global matches
+        //    no local entry and the predicate gets a null function pointer at runtime.
+        //
+        //    LAST ON PURPOSE. This is the operator's ONLY mutation, and by the time it runs
+        //    every refusal is already known: the name is free, the uids agree, the identity was
+        //    minted, the namespace was resolved and the pg_proc/pg_depend rows are written. The
+        //    registry therefore never answers for a function the catalog does not carry. The
+        //    payload was copied at the top, so nothing here can refuse either.
+        if (auto* def_reg = components::compute::function_registry_t::get_default()) {
+            auto res = uids.empty() ? def_reg->add_function(std::move(registry_copy))
+                                    : def_reg->add_function_with_uid(uids.front(), std::move(registry_copy));
+            if (res.has_error()) {
+                // The default registry already carries its own typed reason — pass it through
+                // rather than minting a second, vaguer one.
+                set_error(res.error());
                 mark_failed();
                 co_return;
             }

@@ -56,13 +56,16 @@ namespace components::operators {
             co_return;
         }
 
-        // 2. Drop the matching overload from the default registry.
-        if (reg) {
-            reg->remove_function_by_signature(function_name_, inputs_);
-        }
-
-        // 3. Purge pg_proc + pg_depend rows. resolve_function_by_name returns
+        // 2. Purge pg_proc + pg_depend rows. resolve_function_by_name returns
         //    every namespace match; drop each one.
+        //
+        //    AHEAD OF THE REGISTRY REMOVAL BELOW, and the order is the point. The removal is
+        //    this operator's only mutation, and the pg_proc read here can REFUSE (scan_table
+        //    answers a result_wrapper_t). Doing the removal first meant an unreadable pg_proc
+        //    reported DROP FUNCTION as failed while the function was already gone from the
+        //    process-global registry — every lookup missing it, and its pg_proc/pg_depend rows
+        //    still on the platter claiming it exists. Same shape as the mirror-before-the-
+        //    namespace-read in operator_register_udf.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
             auto [_rfbn, rfbnf] = actor_zeta::send(ctx->disk_address,
@@ -102,6 +105,12 @@ namespace components::operators {
                                                  std::move(specs));
                 co_await std::move(df);
             }
+        }
+
+        // 3. Drop the matching overload from the default registry — the operator's ONLY
+        //    mutation, and last, so it happens with every refusal already known.
+        if (reg) {
+            reg->remove_function_by_signature(function_name_, inputs_);
         }
 
         success_ = true;

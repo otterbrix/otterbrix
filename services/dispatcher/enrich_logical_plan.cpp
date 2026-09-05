@@ -15,6 +15,8 @@
 
 #include "resolve_type.hpp"
 
+#include <core/executor.hpp>
+
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/cursor/cursor.hpp>
@@ -1059,6 +1061,32 @@ namespace services::dispatcher { namespace {
             }
             node->set_ref_col_names(referenced->pk_columns);
         }
+        // ARITY, EXPLICIT FORM — `FOREIGN KEY (a, b) REFERENCES p (x)`, where BOTH
+        // lists are written and they disagree. The branch above answers only the
+        // OMITTED-list form (it is nested inside `ref_col_names().empty()` and
+        // compares against pk_columns), so until this guard existed the explicit
+        // form was accepted verbatim: conkey length 2, confkey length 1.
+        //
+        // Nothing downstream can evaluate that. conkey/confkey are read
+        // POSITIONALLY (operator_resolve_constraint pairs child_col_names[i] with
+        // parent_col_names[i]), so operator_fk_check builds its probe from the
+        // 2-column child list and names the 1-column parent list, and
+        // operator_fk_cascade does the mirror. The operator floor refuses the
+        // shape at DML time — which is the whole problem being fixed here: the
+        // ALTER answered SUCCESS and then EVERY INSERT into the child and EVERY
+        // DELETE from the parent were refused permanently, with no
+        // `ALTER TABLE ... DROP CONSTRAINT` to take it back. Refused here it never
+        // reaches pg_constraint, so the tables stay usable and the user is told at
+        // the statement that was actually wrong. PostgreSQL refuses it here too.
+        if (node->local_col_names().size() != node->ref_col_names().size()) {
+            return core::error_t(
+                core::error_code_t::invalid_constraint,
+                std::pmr::string{describe_constraint() + ": foreign key column count mismatch — " +
+                                     std::to_string(node->local_col_names().size()) +
+                                     " referencing column(s) vs " + std::to_string(node->ref_col_names().size()) +
+                                     " referenced column(s) in table \"" + std::string(referenced->name) + "\"",
+                                 resource});
+        }
         // Same guard as the referencing list above, referenced side: confkey is read
         // positionally too, and a name that matches nothing leaves it short (at
         // length 0 the FK enforces nothing).
@@ -1496,13 +1524,15 @@ namespace services::dispatcher {
                     continue;
                 }
                 queried_oids.push_back(tbl_oid);
-                auto [_ik, ikf] =
-                    actor_zeta::send(index_address, &index::manager_index_t::get_indexed_keys, ctx.session, tbl_oid);
+                auto [_ik, ikf] = actor_zeta::otterbrix::send(index_address,
+                                                              &index::manager_index_t::get_indexed_keys,
+                                                              ctx.session,
+                                                              tbl_oid);
                 keys_futures.push_back(std::move(ikf));
-                auto [_id, idf] = actor_zeta::send(index_address,
-                                                   &index::manager_index_t::get_indexed_descriptions,
-                                                   ctx.session,
-                                                   tbl_oid);
+                auto [_id, idf] = actor_zeta::otterbrix::send(index_address,
+                                                              &index::manager_index_t::get_indexed_descriptions,
+                                                              ctx.session,
+                                                              tbl_oid);
                 desc_futures.push_back(std::move(idf));
             }
             // Consume PER OID: file each table's key set / descriptions under its

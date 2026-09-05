@@ -42,9 +42,9 @@ namespace components::operators {
         // harmless. Replacing the flush with a probe that reports the same health without writing doomed bytes needs
         // a new door on index_agent_contract.
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            auto [_fi, fif] = actor_zeta::send(ctx->index_address,
-                                               &services::index::manager_index_t::flush_all_indexes,
-                                               ctx->session);
+            auto [_fi, fif] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                          &services::index::manager_index_t::flush_all_indexes,
+                                                          ctx->session);
             // THE STATEMENT IS THE CHANNEL. The last step below truncates the WAL, so an index
             // that cannot reach the device must stop the round here rather than be logged
             // inside the agent and forgotten.
@@ -59,9 +59,9 @@ namespace components::operators {
         // W-TORN (prev/current) snapshot pins a known recovery boundary.
         services::wal::id_t wal_max_id{0};
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
-            auto [_wi, wif] = actor_zeta::send(ctx->wal_address,
-                                               &services::wal::manager_wal_replicate_t::current_wal_id,
-                                               ctx->session);
+            auto [_wi, wif] = actor_zeta::otterbrix::send(ctx->wal_address,
+                                                          &services::wal::manager_wal_replicate_t::current_wal_id,
+                                                          ctx->session);
             wal_max_id = co_await std::move(wif);
         }
 
@@ -72,19 +72,20 @@ namespace components::operators {
         // affected per-table checkpoints are then skipped, never unsafe.
         std::uint64_t compact_watermark = 0;
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
-            auto [_wm, wmf] = actor_zeta::send(ctx->current_message_sender,
-                                               &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
+            auto [_wm, wmf] =
+                actor_zeta::otterbrix::send(ctx->current_message_sender,
+                                            &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
             compact_watermark = co_await std::move(wmf);
         }
 
         // checkpoint_all. No-op when disk is off.
         services::wal::id_t checkpoint_wal_id{0};
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            auto [_cp, cpf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::checkpoint_all,
-                                               ctx->session,
-                                               wal_max_id,
-                                               compact_watermark);
+            auto [_cp, cpf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::checkpoint_all,
+                                                          ctx->session,
+                                                          wal_max_id,
+                                                          compact_watermark);
             checkpoint_wal_id = co_await std::move(cpf);
         }
 
@@ -134,10 +135,10 @@ namespace components::operators {
         }
 
         if (checkpoint_wal_id > services::wal::id_t{0} && ctx->wal_address != actor_zeta::address_t::empty_address()) {
-            auto [_wt, wtf] = actor_zeta::send(ctx->wal_address,
-                                               &services::wal::manager_wal_replicate_t::truncate_before,
-                                               ctx->session,
-                                               checkpoint_wal_id);
+            auto [_wt, wtf] = actor_zeta::otterbrix::send(ctx->wal_address,
+                                                          &services::wal::manager_wal_replicate_t::truncate_before,
+                                                          ctx->session,
+                                                          checkpoint_wal_id);
             // THE STATEMENT IS THE CHANNEL, same as the index flush in step 1. A truncate that
             // refused means a segment could not be read — the WAL is not in the state this
             // CHECKPOINT reports, so say so instead of returning success over it.

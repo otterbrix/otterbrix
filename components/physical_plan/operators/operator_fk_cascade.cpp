@@ -195,12 +195,12 @@ namespace components::operators {
             for (const auto& n : key_cols) {
                 col_names.emplace_back(n);
             }
-            auto [_s, sfut] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::scan_by_keys,
-                                               exec_ctx,
-                                               fk_.child_table_oid,
-                                               std::move(col_names),
-                                               std::move(keys));
+            auto [_s, sfut] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::scan_by_keys,
+                                                          exec_ctx,
+                                                          fk_.child_table_oid,
+                                                          std::move(col_names),
+                                                          std::move(keys));
             auto chunk_child_ids_r = co_await std::move(sfut);
             if (chunk_child_ids_r.has_error()) {
                 // A failed child-key read is not a miss; treating it as one lets the
@@ -257,12 +257,12 @@ namespace components::operators {
                 for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
                     row_ids_vec.data<int64_t>()[i] = all_child_ids[i];
                 }
-                auto [_d, dfut] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_delete_rows,
-                                                   exec_ctx,
-                                                   fk_.child_table_oid,
-                                                   std::move(row_ids_vec),
-                                                   static_cast<uint64_t>(all_child_ids.size()));
+                auto [_d, dfut] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::storage_delete_rows,
+                                                              exec_ctx,
+                                                              fk_.child_table_oid,
+                                                              std::move(row_ids_vec),
+                                                              static_cast<uint64_t>(all_child_ids.size()));
                 // READ THE REPLY. The child delete is the whole cascade: if it is refused,
                 // the parent DELETE below it must not stand, or the rows this branch was
                 // supposed to remove outlive the row they reference. The COUNT is
@@ -306,23 +306,24 @@ namespace components::operators {
                 for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
                     fetch_ids.data<int64_t>()[i] = all_child_ids[i];
                 }
-                auto [_f, ffut] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_fetch,
-                                                   ctx->session,
-                                                   fk_.child_table_oid,
-                                                   std::move(fetch_ids),
-                                                   static_cast<uint64_t>(all_child_ids.size()),
-                                                   // No projection: which columns the cascade's consumers read is not
-                                                   // proven here, and an unproven narrowing reads back stubs silently.
-                                                   std::vector<size_t>{},
-                                                   // The cascade runs INSIDE the parent transaction and must see
-                                                   // exactly what it sees — including its own earlier writes, and
-                                                   // NOT a child row it has already deleted in this same statement.
-                                                   ctx->txn,
-                                                   components::table::fetch_visibility_t::SNAPSHOT,
-                                                   // Every child row matters: the cascade must
-                                                   // transform all of them, so no cap.
-                                                   /*limit=*/int64_t{-1});
+                auto [_f, ffut] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::storage_fetch,
+                                                ctx->session,
+                                                fk_.child_table_oid,
+                                                std::move(fetch_ids),
+                                                static_cast<uint64_t>(all_child_ids.size()),
+                                                // No projection: which columns the cascade's consumers read is not
+                                                // proven here, and an unproven narrowing reads back stubs silently.
+                                                std::vector<size_t>{},
+                                                // The cascade runs INSIDE the parent transaction and must see
+                                                // exactly what it sees — including its own earlier writes, and
+                                                // NOT a child row it has already deleted in this same statement.
+                                                ctx->txn,
+                                                components::table::fetch_visibility_t::SNAPSHOT,
+                                                // Every child row matters: the cascade must
+                                                // transform all of them, so no cap.
+                                                /*limit=*/int64_t{-1});
                 auto fetched_r = co_await std::move(ffut); // vector of ≤CAP chunks
                 if (fetched_r.has_error()) {
                     // A failed child-row read must abort the cascade: applying the
@@ -429,12 +430,12 @@ namespace components::operators {
                 // write rides the parent's transaction: the executor tracks the child table on BOTH the append
                 // channel (the new versions) and the delete channel (the superseded old versions, marked deleted
                 // at parent_txn_id), so COMMIT publishes the child update and ROLLBACK reverts it.
-                auto [_u, ufut] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_update,
-                                                   exec_ctx,
-                                                   fk_.child_table_oid,
-                                                   std::move(upd_ids_batch),
-                                                   std::move(upd_data_batch));
+                auto [_u, ufut] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::storage_update,
+                                                              exec_ctx,
+                                                              fk_.child_table_oid,
+                                                              std::move(upd_ids_batch),
+                                                              std::move(upd_data_batch));
                 // The update reply carries any write_conflict / out_of_memory; surface it as a
                 // clean error cursor instead of silently dropping it.
                 auto update_result = co_await std::move(ufut);

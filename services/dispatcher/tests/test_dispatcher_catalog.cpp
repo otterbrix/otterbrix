@@ -538,3 +538,111 @@ TEST_CASE("services::dispatcher::conkey_csv::a_constraint_row_of_unknown_kind_is
     INFO("a constraint row that cannot be classified must stop the statement, not leave the set unannounced");
     REQUIRE(stored->size() <= 1);
 }
+
+// ===========================================================================
+// A SOURCE COLUMN WITH NO TYPE MUST BE NAMED BY THE STATEMENT THAT NAMED IT,
+// NOT BY THE STORAGE SEGMENT THAT CHOKED ON IT.
+//
+// The VALUES form of this already answers by name: validate_types drops an
+// all-NULL column from the chunk (a schemaless table cannot create a column
+// from a value that has no type) and says WHICH column went and why. The
+// INSERT ... SELECT form never reaches that erase — the projection column is
+// typed logical_type::NA (0) and stays in the source schema, bind_computed_rename
+// binds it with target_type = NA, the computed-register wrap creates the catalog
+// column from it, and the append dies down in column_segment_t with
+//
+//     "column_segment_t::append: no segment storage for physical type 127"
+//
+// (127 is physical_type::NA). That sentence names no column, no statement and no
+// cause, and it arrives AFTER the register wrap has already put a phantom NA
+// column into the target's catalog: the table then reports columns it holds no
+// rows for. State survives a failure it should not have survived.
+//
+// The refusal has to be NARROW, and it is: an unknown key on a schemaless table
+// is a different diagnosis with a different message, produced far earlier by
+// validate_key, and a plain projection of NULL is not affected at all — the guard
+// lives on the INSERT binding, not on the select list.
+// ===========================================================================
+TEST_CASE("services::dispatcher::null_source_column::insert_select_names_the_typeless_column") {
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    test_dispatcher test(mr.get(), catalog_dir("null_source_column"));
+
+    auto run = [&test](const char* sql) {
+        test.execute_sql(sql);
+        return test.take_result();
+    };
+
+    REQUIRE(run("CREATE DATABASE nsc;")->is_success());
+    REQUIRE(run("CREATE TABLE nsc.src();")->is_success());
+    REQUIRE(run("INSERT INTO nsc.src (a, b) VALUES (1, 2);")->is_success());
+
+    // ---- the defect: a written column list ----
+    REQUIRE(run("CREATE TABLE nsc.d1();")->is_success());
+    {
+        auto refused = run("INSERT INTO nsc.d1 (x, y) SELECT a, NULL FROM nsc.src;");
+        REQUIRE_FALSE(refused->is_success());
+        const std::string what{refused->get_error().what.c_str()};
+        INFO("refusal text: " << what);
+        // the column the statement named, and the reason, both readable
+        CHECK(what.find("\"y\"") != std::string::npos);
+        CHECK(what.find("no type to create the column from") != std::string::npos);
+        // and NOT the storage segment's sentence
+        CHECK(what.find("column_segment_t::append") == std::string::npos);
+    }
+    {
+        // nothing registered: the target is still the empty computing table it was
+        auto after = run("SELECT * FROM nsc.d1;");
+        REQUIRE(after->is_success());
+        INFO("columns registered on the refused target: " << after->column_count());
+        CHECK(after->column_count() == 0);
+    }
+
+    // ---- same defect without a written column list (the projection names it) ----
+    REQUIRE(run("CREATE TABLE nsc.d2();")->is_success());
+    {
+        auto refused = run("INSERT INTO nsc.d2 SELECT a AS x, NULL AS y FROM nsc.src;");
+        REQUIRE_FALSE(refused->is_success());
+        const std::string what{refused->get_error().what.c_str()};
+        INFO("refusal text: " << what);
+        CHECK(what.find("\"y\"") != std::string::npos);
+        CHECK(what.find("column_segment_t::append") == std::string::npos);
+    }
+
+    // ---- CAST does not give the column a type either, so it is refused the same way ----
+    // (NULL::bigint / CAST(NULL AS BIGINT) still resolve to logical_type::NA here; the
+    // refusal must therefore not advertise a cast as the way out.)
+    REQUIRE(run("CREATE TABLE nsc.d3();")->is_success());
+    {
+        auto refused = run("INSERT INTO nsc.d3 (x, y) SELECT a, CAST(NULL AS BIGINT) FROM nsc.src;");
+        REQUIRE_FALSE(refused->is_success());
+        const std::string what{refused->get_error().what.c_str()};
+        INFO("refusal text: " << what);
+        CHECK(what.find("column_segment_t::append") == std::string::npos);
+    }
+
+    // ---- WHAT MUST NOT CHANGE ----
+    // A projection of NULL is a legal result column; only writing it into a
+    // dynamic-schema table is not.
+    {
+        auto plain = run("SELECT a, NULL FROM nsc.src;");
+        REQUIRE(plain->is_success());
+        CHECK(plain->column_count() == 2);
+    }
+    // A DECLARED target has a column type to store the null under.
+    REQUIRE(run("CREATE TABLE nsc.reg (k bigint, v bigint);")->is_success());
+    CHECK(run("INSERT INTO nsc.reg (k, v) SELECT a, NULL FROM nsc.src;")->is_success());
+    // A UNION branch that supplies a value types the column, so nothing is NA.
+    REQUIRE(run("CREATE TABLE nsc.d4();")->is_success());
+    CHECK(run("INSERT INTO nsc.d4 (x, y) SELECT a, b FROM nsc.src UNION ALL SELECT a, NULL FROM nsc.src;")
+              ->is_success());
+    // An unknown key on a schemaless table keeps its OWN, earlier diagnosis —
+    // this is the distinction the guard must not blur.
+    {
+        auto unknown = run("INSERT INTO nsc.d4 (x, y) SELECT a, nosuchkey FROM nsc.src;");
+        REQUIRE_FALSE(unknown->is_success());
+        const std::string what{unknown->get_error().what.c_str()};
+        INFO("refusal text: " << what);
+        CHECK(what.find("'nosuchkey' was not found") != std::string::npos);
+        CHECK(what.find("no type to create the column from") == std::string::npos);
+    }
+}

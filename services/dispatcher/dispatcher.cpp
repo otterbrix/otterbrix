@@ -269,10 +269,19 @@ namespace services::dispatcher {
                     }
                     for (auto& ex : executors_) {
                         if (ex) {
-                            auto [ns, f] = actor_zeta::send(ex.get(), &collection::executor::executor_t::poke_msg);
+                            // THE ONE SEND IN components/ + services/ THAT IS NOT
+                            // actor_zeta::otterbrix::send, and it is not an oversight: this
+                            // addresses a raw actor POINTER, not an address_t, so it takes the
+                            // library's ActorPtr* overload, which our shorthand has no
+                            // counterpart for. The empty-target hazard our shorthand exists to
+                            // refuse cannot arise here either — `if (ex)` has already proved the
+                            // pointer, and executors_ holds owning handles, not addresses.
+                            // The future is deliberately dropped: dealloc happens when the last
+                            // of future/promise releases.
+                            [[maybe_unused]] auto [ns, f] =
+                                actor_zeta::send(ex.get(), &collection::executor::executor_t::poke_msg);
                             if (ns)
                                 scheduler_->enqueue(ex.get());
-                            (void) f; // safe to drop: dealloc happens when the last of future/promise releases
                         }
                     }
                     for (auto& e : in_flight) e.stale_ticks = 0; // backoff: re-arm threshold
@@ -477,16 +486,17 @@ namespace services::dispatcher {
                         // Parking the future on pending_void_ is just bookkeeping —
                         // poll_pending() drains it via is_ready(); dropping it instead
                         // would be memory-safe too.
-                        auto disk_send_result = actor_zeta::send(disk_address_,
-                                                                 &services::disk::manager_disk_t::on_horizon_advanced,
-                                                                 new_lowest);
+                        auto disk_send_result =
+                            actor_zeta::otterbrix::send(disk_address_,
+                                                        &services::disk::manager_disk_t::on_horizon_advanced,
+                                                        new_lowest);
                         pending_void_.emplace_back(std::move(disk_send_result.second));
                     }
                     if (index_has_dropped_ && index_address_ != actor_zeta::address_t::empty_address()) {
                         auto index_send_result =
-                            actor_zeta::send(index_address_,
-                                             &services::index::manager_index_t::on_horizon_advanced,
-                                             new_lowest);
+                            actor_zeta::otterbrix::send(index_address_,
+                                                        &services::index::manager_index_t::on_horizon_advanced,
+                                                        new_lowest);
                         pending_void_.emplace_back(std::move(index_send_result.second));
                     }
                 });

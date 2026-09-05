@@ -2,6 +2,7 @@
 
 #include <core/result_wrapper.hpp>
 
+#include <components/catalog/results/ddl_result.hpp>
 #include <components/expressions/forward.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
@@ -364,10 +365,12 @@ namespace components::sql::transform {
     // '-' sign has no unsigned reading and reports out_of_range rather than a wrapped value.
     integer_text_t parse_exact_unsigned_integer(std::string_view text, types::uint128_t& out);
 
-    // Reads `text` (optional sign, decimal digits, optional '.' + digits; surrounding
-    // spaces allowed, no exponent) as the EXACT scaled integer of a DECIMAL(width,
-    // scale): the value times 10^scale, digit for digit, rounding only the digits past
-    // `scale` (half away from zero, PostgreSQL's rule). The integer half reads digits
+    // Reads `text` (optional sign, decimal digits, optional '.' + digits, optional
+    // 'e'/'E' exponent; surrounding spaces allowed) as the EXACT scaled integer of a
+    // DECIMAL(width, scale): the value times 10^scale, digit for digit, rounding only the
+    // digits past `scale` (half away from zero, PostgreSQL's rule). An exponent MOVES THE
+    // POINT through the written digits rather than multiplying, so `1e-5` and `0.00001`
+    // read as the same scaled integer. The integer half reads digits
     // exactly through parse_exact_integer; this is the fractional half — atof would flatten a
     // NUMERIC(38,20) literal with more than ~15 significant digits into the nearest
     // double, a silently different number. A value whose integer part needs more than
@@ -381,7 +384,9 @@ namespace components::sql::transform {
     // the unsigned half above that (a `uhugeint` column's top half is reachable no other way),
     // DOUBLE only for literals that are genuinely fractional, and a refusal for a plain integer
     // wider than all of them — silently rounding that one into a double is the wrong answer
-    // this path exists to remove.
+    // this path exists to remove. A fractional literal past the double range is refused for the
+    // same reason: atof answers ±inf without reporting it, and an infinity in a plan is a value
+    // no column holds and no comparison orders.
     core::result_wrapper_t<types::logical_value_t> numeric_literal_value(std::pmr::memory_resource* resource,
                                                                          Value* value);
 
@@ -391,6 +396,28 @@ namespace components::sql::transform {
     // Evaluate constant arithmetic expression at parse time (e.g., 10 * 5 in INSERT VALUES)
     core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource,
                                                                          A_Expr* node);
+
+    // What a DROP clause SAID about its dependents, as this layer can honestly read it.
+    //
+    // The grammar's `opt_drop_behavior` (components/sql/parser/gram.y) has three
+    // alternatives and only TWO values: the EMPTY alternative yields DROP_RESTRICT, the very
+    // token an explicitly written RESTRICT yields. `DROP TABLE t RESTRICT` and `DROP TABLE t`
+    // are therefore INDISTINGUISHABLE here.
+    //
+    // So DROP_RESTRICT maps to `unspecified` — "the statement named neither word" — and NOT
+    // to restrict_. Mapping it to restrict_ would misreport every bare DROP in the tree and
+    // flip all of them at once (refuses_on_dependency turns true), which is precisely what
+    // the owner decision recorded on drop_behavior_t rules out for this build. A written
+    // CASCADE maps to cascade_: that changes no outcome today, because `unspecified` already
+    // resolves to CASCADE, but it stops the word from being discarded and it is the half that
+    // stays correct when GitHub #638 moves the unwritten default to RESTRICT.
+    //
+    // Making a written RESTRICT reachable takes a THIRD DropBehavior value produced by
+    // `opt_drop_behavior: /* EMPTY */` in the grammar. This function cannot invent that
+    // distinction, and recovering it from the raw statement text is not a distinction at all:
+    // `ALTER TABLE t ADD COLUMN c text DEFAULT 'restrict'` carries the word too, and a
+    // multi-clause ALTER carries one word per clause with nothing to attach it to.
+    components::catalog::drop_behavior_t drop_behavior_of(DropBehavior written) noexcept;
 
     core::result_wrapper_t<std::vector<table::column_definition_t>>
     get_column_definitions(std::pmr::memory_resource* resource, PGList& table_elts);

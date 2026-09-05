@@ -24,13 +24,13 @@ namespace components::operators::alter_validators {
         std::pmr::vector<std::uint64_t> keys(resource);
         keys.emplace_back(catalog::pg_attribute_col::attrelid);
 
-        auto [_h, fut] = actor_zeta::send(disk_address,
-                                          &services::disk::manager_disk_t::read_chunks_by_key,
-                                          exec_ctx,
-                                          pg_attr_oid,
-                                          std::move(keys),
-                                          components::operators::make_key_chunk(resource, table_oid),
-                                          std::pmr::vector<std::uint64_t>{resource});
+        auto [_h, fut] = actor_zeta::otterbrix::send(disk_address,
+                                                     &services::disk::manager_disk_t::read_chunks_by_key,
+                                                     exec_ctx,
+                                                     pg_attr_oid,
+                                                     std::move(keys),
+                                                     components::operators::make_key_chunk(resource, table_oid),
+                                                     std::pmr::vector<std::uint64_t>{resource});
         auto batches_r = co_await std::move(fut);
         if (batches_r.has_error()) {
             co_return batches_r.error();

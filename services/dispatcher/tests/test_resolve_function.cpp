@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/casts/default_casts.hpp>
+#include <core/pmr.hpp>
 #include <services/dispatcher/resolve_function.hpp>
 
 using namespace services::dispatcher;
@@ -8,12 +9,22 @@ using components::types::complex_logical_type;
 using components::types::logical_type;
 
 namespace {
+    // The ONE arena this file allocates on -- the DECIMAL refusal messages create_decimal
+    // builds, the cast registry, and the argument vectors alike. create_decimal allocates only
+    // on its refusal path, and that message belongs to the caller, so the caller has to name an
+    // arena it owns rather than reach for the process-global one (rule 14). Everything else here
+    // draws from the same place so the file has one answer to "where does this live", not two.
+    std::pmr::memory_resource* test_arena() {
+        static core::pmr::otterbrix_resource arena;
+        return &arena;
+    }
+
     // create_decimal reports an out-of-window (width, scale) through core::error_t now,
     // instead of an assert that vanished under NDEBUG. Every literal these tests use is
     // inside the window, so the helper checks the result and hands back the type.
     components::types::complex_logical_type
     make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
-        auto created = components::types::complex_logical_type::create_decimal(width, scale, std::move(alias));
+        auto created = components::types::complex_logical_type::create_decimal(test_arena(), width, scale, std::move(alias));
         REQUIRE_FALSE(created.has_error());
         return std::move(created.value());
     }
@@ -21,15 +32,16 @@ namespace {
 
 namespace {
 
-    std::pmr::memory_resource* resource() { return std::pmr::get_default_resource(); }
+    std::pmr::memory_resource* resource() { return test_arena(); }
 
     const components::casts::cast_registry_t& casts() {
-        static components::casts::cast_registry_t registry{std::pmr::new_delete_resource()};
-        static const bool loaded = [] {
+        // Constructed after test_arena()'s own static, so it is destroyed BEFORE the arena it
+        // allocated from -- the order a registry holding arena memory needs.
+        static components::casts::cast_registry_t registry{test_arena()};
+        [[maybe_unused]] static const bool loaded = [] {
             components::casts::register_default_casts(registry);
             return true;
         }();
-        (void) loaded;
         return registry;
     }
 

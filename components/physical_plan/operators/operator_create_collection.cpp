@@ -30,13 +30,13 @@ namespace components::operators {
         // not exist yet at this point (catalog writes follow), so relkind cannot be scanned instead.
         {
             const bool is_computed = columns_.empty();
-            auto [_, f] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::create_storage_disk,
-                                           ctx->session,
-                                           table_oid_,
-                                           database_oid_,
-                                           std::move(columns_),
-                                           is_computed);
+            auto [_, f] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                      &services::disk::manager_disk_t::create_storage_disk,
+                                                      ctx->session,
+                                                      table_oid_,
+                                                      database_oid_,
+                                                      std::move(columns_),
+                                                      is_computed);
             co_await std::move(f);
         }
 
@@ -50,10 +50,10 @@ namespace components::operators {
         }
 
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            auto [_, f] = actor_zeta::send(ctx->index_address,
-                                           &services::index::manager_index_t::register_collection,
-                                           ctx->session,
-                                           table_oid_);
+            auto [_, f] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                      &services::index::manager_index_t::register_collection,
+                                                      ctx->session,
+                                                      table_oid_);
             co_await std::move(f);
         }
 
@@ -65,11 +65,11 @@ namespace components::operators {
             append_futures(resource_);
         append_futures.reserve(catalog_writes_.size());
         for (auto& [tbl_oid, row] : catalog_writes_) {
-            auto [_, f] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::append_pg_catalog_row,
-                                           exec_ctx,
-                                           tbl_oid,
-                                           std::move(row));
+            auto [_, f] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                      &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                      exec_ctx,
+                                                      tbl_oid,
+                                                      std::move(row));
             append_futures.push_back(std::move(f));
         }
         // READ THE REPLIES. These are the pg_class / pg_attribute / pg_depend rows that ARE the table: a CREATE

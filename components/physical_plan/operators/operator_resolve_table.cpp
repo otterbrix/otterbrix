@@ -109,7 +109,7 @@ namespace components::operators {
                 } else {
                     std::pmr::vector<std::uint64_t> ns_keys(resource_);
                     ns_keys.emplace_back(catalog::pg_namespace_col::nspname);
-                    auto [_ns, nsf] = actor_zeta::send(
+                    auto [_ns, nsf] = actor_zeta::otterbrix::send(
                         ctx->disk_address,
                         &services::disk::manager_disk_t::read_chunks_by_key,
                         exec_ctx,
@@ -153,16 +153,16 @@ namespace components::operators {
                 }
                 return components::operators::make_key_chunk(resource_, std::string_view{entry.relname});
             }();
-            auto [_lookup, lookup_f] = actor_zeta::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::read_chunks_by_key,
-                                                        exec_ctx,
-                                                        kPgClass,
-                                                        std::move(key_cols),
-                                                        std::move(keys_chunk),
-                                                        // Only the oid is read from this lookup
-                                                        // (see the get_value below); the key
-                                                        // columns are added by the agent.
-                                                        pg_class_oid_only(resource_));
+            auto [_lookup, lookup_f] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                   &services::disk::manager_disk_t::read_chunks_by_key,
+                                                                   exec_ctx,
+                                                                   kPgClass,
+                                                                   std::move(key_cols),
+                                                                   std::move(keys_chunk),
+                                                                   // Only the oid is read from this lookup
+                                                                   // (see the get_value below); the key
+                                                                   // columns are added by the agent.
+                                                                   pg_class_oid_only(resource_));
             auto lookup_batches_r = co_await std::move(lookup_f);
             if (lookup_batches_r.has_error()) {
                 set_error(lookup_batches_r.error());
@@ -184,17 +184,18 @@ namespace components::operators {
             {
                 std::pmr::vector<std::uint64_t> pc_keys(resource_);
                 pc_keys.emplace_back(catalog::pg_class_col::oid);
-                auto [_pc, pcf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::read_chunks_by_key,
-                                                   exec_ctx,
-                                                   kPgClass,
-                                                   std::move(pc_keys),
-                                                   components::operators::make_key_chunk(resource_, table_oid),
-                                                   // Exactly the two columns read below; the key
-                                                   // column is added by the agent. Non-projected
-                                                   // columns stay ordinal-stable placeholders,
-                                                   // which is why the reads still address 2 and 3.
-                                                   pg_class_namespace_and_kind(resource_));
+                auto [_pc, pcf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgClass,
+                                                std::move(pc_keys),
+                                                components::operators::make_key_chunk(resource_, table_oid),
+                                                // Exactly the two columns read below; the key
+                                                // column is added by the agent. Non-projected
+                                                // columns stay ordinal-stable placeholders,
+                                                // which is why the reads still address 2 and 3.
+                                                pg_class_namespace_and_kind(resource_));
                 auto pc_batches_r = co_await std::move(pcf);
                 if (pc_batches_r.has_error()) {
                     set_error(pc_batches_r.error());
@@ -230,14 +231,15 @@ namespace components::operators {
             if (relkind == catalog::relkind::view || relkind == catalog::relkind::materialized_view) {
                 std::pmr::vector<std::uint64_t> pr_keys(resource_);
                 pr_keys.emplace_back(catalog::pg_rewrite_col::ev_class);
-                auto [_pr, prf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::read_chunks_by_key,
-                                                   exec_ctx,
-                                                   kPgRewrite,
-                                                   std::move(pr_keys),
-                                                   components::operators::make_key_chunk(resource_, table_oid),
-                                                   // Only ev_action is read below.
-                                                   pg_rewrite_action_only(resource_));
+                auto [_pr, prf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgRewrite,
+                                                std::move(pr_keys),
+                                                components::operators::make_key_chunk(resource_, table_oid),
+                                                // Only ev_action is read below.
+                                                pg_rewrite_action_only(resource_));
                 auto pr_batches_r = co_await std::move(prf);
                 if (pr_batches_r.has_error()) {
                     set_error(pr_batches_r.error());
@@ -257,13 +259,14 @@ namespace components::operators {
                 // 2=attname, 3=atttypid, 4=atttypspec, 5=attversion, 6=attrefcount].
                 std::pmr::vector<std::uint64_t> cc_keys(resource_);
                 cc_keys.emplace_back(catalog::pg_computed_column_col::relid);
-                auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::read_chunks_by_key,
-                                                   exec_ctx,
-                                                   kPgComputedColumn,
-                                                   std::move(cc_keys),
-                                                   components::operators::make_key_chunk(resource_, table_oid),
-                                                   std::pmr::vector<std::uint64_t>{resource_});
+                auto [_cc, ccf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgComputedColumn,
+                                                std::move(cc_keys),
+                                                components::operators::make_key_chunk(resource_, table_oid),
+                                                std::pmr::vector<std::uint64_t>{resource_});
                 auto cc_batches_r = co_await std::move(ccf);
                 if (cc_batches_r.has_error()) {
                     set_error(cc_batches_r.error());
@@ -352,10 +355,10 @@ namespace components::operators {
                 // scan_batched output may differ from attoid ordering. Probe storage
                 // for its current types() list (aliases set at append time) and look
                 // up each row's attname linearly — N is small (column count).
-                auto [_st, stf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_types,
-                                                   ctx->session,
-                                                   table_oid);
+                auto [_st, stf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::storage_types,
+                                                              ctx->session,
+                                                              table_oid);
                 auto storage_types_r = co_await std::move(stf);
                 if (storage_types_r.has_error()) {
                     // Every column below is bound to a physical slot BY NAME against this
@@ -474,13 +477,14 @@ namespace components::operators {
                 // stays empty there; view_sql carries the body for the view-rewrite step.
                 std::pmr::vector<std::uint64_t> pa_keys(resource_);
                 pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
-                auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::read_chunks_by_key,
-                                                   exec_ctx,
-                                                   kPgAttribute,
-                                                   std::move(pa_keys),
-                                                   components::operators::make_key_chunk(resource_, table_oid),
-                                                   std::pmr::vector<std::uint64_t>{resource_});
+                auto [_pa, paf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgAttribute,
+                                                std::move(pa_keys),
+                                                components::operators::make_key_chunk(resource_, table_oid),
+                                                std::pmr::vector<std::uint64_t>{resource_});
                 auto pa_batches_r = co_await std::move(paf);
                 if (pa_batches_r.has_error()) {
                     set_error(pa_batches_r.error());

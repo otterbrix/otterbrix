@@ -191,12 +191,12 @@ namespace components::operators {
             for (const auto& n : parent_col_names) {
                 col_names.emplace_back(n);
             }
-            auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::scan_by_keys,
-                                             exec_ctx,
-                                             fk_.parent_table_oid,
-                                             std::move(col_names),
-                                             std::move(keys));
+            auto [_, fut] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::scan_by_keys,
+                                                        exec_ctx,
+                                                        fk_.parent_table_oid,
+                                                        std::move(col_names),
+                                                        std::move(keys));
             auto matches_r = co_await std::move(fut);
             if (matches_r.has_error()) {
                 // A failed parent-key read is not a miss; treating it as one lets the

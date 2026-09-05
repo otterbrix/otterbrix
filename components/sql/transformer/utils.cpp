@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <string_view>
@@ -633,7 +634,8 @@ namespace components::sql::transform {
                 // In uint8 range now, so create_decimal owns the window decision and its
                 // message — one authority, not a second copy that can drift from it.
                 VALUE_OR_RETURN(column,
-                                types::complex_logical_type::create_decimal(static_cast<uint8_t>(raw_width),
+                                types::complex_logical_type::create_decimal(resource,
+                                                                            static_cast<uint8_t>(raw_width),
                                                                             static_cast<uint8_t>(raw_scale)));
             }
         } else {
@@ -758,8 +760,10 @@ namespace components::sql::transform {
             msg += ")";
             return core::error_t(core::error_code_t::invalid_parameter, std::move(msg));
         };
-        // PostgreSQL trims surrounding whitespace of a numeric input; nothing else is
-        // forgiven — an exponent or a stray character is a refusal, never a partial read.
+        // PostgreSQL trims surrounding whitespace of a numeric input and reads an exponent
+        // (`1e-5`, `1.5E+3`) — `'1e-5'::numeric(10,6)` is 0.000010 there, and `1e3::int` is
+        // 1000. Nothing else is forgiven: a stray character is a refusal, never a partial
+        // read.
         size_t begin = 0;
         size_t end = text.size();
         while (begin < end && std::isspace(static_cast<unsigned char>(text[begin]))) {
@@ -777,18 +781,96 @@ namespace components::sql::transform {
             ++begin;
         }
         std::string_view digits = text.substr(begin, end - begin);
+        // The exponent comes off FIRST, so the mantissa split below sees pure digits and
+        // the malformed check keeps its meaning: after this, an 'e' left anywhere in the
+        // mantissa is still garbage ("1e2e3"), not a second shift.
+        int64_t exponent = 0;
+        if (const size_t marker = digits.find_first_of("eE"); marker != std::string_view::npos) {
+            std::string_view exp_text = digits.substr(marker + 1);
+            digits = digits.substr(0, marker);
+            bool exp_negative = false;
+            if (!exp_text.empty() && (exp_text[0] == '+' || exp_text[0] == '-')) {
+                exp_negative = (exp_text[0] == '-');
+                exp_text.remove_prefix(1);
+            }
+            if (exp_text.empty() || exp_text.find_first_not_of("0123456789") != std::string_view::npos) {
+                return malformed(); // "1e", "1e+", "1ex"
+            }
+            // Saturate WHILE READING, so a thousand-digit exponent cannot overflow the
+            // accumulator that reads it. This bound is far outside the two clamps applied
+            // below once the mantissa's length is known, so saturating here cannot change
+            // which of them a given literal lands on.
+            constexpr int64_t exponent_saturate = int64_t{1} << 30;
+            int64_t magnitude = 0;
+            for (char c : exp_text) {
+                magnitude = magnitude * 10 + (c - '0');
+                if (magnitude >= exponent_saturate) {
+                    magnitude = exponent_saturate;
+                    break;
+                }
+            }
+            exponent = exp_negative ? -magnitude : magnitude;
+        }
         const size_t dot = digits.find('.');
-        const std::string_view int_part = (dot == std::string_view::npos) ? digits : digits.substr(0, dot);
-        const std::string_view frac_part = (dot == std::string_view::npos) ? std::string_view{}
-                                                                           : digits.substr(dot + 1);
+        std::string_view int_part = (dot == std::string_view::npos) ? digits : digits.substr(0, dot);
+        std::string_view frac_part = (dot == std::string_view::npos) ? std::string_view{} : digits.substr(dot + 1);
         if (int_part.empty() && frac_part.empty()) {
-            return malformed(); // ".", "-", "+" — no digits at all
+            return malformed(); // ".", "-", "+", "e5" — no digits at all
         }
         auto all_digits = [](std::string_view s) {
             return s.find_first_not_of("0123456789") == std::string_view::npos;
         };
         if (!all_digits(int_part) || !all_digits(frac_part)) {
-            return malformed(); // a second '.', an exponent, anything non-digit
+            return malformed(); // a second '.', a second exponent, anything non-digit
+        }
+        // The exponent is applied by MOVING THE POINT through the written digits — never by
+        // multiplying by 10^exponent, which would put back exactly the rounding this reader
+        // exists to remove. `shifted` owns the re-cut digit string for the rest of the
+        // function, so the two views below must not outlive it: it is declared here, in the
+        // same scope they are read from.
+        std::pmr::string shifted{resource};
+        if (exponent != 0) {
+            const int64_t int_len = static_cast<int64_t>(int_part.size());
+            const int64_t frac_len = static_cast<int64_t>(frac_part.size());
+            // CLAMPED AGAINST THE MANTISSA, NOT AGAINST A CONSTANT. The shifted string has
+            // to stay bounded by the declared width and scale rather than by the exponent
+            // the user typed — but a constant bound is NOT sound, and the two literals
+            // pinned in test_silent_narrowing.cpp ("the shift is bounded BY THE MANTISSA")
+            // are what a constant one gets wrong: a mantissa longer than the bound drags
+            // written digits back inside the scale, answering a number for a value that is
+            // zero, or stopping short of the width, answering a value for one that
+            // overflows. These two are the exact points past which the answer STOPS
+            // changing:
+            //   * at `lo` the point sits (scale + 1) places left of the first written
+            //     digit, so every digit the accumulation reads — the one that decides the
+            //     rounding included — is a zero. The answer is 0 here and at every smaller
+            //     exponent;
+            //   * at `hi` the mantissa is followed by (DECIMAL_MAX_WIDTH + 1) zeros, so a
+            //     non-zero mantissa is already past 10^DECIMAL_MAX_WIDTH and refuses as an
+            //     overflow, while an all-zero mantissa is 0 at every exponent.
+            const int64_t lo = -(static_cast<int64_t>(scale) + 1 + int_len);
+            const int64_t hi = static_cast<int64_t>(types::DECIMAL_MAX_WIDTH) + 1 + frac_len;
+            if (exponent < lo) {
+                exponent = lo;
+            } else if (exponent > hi) {
+                exponent = hi;
+            }
+            shifted.append(int_part.data(), int_part.size());
+            shifted.append(frac_part.data(), frac_part.size());
+            // Where the point lands, counted from the front of the mantissa.
+            const int64_t point = int_len + exponent;
+            if (point <= 0) {
+                shifted.insert(size_t{0}, static_cast<size_t>(-point), '0');
+                int_part = std::string_view{};
+                frac_part = std::string_view{shifted};
+            } else if (static_cast<size_t>(point) >= shifted.size()) {
+                shifted.append(static_cast<size_t>(point) - shifted.size(), '0');
+                int_part = std::string_view{shifted};
+                frac_part = std::string_view{};
+            } else {
+                int_part = std::string_view{shifted}.substr(0, static_cast<size_t>(point));
+                frac_part = std::string_view{shifted}.substr(static_cast<size_t>(point));
+            }
         }
         // 10^38 fits int128 (2^127 ≈ 1.7e38) and DECIMAL_MAX_WIDTH == 38, so one ceiling
         // guards the accumulation for every declarable width.
@@ -881,7 +963,26 @@ namespace components::sql::transform {
             case integer_text_t::not_an_integer:
                 break;
         }
-        return types::logical_value_t(resource, floatVal(value));
+        // floatVal() is atof(): it answers ±inf for a literal past the double range and 0.0
+        // for text it cannot read, and reports NEITHER. `1e400` arriving in a plan as
+        // +Infinity is the same silent wrong answer the out_of_range arm above refuses to
+        // give at the integer ceiling — a value no column holds and no comparison orders —
+        // so this arm refuses it by name too. string_to_double is the reader that reports a
+        // failure at all; the range failure is caught by finiteness rather than errno,
+        // which atof leaves for nobody to read.
+        double parsed = 0.0;
+        const std::string_view digits{text};
+        if (!string_to_double(text, digits.size(), parsed)) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"not a numeric literal: " + std::string(text), resource});
+        }
+        if (!std::isfinite(parsed)) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"numeric literal out of range: " + std::string(text) + " does not fit a double",
+                                 resource});
+        }
+        return types::logical_value_t(resource, parsed);
     }
 
     namespace {
@@ -1071,8 +1172,9 @@ namespace components::sql::transform {
                             return invalid_cast_input(resource, t, "'" + text + "'");
                         }
                         // A NUMERIC literal rounds into an integer target (half away from
-                        // zero) — parse_exact_decimal at scale 0 is exactly that rule, and
-                        // it refuses exponents and garbage rather than guessing.
+                        // zero) — parse_exact_decimal at scale 0 is exactly that rule. It
+                        // reads an exponent the way PostgreSQL does (`1e3::int` is 1000) by
+                        // moving the point, and refuses garbage rather than guessing.
                         auto rounded = parse_exact_decimal(resource, text, types::DECIMAL_MAX_WIDTH, 0);
                         if (rounded.has_error()) {
                             return invalid_cast_input(resource, t, text);
@@ -1412,6 +1514,81 @@ namespace components::sql::transform {
             std::pmr::string{"Unknown arithmetic operator in constant expression: " + std::string(op_str), resource});
     }
 
+    components::catalog::drop_behavior_t drop_behavior_of(DropBehavior written) noexcept {
+        // No `default:` — the two-value enum is the whole reason `unspecified` exists, and a
+        // third grammar value (the one that would finally separate a written RESTRICT from
+        // silence) must break this build rather than fall into the silent form.
+        switch (written) {
+            case DROP_CASCADE:
+                return components::catalog::drop_behavior_t::cascade_;
+            case DROP_RESTRICT:
+                break;
+        }
+        return components::catalog::drop_behavior_t::unspecified;
+    }
+
+    namespace {
+
+        // The value of a DEFAULT clause, read against the type the column is being
+        // DECLARED with.
+        //
+        // A DEFAULT clause is the ONE place this component already knows the target type:
+        // the column definition carries it on the same line. Everywhere else a bare literal
+        // is typed by its own spelling, because the column it will land in is resolved from
+        // the catalog at enrichment, outside components/sql.
+        //
+        // SO INSERT/UPDATE VALUES STILL LOSE THE DIGITS, and "move the exact parse to
+        // enrichment, where the type is known" does not close that on its own — measured
+        // 2026-09-05, not guessed. The literal's TEXT does not survive the trip: fill_row in
+        // impl/transform_insert.cpp calls get_value on the A_Const and stores the result in
+        // a vector_t cell, so what reaches services/dispatcher/enrich_logical_plan.cpp is a
+        // DOUBLE, and no re-parse can put back digits that cell never carried. Closing it
+        // needs a carrier for the written digits from here to enrichment, and every place
+        // one could live is a different owner: node_data_t's chunk, node_insert_t, or the
+        // per-row promotion in transform_insert.cpp plus the reconciliation in
+        // validate_logical_plan.cpp that would meet it. Two shortcuts are already refused
+        // and must not come back: typing every fractional literal DECIMAL by its own digits
+        // (that reverses arithmetic and comparison semantics tree-wide), and converting only
+        // literals past some digit count (two spellings of one number would then behave
+        // differently).
+        //
+        // That knowledge changes the answer for exactly one declared type. get_value types a
+        // bare fractional literal as DOUBLE (the tail of numeric_literal_value), and every
+        // other target a DEFAULT can carry survives that hop: integers are already read
+        // exactly to 128 bits before any narrowing, and FLOAT/DOUBLE want the double. DECIMAL
+        // is the one target whose digits a double cannot hold — `numeric(38,20) DEFAULT
+        // 0.12345678901234567890` becomes 0.12345678901234567168, short by 722 at the 20th
+        // decimal place, BEFORE the cast to the column's type runs, and no later cast can put
+        // back digits the double never carried.
+        //
+        // So a bare numeric literal under a DECIMAL column is parsed against the declared
+        // (width, scale) — the same exact path `0.1234...::numeric(38,20)` already takes,
+        // overflow refusal included. Everything else keeps the untyped reading: widening this
+        // to every declared type would coerce `c integer DEFAULT 7` HERE, in the transformer,
+        // and that is not a literal-precision fix: since 2026-09-05 that coercion already
+        // happens once, downstream, in services/collection/executor.cpp's convert_column_defaults
+        // (the same call CREATE TABLE makes). Doing it here too would put a second authority on
+        // the same question, in a component that holds no cast registry.
+        core::result_wrapper_t<types::logical_value_t> default_clause_value(
+            std::pmr::memory_resource* resource,
+            const types::complex_logical_type& declared,
+            Node* expr) {
+            if (declared.type() == types::logical_type::DECIMAL && declared.extension() != nullptr &&
+                nodeTag(expr) == T_A_Const) {
+                Value* value = &pg_ptr_cast<A_Const>(expr)->val;
+                const auto tag = nodeTag(value);
+                if (tag == T_Integer || tag == T_Float) {
+                    return cast_literal_text(resource,
+                                             declared,
+                                             numeric_literal_text(value),
+                                             /*is_string_literal=*/false);
+                }
+            }
+            return get_value(resource, expr);
+        }
+
+    } // namespace
+
     core::result_wrapper_t<std::vector<table::column_definition_t>>
     get_column_definitions(std::pmr::memory_resource* resource, PGList& table_elts) {
         std::vector<table::column_definition_t> out;
@@ -1438,7 +1615,8 @@ namespace components::sql::transform {
                             break;
                         case CONSTR_DEFAULT:
                             if (constraint->raw_expr) {
-                                if (auto val = get_value(resource, constraint->raw_expr); val.has_error()) {
+                                if (auto val = default_clause_value(resource, type.value(), constraint->raw_expr);
+                                    val.has_error()) {
                                     return val.convert_error<std::vector<table::column_definition_t>>();
                                 } else {
                                     default_val = std::move(val.value());
@@ -1455,7 +1633,7 @@ namespace components::sql::transform {
             }
 
             if (coldef->raw_default && !default_val) {
-                if (auto val = get_value(resource, coldef->raw_default); val.has_error()) {
+                if (auto val = default_clause_value(resource, type.value(), coldef->raw_default); val.has_error()) {
                     return val.convert_error<std::vector<table::column_definition_t>>();
                 } else {
                     default_val = std::move(val.value());

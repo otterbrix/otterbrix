@@ -61,10 +61,10 @@ namespace components::operators {
                 // every drive — its correlated parameter (ctx->parameters) changes per
                 // outer row — so only the types are cached, never the filter.
                 if (!types_cached_) {
-                    auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::storage_types,
-                                                     ctx->session,
-                                                     table_oid_);
+                    auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                &services::disk::manager_disk_t::storage_types,
+                                                                ctx->session,
+                                                                table_oid_);
                     auto types_result = co_await std::move(tf);
                     if (types_result.has_error()) {
                         set_error(types_result.error());
@@ -89,14 +89,14 @@ namespace components::operators {
 
             // ONE reduce round-trip: the owning agent runs the whole GROUP BY over its
             // slice and replies ALL final rows (bounded by #groups).
-            auto [_r, rf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_reduce,
-                                             ctx->session,
-                                             table_oid_,
-                                             std::move(filter),
-                                             projected_cols_,
-                                             ctx->txn,
-                                             open_spec());
+            auto [_r, rf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_reduce,
+                                                        ctx->session,
+                                                        table_oid_,
+                                                        std::move(filter),
+                                                        projected_cols_,
+                                                        ctx->txn,
+                                                        open_spec());
             auto reduce_result = co_await std::move(rf);
             if (reduce_result.has_error()) {
                 set_error(reduce_result.error());

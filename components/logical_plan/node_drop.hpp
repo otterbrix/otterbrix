@@ -64,14 +64,20 @@ namespace components::logical_plan {
 
         // RESTRICT/CASCADE/neither. The dynamic cascade operator refuses a
         // dependent-blocked drop when the statement WROTE restrict_. The
-        // transformer does not copy DropStmt.behavior yet, so today every DROP
-        // arrives with the DEFAULT — which is `unspecified`, the form for "the
-        // statement named neither word", NOT cascade_. That distinction is the
-        // whole point: it lets a written RESTRICT be honoured the moment the
-        // transformer copies the value, without that hop silently changing what
-        // the tree's bare DROP statements mean. `unspecified` resolves to CASCADE
-        // today (components/catalog/results/ddl_result.hpp, owner decision;
-        // moving it is GitHub #638).
+        // transformer copies DropStmt.behavior through transform::drop_behavior_of
+        // at the single wrap_one choke-point every DROP arm passes, so a written
+        // CASCADE arrives as cascade_.
+        //
+        // A written RESTRICT does NOT arrive as restrict_ and cannot yet: the
+        // grammar's opt_drop_behavior gives its EMPTY alternative the same
+        // DROP_RESTRICT token the word gives, so `DROP TABLE t RESTRICT` and
+        // `DROP TABLE t` are one value at that layer and both land on
+        // `unspecified` — the form for "the statement named neither word".
+        // `unspecified` resolves to CASCADE today
+        // (components/catalog/results/ddl_result.hpp, owner decision; moving it is
+        // GitHub #638), so nothing about a bare DROP changed. The remaining step is
+        // a third DropBehavior value for the grammar's empty alternative; a
+        // programmatic plan can already set restrict_ directly.
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
 

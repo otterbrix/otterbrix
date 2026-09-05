@@ -119,13 +119,14 @@ namespace components::operators {
             std::pmr::vector<std::uint64_t> rd_keys(resource_);
             rd_keys.emplace_back(catalog::pg_depend_col::refclassid);
             rd_keys.emplace_back(catalog::pg_depend_col::refobjid);
-            auto [_rd, rdf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_chunks_by_key,
-                                               exec_ctx,
-                                               kPgDepend,
-                                               std::move(rd_keys),
-                                               components::operators::make_key_chunk(resource_, ref_cls, ref_oid),
-                                               std::pmr::vector<std::uint64_t>{resource_});
+            auto [_rd, rdf] =
+                actor_zeta::otterbrix::send(ctx->disk_address,
+                                            &services::disk::manager_disk_t::read_chunks_by_key,
+                                            exec_ctx,
+                                            kPgDepend,
+                                            std::move(rd_keys),
+                                            components::operators::make_key_chunk(resource_, ref_cls, ref_oid),
+                                            std::pmr::vector<std::uint64_t>{resource_});
             auto dep_batches_r = co_await std::move(rdf);
             if (dep_batches_r.has_error()) {
                 // A failed pg_depend read is not a miss; treating it as one lets the
@@ -231,13 +232,13 @@ namespace components::operators {
             // needed. result[i] = matched chunks for probe_oids[i], in input order.
             std::pmr::vector<std::uint64_t> pc_keys(resource_);
             pc_keys.emplace_back(catalog::pg_class_col::oid);
-            auto [_pc, pcf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_chunks_by_keys,
-                                               exec_ctx,
-                                               kPgClass,
-                                               std::move(pc_keys),
-                                               components::operators::make_keys_chunk(resource_, probe_oids),
-                                               std::pmr::vector<std::uint64_t>{resource_});
+            auto [_pc, pcf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::read_chunks_by_keys,
+                                                          exec_ctx,
+                                                          kPgClass,
+                                                          std::move(pc_keys),
+                                                          components::operators::make_keys_chunk(resource_, probe_oids),
+                                                          std::pmr::vector<std::uint64_t>{resource_});
             auto pc_results_r = co_await std::move(pcf);
             if (pc_results_r.has_error()) {
                 set_error(pc_results_r.error());
@@ -292,10 +293,10 @@ namespace components::operators {
         }
         if (!catalog_specs.empty()) {
             const std::size_t spec_count = catalog_specs.size();
-            auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
-                                             exec_ctx,
-                                             std::move(catalog_specs));
+            auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                        exec_ctx,
+                                                        std::move(catalog_specs));
             auto deleted_r = co_await std::move(df);
             // WHICH ZERO IS AN ERROR HERE — exactly one per step: the step's own row. The rest of the spec list
             // is deliberately OVER-GENERATED (deletes_for_classid re-issues the whole per-classid template for
@@ -371,21 +372,21 @@ namespace components::operators {
                 ctx->dropped_storage_oids.push_back(sd.table_oid);
             }
             if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-                auto [_mti, mtif] = actor_zeta::send(ctx->index_address,
-                                                     &services::index::manager_index_t::mark_table_dropped,
-                                                     ctx->session,
-                                                     sd.table_oid,
-                                                     dropped_at);
+                auto [_mti, mtif] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                                &services::index::manager_index_t::mark_table_dropped,
+                                                                ctx->session,
+                                                                sd.table_oid,
+                                                                dropped_at);
                 drop_futures.push_back(std::move(mtif));
             }
             dropped_storage_oids.push_back(sd.table_oid);
         }
         if (!dropped_storage_oids.empty()) {
-            auto [_msd, msdf] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::mark_storage_dropped_many,
-                                                 ctx->session,
-                                                 std::move(dropped_storage_oids),
-                                                 dropped_at);
+            auto [_msd, msdf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::mark_storage_dropped_many,
+                                                            ctx->session,
+                                                            std::move(dropped_storage_oids),
+                                                            dropped_at);
             drop_futures.push_back(std::move(msdf));
         }
         for (auto& f : drop_futures) {
@@ -400,13 +401,13 @@ namespace components::operators {
             constexpr uint8_t DISK_KIND = 1;
             constexpr uint8_t INDEX_KIND = 2;
             [[maybe_unused]] auto disk_mark =
-                actor_zeta::send(ctx->current_message_sender,
-                                 &services::dispatcher::manager_dispatcher_t::on_drop_resource_marked,
-                                 DISK_KIND);
+                actor_zeta::otterbrix::send(ctx->current_message_sender,
+                                            &services::dispatcher::manager_dispatcher_t::on_drop_resource_marked,
+                                            DISK_KIND);
             [[maybe_unused]] auto index_mark =
-                actor_zeta::send(ctx->current_message_sender,
-                                 &services::dispatcher::manager_dispatcher_t::on_drop_resource_marked,
-                                 INDEX_KIND);
+                actor_zeta::otterbrix::send(ctx->current_message_sender,
+                                            &services::dispatcher::manager_dispatcher_t::on_drop_resource_marked,
+                                            INDEX_KIND);
         }
 
         // No output — DROP statements return an affected-rows-style cursor

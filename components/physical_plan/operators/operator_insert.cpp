@@ -132,11 +132,11 @@ namespace components::operators {
                     }
                     data_chunk_t row(resource_, out_chunk.types(), out_chunk.size());
                     out_chunk.copy(row, 0);
-                    auto [_c, cf] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::append_pg_catalog_row,
-                                                     exec_ctx,
-                                                     table_oid_,
-                                                     std::move(row));
+                    auto [_c, cf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                                exec_ctx,
+                                                                table_oid_,
+                                                                std::move(row));
                     auto rng_r = co_await std::move(cf);
                     if (rng_r.has_error()) {
                         // A catalog INSERT that could not write its row is a failed statement,
@@ -200,11 +200,11 @@ namespace components::operators {
                 // storage_append — WAL-FIRST canonical append (batched, handles
                 // schema adoption + column expansion). The reply carries any
                 // write_conflict / out_of_memory as a value.
-                auto [_a, af] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::storage_append,
-                                                 exec_ctx,
-                                                 table_oid_,
-                                                 std::move(append_data));
+                auto [_a, af] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::storage_append,
+                                                            exec_ctx,
+                                                            table_oid_,
+                                                            std::move(append_data));
                 auto append_result = co_await std::move(af);
                 if (append_result.has_error()) {
                     co_return dml_detail::flush_outcome_t{append_result.error()};
@@ -217,13 +217,13 @@ namespace components::operators {
 #ifdef DEV_MODE
                     g_insert_index_mirror_sends.fetch_add(1, std::memory_order_relaxed);
 #endif
-                    auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                                       &services::index::manager_index_t::insert_rows,
-                                                       exec_ctx,
-                                                       table_oid_,
-                                                       std::move(idx_chunks),
-                                                       start_row,
-                                                       count);
+                    auto [_ix, ixf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                                  &services::index::manager_index_t::insert_rows,
+                                                                  exec_ctx,
+                                                                  table_oid_,
+                                                                  std::move(idx_chunks),
+                                                                  start_row,
+                                                                  count);
                     auto index_error = co_await std::move(ixf);
                     if (index_error.contains_error()) {
                         // The rows are in the table but not in the index. Reporting success here
@@ -251,22 +251,22 @@ namespace components::operators {
                     for (uint64_t i = 0; i < count; i++) {
                         ids[i] = static_cast<int64_t>(start_row + i);
                     }
-                    auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::storage_fetch,
-                                                     ctx->session,
-                                                     table_oid_,
-                                                     std::move(row_ids),
-                                                     count,
-                                                     std::vector<size_t>{},
-                                                     // This txn's OWN just-appended, still
-                                                     // uncommitted rows. It sees them by the MVCC
-                                                     // self-write rule, not by the positions
-                                                     // happening to line up.
-                                                     ctx->txn,
-                                                     components::table::fetch_visibility_t::SNAPSHOT,
-                                                     // Reads back exactly the rows just
-                                                     // appended — nothing to cap.
-                                                     /*limit=*/int64_t{-1});
+                    auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                &services::disk::manager_disk_t::storage_fetch,
+                                                                ctx->session,
+                                                                table_oid_,
+                                                                std::move(row_ids),
+                                                                count,
+                                                                std::vector<size_t>{},
+                                                                // This txn's OWN just-appended, still
+                                                                // uncommitted rows. It sees them by the MVCC
+                                                                // self-write rule, not by the positions
+                                                                // happening to line up.
+                                                                ctx->txn,
+                                                                components::table::fetch_visibility_t::SNAPSHOT,
+                                                                // Reads back exactly the rows just
+                                                                // appended — nothing to cap.
+                                                                /*limit=*/int64_t{-1});
                     auto segments_r = co_await std::move(sf);
                     if (segments_r.has_error()) {
                         // A failed re-read (buffer-pool OOM / corrupt overflow block) must fail the statement

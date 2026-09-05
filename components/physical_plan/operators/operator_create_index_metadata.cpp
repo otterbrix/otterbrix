@@ -26,11 +26,11 @@ namespace components::operators {
             append_futures(resource_);
         append_futures.reserve(catalog_writes_.size());
         for (auto& [tbl, row] : catalog_writes_) {
-            auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::append_pg_catalog_row,
-                                             exec_ctx,
-                                             tbl,
-                                             std::move(row));
+            auto [_, fut] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                        exec_ctx,
+                                                        tbl,
+                                                        std::move(row));
             append_futures.push_back(std::move(fut));
         }
         // Drain all, first error wins. A pg_index row that was refused means CREATE INDEX

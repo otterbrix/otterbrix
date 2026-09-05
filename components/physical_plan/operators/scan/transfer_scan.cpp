@@ -40,11 +40,11 @@ namespace components::operators {
         const uint64_t id = cursor_id_;
         cursor_id_ = 0;
         drained_ = true;
-        auto [_s, cf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_close_cursor,
-                                         ctx->session,
-                                         table_oid_,
-                                         id);
+        auto [_s, cf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::storage_close_cursor,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    id);
         co_await std::move(cf);
         co_return;
     }
@@ -75,15 +75,15 @@ namespace components::operators {
             // SELECT OFFSET is applied by operator_limit above, so every scan receives offset()==0
             // and head_cap() == limit here.
             const int64_t scan_limit = limit_.head_cap();
-            auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                             ctx->session,
-                                             table_oid_,
-                                             cursor_id_, // 0 == OPEN
-                                             std::unique_ptr<table::table_filter_t>(nullptr),
-                                             scan_limit,
-                                             projected_cols_,
-                                             ctx->txn);
+            auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                        ctx->session,
+                                                        table_oid_,
+                                                        cursor_id_, // 0 == OPEN
+                                                        std::unique_ptr<table::table_filter_t>(nullptr),
+                                                        scan_limit,
+                                                        projected_cols_,
+                                                        ctx->txn);
             auto fetch_result = co_await std::move(sf);
             if (fetch_result.has_error()) {
                 set_error(fetch_result.error());
@@ -96,15 +96,15 @@ namespace components::operators {
         }
 
         // ADVANCE.
-        auto [_s, sf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                         ctx->session,
-                                         table_oid_,
-                                         cursor_id_,
-                                         std::unique_ptr<table::table_filter_t>(nullptr),
-                                         int64_t{-1},
-                                         projected_cols_,
-                                         ctx->txn);
+        auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    cursor_id_,
+                                                    std::unique_ptr<table::table_filter_t>(nullptr),
+                                                    int64_t{-1},
+                                                    projected_cols_,
+                                                    ctx->txn);
         auto fetch_result = co_await std::move(sf);
         if (fetch_result.has_error()) {
             set_error(fetch_result.error());
@@ -128,10 +128,10 @@ namespace components::operators {
                 emitted_any_ = true;
                 if (!guard_types_loaded_) {
                     guard_types_loaded_ = true;
-                    auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::storage_types,
-                                                     ctx->session,
-                                                     table_oid_);
+                    auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                &services::disk::manager_disk_t::storage_types,
+                                                                ctx->session,
+                                                                table_oid_);
                     auto types_result = co_await std::move(tf);
                     if (types_result.has_error()) {
                         // The guard chunk carries the table's schema to operators above; a

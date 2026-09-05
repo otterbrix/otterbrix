@@ -192,7 +192,13 @@ namespace services::collection::executor {
                    services::context_storage_t&& context_storage)
         : sub_plans(std::move(sub_plans))
         , parameters(parameters)
-        , context_storage_(context_storage) {}
+        // MOVED, not copied. The parameter is an rvalue reference, and a copy here is not merely a
+        // missed move: context_storage_t carries three std::pmr containers (table_indexes,
+        // cte_working_sets, row_counts), and a pmr container's copy constructor does not propagate
+        // its allocator -- the copies would land on the default resource while the original's
+        // `resource` field still names the query's arena, so the struct would describe an arena
+        // its own contents do not live on.
+        , context_storage_(std::move(context_storage)) {}
 
     executor_t::executor_t(std::pmr::memory_resource* resource,
                            actor_zeta::address_t parent_address,
@@ -626,9 +632,10 @@ namespace services::collection::executor {
         // assign — that element-copies the snapshot into a
         // null_memory_resource-anchored pmr vector and aborts (bad_alloc)
         // under concurrent transactions.
-        auto [_tb, tbf] = actor_zeta::send(parent_address_,
-                                           &services::dispatcher::manager_dispatcher_t::txn_begin_session_msg,
-                                           session);
+        auto [_tb, tbf] =
+            actor_zeta::otterbrix::send(parent_address_,
+                                        &services::dispatcher::manager_dispatcher_t::txn_begin_session_msg,
+                                        session);
         services::dispatcher::txn_session_context_t session_ctx = co_await std::move(tbf);
         components::table::transaction_data resolve_txn = session_ctx.txn;
         trace(log_,
@@ -1263,36 +1270,43 @@ namespace services::collection::executor {
                 // this loop is the only place that can refuse, and it walks EVERY
                 // subcommand, not subcommands().front().
                 //
-                // THE TYPE, AND ONLY THE TYPE — and unlike the type, the DEFAULT half is
-                // spelled by ordinary SQL every day. The create_collection_t arm above pairs
-                // its gate_persistable_type loop with convert_column_defaults, which CASTS
-                // each DEFAULT to its column's type in place; there is no such leg here, so
-                // `ADD COLUMN c integer DEFAULT 7` still carries the BIGINT that
-                // numeric_literal_value's T_Integer arm produced. Casting it HERE would mean
-                // rewriting the subcommand, and node_alter_table_t::subcommands() hands out a
-                // const reference (components/logical_plan/node_alter_table.hpp). One layer
-                // down, planner.cpp's rewrite_alter_table already takes a MUTABLE COPY
-                // (`auto col = sub.column;`) and rewrites col.type() in place on the next
-                // lines, so a cast has a home there that needs no mutating accessor; what it
-                // lacks is the cast_registry_t and execution_context convert_column_defaults
-                // wants. Whoever closes the parity should start from that copy, not from an
-                // accessor on the node.
+                // THE TYPE IS GATED HERE; THE DEFAULT IS CAST ONE LAYER LOWER, AND NOT
+                // BECAUSE THE PARITY IS MISSING. The create_collection_t arm above pairs its
+                // gate_persistable_type loop with convert_column_defaults, which CASTS each
+                // DEFAULT to its column's type in place. Doing the same on THIS node would
+                // mean rewriting the subcommand, and node_alter_table_t::subcommands() hands
+                // out a const reference (components/logical_plan/node_alter_table.hpp) — but
+                // it does not have to happen on this node at all. The DDL rewrite below
+                // lowers every subcommand into its own node_alter_column_t, whose column()
+                // IS writable, and the cast runs there, over the whole rewritten tree: see
+                // "ALTER TABLE: DEFAULT coercion" right after ddl_planner.create_plan. Both
+                // spellings of `c integer DEFAULT 7` therefore store the same INTEGER 7 the
+                // assignment cast makes of the BIGINT literal numeric_literal_value's
+                // T_Integer arm produced, through the same cast_registry_ and the same
+                // convert_column_defaults.
                 //
-                // What keeps that divergence out of the catalog is therefore one layer down,
-                // per clause: rewrite_alter_table lowers every subcommand into its own
-                // operator_alter_column_add_t, which refuses on default-vs-column type
-                // inequality before its first catalog write
+                // WHAT STILL REFUSES, AND MUST: a DEFAULT the registry has no assignment cast
+                // to the column's type for. convert_column_defaults answers that with
+                // conversion_failure, in CREATE TABLE's wording. Behind it, per clause,
+                // operator_alter_column_add_t re-checks default-vs-column type equality
+                // before its first catalog write
                 // (alter_column_validators::validate_default_value_type, called from
-                // components/physical_plan/operators/operator_alter_column_add.cpp). That
-                // refusal is load-bearing rather than a duplicate of the codec check below
-                // it: attdefspec is type-directed and carries no type tag, so decode catches
-                // a WIDTH divergence (a BIGINT default read back as INTEGER is
-                // data_corruption) and silently accepts a same-width one (BIGINT read back as
-                // TIMESTAMP). Do not restate that rule here: a second authority is free to
-                // drift from the first. What is left standing is a PARITY gap — a DEFAULT
-                // spelling CREATE TABLE accepts is refused by ALTER — pinned by
-                // services/dispatcher/tests/test_wave_exec_dispatcher.cpp,
-                // "alter_add_column_default_type_divergence_is_refused".
+                // components/physical_plan/operators/operator_alter_column_add.cpp). That is
+                // not a duplicate of the coercion above it: the coercion runs on the ALTER
+                // statement path only, so a host-built plan handing a node_alter_column_t
+                // straight to the operator never passes through it, and the operator is then
+                // the only check between a divergent DEFAULT and the catalog.
+                //
+                // Nor is the operator's check a duplicate of the attdefspec codec below it —
+                // the two refuse at different moments. The codec is type-directed AND
+                // self-describing: read_typed_value (components/index/logical_value_binary_codec.hpp)
+                // stores and checks one logical tag byte per present value, so it refuses a
+                // SAME-WIDTH divergence (BIGINT read back as TIMESTAMP) as well as the width
+                // divergence it always caught, and it says data_corruption. That guarantees
+                // only that a divergence which somehow REACHED disk cannot be read back as a
+                // valid value of the wrong type; the operator refuses before anything is
+                // written at all. Do not restate either rule here: a second authority is free
+                // to drift from the first.
                 const auto* alter_node =
                     static_cast<const components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
                 for (const auto& cmd : alter_node->subcommands()) {
@@ -1819,6 +1833,72 @@ namespace services::collection::executor {
                 // before it ran. resolve_txn so enrich's pg_computed_column scan
                 // sees the INSERT-time register rows committed under that txn.
                 else if (original_type == node_type::alter_table_t) {
+                    // ALTER TABLE: DEFAULT coercion — the ALTER half of what
+                    // convert_column_defaults already does for CREATE TABLE (see the
+                    // alter_table_t case of the schema-validation switch above, which gates
+                    // the column TYPE and explains why the DEFAULT is cast here instead).
+                    // It runs at THIS point and not in that switch because only after the
+                    // DDL rewrite does each ADD COLUMN clause exist as its own
+                    // node_alter_column_t, whose column() is writable —
+                    // node_alter_table_t::subcommands() is a const reference. Same registry,
+                    // same execution context, same error channel as CREATE TABLE: the two
+                    // spellings of `c integer DEFAULT 7` now store the same INTEGER 7, and a
+                    // DEFAULT with no assignment cast to the column's type is refused with
+                    // conversion_failure instead of reaching the operator's equality check.
+                    //
+                    // GATHER, CONVERT, THEN WRITE BACK — in that order. A refusal must leave
+                    // the plan tree exactly as it found it: nothing downstream re-derives the
+                    // pre-cast DEFAULT, so a tree half-rewritten by a conversion that then
+                    // failed would be a tree no error message describes.
+                    //
+                    // The gathered columns sit in a plain std::vector, not a pmr one: that is
+                    // convert_column_defaults' parameter type (it is called with
+                    // node_create_collection_t::column_definitions(), which is a std::vector
+                    // member of the node). The pmr side-vectors below hold only back-pointers.
+                    {
+                        std::pmr::vector<components::logical_plan::node_t*> pending{resource()};
+                        std::pmr::vector<components::logical_plan::node_alter_column_t*> add_nodes{resource()};
+                        std::vector<components::table::column_definition_t> add_columns;
+                        pending.push_back(plan.sub_queries.back().get());
+                        while (!pending.empty()) {
+                            auto* pending_node = pending.back();
+                            pending.pop_back();
+                            if (!pending_node) {
+                                continue;
+                            }
+                            if (pending_node->type() == node_type::alter_column_t) {
+                                auto* alter_column =
+                                    static_cast<components::logical_plan::node_alter_column_t*>(pending_node);
+                                // op=add is the only clause carrying a column_ at all (rename
+                                // and drop name a column that already exists), and the
+                                // computed=true add variant carries registered_cols_ instead,
+                                // never a DEFAULT — so has_default_value() selects exactly the
+                                // clauses a cast can apply to.
+                                if (alter_column->op() == components::logical_plan::alter_column_op::add &&
+                                    alter_column->column().has_default_value()) {
+                                    add_nodes.push_back(alter_column);
+                                    add_columns.push_back(alter_column->column());
+                                }
+                                continue;
+                            }
+                            for (const auto& child : pending_node->children()) {
+                                pending.push_back(child.get());
+                            }
+                        }
+                        if (!add_columns.empty()) {
+                            if (auto default_err =
+                                    services::dispatcher::convert_column_defaults(resource(),
+                                                                                  &cast_registry_,
+                                                                                  context_storage.execution_context,
+                                                                                  add_columns);
+                                default_err.contains_error()) {
+                                co_return execute_result_t{make_cursor(resource(), std::move(default_err))};
+                            }
+                            for (std::size_t i = 0; i < add_nodes.size(); ++i) {
+                                add_nodes[i]->set_column(std::move(add_columns[i]));
+                            }
+                        }
+                    }
                     // The DDL rewrite created NEW consumer nodes (rename /
                     // computed_field_unregister), so they need their own bind +
                     // enrich against the same resolved entries.
@@ -1898,8 +1978,10 @@ namespace services::collection::executor {
             std::pmr::set<components::catalog::oid_t> inner_hash_join_oids{resource()};
             collect_inner_hash_join_oids(plan.sub_queries.back(), inner_hash_join_oids);
             for (auto oid : inner_hash_join_oids) {
-                auto [_tr, trf] =
-                    actor_zeta::send(disk_address_, &services::disk::manager_disk_t::storage_total_rows, session, oid);
+                auto [_tr, trf] = actor_zeta::otterbrix::send(disk_address_,
+                                                              &services::disk::manager_disk_t::storage_total_rows,
+                                                              session,
+                                                              oid);
                 auto rows_r = co_await std::move(trf);
                 // A HINT, and the only consumer treats a MISSING entry as "no hint" — so a
                 // refused count is simply not recorded. Recording its 0 would be the one
@@ -1952,10 +2034,10 @@ namespace services::collection::executor {
             exec_result.pg_catalog_appends.clear();
             if (!revert_ranges.empty() && disk_address_ != actor_zeta::address_t::empty_address()) {
                 components::execution_context_t pgc_ctx{session, resolve_txn, {}};
-                auto [_pa, paf] = actor_zeta::send(disk_address_,
-                                                   &services::disk::manager_disk_t::storage_revert_appends,
-                                                   pgc_ctx,
-                                                   std::move(revert_ranges));
+                auto [_pa, paf] = actor_zeta::otterbrix::send(disk_address_,
+                                                              &services::disk::manager_disk_t::storage_revert_appends,
+                                                              pgc_ctx,
+                                                              std::move(revert_ranges));
                 co_await std::move(paf);
             }
 
@@ -1983,18 +2065,18 @@ namespace services::collection::executor {
                 revert_index_futures.reserve(revert_insert_oids.size() + revert_delete_oids.size());
                 for (auto oid : revert_insert_oids) {
                     components::execution_context_t abort_ctx{session, resolve_txn, session_ctx.session_tz, oid};
-                    auto [_ri, rif] = actor_zeta::send(index_address_,
-                                                       &services::index::manager_index_t::revert_insert,
-                                                       abort_ctx,
-                                                       oid);
+                    auto [_ri, rif] = actor_zeta::otterbrix::send(index_address_,
+                                                                  &services::index::manager_index_t::revert_insert,
+                                                                  abort_ctx,
+                                                                  oid);
                     revert_index_futures.push_back(std::move(rif));
                 }
                 for (auto oid : revert_delete_oids) {
                     components::execution_context_t abort_ctx{session, resolve_txn, session_ctx.session_tz, oid};
-                    auto [_rd, rdf] = actor_zeta::send(index_address_,
-                                                       &services::index::manager_index_t::revert_delete,
-                                                       abort_ctx,
-                                                       oid);
+                    auto [_rd, rdf] = actor_zeta::otterbrix::send(index_address_,
+                                                                  &services::index::manager_index_t::revert_delete,
+                                                                  abort_ctx,
+                                                                  oid);
                     revert_index_futures.push_back(std::move(rdf));
                 }
                 for (auto& rif : revert_index_futures) {
@@ -2022,16 +2104,17 @@ namespace services::collection::executor {
                 }
                 std::vector<components::catalog::oid_t> revert_delete_tables{revert_set.begin(), revert_set.end()};
                 components::execution_context_t rd_ctx{session, resolve_txn, session_ctx.session_tz};
-                auto [_rd, rdf] = actor_zeta::send(disk_address_,
-                                                   &services::disk::manager_disk_t::storage_revert_deletes,
-                                                   rd_ctx,
-                                                   std::move(revert_delete_tables));
+                auto [_rd, rdf] = actor_zeta::otterbrix::send(disk_address_,
+                                                              &services::disk::manager_disk_t::storage_revert_deletes,
+                                                              rd_ctx,
+                                                              std::move(revert_delete_tables));
                 co_await std::move(rdf);
             }
             exec_result.pg_catalog_delete_tables.clear();
 
-            auto [_ab, abf] =
-                actor_zeta::send(parent_address_, &services::dispatcher::manager_dispatcher_t::txn_abort_msg, session);
+            auto [_ab, abf] = actor_zeta::otterbrix::send(parent_address_,
+                                                          &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
+                                                          session);
             co_await std::move(abf);
 
             exec_result.dml_appends.clear();
@@ -2076,10 +2159,11 @@ namespace services::collection::executor {
                       payload.base_deletes.size(),
                       session_ctx.is_explicit ? "publish deferred to COMMIT" : "implicit COMMIT follows");
                 if (!payload.empty()) {
-                    auto [_ac, acf] = actor_zeta::send(parent_address_,
-                                                       &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
-                                                       session,
-                                                       std::move(payload));
+                    auto [_ac, acf] =
+                        actor_zeta::otterbrix::send(parent_address_,
+                                                    &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
+                                                    session,
+                                                    std::move(payload));
                     // READ the refusal. transaction_inactive means the session has
                     // no transaction_t, so this whole statement's ranges were
                     // parked NOWHERE: the rows the operators physically appended
@@ -2186,10 +2270,11 @@ namespace services::collection::executor {
                 // accumulate is just the transit step in both modes.
                 payload.created_storage_oids = std::move(exec_result.created_storage_oids);
                 payload.created_indexes = std::move(exec_result.created_indexes);
-                auto [_ac, acf] = actor_zeta::send(parent_address_,
-                                                   &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
-                                                   session,
-                                                   std::move(payload));
+                auto [_ac, acf] =
+                    actor_zeta::otterbrix::send(parent_address_,
+                                                &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
+                                                session,
+                                                std::move(payload));
                 // READ the refusal — same channel, same meaning as the DML tail:
                 // nothing was parked, so the ddl-commit below would drain an
                 // empty transaction_t and publish nothing while reporting
@@ -2250,19 +2335,20 @@ namespace services::collection::executor {
                     std::vector<components::pg_catalog_append_range_t> revert_ranges;
                     revert_ranges.push_back(create_index_pg_index_range);
                     components::execution_context_t rv_ctx{session, resolve_txn, {}};
-                    auto [_rv, rvf] = actor_zeta::send(disk_address_,
-                                                       &services::disk::manager_disk_t::storage_revert_appends,
-                                                       rv_ctx,
-                                                       std::move(revert_ranges));
+                    auto [_rv, rvf] =
+                        actor_zeta::otterbrix::send(disk_address_,
+                                                    &services::disk::manager_disk_t::storage_revert_appends,
+                                                    rv_ctx,
+                                                    std::move(revert_ranges));
                     co_await std::move(rvf);
                 }
                 if (table_oid != components::catalog::INVALID_OID &&
                     index_address_ != actor_zeta::address_t::empty_address()) {
-                    auto [_di, dif] = actor_zeta::send(index_address_,
-                                                       &services::index::manager_index_t::drop_index,
-                                                       session,
-                                                       table_oid,
-                                                       index_oid);
+                    auto [_di, dif] = actor_zeta::otterbrix::send(index_address_,
+                                                                  &services::index::manager_index_t::drop_index,
+                                                                  session,
+                                                                  table_oid,
+                                                                  index_oid);
                     co_await std::move(dif);
                 }
                 co_return;
@@ -2334,11 +2420,11 @@ namespace services::collection::executor {
                         // a one-element oid vector to the batch commit_inserts.
                         std::pmr::vector<components::catalog::oid_t> commit_oids{resource()};
                         commit_oids.push_back(create_index_table_oid);
-                        auto [_ci, cif] = actor_zeta::send(index_address_,
-                                                           &services::index::manager_index_t::commit_inserts,
-                                                           swap_ctx,
-                                                           std::move(commit_oids),
-                                                           commit_result.commit_id);
+                        auto [_ci, cif] = actor_zeta::otterbrix::send(index_address_,
+                                                                      &services::index::manager_index_t::commit_inserts,
+                                                                      swap_ctx,
+                                                                      std::move(commit_oids),
+                                                                      commit_result.commit_id);
                         // A bitcask write failure here arrives AFTER the storage
                         // commit already published the pg_index row. Revert the
                         // pg_index row and drop the engine+agent so no half-built
@@ -2391,8 +2477,9 @@ namespace services::collection::executor {
         const bool releases_resolve_txn = !needs_ddl_txn && !needs_dml_txn && !needs_commit_txn &&
                                           !session_ctx.is_explicit && original_type != node_type::transaction_t;
         if (releases_resolve_txn) {
-            auto [_rl, rlf] =
-                actor_zeta::send(parent_address_, &services::dispatcher::manager_dispatcher_t::txn_abort_msg, session);
+            auto [_rl, rlf] = actor_zeta::otterbrix::send(parent_address_,
+                                                          &services::dispatcher::manager_dispatcher_t::txn_abort_msg,
+                                                          session);
             co_await std::move(rlf);
         }
 

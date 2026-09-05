@@ -614,12 +614,12 @@ namespace components::operators {
 #ifdef DEV_MODE
                 g_update_storage_update_sends.fetch_add(1, std::memory_order_relaxed);
 #endif
-                auto [_u, uf] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::storage_update,
-                                                 exec_ctx,
-                                                 table_oid_,
-                                                 std::move(update_row_ids),
-                                                 std::move(update_data));
+                auto [_u, uf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::storage_update,
+                                                            exec_ctx,
+                                                            table_oid_,
+                                                            std::move(update_row_ids),
+                                                            std::move(update_data));
                 auto update_result = co_await std::move(uf);
                 if (update_result.has_error()) {
                     co_return dml_detail::flush_outcome_t{update_result.error()};
@@ -630,15 +630,16 @@ namespace components::operators {
                 //    owns its WAL write (unlike INSERT's WAL-first storage_append).
                 if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
                     const uint64_t wal_count = wal_row_ids.size();
-                    auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                                     &services::wal::manager_wal_replicate_t::write_physical_update,
-                                                     ctx->session,
-                                                     table_oid_,
-                                                     std::move(wal_row_ids),
-                                                     std::move(wal_chunks),
-                                                     wal_count,
-                                                     ctx->txn.transaction_id,
-                                                     db_oid);
+                    auto [_w, wf] =
+                        actor_zeta::otterbrix::send(ctx->wal_address,
+                                                    &services::wal::manager_wal_replicate_t::write_physical_update,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    std::move(wal_row_ids),
+                                                    std::move(wal_chunks),
+                                                    wal_count,
+                                                    ctx->txn.transaction_id,
+                                                    db_oid);
                     auto wal_result = co_await std::move(wf);
                     if (wal_result.has_error()) {
                         // The storage_update above already landed, so table and journal now
@@ -647,25 +648,26 @@ namespace components::operators {
                         // rows updated over a record that is not in the journal.
                         co_return dml_detail::flush_outcome_t{wal_result.error()};
                     }
-                    auto [_df, dff] = actor_zeta::send(ctx->disk_address,
-                                                       &services::disk::manager_disk_t::flush,
-                                                       ctx->session,
-                                                       wal_result.value());
-                    ctx->add_pending_disk_future(std::move(dff));
+                    // The wal_id this record landed at used to be handed straight to
+                    // manager_disk_t::flush and parked in ctx's pending futures. That method
+                    // flushed nothing — it traced and returned — so the parked future carried no
+                    // durability and the wal_id it advanced to was never read. Both are gone.
+                    // Durability of the table is checkpoint_all's, driven by the WAL manager's
+                    // checkpoint round, not by anything this statement can post.
                 }
 
                 // 4. Mirror to index (old + new data) — one batched send. idx_old came
                 //    from the streaming staging (index_old_chunks_), aligned row-for-row
                 //    + by row_id with the new rows.
                 if (mirror_index) {
-                    auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                                       &services::index::manager_index_t::update_rows,
-                                                       exec_ctx,
-                                                       table_oid_,
-                                                       std::move(idx_old),
-                                                       std::move(idx_new),
-                                                       std::move(idx_row_ids),
-                                                       range_start);
+                    auto [_ix, ixf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                                  &services::index::manager_index_t::update_rows,
+                                                                  exec_ctx,
+                                                                  table_oid_,
+                                                                  std::move(idx_old),
+                                                                  std::move(idx_new),
+                                                                  std::move(idx_row_ids),
+                                                                  range_start);
                     auto index_error = co_await std::move(ixf);
                     if (index_error.contains_error()) {
                         // The index still points at the pre-update key. Fail rather than let the

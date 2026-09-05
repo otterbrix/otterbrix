@@ -56,13 +56,13 @@ namespace components::operators {
         // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
         std::pmr::vector<std::uint64_t> r_keys(resource_);
         r_keys.emplace_back(catalog::pg_computed_column_col::relid);
-        auto [_r, rf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::read_chunks_by_key,
-                                         exec_ctx,
-                                         pg_computed_column,
-                                         std::move(r_keys),
-                                         components::operators::make_key_chunk(resource_, table_oid_),
-                                         std::pmr::vector<std::uint64_t>{resource_});
+        auto [_r, rf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::read_chunks_by_key,
+                                                    exec_ctx,
+                                                    pg_computed_column,
+                                                    std::move(r_keys),
+                                                    components::operators::make_key_chunk(resource_, table_oid_),
+                                                    std::pmr::vector<std::uint64_t>{resource_});
         auto batches_r = co_await std::move(rf);
         if (batches_r.has_error()) {
             // A failed pg_computed_column read is not a miss; saying "not found" here hides it.
@@ -167,13 +167,13 @@ namespace components::operators {
             }
             std::pmr::vector<std::uint64_t> cl_keys(resource_);
             cl_keys.emplace_back(catalog::pg_class_col::oid);
-            auto [_cl, clf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_chunks_by_key,
-                                               exec_ctx,
-                                               catalog::well_known_oid::pg_class_table,
-                                               std::move(cl_keys),
-                                               components::operators::make_key_chunk(resource_, table_oid_),
-                                               std::pmr::vector<std::uint64_t>{resource_});
+            auto [_cl, clf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::read_chunks_by_key,
+                                                          exec_ctx,
+                                                          catalog::well_known_oid::pg_class_table,
+                                                          std::move(cl_keys),
+                                                          components::operators::make_key_chunk(resource_, table_oid_),
+                                                          std::pmr::vector<std::uint64_t>{resource_});
             auto cls_batches_r = co_await std::move(clf);
             if (cls_batches_r.has_error()) {
                 set_error(cls_batches_r.error());
@@ -211,11 +211,11 @@ namespace components::operators {
                                                                 v.max_version + 1,
                                                                 /*attrefcount=*/std::int64_t{0},
                                                                 v.atttypspec);
-            auto [_w, wf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::append_pg_catalog_row,
-                                             exec_ctx,
-                                             pg_computed_column,
-                                             std::move(cc_row));
+            auto [_w, wf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                        exec_ctx,
+                                                        pg_computed_column,
+                                                        std::move(cc_row));
             auto rng_r = co_await std::move(wf);
             if (rng_r.has_error()) {
                 // The tombstone IS the unregistration. Without it the variant stays

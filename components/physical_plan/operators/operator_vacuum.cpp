@@ -38,18 +38,18 @@ namespace components::operators {
         // round-trip would be one cross-actor hop per VACUUM for a value nobody reads.
         std::uint64_t renumbered_storages = 0;
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            auto [_v, vf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::vacuum_all,
-                                             ctx->session,
-                                             lowest);
+            auto [_v, vf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::vacuum_all,
+                                                        ctx->session,
+                                                        lowest);
             renumbered_storages = co_await std::move(vf);
         }
 
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            auto [_cv, cvf] = actor_zeta::send(ctx->index_address,
-                                               &services::index::manager_index_t::cleanup_all_versions,
-                                               ctx->session,
-                                               lowest);
+            auto [_cv, cvf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                          &services::index::manager_index_t::cleanup_all_versions,
+                                                          ctx->session,
+                                                          lowest);
             co_await std::move(cvf);
         }
 
@@ -112,15 +112,16 @@ namespace components::operators {
             uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
             bool scan_failed = false;
             while (true) {
-                auto [_sc, scf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                                   ctx->session,
-                                                   kPgClass,
-                                                   cursor_id,
-                                                   std::unique_ptr<components::table::table_filter_t>(nullptr),
-                                                   /*limit=*/int64_t{-1},
-                                                   std::vector<size_t>{},
-                                                   ctx->txn);
+                auto [_sc, scf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                ctx->session,
+                                                kPgClass,
+                                                cursor_id,
+                                                std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                /*limit=*/int64_t{-1},
+                                                std::vector<size_t>{},
+                                                ctx->txn);
                 auto scan_r = co_await std::move(scf);
                 if (scan_r.has_error()) {
                     set_error(scan_r.error());
@@ -136,11 +137,11 @@ namespace components::operators {
             }
             if (scan_failed) {
                 if (cursor_id != 0) {
-                    auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
-                                                       &services::disk::manager_disk_t::storage_close_cursor,
-                                                       ctx->session,
-                                                       kPgClass,
-                                                       cursor_id);
+                    auto [_cc, ccf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                  &services::disk::manager_disk_t::storage_close_cursor,
+                                                                  ctx->session,
+                                                                  kPgClass,
+                                                                  cursor_id);
                     co_await std::move(ccf);
                 }
                 mark_failed();
@@ -229,13 +230,14 @@ namespace components::operators {
                 // 3=atttypid 4=atttypspec 5=attversion 6=attrefcount.
                 std::pmr::vector<std::uint64_t> cc_keys(resource_);
                 cc_keys.emplace_back(catalog::pg_computed_column_col::relid);
-                auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::read_chunks_by_key,
-                                                   cc_ctx,
-                                                   kPgComputedColumn,
-                                                   std::move(cc_keys),
-                                                   components::operators::make_key_chunk(resource_, table_oid),
-                                                   std::pmr::vector<std::uint64_t>{resource_});
+                auto [_cc, ccf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                cc_ctx,
+                                                kPgComputedColumn,
+                                                std::move(cc_keys),
+                                                components::operators::make_key_chunk(resource_, table_oid),
+                                                std::pmr::vector<std::uint64_t>{resource_});
                 auto cc_batches_r = co_await std::move(ccf);
                 if (cc_batches_r.has_error()) {
                     // A failed pg_computed_column read is not a miss; treating it as one lets the
@@ -308,10 +310,11 @@ namespace components::operators {
                 }
 
                 if (!cc_specs.empty()) {
-                    auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
-                                                     cc_ctx,
-                                                     std::move(cc_specs));
+                    auto [_d, df] =
+                        actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                    cc_ctx,
+                                                    std::move(cc_specs));
                     auto deleted_r = co_await std::move(df);
                     // WHICH ZERO IS AN ERROR HERE — none. This is a GC pass: a row that is already gone is precisely
                     // the state it is working towards, so a spec that matched nothing has done this operator's job.
@@ -339,13 +342,14 @@ namespace components::operators {
                 {
                     std::pmr::vector<std::uint64_t> cc2_keys(resource_);
                     cc2_keys.emplace_back(catalog::pg_computed_column_col::relid);
-                    auto [_cc2, ccf2] = actor_zeta::send(ctx->disk_address,
-                                                         &services::disk::manager_disk_t::read_chunks_by_key,
-                                                         cc_ctx,
-                                                         kPgComputedColumn,
-                                                         std::move(cc2_keys),
-                                                         components::operators::make_key_chunk(resource_, table_oid),
-                                                         std::pmr::vector<std::uint64_t>{resource_});
+                    auto [_cc2, ccf2] =
+                        actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::read_chunks_by_key,
+                                                    cc_ctx,
+                                                    kPgComputedColumn,
+                                                    std::move(cc2_keys),
+                                                    components::operators::make_key_chunk(resource_, table_oid),
+                                                    std::pmr::vector<std::uint64_t>{resource_});
                     auto live_cc_r = co_await std::move(ccf2);
                     if (live_cc_r.has_error()) {
                         // This list drives which physical columns survive compaction. A failed
@@ -368,11 +372,12 @@ namespace components::operators {
                         }
                     }
 
-                    auto [_dc, dcf] = actor_zeta::send(ctx->disk_address,
-                                                       &services::disk::manager_disk_t::compact_relkind_g_storage,
-                                                       cc_ctx,
-                                                       table_oid,
-                                                       std::move(live_attnames));
+                    auto [_dc, dcf] =
+                        actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::compact_relkind_g_storage,
+                                                    cc_ctx,
+                                                    table_oid,
+                                                    std::move(live_attnames));
                     // The door answers with the number of physical columns it actually
                     // dropped (its only channel: DISK-backed storages and already-compact
                     // columns are skipped silently by contract). Discarding it would leave

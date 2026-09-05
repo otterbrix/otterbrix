@@ -380,12 +380,12 @@ namespace components::operators {
                                                      ctx->txn,
                                                      ctx->execution_context.timezone_offset,
                                                      table_oid_};
-            auto [_c, cf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                             exec_ctx,
-                                             table_oid_,
-                                             oid_col_idx_,
-                                             target_oid_);
+            auto [_c, cf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                                                        exec_ctx,
+                                                        table_oid_,
+                                                        oid_col_idx_,
+                                                        target_oid_);
             co_await std::move(cf);
             if (ctx->txn.transaction_id != 0) {
                 ctx->pg_catalog_delete_tables.insert(table_oid_);
@@ -429,28 +429,28 @@ namespace components::operators {
                     auto count = static_cast<uint64_t>(wal_row_ids.size());
                     // See operator_insert comment on db_oid temporary hardcode.
                     constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-                    auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                                     &services::wal::manager_wal_replicate_t::write_physical_delete,
-                                                     ctx->session,
-                                                     table_oid_,
-                                                     std::move(wal_row_ids),
-                                                     count,
-                                                     ctx->txn.transaction_id,
-                                                     db_oid);
+                    auto [_w, wf] =
+                        actor_zeta::otterbrix::send(ctx->wal_address,
+                                                    &services::wal::manager_wal_replicate_t::write_physical_delete,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    std::move(wal_row_ids),
+                                                    count,
+                                                    ctx->txn.transaction_id,
+                                                    db_oid);
                     auto wal_result = co_await std::move(wf);
                     if (wal_result.has_error()) {
                         // WAL-FIRST: the journal record is what makes the storage mark below
                         // replayable. A refused record answered as a wal_id anyway would mark
-                        // the rows deleted with nothing in the journal to replay — and the
-                        // flush would then be asked to advance to an id that does not exist.
-                        // Fail the statement BEFORE the storage mark.
+                        // the rows deleted with nothing in the journal to replay. Fail the
+                        // statement BEFORE the storage mark.
                         co_return dml_detail::flush_outcome_t{wal_result.error(), false, 0, 0};
                     }
-                    auto [_df2, dff] = actor_zeta::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::flush,
-                                                        ctx->session,
-                                                        wal_result.value());
-                    ctx->add_pending_disk_future(std::move(dff));
+                    // The wal_id was then handed to manager_disk_t::flush and its future parked
+                    // in ctx. That method traced and returned without flushing anything, so
+                    // neither the send nor the parked future carried durability; both are gone.
+                    // Table durability is checkpoint_all's, driven by the WAL manager's
+                    // checkpoint round.
                 }
 
                 // 2. storage_delete_rows — mark the rows deleted under this txn (MVCC).
@@ -458,12 +458,12 @@ namespace components::operators {
                 for (size_t i = 0; i < modified_size; i++) {
                     row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
                 }
-                auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::storage_delete_rows,
-                                                 exec_ctx,
-                                                 table_oid_,
-                                                 std::move(row_ids),
-                                                 static_cast<uint64_t>(modified_size));
+                auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::storage_delete_rows,
+                                                            exec_ctx,
+                                                            table_oid_,
+                                                            std::move(row_ids),
+                                                            static_cast<uint64_t>(modified_size));
                 // The WAL physical_delete above is already written. If the storage mark is
                 // REFUSED, the two disagree: replay would delete rows the live storage still
                 // shows, and this statement would report them deleted without deleting them.
@@ -497,12 +497,12 @@ namespace components::operators {
                         }
                         index_old_copy.emplace_back(std::move(owned));
                     }
-                    auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                                       &services::index::manager_index_t::delete_rows,
-                                                       exec_ctx,
-                                                       table_oid_,
-                                                       std::move(index_old_copy),
-                                                       std::move(index_old_row_ids_));
+                    auto [_ix, ixf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                                  &services::index::manager_index_t::delete_rows,
+                                                                  exec_ctx,
+                                                                  table_oid_,
+                                                                  std::move(index_old_copy),
+                                                                  std::move(index_old_row_ids_));
                     auto index_error = co_await std::move(ixf);
                     if (index_error.contains_error()) {
                         // Rows removed from the table but still present in the index: the next
@@ -565,10 +565,10 @@ namespace components::operators {
                 set_output(make_operator_data(resource_, std::move(returning_staged_)));
             }
         } else if (affected_rows_ > 0) {
-            auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_types,
-                                             ctx->session,
-                                             table_oid_);
+            auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_types,
+                                                        ctx->session,
+                                                        table_oid_);
             auto types_r = co_await std::move(tf);
             if (types_r.has_error()) {
                 // affected_rows_ > 0 here, so rows WERE deleted; the count still has to be

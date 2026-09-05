@@ -72,11 +72,11 @@ namespace components::operators {
         row.set_value(1, 0, std::string_view(timezone_name_.data(), timezone_name_.size()));
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->execution_context.timezone_offset};
-        auto [_u, uf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::append_pg_catalog_row,
-                                         exec_ctx,
-                                         components::catalog::well_known_oid::pg_settings_table,
-                                         std::move(row));
+        auto [_u, uf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                    exec_ctx,
+                                                    components::catalog::well_known_oid::pg_settings_table,
+                                                    std::move(row));
         // Record the append range so the executor's commit tail publishes (and,
         // on error, reverts) this pg_settings row through the unified DML path.
         // append_pg_catalog_row returns count==0 for the direct-write (transaction_id

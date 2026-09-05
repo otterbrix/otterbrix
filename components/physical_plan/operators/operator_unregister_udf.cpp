@@ -66,11 +66,11 @@ namespace components::operators {
         //    missing it, and its pg_proc/pg_depend rows still on the platter claiming it exists.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
-            auto [_rfbn, rfbnf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::resolve_function_by_name,
-                                                   exec_ctx,
-                                                   function_name_,
-                                                   std::uint64_t{0});
+            auto [_rfbn, rfbnf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::resolve_function_by_name,
+                                                              exec_ctx,
+                                                              function_name_,
+                                                              std::uint64_t{0});
             auto matches_r = co_await std::move(rfbnf);
             if (matches_r.has_error()) {
                 // A pg_proc read that FAILED is not "there are no rows to purge": acting on it
@@ -111,10 +111,11 @@ namespace components::operators {
                 }
             }
             if (!specs.empty()) {
-                auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
-                                                 exec_ctx,
-                                                 std::move(specs));
+                auto [_d, df] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                exec_ctx,
+                                                std::move(specs));
                 auto deleted_r = co_await std::move(df);
                 // STILL AHEAD OF THE REGISTRY REMOVAL, which is the whole point of the order
                 // this operator already keeps: a refused scrub must be known before the only

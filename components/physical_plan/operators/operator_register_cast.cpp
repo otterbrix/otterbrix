@@ -41,8 +41,9 @@ namespace components::operators {
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        auto [_oa, oaf] =
-            actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto [_oa, oaf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                      &services::disk::manager_disk_t::allocate_oids_batch,
+                                                      std::size_t{1});
         auto allocated = co_await std::move(oaf);
         // The identity is minted BEFORE the pg_cast row is built, and the round is checked:
         // consuming a round that delivered nothing (allocate() answers INVALID_OID) stamps
@@ -62,11 +63,11 @@ namespace components::operators {
             write_futures(resource_);
         write_futures.reserve(writes.size());
         for (auto& w : writes) {
-            auto [_w, wf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::append_pg_catalog_row,
-                                             exec_ctx,
-                                             w.table_oid,
-                                             std::move(w.row));
+            auto [_w, wf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                        exec_ctx,
+                                                        w.table_oid,
+                                                        std::move(w.row));
             write_futures.push_back(std::move(wf));
         }
         // Drain all, first error wins: an unwritten pg_cast row is a cast that does not
@@ -122,11 +123,11 @@ namespace components::operators {
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        auto [_rc, rcf] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::find_cast_oid,
-                                           exec_ctx,
-                                           source_type_oid_,
-                                           target_type_oid_);
+        auto [_rc, rcf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                      &services::disk::manager_disk_t::find_cast_oid,
+                                                      exec_ctx,
+                                                      source_type_oid_,
+                                                      target_type_oid_);
         auto cast_oid_r = co_await std::move(rcf);
         if (cast_oid_r.has_error()) {
             // "the pg_cast read failed" and "there is no such pg_cast row" are different
@@ -164,10 +165,10 @@ namespace components::operators {
             ctx->pg_catalog_delete_tables.insert(pg_cast_coll);
             ctx->pg_catalog_delete_tables.insert(pg_depend_coll);
         }
-        auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
-                                         exec_ctx,
-                                         std::move(specs));
+        auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                    exec_ctx,
+                                                    std::move(specs));
         auto deleted_r = co_await std::move(df);
         if (deleted_r.has_error()) {
             set_error(deleted_r.error());

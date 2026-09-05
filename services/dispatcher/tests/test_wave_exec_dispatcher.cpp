@@ -33,6 +33,7 @@
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
+#include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 // Dispatcher/executor guards. The fixture path carries ::getpid() so parallel ctest
@@ -105,9 +106,13 @@ namespace {
 // test_dispatcher_catalog.cpp, plus a raw execute_plan entry (hand-built plans) and the
 // pool-admin helpers from test_dispatcher_admin_errors.cpp.
 struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
+    // wire_index=false publishes empty_address() as the executor's index address while the
+    // manager itself still exists — the mis-wired-engine seam, kept so one case can pin the
+    // refusal operator_create_index_backfill now raises there. Every other case wires it.
     wave_fixture(std::pmr::memory_resource* resource,
                  const std::string& disk_path,
-                 components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass)
+                 components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass,
+                 bool wire_index = true)
         : actor_zeta::actor::actor_mixin<wave_fixture>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
@@ -125,20 +130,41 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
             c.on = false;
             return c;
         }())
-        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_)) {
+        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_))
+        // A REAL index manager, not empty_address(). The empty slot pinned the quiet
+        // no-op in operator_create_index_backfill (see the same note in
+        // test_variant_e3_differential.cpp): with no index actor wired the operator
+        // marked itself executed and reported success without creating anything, and
+        // the CREATE INDEX cases below REQUIREd that success. Production always spawns
+        // the index manager (integration/cpp/base_spaces.cpp), so the operator now
+        // refuses on an empty address and the harness matches production.
+        , manager_index_(actor_zeta::spawn<services::index::manager_index_t>(resource,
+                                                                            scheduler_,
+                                                                            log_,
+                                                                            disk_config_.path,
+                                                                            disk_config_.bitcask_flush_threshold,
+                                                                            disk_config_.bitcask_segment_record_limit,
+                                                                            disk_config_.btree_flush_threshold)) {
+        const auto index_address =
+            wire_index ? manager_index_->address() : actor_zeta::address_t::empty_address();
         manager_dispatcher_->sync(manager_dispatcher_t::sync_pack{manager_wal_->address(),
                                                                   manager_disk_->address(),
-                                                                  actor_zeta::address_t::empty_address()});
+                                                                  index_address});
         manager_wal_->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(manager_disk_->address()),
                                                           manager_dispatcher_->address(),
-                                                          actor_zeta::address_t::empty_address()});
+                                                          index_address});
         manager_disk_->sync(manager_disk_t::disk_sync_pack_t{manager_wal_->address()});
+        manager_index_->sync(services::index::index_sync_pack_t{manager_disk_->address()});
+        manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->bootstrap_system_tables_sync();
     }
 
     ~wave_fixture() {
+        // Index BEFORE disk: it holds manager_disk_'s address and addresses it during
+        // teardown.
         manager_dispatcher_.reset();
         manager_wal_.reset();
+        manager_index_.reset();
         manager_disk_.reset();
         scheduler_->stop();
         std::filesystem::remove_all(disk_path_);
@@ -233,6 +259,7 @@ private:
     std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
     configuration::config_wal wal_config_;
     std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_wal_;
+    std::unique_ptr<services::index::manager_index_t, actor_zeta::pmr::deleter_t> manager_index_;
     std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;
 };
 
@@ -538,19 +565,94 @@ TEST_CASE("services::dispatcher::wave4::create_index_refuses_a_taken_name") {
     REQUIRE(test.execute_sql("CREATE INDEX idx2 ON cdi.t (b);")->is_success());
 }
 
-// The two spellings of a DEFAULT diverge, and this pins the split by EXECUTION:
+// A column written NULL in EVERY row of a VALUES source has no type, so it is dropped
+// from the source chunk before anything downstream sees it — and the statement then died
+// as a bare count disagreement ("INSERT names 2 columns but the source provides 1") that
+// named neither the column that went missing nor the reason. The count is a symptom; the
+// cause is a typeless column, and the drop site is the last place that still knows which
+// written name it belonged to, because the drop is exactly what breaks the 1:1
+// correspondence between the written list and the chunk's columns.
+//
+// Both halves are asserted: the refusal still carries the arity sentence (nothing that
+// already reads it changes), and it now also names the column and says why.
+TEST_CASE("services::dispatcher::wave4::insert_names_the_all_null_column_it_drops") {
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    wave_fixture test(mr.get(), wave_dir("insert_all_null_column_named"));
+
+    REQUIRE(test.execute_sql("CREATE DATABASE anc;")->is_success());
+    REQUIRE(test.execute_sql("CREATE TABLE anc.t ();")->is_success());
+
+    auto cur = test.execute_sql("INSERT INTO anc.t (a, x) VALUES (NULL, 'z');");
+    INFO("INSERT result: " << (cur->is_error() ? cur->get_error().what : "accepted"));
+    REQUIRE(cur->is_error());
+    const std::string what{cur->get_error().what};
+    // the arity sentence, unchanged
+    CHECK(what.find("INSERT names 2 columns but the source provides 1") != std::string::npos);
+    // and the half that was missing: WHICH column, and WHY
+    CHECK(what.find("\"a\"") != std::string::npos);
+    CHECK(what.find("NULL in every row") != std::string::npos);
+
+    // Two typeless columns are both named, and the sentence stays grammatical.
+    auto two = test.execute_sql("INSERT INTO anc.t (a, b) VALUES (NULL, NULL);");
+    REQUIRE(two->is_error());
+    const std::string what_two{two->get_error().what};
+    INFO("INSERT result: " << what_two);
+    CHECK(what_two.find("INSERT names 2 columns but the source provides 0") != std::string::npos);
+    CHECK(what_two.find("\"a\", \"b\"") != std::string::npos);
+
+    // A column that some row types is NOT dropped: the mixed case still lands, so the
+    // refusal above is about typelessness and not about NULLs as such.
+    REQUIRE(test.execute_sql("INSERT INTO anc.t (id, v) VALUES (1, NULL), (2, 7);")->is_success());
+}
+
+// A CREATE INDEX that reaches an executor with NO index manager wired must be refused,
+// not answered with success. operator_create_index_backfill used to mark itself executed
+// and return on that branch: the statement registered nothing, created nothing,
+// backfilled nothing and never flipped pg_index.indisvalid, and the cursor said SUCCESS.
+// The quiet success was invisible because this fixture and test_variant_e3_differential
+// both synced empty_address() into the sync_pack's third slot; both wire a real
+// manager_index_t now, and this case keeps the seam alive on purpose so the refusal
+// itself is pinned rather than the silence.
+TEST_CASE("services::dispatcher::wave4::create_index_refuses_without_an_index_manager") {
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    wave_fixture test(mr.get(),
+                      wave_dir("create_index_no_index_manager"),
+                      &components::planner::no_op_pass,
+                      /*wire_index=*/false);
+
+    REQUIRE(test.execute_sql("CREATE DATABASE cim;")->is_success());
+    REQUIRE(test.execute_sql("CREATE TABLE cim.t (a bigint);")->is_success());
+
+    auto cur = test.execute_sql("CREATE INDEX idx ON cim.t (a);");
+    INFO("CREATE INDEX result: " << (cur->is_error() ? cur->get_error().what : "accepted"));
+    REQUIRE(cur->is_error());
+    CHECK(std::string(cur->get_error().what).find("index manager") != std::string::npos);
+}
+
+// The two spellings of a DEFAULT AGREE, and this pins the parity by EXECUTION:
 //
 //   * CREATE TABLE casts. `c integer DEFAULT 7` stores INTEGER 7 although the literal 7 is
 //     BIGINT (numeric_literal_value's T_Integer arm), because services/collection's executor
 //     hands the column list to convert_column_defaults, which resolves an assignment cast and
 //     REPLACES the stored value.
-//   * ALTER TABLE ADD COLUMN has no such leg — its executor arm gates the column TYPE and
-//     nothing else. The divergence is REFUSED instead, loudly and before the first catalog
-//     write, by catalog::alter_column_validators::validate_default_value_type (called from
-//     operator_alter_column_add), so a divergently-typed default is never persisted and there
-//     is no wrong answer to read back; what remains is a PARITY gap. Closing it means casting
-//     the subcommand's default IN PLACE, which needs mutating access to
-//     node_alter_table_t::subcommands().
+//   * ALTER TABLE ADD COLUMN casts TOO, through the SAME convert_column_defaults and the same
+//     cast_registry_ (services/collection/executor.cpp, "ALTER TABLE: DEFAULT coercion", right
+//     after the DDL rewrite — only there does each ADD COLUMN clause exist as its own
+//     node_alter_column_t whose column() is writable).
+//
+// THIS SECTION USED TO PIN THE OPPOSITE — that ALTER REFUSED the divergence — and the owner
+// flipped it on 2026-09-05 under rule 17, together with the decision to close the parity gap.
+// The shape is PostgreSQL's: one cookDefault(), called by both DefineRelation and
+// ATExecAddColumn, coercing with COERCION_ASSIGNMENT and erroring only when no assignment cast
+// exists. Parity there cannot be broken because there is one path; here it now cannot either,
+// because there is one convert_column_defaults.
+//
+// WHAT STILL REFUSES, AND IS PINNED BELOW: a DEFAULT the registry has no assignment cast to the
+// column's type for. Behind that, catalog::alter_column_validators::validate_default_value_type
+// (called from operator_alter_column_add) stays as the SECOND line and MUST NOT be read as "now
+// removable": the coercion runs on the ALTER STATEMENT path only, so a host-built plan handing a
+// node_alter_column_t straight to the operator never passes through it, and the validator is then
+// the only check between a divergent DEFAULT and the catalog.
 //
 // attdefspec is a TYPE-DIRECTED codec: the payload SHAPE is still derived from the column type
 // it is decoded against. But read_typed_value (components/index/logical_value_binary_codec.hpp)
@@ -568,7 +670,7 @@ TEST_CASE("services::dispatcher::wave4::create_index_refuses_a_taken_name") {
 //
 // Neither codec arm asserts, so Debug and NDEBUG give the same answer. The one pair the section
 // below spells out is the worst of a space the next TEST_CASE walks whole.
-TEST_CASE("services::dispatcher::wave4::alter_add_column_default_type_divergence_is_refused") {
+TEST_CASE("services::dispatcher::wave4::alter_add_column_default_is_coerced_like_create_table") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("alter_add_default_type"));
 
@@ -604,16 +706,45 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_type_divergence
     }
 
     // --- ALTER leg, TYPES DIVERGE: the ONLY difference from the control above is the
-    // declared column type. Refused, and nothing is written.
+    // declared column type. ACCEPTED, and the stored default is the COLUMN's type — the same
+    // answer the CREATE TABLE leg above gives for the same spelling. That identity IS the
+    // subject: assert it against db.created, not against a literal, so the two legs cannot
+    // drift apart without this failing.
     REQUIRE(test.execute_sql("CREATE TABLE db.diverge (a bigint);")->is_success());
+    REQUIRE(test.execute_sql("ALTER TABLE db.diverge ADD COLUMN c integer DEFAULT 7;")->is_success());
+    REQUIRE(test.execute_sql("INSERT INTO db.diverge (a) VALUES (1);")->is_success());
     {
-        auto cur = test.execute_sql("ALTER TABLE db.diverge ADD COLUMN c integer DEFAULT 7;");
-        REQUIRE(cur->is_error());
-        CHECK(mentions(cur->get_error(), "default value type mismatch"));
+        auto cur = test.execute_sql("SELECT c FROM db.diverge;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        const auto v = cur->value(0, 0);
+        REQUIRE_FALSE(v.is_null());
+        // INTEGER, not the BIGINT the literal started as — convert_column_defaults ran on the
+        // ALTER path exactly as it does on the CREATE path.
+        CHECK(v.type().type() == logical_type::INTEGER);
+        CHECK(v.value<int32_t>() == 7);
+    }
+
+    // --- WHAT STILL REFUSES, ON BOTH LEGS. A DEFAULT the registry has no ASSIGNMENT cast to the
+    // column's type for. STRING -> number is registered explicit_only (components/casts/
+    // default_casts.cpp, add_string_to_number), so `integer DEFAULT '7'` has a cast that exists
+    // and is nevertheless not usable here — exactly PostgreSQL's rule, where cookDefault coerces
+    // with COERCION_ASSIGNMENT and errors otherwise. Asserted on BOTH spellings, because parity
+    // that only holds for the accepting direction is not parity.
+    {
+        auto cur = test.execute_sql("CREATE TABLE db.nocast_create (a bigint, c integer DEFAULT '7');");
+        INFO("CREATE TABLE with a default that has no assignment cast");
+        CHECK(cur->is_error());
+    }
+    REQUIRE(test.execute_sql("CREATE TABLE db.nocast (a bigint);")->is_success());
+    {
+        auto cur = test.execute_sql("ALTER TABLE db.nocast ADD COLUMN c integer DEFAULT '7';");
+        INFO("ALTER TABLE with a default that has no assignment cast");
+        CHECK(cur->is_error());
     }
     {
         // The refusal landed before the first catalog mutation: no half-added column.
-        auto cur = test.execute_sql("SELECT c FROM db.diverge;");
+        auto cur = test.execute_sql("SELECT c FROM db.nocast;");
         CHECK(cur->is_error());
     }
 

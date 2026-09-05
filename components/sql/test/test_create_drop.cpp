@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
@@ -630,5 +631,102 @@ TEST_CASE("components::sql::drop_carries_missing_ok") {
     }
     SECTION("plain DROP DATABASE stays loud") {
         REQUIRE_FALSE(transform_drop("DROP DATABASE db;")->missing_ok());
+    }
+}
+
+// The word the statement wrote about its dependents, as far as this layer can read it.
+//
+// gram.y's opt_drop_behavior has THREE alternatives and TWO values: the empty one yields
+// DROP_RESTRICT, the same token the written word yields. So `DROP TABLE t RESTRICT` and
+// `DROP TABLE t` are one value here, and both are read as `unspecified` — "the statement
+// named neither word". Reading DROP_RESTRICT as restrict_ instead would flip every bare
+// DROP in the tree from CASCADE to a dependency refusal in one hop.
+//
+// A written CASCADE is separable, and is carried. It resolves the same way `unspecified`
+// does today (catalog::refuses_on_dependency), so no outcome moves; what changes is that
+// the plan node now says what the statement said, and stays right when GitHub #638 moves
+// the unwritten default to RESTRICT.
+TEST_CASE("components::sql::drop_carries_written_behavior") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    using components::catalog::drop_behavior_t;
+
+    auto behavior_of = [&](const char* query) {
+        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::drop_t);
+        return static_cast<node_drop_t*>(node.get())->behavior();
+    };
+
+    SECTION("DROP TABLE CASCADE") {
+        REQUIRE(behavior_of("DROP TABLE db.t CASCADE;") == drop_behavior_t::cascade_);
+    }
+    SECTION("bare DROP TABLE names neither word") {
+        REQUIRE(behavior_of("DROP TABLE db.t;") == drop_behavior_t::unspecified);
+    }
+    SECTION("DROP TABLE RESTRICT is not yet separable from the bare form") {
+        // NOT a wish: the grammar hands both spellings the same token. Pinned so that the
+        // day gram.y grows a third value, this line fails and points at what to change.
+        REQUIRE(behavior_of("DROP TABLE db.t RESTRICT;") == drop_behavior_t::unspecified);
+    }
+    SECTION("DROP VIEW CASCADE") {
+        REQUIRE(behavior_of("DROP VIEW db.v CASCADE;") == drop_behavior_t::cascade_);
+    }
+    SECTION("DROP SEQUENCE CASCADE") {
+        REQUIRE(behavior_of("DROP SEQUENCE db.s CASCADE;") == drop_behavior_t::cascade_);
+    }
+    SECTION("DROP TYPE CASCADE — the arm that does not build through wrap_one") {
+        REQUIRE(behavior_of("DROP TYPE mood CASCADE;") == drop_behavior_t::cascade_);
+    }
+    SECTION("DROP INDEX CASCADE — the other arm that does not build through wrap_one") {
+        REQUIRE(behavior_of("DROP INDEX db.t.idx CASCADE;") == drop_behavior_t::cascade_);
+    }
+}
+
+// The same reading, per ALTER TABLE clause. The subcommand carries it because a
+// multi-clause ALTER can write a different word on each clause.
+TEST_CASE("components::sql::alter_drop_column_carries_written_behavior") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    using components::catalog::drop_behavior_t;
+
+    auto subcommands_of = [&](const char* query) {
+        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::alter_table_t);
+        return static_cast<node_alter_table_t*>(node.get())->subcommands();
+    };
+
+    SECTION("ALTER TABLE ... DROP COLUMN CASCADE") {
+        auto subs = subcommands_of("ALTER TABLE db.t DROP COLUMN c CASCADE;");
+        REQUIRE(subs.size() == 1);
+        REQUIRE(subs.front().behavior == drop_behavior_t::cascade_);
+    }
+    SECTION("bare DROP COLUMN names neither word") {
+        auto subs = subcommands_of("ALTER TABLE db.t DROP COLUMN c;");
+        REQUIRE(subs.size() == 1);
+        REQUIRE(subs.front().behavior == drop_behavior_t::unspecified);
+    }
+    SECTION("DROP COLUMN RESTRICT is not yet separable from the bare form") {
+        auto subs = subcommands_of("ALTER TABLE db.t DROP COLUMN c RESTRICT;");
+        REQUIRE(subs.size() == 1);
+        REQUIRE(subs.front().behavior == drop_behavior_t::unspecified);
+    }
+    SECTION("one word per clause, not one per statement") {
+        auto subs = subcommands_of("ALTER TABLE db.t DROP COLUMN a CASCADE, DROP COLUMN b;");
+        REQUIRE(subs.size() == 2);
+        REQUIRE(subs.front().behavior == drop_behavior_t::cascade_);
+        REQUIRE(subs.back().behavior == drop_behavior_t::unspecified);
+        // IF EXISTS is per-clause too, and must not have been swapped with the behavior.
+        REQUIRE_FALSE(subs.front().missing_ok);
+        REQUIRE_FALSE(subs.back().missing_ok);
     }
 }

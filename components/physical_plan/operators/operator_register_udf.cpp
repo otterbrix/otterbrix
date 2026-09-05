@@ -59,11 +59,11 @@ namespace components::operators {
         // 1. Cross-namespace conflict detection: bail on any pre-existing pg_proc
         //    row with this function name, in any namespace (user or pg_catalog).
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            auto [_rfbn, rfbnf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::resolve_function_by_name,
-                                                   exec_ctx,
-                                                   func_name,
-                                                   std::uint64_t{0});
+            auto [_rfbn, rfbnf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::resolve_function_by_name,
+                                                              exec_ctx,
+                                                              func_name,
+                                                              std::uint64_t{0});
             auto matches_r = co_await std::move(rfbnf);
             if (matches_r.has_error()) {
                 // A pg_proc read that FAILED is not "the name is free". Reporting it as one is
@@ -121,9 +121,9 @@ namespace components::operators {
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             catalog::oid_t fn_oid = catalog::INVALID_OID;
             {
-                auto [_oa, oaf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::allocate_oids_batch,
-                                                   std::size_t{1});
+                auto [_oa, oaf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::allocate_oids_batch,
+                                                              std::size_t{1});
                 auto allocated = co_await std::move(oaf);
                 if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "register_udf", fn_oid);
                     ec_oid.contains_error()) {
@@ -137,8 +137,9 @@ namespace components::operators {
             //    if none exists, the row lives in pg_catalog.
             catalog::oid_t target_ns = catalog::well_known_oid::pg_catalog_namespace;
             {
-                auto [_ln, lnf] =
-                    actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::list_namespaces, exec_ctx);
+                auto [_ln, lnf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::list_namespaces,
+                                                              exec_ctx);
                 auto ns_names_r = co_await std::move(lnf);
                 if (ns_names_r.has_error()) {
                     // Losing this lookup does not merely lose a lookup: target_ns would stay
@@ -149,11 +150,12 @@ namespace components::operators {
                 }
                 for (auto& nname : ns_names_r.value()) {
                     if (!nname.empty() && nname != "pg_catalog") {
-                        auto [_rn, rnf] = actor_zeta::send(ctx->disk_address,
-                                                           &services::disk::manager_disk_t::resolve_namespace,
-                                                           exec_ctx,
-                                                           std::string(nname),
-                                                           std::uint64_t{0});
+                        auto [_rn, rnf] =
+                            actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::resolve_namespace,
+                                                        exec_ctx,
+                                                        std::string(nname),
+                                                        std::uint64_t{0});
                         auto rns_r = co_await std::move(rnf);
                         if (rns_r.has_error()) {
                             set_error(rns_r.error());
@@ -205,11 +207,11 @@ namespace components::operators {
                 fn_write_futures(resource_);
             fn_write_futures.reserve(fn_writes.size());
             for (auto& w : fn_writes) {
-                auto [_w, wf] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::append_pg_catalog_row,
-                                                 exec_ctx,
-                                                 w.table_oid,
-                                                 std::move(w.row));
+                auto [_w, wf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                            exec_ctx,
+                                                            w.table_oid,
+                                                            std::move(w.row));
                 fn_write_futures.push_back(std::move(wf));
             }
             // Drain every reply, then act: an abandoned future is a reply with nowhere to

@@ -16,7 +16,12 @@ namespace components::operators {
                            std::vector<size_t> projected_cols)
         : read_only_operator_t(resource, log, operator_type::index_scan)
         , table_oid_(table_oid)
-        , key_(key)
+        // `key` comes from the LOGICAL node (create_plan_scan hands over node->expressions()'s
+        // key), whose arena is released when the plan is torn down; this operator lives on
+        // `resource` — context.resource for a known table — and is read from during execution,
+        // after that. So the copy is placed on the OPERATOR's arena, the longer-lived of the two.
+        // key_ is const and never re-pointed, so this is the only place its arena is decided.
+        , key_(key, resource)
         , value_(value)
         , compare_type_(compare_type)
         , preferred_index_type_(preferred_index_type)
@@ -45,27 +50,27 @@ namespace components::operators {
         // Search index for matching row IDs (txn-aware visibility). One-shot: the whole matched
         // set comes back in this single future.
         auto [_s, sf] = preferred_index_type_ == logical_plan::index_type::no_valid
-                            ? actor_zeta::send(ctx->index_address,
-                                               &services::index::manager_index_t::search,
-                                               ctx->session,
-                                               table_oid_,
-                                               index::keys_base_storage_t{{key_}},
-                                               types::logical_value_t{resource_, value_},
-                                               compare_type_,
-                                               ctx->txn.start_time,
-                                               ctx->txn.transaction_id,
-                                               ctx->execution_context.timezone_offset)
-                            : actor_zeta::send(ctx->index_address,
-                                               &services::index::manager_index_t::search_with_preferred_type,
-                                               ctx->session,
-                                               table_oid_,
-                                               index::keys_base_storage_t{{key_}},
-                                               types::logical_value_t{resource_, value_},
-                                               compare_type_,
-                                               preferred_index_type_,
-                                               ctx->txn.start_time,
-                                               ctx->txn.transaction_id,
-                                               ctx->execution_context.timezone_offset);
+                            ? actor_zeta::otterbrix::send(ctx->index_address,
+                                                          &services::index::manager_index_t::search,
+                                                          ctx->session,
+                                                          table_oid_,
+                                                          index::keys_base_storage_t{{key_}},
+                                                          types::logical_value_t{resource_, value_},
+                                                          compare_type_,
+                                                          ctx->txn.start_time,
+                                                          ctx->txn.transaction_id,
+                                                          ctx->execution_context.timezone_offset)
+                            : actor_zeta::otterbrix::send(ctx->index_address,
+                                                          &services::index::manager_index_t::search_with_preferred_type,
+                                                          ctx->session,
+                                                          table_oid_,
+                                                          index::keys_base_storage_t{{key_}},
+                                                          types::logical_value_t{resource_, value_},
+                                                          compare_type_,
+                                                          preferred_index_type_,
+                                                          ctx->txn.start_time,
+                                                          ctx->txn.transaction_id,
+                                                          ctx->execution_context.timezone_offset);
         auto matched = co_await std::move(sf);
         if (matched.has_error()) {
             // The index manager could not ANSWER — no engine for the oid, no index on
@@ -107,22 +112,22 @@ namespace components::operators {
         vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
         std::memcpy(row_ids.data(), row_ids_vec_.data() + pos_, count * sizeof(int64_t));
 
-        auto [_f, ff] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::storage_fetch,
-                                         ctx->session,
-                                         table_oid_,
-                                         std::move(row_ids),
-                                         count,
-                                         projected_cols_,
-                                         // The reader's own snapshot: the index answered with a
-                                         // superset of ids and the table decides which of them
-                                         // this transaction may see.
-                                         ctx->txn,
-                                         table::fetch_visibility_t::SNAPSHOT,
-                                         // POST-VISIBILITY row cap. -1 == uncapped; otherwise the
-                                         // agent hands back exactly this many visible rows (fewer
-                                         // if the window runs out first) and reads no further.
-                                         limit_.head_cap());
+        auto [_f, ff] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::storage_fetch,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    std::move(row_ids),
+                                                    count,
+                                                    projected_cols_,
+                                                    // The reader's own snapshot: the index answered with a
+                                                    // superset of ids and the table decides which of them
+                                                    // this transaction may see.
+                                                    ctx->txn,
+                                                    table::fetch_visibility_t::SNAPSHOT,
+                                                    // POST-VISIBILITY row cap. -1 == uncapped; otherwise the
+                                                    // agent hands back exactly this many visible rows (fewer
+                                                    // if the window runs out first) and reads no further.
+                                                    limit_.head_cap());
         co_return co_await std::move(ff);
     }
 
@@ -154,10 +159,10 @@ namespace components::operators {
                 co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(search_error));
             }
             // Cache the table schema for the no-row empty-guard below.
-            auto [_t, tf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::storage_types,
-                                             ctx->session,
-                                             table_oid_);
+            auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_types,
+                                                        ctx->session,
+                                                        table_oid_);
             auto types_result = co_await std::move(tf);
             if (types_result.has_error()) {
                 set_error(types_result.error());

@@ -11,6 +11,7 @@ set(${PROJECT_NAME}_SOURCES
         test_view_expansion.cpp
         test_ddl_oid_batch_refusal.cpp
         test_ddl_unresolved_refusal.cpp
+        test_pushdown_key_arena.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

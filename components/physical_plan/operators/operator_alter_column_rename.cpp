@@ -67,13 +67,13 @@ namespace components::operators {
 
         std::pmr::vector<std::uint64_t> pa_keys(resource_);
         pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
-        auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::read_chunks_by_key,
-                                           exec_ctx,
-                                           pg_attr,
-                                           std::move(pa_keys),
-                                           components::operators::make_key_chunk(resource_, table_oid_),
-                                           std::pmr::vector<std::uint64_t>{resource_});
+        auto [_pa, paf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                      &services::disk::manager_disk_t::read_chunks_by_key,
+                                                      exec_ctx,
+                                                      pg_attr,
+                                                      std::move(pa_keys),
+                                                      components::operators::make_key_chunk(resource_, table_oid_),
+                                                      std::pmr::vector<std::uint64_t>{resource_});
         auto attr_batches_r = co_await std::move(paf);
         if (attr_batches_r.has_error()) {
             // A failed pg_attribute read is not a miss; treating it as one lets the
@@ -171,13 +171,13 @@ namespace components::operators {
             // components/table carries the name into the alias.
             std::pmr::vector<std::uint64_t> cl_keys(resource_);
             cl_keys.emplace_back(catalog::pg_class_col::oid);
-            auto [_cl, clf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::read_chunks_by_key,
-                                               exec_ctx,
-                                               catalog::well_known_oid::pg_class_table,
-                                               std::move(cl_keys),
-                                               components::operators::make_key_chunk(resource_, table_oid_),
-                                               std::pmr::vector<std::uint64_t>{resource_});
+            auto [_cl, clf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::read_chunks_by_key,
+                                                          exec_ctx,
+                                                          catalog::well_known_oid::pg_class_table,
+                                                          std::move(cl_keys),
+                                                          components::operators::make_key_chunk(resource_, table_oid_),
+                                                          std::pmr::vector<std::uint64_t>{resource_});
             auto cls_batches_r = co_await std::move(clf);
             if (cls_batches_r.has_error()) {
                 set_error(cls_batches_r.error());
@@ -210,12 +210,12 @@ namespace components::operators {
             co_return;
         }
 
-        auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                         exec_ctx,
-                                         pg_attr,
-                                         std::int64_t{0},
-                                         attoid);
+        auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                                                    exec_ctx,
+                                                    pg_attr,
+                                                    std::int64_t{0},
+                                                    attoid);
         co_await std::move(df);
         if (ctx->txn.transaction_id != 0)
             ctx->pg_catalog_delete_tables.insert(pg_attr);
@@ -238,11 +238,11 @@ namespace components::operators {
                                                        att_defspec,
                                                        /*added_at_commit_id=*/att_added_at_commit_id,
                                                        /*dropped_at_commit_id=*/0);
-        auto [_w, wf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::append_pg_catalog_row,
-                                         exec_ctx,
-                                         pg_attr,
-                                         std::move(new_row));
+        auto [_w, wf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                    exec_ctx,
+                                                    pg_attr,
+                                                    std::move(new_row));
         auto rng_r = co_await std::move(wf);
         if (rng_r.has_error()) {
             // Same half-renamed state as the zero-row case below, with the reason attached.

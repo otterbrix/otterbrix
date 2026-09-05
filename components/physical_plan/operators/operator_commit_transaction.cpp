@@ -25,20 +25,19 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::commit_transaction) {}
 
     actor_zeta::unique_future<void> operator_commit_transaction_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // In DDL-commit mode, prepend the storage durability barrier. The WAL commit marker is deliberately NOT
-        // written here: this prefix runs BEFORE the drain that allocates the commit_id and before the index
-        // insert-commit — the last step that may still refuse the commit — while replay keys committed
-        // transactions off the MARKER's transaction_id, so a marker already durable at this point turns every
-        // later refusal into a resurrection. The DDL marker rides STEP 2 below, unified with the DML marker,
-        // where the ordering invariant covers it. The flush stays: data pages must be on the device before the
-        // marker, and it stamps nothing and cannot refuse.
-        if (is_ddl_commit_ && ctx->disk_address != actor_zeta::address_t::empty_address()) {
-            auto [_f, ff] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::flush,
-                                             ctx->session,
-                                             services::wal::id_t{0});
-            co_await std::move(ff);
-        }
+        // NO STORAGE DURABILITY BARRIER RUNS HERE, AND THERE NEVER WAS ONE. What used to stand at the
+        // top of DDL-commit mode was a send of manager_disk_t::flush, described in this very comment as
+        // "data pages must be on the device before the marker" — but that method's body traced and
+        // returned, flushing no buffer and syncing no file, so the barrier was a name and nothing else.
+        // It is removed rather than replaced: the ordering this commit actually relies on is that the WAL
+        // commit MARKER is not durable before the last step that may still refuse the commit, and that is
+        // enforced below, not here. The marker is deliberately NOT written at this point: this prefix runs
+        // BEFORE the drain that allocates the commit_id and before the index insert-commit, while replay
+        // keys committed transactions off the MARKER's transaction_id, so a marker already durable here
+        // would turn every later refusal into a resurrection. The DDL marker rides STEP 2 below, unified
+        // with the DML marker, where the ordering invariant covers it. A real storage barrier, if one is
+        // ever needed, is checkpoint_all — and it CAN refuse, so it would need an error path this
+        // no-op never had.
 
         // Snapshot txn_data, drain all swap-info and allocate the commit_id in a single dispatcher round-trip.
         // The dispatcher (sole owner of transaction_manager_t) does find_transaction -> drain_* -> remap ->
@@ -70,9 +69,10 @@ namespace components::operators {
         // Null-sender guard: with no dispatcher to talk to there is no txn to
         // drain — leave commit_id_ = 0 and skip.
         if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
-            auto [_dr, drf] = actor_zeta::send(ctx->current_message_sender,
-                                               &services::dispatcher::manager_dispatcher_t::txn_commit_drain_msg,
-                                               ctx->session);
+            auto [_dr, drf] =
+                actor_zeta::otterbrix::send(ctx->current_message_sender,
+                                            &services::dispatcher::manager_dispatcher_t::txn_commit_drain_msg,
+                                            ctx->session);
             services::dispatcher::txn_commit_drain_t drain = co_await std::move(drf);
             txn_data = drain.txn;
             swap_appends = std::move(drain.swap_appends);
@@ -157,7 +157,7 @@ namespace components::operators {
             std::pmr::vector<components::catalog::oid_t> append_oids{base_append_oids.begin(),
                                                                      base_append_oids.end(),
                                                                      resource_};
-            auto [_ic, icf] = actor_zeta::send(
+            auto [_ic, icf] = actor_zeta::otterbrix::send(
                 ctx->index_address,
                 &services::index::manager_index_t::commit_inserts,
                 components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
@@ -168,9 +168,10 @@ namespace components::operators {
                 // Clean abort: the commit_id is stamped NOWHERE (nothing above this
                 // point writes it anywhere), so releasing it cannot publish anything.
                 if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
-                    auto [_dx, dxf] = actor_zeta::send(ctx->current_message_sender,
-                                                       &services::dispatcher::manager_dispatcher_t::txn_discard_msg,
-                                                       commit_id_);
+                    auto [_dx, dxf] =
+                        actor_zeta::otterbrix::send(ctx->current_message_sender,
+                                                    &services::dispatcher::manager_dispatcher_t::txn_discard_msg,
+                                                    commit_id_);
                     co_await std::move(dxf);
                 }
                 set_error(std::move(result));
@@ -196,22 +197,23 @@ namespace components::operators {
             const std::uint64_t marker_txn_id = is_ddl_commit_ ? txn_id_ : txn_data.transaction_id;
             const components::catalog::oid_t marker_db_oid =
                 is_ddl_commit_ ? database_oid_ : components::catalog::well_known_oid::main_database;
-            auto [_w, wf] = actor_zeta::send(ctx->wal_address,
-                                             &services::wal::manager_wal_replicate_t::commit_txn,
-                                             ctx->session,
-                                             marker_txn_id,
-                                             services::wal::wal_sync_mode::FULL,
-                                             marker_db_oid,
-                                             commit_id_);
+            auto [_w, wf] = actor_zeta::otterbrix::send(ctx->wal_address,
+                                                        &services::wal::manager_wal_replicate_t::commit_txn,
+                                                        ctx->session,
+                                                        marker_txn_id,
+                                                        services::wal::wal_sync_mode::FULL,
+                                                        marker_db_oid,
+                                                        commit_id_);
             // FULL means "this marker is on the device", and the reply is read: discarding it would let a failed
             // fsync be followed by the barrier anyway, and readers would see a commit that a crash one instant
             // later takes back. Refusing HERE is a clean abort in the full sense — nothing has stamped the
             // commit_id at this point, so the discard cannot publish anything and the transaction leaves no trace.
             if (auto commit_result = co_await std::move(wf); commit_result.has_error()) {
                 if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
-                    auto [_dx, dxf] = actor_zeta::send(ctx->current_message_sender,
-                                                       &services::dispatcher::manager_dispatcher_t::txn_discard_msg,
-                                                       commit_id_);
+                    auto [_dx, dxf] =
+                        actor_zeta::otterbrix::send(ctx->current_message_sender,
+                                                    &services::dispatcher::manager_dispatcher_t::txn_discard_msg,
+                                                    commit_id_);
                     co_await std::move(dxf);
                 }
                 set_error(commit_result.error());
@@ -229,19 +231,21 @@ namespace components::operators {
         // broadcast happens inside txn_publish_msg at the bottom.
         if (!dropped_storage_oids.empty() && txn_data.transaction_id != 0 && commit_id_ > 0) {
             if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
-                auto [_sd, sdf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_dropped_committed,
-                                                   ctx->session,
-                                                   txn_data.transaction_id,
-                                                   commit_id_);
+                auto [_sd, sdf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::storage_dropped_committed,
+                                                ctx->session,
+                                                txn_data.transaction_id,
+                                                commit_id_);
                 co_await std::move(sdf);
             }
             if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-                auto [_td, tdf] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::table_dropped_committed,
-                                                   ctx->session,
-                                                   txn_data.transaction_id,
-                                                   commit_id_);
+                auto [_td, tdf] =
+                    actor_zeta::otterbrix::send(ctx->index_address,
+                                                &services::index::manager_index_t::table_dropped_committed,
+                                                ctx->session,
+                                                txn_data.transaction_id,
+                                                commit_id_);
                 co_await std::move(tdf);
             }
         }
@@ -292,11 +296,12 @@ namespace components::operators {
             components::execution_context_t backfill_ctx{ctx->session, txn_data, {}};
             // Log the marker count before the move empties the vector.
             const auto backfill_count = backfill_markers.size();
-            auto [_b, bf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::update_pg_attribute_commit_id_fields,
-                                             backfill_ctx,
-                                             std::move(backfill_markers),
-                                             commit_id_);
+            auto [_b, bf] =
+                actor_zeta::otterbrix::send(ctx->disk_address,
+                                            &services::disk::manager_disk_t::update_pg_attribute_commit_id_fields,
+                                            backfill_ctx,
+                                            std::move(backfill_markers),
+                                            commit_id_);
             // THE ANSWER IS READ, AND IT IS NOT ALLOWED TO REFUSE THE COMMIT. This is STEP 4: the durable
             // commit marker is already on the device (STEP 2, in both modes), the commit_id is stamped, and
             // "nothing below may refuse it". A set_error + co_return here would strand commit_id_ in
@@ -344,7 +349,7 @@ namespace components::operators {
             std::pmr::vector<components::catalog::oid_t> delete_oids{base_delete_table_oids.begin(),
                                                                      base_delete_table_oids.end(),
                                                                      resource_};
-            auto [_dc, dcf] = actor_zeta::send(
+            auto [_dc, dcf] = actor_zeta::otterbrix::send(
                 ctx->index_address,
                 &services::index::manager_index_t::commit_deletes,
                 components::execution_context_t{ctx->session, txn_data, ctx->execution_context.timezone_offset},
@@ -382,11 +387,11 @@ namespace components::operators {
                                std::make_move_iterator(base_appends.begin()),
                                std::make_move_iterator(base_appends.end()));
             if (!all_appends.empty()) {
-                auto [_a, af] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::storage_publish_commits,
-                                                 swap_ctx,
-                                                 commit_id_,
-                                                 std::move(all_appends));
+                auto [_a, af] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::storage_publish_commits,
+                                                            swap_ctx,
+                                                            commit_id_,
+                                                            std::move(all_appends));
                 co_await std::move(af);
             }
             // Concatenate pg_catalog deletes + base-table deletes into one publish
@@ -395,11 +400,11 @@ namespace components::operators {
             std::set<components::catalog::oid_t> all_deletes = std::move(swap_deletes);
             all_deletes.insert(base_delete_tables.begin(), base_delete_tables.end());
             if (!all_deletes.empty()) {
-                auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::storage_publish_deletes,
-                                                 swap_ctx,
-                                                 commit_id_,
-                                                 std::move(all_deletes));
+                auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::storage_publish_deletes,
+                                                            swap_ctx,
+                                                            commit_id_,
+                                                            std::move(all_deletes));
                 co_await std::move(df);
             }
         }
@@ -412,9 +417,9 @@ namespace components::operators {
         // watermark (visible-to-all commit-id horizon) used below.
         uint64_t compact_watermark = 0;
         if (commit_id_ > 0 && ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
-            auto [_p, pf] = actor_zeta::send(ctx->current_message_sender,
-                                             &services::dispatcher::manager_dispatcher_t::txn_publish_msg,
-                                             commit_id_);
+            auto [_p, pf] = actor_zeta::otterbrix::send(ctx->current_message_sender,
+                                                        &services::dispatcher::manager_dispatcher_t::txn_publish_msg,
+                                                        commit_id_);
             compact_watermark = co_await std::move(pf);
         }
 
@@ -439,10 +444,11 @@ namespace components::operators {
                 std::pmr::vector<actor_zeta::unique_future<void>> unregister_futures{resource_};
                 unregister_futures.reserve(dropped_storage_oids.size());
                 for (auto oid : dropped_storage_oids) {
-                    auto [_u, uf] = actor_zeta::send(ctx->index_address,
-                                                     &services::index::manager_index_t::unregister_collection,
-                                                     ctx->session,
-                                                     oid);
+                    auto [_u, uf] =
+                        actor_zeta::otterbrix::send(ctx->index_address,
+                                                    &services::index::manager_index_t::unregister_collection,
+                                                    ctx->session,
+                                                    oid);
                     unregister_futures.push_back(std::move(uf));
                 }
                 // Await EVERY unregister before any disk drop (index-before-disk).
@@ -454,10 +460,10 @@ namespace components::operators {
                 std::pmr::vector<components::catalog::oid_t> drop_oids{dropped_storage_oids.begin(),
                                                                        dropped_storage_oids.end(),
                                                                        resource_};
-                auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::drop_storage_many,
-                                                 ctx->session,
-                                                 std::move(drop_oids));
+                auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::drop_storage_many,
+                                                            ctx->session,
+                                                            std::move(drop_oids));
                 co_await std::move(df);
             }
         }
@@ -481,11 +487,11 @@ namespace components::operators {
         if (commit_id_ > 0 && !column_releases.empty() &&
             ctx->disk_address != actor_zeta::address_t::empty_address()) {
             for (const auto& release : column_releases) {
-                auto [_rc, rcf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::drop_storage_column,
-                                                   ctx->session,
-                                                   release.release_table_oid,
-                                                   release.release_attname);
+                auto [_rc, rcf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::drop_storage_column,
+                                                              ctx->session,
+                                                              release.release_table_oid,
+                                                              release.release_attname);
                 auto released = co_await std::move(rcf);
                 if (released.has_error()) {
                     set_error(released.error());
@@ -526,12 +532,12 @@ namespace components::operators {
         if (commit_id_ > 0 && !column_renames.empty() &&
             ctx->disk_address != actor_zeta::address_t::empty_address()) {
             for (const auto& rename : column_renames) {
-                auto [_rn, rnf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::rename_storage_column,
-                                                   ctx->session,
-                                                   rename.release_table_oid,
-                                                   rename.release_attname,
-                                                   rename.rename_to_attname);
+                auto [_rn, rnf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::rename_storage_column,
+                                                              ctx->session,
+                                                              rename.release_table_oid,
+                                                              rename.release_attname,
+                                                              rename.rename_to_attname);
                 auto renamed = co_await std::move(rnf);
                 if (renamed.has_error()) {
                     set_error(renamed.error());
@@ -576,10 +582,10 @@ namespace components::operators {
             // with NO index engine, the safe-to-compact set (index-rebuild-on-compact is a separate task).
             std::pmr::vector<components::catalog::oid_t> safe_oids{resource_};
             if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-                auto [_ti, tif] = actor_zeta::send(ctx->index_address,
-                                                   &services::index::manager_index_t::tables_without_indexes,
-                                                   ctx->session,
-                                                   std::move(compact_oids));
+                auto [_ti, tif] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                              &services::index::manager_index_t::tables_without_indexes,
+                                                              ctx->session,
+                                                              std::move(compact_oids));
                 safe_oids = co_await std::move(tif);
             } else {
                 safe_oids = std::move(compact_oids);
@@ -588,14 +594,14 @@ namespace components::operators {
             // out internally.
             if (!safe_oids.empty()) {
                 auto [_mc, mcf] =
-                    actor_zeta::send(ctx->disk_address,
-                                     &services::disk::manager_disk_t::maybe_cleanup_many,
-                                     components::execution_context_t{ctx->session,
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::maybe_cleanup_many,
+                                                components::execution_context_t{ctx->session,
                                                                      txn_data,
                                                                      ctx->execution_context.timezone_offset,
                                                                      components::catalog::INVALID_OID},
-                                     std::move(safe_oids),
-                                     compact_watermark);
+                                                std::move(safe_oids),
+                                                compact_watermark);
                 co_await std::move(mcf);
             }
         }

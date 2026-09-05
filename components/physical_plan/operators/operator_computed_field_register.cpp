@@ -68,7 +68,7 @@ namespace components::operators {
             std::pmr::vector<std::uint64_t> r_keys(resource_);
             r_keys.emplace_back(catalog::pg_computed_column_col::relid);
             r_keys.emplace_back(catalog::pg_computed_column_col::attname);
-            auto [_r, rf] = actor_zeta::send(
+            auto [_r, rf] = actor_zeta::otterbrix::send(
                 ctx->disk_address,
                 &services::disk::manager_disk_t::read_chunks_by_key,
                 exec_ctx,
@@ -127,14 +127,14 @@ namespace components::operators {
                 if (!lookup.empty()) {
                     std::pmr::vector<std::uint64_t> t_keys(resource_);
                     t_keys.emplace_back(catalog::pg_type_col::typname);
-                    auto [_t, tf] =
-                        actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::read_chunks_by_key,
-                                         exec_ctx,
-                                         pg_type,
-                                         std::move(t_keys),
-                                         components::operators::make_key_chunk(resource_, std::string_view{lookup}),
-                                         std::pmr::vector<std::uint64_t>{resource_});
+                    auto [_t, tf] = actor_zeta::otterbrix::send(
+                        ctx->disk_address,
+                        &services::disk::manager_disk_t::read_chunks_by_key,
+                        exec_ctx,
+                        pg_type,
+                        std::move(t_keys),
+                        components::operators::make_key_chunk(resource_, std::string_view{lookup}),
+                        std::pmr::vector<std::uint64_t>{resource_});
                     auto type_batches_r = co_await std::move(tf);
                     if (type_batches_r.has_error()) {
                         set_error(type_batches_r.error());
@@ -191,9 +191,9 @@ namespace components::operators {
             }
 
             // allocate a fresh attoid for the new (or evolved) column row.
-            auto [_oa, oaf] = actor_zeta::send(ctx->disk_address,
-                                               &services::disk::manager_disk_t::allocate_oids_batch,
-                                               std::size_t{1});
+            auto [_oa, oaf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::allocate_oids_batch,
+                                                          std::size_t{1});
             auto oid_batch = co_await std::move(oaf);
             if (oid_batch.empty()) {
                 set_error(core::error_t{
@@ -229,11 +229,11 @@ namespace components::operators {
             std::pmr::vector<actor_zeta::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>>
                 append_futures(resource_);
             {
-                auto [_w, wf] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::append_pg_catalog_row,
-                                                 exec_ctx,
-                                                 pg_computed_column,
-                                                 std::move(cc_row));
+                auto [_w, wf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                            exec_ctx,
+                                                            pg_computed_column,
+                                                            std::move(cc_row));
                 append_futures.push_back(std::move(wf));
             }
 
@@ -267,11 +267,11 @@ namespace components::operators {
                                                  catalog::well_known_oid::pg_type_table,            // refclassid
                                                  atttypid,                                          // refobjid
                                                  /*deptype=*/'n');
-                auto [_dt, dtf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::append_pg_catalog_row,
-                                                   exec_ctx,
-                                                   pg_depend,
-                                                   std::move(dep_row));
+                auto [_dt, dtf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                              exec_ctx,
+                                                              pg_depend,
+                                                              std::move(dep_row));
                 append_futures.push_back(std::move(dtf));
             }
             {
@@ -282,11 +282,11 @@ namespace components::operators {
                                                  catalog::well_known_oid::pg_class_table,           // refclassid
                                                  table_oid_,                                        // refobjid
                                                  /*deptype=*/catalog::deptype::auto_dep);
-                auto [_dc, dcf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::append_pg_catalog_row,
-                                                   exec_ctx,
-                                                   pg_depend,
-                                                   std::move(dep_row));
+                auto [_dc, dcf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                              exec_ctx,
+                                                              pg_depend,
+                                                              std::move(dep_row));
                 append_futures.push_back(std::move(dcf));
             }
             // Drain all, first error wins: the pg_computed_column row IS the registration.

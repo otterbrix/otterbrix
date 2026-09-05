@@ -78,10 +78,11 @@ namespace components::operators {
                     ctx->pg_catalog_delete_tables.insert(d.catalog_table_oid);
             }
             {
-                auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
-                                                 exec_ctx,
-                                                 std::move(specs));
+                auto [_, fut] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                exec_ctx,
+                                                std::move(specs));
                 auto deleted_r = co_await std::move(fut);
                 // AHEAD OF THE ENGINE TEARDOWN BELOW, and the order is the point: the teardown is this
                 // operator's other mutation, and it must not happen over a catalog that still describes the
@@ -125,11 +126,11 @@ namespace components::operators {
         // Drop the in-memory index entry. Tolerant of an unknown oid: no error
         // if the engine never saw the index (metadata existed but backfill never ran).
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                               &services::index::manager_index_t::drop_index,
-                                               ctx->session,
-                                               table_oid_,
-                                               index_oid_);
+            auto [_ix, ixf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                          &services::index::manager_index_t::drop_index,
+                                                          ctx->session,
+                                                          table_oid_,
+                                                          index_oid_);
             co_await std::move(ixf);
         }
 

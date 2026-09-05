@@ -250,6 +250,11 @@ namespace components::sql::transform {
             // loud default, which makes the one no-op success PostgreSQL grants the
             // IF EXISTS form unreachable from SQL.
             drop->set_missing_ok(node.missing_ok);
+            // RESTRICT/CASCADE/neither. One choke-point for all six DROP arms —
+            // drop_behavior_of is where the grammar's two-value reading collapses onto the
+            // three forms node_drop_t carries, and why a written RESTRICT is still not
+            // separable from silence at this layer.
+            drop->set_behavior(drop_behavior_of(node.behavior));
             register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
             return n;
         };
@@ -312,6 +317,12 @@ namespace components::sql::transform {
                     // `IF EXISTS` — same wiring as wrap_one; rewrite_drop_index already
                     // reads this flag when the index name does not resolve.
                     drop->set_missing_ok(node.missing_ok);
+                    // Same wiring as wrap_one. Nothing reads it on this arm yet —
+                    // rewrite_drop_index builds its own catalog-delete sequence instead of
+                    // routing through the dynamic cascade — but the arm that DISCARDS a
+                    // word the user wrote is the arm that gets it wrong the day a reader
+                    // appears, and there is no second place this could be set.
+                    drop->set_behavior(drop_behavior_of(node.behavior));
                     std::vector<std::pair<std::string, std::string>> targets;
                     targets.emplace_back(db, rel);
                     targets.emplace_back(db, index_name);
@@ -369,6 +380,11 @@ namespace components::sql::transform {
                 n->set_relname(type_name);
                 // `IF EXISTS` — the one arm that does not build through wrap_one.
                 n->set_missing_ok(node.missing_ok);
+                // RESTRICT/CASCADE/neither, for the same reason: this arm DOES reach the
+                // dynamic cascade (planner rewrite_drop routes drop_target_kind::type
+                // there), so a written CASCADE dropped here would be a word the plan never
+                // hears.
+                n->set_behavior(drop_behavior_of(node.behavior));
                 register_catalog_resolve_namespace(resource_, &catalog_resolves_, "public");
                 register_catalog_resolve_types(resource_, &catalog_resolves_, {type_name});
                 return n;

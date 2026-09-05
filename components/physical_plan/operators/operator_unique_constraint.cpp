@@ -336,12 +336,12 @@ namespace components::operators {
 #ifdef DEV_MODE
                 g_unique_constraint_scan_sends.fetch_add(1, std::memory_order_relaxed);
 #endif
-                auto [_, fut] = actor_zeta::send(ctx->disk_address,
-                                                 &services::disk::manager_disk_t::scan_by_keys,
-                                                 exec_ctx,
-                                                 table_oid_,
-                                                 std::move(names),
-                                                 std::move(keys));
+                auto [_, fut] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::scan_by_keys,
+                                                            exec_ctx,
+                                                            table_oid_,
+                                                            std::move(names),
+                                                            std::move(keys));
                 auto matches_r = co_await std::move(fut);
                 if (matches_r.has_error()) {
                     // A failed unique-key read is not a miss; treating it as one lets the

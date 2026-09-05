@@ -697,6 +697,40 @@ namespace components::planner {
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (const auto& sub : alter->subcommands()) {
                 if (sub.kind == logical_plan::alter_table_kind::add_column) {
+                    // A MUTABLE COPY, and services/collection/executor.cpp's alter_table_t arm
+                    // points at this line as the home for the other half of what CREATE TABLE
+                    // does to a column: coercing its DEFAULT to the declared type. That half is
+                    // NOT here, and the reasons are worth writing down where the next reader
+                    // starts, because two of the three that get named are wrong.
+                    //
+                    // NOT the accessor. node_alter_table_t::subcommands() hands out a const
+                    // reference, and both executor.cpp and the older notes call that the blocker.
+                    // It is not: the copy on the next line is already mutable, and the lines
+                    // below already rewrite col.type() in place.
+                    //
+                    // NOT logical_value_t::cast_as either, which is the one cast this component
+                    // can reach (planner links otterbrix::types, not otterbrix::casts). Its
+                    // numeric-to-numeric arm is a bare static_cast with no range check: BIGINT
+                    // 5'000'000'000 narrowed to INTEGER comes back as 705032704 with no error
+                    // reported, measured in components/planner/test/test_pushdown_key_arena.cpp,
+                    // "value_cast_narrows_without_saying_so". The registry kernel the CREATE
+                    // TABLE leg uses refuses that same pair with "out of range"
+                    // (components/casts/kernels/numeric_cast.hpp). Coercing here with cast_as
+                    // would trade a loud refusal for a silently wrong persisted default.
+                    //
+                    // THE GAP IS CLOSED, AND NOT HERE — 2026-09-05. The coercion lives in
+                    // services/collection/executor.cpp ("ALTER TABLE: DEFAULT coercion", right
+                    // after this rewrite), because convert_column_defaults needs the executor's
+                    // cast_registry_t and graph_execution_context. Both are per-executor state
+                    // (the registry is mutated by CREATE/DROP CAST), so a planner-local copy
+                    // would be a second authority that drifts, and planner_t::create_plan takes
+                    // neither. That placement is the point, not a workaround: one
+                    // convert_column_defaults serves both spellings, the way PostgreSQL's single
+                    // cookDefault() serves DefineRelation and ATExecAddColumn alike.
+                    //
+                    // What this rewrite still owns is the mutable copy below: only after it does
+                    // each ADD COLUMN clause exist as its own node_alter_column_t whose column()
+                    // is writable, which is what lets the executor write the cast value back.
                     auto col = sub.column;
                     // Resolve UNKNOWN-by-name builtins.
                     if (col.type().type() == components::types::logical_type::UNKNOWN) {
@@ -736,9 +770,11 @@ namespace components::planner {
                         // (dependency-free; lowers to operator_computed_field_unregister_t).
                         drop->set_computed(true);
                     } else {
-                        // RESTRICT/CASCADE/neither comes from the subcommand (defaulted
-                        // to `unspecified` until the transformer copies the grammar's
-                        // AlterTableCmd::behavior); the operator refuses blocked drops
+                        // RESTRICT/CASCADE/neither comes from the subcommand — the
+                        // transformer copies the grammar's AlterTableCmd::behavior as of
+                        // 2026-09-05 (components/sql/transformer/impl/transform_alter_table.cpp,
+                        // `sub.behavior = drop_behavior_of(cmd->behavior)`), so `unspecified`
+                        // now means the user wrote neither word; the operator refuses blocked drops
                         // under restrict_ and treats `unspecified` as CASCADE
                         // (components/catalog/results/ddl_result.hpp). Hardcoding a
                         // behavior here would make the written word unreachable by

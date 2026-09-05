@@ -45,33 +45,42 @@ namespace components::operators {
         , indkey_(std::move(indkey)) {}
 
     actor_zeta::unique_future<void> operator_create_index_backfill_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // No-op when there is no index actor wired, AND THAT QUIET SUCCESS IS PINNED: the dispatcher differential
-        // harness deliberately syncs an EMPTY index address
-        // (services/dispatcher/tests/test_variant_e3_differential.cpp, the sync_pack's third slot) and REQUIREs
-        // CREATE INDEX to succeed there, because what it compares is the CATALOG half of the statement. Every
-        // production topology wires the index manager unconditionally (base_spaces spawns it before the executor
-        // exists), so this branch is a harness seam — turning it into a refusal breaks that pinned test.
+        // NO INDEX ACTOR, NO INDEX — AND SAYING SO IS THE WHOLE POINT. This branch used to mark_executed() and
+        // report SUCCESS for a CREATE INDEX that registered nothing, created nothing, backfilled nothing and never
+        // flipped pg_index.indisvalid. The durable half stayed consistent (indisvalid false, so a restart declines
+        // to attach it) precisely BECAUSE the statement did nothing — which is exactly what the user was not told.
+        // Every production topology spawns the index manager UNCONDITIONALLY (integration/cpp/base_spaces.cpp
+        // spawns it before the dispatcher exists, with no config gate), so an empty index address is a mis-wired
+        // engine, not a supported mode. The quiet success was pinned only by two dispatcher harnesses that synced
+        // empty_address() into the sync_pack's third slot; both now wire a real manager_index_t, and
+        // test_wave_exec_dispatcher's create_index_refuses_without_an_index_manager pins THIS refusal instead.
+        //
+        // Refusal, not abort: CREATE INDEX is a write path with an error channel all the way back to the cursor,
+        // and rule 6's "loud" means reported, not fatal.
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
-            mark_executed();
+            set_error(core::error_t{core::error_code_t::index_create_fail,
+                                    std::pmr::string{"CREATE INDEX: no index manager is wired to this executor; "
+                                                     "the index was not created",
+                                                     resource()}});
             co_return;
         }
 
         // Ensure the engine knows about the collection, then create the
         // index entry. register_collection is idempotent.
-        auto [_rc, rcf] = actor_zeta::send(ctx->index_address,
-                                           &services::index::manager_index_t::register_collection,
-                                           ctx->session,
-                                           table_oid_);
+        auto [_rc, rcf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                      &services::index::manager_index_t::register_collection,
+                                                      ctx->session,
+                                                      table_oid_);
         co_await std::move(rcf);
 
-        auto [_ix, ixf] = actor_zeta::send(ctx->index_address,
-                                           &services::index::manager_index_t::create_index,
-                                           ctx->session,
-                                           table_oid_,
-                                           index_oid_,
-                                           keys_,
-                                           index_type_,
-                                           ctx->execution_context.timezone_offset);
+        auto [_ix, ixf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                      &services::index::manager_index_t::create_index,
+                                                      ctx->session,
+                                                      table_oid_,
+                                                      index_oid_,
+                                                      keys_,
+                                                      index_type_,
+                                                      ctx->execution_context.timezone_offset);
         // create_index answers with a core::error_t and nothing else: an index's identity
         // below the planner is its indexrelid, which is right here in index_oid_.
         auto create_error = co_await std::move(ixf);
@@ -101,14 +110,14 @@ namespace components::operators {
         services::wal::id_t build_start_wal_position{0};
         bool build_start_registered = false;
         if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
-            auto [_q, qf] = actor_zeta::send(ctx->wal_address,
-                                             &services::wal::manager_wal_replicate_t::current_wal_id,
-                                             ctx->session);
+            auto [_q, qf] = actor_zeta::otterbrix::send(ctx->wal_address,
+                                                        &services::wal::manager_wal_replicate_t::current_wal_id,
+                                                        ctx->session);
             build_start_wal_position = co_await std::move(qf);
-            auto [_r, rf] = actor_zeta::send(ctx->wal_address,
-                                             &services::wal::manager_wal_replicate_t::register_active_build,
-                                             ctx->session,
-                                             build_start_wal_position);
+            auto [_r, rf] = actor_zeta::otterbrix::send(ctx->wal_address,
+                                                        &services::wal::manager_wal_replicate_t::register_active_build,
+                                                        ctx->session,
+                                                        build_start_wal_position);
             co_await std::move(rf);
             build_start_registered = true;
         }
@@ -137,18 +146,19 @@ namespace components::operators {
                                  [[maybe_unused]] std::pmr::memory_resource* frame_resource)
             -> actor_zeta::unique_future<void> {
             if (build_start_registered) {
-                auto [_u, uf] = actor_zeta::send(ctx->wal_address,
-                                                 &services::wal::manager_wal_replicate_t::unregister_active_build,
-                                                 ctx->session,
-                                                 build_start_wal_position);
+                auto [_u, uf] =
+                    actor_zeta::otterbrix::send(ctx->wal_address,
+                                                &services::wal::manager_wal_replicate_t::unregister_active_build,
+                                                ctx->session,
+                                                build_start_wal_position);
                 co_await std::move(uf);
                 build_start_registered = false;
             }
-            auto [_d, df] = actor_zeta::send(ctx->index_address,
-                                             &services::index::manager_index_t::drop_index,
-                                             ctx->session,
-                                             table_oid_,
-                                             index_oid_);
+            auto [_d, df] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                        &services::index::manager_index_t::drop_index,
+                                                        ctx->session,
+                                                        table_oid_,
+                                                        index_oid_);
             co_await std::move(df);
             co_return;
         };
@@ -165,15 +175,16 @@ namespace components::operators {
             uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
             bool scan_ok = true;
             while (true) {
-                auto [_fb, fbf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                                   ctx->session,
-                                                   table_oid_,
-                                                   cursor_id,
-                                                   std::unique_ptr<components::table::table_filter_t>(nullptr),
-                                                   int64_t{-1},           // unbounded — index every row
-                                                   std::vector<size_t>{}, // empty == read all columns
-                                                   ctx->txn);
+                auto [_fb, fbf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                ctx->session,
+                                                table_oid_,
+                                                cursor_id,
+                                                std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                int64_t{-1},           // unbounded — index every row
+                                                std::vector<size_t>{}, // empty == read all columns
+                                                ctx->txn);
                 auto fetch_result = co_await std::move(fbf);
                 if (fetch_result.has_error()) {
                     set_error(fetch_result.error());
@@ -227,19 +238,19 @@ namespace components::operators {
                     }
                     std::pmr::vector<components::vector::data_chunk_t> idx_chunks(resource_);
                     idx_chunks.push_back(batch_chunk.partial_copy(resource_, run_start, run_len));
-                    auto [_ir, irf] =
-                        actor_zeta::send(ctx->index_address,
-                                         &services::index::manager_index_t::apply_wal_record_for_index,
-                                         ctx->session,
-                                         table_oid_,
-                                         index_oid_,
-                                         services::wal::id_t{0}, // no journal record: this run came from the scan
-                                         static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
-                                         std::pmr::vector<int64_t>(resource_),
-                                         std::move(idx_chunks),
-                                         static_cast<uint64_t>(row_ids[run_start]), // run's TRUE physical base id
-                                         ctx->txn.transaction_id,
-                                         ctx->execution_context.timezone_offset);
+                    auto [_ir, irf] = actor_zeta::otterbrix::send(
+                        ctx->index_address,
+                        &services::index::manager_index_t::apply_wal_record_for_index,
+                        ctx->session,
+                        table_oid_,
+                        index_oid_,
+                        services::wal::id_t{0}, // no journal record: this run came from the scan
+                        static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_INSERT),
+                        std::pmr::vector<int64_t>(resource_),
+                        std::move(idx_chunks),
+                        static_cast<uint64_t>(row_ids[run_start]), // run's TRUE physical base id
+                        ctx->txn.transaction_id,
+                        ctx->execution_context.timezone_offset);
                     co_await std::move(irf);
                     run_start += run_len;
                 }
@@ -286,10 +297,10 @@ namespace components::operators {
                 break;
             }
 
-            auto [_load, lf] = actor_zeta::send(ctx->wal_address,
-                                                &services::wal::manager_wal_replicate_t::load,
-                                                ctx->session,
-                                                catchup_start_wal);
+            auto [_load, lf] = actor_zeta::otterbrix::send(ctx->wal_address,
+                                                           &services::wal::manager_wal_replicate_t::load,
+                                                           ctx->session,
+                                                           catchup_start_wal);
             auto wal_records_result = co_await std::move(lf);
             if (wal_records_result.has_error()) {
                 // An empty list means "the catchup has converged", so `load` must REFUSE rather than answer empty
@@ -368,24 +379,24 @@ namespace components::operators {
                     for (std::size_t k = 0; k < rec.physical_row_ids.size(); ++k) {
                         fetch_ids.data<int64_t>()[k] = rec.physical_row_ids[k];
                     }
-                    auto [_f, ff] = actor_zeta::send(ctx->disk_address,
-                                                     &services::disk::manager_disk_t::storage_fetch,
-                                                     ctx->session,
-                                                     rec.table_oid,
-                                                     std::move(fetch_ids),
-                                                     static_cast<uint64_t>(rec.physical_row_ids.size()),
-                                                     // No projection: the backfill hands whole rows
-                                                     // to the index engine's chunk binding.
-                                                     std::vector<size_t>{},
-                                                     // RAW, and an EMPTY transaction_data is NOT a
-                                                     // substitute: these rows are read BECAUSE they
-                                                     // were deleted, and an empty txn means "see
-                                                     // everything COMMITTED", which hides them.
-                                                     components::table::transaction_data{},
-                                                     components::table::fetch_visibility_t::RAW,
-                                                     // The backfill needs every named row's old
-                                                     // key columns; capping would drop keys.
-                                                     /*limit=*/int64_t{-1});
+                    auto [_f, ff] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                &services::disk::manager_disk_t::storage_fetch,
+                                                                ctx->session,
+                                                                rec.table_oid,
+                                                                std::move(fetch_ids),
+                                                                static_cast<uint64_t>(rec.physical_row_ids.size()),
+                                                                // No projection: the backfill hands whole rows
+                                                                // to the index engine's chunk binding.
+                                                                std::vector<size_t>{},
+                                                                // RAW, and an EMPTY transaction_data is NOT a
+                                                                // substitute: these rows are read BECAUSE they
+                                                                // were deleted, and an empty txn means "see
+                                                                // everything COMMITTED", which hides them.
+                                                                components::table::transaction_data{},
+                                                                components::table::fetch_visibility_t::RAW,
+                                                                // The backfill needs every named row's old
+                                                                // key columns; capping would drop keys.
+                                                                /*limit=*/int64_t{-1});
                     fetch_futures.push_back(std::move(ff));
                     fetch_slots.push_back(r);
                 }
@@ -411,10 +422,11 @@ namespace components::operators {
                 // published and no snapshot saw it, so release the WAL retention guard
                 // before failing so the next checkpoint can truncate freely.
                 if (build_start_registered) {
-                    auto [_u, uf] = actor_zeta::send(ctx->wal_address,
-                                                     &services::wal::manager_wal_replicate_t::unregister_active_build,
-                                                     ctx->session,
-                                                     build_start_wal_position);
+                    auto [_u, uf] =
+                        actor_zeta::otterbrix::send(ctx->wal_address,
+                                                    &services::wal::manager_wal_replicate_t::unregister_active_build,
+                                                    ctx->session,
+                                                    build_start_wal_position);
                     co_await std::move(uf);
                     build_start_registered = false;
                 }
@@ -443,18 +455,19 @@ namespace components::operators {
                     std::pmr::vector<int64_t> row_ids(rec.physical_row_ids.begin(),
                                                       rec.physical_row_ids.end(),
                                                       resource_);
-                    auto [_a, af] = actor_zeta::send(ctx->index_address,
-                                                     &services::index::manager_index_t::apply_wal_record_for_index,
-                                                     ctx->session,
-                                                     rec.table_oid,
-                                                     index_oid_,
-                                                     rec.id,
-                                                     static_cast<uint8_t>(rec.record_type),
-                                                     std::move(row_ids),
-                                                     std::move(rec.physical_data),
-                                                     rec.physical_row_start,
-                                                     ctx->txn.transaction_id,
-                                                     rec.session_tz);
+                    auto [_a, af] =
+                        actor_zeta::otterbrix::send(ctx->index_address,
+                                                    &services::index::manager_index_t::apply_wal_record_for_index,
+                                                    ctx->session,
+                                                    rec.table_oid,
+                                                    index_oid_,
+                                                    rec.id,
+                                                    static_cast<uint8_t>(rec.record_type),
+                                                    std::move(row_ids),
+                                                    std::move(rec.physical_data),
+                                                    rec.physical_row_start,
+                                                    ctx->txn.transaction_id,
+                                                    rec.session_tz);
                     apply_futures.push_back(std::move(af));
                 }
 
@@ -466,19 +479,19 @@ namespace components::operators {
                     std::pmr::vector<int64_t> row_ids(rec.physical_row_ids.begin(),
                                                       rec.physical_row_ids.end(),
                                                       resource_);
-                    auto [_a, af] =
-                        actor_zeta::send(ctx->index_address,
-                                         &services::index::manager_index_t::apply_wal_record_for_index,
-                                         ctx->session,
-                                         rec.table_oid,
-                                         index_oid_,
-                                         rec.id,
-                                         static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE),
-                                         std::move(row_ids),
-                                         std::move(old_chunks[r]),
-                                         rec.physical_row_start,
-                                         ctx->txn.transaction_id,
-                                         rec.session_tz);
+                    auto [_a, af] = actor_zeta::otterbrix::send(
+                        ctx->index_address,
+                        &services::index::manager_index_t::apply_wal_record_for_index,
+                        ctx->session,
+                        rec.table_oid,
+                        index_oid_,
+                        rec.id,
+                        static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE),
+                        std::move(row_ids),
+                        std::move(old_chunks[r]),
+                        rec.physical_row_start,
+                        ctx->txn.transaction_id,
+                        rec.session_tz);
                     apply_futures.push_back(std::move(af));
                 }
             }
@@ -517,10 +530,11 @@ namespace components::operators {
         // Converged: release the retention guard BEFORE the pg_index flip below
         // (which only touches the catalog) so a later truncate isn't blocked.
         if (build_start_registered) {
-            auto [_u, uf] = actor_zeta::send(ctx->wal_address,
-                                             &services::wal::manager_wal_replicate_t::unregister_active_build,
-                                             ctx->session,
-                                             build_start_wal_position);
+            auto [_u, uf] =
+                actor_zeta::otterbrix::send(ctx->wal_address,
+                                            &services::wal::manager_wal_replicate_t::unregister_active_build,
+                                            ctx->session,
+                                            build_start_wal_position);
             co_await std::move(uf);
             build_start_registered = false;
         }
@@ -532,12 +546,12 @@ namespace components::operators {
             constexpr components::catalog::oid_t pg_idx_oid = components::catalog::well_known_oid::pg_index_table;
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-            auto [_d, df] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::delete_pg_catalog_rows,
-                                             exec_ctx,
-                                             pg_idx_oid,
-                                             std::int64_t{0},
-                                             index_oid_);
+            auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::delete_pg_catalog_rows,
+                                                        exec_ctx,
+                                                        pg_idx_oid,
+                                                        std::int64_t{0},
+                                                        index_oid_);
             co_await std::move(df);
             if (ctx->txn.transaction_id != 0)
                 ctx->pg_catalog_delete_tables.insert(pg_idx_oid);
@@ -549,11 +563,11 @@ namespace components::operators {
                 indkey_,
                 /*indisvalid=*/true,
                 components::logical_plan::index_type_to_indtype_code(index_type_));
-            auto [_w, wf] = actor_zeta::send(ctx->disk_address,
-                                             &services::disk::manager_disk_t::append_pg_catalog_row,
-                                             exec_ctx,
-                                             pg_idx_oid,
-                                             std::move(valid_row));
+            auto [_w, wf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                        exec_ctx,
+                                                        pg_idx_oid,
+                                                        std::move(valid_row));
             auto rng_r = co_await std::move(wf);
             if (rng_r.has_error()) {
                 // This is the row that flips the index to indisvalid. Refused, the index stays

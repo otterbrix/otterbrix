@@ -27,15 +27,21 @@ namespace components::logical_plan {
         // lets pass, so without this flag the loud path would refuse it too.
         bool missing_ok{false};
         // drop_column only: RESTRICT/CASCADE/neither. gram.y fills
-        // AlterTableCmd::behavior; the planner forwards this onto the alter_column
-        // primitive, and operator_alter_column_drop_t refuses a dependent-blocked
-        // drop when the clause WROTE restrict_. The transformer does not copy the
-        // grammar's value yet, so today every clause carries this DEFAULT — which
-        // is `unspecified`, the form for "the clause named neither word", NOT
-        // cascade_: only that separation lets a written RESTRICT be honoured
-        // without the same hop changing what the tree's bare DROP COLUMN clauses
-        // mean. `unspecified` resolves to CASCADE today
+        // AlterTableCmd::behavior; the transformer copies it through
+        // transform::drop_behavior_of, the planner forwards it onto the
+        // alter_column primitive, and operator_alter_column_drop_t refuses a
+        // dependent-blocked drop when the clause WROTE restrict_.
+        //
+        // A written CASCADE therefore arrives as cascade_. A written RESTRICT does
+        // NOT arrive as restrict_ and cannot yet: the grammar's opt_drop_behavior
+        // gives its EMPTY alternative the same DROP_RESTRICT token the word gives,
+        // so both reach here as `unspecified` — the form for "the clause named
+        // neither word". That is the honest reading, not a discard: honouring it as
+        // restrict_ would flip every bare DROP COLUMN in the tree at the same time.
+        // `unspecified` resolves to CASCADE today
         // (components/catalog/results/ddl_result.hpp, owner decision; GitHub #638).
+        // The remaining step is in the grammar, not here: a third DropBehavior value
+        // for the empty alternative.
         components::catalog::drop_behavior_t behavior{components::catalog::drop_behavior_t::unspecified};
         components::table::column_definition_t column;
         alter_table_subcommand_t()

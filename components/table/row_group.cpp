@@ -747,6 +747,17 @@ namespace components::table {
         }
     }
 
+    void row_group_t::collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out) {
+        // Same materialized-only rule as the whole-row-group walk above: a column this row group
+        // never materialized owns no in-memory segments to read block ids off. An index past the
+        // end is a row group that predates the column (dynamic schema growth appends columns to
+        // LATER row groups only), not an error.
+        if (column_index >= columns_.size() || !columns_[column_index]) {
+            return;
+        }
+        columns_[column_index]->collect_disk_block_ids(out);
+    }
+
     class version_delete_state {
     public:
         version_delete_state(row_group_t& info,

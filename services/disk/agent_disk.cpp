@@ -2691,9 +2691,18 @@ namespace services::disk {
             co_return 0;
         }
         auto& entry = it->second;
+        // The primitive underneath is no longer the reason for this gate. B3c made
+        // table_storage_t::drop_column mode-agnostic: it rebuilds in both modes and hands the
+        // dropped column's blocks to the checkpoint round that can commit their release. What
+        // is still missing HERE is the round itself — this handler rides VACUUM, which under
+        // A7.2's split pool cannot commit anything, so a DISK drop taken here would sit
+        // un-released until some later checkpoint and, unlike the sibling compact, is not even
+        // attached to one. Un-gating this call site is the follow-up the owner approved, not
+        // this change.
         if (entry->table_storage.mode() != storage_mode_t::IN_MEMORY) {
             trace(log_,
-                  "agent_disk[{}]::compact_relkind_g_storage_inner: skip DISK-backed oid={} (out of scope)",
+                  "agent_disk[{}]::compact_relkind_g_storage_inner: skip DISK-backed oid={} — its drop belongs "
+                  "to a checkpoint round (B3c)",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
             co_return 0;

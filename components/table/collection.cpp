@@ -407,6 +407,12 @@ namespace components::table {
         }
     }
 
+    void collection_t::collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out) {
+        for (auto& row_group : row_groups_->segments()) {
+            row_group.collect_column_disk_block_ids(column_index, out);
+        }
+    }
+
     boost::intrusive_ptr<collection_t> collection_t::add_column(column_definition_t& new_column) {
         auto new_types = types_;
         new_types.push_back(new_column.type());

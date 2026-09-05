@@ -161,27 +161,52 @@ namespace services::disk {
         /// it (resolve_table reads columns from pg_attribute on every lookup).
         void add_column(components::table::column_definition_t& col);
 
-        /// Physical column compaction. Drops the column whose name matches
-        /// `attname` from the IN_MEMORY data_table_t, reclaiming its physical storage.
-        /// Implemented via the data_table_t(parent, removed_column) rebuild constructor —
-        /// row_groups are rebuilt without the dropped column (collection_t::remove_column
-        /// per-segment). Used by VACUUM after pg_computed_column GC: columns that no
-        /// longer have any live attrefcount>0 row are physically dead and can be reclaimed.
+        /// Physical column compaction. Drops the column whose name matches `attname` from the
+        /// live data_table_t, in BOTH storage modes. Implemented via the
+        /// data_table_t(parent, removed_column) rebuild constructor — row_groups are rebuilt
+        /// without the dropped column (collection_t::remove_column per-segment). Used by VACUUM
+        /// after pg_computed_column GC: columns that no longer have any live attrefcount>0 row
+        /// are physically dead and can be reclaimed.
         ///
-        /// No-op for DISK-backed storages (would require segment rewrites + checkpoint
-        /// coordination). No-op if the column is missing.
+        /// B3c — WHAT IS AND IS NOT DONE HERE, on a DISK-backed table. The rebuild itself runs
+        /// immediately and costs nothing: it SHARES every surviving column with the successor
+        /// collection and simply forgets the dropped one, so not a single block is allocated.
+        /// Returning the dropped column's blocks does NOT run here, because outside a checkpoint
+        /// round it could only SPEND space and never return it — A7.2's split pool drains
+        /// pending_free_ into reusable_ in exactly one place, promote_durable_root, reached only
+        /// once a header naming the new root is on the device. (See the long DECISION note at
+        /// agent_disk_t::maybe_cleanup_inner; it is the same reasoning, measured at +2.9 MB per
+        /// VACUUM call for the sibling case.) So the ids are NAMED here — the last moment they
+        /// are knowable, since the rebuild destroys the column object that holds them — and
+        /// released by checkpoint(), the one place that can commit the release.
         ///
-        /// Returns true if the column was found and removed; false otherwise (column
-        /// missing OR storage is DISK-mode).
+        /// No-op if the column is missing.
+        ///
+        /// Returns true if the column was found and removed; false if it was missing.
         bool drop_column(const std::string& attname);
 
     private:
+        /// B3c — the deferred half of drop_column, run from checkpoint() once the new root's
+        /// pointer stream is on the device and immediately before the free list that the
+        /// committing header will name is serialized. Frees only the blocks it can PROVE the
+        /// dropped column owned alone; anything else is left to its owner. See the definition.
+        void release_dropped_column_blocks();
+
         storage_mode_t mode_;
         core::filesystem::local_file_system_t fs_;
         components::table::storage::buffer_pool_t buffer_pool_;
         components::table::storage::standard_buffer_manager_t buffer_manager_;
         std::unique_ptr<components::table::storage::block_manager_t> block_manager_;
         std::unique_ptr<components::table::data_table_t> table_;
+        // B3c: disk block ids named by a column that drop_column has already removed from
+        // table_, still to be released. Filled by drop_column (the only moment they can be
+        // enumerated — the rebuild destroys the column object that knows them) and drained by
+        // release_dropped_column_blocks() inside the checkpoint that can commit the release.
+        // Not durable, and deliberately so: a crash before that checkpoint leaves the durable
+        // root still naming those blocks and the catalog tombstone still hiding the column, i.e.
+        // exactly the state this branch has always shipped for a DISK-backed drop. Space is
+        // leaked until something re-derives the drop; nothing is corrupt and nothing is lost.
+        std::pmr::vector<uint64_t> pending_released_blocks_;
         wal::id_t checkpoint_wal_id_{0};
         wal::id_t prev_checkpoint_wal_id_{0};
         // See last_checkpoint_failed(). Cleared by a successful checkpoint, so a transient

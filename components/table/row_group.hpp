@@ -144,6 +144,14 @@ namespace components::table {
         // sub-columns) to `out`, so a compacting caller can free them after swapping the collection.
         void collect_disk_block_ids(std::pmr::vector<uint64_t>& out);
 
+        // Same walk, restricted to ONE top-level column (and its sub-columns). The caller is
+        // table_storage_t::drop_column, which has to name the outgoing column's blocks BEFORE the
+        // rebuild destroys the column object — after it, nothing can enumerate them again. The ids
+        // are NOT proven exclusive here: B2 packs segments of several columns into one block, so a
+        // reported id may still belong to a surviving column. Proving that is the release site's
+        // job (see table_storage_t::checkpoint).
+        void collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out);
+
         // The checkpoint chain returns out_of_memory when a column flush pin fails;
         // the row group pointer on success.
         [[nodiscard]] core::result_wrapper_t<storage::row_group_pointer_t>

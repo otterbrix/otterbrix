@@ -118,6 +118,10 @@ namespace components::table {
         // so data_table_t::compact can free them after swapping the collection out for a compacted one.
         void collect_disk_block_ids(std::pmr::vector<uint64_t>& out);
 
+        // The same walk restricted to ONE top-level column, across every row group. Reported ids
+        // are candidates, not proven-exclusive blocks — see row_group_t::collect_column_disk_block_ids.
+        void collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out);
+
         const std::pmr::vector<types::complex_logical_type>& types() const;
         void adopt_types(std::pmr::vector<types::complex_logical_type> types);
 

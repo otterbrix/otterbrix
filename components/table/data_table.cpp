@@ -189,6 +189,10 @@ namespace components::table {
     // in. See the note on the declaration.
     boost::intrusive_ptr<collection_t> data_table_t::row_group() const { return row_groups_; }
 
+    void data_table_t::collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out) const {
+        row_groups_->collect_column_disk_block_ids(column_index, out);
+    }
+
     uint64_t data_table_t::calculate_size() { return row_groups_->calculate_size(); }
 
     void data_table_t::cleanup_versions(uint64_t lowest_active_start_time) {

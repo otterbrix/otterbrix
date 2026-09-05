@@ -557,8 +557,10 @@ namespace services::disk {
 
         // compact_relkind_g_storage_inner — whole-op intra-agent: read own slice
         //   (mode + columns), compute the columns NOT in live_attnames, drop each via
-        //   entry->drop_column on its own slice, return the dropped count. DISK-mode /
-        //   missing / already-compact returns 0.
+        //   entry->drop_column on its own slice, return the dropped count. Missing /
+        //   already-compact returns 0, and so does a DISK-backed table — not because the
+        //   primitive cannot do it (B3c made table_storage_t::drop_column mode-agnostic) but
+        //   because un-gating this CALLER is its own task; see the note at the gate.
         unique_future<std::uint64_t> compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
                                                                      std::set<std::string> live_attnames);
 

@@ -127,6 +127,19 @@ namespace components::table {
         // note on collection_t and the ITEM C reasoning in compact().
         boost::intrusive_ptr<collection_t> row_group() const;
 
+        // Append the disk block ids reported by ONE top-level column (and its sub-columns,
+        // validity included) across every row group. The one caller is
+        // table_storage_t::drop_column, and the timing is the whole point: the
+        // data_table_t(parent, removed_column) rebuild SHARES every surviving column with its
+        // successor and simply forgets the dropped one, so the moment the superseded parent
+        // dies the dropped column object — the only thing that knows which blocks it sat on —
+        // is gone with it. Enumerate before the rebuild or never.
+        //
+        // These are CANDIDATES. A reported id can still belong to a surviving column, because
+        // B2 packs segments of several columns into one 256 KiB block; proving sole ownership
+        // is the release site's job, not this walk's.
+        void collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out) const;
+
         uint64_t calculate_size();
         void cleanup_versions(uint64_t lowest_active_start_time);
         // Rebuild row_groups_ keeping only rows visible to the txn-less

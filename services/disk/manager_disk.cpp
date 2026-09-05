@@ -111,7 +111,8 @@ namespace services::disk {
         , table_(std::make_unique<components::table::data_table_t>(
               resource,
               *block_manager_,
-              std::vector<components::table::column_definition_t>{})) {}
+              std::vector<components::table::column_definition_t>{}))
+        , pending_released_blocks_(resource) {}
 
     table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
                                      std::vector<components::table::column_definition_t> columns)
@@ -121,14 +122,16 @@ namespace services::disk {
         , block_manager_(std::make_unique<components::table::storage::in_memory_block_manager_t>(
               buffer_manager_,
               components::table::storage::DEFAULT_BLOCK_ALLOC_SIZE))
-        , table_(std::make_unique<components::table::data_table_t>(resource, *block_manager_, std::move(columns))) {}
+        , table_(std::make_unique<components::table::data_table_t>(resource, *block_manager_, std::move(columns)))
+        , pending_released_blocks_(resource) {}
 
     table_storage_t::table_storage_t(std::pmr::memory_resource* resource,
                                      std::vector<components::table::column_definition_t> columns,
                                      const std::filesystem::path& otbx_path)
         : mode_(storage_mode_t::DISK)
         , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-        , buffer_manager_(resource, fs_, buffer_pool_) {
+        , buffer_manager_(resource, fs_, buffer_pool_)
+        , pending_released_blocks_(resource) {
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
@@ -150,7 +153,8 @@ namespace services::disk {
                                      bool allow_schemaless)
         : mode_(storage_mode_t::DISK)
         , buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-        , buffer_manager_(resource, fs_, buffer_pool_) {
+        , buffer_manager_(resource, fs_, buffer_pool_)
+        , pending_released_blocks_(resource) {
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
@@ -265,6 +269,14 @@ namespace services::disk {
         auto* disk_bm = static_cast<components::table::storage::single_file_block_manager_t*>(block_manager_.get());
         // Set meta_block_ so write_header() persists it
         disk_bm->set_meta_block(writer.get_block_pointer().block_pointer);
+        // B3c: the deferred half of a DISK-backed drop_column, at the only point in the round
+        // where both halves of its safety hold. The new root's pointer stream is written and
+        // data_table_t::checkpoint has already run A7.3's reclaim against it, so the live set
+        // read below is the set the committing header will describe; and the serialize below
+        // publishes reusable_ ∪ pending_free_, so the ids released here land in the very free
+        // list this round's header names. Earlier would free against a root that does not exist
+        // yet; later would publish a root that still claims blocks nothing reads.
+        release_dropped_column_blocks();
         // Serialize free list to metadata blocks. Its chain is written through the same
         // block writes as everything else, so a failure here means the header would name a
         // free-list chain nothing proves was laid down.
@@ -326,11 +338,6 @@ namespace services::disk {
     }
 
     bool table_storage_t::drop_column(const std::string& attname) {
-        // Physical column compaction. DISK is out of scope (would need segment
-        // rewrites + checkpoint coordination); IN_MEMORY only.
-        if (mode_ != storage_mode_t::IN_MEMORY) {
-            return false;
-        }
         if (!table_) {
             return false;
         }
@@ -347,14 +354,119 @@ namespace services::disk {
         if (!found) {
             return false;
         }
+        // B3c. NAME the outgoing column's disk blocks before the rebuild, and only name them:
+        // the release belongs to the checkpoint round (see the contract on this method).
+        //
+        // It has to happen HERE and nowhere later. The rebuild below SHARES every surviving
+        // column with the successor collection and simply forgets this one, so the dropped
+        // column_data_t dies with the superseded parent in the move-assign two lines down —
+        // and with it the only record of which segments, validity children and big-string
+        // overflow blocks it sat on. Nothing downstream can reconstruct that: A7.3's
+        // reclaim_superseded_root walks the DURABLE ROOT's own data blocks, so every block the
+        // column acquired SINCE that root (the write-through at row-group close, the re-pointed
+        // tail segments) is invisible to it, and compact() enumerates the collection that no
+        // longer contains the column. Measured with the naming removed: 15 blocks (~3.75 MB on
+        // a 10k-row table) named by no root, no registry and no free list — orphaned durably,
+        // and still orphaned after a reopen.
+        //
+        // IN_MEMORY tables have no block manager to charge; their storage is released outright
+        // when the superseded parent is destroyed.
+        if (block_manager_ && !block_manager_->in_memory()) {
+            table_->collect_column_disk_block_ids(idx, pending_released_blocks_);
+        }
         // The data_table_t(parent, removed_column) constructor performs the
         // rebuild: column_definitions_ minus idx, row_groups_ rebuilt via
-        // collection_t::remove_column (per-segment column drop). All physical
-        // storage for the dropped column is released when the previous
-        // table_ unique_ptr goes away.
+        // collection_t::remove_column (per-segment column drop).
         auto new_table = std::make_unique<components::table::data_table_t>(*table_, idx);
         table_ = std::move(new_table);
         return true;
+    }
+
+    // B3c — the deferred half of a DISK-backed column drop, and the ownership proof that makes
+    // it safe.
+    //
+    // WHY HERE. Freeing a block something still references is far worse than leaking it: the id
+    // returns from the pool, the next round writes fresh bytes and a valid CRC over it, and the
+    // damage surfaces after a restart as silently wrong data. Two disciplines make the release
+    // safe, and both are properties of THIS point in the round, not of the drop site:
+    //   * A7.2's split pool — mark_as_free files into pending_free_, which drains into
+    //     reusable_ only in promote_durable_root, reached once a header naming the new root is
+    //     on the device. So an id released here cannot be handed out until a root that does not
+    //     name it has committed. At the drop site there is no round to attach that to;
+    //   * the ownership proof below is only MEANINGFUL once the drop's superseded collection is
+    //     gone. row_group() hands out counted collection copies BY VALUE (ITEM C), so a holder
+    //     taken before the drop keeps the dropped column's block handles alive for as long as
+    //     it lives. At the drop site every one of the column's blocks still looks live; here,
+    //     inside the round the branch already treats as holder-free (checkpoint_inner gates on
+    //     an open scan cursor), a surviving handle means a real sharer.
+    //
+    // THE PROOF, per id, and it is a proof of NON-ownership by anyone else — never a guess:
+    //   1. domain. These ids reach us through data_pointer_t::overflow_blocks, read off the
+    //      .otbx as raw uint64s with no check anywhere in between, so an id outside the
+    //      addressable domain is disk corruption, not a bug here. mark_as_free screens its own
+    //      input and LATCHES, which is what stops the next write_header from committing;
+    //      unregister_block only asserts, so it is skipped — the same screening compact() and
+    //      reclaim_superseded_root do, for the same reason.
+    //   2. the live collection does not name it. B2 packs segments of several columns into one
+    //      256 KiB block, so a block the dropped column sat in is routinely still carrying a
+    //      SURVIVING column's segment. Such a block is not leaked by skipping it: it is owned
+    //      by the live collection and comes back through data_table_t::compact's ordinary
+    //      reclaim, which frees the whole outgoing collection.
+    //   3. no live block_handle_t. register_block dedupes by id, so every sharer of a packed
+    //      block holds the SAME handle; a live registry entry therefore means somebody — a
+    //      surviving segment, or a stale collection copy still holding the dropped column — is
+    //      still reading it. This is the same subtraction reclaim_superseded_root and
+    //      roll_back_uncommitted_round make, and it is the one that covers the ITEM C window.
+    // An id that fails (2) or (3) is DELIBERATELY LEFT ALONE. For (2) that is not a leak at
+    // all. For (3) — a stale pre-drop collection outliving this round — it is a real leak of
+    // that block until the file is rebuilt, and it is the deliberate choice: a leak is
+    // recoverable, a bad free is not.
+    //
+    // The list is drained either way. Retrying an unproven id next round would be worse than
+    // dropping it: by then the id may have been promoted, reissued and re-registered to
+    // somebody else's data, and this code would be holding a claim on it.
+    void table_storage_t::release_dropped_column_blocks() {
+        if (pending_released_blocks_.empty() || !block_manager_ || !table_) {
+            return;
+        }
+        auto& block_manager = *block_manager_;
+        // collect_column_disk_block_ids reports one id PER reloadable segment and B2 packs many
+        // segments into one block, so the same id arrives many times. mark_as_free is idempotent
+        // (a set), but unregister_block twice could race a reused id's fresh handle.
+        std::sort(pending_released_blocks_.begin(), pending_released_blocks_.end());
+        pending_released_blocks_.erase(
+            std::unique(pending_released_blocks_.begin(), pending_released_blocks_.end()),
+            pending_released_blocks_.end());
+
+        // Step (2)'s set, taken NOW: the collection the root under construction describes. The
+        // counted copy is scoped to the collect and NOT held across the frees — a holder that
+        // outlives them keeps block handles alive past their reclaim, which is the ITEM C shape.
+        std::pmr::vector<uint64_t> live(pending_released_blocks_.get_allocator().resource());
+        {
+            auto collection = table_->row_group();
+            collection->collect_disk_block_ids(live);
+        }
+        std::sort(live.begin(), live.end());
+        live.erase(std::unique(live.begin(), live.end()), live.end());
+
+        for (uint64_t block_id : pending_released_blocks_) {
+            if (block_id >= components::table::storage::MAXIMUM_BLOCK) {
+                block_manager.mark_as_free(block_id); // refuses the id and latches the corruption
+                continue;
+            }
+            if (std::binary_search(live.begin(), live.end(), block_id)) {
+                continue; // still carries a surviving column's segment (B2 packing)
+            }
+            if (block_manager.registry_alive(block_id)) {
+                continue; // somebody still holds a handle for it
+            }
+            block_manager.mark_as_free(block_id);
+            // ABA break, the pairing data_table_t::compact and reclaim_superseded_root make: the
+            // id goes back to the pool, so no expired registry slot may survive to be revived by
+            // a later register_block for a different block's data.
+            block_manager.unregister_block(block_id);
+        }
+        pending_released_blocks_.clear();
     }
 
     manager_disk_t::manager_disk_t(std::pmr::memory_resource* resource,

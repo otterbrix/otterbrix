@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <services/disk/agent_disk.hpp>
@@ -11,7 +12,7 @@
 // tuple used to cost N full passes over the catalog table for N keys — and all of them
 // serialize on disk agent 0, which owns every oid below FIRST_USER_OID.
 TEST_CASE("integration::cpp::test_catalog_scan_cost::scans_per_statement") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_catalog_scan_cost/basic");
+    auto config = test_create_config(integration_fixture_path("test_catalog_scan_cost/basic"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

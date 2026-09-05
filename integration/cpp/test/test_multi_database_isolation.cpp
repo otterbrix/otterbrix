@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -15,7 +16,7 @@
 // names. The relname-only scan survives ONLY for unqualified names.
 
 TEST_CASE("integration::cpp::multi_database_isolation::same_name_select") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/same_name_select");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/same_name_select"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -60,7 +61,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_select") {
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::same_name_dml_routing") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/same_name_dml_routing");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/same_name_dml_routing"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -133,7 +134,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_dml_routing") {
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::same_name_drop") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/same_name_drop");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/same_name_drop"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -170,7 +171,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_drop") {
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::missing_table_not_aliased") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/missing_table_not_aliased");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/missing_table_not_aliased"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -207,7 +208,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::missing_table_not_aliased
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::nonexistent_database_errors") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/nonexistent_database_errors");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/nonexistent_database_errors"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -243,7 +244,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::nonexistent_database_erro
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::view_resolves_in_own_database") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/view_resolves_in_own_database");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/view_resolves_in_own_database"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -274,7 +275,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::view_resolves_in_own_data
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::unique_constraint_binds_to_own_table") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/unique_constraint_binds_to_own_table");
+    auto config =
+        test_create_config(integration_fixture_path("test_multi_db_isolation/unique_constraint_binds_to_own_table"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -319,7 +321,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::unique_constraint_binds_t
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::index_isolation") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/index_isolation");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/index_isolation"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -379,7 +381,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::index_isolation") {
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::cross_database_join") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/cross_database_join");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/cross_database_join"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -410,7 +412,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::cross_database_join") {
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::alter_column_isolated") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/alter_column_isolated");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/alter_column_isolated"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -462,7 +464,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::alter_column_isolated") {
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::unqualified_names_preserved") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/unqualified_names_preserved");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/unqualified_names_preserved"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -491,7 +493,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::unqualified_names_preserv
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::restart_persistence_isolation") {
-    auto config = test_create_config("/tmp/test_multi_db_isolation/restart_persistence_isolation");
+    auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/restart_persistence_isolation"));
     test_clear_directory(config);
     // disk + WAL ON: isolation must survive checkpoint/recovery.
 

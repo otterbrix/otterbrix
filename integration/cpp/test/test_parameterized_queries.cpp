@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -56,7 +57,7 @@ namespace {
     }
 
     test_spaces make_space(const std::string& subdir) {
-        auto config = test_create_config("/tmp/test_parameterized_queries/" + subdir);
+        auto config = test_create_config(integration_fixture_path("test_parameterized_queries/" + subdir));
         test_clear_directory(config);
         config.wal.on = false;
         return test_spaces(config);

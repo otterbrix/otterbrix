@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <integration/cpp/otterbrix.hpp>
 
@@ -81,7 +82,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engine-lifecycle]") {
-    auto config = test_create_config("/tmp/test_engine_lifecycle/refcount");
+    auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount"));
     test_clear_directory(config);
     components::compute::function_registry_t::reset_default();
 
@@ -170,7 +171,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
     // Same sequence, but driven from a non-actor client thread. Catch2 REQUIRE
     // is unsafe off the main thread, so results are snapshotted and checked
     // after join.
-    auto config = test_create_config("/tmp/test_engine_lifecycle/refcount_thread");
+    auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount_thread"));
     test_clear_directory(config);
     components::compute::function_registry_t::reset_default();
 
@@ -259,7 +260,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_s
     // A wrapper owning a by-value copy of the engine (third owner while alive)
     // must keep it alive while a non-actor client thread issues SQL through it,
     // including per-table LIMIT 0 schema probes.
-    auto config = test_create_config("/tmp/test_engine_lifecycle/refcount_wrapper");
+    auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount_wrapper"));
     test_clear_directory(config);
     components::compute::function_registry_t::reset_default();
 
@@ -351,7 +352,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
     // unpin -> eviction_queue_t::add_to_eviction_queue from client/scan threads
     // against try_dequeue_with_lock/purge on the disk manager threads. Appends and
     // scans run through standard_buffer_manager_t, as every table's now do.
-    auto config = test_create_config("/tmp/test_engine_lifecycle/eviction");
+    auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/eviction"));
     test_clear_directory(config);
     // Aggressive auto-checkpointing keeps checkpoint_all running on the disk
     // threads while scans pin/unpin checkpointed (persistent) blocks —
@@ -538,7 +539,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
 // teardown ordering.
 TEST_CASE("integration::cpp::test_engine_lifecycle::construct_destroy_clean_teardown",
           "[engine-lifecycle][leak-repro]") {
-    auto config = test_create_config("/tmp/test_engine_lifecycle/teardown_leak");
+    auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/teardown_leak"));
     test_clear_directory(config);
     components::compute::function_registry_t::reset_default();
 
@@ -571,7 +572,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::repeated_construct_destroy_n
           "[engine-lifecycle][leak-repro]") {
     constexpr int kCycles = 12;
     for (int i = 0; i < kCycles; ++i) {
-        auto config = test_create_config("/tmp/test_engine_lifecycle/stress_" + std::to_string(i));
+        auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/stress_" + std::to_string(i)));
         test_clear_directory(config);
         components::compute::function_registry_t::reset_default();
 

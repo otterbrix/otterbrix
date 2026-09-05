@@ -47,6 +47,7 @@
 // column (which segfaulted).
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <set>
 #include <string>
@@ -57,10 +58,10 @@ using components::cursor::cursor_t_ptr;
 
 namespace {
 
-    // Fixture paths are pid-qualified: parallel test processes share /tmp, and
-    // two of them clearing and reseeding one directory corrupt each other.
+    // Fixture paths hang off the directory's pid-qualified root: parallel test processes
+    // share /tmp, and two of them clearing and reseeding one directory corrupt each other.
     std::string fixture_dir(const char* leaf) {
-        return "/tmp/test_jsonb_matrix_" + std::to_string(::getpid()) + "/" + leaf;
+        return integration_fixture_path(std::string("test_jsonb_matrix/") + leaf).string();
     }
 
     // The shared fixture used by most cases. Four rows over a computing table,

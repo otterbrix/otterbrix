@@ -228,7 +228,7 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
     } while (false)
 
 TEST_CASE("integration::cpp::test_index::base") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/base");
+    auto config = test_create_config(integration_fixture_path("test_index/base"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -275,7 +275,7 @@ TEST_CASE("integration::cpp::test_index::base") {
 }
 
 TEST_CASE("integration::cpp::test_index::drop") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/drop");
+    auto config = test_create_config(integration_fixture_path("test_index/drop"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -327,7 +327,7 @@ TEST_CASE("integration::cpp::test_index::drop") {
 }
 
 TEST_CASE("integration::cpp::test_index::index already exist") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/index_already_exist");
+    auto config = test_create_config(integration_fixture_path("test_index/index_already_exist"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -369,7 +369,7 @@ TEST_CASE("integration::cpp::test_index::index already exist") {
 }
 
 TEST_CASE("integration::cpp::test_index::no_type base check") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/no_type_base_check");
+    auto config = test_create_config(integration_fixture_path("test_index/no_type_base_check"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -402,7 +402,7 @@ TEST_CASE("integration::cpp::test_index::no_type base check") {
 }
 
 TEST_CASE("integration::cpp::test_index::delete_and_update") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/delete_and_update");
+    auto config = test_create_config(integration_fixture_path("test_index/delete_and_update"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -515,7 +515,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
 // repopulate (txn_id=0) handler must rebuild the index against the compacted
 // ids so equality lookups stay exact with no restart in between.
 TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/checkpoint_then_index_scan_same_session");
+    auto config = test_create_config(integration_fixture_path("test_index/checkpoint_then_index_scan_same_session"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -624,7 +624,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
     static const std::string kHashIndexName = "idx_count_hash";
 
     auto config =
-        test_create_config("/tmp/otterbrix/integration/test_index/checkpoint_repopulate_persists_bitcask_keylog");
+        test_create_config(integration_fixture_path("test_index/checkpoint_repopulate_persists_bitcask_keylog"));
     test_clear_directory(config);
 
     INFO("phase 1: disk hash index, bulk load, CHECKPOINT, bitcask keylog on disk");
@@ -701,7 +701,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
 // repopulate path (txn_id=0, committed-for-everyone) so post-VACUUM lookups
 // return the correct surviving rows.
 TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/vacuum_rebuild_visible");
+    auto config = test_create_config(integration_fixture_path("test_index/vacuum_rebuild_visible"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -881,7 +881,7 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
     static_assert(kRows > kVectorCapacity);
 
     auto config =
-        test_create_config("/tmp/otterbrix/integration/test_index/create_index_backfill_over_vector_capacity");
+        test_create_config(integration_fixture_path("test_index/create_index_backfill_over_vector_capacity"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -1058,7 +1058,7 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
 // uncaught std::logic_error out of execute_sql. They must be rejected with a
 // proper error cursor; plain column indexes keep working.
 TEST_CASE("integration::cpp::test_index::expression_elements_rejected") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index/expression_elements_rejected");
+    auto config = test_create_config(integration_fixture_path("test_index/expression_elements_rejected"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

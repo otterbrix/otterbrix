@@ -64,7 +64,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_explain::sql") {
-    auto config = test_create_config("/tmp/test_explain/sql");
+    auto config = test_create_config(integration_fixture_path("test_explain/sql"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -223,7 +223,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
 }
 
 TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
-    auto config = test_create_config("/tmp/test_explain/inline_subquery_initplan");
+    auto config = test_create_config(integration_fixture_path("test_explain/inline_subquery_initplan"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -362,7 +362,7 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
 }
 
 TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
-    auto config = test_create_config("/tmp/test_explain/per_query_renderer");
+    auto config = test_create_config(integration_fixture_path("test_explain/per_query_renderer"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -463,7 +463,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
 }
 
 TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
-    auto config = test_create_config("/tmp/test_explain/renderer_registration_edges");
+    auto config = test_create_config(integration_fixture_path("test_explain/renderer_registration_edges"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -523,7 +523,7 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
 }
 
 TEST_CASE("integration::cpp::test_explain::analyze_recursive_cte_rows") {
-    auto config = test_create_config("/tmp/test_explain/analyze_recursive_cte_rows");
+    auto config = test_create_config(integration_fixture_path("test_explain/analyze_recursive_cte_rows"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -607,7 +607,7 @@ TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
 // window (LIMIT ALL -> unlimit()+offset 0, or no limit clause) inserts NO operator_limit,
 // so no "Limit" node appears.
 TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
-    auto config = test_create_config("/tmp/test_explain/limit_node_when_effective");
+    auto config = test_create_config(integration_fixture_path("test_explain/limit_node_when_effective"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -679,7 +679,7 @@ TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
 }
 
 TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
-    auto config = test_create_config("/tmp/test_explain/having_node_labeled");
+    auto config = test_create_config(integration_fixture_path("test_explain/having_node_labeled"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -720,7 +720,7 @@ TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
 // operator_type→label change (or a mis-tagged operator, as SELECT DISTINCT once rendered "Filter")
 // is caught here rather than silently shipping a wrong EXPLAIN label.
 TEST_CASE("integration::cpp::test_explain::operator_labels") {
-    auto config = test_create_config("/tmp/test_explain/operator_labels");
+    auto config = test_create_config(integration_fixture_path("test_explain/operator_labels"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -954,7 +954,7 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
 // the "Unique" label stays. The rendered "Unique" label is the observable proxy for the
 // operator_distinct that the drop_redundant_distinct rule removes.
 TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
-    auto config = test_create_config("/tmp/test_explain/distinct_under_group_by");
+    auto config = test_create_config(integration_fixture_path("test_explain/distinct_under_group_by"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

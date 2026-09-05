@@ -57,7 +57,7 @@ namespace {
 // (1) INSERT...SELECT mid-flushes >1 time and every row lands correctly.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::bounded_dml_flush::insert_select_mid_flushes") {
-    auto config = make_test_config("/tmp/test_bounded_dml_flush/insert_select");
+    auto config = make_test_config(integration_fixture_path("test_bounded_dml_flush/insert_select"));
     config.execution.dml_flush_row_threshold = kFlushThreshold;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -107,7 +107,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_select_mid_flushes") {
 //     mid-flush boundaries (affected count, returned rows, persisted values).
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::bounded_dml_flush::update_mid_flushes") {
-    auto config = make_test_config("/tmp/test_bounded_dml_flush/update");
+    auto config = make_test_config(integration_fixture_path("test_bounded_dml_flush/update"));
     config.execution.dml_flush_row_threshold = kFlushThreshold;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -240,7 +240,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::error_after_mid_flush_reverts_al
 //     the ENTIRE produced row set and the configured memory bound is a no-op.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::bounded_dml_flush::insert_from_recursive_cte_mid_flushes") {
-    auto config = make_test_config("/tmp/test_bounded_dml_flush/recursive_cte_insert");
+    auto config = make_test_config(integration_fixture_path("test_bounded_dml_flush/recursive_cte_insert"));
     config.execution.dml_flush_row_threshold = kFlushThreshold;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -286,7 +286,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_from_recursive_cte_mid_fl
 // under-count and over-delete.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes") {
-    auto config = make_test_config("/tmp/test_bounded_dml_flush/delete_using_limit");
+    auto config = make_test_config(integration_fixture_path("test_bounded_dml_flush/delete_using_limit"));
     config.execution.dml_flush_row_threshold = kFlushThreshold;
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();

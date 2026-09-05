@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node.hpp>
@@ -15,7 +16,7 @@
 // The counter sits in node_t::to_string, so it also catches anyone else who starts rendering
 // plans on the hot path for a message nobody reads.
 TEST_CASE("integration::cpp::test_log_laziness::plan_is_not_stringified_when_logging_is_off") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_log_laziness/off");
+    auto config = test_create_config(integration_fixture_path("test_log_laziness/off"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

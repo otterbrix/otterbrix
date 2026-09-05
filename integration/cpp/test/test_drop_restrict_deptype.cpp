@@ -53,6 +53,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -77,15 +78,11 @@ namespace {
 
     using namespace test_helpers;
 
-    // Fixture roots are qualified by pid: two binaries sharing a literal /tmp
-    // path truncate each other's segment files, and the resulting real I/O
-    // failures get read as flakes.
+    // Fixture roots are qualified by pid through the directory's one root: two binaries
+    // sharing a literal /tmp path truncate each other's segment files, and the resulting
+    // real I/O failures get read as flakes.
     std::string fixture_path(const char* leaf) {
-        std::string p = "/tmp/test_drop_restrict_deptype_";
-        p += std::to_string(static_cast<long>(::getpid()));
-        p += '_';
-        p += leaf;
-        return p;
+        return integration_fixture_path(std::string("test_drop_restrict_deptype/") + leaf).string();
     }
 
     namespace catalog = components::catalog;

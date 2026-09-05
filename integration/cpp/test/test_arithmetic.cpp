@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -16,7 +17,7 @@ using namespace components::cursor;
 static constexpr int kNumInserts = 100;
 
 TEST_CASE("integration::cpp::test_arithmetic") {
-    auto config = test_create_config("/tmp/test_arithmetic");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -738,7 +739,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::join") {
-    auto config = test_create_config("/tmp/test_arithmetic_join");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_join"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -836,7 +837,7 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::having") {
-    auto config = test_create_config("/tmp/test_arithmetic_having");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_having"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -923,7 +924,7 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::case_when") {
-    auto config = test_create_config("/tmp/test_arithmetic_case");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_case"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -1034,7 +1035,7 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
-    auto config = test_create_config("/tmp/test_arithmetic_edge");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_edge"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -1114,7 +1115,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
-    auto config = test_create_config("/tmp/test_arithmetic_interleaved_gb");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_interleaved_gb"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -1223,7 +1224,7 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
 }
 
 TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
-    auto config = test_create_config("/tmp/test_optimizer_folding");
+    auto config = test_create_config(integration_fixture_path("test_optimizer_folding"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -1459,7 +1460,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
 // ================================================================
 
 TEST_CASE("integration::cpp::test_arithmetic::datetime") {
-    auto config = test_create_config("/tmp/test_arithmetic_datetime");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_datetime"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -2107,7 +2108,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
 // destination vector unwritten. Such updates must fail with an error and leave
 // the data untouched.
 TEST_CASE("integration::cpp::test_arithmetic::update_bitshift_non_integer_rejected") {
-    auto config = test_create_config("/tmp/test_arithmetic/update_bitshift_non_integer");
+    auto config = test_create_config(integration_fixture_path("test_arithmetic/update_bitshift_non_integer"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

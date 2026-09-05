@@ -69,11 +69,11 @@ namespace {
     constexpr int64_t kDeleteFrom = 1001; // inclusive
     constexpr int64_t kDeleteTo = 2000;   // inclusive
 
-    // Fixture roots are qualified by pid (see services/index/tests/index_fixture_path.hpp):
+    // Fixture roots are qualified by pid (see integration_fixture_path.hpp, and
+    // services/index/tests/index_fixture_path.hpp for the storage layer's own):
     // two binaries running at once must not unlink each other's files.
     std::string fixture_root() {
-        return "/tmp/otterbrix/integration/test_index_stale_marker_crash_" +
-               std::to_string(static_cast<long>(::getpid()));
+        return integration_fixture_path("test_index_stale_marker_crash").string();
     }
 
     std::string plan_text(const components::cursor::cursor_t_ptr& cur) {

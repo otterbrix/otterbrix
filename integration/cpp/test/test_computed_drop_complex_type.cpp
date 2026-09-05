@@ -18,6 +18,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -52,11 +53,7 @@ namespace {
     }
 
     std::string fixture_path(const char* leaf) {
-        std::string p = "/tmp/test_computed_drop_complex_type_";
-        p += std::to_string(::getpid());
-        p += '_';
-        p += leaf;
-        return p;
+        return integration_fixture_path(std::string("test_computed_drop_complex_type/") + leaf).string();
     }
 
 } // namespace

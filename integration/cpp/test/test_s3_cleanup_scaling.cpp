@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -106,7 +107,7 @@ namespace {
 
 TEST_CASE("integration::cpp::test_s3_cleanup_scaling::contiguous_tombstones_reclaimed_at_checkpoint",
           "[.][s3cleanup]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_s3/cleanup");
+    auto config = test_create_config(integration_fixture_path("test_s3/cleanup"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;
@@ -215,7 +216,7 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::contiguous_tombstones_recl
 // dropped whole, so the checkpoint's compact has to rebuild every one of them.
 TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_reclaimed_at_checkpoint",
           "[.][s3cleanup]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_s3/cleanup_scattered");
+    auto config = test_create_config(integration_fixture_path("test_s3/cleanup_scattered"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;
@@ -299,7 +300,7 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_recla
 // operator_checkpoint_t repopulates the index afterwards precisely because that compact renumbers
 // the rows underneath it.
 TEST_CASE("integration::cpp::test_s3_cleanup_scaling::indexed_table_cleanup_cost", "[.][s3cleanup]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_s3/cleanup_indexed");
+    auto config = test_create_config(integration_fixture_path("test_s3/cleanup_indexed"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

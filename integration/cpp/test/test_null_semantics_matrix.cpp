@@ -149,7 +149,7 @@ namespace {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::comparisons_bigint") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/cmp_bigint");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/cmp_bigint"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -159,7 +159,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_bigint") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::comparisons_integer") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/cmp_int");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/cmp_int"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -169,7 +169,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_integer") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::comparisons_double") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/cmp_double");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/cmp_double"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -193,7 +193,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_double") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::comparisons_text") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/cmp_text");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/cmp_text"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -220,7 +220,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_text") {
 
 TEST_CASE("integration::cpp::null_matrix::comparisons_computing_table") {
     // Schemaless table: id=2 and id=5 simply omit `x`, so its cell is absent == NULL.
-    auto config = test_helpers::make_test_config("/tmp/nmx/cmp_comp");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/cmp_comp"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -255,7 +255,7 @@ TEST_CASE("integration::cpp::null_matrix::comparisons_disk_and_restart") {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::arithmetic_projection") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/arith_proj");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/arith_proj"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -316,7 +316,7 @@ TEST_CASE("integration::cpp::null_matrix::arithmetic_where_and_update") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::arithmetic_aggregate") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/arith_agg");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/arith_agg"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -340,7 +340,7 @@ TEST_CASE("integration::cpp::null_matrix::arithmetic_aggregate") {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::aggregates_grouped") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/agg_grp");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/agg_grp"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -380,7 +380,7 @@ TEST_CASE("integration::cpp::null_matrix::aggregates_grouped") {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::case_when") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/case");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/case"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -401,7 +401,7 @@ TEST_CASE("integration::cpp::null_matrix::case_when") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::having") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/having");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/having"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -425,7 +425,7 @@ TEST_CASE("integration::cpp::null_matrix::having") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::check_constraints") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/check");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/check"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -458,7 +458,7 @@ TEST_CASE("integration::cpp::null_matrix::check_constraints") {
 }
 
 TEST_CASE("integration::cpp::null_matrix::distinct") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/distinct");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/distinct"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -482,7 +482,7 @@ TEST_CASE("integration::cpp::null_matrix::distinct") {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::array_element") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/arr");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/arr"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -536,7 +536,7 @@ TEST_CASE("integration::cpp::null_matrix::index_parity") {
 // ===========================================================================================
 
 TEST_CASE("integration::cpp::null_matrix::jsonb_absent_key") {
-    auto config = test_helpers::make_test_config("/tmp/nmx/jsonb");
+    auto config = test_helpers::make_test_config(integration_fixture_path("nmx/jsonb"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));

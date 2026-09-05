@@ -44,6 +44,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 using namespace components;
@@ -62,7 +63,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", "[.][bounded-exec]") {
-    auto config = test_create_config("/tmp/test_bounded_execution");
+    auto config = test_create_config(integration_fixture_path("test_bounded_execution"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

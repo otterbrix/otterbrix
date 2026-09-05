@@ -58,7 +58,7 @@ namespace {
 //  Arithmetic operand under NOT -- the in-memory path (arithmetic is not pushed down).
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::pred3vl::arithmetic_not") {
-    auto config = test_helpers::make_test_config("/tmp/p3vl/arith_not");
+    auto config = test_helpers::make_test_config(integration_fixture_path("p3vl/arith_not"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -84,7 +84,7 @@ TEST_CASE("integration::cpp::pred3vl::arithmetic_not") {
 //  Function (LIKE) operand under NOT -- function_predicate path.
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::pred3vl::like_not") {
-    auto config = test_helpers::make_test_config("/tmp/p3vl/like_not");
+    auto config = test_helpers::make_test_config(integration_fixture_path("p3vl/like_not"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -102,7 +102,7 @@ TEST_CASE("integration::cpp::pred3vl::like_not") {
 //  IN / NOT IN over a plain list -- union_or(eq) / union_and(ne), and NOT(IN).
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::pred3vl::in_not") {
-    auto config = test_helpers::make_test_config("/tmp/p3vl/in_not");
+    auto config = test_helpers::make_test_config(integration_fixture_path("p3vl/in_not"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -119,7 +119,7 @@ TEST_CASE("integration::cpp::pred3vl::in_not") {
 //  NOT distributed over AND / OR (De Morgan) with a NULL operand.
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::pred3vl::not_over_and_or") {
-    auto config = test_helpers::make_test_config("/tmp/p3vl/demorgan");
+    auto config = test_helpers::make_test_config(integration_fixture_path("p3vl/demorgan"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
@@ -156,7 +156,7 @@ TEST_CASE("integration::cpp::pred3vl::delete_update") {
         CHECK(ids(d, "SELECT id FROM m.t;") == L{1, 2});
     }
 
-    auto cfg2 = test_helpers::make_test_config("/tmp/p3vl/dml_upd");
+    auto cfg2 = test_helpers::make_test_config(integration_fixture_path("p3vl/dml_upd"));
     test_spaces space(cfg2);
     auto* d = space.dispatcher();
     seed(d);
@@ -171,7 +171,7 @@ TEST_CASE("integration::cpp::pred3vl::delete_update") {
 //  under NOT. Only a definitely-FALSE row is rejected.
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::pred3vl::check_not") {
-    auto config = test_helpers::make_test_config("/tmp/p3vl/check");
+    auto config = test_helpers::make_test_config(integration_fixture_path("p3vl/check"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));

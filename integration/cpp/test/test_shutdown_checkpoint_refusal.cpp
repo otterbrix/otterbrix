@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -75,7 +76,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::shutdown_checkpoint::a_refused_final_checkpoint_is_reported") {
-    const auto dir = std::filesystem::path("/tmp/otterbrix/integration/test_shutdown_checkpoint_refusal") /
+    const auto dir = integration_fixture_path("test_shutdown_checkpoint_refusal") /
                      std::to_string(::getpid());
     auto config = test_create_config(dir);
     test_clear_directory(config);

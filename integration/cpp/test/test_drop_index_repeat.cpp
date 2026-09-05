@@ -30,6 +30,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -42,11 +43,7 @@ namespace {
     using namespace test_helpers;
 
     std::string fixture_path(const char* leaf) {
-        std::string p = "/tmp/test_drop_index_repeat_";
-        p += std::to_string(static_cast<long>(::getpid()));
-        p += '_';
-        p += leaf;
-        return p;
+        return integration_fixture_path(std::string("test_drop_index_repeat/") + leaf).string();
     }
 
     components::cursor::cursor_t_ptr run_ok(otterbrix::wrapper_dispatcher_t* d, const std::string& sql) {

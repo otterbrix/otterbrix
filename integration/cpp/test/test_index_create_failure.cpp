@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
@@ -17,7 +18,7 @@
 // every platform this builds on — no permission games, no root-dependent behaviour, and
 // nothing a rebuild or a different filesystem can quietly turn green.
 TEST_CASE("integration::cpp::test_index_create_failure::unopenable_disk_index_is_an_error") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_create_failure/unopenable");
+    auto config = test_create_config(integration_fixture_path("test_index_create_failure/unopenable"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

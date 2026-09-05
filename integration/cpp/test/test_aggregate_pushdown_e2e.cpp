@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <core/operations_helper.hpp>
@@ -56,7 +57,8 @@ namespace {
     }
 
     void run_scalar(char relkind) {
-        auto config = make_test_config(std::string("/tmp/test_aggregate_pushdown_e2e/scalar_") + relkind);
+        auto config =
+            make_test_config(integration_fixture_path(std::string("test_aggregate_pushdown_e2e/scalar_") + relkind));
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
         const std::string table = seed(dispatcher, relkind);
@@ -117,7 +119,8 @@ namespace {
     }
 
     void run_grouped(char relkind) {
-        auto config = make_test_config(std::string("/tmp/test_aggregate_pushdown_e2e/grouped_") + relkind);
+        auto config =
+            make_test_config(integration_fixture_path(std::string("test_aggregate_pushdown_e2e/grouped_") + relkind));
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
         const std::string table = seed(dispatcher, relkind);
@@ -196,7 +199,7 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::grouped_static_schema") { r
 // Correct result: TWO groups, g=1 -> MIN 10 and g=2 -> MIN 30.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_aggregation_bails_under_residual_cross_side_where") {
-    auto config = make_test_config("/tmp/test_aggregate_pushdown_e2e/eager_residual_where");
+    auto config = make_test_config(integration_fixture_path("test_aggregate_pushdown_e2e/eager_residual_where"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -236,7 +239,7 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_aggregation_bails_und
 // skipped in Release), so MIN(x) never comes back as 1.5 / 10.25.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_partial_min_keeps_double_type") {
-    auto config = make_test_config("/tmp/test_aggregate_pushdown_e2e/eager_partial_types");
+    auto config = make_test_config(integration_fixture_path("test_aggregate_pushdown_e2e/eager_partial_types"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

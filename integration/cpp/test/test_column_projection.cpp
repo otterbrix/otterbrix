@@ -146,7 +146,7 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_join_and_group") {
 }
 
 TEST_CASE("integration::cpp::column_projection::plain_select") {
-    auto config = test_create_config("/tmp/col_proj/plain_select");
+    auto config = test_create_config(integration_fixture_path("col_proj/plain_select"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -212,7 +212,7 @@ TEST_CASE("integration::cpp::column_projection::plain_select") {
 }
 
 TEST_CASE("integration::cpp::column_projection::select_with_where") {
-    auto config = test_create_config("/tmp/col_proj/select_where");
+    auto config = test_create_config(integration_fixture_path("col_proj/select_where"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -277,7 +277,7 @@ TEST_CASE("integration::cpp::column_projection::select_with_where") {
 }
 
 TEST_CASE("integration::cpp::column_projection::group_by") {
-    auto config = test_create_config("/tmp/col_proj/group_by");
+    auto config = test_create_config(integration_fixture_path("col_proj/group_by"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -341,7 +341,7 @@ TEST_CASE("integration::cpp::column_projection::group_by") {
 }
 
 TEST_CASE("integration::cpp::column_projection::inner_join") {
-    auto config = test_create_config("/tmp/col_proj/inner_join");
+    auto config = test_create_config(integration_fixture_path("col_proj/inner_join"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -444,7 +444,7 @@ TEST_CASE("integration::cpp::column_projection::inner_join") {
 }
 
 TEST_CASE("integration::cpp::column_projection::three_table_join") {
-    auto config = test_create_config("/tmp/col_proj/three_table_join");
+    auto config = test_create_config(integration_fixture_path("col_proj/three_table_join"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -504,7 +504,7 @@ TEST_CASE("integration::cpp::column_projection::three_table_join") {
 }
 
 TEST_CASE("integration::cpp::column_projection::subquery") {
-    auto config = test_create_config("/tmp/col_proj/subquery");
+    auto config = test_create_config(integration_fixture_path("col_proj/subquery"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -539,7 +539,7 @@ TEST_CASE("integration::cpp::column_projection::subquery") {
 }
 
 TEST_CASE("integration::cpp::column_projection::case_when") {
-    auto config = test_create_config("/tmp/col_proj/case_when");
+    auto config = test_create_config(integration_fixture_path("col_proj/case_when"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -574,7 +574,7 @@ TEST_CASE("integration::cpp::column_projection::case_when") {
 }
 
 TEST_CASE("integration::cpp::column_projection::order_by_non_select") {
-    auto config = test_create_config("/tmp/col_proj/order_by");
+    auto config = test_create_config(integration_fixture_path("col_proj/order_by"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -607,7 +607,7 @@ TEST_CASE("integration::cpp::column_projection::order_by_non_select") {
 }
 
 TEST_CASE("integration::cpp::column_projection::limit_does_not_break_projection") {
-    auto config = test_create_config("/tmp/col_proj/limit");
+    auto config = test_create_config(integration_fixture_path("col_proj/limit"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

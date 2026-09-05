@@ -14,6 +14,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -34,7 +35,7 @@ using id_par = core::parameter_id_t;
 
 TEST_CASE("integration::cpp::update_upsert::an_upsert_plan_is_refused_not_quietly_updated", "[upsert]") {
     auto config =
-        test_create_config("/tmp/test_update_upsert_refusal_" + std::to_string(::getpid()) + "/refused");
+        test_create_config(integration_fixture_path("test_update_upsert_refusal/refused"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

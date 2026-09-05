@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <chrono>
 #include <components/logical_plan/node_insert.hpp>
@@ -12,7 +13,7 @@ static const collection_name_t collection_name = "testcollection";
 using namespace components;
 
 int main() {
-    auto config = configuration::config::create_config("/tmp/profile_arithmetic");
+    auto config = configuration::config::create_config(integration_fixture_path("profile_arithmetic"));
     std::filesystem::remove_all(config.main_path);
     std::filesystem::create_directories(config.main_path);
     config.wal.on = false;

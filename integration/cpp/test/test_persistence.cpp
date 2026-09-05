@@ -24,7 +24,7 @@ static const database_name_t database_name = "testdatabase";
     } while (false)
 
 TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/wal_mixed_batch");
+    auto config = test_create_config(integration_fixture_path("test_persistence/wal_mixed_batch"));
     test_clear_directory(config);
 
     INFO("phase 1: insert two batches (no checkpoint)");
@@ -89,7 +89,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {
 }
 
 TEST_CASE("integration::cpp::test_persistence::wal_recovery_multi_type") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/wal_multi_type");
+    auto config = test_create_config(integration_fixture_path("test_persistence/wal_multi_type"));
     test_clear_directory(config);
 
     constexpr int kDocuments = 50;
@@ -145,7 +145,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_multi_type") {
 }
 
 TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/wal_not_null");
+    auto config = test_create_config(integration_fixture_path("test_persistence/wal_not_null"));
     test_clear_directory(config);
 
     INFO("phase 1: create table with NOT NULL, insert valid data");
@@ -215,7 +215,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
 }
 
 TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/wal_dml_cycle");
+    auto config = test_create_config(integration_fixture_path("test_persistence/wal_dml_cycle"));
     test_clear_directory(config);
 
     INFO("phase 1: insert, delete, update (no checkpoint)");
@@ -294,7 +294,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
 }
 
 TEST_CASE("integration::cpp::test_persistence::default_application_in_session") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/default_application");
+    auto config = test_create_config(integration_fixture_path("test_persistence/default_application"));
     test_clear_directory(config);
 
     INFO("verify DEFAULT values are applied during INSERT within a single session");
@@ -364,7 +364,7 @@ TEST_CASE("integration::cpp::test_persistence::default_application_in_session") 
 }
 
 TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_recovery") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/partial_insert_wal");
+    auto config = test_create_config(integration_fixture_path("test_persistence/partial_insert_wal"));
     test_clear_directory(config);
 
     INFO("phase 1: insert with consistent partial columns (only name)");
@@ -423,7 +423,7 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
 }
 
 TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_default") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/wal_not_null_default");
+    auto config = test_create_config(integration_fixture_path("test_persistence/wal_not_null_default"));
     test_clear_directory(config);
 
     INFO("phase 1: create table with NOT NULL + DEFAULT, test enforcement + defaults");
@@ -505,7 +505,7 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
 }
 
 TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/partial_two_cols_wal");
+    auto config = test_create_config(integration_fixture_path("test_persistence/partial_two_cols_wal"));
     test_clear_directory(config);
 
     INFO("phase 1: insert providing 2 of 3 columns (consistent partial)");
@@ -575,7 +575,7 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
 // Computed tables have a file behind them: a disk-backed .otbx whose computed flag is
 // restored from pg_class.relkind on load.
 TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recovery") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/computed_schema_growth_wal");
+    auto config = test_create_config(integration_fixture_path("test_persistence/computed_schema_growth_wal"));
     test_clear_directory(config);
 
     INFO("phase 1: computing table, two INSERTs growing the schema, WAL ON");
@@ -1154,7 +1154,7 @@ TEST_CASE("integration::cpp::test_persistence::zero_column_regular_table_stays_r
 }
 
 TEST_CASE("integration::cpp::test_persistence::double_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/double_restart");
+    auto config = test_create_config(integration_fixture_path("test_persistence/double_restart"));
     test_clear_directory(config);
 
     INFO("phase 1: create table, insert first 50 rows");
@@ -1234,7 +1234,7 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
 // ---- Real DISK checkpoint tests ----
 
 TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_basic");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_basic"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table, insert 50 rows, checkpoint");
@@ -1291,7 +1291,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_update");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_update"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table, insert, update, delete, checkpoint");
@@ -1369,7 +1369,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_plus_wal");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_plus_wal"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table, insert 50, checkpoint, insert 50 more (no second checkpoint)");
@@ -1444,7 +1444,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
 // ---- DISK partial insert, constraints, WAL-only recovery, double restart, DML cycle ----
 
 TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_partial_insert");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_partial_insert"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table with 3 cols, partial INSERT, checkpoint");
@@ -1529,7 +1529,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_not_null_default");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_not_null_default"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table with NOT NULL + DEFAULT, test enforcement");
@@ -1761,7 +1761,7 @@ TEST_CASE("integration::cpp::test_persistence::default_unique_constraint_agrees_
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_wal_only_recovery") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_wal_only");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_wal_only"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table, insert 50 rows, NO checkpoint");
@@ -1811,7 +1811,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_wal_only_recovery") {
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_double_restart");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_double_restart"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table, insert 50 rows, checkpoint");
@@ -1893,7 +1893,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_dml_cycle");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_dml_cycle"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table, INSERT 100, DELETE 10, UPDATE 1, checkpoint");
@@ -1972,7 +1972,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_drop_table");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_drop_table"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table, insert, checkpoint, DROP TABLE, checkpoint");
@@ -2071,7 +2071,7 @@ static std::set<std::filesystem::path> scan_otbx_files(const std::filesystem::pa
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_files") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_drop_gc");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_drop_gc"));
     test_clear_directory(config);
 
     // End-to-end DROP-GC through the unified commit channel. Two nets:
@@ -2191,7 +2191,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
 //     the catalog and its storage payload file is reclaimed.
 // Statements share one session_id_t (active txns are keyed by session.data()).
 TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/drop_rollback");
+    auto config = test_create_config(integration_fixture_path("test_persistence/drop_rollback"));
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
@@ -2312,7 +2312,7 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_add_column");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_add_column"));
     test_clear_directory(config);
 
     INFO("phase 1: create DISK table, insert, checkpoint, ADD COLUMN, insert, checkpoint");
@@ -2431,7 +2431,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
 // exercises the WAL-frontier half; the added_at half is pinned in
 // test_catalog_delete_refusal.cpp — an_added_columns_commit_id_survives_a_restart.)
 TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_invisible") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/reopen_keeps_committed_deletes");
+    auto config = test_create_config(integration_fixture_path("test_persistence/reopen_keeps_committed_deletes"));
     test_clear_directory(config);
 
     INFO("phase 1: WAL-backed table, INSERT 100, DELETE 50, CHECKPOINT");
@@ -2498,7 +2498,7 @@ TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_in
 
 TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_restart") {
     auto config =
-        test_create_config("/tmp/otterbrix/integration/test_persistence/disk_index_mixed_ops_checkpoint_restart");
+        test_create_config(integration_fixture_path("test_persistence/disk_index_mixed_ops_checkpoint_restart"));
     test_clear_directory(config);
 
     INFO("phase 1: create disk table + index, apply mixed DML, checkpoint");
@@ -2579,7 +2579,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_index_long_keys_survive_checkpoint_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_index_long_keys");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_index_long_keys"));
     test_clear_directory(config);
 
     const std::string long_a(220, 'a');
@@ -2636,7 +2636,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_long_keys_survive_chec
 }
 
 TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cycle") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/disk_index_massive_checkpoint_cycle");
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_index_massive_checkpoint_cycle"));
     test_clear_directory(config);
 
     INFO("phase 1: many batches with periodic checkpoint");
@@ -2705,7 +2705,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
 // disk agent from pg_index alone, so post-restart email lookups stay correct.
 TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_driven_bootstrap") {
     auto config = test_create_config(
-        "/tmp/otterbrix/integration/test_persistence/index_recovery_phase4_catalog_driven_bootstrap");
+        integration_fixture_path("test_persistence/index_recovery_phase4_catalog_driven_bootstrap"));
     test_clear_directory(config);
 
     INFO("phase 1: create users(id, email) + email index, insert 10 rows, dtor checkpoint");
@@ -2804,7 +2804,7 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
 // SET TIMEZONE write does not corrupt persistence and the path stays usable across
 // restart; the exact stored value is not observable from SQL.
 TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/set_timezone_survives_restart");
+    auto config = test_create_config(integration_fixture_path("test_persistence/set_timezone_survives_restart"));
     test_clear_directory(config);
 
     INFO("phase 1: SET TIMEZONE, then create + populate a table");
@@ -2878,7 +2878,7 @@ TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
 // index.
 TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_restart") {
     auto config =
-        test_create_config("/tmp/otterbrix/integration/test_persistence/indexed_table_compact_survives_restart");
+        test_create_config(integration_fixture_path("test_persistence/indexed_table_compact_survives_restart"));
     test_clear_directory(config);
 
     INFO("phase 1: disk table + index, insert, delete >30%, commit, checkpoint");
@@ -2969,7 +2969,7 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
 // re-INSERT must land and be visible (the SSB "4ms / 0 rows" regression, where
 // storage_append silently no-opped against a catalog-only table).
 TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/reopen_in_memory_reinsert");
+    auto config = test_create_config(integration_fixture_path("test_persistence/reopen_in_memory_reinsert"));
     // SSB benchmark config: WAL persistence OFF. Tables are disk-backed
     // regardless; durability across a clean shutdown comes from the shutdown
     // checkpoint.
@@ -3082,8 +3082,24 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
         // (The relstoragemode == 'd' half of the gate is asserted at the write
         // site — catalog::ddl::create_table_writes tests — because SQL cannot
         // project pg_class columns today: bare `SELECT oid FROM pg_class` fails
-        // with "path: 'oid' was not found"; system tables' own columns have no
-        // pg_attribute rows.)
+        // with "path: 'oid' was not found".
+        //
+        // THAT SYMPTOM HAS TWO INDEPENDENT CAUSES, MEASURED — fixing either one
+        // alone leaves the message unchanged, so do not read this note as one
+        // bug:
+        //   1. pg_catalog does not describe its OWN relations. Nothing seeds a
+        //      pg_class row (or pg_attribute rows) for pg_class / pg_attribute /
+        //      pg_type / ..., and operator_resolve_table_t knows exactly one way
+        //      to resolve a FROM target — scan pg_class by relname — so a system
+        //      table is indistinguishable from a typo. This is what makes the
+        //      QUALIFIED spelling fail too: `SELECT oid FROM pg_catalog.pg_class`
+        //      answers "collection does not exist".
+        //   2. An UNQUALIFIED name loses its table schema at validation. This is
+        //      NOT pg_class-specific: with a plain user table it reproduces
+        //      identically — `SELECT id FROM Alpha;` answers "path: 'id' was not
+        //      found" while `SELECT id FROM TestDatabase.Alpha;` succeeds — so a
+        //      queryable pg_catalog would still not make the BARE spelling above,
+        //      nor kListTablesQuery, resolve a single column.)
         {
             auto numeric_oid = [](const std::filesystem::path& dir) -> unsigned long {
                 const auto name = dir.filename().string();

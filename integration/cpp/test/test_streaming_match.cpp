@@ -21,6 +21,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
 
@@ -40,7 +41,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
-    auto config = test_create_config("/tmp/test_streaming_match_like");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_like"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -89,7 +90,7 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
 }
 
 TEST_CASE("integration::cpp::streaming_match::like_filter_with_limit_caps_across_batches") {
-    auto config = test_create_config("/tmp/test_streaming_match_limit");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_limit"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -177,7 +178,7 @@ TEST_CASE("integration::cpp::streaming_match::having_count_filter_returns_correc
     // dept_id 3 (1 row) does not. This match (over a group sink) must return
     // exactly the surviving groups — defect (b) would dangle the predicate on a
     // multi-chunk grouped result.
-    auto config = test_create_config("/tmp/test_streaming_match_having");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_having"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -195,7 +196,7 @@ TEST_CASE("integration::cpp::streaming_match::join_with_nonpushdown_filter_retur
     // the joined result. Joining emp to dept on dept_id then keeping names that
     // LIKE 'a%' must return alice, amy, amanda (3) — match sits above the join
     // sink, whose output carries no row_ids.
-    auto config = test_create_config("/tmp/test_streaming_match_join_filter");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_join_filter"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -218,7 +219,7 @@ TEST_CASE("integration::cpp::streaming_match::delete_where_in_group_subquery_lan
     // single dept_id 3 row. The subquery's grouped output has NO real row_ids;
     // defect (a) would feed a bogus absolute id 0 to the storage delete and
     // segfault / delete the wrong row. After the fix the right rows are deleted.
-    auto config = test_create_config("/tmp/test_streaming_match_delete_group");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_delete_group"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -254,7 +255,7 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_large_build_side_does
     // which merge_chunks() into ONE data_chunk_t sized to the TOTAL row count and
     // aborted on the capacity<=1024 ctor assert. After the fix consume_join_batch_
     // iterates the build side per chunk, so the delete lands.
-    auto config = test_create_config("/tmp/test_streaming_match_delete_using_large");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_delete_using_large"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -290,7 +291,7 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_with_nonpushdown_filt
     // Matching emp: alice(1,d1), amy(2,d1), amanda(5,d2) → 3 rows. The match over
     // the join sink carries no real row_ids; defect (a) would feed bogus id 0 to
     // the storage delete. After the fix exactly those 3 rows are deleted.
-    auto config = test_create_config("/tmp/test_streaming_match_delete_using");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_delete_using"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -324,7 +325,7 @@ TEST_CASE("integration::cpp::streaming_match::like_all_null_element_disk_three_v
     // at best UNKNOWN (`s LIKE NULL` is UNKNOWN), so PostgreSQL returns 0 rows — the filter builder
     // used to exclude regex from the NULL-element collapse and returned the non-null-leaf result.
     // ANY is unaffected (UNKNOWN and FALSE both drop the row).
-    auto config = test_create_config("/tmp/test_streaming_match_like_all_null_disk");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_like_all_null_disk"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -372,7 +373,7 @@ TEST_CASE("integration::cpp::streaming_match::like_all_null_element_disk_three_v
 // last vectors — asserting both the survivor COUNT and the exact GATHERED CELL VALUES, which is
 // precisely what silently rots when a fetch error is swallowed.
 TEST_CASE("integration::cpp::streaming_match::late_mat_gather_selective_disk_values_land") {
-    auto config = test_create_config("/tmp/test_streaming_match_late_mat_gather");
+    auto config = test_create_config(integration_fixture_path("test_streaming_match_late_mat_gather"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

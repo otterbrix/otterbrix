@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>
@@ -53,7 +54,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::order_by_nulls::default_placement") {
-    auto config = test_create_config("/tmp/test_order_by_nulls/default_placement");
+    auto config = test_create_config(integration_fixture_path("test_order_by_nulls/default_placement"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -65,7 +66,7 @@ TEST_CASE("integration::cpp::order_by_nulls::default_placement") {
 }
 
 TEST_CASE("integration::cpp::order_by_nulls::explicit_override") {
-    auto config = test_create_config("/tmp/test_order_by_nulls/explicit_override");
+    auto config = test_create_config(integration_fixture_path("test_order_by_nulls/explicit_override"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -80,7 +81,7 @@ TEST_CASE("integration::cpp::order_by_nulls::explicit_override") {
 }
 
 TEST_CASE("integration::cpp::order_by_nulls::positional_key") {
-    auto config = test_create_config("/tmp/test_order_by_nulls/positional_key");
+    auto config = test_create_config(integration_fixture_path("test_order_by_nulls/positional_key"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

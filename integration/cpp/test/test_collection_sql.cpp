@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <components/types/operations_helper.hpp>
 #include <core/operations_helper.hpp>
 
@@ -14,7 +15,7 @@ using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
 
 TEST_CASE("integration::cpp::test_collection::sql::base") {
-    auto config = test_create_config("/tmp/test_collection_sql/base");
+    auto config = test_create_config(integration_fixture_path("test_collection_sql/base"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -414,7 +415,7 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::group_by") {
-    auto config = test_create_config("/tmp/test_collection_sql/group_by");
+    auto config = test_create_config(integration_fixture_path("test_collection_sql/group_by"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -513,7 +514,7 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
-    auto config = test_create_config("/tmp/test_collection_sql/invalid_queries");
+    auto config = test_create_config(integration_fixture_path("test_collection_sql/invalid_queries"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -543,7 +544,7 @@ TEST_CASE("integration::cpp::test_collection::sql::invalid_queries") {
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::index") {
-    auto config = test_create_config("/tmp/test_collection_sql/base");
+    auto config = test_create_config(integration_fixture_path("test_collection_sql/base"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -678,7 +679,7 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
 }
 
 TEST_CASE("integration::cpp::test_collection::sql::udt") {
-    auto config = test_create_config("/tmp/test_collection_sql/udt");
+    auto config = test_create_config(integration_fixture_path("test_collection_sql/udt"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -920,7 +921,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
 // and operator_union must trust that stamp — a genuinely-typed all-NULL INTEGER column
 // must not flip to the NULL-literal branch's text type based on what the table holds.
 TEST_CASE("integration::cpp::test_collection::sql::union_all_null_column_keeps_stamped_type") {
-    auto config = test_create_config("/tmp/test_collection_sql/union_stamped_type");
+    auto config = test_create_config(integration_fixture_path("test_collection_sql/union_stamped_type"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -958,7 +959,7 @@ TEST_CASE("integration::cpp::test_collection::sql::union_all_null_column_keeps_s
 // its alias: PostgreSQL keeps the FIRST SELECT's output names, and renaming the output
 // column breaks outer references to the left branch's alias through a derived table.
 TEST_CASE("integration::cpp::test_collection::sql::union_null_branch_keeps_left_column_name") {
-    auto config = test_create_config("/tmp/test_collection_sql/union_null_alias");
+    auto config = test_create_config(integration_fixture_path("test_collection_sql/union_null_alias"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

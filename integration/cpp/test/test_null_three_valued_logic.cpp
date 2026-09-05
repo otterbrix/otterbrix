@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 // SQL three-valued logic over NULL operands.
@@ -54,7 +55,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::null_3vl::comparisons_exclude_null") {
-    auto config = test_create_config("/tmp/test_null_3vl/cmp");
+    auto config = test_create_config(integration_fixture_path("test_null_3vl/cmp"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -80,7 +81,7 @@ TEST_CASE("integration::cpp::null_3vl::not_does_not_resurrect_null") {
     // The guard against a naive fix. Merely excluding NULL from a comparison is not enough:
     // if the filter tree is two-valued, NOT flips that exclusion into an inclusion.
     // NOT UNKNOWN must stay UNKNOWN.
-    auto config = test_create_config("/tmp/test_null_3vl/not");
+    auto config = test_create_config(integration_fixture_path("test_null_3vl/not"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -95,7 +96,7 @@ TEST_CASE("integration::cpp::null_3vl::not_does_not_resurrect_null") {
 }
 
 TEST_CASE("integration::cpp::null_3vl::and_or_propagate_unknown") {
-    auto config = test_create_config("/tmp/test_null_3vl/andor");
+    auto config = test_create_config(integration_fixture_path("test_null_3vl/andor"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -116,7 +117,7 @@ TEST_CASE("integration::cpp::null_3vl::and_or_propagate_unknown") {
 }
 
 TEST_CASE("integration::cpp::null_3vl::dml_does_not_touch_null_rows") {
-    auto config = test_create_config("/tmp/test_null_3vl/dml");
+    auto config = test_create_config(integration_fixture_path("test_null_3vl/dml"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -140,7 +141,7 @@ TEST_CASE("integration::cpp::null_3vl::update_overlay_keeps_null_excluded") {
     // The update-overlay branch of column_data_t::check_predicate: once a vector carries
     // updates, matching is answered from the overlay. The NULL row must stay excluded there
     // too — the validity gate runs before the overlay is consulted.
-    auto config = test_create_config("/tmp/test_null_3vl/overlay");
+    auto config = test_create_config(integration_fixture_path("test_null_3vl/overlay"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -160,7 +161,7 @@ TEST_CASE("integration::cpp::null_3vl::update_overlay_keeps_null_excluded") {
 TEST_CASE("integration::cpp::null_3vl::string_column_null") {
     // The string fast path (string_check_row) has the same raw-buffer shape as the fixed-size
     // one: an empty string must not be conflated with a NULL.
-    auto config = test_create_config("/tmp/test_null_3vl/str");
+    auto config = test_create_config(integration_fixture_path("test_null_3vl/str"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -194,7 +195,7 @@ TEST_CASE("integration::cpp::null_3vl::string_column_null") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("integration::cpp::null_3vl::jsonb_absent_key_comparisons") {
-    auto config = test_create_config("/tmp/test_null_3vl/jsonb_cmp");
+    auto config = test_create_config(integration_fixture_path("test_null_3vl/jsonb_cmp"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -224,7 +225,7 @@ TEST_CASE("integration::cpp::null_3vl::jsonb_absent_key_comparisons") {
 }
 
 TEST_CASE("integration::cpp::null_3vl::jsonb_not_and_dml") {
-    auto config = test_create_config("/tmp/test_null_3vl/jsonb_dml");
+    auto config = test_create_config(integration_fixture_path("test_null_3vl/jsonb_dml"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -248,7 +249,7 @@ TEST_CASE("integration::cpp::null_3vl::jsonb_not_and_dml") {
 
 TEST_CASE("integration::cpp::null_3vl::jsonb_nested_absent_key") {
     // A dotted/nested key flattens to the column "a/b"; an absent nested key is a NULL there.
-    auto config = test_create_config("/tmp/test_null_3vl/jsonb_nested");
+    auto config = test_create_config(integration_fixture_path("test_null_3vl/jsonb_nested"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

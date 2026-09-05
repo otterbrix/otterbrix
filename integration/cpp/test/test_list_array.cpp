@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -14,7 +15,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::list_array::fixed_array_crud") {
-    auto config = test_create_config("/tmp/test_list_array/fixed_array_crud");
+    auto config = test_create_config(integration_fixture_path("test_list_array/fixed_array_crud"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -81,7 +82,7 @@ TEST_CASE("integration::list_array::fixed_array_crud") {
 }
 
 TEST_CASE("integration::list_array::fixed_array_element_types") {
-    auto config = test_create_config("/tmp/test_list_array/element_types");
+    auto config = test_create_config(integration_fixture_path("test_list_array/element_types"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -106,7 +107,7 @@ TEST_CASE("integration::list_array::fixed_array_element_types") {
 }
 
 TEST_CASE("integration::list_array::variadic_list_crud") {
-    auto config = test_create_config("/tmp/test_list_array/variadic_list_crud");
+    auto config = test_create_config(integration_fixture_path("test_list_array/variadic_list_crud"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -181,7 +182,7 @@ TEST_CASE("integration::list_array::variadic_list_crud") {
 }
 
 TEST_CASE("integration::list_array::list_array_conversion") {
-    auto config = test_create_config("/tmp/test_list_array/conversion");
+    auto config = test_create_config(integration_fixture_path("test_list_array/conversion"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -224,7 +225,7 @@ TEST_CASE("integration::list_array::list_array_conversion") {
 }
 
 TEST_CASE("integration::list_array::list_to_array_length") {
-    auto config = test_create_config("/tmp/test_list_array/length_reconcile");
+    auto config = test_create_config(integration_fixture_path("test_list_array/length_reconcile"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -274,7 +275,7 @@ TEST_CASE("integration::list_array::list_to_array_length") {
 }
 
 TEST_CASE("integration::list_array::empty_array_literal") {
-    auto config = test_create_config("/tmp/test_list_array/empty_array");
+    auto config = test_create_config(integration_fixture_path("test_list_array/empty_array"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -307,7 +308,7 @@ TEST_CASE("integration::list_array::empty_array_literal") {
 }
 
 TEST_CASE("integration::list_array::array_default_padding") {
-    auto config = test_create_config("/tmp/test_list_array/default_padding");
+    auto config = test_create_config(integration_fixture_path("test_list_array/default_padding"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -399,7 +400,7 @@ TEST_CASE("integration::list_array::array_default_padding") {
 }
 
 TEST_CASE("integration::list_array::subscript_in_where") {
-    auto config = test_create_config("/tmp/test_list_array/subscript_where");
+    auto config = test_create_config(integration_fixture_path("test_list_array/subscript_where"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -448,7 +449,7 @@ TEST_CASE("integration::list_array::subscript_in_where") {
 }
 
 TEST_CASE("integration::list_array::unsupported_clean_failures") {
-    auto config = test_create_config("/tmp/test_list_array/unsupported");
+    auto config = test_create_config(integration_fixture_path("test_list_array/unsupported"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -492,7 +493,7 @@ TEST_CASE("integration::list_array::unsupported_clean_failures") {
 }
 
 TEST_CASE("integration::list_array::full_array_update") {
-    auto config = test_create_config("/tmp/test_list_array/full_array_update");
+    auto config = test_create_config(integration_fixture_path("test_list_array/full_array_update"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -534,7 +535,7 @@ TEST_CASE("integration::list_array::full_array_update") {
 }
 
 TEST_CASE("integration::list_array::full_list_update") {
-    auto config = test_create_config("/tmp/test_list_array/full_list_update");
+    auto config = test_create_config(integration_fixture_path("test_list_array/full_list_update"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -581,7 +582,7 @@ TEST_CASE("integration::list_array::full_list_update") {
     }
 }
 TEST_CASE("integration::list_array::null_array_value_reads_safely") {
-    auto config = test_create_config("/tmp/test_list_array/null_array_value");
+    auto config = test_create_config(integration_fixture_path("test_list_array/null_array_value"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -615,7 +616,7 @@ TEST_CASE("integration::list_array::null_array_value_reads_safely") {
 // and a NULL row's value read through the children() idiom must be empty rather
 // than crashing the process.
 TEST_CASE("integration::list_array::null_array_sql_operations_clean") {
-    auto config = test_create_config("/tmp/test_list_array/null_array_sql_ops");
+    auto config = test_create_config(integration_fixture_path("test_list_array/null_array_sql_ops"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -675,7 +676,7 @@ TEST_CASE("integration::list_array::null_array_sql_operations_clean") {
 // simply unequal (never truncated/padded), and an empty sub-query yields a real empty array {} (unequal
 // to a non-empty column), not the NA-null sentinel.
 TEST_CASE("integration::list_array::array_equality_subquery") {
-    auto config = test_create_config("/tmp/test_list_array/array_eq_subquery");
+    auto config = test_create_config(integration_fixture_path("test_list_array/array_eq_subquery"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -713,7 +714,7 @@ TEST_CASE("integration::list_array::array_equality_subquery") {
 // A NULL element inside an ARRAY/LIST literal must be storable and must survive the round trip as a
 // NULL element (validity mask honored), for both fixed ARRAY[n] and variable-length LIST columns.
 TEST_CASE("integration::list_array::null_elements") {
-    auto config = test_create_config("/tmp/test_list_array/null_elements");
+    auto config = test_create_config(integration_fixture_path("test_list_array/null_elements"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

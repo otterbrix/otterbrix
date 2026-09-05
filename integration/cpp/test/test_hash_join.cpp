@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/compute/function.hpp>
@@ -167,7 +168,7 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
 static const std::string db = "hashjoindb";
 
 TEST_CASE("integration::cpp::hash_join::correctness") {
-    auto config = test_create_config("/tmp/test_hash_join/base");
+    auto config = test_create_config(integration_fixture_path("test_hash_join/base"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -261,7 +262,7 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
 // matched rows inside a single builder.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
-    auto config = test_create_config("/tmp/test_hash_join/mbchunk");
+    auto config = test_create_config(integration_fixture_path("test_hash_join/mbchunk"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -418,7 +419,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
 // inversion the swap could introduce.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
-    auto config = test_create_config("/tmp/test_hash_join/buildside");
+    auto config = test_create_config(integration_fixture_path("test_hash_join/buildside"));
     test_clear_directory(config);
     // Row-count fetch is gated on an owning disk agent, which every table now has.
     config.wal.on = false;
@@ -520,7 +521,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
 // cross-product + residual filter — same rows, so this pins the join semantics).
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
-    auto config = test_create_config("/tmp/test_hash_join/multiway");
+    auto config = test_create_config(integration_fixture_path("test_hash_join/multiway"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -685,7 +686,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
 // breaks an exact count tie.
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
-    auto config = test_create_config("/tmp/test_hash_join/syntactic");
+    auto config = test_create_config(integration_fixture_path("test_hash_join/syntactic"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -761,7 +762,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
 // `tiny` (build).
 // ----------------------------------------------------------------------------
 TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrapper") {
-    auto config = test_create_config("/tmp/test_hash_join/wrapped_count");
+    auto config = test_create_config(integration_fixture_path("test_hash_join/wrapped_count"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

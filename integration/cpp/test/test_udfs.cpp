@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <tuple>
 
 #include <catch2/catch_test_macros.hpp>
@@ -160,7 +161,7 @@ std::unique_ptr<vector_function> make_modulo_func(std::pmr::memory_resource* res
 }
 
 TEST_CASE("integration::cpp::test_udfs") {
-    auto config = test_create_config("/tmp/test_udfs");
+    auto config = test_create_config(integration_fixture_path("test_udfs"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

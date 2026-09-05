@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <variant>
 
@@ -18,7 +19,7 @@ static const std::string collection_name_2 = "testcollection_2";
 // operator_join_t. This file therefore exercises the general join operator; the
 // equi hash-join fast path is covered by test_hash_join.cpp.
 TEST_CASE("integration::cpp::test_join") {
-    auto config = test_create_config("/tmp/test_join/base");
+    auto config = test_create_config(integration_fixture_path("test_join/base"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -39,7 +40,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_scan_pin_scope::a_scan_pins_per_segment_not_per_row", "[.][scanpin]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_scan_pin/scope");
+    auto config = test_create_config(integration_fixture_path("test_scan_pin/scope"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;
@@ -86,7 +87,7 @@ TEST_CASE("integration::cpp::test_scan_pin_scope::a_scan_pins_per_segment_not_pe
 //
 // Hidden ([.]). Run it with [predpin].
 TEST_CASE("integration::cpp::test_scan_pin_scope::predicate_evaluation_pins_per_segment", "[.][predpin]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_scan_pin/predicate");
+    auto config = test_create_config(integration_fixture_path("test_scan_pin/predicate"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

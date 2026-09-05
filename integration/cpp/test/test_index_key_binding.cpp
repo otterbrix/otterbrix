@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <services/index/manager_index.hpp>
@@ -17,7 +18,7 @@
 // A counter test rather than a timing one: the defect is a growth rate. The bound is expressed
 // against the ROW COUNT, so it fails if the work is per-row and passes only if it is per-chunk.
 TEST_CASE("integration::cpp::test_index_key_binding::key_lookup_is_per_chunk_not_per_row") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_key_binding/per_chunk");
+    auto config = test_create_config(integration_fixture_path("test_index_key_binding/per_chunk"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

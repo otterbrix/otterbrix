@@ -116,7 +116,9 @@ namespace {
         bool seek(uint64_t location) override { return inner_->seek(location); }
         uint64_t seek_position() override { return inner_->seek_position(); }
         uint64_t file_size() override { return inner_->file_size(); }
-        void close() override { inner_->close(); }
+        // Delegating, and it must FORWARD the refusal: a slot of its own answering "no error"
+        // while the wrapped handle refused would be a new liar (core/file/file_handle.hpp).
+        core::error_t close() override { return inner_->close(); }
 
     private:
         std::unique_ptr<core::filesystem::file_handle_t> inner_;

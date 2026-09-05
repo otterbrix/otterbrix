@@ -23,6 +23,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -38,7 +39,7 @@ using namespace test_helpers;
 
 TEST_CASE("integration::cpp::ddl_commit_marker::carries_the_drained_commit_id") {
     auto config =
-        make_test_config(std::filesystem::path("/tmp/otterbrix/integration/test_ddl_commit_marker_after_drain") /
+        make_test_config(integration_fixture_path("test_ddl_commit_marker_after_drain") /
                              std::to_string(::getpid()),
                          /*wal_on=*/true);
     config.log.level = log_t::level::off;

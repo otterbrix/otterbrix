@@ -4,6 +4,7 @@
 // manager at the same directory observes the persisted state.
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 
 #include <actor-zeta/spawn.hpp>
@@ -33,10 +34,7 @@ using namespace disk_test_helpers;
 using session_id_t = components::session::session_id_t;
 
 namespace {
-    std::string clean_break_dir() {
-        static std::string p = "/tmp/test_otterbrix_clean_break_" + std::to_string(::getpid());
-        return p;
-    }
+    std::string clean_break_dir() { return integration_fixture_path("test_clean_break_startup").string(); }
 
     // The manager actors self-drive on internal threads; futures become ready
     // asynchronously. Pump the (thread-safe) child scheduler with a bounded poll
@@ -58,7 +56,7 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit fresh_disk(const std::filesystem::path& path)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(initialization_logger("python", integration_fixture_path("test_clean_break_startup/logs").string()))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;

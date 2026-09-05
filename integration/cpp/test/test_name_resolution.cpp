@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <tuple>
 
 #include <catch2/catch_test_macros.hpp>
@@ -752,7 +753,7 @@ TEST_CASE("name_resolution::using::cross_join_still_has_no_predicate") {
 }
 
 TEST_CASE("name_resolution::using::row_count_is_not_a_cross_product") {
-    auto config = test_create_config("/tmp/test_name_resolution/using");
+    auto config = test_create_config(integration_fixture_path("test_name_resolution/using"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -841,7 +842,7 @@ TEST_CASE("name_resolution::duplicate_name::same_name_different_database_is_fine
 }
 
 TEST_CASE("name_resolution::validator::unqualified_column_is_placed_by_the_validator") {
-    database_t db("/tmp/test_name_resolution/validator_unqualified");
+    database_t db(integration_fixture_path("test_name_resolution/validator_unqualified"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.a (id INT, av INT);",
              "CREATE TABLE vd.b (id INT, bv INT);",
@@ -853,7 +854,7 @@ TEST_CASE("name_resolution::validator::unqualified_column_is_placed_by_the_valid
 }
 
 TEST_CASE("name_resolution::validator::one_relation_on_both_sides_is_not_ambiguous") {
-    database_t db("/tmp/test_name_resolution/validator_same_schema");
+    database_t db(integration_fixture_path("test_name_resolution/validator_same_schema"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.a (id INT, av INT);",
              "INSERT INTO vd.a (id, av) VALUES (1,10),(2,20);"});
@@ -863,7 +864,7 @@ TEST_CASE("name_resolution::validator::one_relation_on_both_sides_is_not_ambiguo
 }
 
 TEST_CASE("name_resolution::validator::qualified_reference_inside_a_derived_table") {
-    database_t db("/tmp/test_name_resolution/validator_derived");
+    database_t db(integration_fixture_path("test_name_resolution/validator_derived"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.inner_t (k INT, v INT);",
              "INSERT INTO vd.inner_t (k, v) VALUES (1,100),(2,200),(3,300);"});
@@ -873,7 +874,7 @@ TEST_CASE("name_resolution::validator::qualified_reference_inside_a_derived_tabl
 }
 
 TEST_CASE("name_resolution::validator::qualifier_inside_a_derived_join_still_selects") {
-    database_t db("/tmp/test_name_resolution/validator_derived_join");
+    database_t db(integration_fixture_path("test_name_resolution/validator_derived_join"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.a (id INT, av INT);",
              "CREATE TABLE vd.b (id INT, v INT);",
@@ -885,7 +886,7 @@ TEST_CASE("name_resolution::validator::qualifier_inside_a_derived_join_still_sel
 }
 
 TEST_CASE("name_resolution::validator::subquery_qualifier_does_not_reach_a_neighbour") {
-    database_t db("/tmp/test_name_resolution/validator_neighbour");
+    database_t db(integration_fixture_path("test_name_resolution/validator_neighbour"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.a (id INT, av INT);",
              "CREATE TABLE vd.b (id INT, bv INT);",
@@ -897,7 +898,7 @@ TEST_CASE("name_resolution::validator::subquery_qualifier_does_not_reach_a_neigh
 }
 
 TEST_CASE("name_resolution::validator::table_function_alias_names_the_relation") {
-    database_t db("/tmp/test_name_resolution/table_function_alias");
+    database_t db(integration_fixture_path("test_name_resolution/table_function_alias"));
     db.seed({"CREATE DATABASE vd;"});
 
     auto cur = run_ok(db, "SELECT g.g FROM generate_series(1, 3) g;");
@@ -905,7 +906,7 @@ TEST_CASE("name_resolution::validator::table_function_alias_names_the_relation")
 }
 
 TEST_CASE("name_resolution::validator::table_function_shares_the_from_namespace") {
-    database_t db("/tmp/test_name_resolution/table_function_namespace");
+    database_t db(integration_fixture_path("test_name_resolution/table_function_namespace"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.g (id INT, w INT);",
              "INSERT INTO vd.g (id, w) VALUES (1,100);",
@@ -929,7 +930,7 @@ TEST_CASE("name_resolution::validator::table_function_shares_the_from_namespace"
 }
 
 TEST_CASE("name_resolution::using::merged_column_follows_the_join_type") {
-    database_t db("/tmp/test_name_resolution/using_outer");
+    database_t db(integration_fixture_path("test_name_resolution/using_outer"));
     db.seed({"CREATE DATABASE ud;",
              "CREATE TABLE ud.a (id INT, av INT);",
              "CREATE TABLE ud.b (id INT, bv INT);",
@@ -955,7 +956,7 @@ TEST_CASE("name_resolution::using::merged_column_follows_the_join_type") {
 }
 
 TEST_CASE("name_resolution::validator::ambiguous_column_says_it_is_ambiguous") {
-    database_t db("/tmp/test_name_resolution/validator_ambiguous");
+    database_t db(integration_fixture_path("test_name_resolution/validator_ambiguous"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.a (id INT, av INT);",
              "CREATE TABLE vd.b (id INT, bv INT);",
@@ -989,7 +990,7 @@ TEST_CASE("name_resolution::quoted::quoted_relname_in_a_mixed_name") {
 }
 
 TEST_CASE("name_resolution::quoted::quoted_column_keeps_its_case") {
-    database_t db("/tmp/test_name_resolution/quoted_column");
+    database_t db(integration_fixture_path("test_name_resolution/quoted_column"));
     db.seed({"CREATE DATABASE vd;",
              "CREATE TABLE vd.q (\"Id\" INT, v INT);",
              "INSERT INTO vd.q (\"Id\", v) VALUES (1,10);"});
@@ -1005,7 +1006,7 @@ TEST_CASE("name_resolution::quoted::quoted_column_keeps_its_case") {
 }
 
 TEST_CASE("name_resolution::quoted::unquoted_column_is_folded") {
-    database_t db("/tmp/test_name_resolution/unquoted_column");
+    database_t db(integration_fixture_path("test_name_resolution/unquoted_column"));
     db.seed({"CREATE DATABASE vd;", "CREATE TABLE vd.u (Id INT, v INT);", "INSERT INTO vd.u (Id, v) VALUES (1,10);"});
     {
         INFO("declared unquoted, so every unquoted spelling reaches it");
@@ -1020,7 +1021,7 @@ TEST_CASE("name_resolution::quoted::unquoted_column_is_folded") {
 }
 
 TEST_CASE("name_resolution::regression::chained_join_reads_the_middle_table") {
-    database_t db("/tmp/test_name_resolution/chain");
+    database_t db(integration_fixture_path("test_name_resolution/chain"));
     db.seed({"CREATE DATABASE cd;",
              "CREATE TABLE cd.l (jk INT, v INT);",
              "CREATE TABLE cd.m (jk INT, v INT);",
@@ -1035,7 +1036,7 @@ TEST_CASE("name_resolution::regression::chained_join_reads_the_middle_table") {
 }
 
 TEST_CASE("name_resolution::regression::cross_database_join_is_not_a_cross_product") {
-    database_t db("/tmp/test_name_resolution/cross_db");
+    database_t db(integration_fixture_path("test_name_resolution/cross_db"));
     db.seed({"CREATE DATABASE d1;",
              "CREATE DATABASE d2;",
              "CREATE TABLE d1.t (jk INT, v INT);",

@@ -31,7 +31,7 @@ static std::string mirror_gate_plan_text(const components::cursor::cursor_t_ptr&
 // would fail, or worse, answer nothing at all. Counting mirror sends alone cannot tell those
 // apart, because a plan that never reaches an index sends nothing either way.
 TEST_CASE("integration::cpp::test_index_mirror_gate::table_without_indexes_skips_the_index") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_mirror_gate/plain");
+    auto config = test_create_config(integration_fixture_path("test_index_mirror_gate/plain"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;
@@ -86,7 +86,7 @@ TEST_CASE("integration::cpp::test_index_mirror_gate::table_without_indexes_skips
 // answering fewer rows than the table holds, silently. The unindexed twin is the oracle for
 // what "the table holds".
 TEST_CASE("integration::cpp::test_index_mirror_gate::indexed_table_still_mirrors") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_index_mirror_gate/indexed");
+    auto config = test_create_config(integration_fixture_path("test_index_mirror_gate/indexed"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

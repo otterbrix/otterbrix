@@ -19,8 +19,8 @@
 // the machine it happens to be on.
 //
 // Config: the untouched `test_create_config` default (log level `trace`, what
-// every integration test runs at; WAL on). Data goes under
-// /tmp/otterbrix/measure_storage_costs/, never the repository.
+// every integration test runs at; WAL on). Data goes under this process's fixture
+// root -- integration_fixture_path("measure_storage_costs/...") -- never the repository.
 //
 // Build: target `measure_storage_costs` (Debug, for the numbers above to mean
 // anything next to their recorded baseline).

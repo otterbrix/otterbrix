@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
 #include <integration/cpp/connection.hpp>
@@ -12,7 +13,7 @@ constexpr size_t num_threads = 4;
 constexpr size_t work_per_thread = doc_num / num_threads;
 
 TEST_CASE("integration::cpp::test_otterbrix_multithread") {
-    auto config = test_create_config("/tmp/test_otterbrix_multithread");
+    auto config = test_create_config(integration_fixture_path("test_otterbrix_multithread"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -84,7 +85,7 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
 }
 
 TEST_CASE("integration::cpp::test_connectors") {
-    auto config = test_create_config("/tmp/test_connectors");
+    auto config = test_create_config(integration_fixture_path("test_connectors"));
     test_clear_directory(config);
     config.wal.on = false;
     auto otterbrix = otterbrix::make_otterbrix(config);
@@ -169,7 +170,7 @@ TEST_CASE("integration::cpp::test_connectors") {
 // BEFORE: this test died on the assert (Debug) / crashed on nullptr (Release).
 // ===========================================================================
 TEST_CASE("integration::cpp::connection::execute_after_close_refuses_loudly") {
-    auto config = test_create_config(std::filesystem::path("/tmp/test_connection_after_close") /
+    auto config = test_create_config(integration_fixture_path("test_connection_after_close") /
                                      std::to_string(::getpid()));
     test_clear_directory(config);
     config.wal.on = false;

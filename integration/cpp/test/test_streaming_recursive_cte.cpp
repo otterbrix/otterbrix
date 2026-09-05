@@ -34,6 +34,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
 
@@ -62,7 +63,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::streaming_recursive_cte::fixpoint_streams_and_is_correct") {
-    auto config = test_create_config("/tmp/test_streaming_recursive_cte/fixpoint");
+    auto config = test_create_config(integration_fixture_path("test_streaming_recursive_cte/fixpoint"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -106,7 +107,7 @@ TEST_CASE("integration::cpp::streaming_recursive_cte::outer_plan_no_longer_mater
     // execute_pipeline drives that producing sink FIRST then pumps its rows up. So the
     // materialized-path counter must NOT advance across the whole statement (neither the
     // outer chain nor any fixpoint sub-plan materializes).
-    auto config = test_create_config("/tmp/test_streaming_recursive_cte/no_materialize");
+    auto config = test_create_config(integration_fixture_path("test_streaming_recursive_cte/no_materialize"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -134,7 +135,7 @@ TEST_CASE("integration::cpp::streaming_recursive_cte::outer_plan_no_longer_mater
 }
 
 TEST_CASE("integration::cpp::streaming_recursive_cte::subtree_and_depth_stream") {
-    auto config = test_create_config("/tmp/test_streaming_recursive_cte/subtree");
+    auto config = test_create_config(integration_fixture_path("test_streaming_recursive_cte/subtree"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

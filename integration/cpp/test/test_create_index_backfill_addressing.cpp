@@ -61,10 +61,10 @@ namespace {
 
     // Fixture roots are qualified by pid: two binaries running at once (two build
     // directories, or ctest -j against a second checkout) must not open, truncate and unlink
-    // each other's files. Mirrors services/index/tests/index_fixture_path.hpp.
+    // each other's files. integration_fixture_path.hpp holds this directory's root, the way
+    // services/index/tests/index_fixture_path.hpp holds that one's.
     std::string fixture_root() {
-        return "/tmp/otterbrix/integration/test_create_index_backfill_addressing_" +
-               std::to_string(static_cast<long>(::getpid()));
+        return integration_fixture_path("test_create_index_backfill_addressing").string();
     }
 
 } // namespace

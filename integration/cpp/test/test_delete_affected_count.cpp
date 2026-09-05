@@ -13,13 +13,14 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 #include <unistd.h>
 
 TEST_CASE("integration::cpp::delete_affected_count::txn_re_delete_reports_zero", "[deletecount]") {
-    auto config = test_create_config("/tmp/test_delete_affected_count_" + std::to_string(::getpid()) + "/txn");
+    auto config = test_create_config(integration_fixture_path("test_delete_affected_count/txn"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_data.hpp>
@@ -26,7 +27,7 @@
 // Run it with [appendpin].
 
 TEST_CASE("integration::cpp::test_append_pin_lifetime::no_transition_happens_under_a_live_pin", "[.][appendpin]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_append_pin/lifetime");
+    auto config = test_create_config(integration_fixture_path("test_append_pin/lifetime"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

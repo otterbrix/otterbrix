@@ -1,14 +1,15 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <set>
 #include <string>
 #include <unistd.h>
 
 namespace {
-    // Fixture paths are pid-qualified: parallel test processes share /tmp, and
-    // two of them clearing and reseeding one directory corrupt each other.
+    // Fixture paths hang off the directory's pid-qualified root: parallel test processes
+    // share /tmp, and two of them clearing and reseeding one directory corrupt each other.
     std::string cs_fixture_dir(const char* leaf) {
-        return "/tmp/test_computed_schema_" + std::to_string(::getpid()) + "/" + leaf;
+        return integration_fixture_path(std::string("test_computed_schema/") + leaf).string();
     }
 
     // REGRESSION (#622, same as test_jsonb_support.cpp's header note): every

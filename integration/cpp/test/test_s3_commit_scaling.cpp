@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
@@ -46,7 +47,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_s3_commit_scaling::single_row_delete_vs_table_size", "[.][s3probe]") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_s3/scaling");
+    auto config = test_create_config(integration_fixture_path("test_s3/scaling"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

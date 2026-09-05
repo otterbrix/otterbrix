@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include "types/operations_helper.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -17,7 +18,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_rando
     // populated with a string literal; every even-index field with a bigint.
     // The test asserts that the dispatcher accepts all inserts in well-under
     // a minute and that a final SELECT * returns all 1000 rows.
-    auto config = test_create_config("/tmp/test_sql_features/dynamic_schema_stress");
+    auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_stress"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

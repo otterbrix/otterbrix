@@ -25,6 +25,7 @@
 // ============================================================================
 
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <services/collection/executor.hpp>
 
@@ -44,7 +45,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
-    auto config = test_create_config("/tmp/test_streaming_dml_insert");
+    auto config = test_create_config(integration_fixture_path("test_streaming_dml_insert"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -109,7 +110,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_streams") {
     // push() one chunk at a time. The streaming counter MUST bump, and the rows MUST
     // still land identically (R6: the streaming sink and the legacy on_execute path
     // share the same append core).
-    auto config = test_create_config("/tmp/test_streaming_dml_values");
+    auto config = test_create_config(integration_fixture_path("test_streaming_dml_values"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -147,7 +148,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
     // the VALUES batches via push(), commits in await_async_and_resume, then reads the
     // appended segment back for the RETURNING projection. Proves the source -> sink ->
     // readback path lands the right RETURNING rows when VALUES is a streaming source.
-    auto config = test_create_config("/tmp/test_streaming_dml_values_returning");
+    auto config = test_create_config(integration_fixture_path("test_streaming_dml_values_returning"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -177,7 +178,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
 }
 
 TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands") {
-    auto config = test_create_config("/tmp/test_streaming_dml_delete");
+    auto config = test_create_config(integration_fixture_path("test_streaming_dml_delete"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -240,7 +241,7 @@ TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands")
 }
 
 TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands") {
-    auto config = test_create_config("/tmp/test_streaming_dml_update");
+    auto config = test_create_config(integration_fixture_path("test_streaming_dml_update"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -333,7 +334,7 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
 // ============================================================================
 
 TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
-    auto config = test_create_config("/tmp/test_streaming_dml_fk_check");
+    auto config = test_create_config(integration_fixture_path("test_streaming_dml_fk_check"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -391,7 +392,7 @@ TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
 }
 
 TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_select") {
-    auto config = test_create_config("/tmp/test_streaming_dml_check");
+    auto config = test_create_config(integration_fixture_path("test_streaming_dml_check"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -441,7 +442,7 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
 }
 
 TEST_CASE("integration::cpp::streaming_dml::fk_cascade_streams_delete") {
-    auto config = test_create_config("/tmp/test_streaming_dml_cascade");
+    auto config = test_create_config(integration_fixture_path("test_streaming_dml_cascade"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -496,7 +497,7 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
     // the count-cap sits on the disk scan (pushable WHERE), on operator_match (a
     // non-pushable WHERE / bare DELETE), and on a persistent matched-row bound in the
     // DML operator for the USING/FROM semi-join. DML has NO OFFSET (a clean parse error).
-    auto config = test_create_config("/tmp/test_streaming_dml_limit");
+    auto config = test_create_config(integration_fixture_path("test_streaming_dml_limit"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

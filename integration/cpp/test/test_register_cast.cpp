@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -29,7 +30,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::register_cast::duplicate_not_allowed") {
-    auto config = test_create_config("/tmp/test_register_cast_dup");
+    auto config = test_create_config(integration_fixture_path("test_register_cast_dup"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -43,7 +44,7 @@ TEST_CASE("integration::cpp::register_cast::duplicate_not_allowed") {
 }
 
 TEST_CASE("integration::cpp::register_cast::unregistered_type_rejected") {
-    auto config = test_create_config("/tmp/test_register_cast_udt");
+    auto config = test_create_config(integration_fixture_path("test_register_cast_udt"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -79,7 +80,7 @@ TEST_CASE("integration::cpp::register_cast::unregistered_type_rejected") {
 }
 
 TEST_CASE("integration::cpp::register_cast::unregister_deletes") {
-    auto config = test_create_config("/tmp/test_register_cast_del");
+    auto config = test_create_config(integration_fixture_path("test_register_cast_del"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

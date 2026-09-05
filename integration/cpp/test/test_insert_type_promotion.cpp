@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/sql/transformer/utils.hpp>
@@ -45,7 +46,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_insert_type_promotion::growth_is_not_quadratic") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_insert_type_promotion/growth");
+    auto config = test_create_config(integration_fixture_path("test_insert_type_promotion/growth"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;
@@ -133,7 +134,7 @@ namespace {
 // boundaries either side of that seam are where a literal is most likely to be re-read at
 // the wrong width — as are the ones either side of the widest integer type.
 TEST_CASE("integration::cpp::test_insert_type_promotion::integer_literals_keep_their_value") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_insert_type_promotion/literal_values");
+    auto config = test_create_config(integration_fixture_path("test_insert_type_promotion/literal_values"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;
@@ -199,7 +200,7 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::integer_literals_keep_t
 // A column has a range, and a value outside it is refused — never folded into range and
 // stored as some other number.
 TEST_CASE("integration::cpp::test_insert_type_promotion::literal_outside_the_column_range_is_rejected") {
-    auto config = test_create_config("/tmp/otterbrix/integration/test_insert_type_promotion/column_range");
+    auto config = test_create_config(integration_fixture_path("test_insert_type_promotion/column_range"));
     test_clear_directory(config);
     config.wal.on = false;
     config.log.level = log_t::level::off;

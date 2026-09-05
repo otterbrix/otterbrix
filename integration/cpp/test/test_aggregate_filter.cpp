@@ -1,4 +1,5 @@
 #include "test_config.hpp"
+#include "integration_fixture_path.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <optional>
 #include <string>
@@ -42,7 +43,7 @@ namespace {
 //  Scalar aggregates with FILTER over a whole table.
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::aggregate_filter::scalar") {
-    auto config = test_helpers::make_test_config("/tmp/aggregate_filter/scalar");
+    auto config = test_helpers::make_test_config(integration_fixture_path("aggregate_filter/scalar"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -75,7 +76,7 @@ TEST_CASE("integration::cpp::aggregate_filter::scalar") {
 //  Three-valued logic: a NULL operand makes the filter UNKNOWN, which excludes the row.
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::aggregate_filter::three_valued") {
-    auto config = test_helpers::make_test_config("/tmp/aggregate_filter/tvl");
+    auto config = test_helpers::make_test_config(integration_fixture_path("aggregate_filter/tvl"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -98,7 +99,7 @@ TEST_CASE("integration::cpp::aggregate_filter::three_valued") {
 //  built with the unsized NA sentinel type.
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::aggregate_filter::first_row_null") {
-    auto config = test_helpers::make_test_config("/tmp/aggregate_filter/frn");
+    auto config = test_helpers::make_test_config(integration_fixture_path("aggregate_filter/frn"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));
@@ -120,7 +121,7 @@ TEST_CASE("integration::cpp::aggregate_filter::first_row_null") {
 //  FILTER combined with GROUP BY: the filter applies per group, independently of the grouping.
 // -------------------------------------------------------------------------------------------------
 TEST_CASE("integration::cpp::aggregate_filter::group_by") {
-    auto config = test_helpers::make_test_config("/tmp/aggregate_filter/group");
+    auto config = test_helpers::make_test_config(integration_fixture_path("aggregate_filter/group"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(okq(d, "CREATE DATABASE m;"));

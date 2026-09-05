@@ -10,13 +10,20 @@
 
 #include <integration/cpp/wrapper_dispatcher.hpp>
 
+#include "spaces.hpp"
+
 namespace py = pybind11;
 
 class PYBIND11_EXPORT wrapper_cursor final : public boost::intrusive_ref_counter<wrapper_cursor> {
 public:
     using pointer = components::cursor::cursor_t_ptr;
 
-    wrapper_cursor(pointer cursor, otterbrix::wrapper_dispatcher_t* dispatcher);
+    // `space` is not decoration: the result batch is pmr-allocated from the
+    // space's memory resource and `dispatcher` points into the same object, so a
+    // cursor that does not hold the space is only valid while somebody else
+    // happens to. Python releases the locals of a finished frame in no
+    // guaranteed order, so "somebody else" is not a guarantee.
+    wrapper_cursor(pointer cursor, otterbrix::wrapper_dispatcher_t* dispatcher, otterbrix::spaces_ptr space);
 
     void close();
     bool has_next();
@@ -39,6 +46,8 @@ public:
 
 private:
     std::atomic_bool close_;
+    // Declared before the members that live inside it, so it is destroyed last.
+    otterbrix::spaces_ptr space_;
     pointer ptr_;
     otterbrix::wrapper_dispatcher_t* dispatcher_;
 

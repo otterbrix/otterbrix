@@ -6,10 +6,12 @@ database silently destroyed it: the user's tables were gone before the first
 statement ran. These tests are the gate on that.
 
 Read-back goes through `Client`, not through the connection returned by
-`connect()`: `OtterBrixPyConnection.execute` hands back the connection itself
-and drops the cursor, so it cannot report rows. `Client` opens the very same
-on-disk layout (both go through configuration::config::create_config) and does
-return a countable cursor.
+`connect()`, and deliberately stays that way: `Client` opens the very same
+on-disk layout through a *different* entry point (both reach
+configuration::config::create_config), so the rows are proved to be on disk
+rather than merely still in the writer's own hands. (`execute` no longer drops
+its cursor -- it returns the rows now -- but reading them back through the same
+object that wrote them would test less than this does.)
 """
 
 import gc

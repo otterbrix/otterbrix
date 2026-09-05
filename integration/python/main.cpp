@@ -8,6 +8,7 @@
 
 #include <otterbrix_wrapper/pyexpression.hpp>
 #include <otterbrix_wrapper/pyrelation.hpp>
+#include <otterbrix_wrapper/pyresult.hpp>
 #include <otterbrix_wrapper/pytype.hpp>
 #include <otterbrix_wrapper/type_creation.hpp>
 #include <otterbrix_wrapper/typing.hpp>
@@ -26,6 +27,10 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
     type_creation::initialize(m);
     py_expression_t::initialize(m);
     py_relation_t::initialize(m);
+    // py_result_t is what `OtterBrixPyConnection.execute` hands back. It was
+    // compiled but never registered, so the type existed and Python could not
+    // see it -- registering it here is what makes a result returnable at all.
+    py_result_t::initialize(m);
     py_connection_t::initialize(m);
 
     m.def("connect",

@@ -13,7 +13,9 @@
 #include <vector>
 
 namespace components::tableref {
-    class table_ref_t;
+    // struct, matching its definition in components/tableref/tableref.hpp. As
+    // `class` it made every translation unit that saw both warn (-Wmismatched-tags).
+    struct table_ref_t;
 } // namespace components::tableref
 
 namespace components::function {

@@ -1,4 +1,5 @@
 #include "relation_factory.hpp"
+#include <atomic>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -6,8 +7,10 @@
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <integration/cpp/otterbrix.hpp>
+#include <cstdint>
 #include <memory>
 #include <scan/python_replacement_scan.hpp>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -190,11 +193,27 @@ namespace otterbrix {
                                                      node_sort_ptr sort,
                                                      node_select_ptr select,
                                                      node_limit_ptr limit) {
-        static int indx = 0;
+        // The scratch table this aggregate materialises into. The counter stays
+        // process-wide -- two connections in one process would otherwise both start
+        // at t0 and hand the same name to the same `tmp` database -- but it is now
+        // atomic (Python threads can build relations concurrently) and 64-bit (a
+        // plain int wraps).
+        static std::atomic<std::uint64_t> indx{0};
         auto session = otterbrix::session_id_t();
         std::string name = "t";
-        name += std::to_string(indx++);
-        space->dispatcher()->execute_sql(session, "CREATE TABLE tmp." + name + "();");
+        name += std::to_string(indx.fetch_add(1, std::memory_order_relaxed));
+        // Rule 6: this cursor used to go on the floor. A scratch table that was not
+        // created cannot hold the aggregate's output, and saying nothing only moves
+        // the failure to a later, less obvious statement.
+        auto create = space->dispatcher()->execute_sql(session, "CREATE TABLE tmp." + name + "();");
+        if (!create) {
+            throw std::runtime_error("relation: creating the scratch table tmp." + name + " returned no cursor");
+        }
+        if (create->is_error()) {
+            const auto err = create->get_error();
+            throw std::runtime_error("relation: creating the scratch table tmp." + name +
+                                     " failed: " + std::string(err.what.begin(), err.what.end()));
+        }
 
         auto* resource = space->dispatcher()->resource();
         auto aggregator = make_node_aggregate(resource, core::dbname_t{"tmp"}, core::relname_t{name});

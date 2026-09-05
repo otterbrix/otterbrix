@@ -2,9 +2,6 @@
 #include <common/string_util/string_util.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/planner/optimizer.hpp>
-#include <components/sql/parser/parser.h>
-#include <components/sql/transformer/transformer.hpp>
-#include <components/sql/transformer/utils.hpp>
 #include <connection_environment/connection_environment.hpp>
 #include <connection_environment/relation/relation_factory.hpp>
 #include <integration/cpp/catalog_listing.hpp>
@@ -35,6 +32,19 @@ namespace otterbrix {
                 throw std::runtime_error("connect: " + std::string(err.what.begin(), err.what.end()));
             }
             return std::move(space.value());
+        }
+
+        // The same translation point, one step later. A cursor carries the
+        // engine's own core::error_t; Python has exactly one way to hear about a
+        // failure, so it is raised verbatim instead of being dropped.
+        void raise_if_error(const char* what, const components::cursor::cursor_t_ptr& cursor) {
+            if (!cursor) {
+                throw std::runtime_error(std::string(what) + ": the engine returned no cursor");
+            }
+            if (cursor->is_error()) {
+                const auto err = cursor->get_error();
+                throw std::runtime_error(std::string(what) + ": " + std::string(err.what.begin(), err.what.end()));
+            }
         }
     } // namespace
 
@@ -190,22 +200,20 @@ namespace otterbrix {
     }
 
     result_t py_connection_t::execute_internal(const std::string& query) {
-        using namespace components::sql::transform;
-
-        auto session = session_id_t();
-        std::pmr::monotonic_buffer_resource parser_arena(space->dispatcher()->resource());
-        auto parse_result = linitial(raw_parser(&parser_arena, query.c_str()));
-
-        sql::transform::transformer transformer(space->dispatcher()->resource());
-        auto result = transformer.transform(sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
-
-        if (result.has_error()) {
-            return components::cursor::make_cursor(space->dispatcher()->resource(), result.error());
+        // A closed connection has no space, and `space->dispatcher()` on a null
+        // intrusive_ptr aborted the process. Refuse out loud instead.
+        if (!space) {
+            throw std::runtime_error("the connection is closed");
         }
-        auto plan = std::move(result).value();
-        auto cursor = space->dispatcher()->execute_plan(session, std::move(plan));
-
-        return cursor;
+        // One SQL pipeline, not two. This used to re-implement
+        // wrapper_dispatcher_t::execute_sql and got it wrong three ways: raw_parser's
+        // throw was not caught, `linitial` was applied to the parse list without
+        // checking it (an empty statement dereferenced nothing and took the process
+        // down), and neither the registered parser extensions nor the query text
+        // reached the transformer, so extension syntax was rejected and error
+        // messages lost their position.
+        auto session = session_id_t();
+        return space->dispatcher()->execute_sql(session, query);
     }
 
     result_t py_connection_t::execute(const components::logical_plan::node_ptr& node_in, bool optimize) {
@@ -281,12 +289,18 @@ namespace otterbrix {
         return res;
     }
 
-    pycursor_ptr py_connection_t::execute(const py::object& query) {
+    std::unique_ptr<py_result_t> py_connection_t::execute(const py::object& query) {
         py::gil_scoped_acquire gil;
-        if (py::isinstance<py::str>(query)) {
-            execute_internal(std::string(py::str(query)));
+        // Rule 6. A query that was not a str fell through to `return
+        // shared_from_this()`: the statement never ran and the caller was told
+        // nothing. A wrong argument type is a TypeError in Python.
+        if (!py::isinstance<py::str>(query)) {
+            throw py::type_error("execute: query must be a str, got " +
+                                 std::string(py::str(query.get_type().attr("__name__"))));
         }
-        return shared_from_this();
+        auto cursor = execute_internal(std::string(py::str(query)));
+        raise_if_error("execute", cursor);
+        return std::make_unique<py_result_t>(this, cursor, py_result_t::columns_of(cursor));
     }
 
     std::unique_ptr<py_relation_t> py_connection_t::from_df(const py::object& value) {

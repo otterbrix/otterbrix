@@ -89,6 +89,11 @@ namespace otterbrix {
         static void cleanup();
 
     public:
+        // The space a result must keep alive: the result batch is pmr-allocated
+        // from its memory resource, and `close()` can drop the last reference.
+        const boost::intrusive_ptr<otterbrix_t>& space_ptr() const noexcept { return space; }
+
+    public:
         // Execution surface, formerly connection_environment_t. Every method here
         // routes through space->dispatcher().
         void set_null_connection();
@@ -106,7 +111,14 @@ namespace otterbrix {
         void close();
 
         pycursor_ptr cursor();
-        pycursor_ptr execute(const py::object& query);
+
+        // Runs `query` and hands back its rows. Returns py_result_t rather than
+        // the connection: the connection has no way to carry a result set, and
+        // returning it was why a SELECT produced nothing a caller could read.
+        // A statement the engine rejected raises instead of returning -- Python's
+        // only error channel is an exception (same translation point `connect`
+        // and `listTables` use).
+        std::unique_ptr<py_result_t> execute(const py::object& query);
 
     public:
         std::unique_ptr<py_relation_t> from_df(const py::object& value);

@@ -4,6 +4,7 @@ _exported_symbols = []
 from .otterbrix import (
     OtterBrixPyConnection,
     OtterBrixPyRelation,
+    OtterBrixPyResult,
     Expression,
     ConstantExpression,
     ColumnExpression,
@@ -12,6 +13,7 @@ from .otterbrix import (
 _exported_symbols.extend([
     "OtterBrixPyConnection",
     "OtterBrixPyRelation",
+    "OtterBrixPyResult",
     "Expression",
     "ConstantExpression",
     "ColumnExpression",

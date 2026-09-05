@@ -50,24 +50,54 @@ namespace services::index {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
+        // The agent's own type, spelled here because the alias below it needs the class
+        // to be named first.
+        using agent_ptr_t = std::unique_ptr<index_agent_disk_t, actor_zeta::pmr::deleter_t>;
+
+        // THE DOOR. An agent, or the reason its storage could not be opened -- as a
+        // VALUE, not as a flag on an agent that exists anyway.
+        //
+        // The agent still opens its own backing (C2c, rule 10): the open runs in this
+        // function, in the agent's own translation unit, and nothing is created at a
+        // spawn site and handed across. What changed is that the failure no longer has to
+        // be ASKED for. There is no state-then-ask convention left to forget: an agent
+        // only ever exists over a backend that opened, and a caller cannot reach one
+        // without going through result_wrapper_t first.
+        //
+        // On an error the half-built agent is destroyed here, so the caller has nothing
+        // to unwind and leaves the index UNREGISTERED -- an index that will not open
+        // costs a full scan, while aborting costs the whole engine its start (integration
+        // test test_index_bootstrap_failure).
+        //
         // committed_txn_ids: the WAL-replay set of committed transaction ids,
         // forwarded to the bitcask index txn-log recover gate (M1.1). Fresh,
         // post-bootstrap agents pass an EMPTY set (a fresh dir has no txn-log to
-        // gate). The btree / disk_hash branches ignore it (no txn log).
+        // gate). The btree branch ignores it (no txn log).
         //
         // index_oid = pg_index.indexrelid; the agent's on-disk directory is
         // ${path_db}/${table_oid}/${index_oid}/ — oid-keyed, never name-keyed.
+        [[nodiscard]] static core::result_wrapper_t<agent_ptr_t>
+        create(std::pmr::memory_resource* resource,
+               const path_t& path_db,
+               components::catalog::oid_t table_oid,
+               components::catalog::oid_t index_oid,
+               components::logical_plan::index_type type,
+               uint64_t bitcask_flush_threshold,
+               uint64_t bitcask_segment_record_limit,
+               uint64_t btree_flush_threshold,
+               log_t& log,
+               std::pmr::set<std::uint64_t> committed_txn_ids);
+
+        // Takes the backend ALREADY OPEN, which is what makes construction infallible:
+        // there is no failure for this to record and no caller left to ask about one.
+        // `index_disk` is never null (asserted); create() above is the only way to get
+        // one, and it is what meets the failure. Public because actor_zeta::spawn
+        // placement-news the actor, and used through create().
         index_agent_disk_t(std::pmr::memory_resource* resource,
-                           const path_t& path_db,
+                           std::unique_ptr<index_disk_t> index_disk,
                            components::catalog::oid_t table_oid,
                            components::catalog::oid_t index_oid,
-                           components::logical_plan::index_type type,
-                           uint64_t bitcask_flush_threshold,
-                           uint64_t bitcask_segment_record_limit,
-                           uint64_t btree_flush_threshold,
-                           log_t& log,
-                           std::pmr::set<std::uint64_t> committed_txn_ids,
-                           disk_hash_table_ptr shared_hash_index);
+                           log_t& log);
         ~index_agent_disk_t();
 
         components::catalog::oid_t table_oid() const { return table_oid_; }
@@ -136,11 +166,14 @@ namespace services::index {
 
     private:
         log_t log_;
-        std::unique_ptr<index_disk_t> index_disk_;
         components::catalog::oid_t table_oid_;
+        // NEVER null: create() is the only door, and it destroys the agent rather than
+        // publishing one whose backing did not open. Every handler below can therefore
+        // read it without asking first.
+        std::unique_ptr<index_disk_t> index_disk_;
         bool is_dropped_{false};
     };
 
-    using index_agent_disk_ptr = std::unique_ptr<index_agent_disk_t, actor_zeta::pmr::deleter_t>;
+    using index_agent_disk_ptr = index_agent_disk_t::agent_ptr_t;
 
 } //namespace services::index

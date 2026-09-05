@@ -89,4 +89,10 @@ namespace services::index {
         std::unique_ptr<core::b_plus_tree::btree_t> db_;
     };
 
+    // The contract, checked where the class is written (see index_disk.hpp): a member
+    // this backend forgot, mistyped, or hid fails HERE and not at the spawn site in
+    // index_agent_disk.cpp.
+    static_assert(index_disk_impl<btree_index_disk_t>,
+                  "btree_index_disk_t does not satisfy the index_disk_t backend contract");
+
 } // namespace services::index

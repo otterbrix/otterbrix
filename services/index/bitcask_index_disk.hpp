@@ -34,18 +34,24 @@ namespace services::index {
         // this set; uncommitted-txn frames are skipped (their WAL commit marker
         // never landed). A fresh, runtime-created instance passes an EMPTY set —
         // a fresh dir has no txn-log to gate.
+        //
+        // The keydir file (hash_index.bin) is opened HERE, by the store that owns it --
+        // there is no handle to hand in any more (C2c, rule 10). This ctor aborts when it
+        // cannot be opened; create() below returns the same failure as a value, and that
+        // is the one production uses.
         bitcask_index_disk_t(const path_t& path,
                              std::pmr::memory_resource* resource,
                              uint64_t flush_threshold,
                              uint64_t segment_record_limit,
-                             std::pmr::set<std::uint64_t> committed_txn_ids,
-                             disk_hash_table_ptr shared_hash_index = nullptr);
+                             std::pmr::set<std::uint64_t> committed_txn_ids);
         ~bitcask_index_disk_t() override;
 
         // Factory returning the instance, or a core::error_t when on-disk
-        // recovery fails (e.g. segment CRC mismatch). Production code MUST use
-        // this: the direct ctor below loads from disk and aborts on corruption.
-        // committed_txn_ids carries the same recover-gate meaning as the ctor.
+        // recovery fails (a segment CRC mismatch, or a keydir file that will not
+        // open -- an unopenable path, an unreadable or incompatible header).
+        // Production code MUST use this: the direct ctor above loads from disk and
+        // aborts on both. committed_txn_ids carries the same recover-gate meaning as
+        // the ctor.
         [[nodiscard]] static core::result_wrapper_t<std::unique_ptr<bitcask_index_disk_t>>
         create(const path_t& path,
                std::pmr::memory_resource* resource,
@@ -101,8 +107,12 @@ namespace services::index {
         // remove path — no per-key find()-scan to avoid (that is a btree concern).
         void remove_bulk_unchecked(const value_t& key, size_t row_id) override;
 
-        bool load_hash_key_at(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const;
-        bool load_hash_key_at_unlocked(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const;
+        // The keydir this store keeps its (key -> record location) entries in. Reachable
+        // for tests that pin the keydir's OWN state -- that clear() wipes it in place
+        // rather than replacing it. Production reaches it only through find/insert/remove
+        // above.
+        [[nodiscard]] const disk_hash_table_t& hash_storage() const noexcept { return *hash_index_; }
+        [[nodiscard]] disk_hash_table_t& hash_storage() noexcept { return *hash_index_; }
 
     private:
         enum class record_kind_t : uint8_t
@@ -112,6 +122,29 @@ namespace services::index {
         };
 
         struct skip_load_tag {};
+
+        // The whole encoded key of the record at (segment_id, value_offset) — the answer
+        // to the one question a truncated keydir entry cannot answer for itself. Reads
+        // the segment WITHOUT taking this store's lock, because every caller of it below
+        // already holds that lock.
+        bool load_hash_key_at_unlocked(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const;
+
+        // This store's answer to disk_hash_table_t's truncated-key question, as a
+        // DEDUCED callable rather than a virtual interface and rather than a
+        // std::function (rule 14). The customization point is not virtual and has ONE
+        // implementation and ONE caller, both known at compile time, so the erasure buys
+        // nothing — the same rule C0b recorded when for_each stopped taking a
+        // std::function.
+        //
+        // It is HANDED TO THE CALL rather than installed on the table: nothing outlives
+        // anything, there is no unhook to forget in the destructor, and the table has no
+        // null-loader state to answer a long key false from. It crosses no actor
+        // boundary either (rule 10) — the table it is handed to is owned by this store.
+        [[nodiscard]] auto key_loader() const noexcept {
+            return [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) -> bool {
+                return load_hash_key_at_unlocked(log_file_id, log_offset, out_key);
+            };
+        }
 
         // Skip-load ctor used by create() — performs no disk I/O so the
         // factory can stage load_from_disk() and check crc_failure_ before
@@ -170,7 +203,10 @@ namespace services::index {
         void flush_if_needed();
         void force_flush_unlocked();
         void note_write_error(core::error_t err);
-        void install_hash_key_loader();
+        // Opens the keydir file and says why it could not, as a VALUE: the direct ctor
+        // aborts on that value and create() hands it back. Nothing is recorded on the
+        // object, so no owner has to know to ask afterwards.
+        [[nodiscard]] core::error_t open_hash_index();
 
         std::filesystem::path path_;
         std::filesystem::path hash_index_file_path_;
@@ -178,7 +214,10 @@ namespace services::index {
         mutable core::filesystem::local_file_system_t fs_;
         std::unique_ptr<core::filesystem::file_handle_t> file_;
         std::unique_ptr<core::filesystem::file_handle_t> txn_log_file_;
-        disk_hash_table_ptr hash_index_;
+        // SOLE owner. It used to be an intrusive_ptr because the index facade held the
+        // same object across the actor boundary; nothing outside this store holds it any
+        // more, so the reference count went with the sharing (C2c, rule 10).
+        std::unique_ptr<disk_hash_table_t> hash_index_;
         // Set when a hash-index write fails on a path whose caller returns void (the direct and
         // bulk inserts, the startup rebuild, segment merge). force_flush() hands it to the caller,
         // which is the first point on those paths that can report anything at all.
@@ -203,5 +242,11 @@ namespace services::index {
         // core::error_t; the direct ctor asserts.
         bool crc_failure_{false};
     };
+
+    // The contract, checked where the class is written (see index_disk.hpp): a member
+    // this backend forgot, mistyped, or hid fails HERE and not at the spawn site in
+    // index_agent_disk.cpp.
+    static_assert(index_disk_impl<bitcask_index_disk_t>,
+                  "bitcask_index_disk_t does not satisfy the index_disk_t backend contract");
 
 } // namespace services::index

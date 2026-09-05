@@ -6,14 +6,15 @@
 
 // An index whose disk storage cannot be opened must not take the engine down at startup.
 //
-// bootstrap_indexes_sync opens the per-index hash storage
-// (<disk>/<table_oid>/<indexrelid>/hash_index.bin) through disk_hash_table_t::create(), which
-// reports by value. On failure it must SKIP the index entirely — spawn no agent, register
-// nothing: an index that will not open costs a full scan, whereas aborting costs the whole
-// engine its start. In particular it must NOT spawn the bitcask agent with a null shared hash
-// storage, because the agent would then open the same broken file through disk_hash_table_t's
-// DIRECT constructor, which asserts and aborts on exactly the failures this path exists to
-// survive (unopenable file, unreadable or incompatible header).
+// The per-index hash storage (<disk>/<table_oid>/<indexrelid>/hash_index.bin) is opened by the
+// AGENT that owns it, inside bitcask_index_disk_t::create(), which reports by value; it used to
+// be opened by bootstrap_indexes_sync and handed in as a shared handle (removed in C2c, rule
+// 10). The DECISION stays where it was: index_agent_disk_t::create() hands bootstrap_indexes_sync
+// either an agent or the reason there is none, and on a reason it SKIPS the index entirely —
+// registering nothing, publishing no address, never scheduling it. An index that will not open
+// costs a full scan, whereas aborting costs the whole engine its start. The factory is what
+// makes that possible: the DIRECT constructor asserts and aborts on exactly the failures this
+// path exists to survive (unopenable file, unreadable or incompatible header).
 //
 // Historically this test could not be made red: pg_index carried no indtype, so after a restart
 // every index came back as `single` and the hashed branch never ran. With indtype persisted the
@@ -52,7 +53,8 @@ TEST_CASE("integration::cpp::test_index_bootstrap_failure::engine_starts_when_an
     }
 
     // The engine is down; make the per-index storage file unopenable for the next start —
-    // a directory where disk_hash_table_t::create expects a regular file.
+    // a directory where disk_hash_table_t::create expects a regular file. The agent's own
+    // open is what meets it now.
     const auto storage_file = index_dir / "hash_index.bin";
     std::filesystem::remove_all(storage_file);
     std::filesystem::create_directories(storage_file);

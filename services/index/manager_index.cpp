@@ -100,6 +100,7 @@ namespace services::index {
         , engines_(resource)
         , dropped_table_agents_(resource)
         , disk_agents_per_oid_(resource)
+        , disk_agents_owned_(resource)
         , pending_void_(resource) {
         if (!path_db_.empty()) {
             std::filesystem::create_directories(path_db_);
@@ -423,8 +424,7 @@ namespace services::index {
                                                components::logical_plan::index_type type,
                                                components::index::keys_base_storage_t keys,
                                                actor_zeta::address_t disk_agent_addr,
-                                               index_agent_disk_ptr disk_agent_owned,
-                                               disk_hash_table_ptr shared_hash_storage) {
+                                               index_agent_disk_ptr disk_agent_owned) {
         // Steady-state equivalent of create_index below, minus the mailbox send
         // (see the declaration). base_spaces runs bootstrap_engine_sync for every
         // live oid first, so a missing engine here is a bootstrap-order bug:
@@ -451,14 +451,21 @@ namespace services::index {
             return;
         }
 
+        // ONE FACADE CLASS PER FAMILY, picked here by the `type` the catalog recorded --
+        // a runtime choice at the construction site, which is where a runtime choice
+        // belongs, and not a test either class makes about itself. There is no storage to
+        // open here at all any more — the agent whose address arrives with this call
+        // opened its own, and a failure to do so kept this call from happening:
+        // index_agent_disk_t::create returns the reason instead of an agent (see the
+        // declaration).
         uint32_t id_index = components::index::INDEX_ID_UNDEFINED;
         switch (type) {
             case components::logical_plan::index_type::single: {
                 // The DEFAULT `CREATE INDEX` (see the note in create_index below).
-                id_index = components::index::make_index<components::index::disk_ordered_single_field_index_t>(
-                    engine,
-                    index_oid,
-                    keys);
+                id_index =
+                    components::index::make_index<components::index::disk_ordered_single_field_index_t>(engine,
+                                                                                                        index_oid,
+                                                                                                        keys);
                 break;
             }
             case components::logical_plan::index_type::hashed: {
@@ -466,40 +473,12 @@ namespace services::index {
                     id_index = components::index::make_index<components::index::hash_single_field_index_t>(engine,
                                                                                                            index_oid,
                                                                                                            keys);
-                } else if (shared_hash_storage) {
-                    id_index = components::index::make_index<components::index::disk_hash_single_field_index_t>(
-                        engine,
-                        index_oid,
-                        keys,
-                        shared_hash_storage);
-                } else {
-                    const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) /
-                                      std::to_string(static_cast<unsigned>(index_oid));
-                    std::filesystem::create_directories(base);
-                    auto storage = services::index::disk_hash_table_t::create(
-                        base / "hash_index.bin",
-                        services::index::disk_hash_table_t::default_bucket_count,
-                        resource_);
-                    if (storage.has_error()) {
-                        // Startup has no caller to answer, so the index is left
-                        // UNREGISTERED rather than silently replaced by a memory
-                        // one. An absent index costs a full scan; a memory index
-                        // standing in for a disk index answers from an empty
-                        // structure, i.e. returns wrong rows, and reports nothing.
-                        error(log_,
-                              "manager_index_t::bootstrap_index_sync: index_oid={} on oid={} not restored, "
-                              "its disk storage could not be opened: {}",
-                              static_cast<unsigned>(index_oid),
-                              static_cast<unsigned>(table_oid),
-                              storage.error().what);
-                        return;
-                    }
-                    id_index = components::index::make_index<components::index::disk_hash_single_field_index_t>(
-                        engine,
-                        index_oid,
-                        keys,
-                        storage.value());
+                    break;
                 }
+                id_index =
+                    components::index::make_index<components::index::disk_hash_single_field_index_t>(engine,
+                                                                                                     index_oid,
+                                                                                                     keys);
                 break;
             }
             default:
@@ -630,111 +609,110 @@ namespace services::index {
                                     std::pmr::string{"index already exists", resource_}};
         }
 
-        uint32_t id_index = components::index::INDEX_ID_UNDEFINED;
-        services::index::disk_hash_table_ptr shared_hash_storage;
-        switch (type) {
-            case components::logical_plan::index_type::single: {
-                // THE DEFAULT `CREATE INDEX`. SQL has one explicit spelling, `USING hash`;
-                // everything else — including no USING clause at all — arrives here
-                // (transform_index.cpp, detect_index_type). So this line decides the engine
-                // under the statement almost every user writes.
-                //
-                // No `path_db_.empty()` branch, unlike the hashed case below, and that is a
-                // property of this facade rather than an oversight: it holds neither a
-                // handle nor a path, so there is nothing for an empty path to change in its
-                // construction. What an empty path WOULD change is whether an agent gets
-                // spawned at all, and the read path refuses to guess about that — see
-                // search_with_preferred_type, which fails loudly on a facade with no agent
-                // wired instead of answering an empty result set.
-                id_index = components::index::make_index<components::index::disk_ordered_single_field_index_t>(
-                    engine,
-                    index_oid,
-                    keys);
-                break;
-            }
-            case components::logical_plan::index_type::hashed: {
-                if (path_db_.empty()) {
-                    id_index = components::index::make_index<components::index::hash_single_field_index_t>(engine,
-                                                                                                           index_oid,
-                                                                                                           keys);
-                } else {
-                    const auto base = path_db_ / std::to_string(static_cast<unsigned>(table_oid)) /
-                                      std::to_string(static_cast<unsigned>(index_oid));
-                    std::filesystem::create_directories(base);
-                    auto storage = services::index::disk_hash_table_t::create(
-                        base / "hash_index.bin",
-                        services::index::disk_hash_table_t::default_bucket_count,
-                        resource_);
-                    if (storage.has_error()) {
-                        // The statement asked for a disk index. Handing back a
-                        // memory one would report success for something the user
-                        // did not ask for and cannot see, so the failure goes back
-                        // to the caller, which drops the half-built index.
-                        error(log_,
-                              "manager_index_t::create_index: index_oid={} on oid={} failed, "
-                              "disk storage could not be opened: {}",
-                              static_cast<unsigned>(index_oid),
-                              static_cast<unsigned>(table_oid),
-                              storage.error().what);
-                        co_return storage.error();
-                    }
-                    shared_hash_storage = storage.value();
-                    id_index = components::index::make_index<components::index::disk_hash_single_field_index_t>(
-                        engine,
-                        index_oid,
-                        keys,
-                        shared_hash_storage);
-                }
-                break;
-            }
-            default:
+        if (type != components::logical_plan::index_type::single &&
+            type != components::logical_plan::index_type::hashed) {
+            co_return core::error_t{core::error_code_t::index_create_fail,
+                                    std::pmr::string{"unsupported index type", resource_}};
+        }
+
+        // A MEMORY-ONLY engine (no path_db_) spawns no agent, so there is no storage to
+        // open and nothing below to run. The two families part company here and only
+        // here: the hashed one has an in-memory implementation to fall back on, while the
+        // ordered one is registered as the disk facade with NO agent wired — its facade
+        // holds neither a handle nor a path, so an empty path changes nothing about
+        // CONSTRUCTING it. What it changes is whether an agent exists, and the read path
+        // refuses to guess about that: search_with_preferred_type fails loudly on a facade
+        // with no agent instead of answering an empty result set.
+        if (path_db_.empty()) {
+            const auto id_memory =
+                type == components::logical_plan::index_type::hashed
+                    ? components::index::make_index<components::index::hash_single_field_index_t>(engine,
+                                                                                                  index_oid,
+                                                                                                  keys)
+                    : components::index::make_index<components::index::disk_ordered_single_field_index_t>(engine,
+                                                                                                          index_oid,
+                                                                                                          keys);
+            if (id_memory == components::index::INDEX_ID_UNDEFINED) {
                 co_return core::error_t{core::error_code_t::index_create_fail,
-                                        std::pmr::string{"unsupported index type", resource_}};
-        }
-
-        if (id_index != components::index::INDEX_ID_UNDEFINED) {
-            // No btree replay into an in-memory twin here either — see the note in
-            // bootstrap_index_sync. Whatever a pre-existing tree at this oid pair holds is
-            // already loaded by the agent's own btree_index_disk_t constructor, which is
-            // the only owner of those files.
-            //
-            // Create disk agent for persistent storage
-            if (!path_db_.empty()) {
-                // Runtime DDL path: a fresh index dir with no txn-log to
-                // gate, so the recover-gate set is EMPTY (correct value, not
-                // a fallback). Built on resource_ — the resource the agent
-                // and its bitcask store use.
-                auto agent =
-                    actor_zeta::spawn<index_agent_disk_t>(resource_,
-                                                          path_db_,
-                                                          table_oid,
-                                                          index_oid,
-                                                          type,
-                                                          bitcask_index_disk_t::default_flush_threshold_,
-                                                          bitcask_index_disk_t::default_segment_record_limit_,
-                                                          btree_index_disk_t::default_flush_threshold_,
-                                                          log_,
-                                                          std::pmr::set<std::uint64_t>(resource_),
-                                                          shared_hash_storage);
-
-                // Link the disk agent to the index it belongs to, BY INDEXRELID — see
-                // bootstrap_index_sync for why a keys lookup misroutes a second index over
-                // an already-indexed column.
-                if (auto* idx = engine->matching_relid(index_oid); idx) {
-                    idx->set_disk_agent(agent->address(), address());
-                    engine->add_disk_agent(id_index, agent->address());
-                }
-
-                auto addr = agent->address();
-                disk_agents_owned_.emplace_back(std::move(agent));
-                // Register address in per-oid fan-out map for commit_inserts
-                // / commit_deletes / on_horizon_advanced.
-                auto oid_it =
-                    disk_agents_per_oid_.try_emplace(table_oid, std::pmr::vector<actor_zeta::address_t>(resource_))
-                        .first;
-                oid_it->second.emplace_back(addr);
+                                        std::pmr::string{"index could not be constructed", resource_}};
             }
+            co_return id_memory;
         }
+
+        // THE AGENT FIRST, the registration second, and the order is the change. The
+        // storage this index needs is opened by the AGENT now (C2c, rule 10) — nothing is
+        // created here and handed across — so its failure is only knowable once the agent
+        // exists. Registering the facade first would mean unwinding a live index out of
+        // the engine on that failure; this way there is nothing to unwind.
+        //
+        // Runtime DDL path: a fresh index dir with no txn-log to gate, so the recover-gate
+        // set is EMPTY (correct value, not a fallback). Built on resource_ — the resource
+        // the agent and its store use.
+        auto agent_result = index_agent_disk_t::create(resource_,
+                                                       path_db_,
+                                                       table_oid,
+                                                       index_oid,
+                                                       type,
+                                                       bitcask_index_disk_t::default_flush_threshold_,
+                                                       bitcask_index_disk_t::default_segment_record_limit_,
+                                                       btree_index_disk_t::default_flush_threshold_,
+                                                       log_,
+                                                       std::pmr::set<std::uint64_t>(resource_));
+        if (agent_result.has_error()) {
+            // The statement asked for a disk index. Handing back a memory one would report
+            // success for something the user did not ask for and cannot see, so the
+            // failure goes back to the caller. No agent was built, so there is nothing
+            // registered and nothing scheduled to unwind.
+            error(log_,
+                  "manager_index_t::create_index: index_oid={} on oid={} failed, "
+                  "disk storage could not be opened: {}",
+                  static_cast<unsigned>(index_oid),
+                  static_cast<unsigned>(table_oid),
+                  agent_result.error().what);
+            co_return agent_result.error();
+        }
+        // Only reachable past the check above -- result_wrapper_t::value() is what makes
+        // that a compiler-enforced order rather than a convention.
+        auto agent = std::move(agent_result.value());
+
+        // ONE FACADE CLASS PER FAMILY, picked here by `type` — including THE DEFAULT
+        // `CREATE INDEX`, because SQL has one explicit spelling, `USING hash`, and
+        // everything else (no USING clause at all) arrives as index_type::single
+        // (transform_index.cpp, detect_index_type). The choice is made HERE, once, by the
+        // site that already knows the type; neither class carries a test about which one
+        // it is.
+        const uint32_t id_index =
+            type == components::logical_plan::index_type::hashed
+                ? components::index::make_index<components::index::disk_hash_single_field_index_t>(engine,
+                                                                                                   index_oid,
+                                                                                                   keys)
+                : components::index::make_index<components::index::disk_ordered_single_field_index_t>(engine,
+                                                                                                      index_oid,
+                                                                                                      keys);
+        if (id_index == components::index::INDEX_ID_UNDEFINED) {
+            co_return core::error_t{core::error_code_t::index_create_fail,
+                                    std::pmr::string{"index could not be constructed", resource_}};
+        }
+
+        // No btree replay into an in-memory twin — see the note in bootstrap_index_sync.
+        // Whatever a pre-existing store at this oid pair holds is already loaded by the
+        // agent's own backend constructor, which is the only owner of those files.
+        //
+        // Link the disk agent to the index it belongs to, BY INDEXRELID — see
+        // bootstrap_index_sync for why a keys lookup misroutes a second index over an
+        // already-indexed column.
+        if (auto* idx = engine->matching_relid(index_oid); idx) {
+            idx->set_disk_agent(agent->address(), address());
+            engine->add_disk_agent(id_index, agent->address());
+        }
+
+        auto addr = agent->address();
+        disk_agents_owned_.emplace_back(std::move(agent));
+        // Register address in per-oid fan-out map for commit_inserts
+        // / commit_deletes / on_horizon_advanced.
+        auto oid_it =
+            disk_agents_per_oid_.try_emplace(table_oid, std::pmr::vector<actor_zeta::address_t>(resource_)).first;
+        oid_it->second.emplace_back(addr);
 
         co_return id_index;
     }

@@ -61,25 +61,25 @@ namespace services::index {
     disk_hash_table_t::disk_hash_table_t(const std::filesystem::path& file_path,
                                          uint32_t bucket_count,
                                          std::pmr::memory_resource* memory_resource,
-                                         defer_abort_tag)
+                                         defer_open_tag)
         : file_path_(file_path)
         , overflow_file_path_(std::filesystem::path(file_path).concat(".ovf"))
         , memory_resource_(memory_resource) {
         // A missing resource or a zero bucket count is a caller bug, not an I/O
         // failure: nothing can recover from it, and with no resource there is not
-        // even anything to build the message on. I/O failures below are different
-        // — they are environmental, so they travel as a value.
+        // even anything to build the message on. I/O failures are different
+        // — they are environmental, so they travel as a value, and this ctor opens
+        // nothing at all: whoever runs open_or_create() owns its answer.
         assert(memory_resource && "disk_hash_table: resource required");
         assert(bucket_count > 0 && "disk_hash_table: bucket_count must be > 0");
         header_.bucket_count_value = bucket_count;
-        open_or_create();
     }
 
     disk_hash_table_t::disk_hash_table_t(const std::filesystem::path& file_path,
                                          uint32_t bucket_count,
                                          std::pmr::memory_resource* memory_resource)
-        : disk_hash_table_t(file_path, bucket_count, memory_resource, defer_abort_tag{}) {
-        if (!open_error_.empty()) {
+        : disk_hash_table_t(file_path, bucket_count, memory_resource, defer_open_tag{}) {
+        if (open_or_create().contains_error()) {
             // A half-open table must never be handed to a caller that believes it
             // has durable storage; create() reports the same failure as a value.
             assert(false && "disk_hash_table: direct ctor could not open storage");
@@ -87,17 +87,18 @@ namespace services::index {
         }
     }
 
-    core::result_wrapper_t<boost::intrusive_ptr<disk_hash_table_t>>
+    core::result_wrapper_t<std::unique_ptr<disk_hash_table_t>>
     disk_hash_table_t::create(const std::filesystem::path& file_path,
                               uint32_t bucket_count,
                               std::pmr::memory_resource* memory_resource) {
-        auto instance =
-            boost::intrusive_ptr(new disk_hash_table_t(file_path, bucket_count, memory_resource, defer_abort_tag{}));
-        if (!instance->open_error_.empty()) {
-            return core::error_t{core::error_code_t::index_create_fail,
-                                 std::pmr::string{instance->open_error_, memory_resource}};
+        auto instance = std::unique_ptr<disk_hash_table_t>(
+            new disk_hash_table_t(file_path, bucket_count, memory_resource, defer_open_tag{}));
+        // The open runs HERE, and its answer is the return value rather than a member
+        // the caller has to know to ask about.
+        if (auto open_result = instance->open_or_create(); open_result.contains_error()) {
+            return open_result;
         }
-        return instance;
+        return std::move(instance);
     }
 
     disk_hash_table_t::~disk_hash_table_t() {
@@ -166,95 +167,6 @@ namespace services::index {
             }
             page_id = overflow;
         }
-    }
-
-    void disk_hash_table_t::set_full_key_loader(full_key_loader_t loader) {
-        std::unique_lock lock(mutex_);
-        key_loader_ = std::move(loader);
-    }
-
-    std::vector<disk_hash_table_t::value_ref_t> disk_hash_table_t::get_all(std::string_view key,
-                                                                           bool lock_bitcask) const {
-        std::unique_lock lock(mutex_);
-        const uint32_t key_hash = hash_key(key);
-        uint64_t page_id = bucket_primary_page_id(bucket_id_for_hash(key_hash));
-        std::pmr::vector<value_ref_t> values(memory_resource_);
-
-        byte_buffer_t page(memory_resource_);
-        page.resize(page_size);
-        while (page_id != 0) {
-            if (!read_page(page_id, page)) {
-                break; // unreadable page: stop walking this chain
-            }
-            const auto cnt = page_count(page);
-            for (uint16_t i = 0; i < cnt; ++i) {
-                auto slot = read_slot(page, i);
-                if (slot.flags != slot_flag_used || slot.key_hash != key_hash || slot.length == 0) {
-                    continue;
-                }
-                const auto entry = decode_entry(page, slot);
-                if (!entry.valid) {
-                    continue; // corrupt slot: skip it rather than read past the page
-                }
-                if (!keys_equal(key, entry, lock_bitcask)) {
-                    continue;
-                }
-                values.push_back(value_ref_t{entry.value,
-                                             entry.log_file_id,
-                                             entry.log_offset,
-                                             (entry.entry_flags & entry_flag_truncated) != 0});
-            }
-            page_id = page_overflow(page);
-        }
-        return {values.begin(), values.end()};
-    }
-
-    std::optional<disk_hash_table_t::value_ref_t> disk_hash_table_t::get(std::string_view key,
-                                                                         bool lock_bitcask) const {
-        auto all = get_all(key, lock_bitcask);
-        if (all.empty()) {
-            return std::nullopt;
-        }
-        return all.front();
-    }
-
-    std::vector<disk_hash_table_t::value_ref_t> disk_hash_table_t::get_all(std::string_view key) const {
-        return get_all(key, true);
-    }
-
-    bool disk_hash_table_t::erase(std::string_view key, std::optional<int64_t> expected_value, bool lock_bitcask) {
-        std::unique_lock lock(mutex_);
-        const uint32_t key_hash = hash_key(key);
-        uint64_t page_id = bucket_primary_page_id(bucket_id_for_hash(key_hash));
-        byte_buffer_t page(memory_resource_);
-        page.resize(page_size);
-        while (page_id != 0) {
-            if (!read_page(page_id, page)) {
-                break; // unreadable page: stop walking this chain
-            }
-            bool erased = false;
-            if (try_erase_in_page(page, key, key_hash, expected_value, lock_bitcask, erased)) {
-                if (erased) {
-                    if (!write_page(page_id, page)) {
-                        return false;
-                    }
-                    if (entry_count_ > 0) {
-                        --entry_count_;
-                    }
-                }
-                return erased;
-            }
-            page_id = page_overflow(page);
-        }
-        return false;
-    }
-
-    bool disk_hash_table_t::erase(std::string_view key, bool lock_bitcask) {
-        return erase(key, std::nullopt, lock_bitcask);
-    }
-
-    bool disk_hash_table_t::erase(std::string_view key, int64_t value, bool lock_bitcask) {
-        return erase(key, std::optional<int64_t>(value), lock_bitcask);
     }
 
     bool disk_hash_table_t::rehash(uint32_t new_bucket_count) {
@@ -459,7 +371,18 @@ namespace services::index {
             header_.bucket_count_value > 0 ? header_.bucket_count_value : default_bucket_count;
         header_ = header_t{};
         header_.bucket_count_value = bucket_count;
-        open_or_create();
+        if (open_or_create().contains_error()) {
+            // clear() has just DELETED the backing files and is recreating them empty. A
+            // failure here leaves a live table with nothing under it, and clear() has no
+            // error channel to say so -- its caller chain (bitcask clear -> the agent's
+            // clear handler -> repopulate) is void the whole way. Terminal, therefore,
+            // exactly like the direct constructor on the same failure. Making it a value
+            // instead would mean widening index_disk_t::clear(), which is a different
+            // change; what it must NOT be is what it was, which was recorded in a member
+            // nobody read.
+            assert(false && "disk_hash_table: clear() could not re-open storage");
+            std::abort();
+        }
     }
 
     void disk_hash_table_t::sync_files() {
@@ -471,69 +394,65 @@ namespace services::index {
         }
     }
 
-    void disk_hash_table_t::open_or_create() {
+    core::error_t disk_hash_table_t::io_failure(const std::string& message) const {
+        return core::error_t{core::error_code_t::index_create_fail, std::pmr::string{message, memory_resource_}};
+    }
+
+    core::error_t disk_hash_table_t::open_or_create() {
         file_ = open_file(fs_,
                           file_path_,
                           file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                           file_lock_type::NO_LOCK);
         if (!file_) {
-            open_error_ = "disk_hash_table: failed to open file " + file_path_.string();
-            return;
+            return io_failure("disk_hash_table: failed to open file " + file_path_.string());
         }
         if (file_->file_size() == 0) {
-            initialize_new_file();
-            return;
+            return initialize_new_file();
         }
-        load_existing_file();
-        if (!open_error_.empty()) {
-            return;
-        }
+        RETURN_IF_ERROR(load_existing_file());
         entry_count_ = count_entries_unlocked();
+        return core::error_t::no_error();
     }
 
-    void disk_hash_table_t::open_overflow_file() {
+    core::error_t disk_hash_table_t::open_overflow_file() {
         ovf_file_ = open_file(fs_,
                               overflow_file_path_,
                               file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                               file_lock_type::NO_LOCK);
         if (!ovf_file_) {
-            open_error_ = "disk_hash_table: failed to open overflow file " + overflow_file_path_.string();
+            return io_failure("disk_hash_table: failed to open overflow file " + overflow_file_path_.string());
         }
+        return core::error_t::no_error();
     }
 
-    void disk_hash_table_t::initialize_new_file() {
+    core::error_t disk_hash_table_t::initialize_new_file() {
         header_.page_size_value = page_size;
         header_.next_overflow_page = overflow_page_id_base;
         header_.hash_seed_value = generate_hash_seed();
         initialize_linear_state_from_bucket_count();
 
-        open_overflow_file();
-        if (!open_error_.empty()) {
-            return;
-        }
+        RETURN_IF_ERROR(open_overflow_file());
         if (!persist_header()) {
-            open_error_ = "disk_hash_table: failed to write header";
-            return;
+            return io_failure("disk_hash_table: failed to write header");
         }
         byte_buffer_t page(memory_resource_);
         page.resize(page_size);
         for (uint32_t i = 0; i < header_.bucket_count_value; ++i) {
             init_empty_page(page);
             if (!write_page(bucket_primary_page_id(i), page)) {
-                open_error_ = "disk_hash_table: failed to initialize bucket page";
-                return;
+                return io_failure("disk_hash_table: failed to initialize bucket page");
             }
         }
         entry_count_ = 0;
         sync_files();
+        return core::error_t::no_error();
     }
 
-    void disk_hash_table_t::load_existing_file() {
+    core::error_t disk_hash_table_t::load_existing_file() {
         byte_buffer_t hdr(memory_resource_);
         hdr.resize(page_size, 0);
         if (!file_->read(hdr.data(), page_size, 0)) {
-            open_error_ = "disk_hash_table: failed to read header page";
-            return;
+            return io_failure("disk_hash_table: failed to read header page");
         }
         header_.page_size_value = codec::read_le_ptr<uint32_t>(hdr.data() + 12);
         header_.bucket_count_value = codec::read_le_ptr<uint32_t>(hdr.data() + 16);
@@ -542,8 +461,7 @@ namespace services::index {
         header_.split_bucket_value = codec::read_le_ptr<uint32_t>(hdr.data() + 32);
         header_.hash_seed_value = hdr.size() >= 40 ? codec::read_le_ptr<uint32_t>(hdr.data() + 36) : 0;
         if (header_.page_size_value != page_size || header_.bucket_count_value == 0) {
-            open_error_ = "disk_hash_table: incompatible header";
-            return;
+            return io_failure("disk_hash_table: incompatible header");
         }
         const uint32_t base = header_.level_value > 31 ? 0 : (1U << header_.level_value);
         if (base == 0 || base > header_.bucket_count_value || header_.split_bucket_value > base ||
@@ -551,10 +469,11 @@ namespace services::index {
             initialize_linear_state_from_bucket_count();
         }
 
-        open_overflow_file();
+        RETURN_IF_ERROR(open_overflow_file());
         if (header_.next_overflow_page < overflow_page_id_base) {
             header_.next_overflow_page = overflow_page_id_base;
         }
+        return core::error_t::no_error();
     }
 
     bool disk_hash_table_t::is_overflow_page_id(uint64_t page_id) { return page_id >= overflow_page_id_base; }
@@ -747,25 +666,6 @@ namespace services::index {
         return e;
     }
 
-    bool
-    disk_hash_table_t::keys_equal(std::string_view query_key, const decoded_entry_t& entry, bool lock_bitcask) const {
-        if ((entry.entry_flags & entry_flag_truncated) == 0) {
-            return query_key.size() == entry.full_key_len && query_key == entry.stored_key;
-        }
-        if (query_key.size() < entry.stored_key.size() ||
-            query_key.substr(0, entry.stored_key.size()) != entry.stored_key) {
-            return false;
-        }
-        if (!key_loader_) {
-            return false;
-        }
-        std::string full;
-        if (!key_loader_(entry.log_file_id, entry.log_offset, full, lock_bitcask)) {
-            return false;
-        }
-        return full == query_key;
-    }
-
     bool disk_hash_table_t::try_insert_payload_in_page(byte_buffer_t& page,
                                                        uint32_t key_hash,
                                                        const byte_buffer_t& payload,
@@ -791,36 +691,6 @@ namespace services::index {
         set_page_free_offset(page, static_cast<uint16_t>(free_off + payload.size()));
         changed = true;
         return true;
-    }
-
-    bool disk_hash_table_t::try_erase_in_page(byte_buffer_t& page,
-                                              std::string_view key,
-                                              uint32_t key_hash,
-                                              std::optional<int64_t> expected_value,
-                                              bool lock_bitcask,
-                                              bool& erased) {
-        const auto cnt = page_count(page);
-        for (uint16_t i = 0; i < cnt; ++i) {
-            auto slot = read_slot(page, i);
-            if (slot.flags != slot_flag_used || slot.key_hash != key_hash || slot.length == 0) {
-                continue;
-            }
-            const auto entry = decode_entry(page, slot);
-            if (!entry.valid) {
-                continue; // corrupt slot: skip it rather than read past the page
-            }
-            if (!keys_equal(key, entry, lock_bitcask)) {
-                continue;
-            }
-            if (expected_value.has_value() && entry.value != *expected_value) {
-                continue;
-            }
-            slot.flags = slot_flag_free;
-            write_slot(page, i, slot);
-            erased = true;
-            return true;
-        }
-        return false;
     }
 
     disk_hash_table_t::byte_buffer_t disk_hash_table_t::make_entry_payload(std::string_view key,

@@ -31,6 +31,10 @@ namespace components::index {
         // asked, answered on the same operators btree_index_disk_t::scan_range walks the
         // tree with, so the txn-local half of an answer and its committed half agree by
         // construction instead of by coincidence.
+        //
+        // ALL SIX, which is what separates this family from the hashed one: an ordered
+        // index may be asked lt/lte/gt/gte/ne, and a pending row with key 3 belongs in
+        // the answer to `x < 5`.
         bool predicate_holds(expressions::compare_type compare,
                              const components::types::physical_value& stored,
                              const components::types::physical_value& probe) {
@@ -212,12 +216,13 @@ namespace components::index {
         // because it is not looked up at all — there is no stamp to compare and no
         // visibility predicate to get wrong.
         //
-        // WHAT MAKES THIS DIFFERENT FROM THE HASHED FACADE'S MERGE: the predicate. A hash
-        // bucket can only ever be asked `= k`, so byte equality against the encoded probe
-        // is the whole test there. Here the same call may carry lt/lte/gt/gte/ne, and a
-        // pending row with key 3 belongs in the answer to `x < 5`. So the probe is encoded
-        // and decoded back into the tree's own key value, and each bucket key is decoded
-        // the same way — the comparison then runs on the operators the tree itself uses.
+        // WHAT MAKES THIS DIFFERENT FROM THE HASHED FACADE'S MERGE: the predicate, and the
+        // comparison domain. A hash bucket can only ever be asked `= k`, and answers it on
+        // the encoded BYTES. Here the same call may carry lt/lte/gt/gte/ne, so the probe is
+        // encoded and decoded back into the tree's own key value and each bucket key is
+        // decoded the same way — the comparison then runs on the operators the tree itself
+        // uses. No normalization on either side: the tree stores and compares the column's
+        // own type.
         const auto encoded_probe = encode_key(key);
         const auto probe = decode_as_tree_key(encoded_probe);
 

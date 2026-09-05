@@ -3,57 +3,96 @@
 #include "bitcask_index_disk.hpp"
 #include "btree_index_disk.hpp"
 
+#include <cassert>
+
 namespace services::index {
 
     namespace {
-        std::unique_ptr<index_disk_t> make_index_disk(const std::filesystem::path& path,
-                                                      std::pmr::memory_resource* resource,
-                                                      components::logical_plan::index_type type,
-                                                      uint64_t bitcask_flush_threshold,
-                                                      uint64_t bitcask_segment_record_limit,
-                                                      uint64_t btree_flush_threshold,
-                                                      std::pmr::set<std::uint64_t> committed_txn_ids,
-                                                      disk_hash_table_ptr shared_hash_index) {
+        // The backend, or why it could not be built. A result, not a constructor call,
+        // and the reason is new: the bitcask store opens the keydir file (hash_index.bin)
+        // HERE now -- nothing is opened outside the actor and handed in any more (C2c,
+        // rule 10) -- and that file can be unopenable, which must cost the index its
+        // registration and never the engine its start.
+        core::result_wrapper_t<std::unique_ptr<index_disk_t>>
+        make_index_disk(const std::filesystem::path& path,
+                        std::pmr::memory_resource* resource,
+                        components::logical_plan::index_type type,
+                        uint64_t bitcask_flush_threshold,
+                        uint64_t bitcask_segment_record_limit,
+                        uint64_t btree_flush_threshold,
+                        std::pmr::set<std::uint64_t> committed_txn_ids) {
             // index_type::hashed → bitcask LSM. Everything else (single / composite /
             // multikey / wildcard) → ordered B+tree.
             //
             // Only the bitcask branch owns a txn log, so only it receives the WAL
             // committed-txn set for the recover gate (M1.1). btree has no txn log.
             if (type == components::logical_plan::index_type::hashed) {
-                return std::make_unique<bitcask_index_disk_t>(path,
-                                                              resource,
-                                                              bitcask_flush_threshold,
-                                                              bitcask_segment_record_limit,
-                                                              std::move(committed_txn_ids),
-                                                              std::move(shared_hash_index));
+                // The FACTORY, not the direct ctor: the direct one aborts on exactly the
+                // failures this path exists to survive.
+                auto instance = bitcask_index_disk_t::create(path,
+                                                            resource,
+                                                            bitcask_flush_threshold,
+                                                            bitcask_segment_record_limit,
+                                                            std::move(committed_txn_ids));
+                if (instance.has_error()) {
+                    return instance.error();
+                }
+                return std::unique_ptr<index_disk_t>(std::move(instance.value()));
             }
-            return std::make_unique<btree_index_disk_t>(path, resource, btree_flush_threshold);
+            return std::unique_ptr<index_disk_t>(
+                std::make_unique<btree_index_disk_t>(path, resource, btree_flush_threshold));
         }
     } // namespace
 
+    core::result_wrapper_t<index_agent_disk_t::agent_ptr_t>
+    index_agent_disk_t::create(std::pmr::memory_resource* resource,
+                               const path_t& path_db,
+                               components::catalog::oid_t table_oid,
+                               components::catalog::oid_t index_oid,
+                               components::logical_plan::index_type type,
+                               uint64_t bitcask_flush_threshold,
+                               uint64_t bitcask_segment_record_limit,
+                               uint64_t btree_flush_threshold,
+                               log_t& log,
+                               std::pmr::set<std::uint64_t> committed_txn_ids) {
+        // The open runs BEFORE the actor exists, and its failure is the return value.
+        // There is therefore no such thing as an agent whose backing did not open: the
+        // two spawn sites cannot forget to ask, because there is nothing to ask -- they
+        // hold either an agent or a reason.
+        //
+        // The path is derived HERE from the two oids, in the agent's own translation
+        // unit, exactly as the constructor derived it before (C2c, rule 10): no caller
+        // builds it, and no caller opens anything.
+        auto backend = make_index_disk(path_db / std::to_string(static_cast<unsigned>(table_oid)) /
+                                           std::to_string(static_cast<unsigned>(index_oid)),
+                                       resource,
+                                       type,
+                                       bitcask_flush_threshold,
+                                       bitcask_segment_record_limit,
+                                       btree_flush_threshold,
+                                       std::move(committed_txn_ids));
+        if (backend.has_error()) {
+            return backend.error();
+        }
+        return actor_zeta::spawn<index_agent_disk_t>(resource,
+                                                     std::move(backend.value()),
+                                                     table_oid,
+                                                     index_oid,
+                                                     log);
+    }
+
     index_agent_disk_t::index_agent_disk_t(std::pmr::memory_resource* resource,
-                                           const path_t& path_db,
+                                           std::unique_ptr<index_disk_t> index_disk,
                                            components::catalog::oid_t table_oid,
                                            components::catalog::oid_t index_oid,
-                                           components::logical_plan::index_type type,
-                                           uint64_t bitcask_flush_threshold,
-                                           uint64_t bitcask_segment_record_limit,
-                                           uint64_t btree_flush_threshold,
-                                           log_t& log,
-                                           std::pmr::set<std::uint64_t> committed_txn_ids,
-                                           disk_hash_table_ptr shared_hash_index)
+                                           log_t& log)
         : actor_zeta::basic_actor<index_agent_disk_t>(resource)
         , log_(log.clone())
-        , index_disk_(make_index_disk(path_db / std::to_string(static_cast<unsigned>(table_oid)) /
-                                          std::to_string(static_cast<unsigned>(index_oid)),
-                                      this->resource(),
-                                      type,
-                                      bitcask_flush_threshold,
-                                      bitcask_segment_record_limit,
-                                      btree_flush_threshold,
-                                      std::move(committed_txn_ids),
-                                      std::move(shared_hash_index)))
-        , table_oid_(table_oid) {
+        , table_oid_(table_oid)
+        , index_disk_(std::move(index_disk)) {
+        // Not a recoverable failure: create() is the only door and it returns the reason
+        // instead of an agent, so a null backend here is a caller that went around it.
+        assert(index_disk_ && "index_agent_disk_t: the backend must be open before the agent exists");
         trace(log_,
               "index_agent_disk::create index_oid={} (table_oid={})",
               static_cast<unsigned>(index_oid),
@@ -206,7 +245,7 @@ namespace services::index {
         // so skip. The is_dropped_ guard lives here now (was the owner-side check
         // in manager_index_t::flush_all_indexes before this became a mailbox op).
         trace(log_, "index_agent_disk_t::force_flush, session: {}", session.data());
-        if (index_disk_ && !is_dropped_) {
+        if (!is_dropped_) {
             // Checkpoint path, not a statement: there is no cursor to fail here, so the result is
             // recorded rather than propagated. The DML paths above DO propagate it.
             auto flush_error = index_disk_->force_flush();

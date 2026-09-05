@@ -7,8 +7,10 @@
 // `rows.back()` (bitcask_index_disk.cpp, append_snapshot). So there are two ways to
 // answer "which rows carry this key", and they do not agree:
 //
-//   * through the KEYDIR (disk_hash_storage_t::get_all) -- one value_ref per key,
+//   * through the KEYDIR (disk_hash_table_t::get_all) -- one value_ref per key,
 //     whose `.value` is the LAST row id written. Every earlier duplicate is lost.
+//     Nothing above the bitcask store can even ask it that way any more: the handle
+//     the index facade used to hold went with C2c.
 //   * through the RECORD (bitcask_index_disk_t::find) -- the payload is read back
 //     and unrolled, so all duplicates come out.
 //

@@ -6,10 +6,12 @@
 #include <components/types/logical_value.hpp>
 
 #include <cassert>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory_resource>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -162,6 +164,62 @@ namespace services::index {
         uint64_t flush_threshold_;
         bool dirty_{false};
         uint64_t ops_since_flush_{0};
+    };
+
+    // WHAT EVERY BACKEND MUST BE, checked AT ITS OWN DEFINITION.
+    //
+    // The erasure above is FORCED, not chosen: which backend an index gets is read from
+    // pg_index.indtype off DISK at runtime (index_agent_disk.cpp), and index_engine_t
+    // holds a heterogeneous set the catalog decides at startup — so no template can be
+    // instantiated on it and the virtuals stay. What a concept buys where the runtime
+    // choice cannot be removed is the DIAGNOSTIC POSITION: each implementation asserts
+    // itself against this contract on the line after its own class, so a missing or
+    // mistyped member fails where the class is written instead of where it is used.
+    //
+    // Three things `override` does NOT catch, and this does:
+    //   * a member never written at all. `override` can only be attached to a member that
+    //     exists; forgetting one entirely leaves the class ABSTRACT, and the first word of
+    //     that arrives at the unrelated make_unique / spawn site in another translation
+    //     unit. is_abstract_v below moves that failure back to the definition.
+    //   * a NON-virtual member of the wrong shape. resource() and the by-value find /
+    //     lower_bound / upper_bound shorthands carry no `virtual`, so `override` says
+    //     nothing about them at all.
+    //   * name HIDING. An override of `find(const value_t&, result&)` hides the base's
+    //     by-value `find(const value_t&)` unless the implementation says
+    //     `using index_disk_t::find;`. Nothing about the override is wrong, so no
+    //     diagnostic fires — the call simply stops compiling at whichever caller wanted
+    //     the shorthand. The find(value) requirement below fails at the class instead.
+    template<typename backend_t>
+    concept index_disk_impl =
+        std::derived_from<backend_t, index_disk_t> && !std::is_abstract_v<backend_t> &&
+        requires(backend_t& backend,
+                 const backend_t& const_backend,
+                 const index_disk_t::value_t& key,
+                 index_disk_t::result& res,
+                 const std::vector<std::pair<index_disk_t::value_t, size_t>>& values,
+                 uint64_t txn_id,
+                 size_t row_id,
+                 bool flag) {
+        { backend.insert(key, row_id) } -> std::same_as<void>;
+        { backend.remove(key) } -> std::same_as<void>;
+        { backend.remove(key, row_id) } -> std::same_as<void>;
+        { const_backend.find(key, res) } -> std::same_as<void>;
+        { const_backend.scan_range(components::expressions::compare_type::eq, key, res) } -> std::same_as<void>;
+        // The by-value shorthands: non-virtual base members, and hidden by an override of
+        // the same name unless the implementation un-hides them.
+        { const_backend.find(key) } -> std::same_as<index_disk_t::result>;
+        { const_backend.lower_bound(key) } -> std::same_as<index_disk_t::result>;
+        { const_backend.upper_bound(key) } -> std::same_as<index_disk_t::result>;
+        { backend.drop() } -> std::same_as<void>;
+        { backend.clear() } -> std::same_as<void>;
+        { backend.force_flush() } -> std::same_as<core::error_t>;
+        { backend.insert_bulk_unchecked(key, row_id) } -> std::same_as<void>;
+        { backend.remove_bulk_unchecked(key, row_id) } -> std::same_as<void>;
+        { backend.set_bulk_mode(flag) } -> std::same_as<void>;
+        { const_backend.has_txn_log() } noexcept -> std::same_as<bool>;
+        { backend.apply_txn_inserts(txn_id, values) } -> std::same_as<core::error_t>;
+        { backend.apply_txn_deletes(txn_id, values) } -> std::same_as<core::error_t>;
+        { const_backend.resource() } noexcept -> std::same_as<std::pmr::memory_resource*>;
     };
 
 } // namespace services::index

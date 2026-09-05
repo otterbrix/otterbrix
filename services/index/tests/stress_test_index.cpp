@@ -9,7 +9,6 @@
 #include <memory_resource>
 #include <mutex>
 #include <random>
-#include <services/index/bitcask_hash_key_loader.hpp>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
 #include <services/index/disk_hash_table.hpp>

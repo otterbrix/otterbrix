@@ -130,13 +130,19 @@ namespace services::index {
         // its indexrelid). The owning disk-agent pointer is passed in (spawn
         // stays in base_spaces); its address is wired into engines_[oid] +
         // disk_agents_per_oid_.
+        //
+        // No storage handle any more (C2c, rule 10): the agent opens its own backing from
+        // the same (table_oid, index_oid) pair, so there is nothing for the caller to
+        // create and nothing for two owners to hold. An agent only exists at all when
+        // that open succeeded -- index_agent_disk_t::create hands back the reason instead
+        // of an agent otherwise -- so there is no convention for the caller to observe
+        // here, and nothing it can forget to ask.
         void bootstrap_index_sync(components::catalog::oid_t table_oid,
                                   components::catalog::oid_t index_oid,
                                   components::logical_plan::index_type type,
                                   components::index::keys_base_storage_t keys,
                                   actor_zeta::address_t disk_agent_addr,
-                                  index_agent_disk_ptr disk_agent_owned,
-                                  disk_hash_table_ptr shared_hash_storage = nullptr);
+                                  index_agent_disk_ptr disk_agent_owned);
 
         // Restore a dropped-table entry from pg_class.delete_id (alias of
         // mark_table_dropped_sync).
@@ -336,8 +342,9 @@ namespace services::index {
 
         // Owning pointers to the disk agents, kept alive for the manager's
         // lifetime so the addresses in disk_agents_per_oid_ stay valid. Reaped
-        // when the owning table is GC'd by on_horizon_advanced.
-        std::vector<index_agent_disk_ptr> disk_agents_owned_;
+        // when the owning table is GC'd by on_horizon_advanced. On resource_,
+        // like the three maps above it (rule 8).
+        std::pmr::vector<index_agent_disk_ptr> disk_agents_owned_;
 
         // Index metadata lives in pg_catalog.pg_index (no separate metadata file).
         core::filesystem::local_file_system_t fs_;

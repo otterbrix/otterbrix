@@ -637,36 +637,13 @@ namespace otterbrix {
             // Spawn args must match manager_index_t::create_index so the agent is
             // equivalent to one from the runtime DDL path. The index directory is
             // ${disk}/${table_oid}/${indexrelid}/ — oid-keyed, never name-keyed.
-            services::index::disk_hash_table_ptr shared_hash_storage;
-            if (row.type == components::logical_plan::index_type::hashed && !disk_config.path.empty()) {
-                const auto base = disk_config.path / std::to_string(static_cast<unsigned>(row.table_oid)) /
-                                  std::to_string(static_cast<unsigned>(row.oid));
-                std::filesystem::create_directories(base);
-                // The direct ctor asserts and aborts on exactly the failures this bootstrap is
-                // meant to survive (unopenable file, unreadable or incompatible header), so it
-                // must not be used here: an index whose storage will not open costs a full scan,
-                // whereas aborting costs the whole engine its start.
-                auto storage =
-                    services::index::disk_hash_table_t::create(base / "hash_index.bin",
-                                                               services::index::disk_hash_table_t::default_bucket_count,
-                                                               &resource);
-                if (storage.has_error()) {
-                    // Skip the WHOLE index, not just the shared storage: spawning the
-                    // bitcask agent with a null shared hash would make it open the same
-                    // broken file through disk_hash_table_t's direct ctor, which
-                    // asserts and aborts — the exact failure this branch survives.
-                    // An unregistered index costs a full scan; the table stays readable.
-                    error(log_,
-                          "bootstrap_indexes_sync: disk hash storage init failed for index_oid={}: {} — "
-                          "index left unregistered",
-                          static_cast<unsigned>(row.oid),
-                          storage.error().what);
-                    ++indexes_skipped_unfinished;
-                    continue;
-                }
-                shared_hash_storage = std::move(storage.value());
-            }
-
+            //
+            // Nothing is opened HERE any more (C2c, rule 10): the agent opens its own
+            // storage from the same two oids, so there is no handle to create outside it
+            // and hand across. What survives is the DECISION this site makes from the
+            // failure — which now arrives as the VALUE index_agent_disk_t::create returns,
+            // so this site cannot proceed without having looked at it.
+            //
             // the WAL committed-txn set, used by the bitcask agent's
             // txn-log recover gate. Materialised here as a pmr::set on this
             // instance's resource (the resource the agent and its index store).
@@ -676,18 +653,33 @@ namespace otterbrix {
                                                              committed_txn_ids.end(),
                                                              &resource);
 
-            auto agent =
-                actor_zeta::spawn<services::index::index_agent_disk_t>(&resource,
-                                                                       disk_config.path,
-                                                                       row.table_oid,
-                                                                       row.oid,
-                                                                       row.type,
-                                                                       disk_config.bitcask_flush_threshold,
-                                                                       disk_config.bitcask_segment_record_limit,
-                                                                       disk_config.btree_flush_threshold,
-                                                                       log_,
-                                                                       std::move(committed_for_agent),
-                                                                       shared_hash_storage);
+            auto agent_result =
+                services::index::index_agent_disk_t::create(&resource,
+                                                           disk_config.path,
+                                                           row.table_oid,
+                                                           row.oid,
+                                                           row.type,
+                                                           disk_config.bitcask_flush_threshold,
+                                                           disk_config.bitcask_segment_record_limit,
+                                                           disk_config.btree_flush_threshold,
+                                                           log_,
+                                                           std::move(committed_for_agent));
+            if (agent_result.has_error()) {
+                // Skip the WHOLE index: an index whose storage will not open costs a full
+                // scan, whereas aborting costs the whole engine its start. No agent was
+                // built — nothing registered, no address published, nothing scheduled —
+                // and the table stays readable.
+                error(log_,
+                      "bootstrap_indexes_sync: disk storage init failed for index_oid={}: {} — "
+                      "index left unregistered",
+                      static_cast<unsigned>(row.oid),
+                      agent_result.error().what);
+                ++indexes_skipped_unfinished;
+                continue;
+            }
+            // Only reachable past the check above -- result_wrapper_t::value() is what
+            // makes that a compiler-enforced order rather than a convention.
+            auto agent = std::move(agent_result.value());
             auto agent_addr = agent->address();
 
             manager_index_->bootstrap_index_sync(row.table_oid,
@@ -695,8 +687,7 @@ namespace otterbrix {
                                                  row.type,
                                                  std::move(row.keys),
                                                  agent_addr,
-                                                 std::move(agent),
-                                                 std::move(shared_hash_storage));
+                                                 std::move(agent));
             ++indexes_wired;
         }
 

@@ -81,11 +81,15 @@ namespace components::index {
                 // Pure virtual, with no default enumerator: a default would let two
                 // unrelated implementations report the same kind and then be cast into
                 // each other, which is the silent wrong answer this replaces.
+                //
+                // No enumerator for either DISK-backed facade, and its absence is the
+                // statement: neither disk_hash_single_field_index_t nor
+                // disk_ordered_single_field_index_t has an in-memory sequence, so
+                // cbegin/cend are terminal on both and no iterator over them can exist.
                 enum class kind_t : uint8_t
                 {
                     ram_single_field,
                     ram_hash_single_field,
-                    disk_hash_single_field,
                     // Not a production backend. The fake index in components/index/test
                     // needs an identity of its own instead of borrowing a real one.
                     test_fake

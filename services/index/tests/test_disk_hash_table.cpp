@@ -18,6 +18,20 @@ namespace {
         return dir / name;
     }
 
+    // The truncated-key question is asked through a TEMPLATE parameter now, not a virtual
+    // hook, so a test lambda IS the loader and the adapter that used to wrap one is gone.
+    // The question and every answer below are unchanged except for the `lock_bitcask`
+    // flag, which every lambda here already ignored and which had no caller left once the
+    // reads moved to the agent: the loader is chosen per call by the owning store, which
+    // holds its own lock.
+    //
+    // A case with no truncated entry to resolve passes this one, which says out loud that
+    // no record can be read back. It is the shape the null key_loader_ used to take, made
+    // a WRITTEN choice at the call: a table on which every key is inline cannot notice the
+    // difference, and one holding long keys reports them missing either way -- which is
+    // exactly what the cases below that pass a real loader pin.
+    constexpr auto no_stored_key = [](uint32_t, uint64_t, std::string&) { return false; };
+
     struct env_var_guard_t {
         std::string name;
         bool had_value{false};
@@ -51,19 +65,19 @@ TEST_CASE("services::index::disk_hash_table::put_get_erase_roundtrip") {
     REQUIRE(table.put("alpha", 10, 1, 100));
     REQUIRE(table.put("beta", 20, 1, 200));
 
-    auto alpha = table.get("alpha");
+    auto alpha = table.get("alpha", no_stored_key);
     REQUIRE(alpha.has_value());
     REQUIRE(alpha->value == 10);
     REQUIRE(alpha->log_file_id == 1);
     REQUIRE(alpha->log_offset == 100);
 
-    auto beta = table.get("beta");
+    auto beta = table.get("beta", no_stored_key);
     REQUIRE(beta.has_value());
     REQUIRE(beta->value == 20);
 
-    REQUIRE(table.erase("alpha"));
-    REQUIRE_FALSE(table.get("alpha").has_value());
-    REQUIRE(table.get("beta").has_value());
+    REQUIRE(table.erase("alpha", no_stored_key));
+    REQUIRE_FALSE(table.get("alpha", no_stored_key).has_value());
+    REQUIRE(table.get("beta", no_stored_key).has_value());
 }
 
 TEST_CASE("services::index::disk_hash_table::persist_reopen") {
@@ -80,12 +94,12 @@ TEST_CASE("services::index::disk_hash_table::persist_reopen") {
 
     {
         disk_hash_table_t reopened(path, 32, &resource);
-        auto v1 = reopened.get("k1");
+        auto v1 = reopened.get("k1", no_stored_key);
         REQUIRE(v1.has_value());
         REQUIRE(v1->value == 111);
         REQUIRE(v1->log_file_id == 2);
         REQUIRE(v1->log_offset == 1234);
-        auto v2 = reopened.get("k2");
+        auto v2 = reopened.get("k2", no_stored_key);
         REQUIRE(v2.has_value());
         REQUIRE(v2->value == 222);
     }
@@ -101,7 +115,7 @@ TEST_CASE("services::index::disk_hash_table::multiple_values_per_key") {
     REQUIRE(table.put("dup", 20, 2, 200));
     REQUIRE(table.put("dup", 10, 3, 300));
 
-    const auto values = table.get_all("dup");
+    const auto values = table.get_all("dup", no_stored_key);
     REQUIRE(values.size() == 3);
 }
 
@@ -116,21 +130,21 @@ TEST_CASE("services::index::disk_hash_table::long_key_prefix_and_loader") {
     disk_hash_table_t table(path, 8, &resource);
     REQUIRE(table.put(long_key, 777, 7, 700));
 
-    table.set_full_key_loader([&](uint32_t file_id, uint64_t offset, std::string& out, bool /*lock_bitcask*/) {
+    const auto source_1 = [&](uint32_t file_id, uint64_t offset, std::string& out) {
         REQUIRE(file_id == 7);
         REQUIRE(offset == 700);
         out = long_key;
         return true;
-    });
-    auto with_loader = table.get(long_key);
+    };
+    auto with_loader = table.get(long_key, source_1);
     REQUIRE(with_loader.has_value());
     REQUIRE(with_loader->value == 777);
 
-    table.set_full_key_loader([&](uint32_t, uint64_t, std::string& out, bool /*lock_bitcask*/) {
+    const auto source_2 = [&](uint32_t, uint64_t, std::string& out) {
         out = long_key;
         return true;
-    });
-    auto mismatch = table.get(other_key);
+    };
+    auto mismatch = table.get(other_key, source_2);
     REQUIRE_FALSE(mismatch.has_value());
 }
 
@@ -171,13 +185,13 @@ TEST_CASE("services::index::disk_hash_table::truncated_collision_requires_loader
     REQUIRE(table.put(enc_a, 777, 1, 100));
 
     size_t loader_calls = 0;
-    table.set_full_key_loader([&](uint32_t, uint64_t, std::string& out, bool /*lock_bitcask*/) {
+    const auto source_3 = [&](uint32_t, uint64_t, std::string& out) {
         ++loader_calls;
         out = enc_a;
         return true;
-    });
+    };
 
-    REQUIRE(table.get_all(enc_b).empty());
+    REQUIRE(table.get_all(enc_b, source_3).empty());
     REQUIRE(loader_calls >= 1);
 }
 
@@ -191,15 +205,15 @@ TEST_CASE("services::index::disk_hash_table::get_invokes_key_loader_for_truncate
     REQUIRE(table.put(long_key, 777, 7, 700));
 
     size_t loader_calls = 0;
-    table.set_full_key_loader([&](uint32_t file_id, uint64_t offset, std::string& out, bool /*lock_bitcask*/) {
+    const auto source_4 = [&](uint32_t file_id, uint64_t offset, std::string& out) {
         ++loader_calls;
         REQUIRE(file_id == 7);
         REQUIRE(offset == 700);
         out = long_key;
         return true;
-    });
+    };
 
-    const auto value = table.get(long_key);
+    const auto value = table.get(long_key, source_4);
     REQUIRE(value.has_value());
     REQUIRE(value->value == 777);
     REQUIRE(loader_calls == 1);
@@ -214,13 +228,13 @@ TEST_CASE("services::index::disk_hash_table::get_skips_key_loader_for_inline_ent
     REQUIRE(table.put("short-key", 5, 1, 100));
 
     size_t loader_calls = 0;
-    table.set_full_key_loader([&](uint32_t, uint64_t, std::string& out, bool /*lock_bitcask*/) {
+    const auto source_5 = [&](uint32_t, uint64_t, std::string& out) {
         ++loader_calls;
         out = "short-key";
         return true;
-    });
+    };
 
-    const auto value = table.get("short-key");
+    const auto value = table.get("short-key", source_5);
     REQUIRE(value.has_value());
     REQUIRE(value->value == 5);
     REQUIRE(loader_calls == 0);
@@ -236,17 +250,17 @@ TEST_CASE("services::index::disk_hash_table::erase_invokes_key_loader_for_trunca
     REQUIRE(table.put(long_key, 909, 9, 900));
 
     size_t loader_calls = 0;
-    table.set_full_key_loader([&](uint32_t file_id, uint64_t offset, std::string& out, bool /*lock_bitcask*/) {
+    const auto source_6 = [&](uint32_t file_id, uint64_t offset, std::string& out) {
         ++loader_calls;
         REQUIRE(file_id == 9);
         REQUIRE(offset == 900);
         out = long_key;
         return true;
-    });
+    };
 
-    REQUIRE(table.erase(long_key));
+    REQUIRE(table.erase(long_key, source_6));
     REQUIRE(loader_calls >= 1);
-    REQUIRE_FALSE(table.get(long_key).has_value());
+    REQUIRE_FALSE(table.get(long_key, source_6).has_value());
 }
 
 TEST_CASE("services::index::disk_hash_table::rehash_preserves_entries") {
@@ -268,7 +282,7 @@ TEST_CASE("services::index::disk_hash_table::rehash_preserves_entries") {
 
     for (int i = 0; i < 300; ++i) {
         const auto key = "k." + std::to_string(i);
-        auto v = table.get(key);
+        auto v = table.get(key, no_stored_key);
         REQUIRE(v.has_value());
         REQUIRE(v->value == static_cast<int64_t>(i));
     }
@@ -288,7 +302,7 @@ TEST_CASE("services::index::disk_hash_table::rehash_truncated_keys_without_loade
 
     REQUIRE(table.rehash(64));
 
-    table.set_full_key_loader([&](uint32_t file_id, uint64_t offset, std::string& out, bool /*lock_bitcask*/) {
+    const auto source_7 = [&](uint32_t file_id, uint64_t offset, std::string& out) {
         if (file_id == 5 && offset == 500) {
             out = key1;
             return true;
@@ -298,12 +312,12 @@ TEST_CASE("services::index::disk_hash_table::rehash_truncated_keys_without_loade
             return true;
         }
         return false;
-    });
-    auto v1 = table.get(key1);
+    };
+    auto v1 = table.get(key1, source_7);
     REQUIRE(v1.has_value());
     REQUIRE(v1->value == 11);
 
-    auto v2 = table.get(key2);
+    auto v2 = table.get(key2, source_7);
     REQUIRE(v2.has_value());
     REQUIRE(v2->value == 22);
 }
@@ -334,7 +348,7 @@ TEST_CASE("services::index::disk_hash_table::linear_hashing_progression") {
             REQUIRE(table.put(keys[i], static_cast<int64_t>(i), 42, offset));
         }
 
-        table.set_full_key_loader([&](uint32_t file_id, uint64_t offset, std::string& out, bool /*lock_bitcask*/) {
+        const auto source_8 = [&](uint32_t file_id, uint64_t offset, std::string& out) {
             if (file_id != 42) {
                 return false;
             }
@@ -344,13 +358,13 @@ TEST_CASE("services::index::disk_hash_table::linear_hashing_progression") {
             }
             out = it->second;
             return true;
-        });
+        };
 
         for (uint32_t target = 5; target <= 9; ++target) {
             REQUIRE(table.rehash(target));
             REQUIRE(table.bucket_count() == target);
             for (size_t i = 0; i < keys.size(); ++i) {
-                auto v = table.get(keys[i]);
+                auto v = table.get(keys[i], source_8);
                 REQUIRE(v.has_value());
                 REQUIRE(v->value == static_cast<int64_t>(i));
             }
@@ -362,7 +376,7 @@ TEST_CASE("services::index::disk_hash_table::linear_hashing_progression") {
         disk_hash_table_t reopened(path, 4, &resource);
         REQUIRE(reopened.bucket_count() == 9);
 
-        reopened.set_full_key_loader([&](uint32_t file_id, uint64_t offset, std::string& out, bool /*lock_bitcask*/) {
+        const auto source_9 = [&](uint32_t file_id, uint64_t offset, std::string& out) {
             if (file_id != 42) {
                 return false;
             }
@@ -372,13 +386,13 @@ TEST_CASE("services::index::disk_hash_table::linear_hashing_progression") {
             }
             out = it->second;
             return true;
-        });
+        };
 
         for (uint32_t target = 10; target <= 12; ++target) {
             REQUIRE(reopened.rehash(target));
             REQUIRE(reopened.bucket_count() == target);
             for (size_t i = 0; i < keys.size(); ++i) {
-                auto v = reopened.get(keys[i]);
+                auto v = reopened.get(keys[i], source_9);
                 REQUIRE(v.has_value());
                 REQUIRE(v->value == static_cast<int64_t>(i));
             }
@@ -429,7 +443,7 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_copy_sync") {
         disk_hash_table_t reopened(path, 4, &resource);
         REQUIRE(reopened.bucket_count() == 4);
         for (int i = 0; i < 300; ++i) {
-            auto v = reopened.get(keys[static_cast<size_t>(i)]);
+            auto v = reopened.get(keys[static_cast<size_t>(i)], no_stored_key);
             REQUIRE(v.has_value());
             REQUIRE(v->value == static_cast<int64_t>(i));
         }
@@ -458,7 +472,7 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_header_sync") {
         disk_hash_table_t reopened(path, 4, &resource);
         REQUIRE(reopened.bucket_count() == 5);
         for (int i = 0; i < 300; ++i) {
-            auto v = reopened.get(keys[static_cast<size_t>(i)]);
+            auto v = reopened.get(keys[static_cast<size_t>(i)], no_stored_key);
             REQUIRE(v.has_value());
             REQUIRE(v->value == static_cast<int64_t>(i));
         }
@@ -492,7 +506,7 @@ TEST_CASE("services::index::disk_hash_table::split_crash_recovery_continues_prog
         REQUIRE(reopened.bucket_count() == 6);
 
         for (int i = 0; i < 400; ++i) {
-            auto v = reopened.get(keys[static_cast<size_t>(i)]);
+            auto v = reopened.get(keys[static_cast<size_t>(i)], no_stored_key);
             REQUIRE(v.has_value());
             REQUIRE(v->value == static_cast<int64_t>(i));
         }
@@ -525,10 +539,12 @@ TEST_CASE("services::index::disk_hash_table::create_returns_a_usable_table") {
 
     auto result = disk_hash_table_t::create(path, 8, &resource);
     REQUIRE_FALSE(result.has_error());
-    auto table = result.value();
+    // A unique_ptr now: the table stopped being reference-counted when the index facade
+    // stopped holding a second reference to it across the actor boundary (C2c).
+    auto table = std::move(result.value());
     REQUIRE(table);
     REQUIRE(table->put("k", 42, 0, 0));
-    auto found = table->get("k");
+    auto found = table->get("k", no_stored_key);
     REQUIRE(found.has_value());
     REQUIRE(found->value == 42);
 }
@@ -584,7 +600,7 @@ TEST_CASE("services::index::disk_hash_table::for_each_walks_duplicates_in_insert
 
     // Independent oracle: get_all walks the same chain by the same rule and is NOT
     // touched by this task, so the two orders must agree.
-    auto all = table.get_all("dup");
+    auto all = table.get_all("dup", no_stored_key);
     REQUIRE(all.size() == seen.size());
     for (size_t i = 0; i < all.size(); ++i) {
         REQUIRE(all[i].value == seen[i].value);
@@ -738,7 +754,7 @@ TEST_CASE("services::index::disk_hash_table::for_each_delivers_every_entry_befor
 
     // ... and nothing keeps calling it afterwards: later work on the same table must
     // not append one more entry through the capture.
-    REQUIRE(table.get("k0").has_value());
+    REQUIRE(table.get("k0", no_stored_key).has_value());
     table.sync();
     REQUIRE(collected.size() == size_on_return);
     REQUIRE(calls == size_on_return);

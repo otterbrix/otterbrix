@@ -14,16 +14,24 @@ namespace components::index {
 
     // The facade for a DISK-BACKED ORDERED index — the engine behind a plain
     // `CREATE INDEX`. SQL has exactly two spellings: `USING hash` selects
-    // index_type::hashed, and everything else (including no USING clause at all)
-    // selects index_type::single, so this class is what the DEFAULT statement builds.
+    // index_type::hashed and builds disk_hash_single_field_index_t, and everything else
+    // (including no USING clause at all) selects index_type::single, so this class is
+    // what the DEFAULT statement builds.
+    //
+    // A SEPARATE CLASS from the hashed facade, and deliberately so. The two carry the
+    // same method SET and share no code, because what they do inside those methods is
+    // two different algorithms: an ordered key is encoded as it is and compared through
+    // the physical_value the b+tree orders by, a hashed key is normalized first and
+    // compared bytewise. One class holding both would have to ask what it is on every key
+    // operation, and a class that branches on its own type is two classes glued together.
+    // The duplication between the two files is the price of not having that coupling, and
+    // it is the cheaper half.
     //
     // It holds NEITHER a handle NOR a path, and that is the point rather than an
     // omission. Its committed rows live in the b+tree owned by this index's
     // index_agent_disk_t and are reachable only by sending that agent a message
     // (index_agent_disk_t::read_rows). Nothing here opens a file, so there is no
-    // cross-actor state to share and no second owner of the tree — the shape
-    // disk_hash_single_field_index_t still departs from with its disk_hash_storage_ptr
-    // (removed by C2c).
+    // cross-actor state to share and no second owner of the tree.
     //
     // What it DOES hold is the half of an answer that never reaches disk: this
     // transaction's own uncommitted inserts and deletes, in per-txn buckets
@@ -46,10 +54,9 @@ namespace components::index {
         //     physical_value the tree orders by. Comparing logical_value_t instead
         //     would need a cast into one type domain, and logical_value_t::operator<
         //     asserts both sides carry the same type;
-        //   * it is the shape disk_hash_single_field_index_t already uses, so the
-        //     landmine C1 recorded — a bucket key is stored as encoded, so a merge
-        //     performed anywhere but inside the facade would compare an encoded key
-        //     against an un-encoded probe — stays confined to one class.
+        //   * a bucket key is stored ENCODED, so a merge performed anywhere but inside
+        //     this facade would compare an encoded key against an un-encoded probe — the
+        //     landmine C1 recorded, kept confined to one class.
         using pending_row_t = std::pair<std::pmr::string, int64_t>;
         using pending_rows_t = std::pmr::vector<pending_row_t>;
         using pending_txn_map_t = std::pmr::unordered_map<uint64_t, pending_rows_t>;
@@ -101,8 +108,9 @@ namespace components::index {
                                          std::pmr::vector<int64_t>& rows) const final;
         void clean_memory_to_new_elements_impl(std::size_t count) final;
 
-        // key -> the b+tree record's key bytes. The row id is NOT appended: a bucket
-        // carries it beside the key, and the merge needs the key alone.
+        // key -> the b+tree record's key bytes, in the column's own type. The row id is
+        // NOT appended: a bucket carries it beside the key, and the merge needs the key
+        // alone.
         std::pmr::string encode_key(const value_t& key) const;
 
         pending_txn_map_t pending_inserts_;

@@ -6,9 +6,7 @@
 #include "components/index/disk_hash_single_field_index.hpp"
 #include "components/index/hash_single_field_index.hpp"
 #include "components/index/index_engine.hpp"
-#include "components/index/logical_value_binary_codec.hpp"
 #include "components/index/single_field_index.hpp"
-#include "services/index/disk_hash_table.hpp"
 #include <components/table/row_version_manager.hpp>
 
 using namespace components::index;
@@ -26,27 +24,47 @@ namespace {
     // Indexes are oid-identified; the file_name only labels the scratch file.
     constexpr components::catalog::oid_t mvcc_test_index_oid = 601u;
 
+    // The disk facade opens NOTHING (C2c, rule 10): its committed rows live in the store
+    // its disk agent owns, so there is no file to name and no handle to build -- the
+    // hashed facade takes neither. `file_name` labelled the scratch file it no longer
+    // has.
     std::unique_ptr<index_t> make_hash_mvcc_index(std::pmr::memory_resource* resource,
                                                   const std::string& /*name*/,
-                                                  const std::string& file_name,
+                                                  const std::string& /*file_name*/,
                                                   hash_index_mode mode) {
         if (mode == hash_index_mode::in_memory) {
             return std::make_unique<hash_single_field_index_t>(resource,
                                                                mvcc_test_index_oid,
                                                                keys_base_storage_t{key(resource, "val")});
         }
-        const auto base = std::filesystem::path("/tmp/index_disk/components_hash_mvcc_tests");
-        std::filesystem::create_directories(base);
-        const auto file = base / file_name;
-        std::filesystem::remove(file);
-        return std::make_unique<disk_hash_single_field_index_t>(
-            resource,
-            mvcc_test_index_oid,
-            keys_base_storage_t{key(resource, "val")},
-            boost::intrusive_ptr(
-                new services::index::disk_hash_table_t(file,
-                                                       services::index::disk_hash_table_t::default_bucket_count,
-                                                       resource)));
+        return std::make_unique<disk_hash_single_field_index_t>(resource,
+                                                                mvcc_test_index_oid,
+                                                                keys_base_storage_t{key(resource, "val")});
+    }
+
+    // The rows this index answers with, asked through the door the mode actually has.
+    //
+    // An in-memory index keeps committed and pending entries in ONE structure and answers
+    // both from find(). The disk facade keeps only the pending half, and since C2c every
+    // local door on it is terminal: with the storage handle gone, find() could only answer
+    // from that half, i.e. with a SUBSET of the rows the key carries that no caller could
+    // tell from the whole answer (rule 6). Its production door is
+    // merge_uncommitted_rows, which manager_index_t calls with the committed half the disk
+    // agent returned; these cases have no agent, so the half handed in is empty -- exactly
+    // what search() used to read out of the never-written keydir.
+    std::vector<int64_t> search_rows(index_t& index,
+                                     hash_index_mode mode,
+                                     compare_type compare,
+                                     const components::types::logical_value_t& value,
+                                     uint64_t start_time,
+                                     uint64_t txn_id) {
+        if (mode == hash_index_mode::in_memory) {
+            auto found = index.search(compare, value, start_time, txn_id, {});
+            return {found.begin(), found.end()};
+        }
+        std::pmr::vector<int64_t> rows(index.resource());
+        index.merge_uncommitted_rows(compare, value, txn_id, {}, rows);
+        return {rows.begin(), rows.end()};
     }
 
     void run_txn_insert_search_contract(hash_index_mode mode) {
@@ -62,7 +80,7 @@ namespace {
                                                                                  : "txn_insert_search_disk_1.bin",
                                               mode);
             index->insert(val42, int64_t(0), txn1, {});
-            auto result = index->search(compare_type::eq, val42, txn1 - 1, txn1, {});
+            auto result = search_rows(*index, mode, compare_type::eq, val42, txn1 - 1, txn1);
             REQUIRE(result.size() == 1);
             REQUIRE(result[0] == 0);
         }
@@ -74,7 +92,7 @@ namespace {
                                                                                  : "txn_insert_search_disk_2.bin",
                                               mode);
             index->insert(val42, int64_t(0), txn1, {});
-            auto result = index->search(compare_type::eq, val42, txn1 - 1, txn2, {});
+            auto result = search_rows(*index, mode, compare_type::eq, val42, txn1 - 1, txn2);
             REQUIRE(result.empty());
         }
 
@@ -86,7 +104,7 @@ namespace {
                                               mode);
             index->insert(val42, int64_t(0), txn1, {});
             index->commit_insert(txn1, 10);
-            auto result = index->search(compare_type::eq, val42, 15, txn2, {});
+            auto result = search_rows(*index, mode, compare_type::eq, val42, 15, txn2);
             if (mode == hash_index_mode::in_memory) {
                 REQUIRE(result.size() == 1);
                 REQUIRE(result[0] == 0);
@@ -104,7 +122,7 @@ namespace {
                                               mode);
             index->insert(val42, int64_t(0), txn1, {});
             index->revert_insert(txn1);
-            auto result = index->search(compare_type::eq, val42, txn1 - 1, txn1, {});
+            auto result = search_rows(*index, mode, compare_type::eq, val42, txn1 - 1, txn1);
             REQUIRE(result.empty());
         }
     }
@@ -127,7 +145,7 @@ namespace {
         index->insert(val42, int64_t(0), txn1, {});
         index->commit_insert(txn1, commit1);
 
-        auto result = index->search(compare_type::eq, val42, commit1 + 1, txn2, {});
+        auto result = search_rows(*index, mode, compare_type::eq, val42, commit1 + 1, txn2);
         if (mode == hash_index_mode::in_memory) {
             REQUIRE(result.size() == 1);
         } else {
@@ -138,11 +156,12 @@ namespace {
         index->mark_delete(val42, int64_t(0), txn2, {});
         index->commit_delete(txn2, commit2);
 
-        result = index->search(compare_type::eq, val42, commit2 + 1, TRANSACTION_ID_START + 3, {});
+        result = search_rows(*index, mode, compare_type::eq, val42, commit2 + 1, TRANSACTION_ID_START + 3);
         REQUIRE(result.empty());
 
         index->cleanup_versions(commit2 + 1);
-        result = index->search(compare_type::eq, val42, {});
+        // The see-all-committed probe: start_time 0 and txn_id 0.
+        result = search_rows(*index, mode, compare_type::eq, val42, 0, 0);
         REQUIRE(result.empty());
     }
 
@@ -166,10 +185,10 @@ namespace {
 
         index->mark_delete(val42, int64_t(7), txn_delete, {});
 
-        auto seen_by_deleter = index->search(compare_type::eq, val42, commit_insert + 1, txn_delete, {});
+        auto seen_by_deleter = search_rows(*index, mode, compare_type::eq, val42, commit_insert + 1, txn_delete);
         REQUIRE(seen_by_deleter.empty());
 
-        auto seen_by_other = index->search(compare_type::eq, val42, commit_insert + 1, txn_other, {});
+        auto seen_by_other = search_rows(*index, mode, compare_type::eq, val42, commit_insert + 1, txn_other);
         if (mode == hash_index_mode::in_memory) {
             REQUIRE(seen_by_other.size() == 1);
             REQUIRE(seen_by_other[0] == 7);
@@ -179,7 +198,8 @@ namespace {
         }
 
         index->commit_delete(txn_delete, commit_delete);
-        auto gone_after_commit = index->search(compare_type::eq, val42, commit_delete + 1, txn_other + 1, {});
+        auto gone_after_commit =
+            search_rows(*index, mode, compare_type::eq, val42, commit_delete + 1, txn_other + 1);
         REQUIRE(gone_after_commit.empty());
     }
 
@@ -195,15 +215,15 @@ namespace {
         components::types::logical_value_t val42(&resource, int64_t(42));
 
         index->insert(val42, int64_t(9), txn_insert, {});
-        auto own_before_revert = index->search(compare_type::eq, val42, txn_insert - 1, txn_insert, {});
+        auto own_before_revert = search_rows(*index, mode, compare_type::eq, val42, txn_insert - 1, txn_insert);
         REQUIRE(own_before_revert.size() == 1);
 
         index->revert_insert(txn_insert);
 
-        auto own_after_revert = index->search(compare_type::eq, val42, txn_insert - 1, txn_insert, {});
+        auto own_after_revert = search_rows(*index, mode, compare_type::eq, val42, txn_insert - 1, txn_insert);
         REQUIRE(own_after_revert.empty());
 
-        auto other_after_revert = index->search(compare_type::eq, val42, txn_insert - 1, txn_other, {});
+        auto other_after_revert = search_rows(*index, mode, compare_type::eq, val42, txn_insert - 1, txn_other);
         REQUIRE(other_after_revert.empty());
     }
 } // namespace

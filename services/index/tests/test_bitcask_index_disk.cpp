@@ -9,7 +9,6 @@
 #include <memory_resource>
 #include <mutex>
 #include <random>
-#include <services/index/bitcask_hash_key_loader.hpp>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
 #include <services/index/disk_hash_table.hpp>
@@ -24,6 +23,14 @@ using services::index::btree_index_disk_t;
 namespace {
     constexpr uint64_t test_flush_threshold = 1000;
     constexpr uint64_t test_segment_record_limit = 100;
+
+    // The keydir's truncated-key loader, for the one case below that reads the keydir
+    // DIRECTLY rather than through the store. It is a template parameter now, so a lambda
+    // is the whole loader; this one says there is no record to read back, which is exact
+    // for that case: its key is a 9-byte encoded BIGINT, far inside
+    // disk_hash_table_t::inline_key_limit, so no entry there is truncated and no loader is
+    // ever consulted. The store's own reads pass the store's own loader (key_loader()).
+    constexpr auto no_stored_key = [](uint32_t, uint64_t, std::string&) { return false; };
 
     // Empty committed set: the segment-only fixtures below never recover a
     // txn-log, so the recover gate is never consulted — an empty set is the
@@ -824,6 +831,18 @@ TEST_CASE("services::index::bitcask_index_disk::string_key_with_embedded_null_pe
     }
 }
 
+// SAME SUBJECT -- a truncated keydir entry sends the store back to the segment record
+// that holds the whole key -- pinned on the ANSWER instead of on a call count.
+//
+// It used to count the calls by installing its own hash_key_source_t on the store's
+// keydir. That injection point is gone with the virtual hook: the loader is a deduced
+// template parameter now, chosen by the store at the call, so nothing outside the store
+// can stand in the middle of it and count. What CAN be observed is the only thing the
+// count was evidence for. The two keys below are both longer than
+// disk_hash_table_t::inline_key_limit and are the SAME LENGTH with the same leading
+// characters, so their entries carry an identical 32-byte stored prefix: telling them
+// apart is impossible without reading both records back. A store that skips the loader
+// answers keys_equal false for both and this case returns nothing.
 TEST_CASE("services::index::bitcask_index_disk::find_invokes_key_loader_for_truncated_key") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -831,35 +850,30 @@ TEST_CASE("services::index::bitcask_index_disk::find_invokes_key_loader_for_trun
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    auto shared_table = boost::intrusive_ptr(
-        new services::index::disk_hash_table_t(path / "hash_index.bin",
-                                               services::index::disk_hash_table_t::default_bucket_count,
-                                               &resource));
-
+    // The store opens its own keydir now (C2c) — there is no table to build here and
+    // hand in.
     bitcask_index_disk_t index(path,
                                &resource,
                                test_flush_threshold,
                                test_segment_record_limit,
-                               std::pmr::set<std::uint64_t>{&resource},
-                               shared_table);
-
-    const auto real_loader = services::index::make_bitcask_hash_key_loader(index);
-    size_t loader_calls = 0;
-    shared_table->set_full_key_loader(
-        [&](uint32_t segment_id, uint64_t value_offset, std::string& out_key, bool lock_bitcask) {
-            ++loader_calls;
-            return real_loader(segment_id, value_offset, out_key, lock_bitcask);
-        });
+                               std::pmr::set<std::uint64_t>{&resource});
 
     const std::string long_key(200, 'q');
+    // Same length, same first 100 characters: the encoded prefix the keydir stores is
+    // byte-identical to long_key's.
+    const std::string sibling_key = std::string(100, 'q') + std::string(100, 'z');
+
     index.insert(logical_value_t(&resource, long_key), 4242);
+    index.insert(logical_value_t(&resource, sibling_key), 777);
     REQUIRE(index.force_flush().type == core::error_code_t::none);
-    loader_calls = 0;
 
     const auto rows = index.find(logical_value_t(&resource, long_key));
     REQUIRE(rows.size() == 1);
     REQUIRE(rows.front() == 4242);
-    REQUIRE(loader_calls >= 1);
+
+    const auto sibling_rows = index.find(logical_value_t(&resource, sibling_key));
+    REQUIRE(sibling_rows.size() == 1);
+    REQUIRE(sibling_rows.front() == 777);
 }
 
 TEST_CASE("services::index::bitcask_index_disk::very_long_string_key_persists") {
@@ -1116,30 +1130,33 @@ TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage"
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    auto shared = boost::intrusive_ptr(
-        new disk_hash_table_t(path / "hash_index.bin", disk_hash_table_t::default_bucket_count, &resource));
-    const auto* shared_ptr = shared.get();
-
+    // Same subject, one owner. The keydir used to be built here and handed in, so
+    // "kept" meant "the handle the caller still holds is still the one being written";
+    // the store owns it alone now (C2c, rule 10), so "kept" means the object clear()
+    // leaves behind is the SAME object — pinned by identity below.
     bitcask_index_disk_t index(path,
                                &resource,
                                test_flush_threshold,
                                test_segment_record_limit,
-                               std::pmr::set<std::uint64_t>{},
-                               std::move(shared));
+                               std::pmr::set<std::uint64_t>{});
+    const auto* shared_ptr = &index.hash_storage();
 
     index.insert(logical_value_t(&resource, int64_t(987)), 986);
     auto encoded_cast =
         logical_value_t(&resource, int64_t(987)).cast_as(complex_logical_type(logical_type::BIGINT), {});
     REQUIRE_FALSE(encoded_cast.has_error());
     const auto encoded = codec::encode_disk_hash_key(encoded_cast.value());
-    REQUIRE(shared_ptr->get(encoded, false).has_value());
+    REQUIRE(shared_ptr->get(encoded, no_stored_key).has_value());
 
     index.clear();
 
-    REQUIRE_FALSE(shared_ptr->get(encoded, false).has_value());
+    // The identity half: clear() wipes the keydir in place instead of replacing it, so
+    // the store's own pointer to it stays valid across the wipe.
+    REQUIRE(&index.hash_storage() == shared_ptr);
+    REQUIRE_FALSE(shared_ptr->get(encoded, no_stored_key).has_value());
 
     index.insert(logical_value_t(&resource, int64_t(987)), 986);
-    REQUIRE(shared_ptr->get(encoded, false).has_value());
+    REQUIRE(shared_ptr->get(encoded, no_stored_key).has_value());
     const auto rows = index.find(logical_value_t(&resource, int64_t(987)));
     REQUIRE(rows.size() == 1);
     REQUIRE(rows.front() == 986);

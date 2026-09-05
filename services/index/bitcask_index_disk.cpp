@@ -1,7 +1,6 @@
 #include "bitcask_index_disk.hpp"
 
 #include "absl/crc/crc32c.h"
-#include "bitcask_hash_key_loader.hpp"
 #include <components/index/logical_value_binary_codec.hpp>
 
 #include <algorithm>
@@ -290,8 +289,7 @@ namespace services::index {
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
                                                uint64_t segment_record_limit,
-                                               std::pmr::set<std::uint64_t> committed_txn_ids,
-                                               disk_hash_table_ptr shared_hash_index)
+                                               std::pmr::set<std::uint64_t> committed_txn_ids)
         : index_disk_t(resource, flush_threshold)
         , path_(path)
         , hash_index_file_path_(path_ / hash_index_file)
@@ -300,13 +298,12 @@ namespace services::index {
         , task_executor_(std::make_unique<bitcask_task_executor_t>())
         , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {
         initialize_storage();
-        if (shared_hash_index) {
-            hash_index_ = std::move(shared_hash_index);
-        } else {
-            hash_index_ = boost::intrusive_ptr(
-                new disk_hash_table_t(hash_index_file_path_, disk_hash_table_t::default_bucket_count, resource));
+        if (open_hash_index().contains_error()) {
+            // Direct ctor aborts on an unopenable keydir; only create() tolerates it and
+            // hands the value back. Same split as the CRC check below.
+            assert(false && "bitcask I/O failure: direct ctor could not open the keydir");
+            std::abort();
         }
-        install_hash_key_loader();
         load_from_disk();
         if (crc_failure_) {
             // Direct ctor aborts on corruption; only create() tolerates a CRC
@@ -333,6 +330,13 @@ namespace services::index {
                                                                                        segment_record_limit,
                                                                                        std::move(committed_txn_ids),
                                                                                        skip_load_tag{}));
+        // The keydir opens HERE, and the reason it could not is this function's return
+        // value rather than a flag on the instance: nothing after it has run, so the
+        // half-built instance is simply dropped and the caller gets the reason instead of
+        // an index over storage that is not there.
+        if (auto open_result = instance->open_hash_index(); open_result.contains_error()) {
+            return open_result;
+        }
         instance->load_from_disk();
         if (instance->crc_failure_) {
             return core::error_t{core::error_code_t::index_create_fail,
@@ -357,26 +361,33 @@ namespace services::index {
         , task_executor_(std::make_unique<bitcask_task_executor_t>())
         , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {
         initialize_storage();
-        hash_index_ = boost::intrusive_ptr(
-            new disk_hash_table_t(hash_index_file_path_, disk_hash_table_t::default_bucket_count, resource));
-        install_hash_key_loader();
-        // Caller (factory) is responsible for load_from_disk +
-        // open_active_segment + recover_txn_log_unlocked.
+        // The factory runs open_hash_index() itself and acts on what it returns, then
+        // load_from_disk + open_active_segment + recover_txn_log_unlocked.
+    }
+
+    // The keydir file, opened by the store that owns it. Through create() rather than the
+    // aborting direct ctor, because the failures it reports -- an unopenable path, an
+    // unreadable or incompatible header -- are environmental: they must cost the index its
+    // registration, never the engine its start (integration test
+    // test_index_bootstrap_failure).
+    core::error_t bitcask_index_disk_t::open_hash_index() {
+        auto storage =
+            disk_hash_table_t::create(hash_index_file_path_, disk_hash_table_t::default_bucket_count, resource());
+        if (storage.has_error()) {
+            return storage.error();
+        }
+        hash_index_ = std::move(storage.value());
+        return core::error_t::no_error();
     }
 
     bitcask_index_disk_t::~bitcask_index_disk_t() {
-        if (hash_index_) {
-            hash_index_->set_full_key_loader(nullptr);
+        if (!hash_index_) {
+            // The keydir never opened (see open_hash_index) or drop() released it, so
+            // there is nothing to flush. Nothing to unhook either: the key loader travels
+            // with each call instead of being installed on the table.
+            return;
         }
         auto ignored_flush_error = force_flush();
-    }
-
-    void bitcask_index_disk_t::install_hash_key_loader() {
-        hash_index_->set_full_key_loader(
-            [this](uint32_t segment_id, uint64_t value_offset, std::string& out_key, bool lock_bitcask) {
-                return lock_bitcask ? load_hash_key_at(segment_id, value_offset, out_key)
-                                    : load_hash_key_at_unlocked(segment_id, value_offset, out_key);
-            });
     }
 
     bool bitcask_index_disk_t::load_hash_key_at_unlocked(uint32_t segment_id,
@@ -389,12 +400,6 @@ namespace services::index {
         }
         out_key = key_bytes_for_hash(key);
         return true;
-    }
-
-    bool
-    bitcask_index_disk_t::load_hash_key_at(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const {
-        std::shared_lock lock(mutex_);
-        return load_hash_key_at_unlocked(segment_id, value_offset, out_key);
     }
 
     void bitcask_index_disk_t::enqueue_task(std::function<void()> task) { task_executor_->enqueue(std::move(task)); }
@@ -656,7 +661,7 @@ namespace services::index {
 
     bitcask_index_disk_t::row_ids_t bitcask_index_disk_t::current_rows(const value_t& key) const {
         const auto key_bytes = key_bytes_for_hash(key);
-        auto ref = hash_index_->get(key_bytes, false);
+        auto ref = hash_index_->get(key_bytes, key_loader());
         if (!ref.has_value()) {
             return row_ids_t(resource());
         }
@@ -668,7 +673,7 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::erase_all_refs_for_key(std::string_view key_bytes) {
-        while (hash_index_->erase(key_bytes, false)) {
+        while (hash_index_->erase(key_bytes, key_loader())) {
         }
     }
 
@@ -993,7 +998,7 @@ namespace services::index {
 
     void bitcask_index_disk_t::remove(value_t key) {
         std::unique_lock lock(mutex_);
-        if (!hash_index_->get(key_bytes_for_hash(key), false).has_value()) {
+        if (!hash_index_->get(key_bytes_for_hash(key), key_loader()).has_value()) {
             return;
         }
         append_tombstone(key);
@@ -1078,7 +1083,7 @@ namespace services::index {
 
     void bitcask_index_disk_t::find(const value_t& value, result& res) const {
         std::shared_lock lock(mutex_);
-        auto ref = hash_index_->get(key_bytes_for_hash(value), false);
+        auto ref = hash_index_->get(key_bytes_for_hash(value), key_loader());
         if (!ref.has_value()) {
             return;
         }
@@ -1256,7 +1261,7 @@ namespace services::index {
             }
             meta_offset += sizeof(new_log_offset);
 
-            auto current = hash_index_->get(key_bytes, false);
+            auto current = hash_index_->get(key_bytes, key_loader());
             if (!current.has_value()) {
                 continue;
             }
@@ -1300,9 +1305,9 @@ namespace services::index {
         txn_log_file_.reset();
 
         // Remove all on-disk bitcask artifacts: data segments, the CURRENT
-        // pointer, the txn log and its applied-offset sidecar. The shared
-        // hash_index.bin is cleared in place when hash_index_ is present so
-        // disk_hash_single_field_index keeps reading the same storage object.
+        // pointer, the txn log and its applied-offset sidecar. hash_index.bin is
+        // cleared IN PLACE rather than unlinked and re-opened, so the key source
+        // installed on it stays valid across the wipe.
         // std::error_code overloads — no exceptions on a -fno-exceptions build.
         for (const auto& segment : collect_segments()) {
             remove_file(fs_, segment.path);
@@ -1326,14 +1331,15 @@ namespace services::index {
         // directory. A fresh executor replaces the stopped one.
         task_executor_ = std::make_unique<bitcask_task_executor_t>();
         initialize_storage();
-        if (hash_index_) {
-            hash_index_->clear();
-        } else {
-            remove_file(fs_, hash_index_file_path_);
-            hash_index_ = boost::intrusive_ptr(
-                new disk_hash_table_t(hash_index_file_path_, disk_hash_table_t::default_bucket_count, resource()));
+        if (!hash_index_) {
+            // clear() keeps the index alive and writable, so it is only ever called on a
+            // live one; the store is released exactly once, by drop(), and the agent
+            // refuses to clear after that. Reaching here means that guard was bypassed,
+            // and re-opening the file would quietly resurrect a dropped index.
+            assert(false && "bitcask_index_disk_t::clear: the store was released by drop()");
+            std::abort();
         }
-        install_hash_key_loader();
+        hash_index_->clear();
         load_from_disk();
         open_active_segment();
         // committed_txn_ids_ is intentionally left as-is: the txn log it gated

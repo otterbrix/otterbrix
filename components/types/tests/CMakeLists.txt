@@ -5,6 +5,7 @@ add_definitions(-DDEV_MODE)
 set( ${PROJECT_NAME}_SOURCES
         test_types.cpp
         test_type_switch.cpp
+        test_type_spec_codec.cpp
         test_tri_bool.cpp
 )
 

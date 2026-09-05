@@ -21,12 +21,24 @@ namespace components::types {
         requires(core::IsBufferLike<T>) explicit physical_value(const T& value)
             : physical_value(value.data(), static_cast<uint32_t>(value.size())) {}
         explicit physical_value(const char* data, uint32_t size);
-        // all integral types
+        // all integral types, including the 16-byte absl int128 family (C3)
         template<typename T>
         requires(!core::IsBufferLike<T>) explicit physical_value(T value)
             : type_(physical_value::get_type_<T>()) {
-            std::memcpy(&data_, &value, sizeof(value));
+            if constexpr (sizeof(T) == 16) {
+                std::memcpy(&data_, &value, sizeof(data_));
+                std::memcpy(&data_hi_, reinterpret_cast<const char*>(&value) + sizeof(data_), sizeof(data_hi_));
+            } else {
+                std::memcpy(&data_, &value, sizeof(value));
+            }
         }
+
+        // NOTE on DECIMAL (C3): there is deliberately NO decimal tag here. A DECIMAL's
+        // physical representation IS its storage integer (INT64 for width<=18, INT128
+        // beyond — decimal_storage_type), and an index tree holds ONE column's keys, so
+        // encoding the raw scaled integer as INT64/INT128 gives exactly the scan's
+        // compare_rows<T> semantics. The planner guarantees the index is only consulted
+        // when the unified comparison type equals the column type (one scale per tree).
 
         ~physical_value() = default;
 
@@ -48,6 +60,9 @@ namespace components::types {
         physical_type type() const noexcept;
 
     private:
+        // C3: the 16-byte-family comparison arm of operator<.
+        bool less_128_(const physical_value& other, bool lhs128, bool rhs128) const noexcept;
+
         std::nullptr_t value_(std::integral_constant<physical_type, physical_type::NA>) const noexcept;
         bool value_(std::integral_constant<physical_type, physical_type::BOOL>) const noexcept;
         uint8_t value_(std::integral_constant<physical_type, physical_type::UINT8>) const noexcept;
@@ -60,6 +75,8 @@ namespace components::types {
         int64_t value_(std::integral_constant<physical_type, physical_type::INT64>) const noexcept;
         float value_(std::integral_constant<physical_type, physical_type::FLOAT>) const noexcept;
         double value_(std::integral_constant<physical_type, physical_type::DOUBLE>) const noexcept;
+        int128_t value_(std::integral_constant<physical_type, physical_type::INT128>) const noexcept;
+        uint128_t value_(std::integral_constant<physical_type, physical_type::UINT128>) const noexcept;
         std::string_view value_(std::integral_constant<physical_type, physical_type::STRING>) const noexcept;
 
         template<typename T>
@@ -86,6 +103,10 @@ namespace components::types {
                 return physical_type::FLOAT;
             else if constexpr (std::is_same_v<T, double>)
                 return physical_type::DOUBLE;
+            else if constexpr (std::is_same_v<T, int128_t>)
+                return physical_type::INT128;
+            else if constexpr (std::is_same_v<T, uint128_t>)
+                return physical_type::UINT128;
             //static_assert(false && "should be unreachable");
             return physical_type::NA;
         }
@@ -93,10 +114,15 @@ namespace components::types {
         physical_type type_ = physical_type::NA;
         bool memory_ownership = false; // for now is always false
         uint32_t size_ = 0;            // only for pointers
-        uint64_t data_ = 0;            // buffer but allocated on a stack to make it trivially copyable
+        uint64_t data_ = 0;            // low word: pointer / all <=8-byte payloads
+        uint64_t data_hi_ = 0;         // high word of the 16-byte payloads (INT128/UINT128/DECIMAL)
     };
 
-    static_assert(sizeof(physical_value) == 16);
+    // 16 -> 24 with the int128 family (C3). The sizeof is baked into two PERSISTENT
+    // structures (b_plus_tree/block.hpp metadata, segment_tree block_metadata); the change is
+    // a disk-format break; the format is pre-release and changes in place at version 0
+    // (see main_header_t::CURRENT_VERSION).
+    static_assert(sizeof(physical_value) == 24);
     static_assert(alignof(physical_value) == 8);
     static_assert(std::is_trivially_copyable_v<physical_value>);
     static_assert(std::is_trivially_copy_assignable_v<physical_value>);

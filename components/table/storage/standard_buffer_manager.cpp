@@ -385,17 +385,22 @@ namespace components::table::storage {
         return result;
     }
 
-    void standard_buffer_manager_t::reserve_memory(uint64_t size) {
+    core::result_wrapper_t<bool> standard_buffer_manager_t::reserve_memory_impl(uint64_t size) {
         if (size == 0) {
-            return;
+            return true; // nothing to reserve is trivially reserved
         }
-        // void signature (base virtual; currently no callers). On OOM this no-ops rather than throwing;
-        // evict_blocks_or_error released nothing in that case.
         auto reservation = evict_blocks_or_error(memory_tag::EXTENSION, size, nullptr);
         if (reservation.has_error()) {
-            return;
+            // Nothing was reserved: evict_blocks could not free enough and rolled its own
+            // temporary reservation back to zero. Swallowing this is what made "granted" and
+            // "refused" the same event to every caller — say which one happened.
+            return reservation.convert_error<bool>();
         }
+        // Detach the reservation from the RAII object: the bytes stay charged to the pool
+        // until free_reserved_memory gives them back. That is what "reserve" means here, and
+        // it is only correct on the path that answers true.
         reservation.value().size = 0;
+        return true;
     }
 
     void standard_buffer_manager_t::free_reserved_memory(uint64_t size) {

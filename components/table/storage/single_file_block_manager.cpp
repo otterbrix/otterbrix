@@ -327,6 +327,34 @@ namespace components::table::storage {
             }
         }
 
+        // GEOMETRY BEFORE ANY ADOPTION, because a header that cannot describe this file is not
+        // a header to open, and nothing below should be half-installed when it is refused.
+        //
+        // The header's claim about the file's geometry is DISK BYTES. Adopting it unchecked
+        // wrapped block_size() for any value <= DEFAULT_BLOCK_HEADER_SIZE; the guard lives in
+        // set_block_allocation_size and reports instead of throwing, and the open fails loudly
+        // (load_storage_disk_sync hands the refusal to its bootstrap caller, file untouched)
+        // rather than running the engine on a nonsense block size.
+        //
+        // The two short-circuits this check used to carry are gone, and the ZERO one is the
+        // reason. `active.block_alloc_size != 0` skipped the geometry check entirely and left
+        // the engine running on whatever size the CALLER passed to this manager's constructor —
+        // a compatibility branch for a header shape no writer in this build produces:
+        // database_header_t::initialize() stores DEFAULT_BLOCK_ALLOC_SIZE and write_header()
+        // stores block_allocation_size(), which set_block_allocation_size has already proven to
+        // be a non-zero sector multiple. So a zero here is not an older format, it is a corrupt
+        // or truncated header, and "it declares no geometry, so use mine" is a guess about the
+        // stride of every block in the file (rule 6: refuse, do not guess). The
+        // `!= block_allocation_size()` short-circuit goes with it for a smaller reason — it
+        // made the header's claim validated only when it disagreed with the constructor, so an
+        // AGREED-ON nonsense size was adopted by both without anyone checking it.
+        if (auto adopted = set_block_allocation_size(active.block_alloc_size); adopted.has_error()) {
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"Database header of " + path_ +
+                                                      " is unusable: " + std::string(adopted.error().what.c_str()),
+                                                  buffer_manager.resource()});
+        }
+
         iteration_ = active.iteration;
         meta_block_ = active.meta_block;
         max_block_ = active.block_count;
@@ -337,21 +365,6 @@ namespace components::table::storage {
         // ids the row_group_pointer_t stream names.
         durable_meta_block_ = active.meta_block;
         durable_free_list_ = active.free_list;
-
-        if (active.block_alloc_size != 0 && active.block_alloc_size != block_allocation_size()) {
-            // The header's claim about the file's geometry is DISK BYTES. Adopting it unchecked
-            // wrapped block_size() for any value <= DEFAULT_BLOCK_HEADER_SIZE; the guard now
-            // lives in set_block_allocation_size and reports instead of throwing, and the open
-            // fails loudly (load_storage_disk_sync hands the refusal to its bootstrap caller,
-            // file untouched) rather than running the engine on a nonsense block size.
-            if (auto adopted = set_block_allocation_size(active.block_alloc_size); adopted.has_error()) {
-                return core::error_t(
-                    core::error_code_t::data_corruption,
-                    std::pmr::string{"Database header of " + path_ + " is unusable: " +
-                                         std::string(adopted.error().what.c_str()),
-                                     buffer_manager.resource()});
-            }
-        }
 
         if (active.free_list != INVALID_INDEX) {
             return deserialize_free_list(meta_block_pointer_t{active.free_list, 0});
@@ -447,7 +460,7 @@ namespace components::table::storage {
         return block_id;
     }
 
-    void single_file_block_manager_t::latch_allocation_error(uint64_t block_id, const char* reason) {
+    void single_file_block_manager_t::latch_allocation_error(uint64_t block_id, const std::string& reason) {
         // First one wins: it names the id that proved the block accounting wrong, and later ones
         // are consequences of the same corrupt input.
         if (allocation_error_.contains_error()) {
@@ -533,8 +546,27 @@ namespace components::table::storage {
     uint64_t single_file_block_manager_t::peek_free_block_id() {
         // Must mirror free_block_id EXACTLY, pending_free_ included (i.e. excluded): a peek
         // that names an id the allocator would not hand out is worse than no peek at all.
-        if (!reusable_.empty()) {
-            return *reusable_.begin();
+        //
+        // The mirror was written down and not implemented. free_block_id does NOT hand out
+        // *reusable_.begin(): a candidate with a live handle in the block registry is live
+        // table state, so it is skipped (and dropped from the list for good, and latched), and
+        // allocation continues with the next one. This returned the skipped candidate. There
+        // is no production caller today, which is exactly what made the divergence survivable
+        // — and exactly what makes it a trap: the first caller to appear would size, reserve
+        // or lay out against an id the very next free_block_id refuses to give it, and the
+        // only case the two answers differ in is the case the free list is corrupt.
+        //
+        // What a peek does NOT mirror is the SIDE EFFECTS. Dropping the corrupt candidate and
+        // latching the accounting error belong to the allocation that consumes it, not to a
+        // look: latching here would let a diagnostic turn a checkpoint into a refusal. So this
+        // walks past the same candidates without removing them, and answers what the next
+        // free_block_id would RETURN — including the fall-through to the high-water mark when
+        // every candidate is live.
+        for (uint64_t candidate : reusable_) {
+            if (registry_alive(candidate)) {
+                continue;
+            }
+            return candidate;
         }
         return max_block_;
     }
@@ -558,8 +590,37 @@ namespace components::table::storage {
         // (2^62 + N) * 2^18 == N * 2^18, a REAL live block, rewritten with a valid CRC. Branch
         // instead, in every build: drop the id and latch, which makes the next write_header
         // refuse to commit a root built on state already known to be inconsistent.
-        if (block_id >= MAXIMUM_BLOCK) {
-            latch_allocation_error(block_id, "it is outside the addressable block domain");
+        //
+        // THE BOUNDARY IS THE FILE, not the domain, and the two are not the same guard. This
+        // used to test `>= MAXIMUM_BLOCK` alone, which rejects an id that would WRAP inside
+        // block_location and accepts every id between the end of the file and 2^62. Those are
+        // just as unaddressable: block_location computes BLOCK_START + id * alloc, the seek
+        // lands past EOF, and the write extends the file across the whole gap — a corrupt
+        // overflow_blocks entry naming block 2^40 asks for a 256 TB file — while total_blocks()
+        // still reports the old extent and the published free list hands the same id to the
+        // next process that opens the file. max_block_ is that boundary — with its meaning
+        // stated exactly, because it is NOT always the file's extent: it is this manager's
+        // ISSUANCE MARK (adopted from the header's block_count at open, raised by
+        // free_block_id, lowered only by roll_back_uncommitted_round over the contiguous
+        // released tail). After a rollback the mark can sit BELOW both the physical end of the
+        // file and the durable header's block_count — the failed tail's bytes stay in the
+        // file, truncate() has no production caller — so `id < max_block_` means "an id this
+        // manager currently stands behind", a SUBSET of the blocks physically present. The
+        // narrower measure is safe in the only direction a release guard can err: nothing
+        // legitimate can name an id in the gap, because the rollback's descent walks only over
+        // RELEASED ids (registry-alive ids are filtered out of that set, and root N's blocks
+        // are never in it — they are not in issued_since_root_) and stops at the first id it
+        // may not cross, so every live and every root id is always below the mark. The gap
+        // holds only a failed round's abandoned tail, which nothing owns and nothing may free
+        // again; a refusal there latches a leak (recoverable), it cannot lose a block. It is
+        // also the STRICTLY WIDER guard — max_block_ can never exceed MAXIMUM_BLOCK — so the
+        // domain case is still caught, and named separately because it means something else.
+        if (block_id >= max_block_) {
+            latch_allocation_error(block_id,
+                                   block_id >= MAXIMUM_BLOCK
+                                       ? std::string("it is outside the addressable block domain")
+                                       : "the file holds " + std::to_string(max_block_) +
+                                             " blocks, so it is past the end of the file");
             return;
         }
         used_blocks_.erase(block_id);
@@ -715,16 +776,17 @@ namespace components::table::storage {
 
         uint64_t reclaimed = 0;
         for (uint64_t block_id : candidates) {
-            // DOMAIN FIRST, because this list is DISK BYTES. durable_root_data_ is collected
-            // from data_pointer_t::block_pointer.block_id — a full uint64 the metadata reader
-            // takes straight off the file, with no domain check anywhere in between. An id in
-            // the TRANSIENT domain (>= MAXIMUM_BLOCK) cannot address this file at all, and
-            // unregister_block below guards its input with an assert(): an abort in a debug
-            // build, on the agent thread inside the checkpoint coroutine (rule 9), and silence
-            // under NDEBUG — where block_location would then wrap it, (2^62 + N) * 2^18 ==
-            // N * 2^18, onto a REAL live block. mark_as_free drops it and latches the
-            // corruption, which is what makes the next write_header refuse to commit.
-            if (block_id >= MAXIMUM_BLOCK) {
+            // ADDRESSABILITY FIRST, because this list is DISK BYTES. durable_root_data_ is
+            // collected from data_pointer_t::block_pointer.block_id — a full uint64 the
+            // metadata reader takes straight off the file, with no check anywhere in between.
+            // An id this FILE does not contain cannot be freed: past max_block_ it names no
+            // block at all, and past MAXIMUM_BLOCK block_location would wrap it,
+            // (2^62 + N) * 2^18 == N * 2^18, onto a REAL live block. mark_as_free applies
+            // exactly this boundary and latches the corruption, which is what makes the next
+            // write_header refuse to commit — the screen here is what keeps the CALLER from
+            // walking on: unregister_block's assert() only covers the domain half, and
+            // ++reclaimed would otherwise count an id that reached no pool.
+            if (block_id >= max_block_) {
                 mark_as_free(block_id); // refuses the id and latches; never reaches either pool
                 continue;
             }
@@ -847,10 +909,22 @@ namespace components::table::storage {
             issued_since_root_.erase(block_id);
             used_blocks_.erase(block_id);
             modified_blocks_.erase(block_id);
-            // Disjointness of the two pools is maintained explicitly rather than assumed: an id
-            // this round allocated cannot be in pending_free_ today (free_block_id draws only
-            // from reusable_, and mark_as_free is the only filler of pending_free_), but the
-            // erase is what keeps that true if either half ever changes.
+            // LOAD-BEARING, not defensive. The note that used to sit here claimed an id this
+            // round allocated "cannot be in pending_free_ today", reasoning that free_block_id
+            // draws only from reusable_ and mark_as_free is pending_free_'s only filler. That
+            // reasoning is about ONE round; issued_since_root_ spans every round since the last
+            // COMMITTED header. A second failed round that is allowed to compact swaps out the
+            // collection the FIRST failed round built and mark_as_free's its blocks — ids no
+            // header ever promoted out of issued_since_root_ — so the two sets do intersect,
+            // and on the ordinary retry path rather than in some future refactor. Measured on
+            // the 12k-row gate: 14 ids in both after two failed compacting rounds
+            // (test_failed_round_rollback.cpp, gate 2b).
+            //
+            // Moving them is also the right answer, not merely the safe one: pending_free_
+            // means "the DURABLE root still names it", which is false for everything in
+            // issued_since_root_ by construction, and pending_free_ drains only on a committed
+            // header — the one event this whole path exists because it did not happen — so
+            // leaving them quarantined would strand the space indefinitely.
             pending_free_.erase(block_id);
             reusable_.insert(block_id);
             // ABA break, the same pairing data_table_t::compact and reclaim_superseded_root
@@ -1281,11 +1355,38 @@ namespace components::table::storage {
         // R-LEAK third term (see the doctrine above): blocks owned only by the live tree.
         // Computed before anything allocates — allocation draws from reusable_ and can neither
         // create nor destroy a registry entry, so this set is stable across the reservation
-        // below; the domain guard mirrors mark_as_free's (a transient-domain id cannot address
-        // this file and must never be published as free in it).
+        // below.
+        //
+        // THE WRITER OBEYS THE READER'S BOUNDARY, and the reader's boundary is the file:
+        // deserialize_free_list refuses any id at or past the block_count of the header it
+        // hangs off, and write_header stamps block_count = max_block_. So an id >= max_block_
+        // published here would produce a file this build just COMMITTED and this build then
+        // refuses to ever open — corruption (recoverable as a leak) converted into an
+        // unopenable database (not recoverable). These ids are DISK-FED with no extent check
+        // on the way in (column_data / column_state hand data_pointer_t's block ids straight
+        // to register_block), and on a non-compacting round no mark_as_free ever sees them, so
+        // this is the LAST point before they become durable. Seeing one is the same corruption
+        // mark_as_free latches, and it is answered the same way: latch (sticky — a corrupt
+        // registration does not heal) and refuse THIS round through the error channel this
+        // function already has. No header lands, the previous root stands, and the file keeps
+        // opening. reusable_ and pending_free_ need no such screen — every path that fills
+        // them (mark_as_free, deserialize_free_list, the rollback's descent) already keeps
+        // them below max_block_.
         std::set<uint64_t> live_unnamed;
         for (uint64_t block_id : live_registry_ids()) {
-            if (block_id < MAXIMUM_BLOCK && pending_root_data_.count(block_id) == 0) {
+            if (block_id >= max_block_) {
+                const std::string reason = block_id >= MAXIMUM_BLOCK
+                                               ? std::string("it is outside the addressable block domain")
+                                               : "the file holds " + std::to_string(max_block_) +
+                                                     " blocks, so it is past the end of the file";
+                latch_allocation_error(block_id, reason);
+                return core::error_t(core::error_code_t::data_corruption,
+                                     std::pmr::string{"Free list of " + path_ +
+                                                          " refuses to publish registry-live block " +
+                                                          std::to_string(block_id) + ": " + reason,
+                                                      buffer_manager.resource()});
+            }
+            if (pending_root_data_.count(block_id) == 0) {
                 live_unnamed.insert(block_id);
             }
         }
@@ -1386,35 +1487,58 @@ namespace components::table::storage {
         metadata_manager_t meta_mgr(*this);
         metadata_reader_t reader(meta_mgr, pointer);
         auto count = reader.read<uint64_t>();
+        // STAGED, NOT INSTALLED. The list is validated and read to the end before a single id
+        // reaches reusable_: the list is published sorted, so an offender is typically LAST,
+        // and installing everything before it and then refusing left the allocator's pool
+        // half-filled by a load that reported failure — the same half-installed shape the
+        // geometry gate on the open path exists to prevent. A refused list installs NOTHING.
+        // (No reserve() on `count`: it is disk bytes, and pre-sizing from a corrupt count is
+        // its own defect.)
+        std::pmr::vector<uint64_t> staged(buffer_manager.resource());
         for (uint64_t i = 0; i < count && !reader.finished(); ++i) {
             const uint64_t block_id = reader.read<uint64_t>();
-            // Rule 19, same class of defect as M7 one level earlier: an id from the TRANSIENT
-            // domain cannot address this file. block_location() would compute
-            // (2^62 + N) * block_alloc_size, which wraps to N * block_alloc_size — a real,
-            // live block, rewritten with a valid CRC. That was guarded only by an assert()
-            // two calls downstream: an abort in a debug build, silence in a release one. No
-            // writer of this format can emit such an id, so seeing one means the free-list
-            // chain is corrupt; say so here, where there is an error channel, and never let
-            // it into the pool free_block_id draws from.
-            if (block_id >= MAXIMUM_BLOCK) {
+            // Rule 19, same class of defect as M7 one level earlier, and the SAME boundary
+            // mark_as_free applies: an id this file does not contain cannot be handed to the
+            // allocator. Two ways to fail it, one guard, because max_block_ (installed by
+            // load_existing_database from this very header's block_count before this runs —
+            // the precondition named at the declaration) can never exceed MAXIMUM_BLOCK:
+            //   * past the end of the file — block_location() seeks past EOF, and the first
+            //     write of the reissued id extends the file across the whole gap;
+            //   * past the addressable domain — block_location() computes
+            //     (2^62 + N) * block_alloc_size, which wraps to N * block_alloc_size, a real
+            //     live block rewritten with a valid CRC.
+            // The narrow version of this guard tested only the second, so a list naming a
+            // block past its own header's block_count opened CLEANLY and armed the very next
+            // allocation. No writer of this format can emit either shape — serialize_free_list
+            // refuses to publish an id at or past the block_count the same header records —
+            // so seeing one means the free-list chain is corrupt; say so HERE, where there is
+            // an error channel, and never let it into the pool free_block_id draws from.
+            if (block_id >= max_block_) {
                 return core::error_t(
                     core::error_code_t::data_corruption,
                     std::pmr::string{"Free list of " + path_ + " contains block id " + std::to_string(block_id) +
-                                         ", which is outside the addressable block domain",
+                                         (block_id >= MAXIMUM_BLOCK
+                                              ? std::string(", which is outside the addressable block domain")
+                                              : ", but the header of this file records only " +
+                                                    std::to_string(max_block_) +
+                                                    " blocks (the last addressable id is " +
+                                                    std::to_string(max_block_ == 0 ? 0 : max_block_ - 1) + ")"),
                                      buffer_manager.resource()});
             }
-            // reusable_, not pending_free_: this list belongs to the root the engine is opening
-            // ON, so it is by construction the DURABLE root's own statement about what it does
-            // not reference. Nothing is in flight at load time, so there is nothing to
-            // quarantine — and routing it to pending_free_ instead would strand every reclaimed
-            // block until the first checkpoint of the new process.
-            reusable_.insert(block_id);
+            staged.push_back(block_id);
         }
         // Corrupt free-list chain (read past end) -> data_corruption, surfaced at the load boundary
-        // instead of throwing.
+        // instead of throwing — and before anything is installed, like the guard above.
         if (reader.has_error()) {
             return core::error_t(reader.error());
         }
+        // The whole list passed; only now does it become allocator state. reusable_, not
+        // pending_free_: this list belongs to the root the engine is opening ON, so it is by
+        // construction the DURABLE root's own statement about what it does not reference.
+        // Nothing is in flight at load time, so there is nothing to quarantine — and routing
+        // it to pending_free_ instead would strand every reclaimed block until the first
+        // checkpoint of the new process.
+        reusable_.insert(staged.begin(), staged.end());
         return true;
     }
 

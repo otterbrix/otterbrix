@@ -4,6 +4,7 @@
 #include <cstring>
 #include <memory>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "block_manager.hpp"
@@ -127,6 +128,13 @@ namespace components::table::storage {
         // single-threaded bootstrap/load path, whose boundary (load_storage_disk_sync) reports the error
         // to its caller; the file is refused, never mutated (A7.5: no external backup exists to fall
         // back to — recovery is the two-slot root reconciliation inside load_existing_database itself).
+        //
+        // A MANAGER WHOSE LOAD WAS REFUSED IS NOT FIT FOR USE — destroy it (the production caller
+        // drops it on the spot). The geometry gate runs before ANY header field is adopted, so a
+        // refused header installs nothing; but a refusal LATER on the path (a free list that fails
+        // its extent guard, a metadata read error) necessarily lands after the header's fields are
+        // adopted, because interpreting the rest of the file REQUIRES them. The allocator pool
+        // itself stays clean either way: deserialize_free_list installs all-or-nothing.
         [[nodiscard]] core::result_wrapper_t<bool> create_new_database();
         [[nodiscard]] core::result_wrapper_t<bool> load_existing_database();
 
@@ -193,8 +201,18 @@ namespace components::table::storage {
         // the definition.
         [[nodiscard]] core::result_wrapper_t<meta_block_pointer_t> serialize_free_list();
         // Loads the free list OF THE DURABLE ROOT, so every id it carries is free under the
-        // root the engine is about to run on: they go straight into reusable_, never into
-        // pending_free_ (nothing is in flight at load time).
+        // root the engine is about to run on: they go into reusable_, never into pending_free_
+        // (nothing is in flight at load time) — and only as a whole. A list refused for ANY id
+        // installs NOTHING (all-or-nothing, the same principle as the geometry gate on the
+        // open path).
+        //
+        // PRECONDITION, an ordering one: max_block_ must already hold the block_count of the
+        // header this list hangs off — load_existing_database installs it before calling. The
+        // guard measures the file's extent through it, so on a manager where nothing has
+        // raised the mark (a freshly created database: max_block_ == 0 until the first
+        // free_block_id) EVERY id is refused. That is the intended reading, not an accident:
+        // a free list is a header's own statement and cannot be interpreted against a file
+        // whose extent has not been adopted yet.
         [[nodiscard]] core::result_wrapper_t<bool> deserialize_free_list(meta_block_pointer_t pointer);
 
         // M7 error channel. free_block_id() cannot return an error (it is a uint64_t-returning
@@ -270,8 +288,9 @@ namespace components::table::storage {
         uint64_t block_location(uint64_t block_id) const;
         [[nodiscard]] core::result_wrapper_t<bool> checksum_and_write(file_buffer_t& buffer, uint64_t block_id);
         bool verify_checksum(file_buffer_t& buffer);
-        // `reason` completes the sentence "refused block N: ".
-        void latch_allocation_error(uint64_t block_id, const char* reason);
+        // `reason` completes the sentence "refused block N: ", and is a std::string because
+        // the file-extent case has to NAME the extent it measured against.
+        void latch_allocation_error(uint64_t block_id, const std::string& reason);
         // ITEM A. A walk of the SUPERSEDED root's chains failed, so this manager can no longer
         // say which blocks root N owns. Latches into allocation_error_ (first failure wins) and
         // returns the composed error for propagation. `which_chain` completes "its ... chain".

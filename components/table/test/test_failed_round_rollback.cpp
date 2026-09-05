@@ -349,8 +349,14 @@ TEST_CASE("failed_round: the rollback gives back only what the live tree does no
     // are in issued_since_root_ exactly like the packed copy is, and freeing them would be the
     // corruption the "WHY NOT ROLL BACK" note refuses.
     const uint64_t blocks_before_round = bm.total_blocks();
-    REQUIRE(steady.table->compact(WATERMARK));
+    // The journal is reset BEFORE the compaction, not after it. issued_since_root_ — the set
+    // this gate is about — starts at the last COMMITTED header, and the compaction runs after
+    // that header and before this round's checkpoint, so its write-through allocations are in
+    // it. Resetting after the compact measured only the checkpoint's own allocations, i.e.
+    // strictly LESS than "every id a failed round issued", which is what the gate's name
+    // promises and what roll_back_uncommitted_round actually walks.
     bm.dev_reset_tracking();
+    REQUIRE(steady.table->compact(WATERMARK));
     auto r = checkpoint_round(bm, *steady.table, &plan, true);
     REQUIRE_FALSE(r.committed);
     REQUIRE_FALSE(bm.degraded());
@@ -397,6 +403,82 @@ TEST_CASE("failed_round: the rollback gives back only what the live tree does no
     CHECK(bm.total_blocks() <= blocks_before_round); // a failed round never leaves the mark higher
 
     // The rollback did not take anything the in-memory tree depends on: read the DATA.
+    REQUIRE(scan_and_count(*steady.table, env) == ROLLBACK_ROWS);
+    remove_file(path);
+}
+
+// ---------------------------------------------------------------------------------------
+// A7.7 GATE 2b — THE PREMISE, MEASURED. "Allocated for the root under construction" and
+// "already released" DO intersect, and the rollback's pending_free_.erase is load-bearing
+// TODAY rather than future-proofing.
+//
+// The rollback's own note used to claim the opposite ("an id this round allocated cannot be in
+// pending_free_ today"), reasoning from free_block_id drawing only from reusable_. That
+// reasoning is about ONE round. issued_since_root_ spans every round since the last COMMITTED
+// header, and a compaction inside a later one releases the collection an EARLIER failed round
+// built — ids that are still in issued_since_root_ because no header ever promoted them out.
+//
+// Two failed compacting rounds are the smallest shape that produces it, and it is the ordinary
+// one: agent_disk retries, and a retry that is allowed to compact rebuilds again.
+// ---------------------------------------------------------------------------------------
+TEST_CASE("failed_round: a later round's compaction releases ids the round journal still holds", "[a7.7]") {
+    const auto path = rollback_db_path("premise");
+    remove_file(path);
+    rollback_env_t env;
+
+    otterbrix_test::fault_plan_t plan;
+    otterbrix_test::fault_injection_scope_t scope(plan);
+
+    tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+    REQUIRE(!bm.create_new_database().has_error());
+    auto steady = reach_steady_state(env, bm, path, &plan);
+
+    // The journal now mirrors issued_since_root_: the last round COMMITTED, so
+    // promote_durable_root emptied that set and this reset empties its shadow.
+    bm.dev_reset_tracking();
+
+    // Round 1: compact, then fail the header. Its rebuilt collection is registry-alive, so the
+    // rollback KEEPS those ids — they stay in issued_since_root_.
+    REQUIRE(steady.table->compact(WATERMARK));
+    REQUIRE_FALSE(checkpoint_round(bm, *steady.table, &plan, true).committed);
+    REQUIRE_FALSE(bm.degraded());
+
+    // Round 2's compaction swaps that collection out and mark_as_free's its blocks. They are
+    // not in reusable_, so they go to pending_free_ — while still being ids this un-promoted
+    // window issued.
+    REQUIRE(steady.table->compact(WATERMARK));
+    const std::set<uint64_t> issued_since_commit(bm.dev_issued_ids().begin(), bm.dev_issued_ids().end());
+    const auto pending_after_compact = bm.dev_pending_free_snapshot();
+    std::set<uint64_t> overlap;
+    for (auto id : issued_since_commit) {
+        if (pending_after_compact.count(id) != 0) {
+            overlap.insert(id);
+        }
+    }
+    WARN("[a7.7 gate 2b] issued_since_commit=" << issued_since_commit.size()
+                                               << " pending_free=" << pending_after_compact.size()
+                                               << " intersection=" << overlap.size());
+    CHECK_FALSE(overlap.empty());
+
+    // ...and the rollback of round 2 puts every one of them on exactly one side, with the
+    // erase doing the work the old note said was unnecessary: released ids move OUT of
+    // pending_free_ into reusable_ (root N cannot name them, so quarantining them would strand
+    // the space until a commit that is not coming), and kept ids stay quarantined.
+    REQUIRE_FALSE(checkpoint_round(bm, *steady.table, &plan, true).committed);
+    const auto reusable_after = bm.dev_reusable_snapshot();
+    const auto pending_after = bm.dev_pending_free_snapshot();
+    const uint64_t high_water = bm.total_blocks();
+    for (auto id : overlap) {
+        INFO("id " << id << " was both issued-since-commit and pending-free");
+        CHECK((reusable_after.count(id) != 0) + (pending_after.count(id) != 0) <= 1);
+        if (bm.registry_alive(id)) {
+            CHECK(reusable_after.count(id) == 0);
+        } else if (id < high_water) {
+            CHECK(pending_after.count(id) == 0);
+            CHECK(reusable_after.count(id) != 0);
+        }
+    }
+
     REQUIRE(scan_and_count(*steady.table, env) == ROLLBACK_ROWS);
     remove_file(path);
 }

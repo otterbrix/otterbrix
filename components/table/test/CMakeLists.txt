@@ -32,6 +32,7 @@ set(${PROJECT_NAME}_SOURCES
         test_collection_ownership.cpp
         test_wide_decimal_storage.cpp
         test_update_merge.cpp
+        test_block_accounting_bounds.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

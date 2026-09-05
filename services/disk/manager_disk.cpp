@@ -463,12 +463,17 @@ namespace services::disk {
     //     an open scan cursor), a surviving handle means a real sharer.
     //
     // THE PROOF, per id, and it is a proof of NON-ownership by anyone else — never a guess:
-    //   1. domain. These ids reach us through data_pointer_t::overflow_blocks, read off the
-    //      .otbx as raw uint64s with no check anywhere in between, so an id outside the
-    //      addressable domain is disk corruption, not a bug here. mark_as_free screens its own
-    //      input and LATCHES, which is what stops the next write_header from committing;
-    //      unregister_block only asserts, so it is skipped — the same screening compact() and
-    //      reclaim_superseded_root do, for the same reason.
+    //   1. the file's extent. These ids reach us through data_pointer_t::overflow_blocks, read
+    //      off the .otbx as raw uint64s with no check anywhere in between, so an id this file
+    //      does not contain — past total_blocks() as well as past the addressable domain — is
+    //      disk corruption, not a bug here. It is routed straight to mark_as_free, which
+    //      refuses it and LATCHES (that is what stops the next write_header from committing),
+    //      and the routing happens BEFORE the live-set and registry probes below: their
+    //      `continue`s must not carry a corrupt id out of the loop unlatched. unregister_block
+    //      is skipped for it — an assert covers only the domain half, and the by-id erase must
+    //      not touch a slot a corrupt registration may hold. This is the same file boundary
+    //      compact() and reclaim_superseded_root screen with, measured through the same
+    //      manager.
     //   2. the live collection does not name it. B2 packs segments of several columns into one
     //      256 KiB block, so a block the dropped column sat in is routinely still carrying a
     //      SURVIVING column's segment. Such a block is not leaked by skipping it: it is owned
@@ -512,7 +517,7 @@ namespace services::disk {
         live.erase(std::unique(live.begin(), live.end()), live.end());
 
         for (uint64_t block_id : pending_released_blocks_) {
-            if (block_id >= components::table::storage::MAXIMUM_BLOCK) {
+            if (block_id >= block_manager.total_blocks()) {
                 block_manager.mark_as_free(block_id); // refuses the id and latches the corruption
                 continue;
             }

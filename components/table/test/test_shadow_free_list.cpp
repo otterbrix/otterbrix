@@ -583,9 +583,24 @@ TEST_CASE("shadow_free_list: a chain-spanning free list never lists its own chai
     // Comfortably past one chain block's worth of ids (~32.6k at the default 256 KiB block),
     // so the chain needs a second and a third -- the ones allocated MID-WRITE.
     constexpr uint64_t FREE_IDS = 70000;
+    // The pool is built by ALLOCATING the ids and then releasing them, which is both the only
+    // shape mark_as_free accepts and the only shape production produces. Its guard measures
+    // the FILE (max_block_), not just the addressable domain, so an id the file never
+    // contained is refused and latched rather than quarantined -- and a free list is by
+    // definition what a round LEFT BEHIND, never a set of ids conjured out of nothing. Block 0
+    // stays allocated so the pool is exactly 1..FREE_IDS, as before. No block is written: this
+    // gate is about the CHAIN's ids, and the listed ones only ever exist as numbers.
+    for (uint64_t id = 0; id <= FREE_IDS; ++id) {
+        const uint64_t allocated = bm.free_block_id();
+        if (allocated != id) {
+            FAIL("free_block_id must extend the empty file in order: expected " << id << ", got " << allocated);
+        }
+    }
+    REQUIRE(bm.total_blocks() == FREE_IDS + 1);
     for (uint64_t id = 1; id <= FREE_IDS; ++id) {
         bm.mark_as_free(id);
     }
+    REQUIRE_FALSE(bm.degraded());
     {
         // A durable header is what moves them from pending_free_ into the pool free_block_id
         // actually draws from; without it the hazard cannot even arise.

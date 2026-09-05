@@ -366,17 +366,20 @@ namespace components::table {
             std::sort(reclaimable.begin(), reclaimable.end());
             reclaimable.erase(std::unique(reclaimable.begin(), reclaimable.end()), reclaimable.end());
             for (uint64_t block_id : reclaimable) {
-                // Same domain guard reclaim_superseded_root applies, and for the same
-                // reason: these ids are DISK-FED. collect_disk_block_ids emits
-                // state->additional_blocks() unfiltered, and those come from
-                // data_pointer_t::overflow_blocks, read off the file as a raw uint64 with
-                // no check. mark_as_free screens its OWN input and returns — it does not
-                // stop the next statement — so without this `continue` a corrupt id in the
-                // transient domain reaches unregister_block's assert: an abort on the agent
-                // thread inside the checkpoint coroutine (rule 9) in a debug build, and
-                // silence under NDEBUG. mark_as_free has already latched the corruption,
-                // which is what stops the next write_header from committing.
-                if (block_id >= storage::MAXIMUM_BLOCK) {
+                // Same file-extent guard reclaim_superseded_root applies, measured through
+                // the same manager, and for the same reason: these ids are DISK-FED.
+                // collect_disk_block_ids emits state->additional_blocks() unfiltered, and
+                // those come from data_pointer_t::overflow_blocks, read off the file as a
+                // raw uint64 with no check. mark_as_free screens its OWN input against the
+                // same boundary and returns — it does not stop the next statement — so
+                // without this `continue` an id past the addressable domain reaches
+                // unregister_block's assert (an abort on the agent thread inside the
+                // checkpoint coroutine, rule 9, in a debug build, and silence under NDEBUG),
+                // and an id merely past the end of the file reaches the by-id erase, which
+                // must not touch a slot a corrupt registration may hold. mark_as_free has
+                // already latched the corruption, which is what stops the next write_header
+                // from committing.
+                if (block_id >= block_manager.total_blocks()) {
                     block_manager.mark_as_free(block_id);
                     continue;
                 }

@@ -59,7 +59,6 @@ namespace components::table::storage {
                                  std::unique_ptr<file_buffer_t>&& source,
                                  file_buffer_type type = file_buffer_type::MANAGED_BUFFER) override;
 
-        void reserve_memory(uint64_t size) final;
         void free_reserved_memory(uint64_t size) final;
 
         std::pmr::memory_resource* resource() const noexcept final { return resource_; }
@@ -89,6 +88,11 @@ namespace components::table::storage {
         std::atomic<uint64_t> temp_id_;
         std::unique_ptr<block_manager_t> temp_block_manager_;
         std::atomic<uint64_t> evicted_data_per_tag_[static_cast<uint64_t>(memory_tag::MEMORY_TAG_COUNT)];
+
+    private:
+        // NVI: overrides buffer_manager_t's private customization point; callers use the
+        // public non-virtual reserve_memory inherited from the base.
+        [[nodiscard]] core::result_wrapper_t<bool> reserve_memory_impl(uint64_t size) final;
     };
 
 } // namespace components::table::storage

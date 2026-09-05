@@ -46,6 +46,13 @@ namespace services::wal {
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
+        /// Parse the segment index out of a `wal_<db>_NNNNNN` filename. Returns
+        /// (uint32_t)-1 when the name is not exactly that shape — a suffix that
+        /// merely BEGINS with digits ("000012.bak") is a refusal, never a
+        /// half-parsed index. Public and static: pure name arithmetic with no
+        /// worker state, pinned directly by the classification tests.
+        static uint32_t parse_segment_index(const std::filesystem::path& path, const std::string& db_dir_name);
+
         // -----------------------------------------------------------------------
         // Internal methods (called by manager, NOT wal_contract)
         // -----------------------------------------------------------------------
@@ -137,9 +144,6 @@ namespace services::wal {
 
         /// Collect all segment file paths sorted by index.
         std::vector<std::filesystem::path> discover_segments() const;
-
-        /// Parse segment index from filename. Returns (uint32_t)-1 on failure.
-        static uint32_t parse_segment_index(const std::filesystem::path& path, const std::string& db_dir_name);
 
         /// Ensure the page writer is ready; rotate if the current segment is full.
         /// Refuses when the segment cannot be opened, or when the flush that precedes a

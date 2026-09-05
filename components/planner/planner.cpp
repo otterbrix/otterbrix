@@ -559,6 +559,25 @@ namespace components::planner {
                 return core::error_t{core::error_code_t::table_not_exists, std::move(msg)};
             }
 
+            // The NAME is checked the same way the table was: enrich resolved the
+            // {db, indexname} demand the transformer registered, and stamped the
+            // pg_class oid of whatever already answers to it. Nothing checked
+            // relname uniqueness before — duplicate detection was by (keys, type)
+            // only, so a second index under a taken name minted a second pg_class
+            // row with the same relname, and DROP INDEX by name then answered
+            // about whichever row the resolve found.
+            if (ci->name_conflict_oid() != catalog::INVALID_OID) {
+                std::pmr::string msg{r};
+                msg.append("CREATE INDEX: relation ");
+                msg.append(ci->dbname());
+                msg.append(".");
+                msg.append(ci->name());
+                msg.append(" already exists (oid ");
+                msg.append(std::to_string(static_cast<std::uint64_t>(ci->name_conflict_oid())));
+                msg.append("); no index was created");
+                return core::error_t{core::error_code_t::index_create_fail, std::move(msg)};
+            }
+
             const catalog::oid_t index_oid = oid_batch.allocate();
             ci->set_index_oid(index_oid);
 
@@ -569,9 +588,15 @@ namespace components::planner {
                                                              index_oid,
                                                              ci->column_attoids(),
                                                              logical_plan::index_type_to_indtype_code(ci->type()));
+            if (writes.has_error()) {
+                // An index column without an attoid — the builder refuses to write an
+                // indkey that claims a column with no dependency edge (same gate as
+                // build_create_constraint_writes above).
+                return writes.error();
+            }
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
-            for (auto& w : writes) {
+            for (auto& w : writes.value()) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
             // Backfill marker: the original create_index_t now carries resolved

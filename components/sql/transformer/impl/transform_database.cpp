@@ -10,9 +10,12 @@ namespace components::sql::transform {
             node.if_not_exists);
     }
 
-    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_drop_database(DropdbStmt&) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_drop_database(DropdbStmt& node) {
         // dbname is captured by the resolve-namespace wrap in transformer::transform
-        return logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::database);
+        auto drop = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::database);
+        // `IF EXISTS`: DropdbStmt carries its own missing_ok, separate from DropStmt's.
+        drop->set_missing_ok(node.missing_ok);
+        return drop;
     }
 
 } // namespace components::sql::transform

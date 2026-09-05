@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/vector/operations/apply_operator.hpp>
+#include <core/pmr.hpp>
 
 using namespace components;
 using components::operators::operator_code;
@@ -12,7 +13,12 @@ namespace {
 
     constexpr uint64_t capacity = 8;
 
-    std::pmr::memory_resource* resource() { return std::pmr::get_default_resource(); }
+    // Rule 14: never the process default resource — the project's own pool, as in
+    // every other vector test.
+    std::pmr::memory_resource* resource() {
+        static core::pmr::otterbrix_resource resource;
+        return &resource;
+    }
 
     template<typename T>
     vector_t column(logical_type type, std::initializer_list<std::optional<T>> values) {

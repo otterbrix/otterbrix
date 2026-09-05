@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <charconv>
 #include <filesystem>
 #include <limits>
 #include <set>
@@ -999,12 +1000,18 @@ namespace services::wal {
         if (fname.size() <= prefix.size() || fname.compare(0, prefix.size(), prefix) != 0) {
             return static_cast<uint32_t>(-1);
         }
-        auto suffix = fname.substr(prefix.size());
-        try {
-            return static_cast<uint32_t>(std::stoul(suffix));
-        } catch (...) {
+        // from_chars over the WHOLE suffix — the std::stoul-under-catch(...) that stood
+        // here both used exceptions as control flow and HALF-PARSED foreign names:
+        // "000012.bak" and "12abc" answered 12, so a stray neighbour of the journal took
+        // part in the max-segment-index arithmetic that decides where the next segment
+        // is written. The engine writes digits and nothing else; anything else refuses.
+        const std::string_view suffix{fname.data() + prefix.size(), fname.size() - prefix.size()};
+        uint32_t index = 0;
+        const auto [ptr, ec] = std::from_chars(suffix.data(), suffix.data() + suffix.size(), index);
+        if (ec != std::errc{} || ptr != suffix.data() + suffix.size()) {
             return static_cast<uint32_t>(-1);
         }
+        return index;
     }
 
 } // namespace services::wal

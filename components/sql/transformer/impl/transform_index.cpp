@@ -90,7 +90,15 @@ namespace components::sql::transform {
         // resolved entry by name and stamps ns_oid + table_oid + columns from there.
         create_index->set_dbname(dbname_for_resolve);
         create_index->set_relname(relname_for_resolve);
-        register_catalog_resolve_table(resource_, &catalog_resolves_, dbname_for_resolve, relname_for_resolve);
+        // TWO demands, exactly as DROP INDEX registers them: the indexed table AND
+        // the index's own name. The second probes pg_class for a relation already
+        // answering to the new name — enrich stamps name_conflict_oid from it and
+        // the planner refuses a taken name. A miss on this demand is the NORMAL
+        // case (the name is free) and refuses nothing.
+        std::vector<std::pair<std::string, std::string>> targets;
+        targets.emplace_back(dbname_for_resolve, relname_for_resolve);
+        targets.emplace_back(dbname_for_resolve, std::string(node.idxname));
+        register_catalog_resolve_tables(resource_, &catalog_resolves_, targets);
         return create_index;
     }
 

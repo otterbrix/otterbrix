@@ -2,6 +2,7 @@
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
+#include <components/logical_plan/node_drop.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -253,6 +254,9 @@ TEST_CASE("components::sql::index") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
+    // CREATE INDEX registers TWO table lookups, like DROP INDEX below: the indexed
+    // table AND the index's own name — the second probes pg_class for a relation
+    // already answering to the new name, so a taken name refuses (ЗАПИСЬ #235).
     SECTION("create with uuid") {
         auto create =
             raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
@@ -262,7 +266,7 @@ TEST_CASE("components::sql::index") {
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.sub_queries.back()->type() == node_type::create_index_t);
         REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
-        REQUIRE(entry_count(result.catalog_resolves.tables) == 1);
+        REQUIRE(entry_count(result.catalog_resolves.tables) == 2);
     }
 
     SECTION("create with schema") {
@@ -274,10 +278,10 @@ TEST_CASE("components::sql::index") {
         }(transformer.transform(pg_cell_to_node_cast(create)).finalize()));
         REQUIRE(result.sub_queries.back()->type() == node_type::create_index_t);
         REQUIRE(entry_count(result.catalog_resolves.namespaces) == 1);
-        REQUIRE(entry_count(result.catalog_resolves.tables) == 1);
+        REQUIRE(entry_count(result.catalog_resolves.tables) == 2);
     }
 
-    TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);", node_type::create_index_t, 1, 1);
+    TEST_TRANSFORMER_OK("CREATE INDEX some_idx ON db.table (field);", node_type::create_index_t, 1, 2);
 
     // DROP INDEX names TWO pg_class rows — the parent table and the index — so it
     // registers two table lookups, and the drop node carries both names.
@@ -578,5 +582,54 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
         auto& macro = reinterpret_cast<node_create_macro_ptr&>(node);
         CHECK(macro->macroname() == "solo");
         CHECK(macro->dbname().empty());
+    }
+}
+
+// ЗАПИСЬ #291 — the grammar sets DropStmt.missing_ok for every `DROP ... IF EXISTS`
+// form, and node_drop_t::missing_ok has carried the flag since batch 2 — but
+// transform_drop never read it, so `DROP INDEX IF EXISTS` reached the planner
+// with missing_ok=false and the one no-op success PostgreSQL grants that form
+// was unreachable from SQL. CREATE has honoured IF NOT EXISTS all along; this
+// pins the other half of the pair.
+TEST_CASE("components::sql::drop_carries_missing_ok") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    auto transform_drop = [&](const char* query) {
+        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(!result.has_error());
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::drop_t);
+        return boost::intrusive_ptr{static_cast<node_drop_t*>(node.get())};
+    };
+
+    SECTION("DROP TABLE IF EXISTS carries missing_ok") {
+        REQUIRE(transform_drop("DROP TABLE IF EXISTS db.t;")->missing_ok());
+    }
+    SECTION("plain DROP TABLE stays loud") {
+        REQUIRE_FALSE(transform_drop("DROP TABLE db.t;")->missing_ok());
+    }
+    SECTION("DROP INDEX IF EXISTS carries missing_ok") {
+        REQUIRE(transform_drop("DROP INDEX IF EXISTS db.t.idx;")->missing_ok());
+    }
+    SECTION("plain DROP INDEX stays loud") {
+        REQUIRE_FALSE(transform_drop("DROP INDEX db.t.idx;")->missing_ok());
+    }
+    SECTION("DROP VIEW IF EXISTS carries missing_ok") {
+        REQUIRE(transform_drop("DROP VIEW IF EXISTS db.v;")->missing_ok());
+    }
+    SECTION("DROP SEQUENCE IF EXISTS carries missing_ok") {
+        REQUIRE(transform_drop("DROP SEQUENCE IF EXISTS db.s;")->missing_ok());
+    }
+    SECTION("DROP TYPE IF EXISTS carries missing_ok") {
+        REQUIRE(transform_drop("DROP TYPE IF EXISTS mood;")->missing_ok());
+    }
+    SECTION("DROP DATABASE IF EXISTS carries missing_ok (its own DropdbStmt flag)") {
+        REQUIRE(transform_drop("DROP DATABASE IF EXISTS db;")->missing_ok());
+    }
+    SECTION("plain DROP DATABASE stays loud") {
+        REQUIRE_FALSE(transform_drop("DROP DATABASE db;")->missing_ok());
     }
 }

@@ -228,6 +228,11 @@ namespace components::sql::transform {
             auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
             drop->set_dbname(db);
             drop->set_relname(rel);
+            // `IF EXISTS`. The grammar has set DropStmt.missing_ok since the rule was
+            // written; discarding it here left node_drop_t at its loud default, so the
+            // one no-op success PostgreSQL grants the IF EXISTS form was unreachable
+            // from SQL (the CREATE side has honoured IF NOT EXISTS all along).
+            drop->set_missing_ok(node.missing_ok);
             register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
             return n;
         };
@@ -288,6 +293,9 @@ namespace components::sql::transform {
                     drop->set_dbname(db);
                     drop->set_relname(rel);
                     drop->set_index_name(index_name);
+                    // `IF EXISTS` — same wiring as wrap_one; rewrite_drop_index already
+                    // reads this flag when the index name does not resolve.
+                    drop->set_missing_ok(node.missing_ok);
                     std::vector<std::pair<std::string, std::string>> targets;
                     targets.emplace_back(db, rel);
                     targets.emplace_back(db, index_name);
@@ -344,6 +352,8 @@ namespace components::sql::transform {
                 // resolved type entry and stamps type_oid from there.
                 n->set_dbname("public");
                 n->set_relname(type_name);
+                // `IF EXISTS` — the one arm that does not build through wrap_one.
+                n->set_missing_ok(node.missing_ok);
                 register_catalog_resolve_namespace(resource_, &catalog_resolves_, "public");
                 register_catalog_resolve_types(resource_, &catalog_resolves_, {type_name});
                 return n;

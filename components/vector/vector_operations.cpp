@@ -1365,10 +1365,17 @@ namespace components::vector::vector_ops {
         }
     };
 
-    vector_t apply_unary_vector_op(std::pmr::memory_resource* resource,
-                                   unary_vector_op op,
-                                   const vector_t& src,
-                                   uint64_t count) {
+    core::result_wrapper_t<vector_t> apply_unary_vector_op(std::pmr::memory_resource* resource,
+                                                           unary_vector_op op,
+                                                           const vector_t& src,
+                                                           uint64_t count) {
+        // The string leg of both callbacks below was an `assert(false)` with NO else:
+        // under NDEBUG the assert vanished and the result vector was returned with its
+        // payload UNINITIALIZED. Refuse the type up front, identically in both builds.
+        if (src.type().to_physical_type() == types::physical_type::STRING) {
+            std::pmr::string msg{"apply_unary_vector_op: string operand has no numeric reading", resource};
+            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+        }
         const bool to_double =
             op == unary_vector_op::sqr_root || op == unary_vector_op::cube_root || op == unary_vector_op::factorial;
         vector_t result(resource,
@@ -1486,6 +1493,22 @@ namespace components::vector::vector_ops {
         }
 
         const auto lhs_phys = lhs.type().to_physical_type();
+        // The string and floating-point legs of binary_same_type_callback_t were an
+        // `assert(false)` with NO else: under NDEBUG the assert vanished and the result
+        // vector came back with its payload UNINITIALIZED. Bitwise/shift ops are defined
+        // for the integer widths and BOOL only — refuse everything else up front,
+        // identically in both builds.
+        const bool integral_lhs = lhs_phys == types::physical_type::BOOL || lhs_phys == types::physical_type::INT8 ||
+                                  lhs_phys == types::physical_type::INT16 || lhs_phys == types::physical_type::INT32 ||
+                                  lhs_phys == types::physical_type::INT64 || lhs_phys == types::physical_type::INT128 ||
+                                  lhs_phys == types::physical_type::UINT8 || lhs_phys == types::physical_type::UINT16 ||
+                                  lhs_phys == types::physical_type::UINT32 ||
+                                  lhs_phys == types::physical_type::UINT64 || lhs_phys == types::physical_type::UINT128;
+        if (!integral_lhs) {
+            std::pmr::string msg{"apply_binary_vector_op: bitwise/shift ops are defined for integer types only",
+                                 resource};
+            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+        }
         std::optional<vector_t> rhs_casted;
         const vector_t* rhs_ptr = &rhs;
         if (lhs_phys != rhs.type().to_physical_type()) {

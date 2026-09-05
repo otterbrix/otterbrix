@@ -338,7 +338,11 @@ namespace services::catalog_resolve {
                 }
                 case node_type::create_index_t: {
                     const auto* d = static_cast<const node_create_index_t*>(node);
-                    return {d->dbname(), d->relname(), {}};
+                    // The index's own name rides the secondary slot (as it does for
+                    // DROP INDEX): the transformer registered a {db, indexname}
+                    // demand so a relation already answering to the new name can be
+                    // found and the statement refused.
+                    return {d->dbname(), d->relname(), d->name()};
                 }
                 case node_type::alter_table_t: {
                     const auto* d = static_cast<const node_alter_table_t*>(node);
@@ -643,6 +647,13 @@ namespace services::catalog_resolve {
                             }
                             if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
                                 d->set_table_oid(rt->table_oid());
+                            }
+                            // The secondary demand probed pg_class for the index's own
+                            // NAME. A hit means the name is taken (by an index or a
+                            // table — one pg_class); rewrite_create_index refuses on
+                            // this stamp. A miss stamps nothing: the name is free.
+                            if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
+                                d->set_name_conflict_oid(rt_index->table_oid());
                             }
                             break;
                         }

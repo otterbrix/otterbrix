@@ -398,13 +398,16 @@ namespace components::vector::vector_ops {
         shift_right
     };
 
-    // Element-wise unary op. abs/bit_not preserve source type; sqr_root/cube_root/factorial return DOUBLE.
-    vector_t
+    // Element-wise unary op. abs/bit_not preserve source type; sqr_root/cube_root/factorial
+    // return DOUBLE. A string operand is a refusal — the string leg used to be an assert
+    // with no else, i.e. an UNINITIALIZED result under NDEBUG.
+    core::result_wrapper_t<vector_t>
     apply_unary_vector_op(std::pmr::memory_resource* resource, unary_vector_op op, const vector_t& src, uint64_t count);
 
-    // Element-wise binary op. exp returns DOUBLE; bitwise/shift ops preserve lhs type.
-    // A mixed-type rhs is cast to lhs's type first; a value that does not fit is a
-    // conversion_failure error (see cast_vector).
+    // Element-wise binary op. exp returns DOUBLE; bitwise/shift ops preserve lhs type and
+    // are defined for BOOL and the integer widths ONLY (string/float operands refuse —
+    // same former assert-without-else). A mixed-type rhs is cast to lhs's type first; a
+    // value that does not fit is a conversion_failure error (see cast_vector).
     core::result_wrapper_t<vector_t> apply_binary_vector_op(std::pmr::memory_resource* resource,
                                                             binary_vector_op op,
                                                             const vector_t& lhs,

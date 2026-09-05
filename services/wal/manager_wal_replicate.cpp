@@ -81,24 +81,16 @@ namespace services::wal {
                 // catch (...) both used exceptions as control flow and HALF-PARSED foreign
                 // names: "9zz" answered 9, and a worker was spawned over directory "9" — a
                 // DIFFERENT path from the one the files are in, splitting the journal in two.
-                // from_chars over the whole name, round-tripped through to_string, accepts
-                // exactly the names the engine writes; everything else is foreign content and
-                // is skipped LOUDLY (nothing the engine wrote is ever skipped by this).
+                // parse_database_dir_name (base.hpp) is THE classification, shared with
+                // wal_reader_t's replay walk; everything foreign is skipped LOUDLY
+                // (nothing the engine wrote is ever skipped by this).
                 components::catalog::oid_t db_oid;
-                {
-                    unsigned long parsed = 0;
-                    const char* first = db_dir_name.data();
-                    const char* last = first + db_dir_name.size();
-                    auto [ptr, ec] = std::from_chars(first, last, parsed);
-                    if (ec != std::errc{} || ptr != last || std::to_string(parsed) != db_dir_name ||
-                        parsed > std::numeric_limits<components::catalog::oid_t>::max()) {
-                        warn(log_,
-                             "manager_wal_replicate: '{}' under the WAL root is not a database oid directory , "
-                             "skipping it (the engine never writes this name)",
-                             db_dir_name);
-                        continue;
-                    }
-                    db_oid = static_cast<components::catalog::oid_t>(parsed);
+                if (!parse_database_dir_name(db_dir_name, db_oid)) {
+                    warn(log_,
+                         "manager_wal_replicate: '{}' under the WAL root is not a database oid directory , "
+                         "skipping it (the engine never writes this name)",
+                         db_dir_name);
+                    continue;
                 }
                 trace(log_, "manager_wal_replicate: recovering database_oid={}", static_cast<unsigned>(db_oid));
 

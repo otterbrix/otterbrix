@@ -38,6 +38,21 @@ namespace services::wal {
             }
 
             auto db_name = entry.path().filename().string();
+            // THE SAME classification the manager's startup scan applies
+            // (parse_database_dir_name, base.hpp). Replay used to walk EVERY
+            // directory: a foreign-named one was replayed in full while the manager
+            // refused to manage it and the wal ids it carries never bounded the id
+            // allocator — next_wal_id() could then reissue ids UNDER records this
+            // replay had already applied. Foreign content is skipped LOUDLY here
+            // exactly as it is there; the two walks must never disagree again.
+            components::catalog::oid_t db_oid;
+            if (!parse_database_dir_name(db_name, db_oid)) {
+                warn(log_,
+                     "wal_reader::read_committed_records , '{}' under the WAL root is not a database oid "
+                     "directory , skipping it (the engine never writes this name)",
+                     db_name);
+                continue;
+            }
             trace(log_, "wal_reader::read_committed_records , scanning database '{}'", db_name);
 
             // committed_out collects the union of committed txn ids across all

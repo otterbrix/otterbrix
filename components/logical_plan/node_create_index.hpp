@@ -46,6 +46,17 @@ namespace components::logical_plan {
         components::catalog::oid_t index_oid() const noexcept { return index_oid_; }
         void set_index_oid(components::catalog::oid_t oid) noexcept { index_oid_ = oid; }
 
+        // pg_class oid of an EXISTING relation already answering to this index's
+        // NAME — another index, or a table (they share pg_class). Stamped by
+        // enrich from the {db, indexname} resolve the transformer registers; the
+        // planner's rewrite refuses the statement when it is valid. Before this
+        // slot nothing checked relname uniqueness at all: duplicate detection was
+        // by (keys, type) only, so a second index under a taken name minted a
+        // second pg_class row and DROP INDEX by name answered about WHICHEVER row
+        // the resolve happened to find.
+        components::catalog::oid_t name_conflict_oid() const noexcept { return name_conflict_oid_; }
+        void set_name_conflict_oid(components::catalog::oid_t oid) noexcept { name_conflict_oid_ = oid; }
+
         const std::vector<components::catalog::oid_t>& column_attoids() const noexcept { return column_attoids_; }
         void set_column_attoids(std::vector<components::catalog::oid_t> v) noexcept { column_attoids_ = std::move(v); }
 
@@ -72,6 +83,7 @@ namespace components::logical_plan {
         index_type index_type_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};
+        components::catalog::oid_t name_conflict_oid_{components::catalog::INVALID_OID};
         std::vector<components::catalog::oid_t> column_attoids_;
         std::string indkey_;
     };

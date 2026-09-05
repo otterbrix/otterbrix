@@ -475,7 +475,7 @@ namespace components::types {
             // The scale lives on the SOURCE decimal type; `type` is the plain numeric target and
             // carries no extension.
             const auto* decimal_extension = reinterpret_cast<const decimal_logical_type_extension*>(type_.extension());
-            auto create_numeric_inner = [&]<typename From, typename To>() {
+            auto create_numeric_inner = [&]<typename From, typename To>() -> core::result_wrapper_t<logical_value_t> {
                 if constexpr (std::is_floating_point_v<To>) {
                     return logical_value_t{resource_,
                                            decimal_to_floating<From, To>(value<From>(), decimal_extension->scale())};
@@ -483,12 +483,15 @@ namespace components::types {
                     auto val = decimal_to_numeric<From, To>(value<From>(), decimal_extension->scale());
                     if (val.has_value()) {
                         return logical_value_t{resource_, val.value()};
-                    } else {
-                        return logical_value_t{resource_, logical_type::NA};
                     }
+                    // The REVERSE of the int->DECIMAL overflow refusal: a descaled value
+                    // that does not fit the integer target used to come back as a SILENT
+                    // NA — a success-shaped NULL for a value that exists. Refuse, with
+                    // the same conversion_failure shape as the forward direction.
+                    return conversion_failure();
                 }
             };
-            auto create_numeric = [&]<typename To>() {
+            auto create_numeric = [&]<typename To>() -> core::result_wrapper_t<logical_value_t> {
                 switch (type_.to_physical_type()) {
                     case physical_type::INT16:
                         return create_numeric_inner.operator()<int16_t, To>();
@@ -501,9 +504,9 @@ namespace components::types {
                     default:
                         // INVARIANT, not input: a DECIMAL type's storage is one of these four
                         // by construction (create_decimal vets the width). Loud in Debug, and
-                        // a NULL rather than a fall-through anywhere else.
+                        // the SAME refusal — never a silent NULL — under NDEBUG.
                         assert(false && "decimal source has no integer storage width");
-                        return logical_value_t{resource_, logical_type::NA};
+                        return conversion_failure();
                 }
             };
             switch (type.type()) {
@@ -1312,7 +1315,14 @@ namespace components::types {
             return sum(lhs, rhs);
         }
 
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
+        // The switch below reads BOTH operands with the getter of `type`. Entering it
+        // with two DIFFERENT types read the right operand's payload with the left's
+        // getter: STRING+BIGINT threw value<T>-not-implemented out of an error-channel
+        // function, and BIGINT+STRING answered the string's HEAP POINTER as an int64.
+        // A mixed pair that numeric promotion did not unify goes to the explicit
+        // temporal combinations below, and failing those, to unsupported_operands.
+        const auto type =
+            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<bool>);
@@ -1340,8 +1350,10 @@ namespace components::types {
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<float>);
             case logical_type::DOUBLE:
                 return op<std::plus<>>(value1, value2, &logical_value_t::value<double>);
-            case logical_type::STRING_LITERAL:
-                return op<std::plus<>>(value1, value2, &logical_value_t::value<std::string>);
+            // STRING_LITERAL had an arm here that dispatched through
+            // &value<std::string> — a specialization that DOES NOT EXIST, so
+            // 'a' + 'b' threw the primary template's std::logic_error. SQL spells
+            // concatenation ||; text + text is a refusal in PostgreSQL and here.
             default:
                 break;
         }
@@ -1434,7 +1446,9 @@ namespace components::types {
             return subtract(lhs, rhs);
         }
 
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
+        // Same mixed-operand guard as sum: the arms read BOTH operands with one getter.
+        const auto type =
+            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<std::minus<>>(value1, value2, &logical_value_t::value<bool>);
@@ -1567,7 +1581,9 @@ namespace components::types {
             return mult(lhs, rhs);
         }
 
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
+        // Same mixed-operand guard as sum: the arms read BOTH operands with one getter.
+        const auto type =
+            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<std::multiplies<>>(value1, value2, &logical_value_t::value<bool>);
@@ -1672,7 +1688,9 @@ namespace components::types {
             return divide(lhs, rhs);
         }
 
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
+        // Same mixed-operand guard as sum: the arms read BOTH operands with one getter.
+        const auto type =
+            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<std::divides<>>(value1, value2, &logical_value_t::value<bool>);
@@ -1763,7 +1781,9 @@ namespace components::types {
             return modulus(lhs, rhs);
         }
 
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
+        // Same mixed-operand guard as sum: the arms read BOTH operands with one getter.
+        const auto type =
+            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<std::modulus<>>(value1, value2, &logical_value_t::value<bool>);
@@ -1799,7 +1819,18 @@ namespace components::types {
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
+        // exponent had NO promotion step: a mixed numeric pair dispatched by the LEFT
+        // type and read the right operand's raw payload with the left's getter. Promote
+        // like sum does, then guard the switch the same way.
+        if (needs_numeric_promotion(value1, value2)) {
+            auto promoted = promote_numeric_operands(value1, value2);
+            if (promoted.has_error()) {
+                return promoted.error();
+            }
+            return exponent(promoted.value().lhs, promoted.value().rhs);
+        }
+        const auto type =
+            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<pow<>>(value1, value2, &logical_value_t::value<bool>);
@@ -1835,7 +1866,16 @@ namespace components::types {
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
-        auto type = value1.is_null() ? value2.type().type() : value1.type().type();
+        // bit_and had NO promotion step either — same repair as exponent.
+        if (needs_numeric_promotion(value1, value2)) {
+            auto promoted = promote_numeric_operands(value1, value2);
+            if (promoted.has_error()) {
+                return promoted.error();
+            }
+            return bit_and(promoted.value().lhs, promoted.value().rhs);
+        }
+        const auto type =
+            value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
         switch (type) {
             case logical_type::BOOLEAN:
                 return op<std::bit_and<>>(value1, value2, &logical_value_t::value<bool>);

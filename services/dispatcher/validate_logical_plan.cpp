@@ -2115,6 +2115,60 @@ namespace services::dispatcher {
                                              "are not yet supported on relkind='g' (dynamic-schema) tables",
                                              resource});
                     }
+                    // The WRITTEN COLUMN LIST routes the values into a computing table.
+                    // Skipping set_column_bindings for relkind='g' dropped it on the
+                    // floor: `INSERT INTO g (x, y) SELECT a, b` appended AND registered
+                    // columns a and b, and the (x, y) the statement wrote vanished
+                    // without a word (PR #568 carried this rename through
+                    // rename_targets for every table kind; the #585 bindings rework kept
+                    // it only for relational targets). The bindings are rename-only —
+                    // target type is the incoming type, no cast: the computing table
+                    // adopts the incoming shape under the written names, exactly as the
+                    // VALUES form names its chunk columns. A list whose arity disagrees
+                    // with the projection is a refusal, not a silent partial mapping.
+                    auto bind_computed_rename = [&]() -> core::error_t {
+                        if (insert_node->key_translation().empty()) {
+                            return core::error_t::no_error();
+                        }
+                        if (insert_node->key_translation().size() != incoming_schema.value().size()) {
+                            return core::error_t(
+                                core::error_code_t::schema_error,
+                                std::pmr::string{"insert_node: INSERT names " +
+                                                     std::to_string(insert_node->key_translation().size()) +
+                                                     " columns but the source provides " +
+                                                     std::to_string(incoming_schema.value().size()),
+                                                 resource});
+                        }
+                        components::logical_plan::insert_column_bindings_t bindings(insert_node->resource());
+                        bindings.reserve(incoming_schema.value().size());
+                        for (size_t i = 0; i < incoming_schema.value().size(); i++) {
+                            std::string target_name = insert_node->key_translation()[i].as_string();
+                            bindings.emplace_back(components::logical_plan::insert_column_binding_t{
+                                .target_index = i,
+                                .target_name = std::pmr::string{target_name.c_str(), insert_node->resource()},
+                                .target_type = incoming_schema.value()[i].type,
+                                .cast = {}});
+                        }
+                        insert_node->set_column_bindings(std::move(bindings));
+                        // The computed-register wrap (executor) registers this table's
+                        // columns from the SELECT child's DECLARED output schema. The
+                        // bindings above change what actually lands — the insert
+                        // operator renames the streamed columns — so the declared
+                        // schema follows the written names too; otherwise the catalog
+                        // would register the projection's names while storage holds
+                        // the written ones: the exact storage/catalog divergence the
+                        // register wrap exists to prevent.
+                        auto* source_child = node->children().front().get();
+                        if (source_child->has_output_types()) {
+                            auto renamed = source_child->output_types();
+                            const size_t bound = std::min(renamed.size(), insert_node->key_translation().size());
+                            for (size_t i = 0; i < bound; i++) {
+                                renamed[i].set_alias(insert_node->key_translation()[i].as_string());
+                            }
+                            source_child->set_output_types(std::move(renamed));
+                        }
+                        return core::error_t::no_error();
+                    };
                     if (table_schema.empty()) {
                         // A computing table with no columns yet accepts any INSERT: the shape
                         // IS the schema, and operator_computed_field_register_t registers the
@@ -2138,10 +2192,19 @@ namespace services::dispatcher {
                                                      "' has no columns; INSERT needs at least one column",
                                                  resource});
                         }
+                        // First INSERT into a fresh computing table: the written list
+                        // names the columns the register wrap will create.
+                        if (auto rename_err = bind_computed_rename(); rename_err.contains_error()) {
+                            return rename_err;
+                        }
                     } else if (is_computed && is_simple_chunk()) {
                         // Computing table with simple-typed INSERT: skip the static-shape
                         // checks. operator_computed_field_register registers new attoids
-                        // for added/widened columns at execute time.
+                        // for added/widened columns at execute time. The written column
+                        // list still routes the values (see bind_computed_rename above).
+                        if (auto rename_err = bind_computed_rename(); rename_err.contains_error()) {
+                            return rename_err;
+                        }
                     } else if (incoming_schema.value().size() > table_schema.size()) {
                         return core::error_t(core::error_code_t::schema_error,
                                              std::pmr::string{"insert_node: too many columns in INSERT", resource});

@@ -405,7 +405,22 @@ namespace components::vector {
         return core::error_t{core::error_code_t::field_not_exists, std::move(message)};
     }
 
-    std::pmr::vector<size_t> data_chunk_t::sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const {
+    core::result_wrapper_t<std::pmr::vector<size_t>>
+    data_chunk_t::sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const {
+        // A path this chunk cannot resolve is USER input, exactly as in column_index
+        // above: it comes back as an error, not as the {size_t(-1)} sentinel that stood
+        // here behind a bare assert (and indexed the chunk out of bounds under NDEBUG).
+        auto missing = [&](std::string_view segment) {
+            std::pmr::string message{resource_};
+            message.append("data_chunk_t::sub_column_indices: no column or field named \"");
+            message.append(segment);
+            message.append("\"");
+            return core::error_t{core::error_code_t::field_not_exists, std::move(message)};
+        };
+        if (path.empty()) {
+            std::pmr::string message{"data_chunk_t::sub_column_indices: empty path", resource_};
+            return core::error_t{core::error_code_t::field_not_exists, std::move(message)};
+        }
         std::pmr::vector<size_t> res(resource_);
         for (uint64_t i = 0; i < column_count(); i++) {
             if (core::pmr::operator==(data[i].type().alias(), path.front())) {
@@ -414,37 +429,35 @@ namespace components::vector {
             }
         }
         if (res.empty()) {
-            assert(false && "data_chunk_t::column_index: no such column");
-            return {size_t(-1)};
-        } else {
-            const vector_t* sub_column = &data[res.front()];
-            for (auto it = std::next(path.begin()); it != path.end(); ++it) {
-                bool field_found = false;
-                if (sub_column->type().type() == types::logical_type::ARRAY) {
-                    size_t index{};
-                    auto [p, ec] = std::from_chars(it->data(), it->data() + it->size(), index);
-                    if (ec == std::errc{} &&
-                        index < static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())
-                                    ->size()) {
-                        res.emplace_back(index);
-                        sub_column = &sub_column->entry();
-                        field_found = true;
-                    }
-                } else {
-                    for (uint64_t i = 0; i < sub_column->type().child_types().size(); i++) {
-                        if (core::pmr::operator==(sub_column->type().child_types()[i].alias(), *it)) {
-                            res.emplace_back(i);
-                            if (std::next(it) != path.end()) {
-                                sub_column = sub_column->entries()[i].get();
-                            }
-                            field_found = true;
-                            break;
+            return missing(path.front());
+        }
+        const vector_t* sub_column = &data[res.front()];
+        for (auto it = std::next(path.begin()); it != path.end(); ++it) {
+            bool field_found = false;
+            if (sub_column->type().type() == types::logical_type::ARRAY) {
+                size_t index{};
+                auto [p, ec] = std::from_chars(it->data(), it->data() + it->size(), index);
+                if (ec == std::errc{} &&
+                    index < static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())
+                                ->size()) {
+                    res.emplace_back(index);
+                    sub_column = &sub_column->entry();
+                    field_found = true;
+                }
+            } else {
+                for (uint64_t i = 0; i < sub_column->type().child_types().size(); i++) {
+                    if (core::pmr::operator==(sub_column->type().child_types()[i].alias(), *it)) {
+                        res.emplace_back(i);
+                        if (std::next(it) != path.end()) {
+                            sub_column = sub_column->entries()[i].get();
                         }
+                        field_found = true;
+                        break;
                     }
                 }
-                if (!field_found) {
-                    return {size_t(-1)};
-                }
+            }
+            if (!field_found) {
+                return missing(*it);
             }
         }
         return res;

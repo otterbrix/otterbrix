@@ -1114,13 +1114,40 @@ namespace components::vector {
             return output;
         }
 
+        // THE one classification of an operand pair for the four entry points below.
+        // arithmetic_result_type answers NA for every pair it cannot type; the temporal
+        // guard at the top of each entry point has already claimed every pair with a
+        // date/time/interval side, so NA here means "at least one operand is not an
+        // arithmetic numeric" — string, blob, boolean, struct, array.
+        // An NA-TYPED OPERAND IS NOT A MISMATCH: an NA-typed vector is this engine's
+        // untyped-NULL column and SQL says NULL + 1 is NULL, so that pair keeps
+        // answering NA. Everything else refuses.
+        bool operand_is_untyped(types::logical_type t) noexcept { return t == types::logical_type::NA; }
+
+        // Wording and error code match logical_value_t's unsupported_operands, the
+        // value-level sibling of this refusal: one shape for "arithmetic has no meaning
+        // for this operand pair", whichever layer noticed.
+        core::error_t untypeable_pair(std::pmr::memory_resource* resource,
+                                      std::string_view fn,
+                                      types::logical_type lhs,
+                                      types::logical_type rhs) {
+            std::pmr::string msg{resource};
+            msg.append(fn);
+            msg.append(": unsupported operand types (");
+            msg.append(std::to_string(static_cast<int>(lhs)).c_str());
+            msg.append(", ");
+            msg.append(std::to_string(static_cast<int>(rhs)).c_str());
+            msg.append(")");
+            return core::error_t{core::error_code_t::arithmetics_failure, std::move(msg)};
+        }
+
     } // anonymous namespace
 
-    vector_t compute_binary_arithmetic(std::pmr::memory_resource* resource,
-                                       arithmetic_op op,
-                                       const vector_t& left,
-                                       const vector_t& right,
-                                       uint64_t count) {
+    core::result_wrapper_t<vector_t> compute_binary_arithmetic(std::pmr::memory_resource* resource,
+                                                               arithmetic_op op,
+                                                               const vector_t& left,
+                                                               const vector_t& right,
+                                                               uint64_t count) {
         // Empty input: produce an empty result without dereferencing operand
         // vectors. On a 0-row chunk the operands may not be resolvable at all
         // (e.g. a degenerate 0-column batch chunk yields out-of-bounds operand
@@ -1132,6 +1159,12 @@ namespace components::vector {
         // Compute the result values first (numeric or temporal), then apply NULL propagation as a
         // single tail below. Capturing the temporal branch in this local instead of returning it
         // directly keeps it on the same validity path as the numeric branch.
+        if (!types::is_duration(left.type().type()) && !types::is_duration(right.type().type()) &&
+            types::arithmetic_result_type(left.type().type(), right.type().type(), op) ==
+                types::logical_type::NA &&
+            !operand_is_untyped(left.type().type()) && !operand_is_untyped(right.type().type())) {
+            return untypeable_pair(resource, "compute_binary_arithmetic", left.type().type(), right.type().type());
+        }
         vector_t output = [&]() -> vector_t {
             if (types::is_duration(left.type().type()) || types::is_duration(right.type().type())) {
                 return compute_temporal_binary(resource, op, left, right, count);
@@ -1143,6 +1176,8 @@ namespace components::vector {
             auto result_type = types::complex_logical_type(result_logical);
             vector_t out(resource, result_type, count);
             if (result_type.type() == types::logical_type::NA) {
+                // Reached ONLY for an NA-typed operand now (the guard above refused every
+                // other untypeable pair): an untyped-NULL column answers NULL.
                 return out;
             }
             switch (op) {
@@ -1172,16 +1207,25 @@ namespace components::vector {
         return output;
     }
 
-    vector_t compute_vector_scalar_arithmetic(std::pmr::memory_resource* resource,
-                                              arithmetic_op op,
-                                              const vector_t& vec,
-                                              const types::logical_value_t& scalar,
-                                              uint64_t count) {
+    core::result_wrapper_t<vector_t> compute_vector_scalar_arithmetic(std::pmr::memory_resource* resource,
+                                                                      arithmetic_op op,
+                                                                      const vector_t& vec,
+                                                                      const types::logical_value_t& scalar,
+                                                                      uint64_t count) {
         // Empty input: see compute_binary_arithmetic. The vec operand may be a
         // dangling/out-of-bounds reference on a 0-row chunk, so do not read its
         // type here.
         if (count == 0) {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
+        }
+        if (!types::is_duration(vec.type().type()) && !types::is_duration(scalar.type().type()) &&
+            types::arithmetic_result_type(vec.type().type(), scalar.type().type(), op) ==
+                types::logical_type::NA &&
+            !operand_is_untyped(vec.type().type()) && !operand_is_untyped(scalar.type().type())) {
+            return untypeable_pair(resource,
+                                   "compute_vector_scalar_arithmetic",
+                                   vec.type().type(),
+                                   scalar.type().type());
         }
         vector_t output = [&]() -> vector_t {
             if (types::is_duration(vec.type().type()) || types::is_duration(scalar.type().type())) {
@@ -1194,6 +1238,7 @@ namespace components::vector {
             auto result_type = types::complex_logical_type(result_logical);
             vector_t out(resource, result_type, count);
             if (result_type.type() == types::logical_type::NA) {
+                // Reached ONLY for an NA-typed operand now (see compute_binary_arithmetic).
                 return out;
             }
             switch (op) {
@@ -1224,16 +1269,25 @@ namespace components::vector {
         return output;
     }
 
-    vector_t compute_scalar_vector_arithmetic(std::pmr::memory_resource* resource,
-                                              arithmetic_op op,
-                                              const types::logical_value_t& scalar,
-                                              const vector_t& vec,
-                                              uint64_t count) {
+    core::result_wrapper_t<vector_t> compute_scalar_vector_arithmetic(std::pmr::memory_resource* resource,
+                                                                      arithmetic_op op,
+                                                                      const types::logical_value_t& scalar,
+                                                                      const vector_t& vec,
+                                                                      uint64_t count) {
         // Empty input: see compute_binary_arithmetic. The vec operand may be a
         // dangling/out-of-bounds reference on a 0-row chunk, so do not read its
         // type here.
         if (count == 0) {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
+        }
+        if (!types::is_duration(scalar.type().type()) && !types::is_duration(vec.type().type()) &&
+            types::arithmetic_result_type(scalar.type().type(), vec.type().type(), op) ==
+                types::logical_type::NA &&
+            !operand_is_untyped(scalar.type().type()) && !operand_is_untyped(vec.type().type())) {
+            return untypeable_pair(resource,
+                                   "compute_scalar_vector_arithmetic",
+                                   scalar.type().type(),
+                                   vec.type().type());
         }
         vector_t output = [&]() -> vector_t {
             if (types::is_duration(scalar.type().type()) || types::is_duration(vec.type().type())) {
@@ -1246,6 +1300,7 @@ namespace components::vector {
             auto result_type = types::complex_logical_type(result_logical);
             vector_t out(resource, result_type, count);
             if (result_type.type() == types::logical_type::NA) {
+                // Reached ONLY for an NA-typed operand now (see compute_binary_arithmetic).
                 return out;
             }
             switch (op) {
@@ -1276,12 +1331,25 @@ namespace components::vector {
         return output;
     }
 
-    vector_t compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count) {
+    core::result_wrapper_t<vector_t>
+    compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count) {
         // Empty input: see compute_binary_arithmetic. The vec operand may be a
         // dangling/out-of-bounds reference on a 0-row chunk, so do not read its
         // type here.
         if (count == 0) {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
+        }
+        // This entry point had NO type guard: it dispatched straight into
+        // unary_neg_wrapper, whose non-numeric branch THREW std::logic_error, so
+        // negating a string vector left an exception in a compute path (rule 2).
+        // An NA-typed operand still answers NA — an untyped-NULL column negates to NULL.
+        if (!types::is_arithmetic_numeric(vec.type().type()) && !operand_is_untyped(vec.type().type())) {
+            return untypeable_pair(resource, "compute_unary_neg", vec.type().type(), vec.type().type());
+        }
+        if (operand_is_untyped(vec.type().type())) {
+            vector_t na(resource, vec.type(), count);
+            na.validity().set_all_invalid(count);
+            return na;
         }
         vector_t output(resource, vec.type(), count);
         types::simple_physical_type_switch<unary_neg_wrapper::callback>(vec.type().to_physical_type(),

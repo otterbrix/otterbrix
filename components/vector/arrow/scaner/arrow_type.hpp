@@ -1,6 +1,8 @@
 #pragma once
 
 #include "arrow_type_info.hpp"
+#include <boost/smart_ptr/intrusive_ptr.hpp>
+#include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/vector/arrow/arrow.hpp>
 #include <components/vector/arrow/arrow_wrapper.hpp>
 #include <components/vector/vector.hpp>
@@ -24,7 +26,9 @@ namespace components::vector::arrow {
         std::shared_ptr<arrow_array_wrapper_t> arrow_array;
     };
 
-    class arrow_type_extension_data_t {
+    // Intrusive refcount (rule 14: no std::shared_ptr): single-owner in practice —
+    // arrow_type::extension_data and arrow_type_extension_t::type_extension_ hold it.
+    class arrow_type_extension_data_t : public boost::intrusive_ref_counter<arrow_type_extension_data_t> {
     public:
         explicit arrow_type_extension_data_t(const types::complex_logical_type& unique_type,
                                              const types::complex_logical_type& internal_type,
@@ -49,6 +53,8 @@ namespace components::vector::arrow {
         types::complex_logical_type unique_type_;
         types::complex_logical_type internal_type_;
     };
+
+    using arrow_type_extension_data_ptr = boost::intrusive_ptr<arrow_type_extension_data_t>;
 
     class arrow_type {
     public:
@@ -78,7 +84,7 @@ namespace components::vector::arrow {
 
         arrow_array_physical_type get_physical_type() const;
 
-        std::shared_ptr<arrow_type_extension_data_t> extension_data;
+        arrow_type_extension_data_ptr extension_data;
 
     protected:
         types::complex_logical_type type_;

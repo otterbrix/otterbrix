@@ -16,38 +16,45 @@ namespace components::sql::transform {
         // The aggregate a HAVING names may sit ANYWHERE inside a target-list entry — as the entry
         // itself, under a CAST, inside a CASE arm, or as an operand of arithmetic — so matching it
         // means descending the whole expression rather than inspecting its top node. A call matches
-        // on name AND arguments: two aggregates of the same name are different aggregates.
+        // on name AND arguments AND the DISTINCT flag: two aggregates of the same name are
+        // different aggregates, and count(DISTINCT x) is a different aggregate from count(x) —
+        // matching that ignored `distinct` bound `HAVING count(DISTINCT x)` to a projected
+        // count(x) and silently counted duplicates.
         const expressions::expression_i* find_call(const expressions::expression_i* expr,
                                                    const std::string& name,
                                                    const std::pmr::vector<expressions::param_storage>& args,
-                                                   bool args_comparable);
+                                                   bool args_comparable,
+                                                   bool distinct);
 
         const expressions::expression_i* find_call_in(const expressions::param_storage& param,
                                                       const std::string& name,
                                                       const std::pmr::vector<expressions::param_storage>& args,
-                                                      bool args_comparable) {
+                                                      bool args_comparable,
+                                                      bool distinct) {
             if (!std::holds_alternative<expressions::expression_ptr>(param)) {
                 return nullptr;
             }
             const auto& nested = std::get<expressions::expression_ptr>(param);
-            return nested ? find_call(nested.get(), name, args, args_comparable) : nullptr;
+            return nested ? find_call(nested.get(), name, args, args_comparable, distinct) : nullptr;
         }
 
         const expressions::expression_i* find_call(const expressions::expression_i* expr,
                                                    const std::string& name,
                                                    const std::pmr::vector<expressions::param_storage>& args,
-                                                   bool args_comparable) {
+                                                   bool args_comparable,
+                                                   bool distinct) {
             if (expr == nullptr) {
                 return nullptr;
             }
             switch (expr->group()) {
                 case expression_group::aggregate: {
                     const auto* agg = static_cast<const aggregate_expression_t*>(expr);
-                    if (agg->function_name() == name && (!args_comparable || agg->params() == args)) {
+                    if (agg->function_name() == name && agg->is_distinct() == distinct &&
+                        (!args_comparable || agg->params() == args)) {
                         return expr;
                     }
                     for (const auto& param : agg->params()) {
-                        if (const auto* found = find_call_in(param, name, args, args_comparable)) {
+                        if (const auto* found = find_call_in(param, name, args, args_comparable, distinct)) {
                             return found;
                         }
                     }
@@ -55,11 +62,12 @@ namespace components::sql::transform {
                 }
                 case expression_group::function: {
                     const auto* call = static_cast<const function_expression_t*>(expr);
-                    if (call->name() == name && (!args_comparable || call->args() == args)) {
+                    if (call->name() == name && call->is_distinct() == distinct &&
+                        (!args_comparable || call->args() == args)) {
                         return expr;
                     }
                     for (const auto& param : call->args()) {
-                        if (const auto* found = find_call_in(param, name, args, args_comparable)) {
+                        if (const auto* found = find_call_in(param, name, args, args_comparable, distinct)) {
                             return found;
                         }
                     }
@@ -69,10 +77,11 @@ namespace components::sql::transform {
                     return find_call_in(static_cast<const expressions::cast_expression_t*>(expr)->child(),
                                         name,
                                         args,
-                                        args_comparable);
+                                        args_comparable,
+                                        distinct);
                 case expression_group::scalar: {
                     for (const auto& param : static_cast<const scalar_expression_t*>(expr)->params()) {
-                        if (const auto* found = find_call_in(param, name, args, args_comparable)) {
+                        if (const auto* found = find_call_in(param, name, args, args_comparable, distinct)) {
                             return found;
                         }
                     }
@@ -80,14 +89,14 @@ namespace components::sql::transform {
                 }
                 case expression_group::compare: {
                     const auto* cmp = static_cast<const compare_expression_t*>(expr);
-                    if (const auto* found = find_call_in(cmp->left(), name, args, args_comparable)) {
+                    if (const auto* found = find_call_in(cmp->left(), name, args, args_comparable, distinct)) {
                         return found;
                     }
-                    if (const auto* found = find_call_in(cmp->right(), name, args, args_comparable)) {
+                    if (const auto* found = find_call_in(cmp->right(), name, args, args_comparable, distinct)) {
                         return found;
                     }
                     for (const auto& child : cmp->children()) {
-                        if (const auto* found = find_call(child.get(), name, args, args_comparable)) {
+                        if (const auto* found = find_call(child.get(), name, args, args_comparable, distinct)) {
                             return found;
                         }
                     }
@@ -420,6 +429,9 @@ namespace components::sql::transform {
 
                 auto call = make_function_expression(resource_, std::move(funcname), std::move(filtered));
                 call->set_star_argument(func->agg_star);
+                // Same agg_distinct wiring as the select-list arm: this leg builds the
+                // call for a nested operand and used to drop the flag.
+                call->set_distinct(func->agg_distinct);
                 return param_storage{expressions::expression_ptr{call}};
             }
             case T_CaseExpr: {
@@ -1269,7 +1281,11 @@ namespace components::sql::transform {
                 args.emplace_back(param);
             }
         }
-        return make_function_expression(resource_, std::move(funcname), std::move(args));
+        auto expr = make_function_expression(resource_, std::move(funcname), std::move(args));
+        // DISTINCT inside the call (count(DISTINCT x) nested as an argument). Only the
+        // select-list arm used to copy agg_distinct; every call built here lost it.
+        expr->set_distinct(node->agg_distinct);
+        return expr;
     }
 
     core::result_wrapper_t<expression_ptr> transformer::transform_a_indirection(A_Indirection* node,
@@ -1705,17 +1721,20 @@ namespace components::sql::transform {
                     return std::holds_alternative<expressions::expression_ptr>(p);
                 });
                 for (const auto& expr : group->expressions()) {
-                    if (const auto* found = find_call(expr.get(), funcname, args, args_comparable)) {
+                    if (const auto* found = find_call(expr.get(), funcname, args, args_comparable, func->agg_distinct)) {
                         return found->key();
                     }
                 }
-                // Not in SELECT — add to group so operator_group_t computes it for HAVING
-                // (mirrors PostgreSQL: aggregates in HAVING need not appear in SELECT).
+                // Not in SELECT — add to the group node so the aggregation operator computes
+                // it for HAVING (mirrors PostgreSQL: aggregates in HAVING need not appear in
+                // SELECT). The DISTINCT flag travels onto the minted aggregate: dropping it
+                // here made `HAVING count(DISTINCT x)` silently compute count(x).
                 std::string alias = "__having_" + funcname + "_" + std::to_string(aggregate_counter_++);
                 auto agg_expr = make_aggregate_expression(resource_, funcname, expressions::key_t{resource_, alias});
                 for (auto& arg : args) {
                     agg_expr->append_param(arg);
                 }
+                agg_expr->set_distinct(func->agg_distinct);
                 group->append_expression(agg_expr);
                 return expressions::key_t{resource_, alias};
             }

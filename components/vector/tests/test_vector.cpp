@@ -458,3 +458,115 @@ TEST_CASE("components::vector::vector: an NA vector allocates nothing and reads 
         REQUIRE(placed.is_null(0));
     }
 }
+
+// ЗАПИСИ #349 и #350 — the assert-with-no-else surfaces of the vector layer.
+//
+// #350: data_chunk_t::sub_column_indices answered {size_t(-1)} behind a bare
+// assert for a path it could not resolve — the same sentinel-behind-assert its
+// neighbour column_index was already cured of. It answers the same
+// field_not_exists error now.
+//
+// #349: the string legs of apply_unary_vector_op / apply_binary_vector_op were
+// `assert(false)` with NO else — under NDEBUG the result vector's payload came
+// back UNINITIALIZED. Both entry points refuse the type up front now,
+// identically in both builds.
+#include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_operations.hpp>
+
+TEST_CASE("components::vector::data_chunk::sub_column_indices answers the error channel") {
+    auto resource = core::pmr::otterbrix_resource();
+    using components::types::complex_logical_type;
+    using components::types::logical_type;
+
+    auto int_type = complex_logical_type{logical_type::INTEGER};
+    int_type.set_alias("a");
+    std::pmr::vector<complex_logical_type> field_types(&resource);
+    auto leaf = complex_logical_type{logical_type::BIGINT};
+    leaf.set_alias("inner");
+    field_types.push_back(leaf);
+    auto struct_type = complex_logical_type::create_struct("", field_types, "s");
+
+    std::pmr::vector<complex_logical_type> chunk_types(&resource);
+    chunk_types.push_back(int_type);
+    chunk_types.push_back(struct_type);
+    components::vector::data_chunk_t chunk(&resource, chunk_types, 4);
+
+    auto path = [&](std::initializer_list<const char*> segments) {
+        std::pmr::vector<std::pmr::string> p(&resource);
+        for (const auto* s : segments) {
+            p.emplace_back(s);
+        }
+        return p;
+    };
+
+    SECTION("a resolvable top-level column answers its index") {
+        auto r = chunk.sub_column_indices(path({"a"}));
+        REQUIRE_FALSE(r.has_error());
+        REQUIRE(r.value() == std::pmr::vector<size_t>({0}, &resource));
+    }
+    SECTION("a resolvable nested field answers the index chain") {
+        auto r = chunk.sub_column_indices(path({"s", "inner"}));
+        REQUIRE_FALSE(r.has_error());
+        REQUIRE(r.value() == std::pmr::vector<size_t>({1, 0}, &resource));
+    }
+    SECTION("a missing top-level column is a field_not_exists error, not a sentinel") {
+        auto r = chunk.sub_column_indices(path({"nope"}));
+        REQUIRE(r.has_error());
+        REQUIRE(r.error().type == core::error_code_t::field_not_exists);
+    }
+    SECTION("a missing nested segment is a field_not_exists error too") {
+        auto r = chunk.sub_column_indices(path({"s", "nope"}));
+        REQUIRE(r.has_error());
+        REQUIRE(r.error().type == core::error_code_t::field_not_exists);
+    }
+    SECTION("an empty path is a refusal") {
+        auto r = chunk.sub_column_indices(path({}));
+        REQUIRE(r.has_error());
+        REQUIRE(r.error().type == core::error_code_t::field_not_exists);
+    }
+}
+
+TEST_CASE("components::vector::apply vector ops refuse string operands loudly") {
+    auto resource = core::pmr::otterbrix_resource();
+    using components::types::complex_logical_type;
+    using components::types::logical_type;
+    using components::vector::vector_ops::apply_binary_vector_op;
+    using components::vector::vector_ops::apply_unary_vector_op;
+    using components::vector::vector_ops::binary_vector_op;
+    using components::vector::vector_ops::unary_vector_op;
+    using components::vector::vector_t;
+
+    constexpr uint64_t count = 2;
+    vector_t strings(&resource, complex_logical_type{logical_type::STRING_LITERAL}, count);
+    strings.set_value(0, components::types::logical_value_t{&resource, std::string{"a"}});
+    strings.set_value(1, components::types::logical_value_t{&resource, std::string{"b"}});
+    vector_t ints(&resource, complex_logical_type{logical_type::INTEGER}, count);
+    ints.set_value(0, components::types::logical_value_t{&resource, int32_t{1}});
+    ints.set_value(1, components::types::logical_value_t{&resource, int32_t{2}});
+
+    SECTION("unary op over strings refuses (used to answer uninitialized memory under NDEBUG)") {
+        auto r = apply_unary_vector_op(&resource, unary_vector_op::abs, strings, count);
+        REQUIRE(r.has_error());
+    }
+    SECTION("unary DOUBLE-producing op over strings refuses too") {
+        auto r = apply_unary_vector_op(&resource, unary_vector_op::sqr_root, strings, count);
+        REQUIRE(r.has_error());
+    }
+    SECTION("bitwise op over strings refuses") {
+        auto r = apply_binary_vector_op(&resource, binary_vector_op::bit_and, strings, strings, count);
+        REQUIRE(r.has_error());
+    }
+    SECTION("bitwise op over floats refuses (the other assert leg)") {
+        vector_t doubles(&resource, complex_logical_type{logical_type::DOUBLE}, count);
+        doubles.set_value(0, components::types::logical_value_t{&resource, 1.5});
+        doubles.set_value(1, components::types::logical_value_t{&resource, 2.5});
+        auto r = apply_binary_vector_op(&resource, binary_vector_op::bit_or, doubles, doubles, count);
+        REQUIRE(r.has_error());
+    }
+    SECTION("integer legs still answer") {
+        auto u = apply_unary_vector_op(&resource, unary_vector_op::abs, ints, count);
+        REQUIRE_FALSE(u.has_error());
+        auto b = apply_binary_vector_op(&resource, binary_vector_op::bit_and, ints, ints, count);
+        REQUIRE_FALSE(b.has_error());
+    }
+}

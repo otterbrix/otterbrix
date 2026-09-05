@@ -572,3 +572,88 @@ TEST_CASE("logical_value: numeric overflow into DECIMAL is a refusal") {
         REQUIRE_FALSE(result.has_error());
     }
 }
+
+// ЗАПИСЬ #347 — THE REVERSE OF THE CLOSED int->DECIMAL DEFECT. The forward
+// direction (numeric into DECIMAL, batch 2) refuses an out-of-range value with
+// conversion_failure. The descale direction — DECIMAL back into an integer —
+// still answered a SILENT NA when decimal_to_numeric said "does not fit": the
+// caller got a success-shaped result carrying NULL for a value that exists.
+// Both directions must refuse identically.
+TEST_CASE("components::types::logical_value::decimal_to_integer_overflow_is_a_refusal") {
+    std::pmr::monotonic_buffer_resource resource;
+
+    // NUMERIC(10,0) holding 1000: descale to TINYINT (max 127) cannot represent it.
+    auto dec = logical_value_t(&resource, int64_t{1000}).cast_as(make_decimal(10, 0), {});
+    REQUIRE_FALSE(dec.has_error());
+    REQUIRE(dec.value().type().type() == logical_type::DECIMAL);
+
+    SECTION("descale overflow refuses instead of answering NA") {
+        auto back = dec.value().cast_as(complex_logical_type{logical_type::TINYINT}, {});
+        REQUIRE(back.has_error());
+        CHECK(back.error().type == core::error_code_t::conversion_failure);
+    }
+
+    SECTION("a negative value cannot descale into an unsigned width") {
+        auto neg = logical_value_t(&resource, int64_t{-5}).cast_as(make_decimal(10, 0), {});
+        REQUIRE_FALSE(neg.has_error());
+        auto back = neg.value().cast_as(complex_logical_type{logical_type::UTINYINT}, {});
+        REQUIRE(back.has_error());
+        CHECK(back.error().type == core::error_code_t::conversion_failure);
+    }
+
+    SECTION("an in-range descale still answers the value") {
+        auto small = logical_value_t(&resource, int64_t{42}).cast_as(make_decimal(10, 0), {});
+        REQUIRE_FALSE(small.has_error());
+        auto back = small.value().cast_as(complex_logical_type{logical_type::TINYINT}, {});
+        REQUIRE_FALSE(back.has_error());
+        CHECK(back.value().value<int8_t>() == 42);
+    }
+}
+
+// ЗАПИСЬ #348 — MIXED OPERANDS OUTSIDE NUMERIC PROMOTION DISPATCH BY THE LEFT
+// TYPE AND READ THE RIGHT OPERAND WITH THE LEFT'S GETTER. needs_numeric_promotion
+// requires BOTH operands numeric, so STRING+BIGINT entered the STRING arm and
+// `sum('a', 1)` THREW std::logic_error ("value<T>() is not implemented") out of
+// an error-channel function — a rule-2 violation reachable from every predicate
+// evaluator. Worse, BIGINT+STRING read the string's HEAP POINTER as an int64
+// payload and answered garbage. Every mixed pair outside promotion (and outside
+// the explicit temporal combinations) must come back as an error.
+TEST_CASE("components::types::logical_value::mixed_operand_arithmetic_refuses") {
+    std::pmr::monotonic_buffer_resource resource;
+    const logical_value_t str(&resource, std::string{"a"});
+    const logical_value_t num(&resource, int64_t{1});
+
+    SECTION("string + number refuses (used to throw)") {
+        auto r = logical_value_t::sum(str, num);
+        REQUIRE(r.has_error());
+    }
+    SECTION("number + string refuses (used to answer pointer bits)") {
+        auto r = logical_value_t::sum(num, str);
+        REQUIRE(r.has_error());
+    }
+    SECTION("string - number refuses") {
+        auto r = logical_value_t::subtract(str, num);
+        REQUIRE(r.has_error());
+    }
+    SECTION("number * string refuses") {
+        auto r = logical_value_t::mult(num, str);
+        REQUIRE(r.has_error());
+    }
+    SECTION("number % string refuses") {
+        auto r = logical_value_t::modulus(num, str);
+        REQUIRE(r.has_error());
+    }
+    SECTION("number ^ string refuses") {
+        auto r = logical_value_t::exponent(num, str);
+        REQUIRE(r.has_error());
+    }
+    SECTION("number & string refuses") {
+        auto r = logical_value_t::bit_and(num, str);
+        REQUIRE(r.has_error());
+    }
+    SECTION("mixed NUMERIC pairs still promote and answer") {
+        auto r = logical_value_t::sum(logical_value_t(&resource, int32_t{2}), num);
+        REQUIRE_FALSE(r.has_error());
+        CHECK(r.value().value<int64_t>() == 3);
+    }
+}

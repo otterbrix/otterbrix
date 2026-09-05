@@ -37,25 +37,25 @@
 
 namespace {
     // The resolver takes the cast registry unconditionally; these tests validate no DML node.
+    // No (void)-cast to silence an unused local (rule 14): the registration runs
+    // inside the static's own initializer, so there is nothing left over to ignore.
     const components::casts::cast_registry_t* test_cast_registry() {
-        static components::casts::cast_registry_t registry{std::pmr::new_delete_resource()};
-        static const bool loaded = [] {
-            components::casts::register_default_casts(registry);
-            return true;
+        static const components::casts::cast_registry_t& registry = []() -> components::casts::cast_registry_t& {
+            static components::casts::cast_registry_t r{std::pmr::new_delete_resource()};
+            components::casts::register_default_casts(r);
+            return r;
         }();
-        (void) loaded;
         return &registry;
     }
 
     services::dispatcher::validation::validation_context_t
     test_validation_context(std::pmr::memory_resource* resource) {
-        static components::compute::function_registry_t functions{std::pmr::new_delete_resource()};
         static const components::graph_execution_context execution_context{};
-        static const bool loaded = [] {
-            components::compute::register_default_functions(functions);
-            return true;
+        static components::compute::function_registry_t& functions = [] () -> components::compute::function_registry_t& {
+            static components::compute::function_registry_t f{std::pmr::new_delete_resource()};
+            components::compute::register_default_functions(f);
+            return f;
         }();
-        (void) loaded;
         return {resource, nullptr, *test_cast_registry(), functions, execution_context};
     }
 } // namespace

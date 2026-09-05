@@ -441,6 +441,21 @@ namespace components::table {
                            static_cast<int64_t>(local_row - vector_index * vector::DEFAULT_VECTOR_CAPACITY));
     }
 
+    uint64_t row_version_manager_t::delete_stamp(uint64_t row) {
+        assert(row >= static_cast<uint64_t>(start_));
+        const uint64_t local_row = row - static_cast<uint64_t>(start_);
+        const uint64_t vector_index = local_row / vector::DEFAULT_VECTOR_CAPACITY;
+        auto* info = get_chunk_info(vector_index);
+        if (!info) {
+            return NOT_DELETED_ID;
+        }
+        const uint64_t idx = local_row - vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+        if (info->type == chunk_info_type::CONSTANT_INFO) {
+            return info->cast<chunk_constant_info>().delete_id;
+        }
+        return info->cast<chunk_vector_info>().deleted[idx];
+    }
+
     void row_version_manager_t::fill_vector_info(uint64_t vector_idx) {
         if (vector_idx < vector_info_.size()) {
             return;

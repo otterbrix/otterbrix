@@ -84,6 +84,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_pool.cpp
         test_persistence.cpp
         test_alter_drop_column_reclaim.cpp
+        test_cursor_under_concurrent_ddl.cpp
         test_alter_rename_column.cpp
         test_alter_missing_column.cpp
         test_wal_nested_payload_replay.cpp
@@ -188,6 +189,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_fixture_root_qualification.cpp
         test_pg_catalog_dml_guard.cpp
         test_pg_catalog_read.cpp
+        test_catalog_name_uniqueness.cpp
         test_unqualified_name_ambiguity.cpp
 
         # TODO: casts for dynamic schema

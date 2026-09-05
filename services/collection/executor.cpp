@@ -2909,8 +2909,26 @@ namespace services::collection::executor {
                 for (const auto& del : pipeline_context.dml_deletes) {
                     result_tracking.dml_deletes.push_back({del.table_oid, del.txn_id});
                 }
+                // Catalog appends/deletes made by an EARLIER operator of a failed fragment need the
+                // same lift. A two-operator DDL chain (CREATE INDEX = metadata + backfill; the ALTER
+                // chain likewise) shares ONE pipeline_context, so when the trailing operator fails the
+                // metadata operator's pg_class/pg_index/pg_depend appends sit here unlifted — the abort
+                // tail would then leave them PHYSICALLY appended (pending under the aborted txn:
+                // MVCC-invisible to snapshots, but the row is really there, so a write-point uniqueness
+                // check sees it and the retry of the same statement is refused over a name nothing
+                // published). Lifting them hands the ranges to revert_failed_txn, whose
+                // storage_revert_appends truncates the slots. All still pending here (the fragment's
+                // commit runs later in the tail), so reverting is always safe on this path.
+                for (auto& app : pipeline_context.pg_catalog_appends) {
+                    result_tracking.pg_catalog_appends.push_back(std::move(app));
+                }
+                for (auto& d : pipeline_context.pg_catalog_delete_tables) {
+                    result_tracking.pg_catalog_delete_tables.insert(std::move(d));
+                }
                 pipeline_context.dml_appends.clear();
                 pipeline_context.dml_deletes.clear();
+                pipeline_context.pg_catalog_appends.clear();
+                pipeline_context.pg_catalog_delete_tables.clear();
             };
 
             // Drive the sub-plan to completion through the shared streaming seam

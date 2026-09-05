@@ -645,6 +645,14 @@ namespace components::table {
         return versions->fetch(txn, static_cast<uint64_t>(row_id));
     }
 
+    uint64_t row_group_t::delete_stamp(int64_t row_id) {
+        auto* versions = version_info();
+        if (!versions) {
+            return NOT_DELETED_ID;
+        }
+        return versions->delete_stamp(static_cast<uint64_t>(row_id));
+    }
+
     void row_group_t::append_version_info(transaction_data txn, uint64_t count) {
         uint64_t row_group_start = this->count.load();
         uint64_t row_group_end = row_group_start + count;

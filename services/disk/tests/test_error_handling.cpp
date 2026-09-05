@@ -110,19 +110,31 @@ TEST_CASE("services::disk::error::resolve_table_invalid_namespace") {
     REQUIRE_FALSE(rt.found);
 }
 
-// 8. CREATE NAMESPACE allows duplicate names — name is not enforced unique at the
-//    primitive-write layer (dispatcher checks via catalog_ before calling). Here we
-//    just verify it produces distinct OIDs and pg_namespace ends up with two rows of
-//    the same name.
-TEST_CASE("services::disk::error::duplicate_namespace_name_two_rows") {
+// 8. CREATE NAMESPACE refuses a duplicate name AT THE WRITE LAYER. The dispatcher's own
+//    check reads a resolve snapshot that cannot see another transaction's uncommitted row,
+//    so the catalog agent re-asks the question right before the append; the second
+//    same-name row must be refused, and resolve must keep answering the surviving oid.
+//    (Before the gate this appended a second 'dup' row and resolve bound to whichever row
+//    its scan reached first.)
+TEST_CASE("services::disk::error::duplicate_namespace_name_refused_at_write") {
     fixture fx;
     auto a = test_create_namespace(fx, "dup");
-    auto b = test_create_namespace(fx, "dup");
-    REQUIRE(a != b);
-    // resolve_namespace returns the first match by scan order — non-deterministic but found.
+    REQUIRE(a >= FIRST_USER_OID);
+
+    auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+    auto writes = catalog::build_create_namespace_writes(&fx.resource, std::string("dup"), oids[0]);
+    REQUIRE(writes.size() == 1);
+    auto second = fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                            fx.ctx(),
+                            writes[0].table_oid,
+                            std::move(writes[0].row));
+    REQUIRE(second.has_error());
+    REQUIRE(second.error().type == core::error_code_t::database_already_exists);
+
     auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("dup"));
     REQUIRE_FALSE(r.has_error());
     REQUIRE(r.value().found);
+    REQUIRE(r.value().oid == a);
 }
 
 // 12. topological_drop_order on an empty seed returns empty vector — caller pushes the seed.

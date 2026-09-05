@@ -85,6 +85,31 @@ namespace components::operators {
                 ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
         }
         if (append_error.contains_error()) {
+            // A refused catalog append (the name-uniqueness gate, a WAL refusal, ...) leaves the
+            // storage created above ORPHANED: the failing fragment's back-channel is never lifted
+            // into the abort tail, so nothing else tears it down. Undo this operator's own side
+            // effects here, index-before-disk like the abort path; drop_storage tolerates an
+            // unknown target, so a partially materialized CREATE is safe to remove.
+            if (ctx->txn.transaction_id != 0 && !ctx->created_storage_oids.empty() &&
+                ctx->created_storage_oids.back() == table_oid_) {
+                ctx->created_storage_oids.pop_back();
+            }
+            if (ctx->index_address != actor_zeta::address_t::empty_address()) {
+                auto [_u, uf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                            &services::index::manager_index_t::unregister_collection,
+                                                            ctx->session,
+                                                            table_oid_);
+                co_await std::move(uf);
+            }
+            {
+                std::pmr::vector<components::catalog::oid_t> drop_oids{resource_};
+                drop_oids.push_back(table_oid_);
+                auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::drop_storage_many,
+                                                            ctx->session,
+                                                            std::move(drop_oids));
+                co_await std::move(df);
+            }
             set_error(std::move(append_error));
             mark_failed();
             co_return;

@@ -104,6 +104,10 @@ namespace components::table {
         // manager means no recorded insert/delete, so every row is visible.
         bool is_visible(const transaction_data& txn, int64_t row_id);
 
+        // Raw delete stamp of one row (collection-absolute, same addressing as is_visible):
+        // NOT_DELETED_ID when nothing was recorded. See row_version_manager_t::delete_stamp.
+        uint64_t delete_stamp(int64_t row_id);
+
         void append_version_info(transaction_data txn, uint64_t count);
 
         void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);

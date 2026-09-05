@@ -95,6 +95,12 @@ namespace components::table {
                    const transaction_data& txn,
                    fetch_visibility_t visibility);
 
+        // Raw delete stamp of one physically present row: NOT_DELETED_ID when no delete was
+        // recorded (or the id names no row group), a commit id for a committed delete, a
+        // transaction id for a pending one. Read-only companion of fetch's RAW visibility:
+        // together they let a writer classify every physical row of a small table.
+        uint64_t delete_stamp(int64_t row_id);
+
         // The append chain returns out_of_memory when a row group / column segment allocation
         // fails. initialize_append: true on success. append: on success the bool reports whether
         // a new row group was started.

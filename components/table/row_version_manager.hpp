@@ -271,6 +271,11 @@ namespace components::table {
                                  vector::indexing_vector_t& indexing_vector,
                                  uint64_t max_count);
         bool fetch(const transaction_data& transaction, uint64_t row);
+        // Raw delete stamp of one row (collection-absolute, rebased like fetch):
+        // NOT_DELETED_ID when no delete was ever recorded, a commit id for a committed
+        // delete, a transaction id for a pending one. Read-only; lets a writer judge
+        // whether a physically present row still occupies its catalog name.
+        uint64_t delete_stamp(uint64_t row);
 
         void append_version_info(transaction_data transaction,
                                  uint64_t count,

@@ -344,6 +344,19 @@ namespace components::table {
         }
     }
 
+    uint64_t collection_t::delete_stamp(int64_t row_id) {
+        row_group_t* row_group = nullptr;
+        {
+            uint64_t segment_index;
+            auto l = row_groups_->lock();
+            if (!row_groups_->try_segment_index(l, row_id, segment_index)) {
+                return NOT_DELETED_ID;
+            }
+            row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+        }
+        return row_group->delete_stamp(row_id);
+    }
+
     core::result_wrapper_t<bool> collection_t::revert_append(int64_t row_start, uint64_t count) {
         core::error_t first_error = core::error_t::no_error();
         for (auto& rg : row_groups_->segments()) {

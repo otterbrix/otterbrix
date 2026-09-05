@@ -2,6 +2,7 @@
 #include "inline_scan.hpp" // services::disk::detail::inline_scan (catalog DDL on the agent)
 #include "manager_disk.hpp"
 #include <algorithm>                                       // std::min
+#include <components/catalog/helpers.hpp>                  // pg_*_col ordinals (name-uniqueness gate)
 #include <components/catalog/system_table_schemas.hpp>     // encode_type_spec (type names in refusals)
 #include <components/logical_plan/node_group.hpp>          // node_group_t::set_pushdown (re-lowering guard)
 #include <components/physical_plan/operators/operator_hash_group.hpp>
@@ -36,6 +37,12 @@ namespace services::disk {
         g_checkpoint_entries_deferred.store(0, std::memory_order_relaxed);
         g_checkpoint_entries_rewritten.store(0, std::memory_order_relaxed);
     }
+
+    namespace {
+        scan_advance_gate_t* g_scan_advance_gate = nullptr;
+    } // namespace
+    void dev_set_scan_advance_gate(scan_advance_gate_t* gate) { g_scan_advance_gate = gate; }
+    scan_advance_gate_t* dev_scan_advance_gate() { return g_scan_advance_gate; }
 #endif
 
     using namespace core::filesystem;
@@ -1314,6 +1321,23 @@ namespace services::disk {
             return fetch_batch_t{std::move(empty), reply_cursor_id};
         };
 
+        // Column identities in the exact order the storage's types() presents them: physical
+        // columns first, then the published-but-unmaterialized tail (the same alignment
+        // table_storage_adapter_t::types() produces). Snapshot at OPEN, re-collected each
+        // ADVANCE for the identity check below.
+        auto collect_identity = [](collection_storage_entry_t& entry,
+                                   std::vector<active_scan_t::open_column_t>& out) {
+            const auto& physical = entry.table_storage.table().columns();
+            out.clear();
+            out.reserve(physical.size() + entry.unmaterialized_columns.size());
+            for (const auto& c : physical) {
+                out.push_back(active_scan_t::open_column_t{c.attoid(), c.name()});
+            }
+            for (const auto& c : entry.unmaterialized_columns) {
+                out.push_back(active_scan_t::open_column_t{c.attoid(), c.name()});
+            }
+        };
+
         if (cursor_id == 0) {
             // OPEN: resolve the owned slice entry and snapshot the source-row bound. A not-owned /
             // record-only oid replies a drained sentinel (no cursor minted), mirroring the
@@ -1338,6 +1362,13 @@ namespace services::disk {
             scan.projected_cols = std::move(projected_cols);
             scan.txn = txn;
             scan.matched_limit = limit;
+            // OPEN-time schema snapshot: the shape this cursor's replies keep for its whole
+            // life, and the identity every later fetch re-resolves columns against.
+            {
+                const auto open_types = it->second->storage->types();
+                scan.open_types.assign(open_types.begin(), open_types.end());
+                collect_identity(*it->second, scan.open_columns);
+            }
             // Mint cursor id = (session, agent counter): the session disambiguates across
             // queries, the agent-local counter across concurrent cursors of one session. Fall back
             // to the bare counter on the (vanishingly unlikely) reserved-0 / collision.
@@ -1370,11 +1401,130 @@ namespace services::disk {
         }
         auto* storage = storage_it->second->storage.get();
 
+        // Schema-identity check against the OPEN-time snapshot. The cursor's projection and
+        // pushed-down filter were bound POSITIONALLY at open, and a committed ALTER (or a
+        // computed table's schema growth) rebuilds the storage BETWEEN two fetches of the same
+        // cursor — after which the stored positions name DIFFERENT columns. Re-applying them
+        // blindly served the neighbour column of the same rows as a SUCCESS (observed:
+        // SELECT b answered with c's values from the first post-DDL batch on). The fast path
+        // below is a per-column (attoid, name, type) compare; on a change the fetch reads by
+        // COLUMN IDENTITY and answers in the OPEN-time shape, refusing loudly only when the
+        // data the cursor promised is physically gone or its filter cannot survive the move.
+        auto all_types = storage->types();
+        // Allocation-free fast-path compare (the common case is "nothing changed"): walk the
+        // live physical + unmaterialized columns in the snapshot's own order without copying
+        // a single name.
+        const bool schema_unchanged = [&] {
+            const auto& physical = storage_it->second->table_storage.table().columns();
+            const auto& unmaterialized = storage_it->second->unmaterialized_columns;
+            if (physical.size() + unmaterialized.size() != scan.open_columns.size() ||
+                all_types.size() != scan.open_types.size()) {
+                return false;
+            }
+            for (size_t i = 0; i < scan.open_columns.size(); ++i) {
+                const auto& live = i < physical.size() ? physical[i] : unmaterialized[i - physical.size()];
+                if (live.attoid() != scan.open_columns[i].attoid || live.name() != scan.open_columns[i].name ||
+                    !(all_types[i] == scan.open_types[i])) {
+                    return false;
+                }
+            }
+            return true;
+        }();
+
+        std::vector<size_t> remapped_projected;        // current ordinals to fetch (identity-remap leg only)
+        std::vector<std::pair<size_t, size_t>> reslot; // (open slot, current ordinal) to re-slot the reply
+        if (!schema_unchanged) {
+            std::vector<active_scan_t::open_column_t> current_columns;
+            collect_identity(*storage_it->second, current_columns);
+            auto refuse = [&](const char* what) {
+                active_scans_.erase(cit);
+                std::pmr::string msg{"storage_fetch_next_batch: schema changed under open cursor on table oid ",
+                                     resource()};
+                msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
+                msg += std::pmr::string{": ", resource()};
+                msg += std::pmr::string{what, resource()};
+                return core::error_t{core::error_code_t::schema_error, std::move(msg)};
+            };
+
+            // Match every OPEN column to its CURRENT ordinal by identity: attoid when both
+            // sides carry one (survives a RENAME), else (name, type) — unique even across a
+            // computed table's same-named type variants. `gone` = no current home.
+            const size_t gone = current_columns.size();
+            std::vector<size_t> open_to_current(scan.open_columns.size(), gone);
+            for (size_t o = 0; o < scan.open_columns.size(); ++o) {
+                const auto& oc = scan.open_columns[o];
+                size_t found = gone;
+                bool ambiguous = false;
+                for (size_t c = 0; c < current_columns.size(); ++c) {
+                    const auto& cc = current_columns[c];
+                    const bool match = (oc.attoid != 0 && cc.attoid != 0)
+                                           ? oc.attoid == cc.attoid
+                                           : (oc.name == cc.name && all_types[c] == scan.open_types[o]);
+                    if (!match) {
+                        continue;
+                    }
+                    if (found != gone) {
+                        ambiguous = true;
+                        break;
+                    }
+                    found = c;
+                }
+                if (ambiguous) {
+                    co_return refuse("a column's identity is ambiguous after the schema change");
+                }
+                if (found != gone && !(all_types[found] == scan.open_types[o])) {
+                    // Same identity, different type: the open-shaped reply cannot carry it.
+                    found = gone;
+                }
+                open_to_current[o] = found;
+            }
+
+            // The pushed-down filter binds OPEN ordinals inside its execution graph, where
+            // nothing can remap them; it stays valid only when every open column still sits at
+            // its open ordinal with its open type (a pure tail-append). Any shift or loss and
+            // it would silently test the wrong columns — refuse instead.
+            if (scan.filter != nullptr) {
+                for (size_t o = 0; o < open_to_current.size(); ++o) {
+                    if (open_to_current[o] != o) {
+                        co_return refuse("the cursor's filter is bound to column positions the change moved");
+                    }
+                }
+            }
+
+            // The open slots this cursor hands upstream (its projection; empty == every open
+            // column), each remapped to the column's current home.
+            reslot.reserve(scan.projected_cols.empty() ? scan.open_columns.size() : scan.projected_cols.size());
+            remapped_projected.reserve(reslot.capacity());
+            auto need_slot = [&](size_t slot) -> bool {
+                if (slot >= open_to_current.size() || open_to_current[slot] == gone) {
+                    return false;
+                }
+                remapped_projected.push_back(open_to_current[slot]);
+                reslot.emplace_back(slot, open_to_current[slot]);
+                return true;
+            };
+            if (scan.projected_cols.empty()) {
+                for (size_t slot = 0; slot < scan.open_columns.size(); ++slot) {
+                    if (!need_slot(slot)) {
+                        co_return refuse("a column this cursor serves was dropped from the storage");
+                    }
+                }
+            } else {
+                for (size_t slot : scan.projected_cols) {
+                    if (!need_slot(slot)) {
+                        co_return refuse("a column this cursor serves was dropped from the storage");
+                    }
+                }
+            }
+        }
+
         // Construct the projected output chunk, then re-seek + read ONE batch from the stored
         // position. fetch_next_batch builds a transient scan state, pins only one batch's segments,
-        // and releases them before returning — nothing pinned survives this handler.
-        auto all_types = storage->types();
-        const std::vector<size_t>* projected_ptr = scan.projected_cols.empty() ? nullptr : &scan.projected_cols;
+        // and releases them before returning — nothing pinned survives this handler. On the
+        // identity-remap leg the chunk is CURRENT-shaped (the storage fills slots by its own
+        // ordinals) and is re-slotted into the OPEN-time shape after the read.
+        const std::vector<size_t>* projected_ptr =
+            schema_unchanged ? (scan.projected_cols.empty() ? nullptr : &scan.projected_cols) : &remapped_projected;
         auto batch =
             projected_ptr
                 ? std::make_unique<components::vector::data_chunk_t>(resource(),
@@ -1405,6 +1555,29 @@ namespace services::disk {
             // No rows this round (drained, or a boundary batch trimmed to 0): GC and reply drained.
             active_scans_.erase(cit);
             co_return make_drained(cursor_id);
+        }
+
+        if (!schema_unchanged) {
+            // Re-slot the fetched vectors into the OPEN-time shape: the plan above this cursor
+            // addresses reply chunks by the ordinals it was planned with, and every earlier
+            // batch already crossed the mailbox in that shape. reference() shares the fetched
+            // buffers, so this is per-column pointer work, not a copy.
+            std::pmr::vector<components::types::complex_logical_type> open_types{resource()};
+            open_types.assign(scan.open_types.begin(), scan.open_types.end());
+            auto reshaped =
+                scan.projected_cols.empty()
+                    ? std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                         open_types,
+                                                                         components::vector::DEFAULT_VECTOR_CAPACITY)
+                    : std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                         open_types,
+                                                                         scan.projected_cols,
+                                                                         components::vector::DEFAULT_VECTOR_CAPACITY);
+            for (const auto& [open_slot, current_ordinal] : reslot) {
+                reshaped->data[open_slot].reference(batch->data[current_ordinal]);
+            }
+            reshaped->set_cardinality(batch->size());
+            batch = std::move(reshaped);
         }
         co_return fetch_batch_t{std::move(batch), cursor_id};
     }
@@ -2850,6 +3023,177 @@ namespace services::disk {
     // co_await; the WAL manager self-schedules, so NO scheduler_disk_->enqueue here).
     // ---------------------------------------------------------------------------
 
+    namespace {
+        // Name-key layout of the catalog tables whose rows CARRY an object's name.
+        // The executor's *_already_exists checks read the statement's resolve SNAPSHOT,
+        // which cannot see another session's uncommitted row — two CREATEs of one name
+        // from two transactions both pass that check. The gate below re-asks the question
+        // at the WRITE point, on this (CATALOG) agent, where the mailbox makes
+        // check-and-append atomic and the answer is deterministic.
+        struct catalog_name_key_t {
+            uint64_t name_col;
+            int64_t ns_col; // -1 — the table has no namespace column
+            const char* name_alias;
+            const char* ns_alias;
+            core::error_code_t code;
+            const char* kind;
+        };
+
+        const catalog_name_key_t* catalog_name_key_for(components::catalog::oid_t table_oid) {
+            namespace cat = components::catalog;
+            static constexpr catalog_name_key_t pg_class_key{cat::pg_class_col::relname,
+                                                             static_cast<int64_t>(cat::pg_class_col::relnamespace),
+                                                             "relname",
+                                                             "relnamespace",
+                                                             core::error_code_t::table_already_exists,
+                                                             "relation"};
+            static constexpr catalog_name_key_t pg_namespace_key{cat::pg_namespace_col::nspname,
+                                                                 int64_t{-1},
+                                                                 "nspname",
+                                                                 nullptr,
+                                                                 core::error_code_t::database_already_exists,
+                                                                 "database"};
+            static constexpr catalog_name_key_t pg_type_key{cat::pg_type_col::typname,
+                                                            static_cast<int64_t>(cat::pg_type_col::typnamespace),
+                                                            "typname",
+                                                            "typnamespace",
+                                                            core::error_code_t::type_already_exists,
+                                                            "type"};
+            switch (table_oid) {
+                case cat::well_known_oid::pg_class_table:
+                    return &pg_class_key;
+                case cat::well_known_oid::pg_namespace_table:
+                    return &pg_namespace_key;
+                case cat::well_known_oid::pg_type_table:
+                    return &pg_type_key;
+                default:
+                    return nullptr;
+            }
+        }
+
+        // A physically present row occupies its name unless its delete stamp frees it:
+        // a committed delete (id below TRANSACTION_ID_START) or this transaction's own
+        // pending delete (same-txn DROP + CREATE of one name stays legal). Another
+        // transaction's PENDING delete does NOT free the name — were it allowed and the
+        // dropper aborted, two live rows would share the name again; refusing is the
+        // non-blocking analogue of waiting out the dropper's lock.
+        bool name_freed_by_delete(uint64_t delete_stamp, uint64_t writer_txn_id) {
+            if (delete_stamp == components::table::NOT_DELETED_ID) {
+                return false;
+            }
+            if (delete_stamp < components::table::TRANSACTION_ID_START) {
+                return true;
+            }
+            return writer_txn_id != 0 && delete_stamp == writer_txn_id;
+        }
+
+        // The write-point uniqueness check: scan EVERY physical row of the catalog table
+        // (RAW fetch — snapshot visibility is exactly what this gate must not trust) and
+        // refuse the incoming row when a live same-name row exists. Small tables by
+        // construction (pg_class / pg_namespace / pg_type), so the full pass is cheap.
+        core::error_t catalog_name_conflict(std::pmr::memory_resource* resource,
+                                            collection_storage_entry_t& entry,
+                                            components::catalog::oid_t table_oid,
+                                            const catalog_name_key_t& key,
+                                            const components::vector::data_chunk_t& row,
+                                            const components::table::transaction_data& txn) {
+            const auto* def = components::catalog::find_system_table(table_oid);
+            if (def == nullptr) {
+                return core::error_t::no_error();
+            }
+            // Locate the incoming row's name (and namespace) columns: builder rows arrive
+            // full-width (positional), reduced rows are alias-keyed like the append leg's
+            // own column expansion.
+            int64_t in_name_col = -1;
+            int64_t in_ns_col = -1;
+            if (row.column_count() == def->columns.size()) {
+                in_name_col = static_cast<int64_t>(key.name_col);
+                in_ns_col = key.ns_col;
+            } else {
+                for (uint64_t c = 0; c < row.column_count(); c++) {
+                    if (!row.data[c].type().has_alias()) {
+                        continue;
+                    }
+                    const auto& alias = row.data[c].type().alias();
+                    if (alias == key.name_alias) {
+                        in_name_col = static_cast<int64_t>(c);
+                    } else if (key.ns_alias != nullptr && alias == key.ns_alias) {
+                        in_ns_col = static_cast<int64_t>(c);
+                    }
+                }
+            }
+            if (in_name_col < 0) {
+                // A row that names nothing can occupy no name.
+                return core::error_t::no_error();
+            }
+
+            auto& table = entry.table_storage.table();
+            const uint64_t total = entry.storage->total_rows();
+            const auto types = entry.storage->types();
+            std::vector<size_t> projected{static_cast<size_t>(key.name_col)};
+            if (key.ns_col >= 0) {
+                projected.push_back(static_cast<size_t>(key.ns_col));
+            }
+
+            for (uint64_t in_r = 0; in_r < row.size(); in_r++) {
+                if (row.is_null(static_cast<uint64_t>(in_name_col), in_r)) {
+                    continue;
+                }
+                const auto in_name = row.get_value<std::string_view>(static_cast<uint64_t>(in_name_col), in_r);
+                const bool has_ns = key.ns_col >= 0 && in_ns_col >= 0 &&
+                                    !row.is_null(static_cast<uint64_t>(in_ns_col), in_r);
+                const std::uint32_t in_ns =
+                    has_ns ? row.get_value<std::uint32_t>(static_cast<uint64_t>(in_ns_col), in_r) : 0;
+
+                for (uint64_t offset = 0; offset < total; offset += components::vector::DEFAULT_VECTOR_CAPACITY) {
+                    const uint64_t n =
+                        std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, total - offset);
+                    components::vector::vector_t window_ids(resource, components::types::logical_type::BIGINT, n);
+                    auto* ids = window_ids.data<int64_t>();
+                    for (uint64_t i = 0; i < n; i++) {
+                        ids[i] = static_cast<int64_t>(offset + i);
+                    }
+                    components::vector::data_chunk_t chunk(resource, types, n);
+                    auto fetch_r = entry.storage->fetch(chunk,
+                                                        window_ids,
+                                                        n,
+                                                        projected,
+                                                        txn,
+                                                        components::table::fetch_visibility_t::RAW);
+                    if (fetch_r.has_error()) {
+                        // An unreadable catalog page means the question was NOT answered;
+                        // appending anyway would be the very blind write this gate removes.
+                        return fetch_r.error();
+                    }
+                    const auto* got_ids = chunk.row_ids.data<int64_t>();
+                    for (uint64_t i = 0; i < chunk.size(); i++) {
+                        if (chunk.is_null(key.name_col, i)) {
+                            continue;
+                        }
+                        if (chunk.get_value<std::string_view>(key.name_col, i) != in_name) {
+                            continue;
+                        }
+                        if (has_ns && !chunk.is_null(static_cast<uint64_t>(key.ns_col), i) &&
+                            chunk.get_value<std::uint32_t>(static_cast<uint64_t>(key.ns_col), i) != in_ns) {
+                            continue;
+                        }
+                        const uint64_t stamp = table.row_group()->delete_stamp(got_ids[i]);
+                        if (name_freed_by_delete(stamp, txn.transaction_id)) {
+                            continue;
+                        }
+                        std::pmr::string msg{key.kind, resource};
+                        msg += " '";
+                        msg.append(in_name.data(), in_name.size());
+                        msg += "' already exists: the catalog holds a live row under this name "
+                               "(committed, or pending in another transaction)";
+                        return core::error_t{key.code, std::move(msg)};
+                    }
+                }
+            }
+            return core::error_t::no_error();
+        }
+    } // namespace
+
     // Crash-safe pg_catalog row append: the WAL physical_insert is written first so a crash before
     // the storage update can be replayed on restart, then storage is updated on this agent's own
     // slice. The preprocessing applies only schema adoption + alias-keyed column expansion +
@@ -2862,6 +3206,29 @@ namespace services::disk {
     agent_disk_t::append_pg_catalog_row_inner(execution_context_t ctx,
                                               components::catalog::oid_t table_oid,
                                               components::vector::data_chunk_t row) {
+        // Name-uniqueness gate, BEFORE the WAL leg: a refused row must reach neither the
+        // journal nor storage. Runs only for the name-carrying catalog tables; sits above
+        // every CREATE (TABLE / DATABASE / TYPE / INDEX / VIEW / MATVIEW / SEQUENCE / MACRO)
+        // because they all funnel their pg_class / pg_namespace / pg_type rows through this
+        // handler. WAL replay does not travel this path, so recovery is never refused here.
+        if (row.size() != 0) {
+            if (const auto* key = catalog_name_key_for(table_oid)) {
+                auto it_gate = storages_.find(table_oid);
+                if (it_gate != storages_.end() && it_gate->second != nullptr && it_gate->second->storage != nullptr) {
+                    auto conflict = catalog_name_conflict(resource(), *it_gate->second, table_oid, *key, row, ctx.txn);
+                    if (conflict.contains_error()) {
+                        error(log_,
+                              "agent_disk[{}]::append_pg_catalog_row_inner: name-uniqueness gate refused the "
+                              "append for oid={}: {}",
+                              pool_idx_,
+                              static_cast<unsigned>(table_oid),
+                              conflict.what);
+                        co_return conflict;
+                    }
+                }
+            }
+        }
+
         if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
             components::vector::data_chunk_t wal_chunk(resource(), row.types(), row.size());
             wal_chunk.set_cardinality(row.size());

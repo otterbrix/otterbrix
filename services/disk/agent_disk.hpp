@@ -48,6 +48,32 @@ namespace services::disk {
     uint64_t checkpoint_entries_deferred() noexcept;
     uint64_t checkpoint_entries_rewritten() noexcept;
     void reset_checkpoint_entry_tallies() noexcept;
+
+    // Deterministic BETWEEN-BATCHES pause for streaming scans — the interleaving seam of the
+    // cursor-vs-concurrent-DDL tests. The window where an open cursor meets a schema change
+    // only exists between two fetches of the same cursor, and a timing-based repro hits it in
+    // a fraction of runs; this gate turns the window into a held door.
+    //
+    // Consulted by the streaming scan sources (full_scan / transfer_scan source_next)
+    // immediately before every cursor ADVANCE — never before OPEN, so the first batch always
+    // flows. While hold() answers true the source performs one cross-actor no-op round-trip
+    // and asks again: the await parks the source's nested coroutine, so no actor thread ever
+    // blocks and every mailbox — executor, disk manager, the cursor's owner agent — stays
+    // free to run whatever statement the test slides into the window. A blocking wait anywhere
+    // on an actor thread could not work at all: the agent serving the cursor is by oid routing
+    // the SAME agent a DDL's physical half lands on, so holding its mailbox would deadlock the
+    // very statement the test is interleaving.
+    //
+    // Plain virtual interface like the other dev seams (no std::function); process-wide,
+    // DEV_MODE-only (release builds compile the consultation out), one nullptr load per
+    // ADVANCE while unarmed.
+    struct scan_advance_gate_t {
+        virtual ~scan_advance_gate_t() = default;
+        // true = keep holding this scan between batches; false = let the next fetch go.
+        virtual bool hold(components::catalog::oid_t table_oid, uint64_t cursor_id) = 0;
+    };
+    void dev_set_scan_advance_gate(scan_advance_gate_t* gate); // nullptr = off
+    scan_advance_gate_t* dev_scan_advance_gate();
 #endif
 
     using path_t = std::filesystem::path;
@@ -632,6 +658,14 @@ namespace services::disk {
         // shared). Keyed by the agent-minted cursor_id = (session, counter), which scopes a source
         // to one query.
         struct active_scan_t {
+            // Identity of one OPEN-time column: pg_attribute's attoid when the storage column
+            // carries one (0 on never-stamped columns), plus the name it had at open. attoid is
+            // the primary identity — it survives a RENAME — and (name, type) closes the
+            // attoid-0 case, unique even across a computed table's same-named type variants.
+            struct open_column_t {
+                std::uint32_t attoid{0};
+                std::string name;
+            };
             components::catalog::oid_t table_oid{components::catalog::INVALID_OID}; // gates compact() on this oid
             components::storage::scan_position_t pos; // absolute resume position (re-seek each fetch)
             std::unique_ptr<components::table::table_filter_t>
@@ -640,6 +674,14 @@ namespace services::disk {
             components::table::transaction_data txn{0, 0}; // MVCC snapshot for the whole scan
             int64_t matched_limit{-1};                     // post-filter matched-row cap (-1 == unbounded)
             uint64_t matched_emitted{0};                   // running matched rows handed out (enforces matched_limit)
+            // OPEN-time schema snapshot, aligned with the storage's types() of that moment
+            // (physical columns first, then the published-but-unmaterialized tail). The cursor's
+            // projection and filter were bound POSITIONALLY against THIS schema, and the plan
+            // above the scan keeps addressing reply chunks by THESE ordinals — so every fetch
+            // checks the live schema against the snapshot and answers in this shape, whatever
+            // DDL commits between two fetches (see storage_fetch_next_batch_inner).
+            std::vector<open_column_t> open_columns;
+            std::vector<components::types::complex_logical_type> open_types;
         };
         std::pmr::unordered_map<uint64_t, active_scan_t> active_scans_;
         // Monotonic per-agent cursor-id counter, combined with the session at mint time so the id

@@ -37,21 +37,26 @@ namespace core::filesystem {
         file_handle_t(const file_handle_t&) = delete;
         virtual ~file_handle_t();
 
-        int64_t read(void* buffer, uint64_t nr_bytes);
-        int64_t write(void* buffer, uint64_t nr_bytes);
-        bool read(void* buffer, uint64_t nr_bytes, uint64_t location);
-        bool write(void* buffer, uint64_t nr_bytes, uint64_t location);
+        // The I/O entry points are virtual so a test-side wrapper can interpose fault
+        // injection / crash simulation (plan task T3). Production handles inherit the
+        // default bodies, which delegate to the filesystem free functions; those free
+        // functions reinterpret_cast the handle to the PLATFORM handle type, so a wrapper
+        // must always override and delegate to its wrapped inner handle, never pass itself.
+        virtual int64_t read(void* buffer, uint64_t nr_bytes);
+        virtual int64_t write(void* buffer, uint64_t nr_bytes);
+        virtual bool read(void* buffer, uint64_t nr_bytes, uint64_t location);
+        virtual bool write(void* buffer, uint64_t nr_bytes, uint64_t location);
         bool seek(uint64_t location);
         void reset();
         uint64_t seek_position();
-        bool sync();
-        bool truncate(int64_t new_size);
-        bool trim(uint64_t offset_bytes, uint64_t length_bytes);
+        virtual bool sync();
+        virtual bool truncate(int64_t new_size);
+        virtual bool trim(uint64_t offset_bytes, uint64_t length_bytes);
         std::string read_line();
 
         bool can_seek();
         bool is_pipe();
-        uint64_t file_size();
+        virtual uint64_t file_size();
         file_type_t type();
 
         virtual void close() = 0;

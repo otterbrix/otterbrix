@@ -312,10 +312,30 @@ namespace core::b_plus_tree {
 
             if (remove_node->block->contains(index, item)) {
                 // since items are unique, we do not have to check other blocks after
-                if (remove_node->block->item_count(index) == 1) {
-                    header_->unique_id_count_--;
-                }
+                bool last_copy_in_block = remove_node->block->item_count(index) == 1;
                 remove_node->block->remove(index, item);
+                if (last_copy_in_block) {
+                    // unique_id_count_ counts distinct keys across the whole segment tree,
+                    // and one key can straddle several blocks of the range. Decrementing on
+                    // every block-local extinction charged a K-block key K times: deleting a
+                    // low-cardinality key spread over 2 blocks drove the counter 2 -> 0 while
+                    // the other key's items were all still present. Decrement only when the
+                    // key is gone from every candidate block.
+                    bool index_still_present = false;
+                    for (block_metadata* probe = range.begin; probe != range.end; probe++) {
+                        it node = segments_.begin() + (probe - metadata_begin_);
+                        if (!node->block) {
+                            load_segment_(probe);
+                        }
+                        if (node->block->contains_index(index)) {
+                            index_still_present = true;
+                            break;
+                        }
+                    }
+                    if (!index_still_present) {
+                        header_->unique_id_count_--;
+                    }
+                }
 
                 if (remove_node->block->count() == 0) {
                     remove_segment_(remove_node);

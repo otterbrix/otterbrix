@@ -1224,6 +1224,86 @@ TEST_CASE("core::b_plus_tree::segment_tree_remove_index_loads_the_last_block_of_
     }
 }
 
+// unique_id_count_ counts distinct keys across the whole segment tree, but remove() used to
+// decrement it on every per-BLOCK extinction of a key. A key whose duplicates straddle K blocks
+// was charged K times: deleting one whole low-cardinality group drove the counter from 2 to 0
+// while every item of the other group was still in the tree, and the next append died on
+// b_plus_tree.cpp's `assert(root_->unique_entry_count() != 0)`.
+TEST_CASE("core::b_plus_tree::segment_tree_remove_charges_a_multi_block_key_once") {
+    auto resource = core::pmr::otterbrix_resource();
+    path_t testing_directory = "segment_tree_remove_unique_count";
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        uint64_t val;
+        std::memcpy(&val, data.data, sizeof(val));
+        return block_t::index_t(val);
+    };
+
+    // Two keys only. Each key repeats far past a single block's capacity, so the doomed key's
+    // metadata range spans several blocks — the shape that used to be over-charged.
+    constexpr uint64_t kDoomed = 1;   // every item of this key is removed, one by one
+    constexpr uint64_t kSurvivor = 2; // untouched
+    constexpr uint64_t kPerKey = 40;
+    std::vector<dummy_alloc> doomed_items;
+    std::vector<dummy_alloc> survivor_items;
+    for (uint64_t i = 0; i < kPerKey; i++) {
+        dummy_alloc dummy;
+        dummy.size = DEFAULT_BLOCK_SIZE / 32;
+        dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+        std::memset(dummy.buffer, 0, dummy.size);
+        write_unaligned<uint64_t>(dummy.buffer, kDoomed);
+        // Same key, different payload: byte-identical duplicates are rejected outright.
+        write_unaligned<uint64_t>(dummy.buffer + sizeof(uint64_t), i);
+        doomed_items.push_back(dummy);
+    }
+    for (uint64_t i = 0; i < kPerKey; i++) {
+        dummy_alloc dummy;
+        dummy.size = DEFAULT_BLOCK_SIZE / 32;
+        dummy.buffer = static_cast<data_ptr_t>(resource.allocate(dummy.size));
+        std::memset(dummy.buffer, 0, dummy.size);
+        write_unaligned<uint64_t>(dummy.buffer, kSurvivor);
+        write_unaligned<uint64_t>(dummy.buffer + sizeof(uint64_t), i);
+        survivor_items.push_back(dummy);
+    }
+
+    auto fname = testing_directory;
+    fname /= "remove_unique_count_file";
+    segment_tree_t tree(&resource,
+                        key_getter,
+                        open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
+    for (const auto& item : doomed_items) {
+        REQUIRE(tree.append(item.buffer, item.size));
+    }
+    for (const auto& item : survivor_items) {
+        REQUIRE(tree.append(item.buffer, item.size));
+    }
+    REQUIRE(tree.blocks_count() > 2);
+    REQUIRE(tree.count() == 2 * kPerKey);
+    REQUIRE(tree.unique_indices_count() == 2);
+
+    // The doomed key must stay counted until its LAST item is gone, no matter how many blocks
+    // it occupied along the way.
+    for (uint64_t i = 0; i < kPerKey; i++) {
+        REQUIRE(tree.remove({doomed_items[i].buffer, doomed_items[i].size}));
+        const size_t expected = (i + 1 == kPerKey) ? 1 : 2;
+        REQUIRE(tree.unique_indices_count() == expected);
+    }
+
+    CHECK_FALSE(tree.contains_index(segment_tree_t::index_t(kDoomed)));
+    CHECK(tree.contains_index(segment_tree_t::index_t(kSurvivor)));
+    CHECK(tree.count() == kPerKey);
+    CHECK(tree.unique_indices_count() == 1);
+
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+}
+
 // Both persistence layers write a fixed-size region but initialised only its head: segment_tree_t's
 // leaf header is allocated at 2 * DEFAULT_BLOCK_SIZE with three counters set, and btree_t::flush()
 // allocates METADATA_SIZE and fills two counters plus one id per leaf. The rest of each region was

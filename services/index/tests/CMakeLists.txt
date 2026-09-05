@@ -27,6 +27,7 @@ target_link_libraries(
     otterbrix::test_generaty
 
     absl::int128
+    absl::crc32c
     actor-zeta::actor-zeta
     Boost::boost
     Catch2::Catch2WithMain

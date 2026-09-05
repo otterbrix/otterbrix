@@ -352,6 +352,11 @@ namespace services::index {
     template<typename ApplyFn>
     core::error_t
     bitcask_index_agent_t::publish_buckets(pending_txn_map_t& buckets, uint64_t txn_id, ApplyFn&& apply) {
+        // The bytes came out of this actor's own encode_key(); a refusal is encoder/decoder
+        // drift, not a flipped bit. It is still refused rather than published: `apply` would
+        // hand the store an NA key, which hashes like any other value and would answer a
+        // later probe for a key nobody ever inserted.
+        bool decode_ok = true;
         const auto publish_one = [&](uint64_t bucket_id) {
             auto it = buckets.find(bucket_id);
             if (it == buckets.end()) {
@@ -359,13 +364,23 @@ namespace services::index {
             }
             for (const auto& [encoded, row_id] : it->second) {
                 size_t pos = 0;
-                apply(codec::read_logical_value(resource(), encoded, pos), static_cast<size_t>(row_id));
+                auto key = codec::read_logical_value(resource(), encoded, pos, &decode_ok);
+                if (!decode_ok) {
+                    return;
+                }
+                apply(key, static_cast<size_t>(row_id));
             }
             buckets.erase(it);
         };
         publish_one(txn_id);
-        if (txn_id != 0) {
+        if (txn_id != 0 && decode_ok) {
             publish_one(0);
+        }
+        if (!decode_ok) {
+            return core::error_t{
+                core::error_code_t::data_corruption,
+                std::pmr::string{"bitcask_index_agent_t: a staged key could not be decoded for publication",
+                                 resource()}};
         }
         // The rows are only in the index once this succeeds. Reporting no_error on a
         // failed flush would leave the statement believing the index matches the table
@@ -390,6 +405,10 @@ namespace services::index {
             // The journal takes the whole statement at once, so the bucket is materialized
             // into the store's own pair vector rather than fed entry by entry.
             std::vector<std::pair<value_t, size_t>> journal;
+            // A key that would not decode must not reach the DURABLE txn log: the frame it
+            // lands in is replayed by every later open, so one NA key would be re-inserted
+            // into the index on every restart from then on.
+            bool decode_ok = true;
             const auto take = [&](uint64_t bucket_id) {
                 auto it = pending_inserts_.find(bucket_id);
                 if (it == pending_inserts_.end()) {
@@ -398,13 +417,24 @@ namespace services::index {
                 journal.reserve(journal.size() + it->second.size());
                 for (const auto& [encoded, row_id] : it->second) {
                     size_t pos = 0;
-                    journal.emplace_back(codec::read_logical_value(resource(), encoded, pos),
-                                         static_cast<size_t>(row_id));
+                    auto key = codec::read_logical_value(resource(), encoded, pos, &decode_ok);
+                    if (!decode_ok) {
+                        return;
+                    }
+                    journal.emplace_back(std::move(key), static_cast<size_t>(row_id));
                 }
                 pending_inserts_.erase(it);
             };
             take(txn_id);
-            take(0);
+            if (decode_ok) {
+                take(0);
+            }
+            if (!decode_ok) {
+                co_return core::error_t{
+                    core::error_code_t::data_corruption,
+                    std::pmr::string{"bitcask_index_agent_t::commit_inserts: a staged key could not be decoded",
+                                     resource()}};
+            }
             if (journal.empty()) {
                 co_return core::error_t::no_error();
             }
@@ -445,6 +475,10 @@ namespace services::index {
         }
         if (txn_id != 0) {
             std::vector<std::pair<value_t, size_t>> journal;
+            // Symmetric with commit_inserts, and the cost of getting it wrong is larger here:
+            // a delete frame naming an NA key removes nothing, so the row stays in the index
+            // after every replay while the statement was told the delete landed.
+            bool decode_ok = true;
             const auto take = [&](uint64_t bucket_id) {
                 auto it = pending_deletes_.find(bucket_id);
                 if (it == pending_deletes_.end()) {
@@ -453,13 +487,24 @@ namespace services::index {
                 journal.reserve(journal.size() + it->second.size());
                 for (const auto& [encoded, row_id] : it->second) {
                     size_t pos = 0;
-                    journal.emplace_back(codec::read_logical_value(resource(), encoded, pos),
-                                         static_cast<size_t>(row_id));
+                    auto key = codec::read_logical_value(resource(), encoded, pos, &decode_ok);
+                    if (!decode_ok) {
+                        return;
+                    }
+                    journal.emplace_back(std::move(key), static_cast<size_t>(row_id));
                 }
                 pending_deletes_.erase(it);
             };
             take(txn_id);
-            take(0);
+            if (decode_ok) {
+                take(0);
+            }
+            if (!decode_ok) {
+                co_return core::error_t{
+                    core::error_code_t::data_corruption,
+                    std::pmr::string{"bitcask_index_agent_t::commit_deletes: a staged key could not be decoded",
+                                     resource()}};
+            }
             if (journal.empty()) {
                 co_return core::error_t::no_error();
             }

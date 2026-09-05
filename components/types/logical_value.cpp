@@ -85,17 +85,25 @@ namespace components::types {
             case logical_type::STRING_LITERAL:
                 data_ = reinterpret_cast<uint64_t>(heap_new<std::string>());
                 break;
+            // UNION AND VARIANT ARE VECTOR-BACKED LIKE THE REST, and this arm used to be an
+            // `assert(false)` with a bare `break` behind it -- the exact shape "Debug dies,
+            // Release walks on": under NDEBUG the object came out with type UNION and
+            // data_ == 0, which children() then dereferenced (it guards is_null(), and a
+            // UNION is not NA).
+            //
+            // The assert was also FALSE ABOUT THIS FILE. create_union below builds its member
+            // slots with exactly this constructor (`union_values->emplace_back(r, types[i])`),
+            // so a union whose member type is itself a UNION or VARIANT reached the assert
+            // through the factory the assert told you to use.
             case logical_type::TIME_TZ:
             case logical_type::INTERVAL:
             case logical_type::LIST:
             case logical_type::ARRAY:
             case logical_type::MAP:
             case logical_type::STRUCT:
-                data_ = reinterpret_cast<uint64_t>(heap_new<std::vector<logical_value_t>>());
-                break;
             case logical_type::UNION:
             case logical_type::VARIANT:
-                assert(false && "UNION/VARIANT must be created via factory methods");
+                data_ = reinterpret_cast<uint64_t>(heap_new<std::vector<logical_value_t>>());
                 break;
             default:
                 break;
@@ -368,6 +376,19 @@ namespace components::types {
         if (type_ == type) {
             return logical_value_t(*this);
         }
+        // ONE SHAPE FOR "THIS CAST HAS NO READING". Two of the DECIMAL switch arms below used
+        // to end in a bare assert(false) with NO RETURN AT ALL: SIGABRT in a Debug build, and
+        // under NDEBUG the assert is compiled out and control walks off the end of the switch,
+        // out of the else-if chain and into this function's trailing `return NA` — so the same
+        // call answered a silent NULL in the build users ship. (The STRUCT shape check did
+        // return NA, so it only had the Debug half of the problem.) A caller can act on
+        // neither answer, and the two builds disagreeing is worse than either.
+        auto conversion_failure = [this, &type]() {
+            std::string message = "cannot cast logical_type " + std::to_string(static_cast<int>(type_.type())) +
+                                  " to logical_type " + std::to_string(static_cast<int>(type.type()));
+            return core::error_t{core::error_code_t::conversion_failure,
+                                 std::pmr::string{message.c_str(), resource_}};
+        };
         // A DECIMAL source stores value * 10^scale, so the raw physical cast below would hand an
         // integer/float target the SCALED payload (NUMERIC(10,2) 3.00 -> 300, and 100000.00 wraps
         // int16 to -27008). Route it to the descaling DECIMAL -> numeric branch instead. BOOLEAN is
@@ -387,10 +408,7 @@ namespace components::types {
             // Surface it as a conversion_failure error instead.
             if (!is_scalar_castable_physical_type(type.to_physical_type()) ||
                 !is_scalar_castable_physical_type(type_.to_physical_type())) {
-                std::string message = "cannot cast logical_type " + std::to_string(static_cast<int>(type_.type())) +
-                                      " to logical_type " + std::to_string(static_cast<int>(type.type()));
-                return core::error_t{core::error_code_t::conversion_failure,
-                                     std::pmr::string{message.c_str(), resource_}};
+                return conversion_failure();
             }
 
             return double_simple_physical_type_switch<cast_callback_t>(type.to_physical_type(),
@@ -405,6 +423,13 @@ namespace components::types {
                     to_decimal<int128_t>(value<T>(), decimal_extension->width(), decimal_extension->scale()));
             };
             switch (type_.type()) {
+                // TINYINT and UTINYINT are is_numeric(), so they arrive here like every other
+                // integer width — and the arm list ran USMALLINT..DOUBLE without them, which
+                // made CAST(<tinyint> AS NUMERIC(p,s)) the crash, not an unsupported cast.
+                case logical_type::TINYINT:
+                    return create_decimal.operator()<int8_t>();
+                case logical_type::UTINYINT:
+                    return create_decimal.operator()<uint8_t>();
                 case logical_type::USMALLINT:
                     return create_decimal.operator()<uint16_t>();
                 case logical_type::UINTEGER:
@@ -426,7 +451,10 @@ namespace components::types {
                 case logical_type::DOUBLE:
                     return create_decimal.operator()<double>();
                 default:
-                    assert(false && "incorrect type for conversion to decimal");
+                    // BOOLEAN is the one type left: is_numeric() calls it a number, but there
+                    // is no scaled payload a boolean means (PostgreSQL refuses boolean::numeric
+                    // too). REFUSE, identically in both builds.
+                    return conversion_failure();
             }
         } else if (type_.type() == logical_type::DECIMAL && is_numeric(type.type())) {
             // The scale lives on the SOURCE decimal type; `type` is the plain numeric target and
@@ -456,7 +484,10 @@ namespace components::types {
                     case physical_type::INT128:
                         return create_numeric_inner.operator()<int128_t, To>();
                     default:
-                        assert(false && "incorrect type for conversion to decimal");
+                        // INVARIANT, not input: a DECIMAL type's storage is one of these four
+                        // by construction (create_decimal vets the width). Loud in Debug, and
+                        // a NULL rather than a fall-through anywhere else.
+                        assert(false && "decimal source has no integer storage width");
                         return logical_value_t{resource_, logical_type::NA};
                 }
             };
@@ -486,17 +517,31 @@ namespace components::types {
                 case logical_type::DOUBLE:
                     return create_numeric.operator()<double>();
                 default:
-                    assert(false && "incorrect type for conversion to decimal");
+                    // Every is_numeric() target except BOOLEAN is listed above, and a DECIMAL
+                    // source bound for BOOLEAN never reaches this branch (decimal_source_descale
+                    // routes it to the raw cast). So this arm is unreachable today — but it is a
+                    // cast, not a load-bearing invariant, and refusing costs nothing.
+                    return conversion_failure();
             }
         } else if (type_.type() == logical_type::STRUCT && type.type() == logical_type::STRUCT) {
             if (type_.child_types().size() != type.child_types().size()) {
-                assert(false && "incorrect type");
-                return logical_value_t{resource_, complex_logical_type{logical_type::NA}};
+                // A SHAPE THE CALLER GOT WRONG IS A FAILED CAST, not a broken invariant of this
+                // class: nothing stops a query asking for row(1,2)::<one-field struct>. It used
+                // to assert (SIGABRT in Debug) and answer NULL under NDEBUG.
+                return conversion_failure();
             }
 
             std::vector<logical_value_t> fields;
             fields.reserve(children().size());
             for (size_t i = 0; i < children().size(); i++) {
+                // A NULL field (logical_type NA) stays a NULL slot, exactly as the ARRAY and
+                // LIST arms below already do it. Without this guard one NULL field made the
+                // scalar cast's NA guard refuse the WHOLE row value — and a NULL is not a
+                // failed conversion, it is a value the target type can hold.
+                if (children()[i].type().type() == logical_type::NA) {
+                    fields.emplace_back(children()[i]);
+                    continue;
+                }
                 auto casted = children()[i].cast_as(type.child_types()[i], session_tz);
                 if (casted.has_error()) {
                     return casted.error();
@@ -648,7 +693,12 @@ namespace components::types {
                     break;
             }
         }
-        // assert(false && "cast to value is not implemented");
+        // NO ARM MATCHED, AND THAT IS DELIBERATELY A NULL RATHER THAN A REFUSAL. The branches
+        // above fall through here on purpose — ENUM from a source that is neither string nor
+        // numeric, a duration pair with no conversion (DATE -> TIME), a nested-to-scalar pair —
+        // and the comparison paths that call cast_as read NA as "these do not compare", not as
+        // an error. What used to stand here was a commented-out assert, which said nothing
+        // about which of the two this is.
         return logical_value_t{resource_, complex_logical_type{logical_type::NA}};
     }
 
@@ -707,7 +757,18 @@ namespace components::types {
                 return le.type_ == re.type_ && le == re;
             });
         }
+        // LOUD, THEN SAFE. The switch below dispatches on the LEFT operand's type and then
+        // reads the RIGHT operand's payload as if it had that same type -- so under NDEBUG,
+        // where this assert is not compiled, a STRING_LITERAL compared against an INTEGER ran
+        // `*rhs.str_ptr()`, i.e. reinterpreted the integer as a std::string* and dereferenced
+        // it. The assert stays because a mismatch IS a caller bug; the guard behind it is what
+        // keeps the shipped build from following a wild pointer. Two values of different types
+        // are structurally unequal, which is the same answer the ARRAY/LIST arm above already
+        // gives for a per-element type mismatch.
         assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
+        if (!(type_ == rhs.type_)) {
+            return false;
+        }
         switch (type_.type()) {
             case logical_type::BOOLEAN:
             case logical_type::TINYINT:
@@ -788,7 +849,20 @@ namespace components::types {
             const auto& rv = *rhs.vec_ptr();
             return std::lexicographical_compare(lv.begin(), lv.end(), rv.begin(), rv.end());
         }
+        // LOUD, THEN SAFE -- and here the release-build cost was worse than one wild read.
+        // The switch dispatches on the LEFT type and reads the RIGHT payload through it, so a
+        // mismatch could dereference a foreign pointer; and an unhandled left type falls to
+        // `default: return false`, which makes cross-type values MUTUALLY equivalent while
+        // same-type values stay ordered. That is a non-transitive equivalence, i.e. undefined
+        // behaviour for every std::sort, std::map and tree keyed on this comparator.
+        //
+        // Ordering by the logical type tag when the types differ is total, deterministic and
+        // consistent in both directions, so strict weak ordering survives a mismatch instead
+        // of the container doing.
         assert(type_ == rhs.type_ && "logical_value_t has to be casted to the same type before comparison");
+        if (!(type_ == rhs.type_)) {
+            return type_.type() < rhs.type_.type();
+        }
         switch (type_.type()) {
             case logical_type::BOOLEAN:
                 return static_cast<bool>(data_) < static_cast<bool>(rhs.data_);
@@ -1116,9 +1190,38 @@ namespace components::types {
     constexpr auto place_holder_time_zone = core::date::timezone_offset_t{};
 
     namespace {
+        // THE ONE REFUSAL SHAPE FOR THE SIXTEEN ARITHMETIC AND BIT ENTRY POINTS.
+        //
+        // What stood here instead was `throw std::runtime_error(...)` -- seventeen of them,
+        // in a file compiled into a build that turns exceptions off, on the operators every
+        // constant-folding SQL statement runs through. It was also unreachable as a diagnosis:
+        // `2.0 ^ 3.0`, `5.5 % 2`, `bit_and` on a DOUBLE and every HUGEINT arm (commented out,
+        // not implemented) all landed on one of them, so "unable to process given types" was
+        // the engine's whole answer to an ordinary typing question.
+        //
+        // The message NAMES BOTH OPERAND TYPES now, because "unable to process given types"
+        // without saying which types was the part that made these hard to read in a log.
+        core::error_t unsupported_operands(std::string_view what,
+                                           const logical_value_t& value1,
+                                           const logical_value_t& value2) {
+            auto* r = value1.resource() ? value1.resource() : value2.resource();
+            std::pmr::string message{r};
+            message.append(what);
+            message.append(": unsupported operand types (");
+            message.append(std::to_string(static_cast<int>(value1.type().type())).c_str());
+            message.append(", ");
+            message.append(std::to_string(static_cast<int>(value2.type().type())).c_str());
+            message.append(")");
+            return core::error_t{core::error_code_t::arithmetics_failure, message};
+        }
+
         // Mixed-type numeric operands of sum/subtract/mult/divide/modulus are promoted
         // to one common type before the per-type dispatch. Both casts are
-        // numeric-to-numeric (see promote_type) and cannot fail, hence the assert.
+        // numeric-to-numeric (see promote_type), so a failure is a promote_type/cast_as
+        // drift rather than user input -- but ASSERT-THEN-value() IS NOT A GUARD:
+        // result_wrapper_t::value() is itself only assert-protected, so under NDEBUG a
+        // failed promotion returned a MOVED-FROM value and the arithmetic below went on
+        // with it. The refusal travels now; the five callers all have a channel for it.
         struct promoted_operands_t {
             logical_value_t lhs;
             logical_value_t rhs;
@@ -1129,23 +1232,35 @@ namespace components::types {
                    is_numeric(value1.type().type()) && is_numeric(value2.type().type());
         }
 
-        promoted_operands_t promote_numeric_operands(const logical_value_t& value1, const logical_value_t& value2) {
+        core::result_wrapper_t<promoted_operands_t> promote_numeric_operands(const logical_value_t& value1,
+                                                                             const logical_value_t& value2) {
             auto promoted = promote_type(value1.type().type(), value2.type().type());
             auto lhs = value1.cast_as(complex_logical_type(promoted), place_holder_time_zone);
             auto rhs = value2.cast_as(complex_logical_type(promoted), place_holder_time_zone);
-            assert(!lhs.has_error() && !rhs.has_error() && "numeric promotion cast can not fail");
-            return {std::move(lhs.value()), std::move(rhs.value())};
+            if (lhs.has_error()) {
+                return lhs.error();
+            }
+            if (rhs.has_error()) {
+                return rhs.error();
+            }
+            return promoted_operands_t{std::move(lhs.value()), std::move(rhs.value())};
         }
     } // namespace
 
-    logical_value_t logical_value_t::sum(const logical_value_t& value1, const logical_value_t& value2) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::sum(const logical_value_t& value1,
+                                                                const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         if (needs_numeric_promotion(value1, value2)) {
-            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
+            auto promoted = promote_numeric_operands(value1, value2);
+            if (promoted.has_error()) {
+                return promoted.error();
+            }
+            const auto& lhs = promoted.value().lhs;
+            const auto& rhs = promoted.value().rhs;
             return sum(lhs, rhs);
         }
 
@@ -1251,17 +1366,23 @@ namespace components::types {
         if (t1 == logical_type::INTERVAL && t2 == logical_type::TIME_TZ) {
             return logical_value_t::sum(value2, value1);
         }
-        throw std::runtime_error("logical_value_t::sum unable to process given types");
+        return unsupported_operands("logical_value_t::sum", value1, value2);
     }
 
-    logical_value_t logical_value_t::subtract(const logical_value_t& value1, const logical_value_t& value2) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::subtract(const logical_value_t& value1,
+                                                                const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         if (needs_numeric_promotion(value1, value2)) {
-            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
+            auto promoted = promote_numeric_operands(value1, value2);
+            if (promoted.has_error()) {
+                return promoted.error();
+            }
+            const auto& lhs = promoted.value().lhs;
+            const auto& rhs = promoted.value().rhs;
             return subtract(lhs, rhs);
         }
 
@@ -1378,17 +1499,23 @@ namespace components::types {
             const auto utc2 = tz2.time - std::chrono::duration_cast<microseconds>(tz2.zone);
             return logical_value_t{r, interval_t{utc1 - utc2, days{0}, months{0}}};
         }
-        throw std::runtime_error("logical_value_t::subtract unable to process given types");
+        return unsupported_operands("logical_value_t::subtract", value1, value2);
     }
 
-    logical_value_t logical_value_t::mult(const logical_value_t& value1, const logical_value_t& value2) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::mult(const logical_value_t& value1,
+                                                                const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         if (needs_numeric_promotion(value1, value2)) {
-            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
+            auto promoted = promote_numeric_operands(value1, value2);
+            if (promoted.has_error()) {
+                return promoted.error();
+            }
+            const auto& lhs = promoted.value().lhs;
+            const auto& rhs = promoted.value().rhs;
             return mult(lhs, rhs);
         }
 
@@ -1467,10 +1594,11 @@ namespace components::types {
         if (is_numeric(t1) && t2 == logical_type::INTERVAL) {
             return logical_value_t::mult(value2, value1);
         }
-        throw std::runtime_error("logical_value_t::mult unable to process given types");
+        return unsupported_operands("logical_value_t::mult", value1, value2);
     }
 
-    logical_value_t logical_value_t::divide(const logical_value_t& value1, const logical_value_t& value2) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::divide(const logical_value_t& value1,
+                                                                const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1487,7 +1615,12 @@ namespace components::types {
         }
 
         if (needs_numeric_promotion(value1, value2)) {
-            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
+            auto promoted = promote_numeric_operands(value1, value2);
+            if (promoted.has_error()) {
+                return promoted.error();
+            }
+            const auto& lhs = promoted.value().lhs;
+            const auto& rhs = promoted.value().rhs;
             return divide(lhs, rhs);
         }
 
@@ -1562,17 +1695,23 @@ namespace components::types {
                            days{static_cast<int32_t>(std::llround(static_cast<double>(iv.day.count()) / f))},
                            months{static_cast<int32_t>(std::llround(static_cast<double>(iv.month.count()) / f))}}};
         }
-        throw std::runtime_error("logical_value_t::divide unable to process given types");
+        return unsupported_operands("logical_value_t::divide", value1, value2);
     }
 
-    logical_value_t logical_value_t::modulus(const logical_value_t& value1, const logical_value_t& value2) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::modulus(const logical_value_t& value1,
+                                                                const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
         }
 
         if (needs_numeric_promotion(value1, value2)) {
-            auto [lhs, rhs] = promote_numeric_operands(value1, value2);
+            auto promoted = promote_numeric_operands(value1, value2);
+            if (promoted.has_error()) {
+                return promoted.error();
+            }
+            const auto& lhs = promoted.value().lhs;
+            const auto& rhs = promoted.value().rhs;
             return modulus(lhs, rhs);
         }
 
@@ -1601,11 +1740,12 @@ namespace components::types {
             case logical_type::UHUGEINT:
                 return op<std::modulus<>>(value1, value2, &logical_value_t::value<uint128_t>);
             default:
-                throw std::runtime_error("logical_value_t::divide unable to process given types");
+                return unsupported_operands("logical_value_t::modulus", value1, value2);
         }
     }
 
-    logical_value_t logical_value_t::exponent(const logical_value_t& value1, const logical_value_t& value2) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::exponent(const logical_value_t& value1,
+                                                                const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1636,11 +1776,11 @@ namespace components::types {
             // case logical_type::UHUGEINT:
             // return op<pow<>>(value1, value2, &logical_value_t::value<uint128_t>);
             default:
-                throw std::runtime_error("logical_value_t::exponent unable to process given types");
+                return unsupported_operands("logical_value_t::exponent", value1, value2);
         }
     }
 
-    logical_value_t logical_value_t::sqr_root(const logical_value_t& value) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::sqr_root(const logical_value_t& value) {
         if (value.is_null()) {
             return value;
         }
@@ -1669,11 +1809,11 @@ namespace components::types {
             // case logical_type::UHUGEINT:
             // return op<sqrt<>>(value, &logical_value_t::value<uint128_t>);
             default:
-                throw std::runtime_error("logical_value_t::sqr_root unable to process given types");
+                return unsupported_operands("logical_value_t::sqr_root", value, value);
         }
     }
 
-    logical_value_t logical_value_t::cube_root(const logical_value_t& value) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::cube_root(const logical_value_t& value) {
         if (value.is_null()) {
             return value;
         }
@@ -1702,11 +1842,11 @@ namespace components::types {
             // case logical_type::UHUGEINT:
             // return op<cbrt<>>(value, &logical_value_t::value<uint128_t>);
             default:
-                throw std::runtime_error("logical_value_t::cube_root unable to process given types");
+                return unsupported_operands("logical_value_t::cube_root", value, value);
         }
     }
 
-    logical_value_t logical_value_t::factorial(const logical_value_t& value) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::factorial(const logical_value_t& value) {
         if (value.is_null()) {
             return value;
         }
@@ -1735,11 +1875,11 @@ namespace components::types {
             // case logical_type::UHUGEINT:
             // return op<fact<>>(value, &logical_value_t::value<uint128_t>);
             default:
-                throw std::runtime_error("logical_value_t::factorial unable to process given types");
+                return unsupported_operands("logical_value_t::factorial", value, value);
         }
     }
 
-    logical_value_t logical_value_t::absolute(const logical_value_t& value) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::absolute(const logical_value_t& value) {
         if (value.is_null()) {
             return value;
         }
@@ -1768,10 +1908,11 @@ namespace components::types {
             case logical_type::DOUBLE:
                 return op<abs<>>(value, &logical_value_t::value<double>);
             default:
-                throw std::runtime_error("logical_value_t::absolute unable to process given types");
+                return unsupported_operands("logical_value_t::absolute", value, value);
         }
     }
-    logical_value_t logical_value_t::bit_and(const logical_value_t& value1, const logical_value_t& value2) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::bit_and(const logical_value_t& value1,
+                                                                const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1802,11 +1943,12 @@ namespace components::types {
             case logical_type::UHUGEINT:
                 return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint128_t>);
             default:
-                throw std::runtime_error("logical_value_t::bit_and unable to process given types");
+                return unsupported_operands("logical_value_t::bit_and", value1, value2);
         }
     }
 
-    logical_value_t logical_value_t::bit_or(const logical_value_t& value1, const logical_value_t& value2) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::bit_or(const logical_value_t& value1,
+                                                                const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1837,11 +1979,12 @@ namespace components::types {
             case logical_type::UHUGEINT:
                 return op<std::bit_or<>>(value1, value2, &logical_value_t::value<uint128_t>);
             default:
-                throw std::runtime_error("logical_value_t::bit_or unable to process given types");
+                return unsupported_operands("logical_value_t::bit_or", value1, value2);
         }
     }
 
-    logical_value_t logical_value_t::bit_xor(const logical_value_t& value1, const logical_value_t& value2) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::bit_xor(const logical_value_t& value1,
+                                                                const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1872,11 +2015,11 @@ namespace components::types {
             case logical_type::UHUGEINT:
                 return op<std::bit_xor<>>(value1, value2, &logical_value_t::value<uint128_t>);
             default:
-                throw std::runtime_error("logical_value_t::bit_xor unable to process given types");
+                return unsupported_operands("logical_value_t::bit_xor", value1, value2);
         }
     }
 
-    logical_value_t logical_value_t::bit_not(const logical_value_t& value) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::bit_not(const logical_value_t& value) {
         if (value.is_null()) {
             return value;
         }
@@ -1905,11 +2048,12 @@ namespace components::types {
             case logical_type::UHUGEINT:
                 return op<std::bit_not<>>(value, &logical_value_t::value<uint128_t>);
             default:
-                throw std::runtime_error("logical_value_t::bit_not unable to process given types");
+                return unsupported_operands("logical_value_t::bit_not", value, value);
         }
     }
 
-    logical_value_t logical_value_t::bit_shift_l(const logical_value_t& value1, const logical_value_t& value2) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::bit_shift_l(const logical_value_t& value1,
+                                                                const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1940,11 +2084,12 @@ namespace components::types {
             // case logical_type::UHUGEINT:
             // return op<shift_left<>>(value1, value2, &logical_value_t::value<uint128_t>);
             default:
-                throw std::runtime_error("logical_value_t::bit_shift_l unable to process given types");
+                return unsupported_operands("logical_value_t::bit_shift_l", value1, value2);
         }
     }
 
-    logical_value_t logical_value_t::bit_shift_r(const logical_value_t& value1, const logical_value_t& value2) {
+    core::result_wrapper_t<logical_value_t> logical_value_t::bit_shift_r(const logical_value_t& value1,
+                                                                const logical_value_t& value2) {
         if (value1.is_null() || value2.is_null()) {
             auto* r = value1.resource() ? value1.resource() : value2.resource();
             return logical_value_t{r, complex_logical_type{logical_type::NA}};
@@ -1975,7 +2120,7 @@ namespace components::types {
             // case logical_type::UHUGEINT:
             // return op<shift_right<>>(value1, value2, &logical_value_t::value<uint128_t>);
             default:
-                throw std::runtime_error("logical_value_t::bit_shift_r unable to process given types");
+                return unsupported_operands("logical_value_t::bit_shift_r", value1, value2);
         }
     }
 

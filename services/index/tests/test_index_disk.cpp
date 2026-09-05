@@ -7,6 +7,9 @@
 #include <memory_resource>
 #include <services/index/bitcask_index_disk.hpp>
 #include <services/index/btree_index_disk.hpp>
+#include <services/index/btree_record_codec.hpp>
+#include <components/index/logical_value_binary_codec.hpp>
+#include <core/b_plus_tree/b_plus_tree.hpp>
 #include <vector>
 
 using components::types::logical_value_t;
@@ -493,7 +496,7 @@ TEST_CASE("services::index::index_disk::write_path_never_uses_the_default_resour
     REQUIRE(index.remove(logical_value_t(&resource, int64_t(4)), size_t(400)).type == core::error_code_t::none);
 
     btree_index_disk_t::result rows(&resource);
-    index.find(logical_value_t(&resource, int64_t(4)), rows);
+    REQUIRE(index.find(logical_value_t(&resource, int64_t(4)), rows).type == core::error_code_t::none);
     REQUIRE(rows.size() == 1);
     REQUIRE(rows.front() == 4);
     REQUIRE(index.find(logical_value_t(&resource, int64_t(4))).size() == 1);
@@ -669,7 +672,7 @@ TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
                              compare_type::gt,
                              compare_type::gte}) {
             btree_index_disk_t::result disk_rows(&resource);
-            on_disk.scan_range(compare, v, disk_rows);
+            REQUIRE(on_disk.scan_range(compare, v, disk_rows).type == core::error_code_t::none);
 
             INFO("probe=" << probe << " compare=" << static_cast<int>(compare));
             REQUIRE(sorted(disk_rows) == expected(compare, probe));
@@ -689,7 +692,8 @@ TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
     // oracle above cannot agree with itself on a wrong answer.
     const auto probe = [&](compare_type compare, int64_t k) {
         btree_index_disk_t::result res(&resource);
-        on_disk.scan_range(compare, components::types::logical_value_t(&resource, k), res);
+        REQUIRE(on_disk.scan_range(compare, components::types::logical_value_t(&resource, k), res).type ==
+                core::error_code_t::none);
         return sorted(res);
     };
     REQUIRE(probe(compare_type::lt, 10) == std::vector<int64_t>{2, 3, 5, 6, 8, 10});
@@ -703,4 +707,71 @@ TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
     REQUIRE(probe(compare_type::lte, 4) == probe(compare_type::lt, 4));
     REQUIRE(probe(compare_type::gte, 4) == probe(compare_type::gt, 4));
     REQUIRE(probe(compare_type::eq, 4).empty());
+}
+
+// A LEAF RECORD WHOSE KEY WILL NOT DECODE MUST FAIL THE READ, NOT ANSWER ROW ID 0.
+//
+// A b+tree leaf record is [key][uint64 row id], and services::index::id_of walks it by
+// skipping the key and reading the eight bytes behind it. When the key codec refuses, it
+// leaves `pos` WHERE THE BAD BYTE WAS -- by contract, so a partly-decoded record cannot walk
+// itself further off the end -- and the read that follows then took the KEY'S OWN PAYLOAD for
+// the row id. Both halves reached the caller as a plain number, with no way to tell them from
+// a real answer.
+//
+// BEFORE THIS CHANGE this read answered {5, 0} and reported nothing. Row id 0 is a
+// LEGITIMATE row id: nothing downstream could distinguish the record this store could not
+// read from the first row of the table. And the b+tree's own checksum is compared INSIDE an
+// assert (core/b_plus_tree/segment_tree.cpp:927, :1049), so under NDEBUG this codec is the
+// only thing between a flipped bit and that answer.
+//
+// The corrupt record below is built so the misread is visible: tag byte 200 maps to no
+// logical type at all, so skip_logical_value refuses with `pos` at 1, and the eight ZERO
+// bytes that follow are what the old id_getter returned -- while the record's real row id,
+// 4242, sits behind them and was never read.
+TEST_CASE("services::index::index_disk::a_leaf_record_whose_key_will_not_decode_fails_the_read") {
+    using components::expressions::compare_type;
+
+    auto resource = core::pmr::otterbrix_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/corrupt_key"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        core::filesystem::local_file_system_t fs;
+        core::b_plus_tree::btree_t tree(&resource, fs, path, services::index::item_key_getter);
+        tree.load();
+
+        std::pmr::string good(&resource);
+        components::index::codec::append_logical_value(good, logical_value_t(&resource, int64_t(7)));
+        components::index::codec::append_le<uint64_t>(good, uint64_t{5});
+        REQUIRE(tree.append(reinterpret_cast<core::b_plus_tree::data_ptr_t>(good.data()),
+                            static_cast<uint32_t>(good.size())));
+
+        std::pmr::string corrupt(&resource);
+        components::index::codec::append_le<uint8_t>(corrupt, uint8_t{200}); // no logical type uses 200
+        components::index::codec::append_le<uint64_t>(corrupt, uint64_t{0}); // what the old read returned
+        components::index::codec::append_le<uint64_t>(corrupt, uint64_t{4242}); // the real row id, unreachable
+        REQUIRE(tree.append(reinterpret_cast<core::b_plus_tree::data_ptr_t>(corrupt.data()),
+                            static_cast<uint32_t>(corrupt.size())));
+        REQUIRE(tree.flush());
+    }
+
+    auto index = btree_index_disk_t(path, &resource);
+
+    // `ne` is the one predicate that walks the WHOLE tree, so it reaches the corrupt record
+    // regardless of where item_key_getter's refusal placed it.
+    btree_index_disk_t::result rows(&resource);
+    const auto refused = index.scan_range(compare_type::ne, logical_value_t(&resource, int64_t(999)), rows);
+    CHECK(refused.type == core::error_code_t::data_corruption);
+    // THE BEHAVIOURAL HALF, and the one that fails against the old code: row id 0 was in this
+    // answer, and no insert ever put it there.
+    CHECK(std::find(rows.begin(), rows.end(), size_t(0)) == rows.end());
+
+    // The intact record is still readable on its own -- the refusal is about the record that
+    // could not be decoded, not about the index being written off.
+    btree_index_disk_t::result good_rows(&resource);
+    CHECK(index.find(logical_value_t(&resource, int64_t(7)), good_rows).type == core::error_code_t::none);
+    REQUIRE(good_rows.size() == 1);
+    CHECK(good_rows.front() == 5);
 }

@@ -108,7 +108,12 @@ namespace services::index {
         // through the by-value find() virtual, whose default-constructed vector put the
         // process default resource on the write path (C7).
         result values(resource());
-        find(key, values);
+        // THE DEDUP PROBE IS A READ, and a read that could not decode a record cannot answer
+        // "this pair is not there yet". Writing over that would append a duplicate entry into
+        // a tree that already holds one, so the refusal fails the write.
+        if (auto probe_error = find(key, values); probe_error.contains_error()) {
+            return probe_error;
+        }
         if (std::find(values.begin(), values.end(), value) == values.end()) {
             std::pmr::string out(resource());
             components::index::codec::append_logical_value(out, key);
@@ -134,7 +139,11 @@ namespace services::index {
             return core::error_t::no_error();
         }
         result values(resource());
-        find(key, values);
+        // Same as insert(): an unfinished probe would read as "this key holds nothing" and
+        // skip a removal that is owed.
+        if (auto probe_error = find(key, values); probe_error.contains_error()) {
+            return probe_error;
+        }
         if (!values.empty()) {
             std::pmr::string out(resource());
             components::index::codec::append_logical_value(out, key);
@@ -201,33 +210,65 @@ namespace services::index {
     }
 
     namespace {
-        // item bytes -> the row id stored beside the key. Stateless, so the same one
-        // serves every scan below.
-        size_t row_id_of(void* data, size_t size) {
-            return id_getter(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)})
-                .value<components::types::physical_type::UINT64>();
+        // WHY THIS IS A STATE OBJECT AND NOT A FUNCTION ANY MORE. btree_t hands a scan its
+        // Deserializer BY VALUE and its Predicate right behind it, and calls the two
+        // back-to-back on the SAME record (core/b_plus_tree/b_plus_tree.hpp, scan_ascending /
+        // full_scan). Neither signature has room for "I could not read this one" -- the
+        // deserializer must produce a size_t -- so the verdict is carried out of the callback
+        // in this object, which the scan below references rather than copies.
+        //
+        // WHAT IT BUYS, precisely: a record whose key the codec refuses is DROPPED from the
+        // answer instead of contributing read_le_raw's T{}, i.e. ROW ID 0, WHICH IS A
+        // LEGITIMATE ROW ID. `all_ok` then fails the whole read, because a partial answer from
+        // an index is a wrong answer, not a fast one.
+        struct record_row_reader_t {
+            bool last_ok{true};
+            bool all_ok{true};
+
+            size_t operator()(void* data, size_t size) {
+                bool ok = true;
+                const auto id =
+                    id_of(btree_t::item_data{static_cast<data_ptr_t>(data), static_cast<uint32_t>(size)}, ok);
+                last_ok = ok;
+                all_ok = all_ok && ok;
+                return ok ? id.value<components::types::physical_type::UINT64>() : 0;
+            }
+        };
+
+        core::error_t unreadable_record(std::pmr::memory_resource* resource) {
+            return core::error_t{
+                core::error_code_t::data_corruption,
+                std::pmr::string{"btree index: a stored record's key could not be decoded", resource}};
         }
     } // namespace
 
-    void btree_index_disk_t::find(const value_t& value, result& res) const {
+    core::error_t btree_index_disk_t::find(const value_t& value, result& res) const {
         if (key_is_absent(value)) {
-            return;
+            return core::error_t::no_error();
         }
         auto index = convert(value);
         size_t count = db_->item_count(index);
         res.reserve(res.size() + count);
         for (size_t i = 0; i < count; i++) {
-            res.emplace_back(id_getter(db_->get_item(index, i)).value<components::types::physical_type::UINT64>());
+            bool ok = true;
+            const auto id = id_of(db_->get_item(index, i), ok);
+            if (!ok) {
+                // STOP HERE, and do not emplace. The alternative is the row id 0 this used to
+                // hand back, which the reader cannot tell from a real row 0.
+                return unreadable_record(resource());
+            }
+            res.emplace_back(id.value<components::types::physical_type::UINT64>());
         }
+        return core::error_t::no_error();
     }
 
-    void btree_index_disk_t::scan_range(components::expressions::compare_type compare,
-                                        const value_t& value,
-                                        result& res) const {
+    core::error_t btree_index_disk_t::scan_range(components::expressions::compare_type compare,
+                                                 const value_t& value,
+                                                 result& res) const {
         using components::expressions::compare_type;
 
         if (key_is_absent(value)) {
-            return;
+            return core::error_t::no_error();
         }
 
         // Both scan_ascending bounds are INCLUSIVE, which is what makes lte and gte
@@ -238,37 +279,45 @@ namespace services::index {
         // Every arm walks ASCENDING. gt used to be a scan_decending, so it was the one
         // predicate whose rows arrived reversed relative to the other five.
         const auto probe = convert(value);
+        // ONE reader for the whole walk, referenced by the deserializer the tree copies.
+        record_row_reader_t reader;
+        const auto read_row = [&reader](void* data, size_t size) { return reader(data, size); };
+        // A record the codec refused never reaches the answer, whatever the predicate says.
+        const auto readable = [&reader](auto keep) {
+            return [&reader, keep](const auto& index, const auto& row) { return reader.last_ok && keep(index, row); };
+        };
         const auto ascending = [&](const auto& lo, const auto& hi, auto keep) {
-            db_->scan_ascending(lo, hi, size_t(-1), &res, row_id_of, keep);
+            db_->scan_ascending(lo, hi, size_t(-1), &res, read_row, readable(keep));
         };
         const auto keep_all = [](const auto&, const auto&) { return true; };
 
         switch (compare) {
             case compare_type::eq:
-                find(value, res);
-                return;
+                return find(value, res);
             case compare_type::lt:
                 ascending(std::numeric_limits<btree_t::index_t>::min(),
                           probe,
                           [&probe](const auto& index, const auto&) { return index < probe; });
-                return;
+                break;
             case compare_type::lte:
                 ascending(std::numeric_limits<btree_t::index_t>::min(), probe, keep_all);
-                return;
+                break;
             case compare_type::gt:
                 ascending(probe,
                           std::numeric_limits<btree_t::index_t>::max(),
                           [&probe](const auto& index, const auto&) { return index > probe; });
-                return;
+                break;
             case compare_type::gte:
                 ascending(probe, std::numeric_limits<btree_t::index_t>::max(), keep_all);
-                return;
+                break;
             case compare_type::ne:
                 // Not a bounded ray: every key except one, so the whole tree is walked.
                 // Expensive and honest. The alternative this replaces was an ordered
                 // facade that had no way to answer `ne` at all, which read as zero rows.
-                db_->full_scan(&res, row_id_of, [&probe](const auto& index, const auto&) { return index != probe; });
-                return;
+                db_->full_scan(&res,
+                               read_row,
+                               readable([&probe](const auto& index, const auto&) { return index != probe; }));
+                break;
             default:
                 // Only the six value comparisons above can reach an index: the planner
                 // routes nothing else here (create_plan_match), and manager_index_t
@@ -278,6 +327,13 @@ namespace services::index {
                 assert(false && "btree_index_disk_t::scan_range: predicate is not a value comparison");
                 std::abort();
         }
+        // ONE exit for the five walking arms: the answer stands only if every record the walk
+        // touched decoded. A subset would read as "these are the rows", which is the wrong
+        // answer this channel exists to prevent.
+        if (!reader.all_ok) {
+            return unreadable_record(resource());
+        }
+        return core::error_t::no_error();
     }
 
     void btree_index_disk_t::drop() {

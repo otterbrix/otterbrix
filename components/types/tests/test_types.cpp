@@ -293,3 +293,195 @@ TEST_CASE("components::types::logical_value::cast_as_null_returns_error") {
     REQUIRE_FALSE(ok.has_error());
     CHECK(ok.value().value<int64_t>() == 7);
 }
+
+// -----------------------------------------------------------------------------
+// cast_as: A SWITCH ARM THAT ONLY ASSERTS ANSWERS DIFFERENTLY IN THE TWO BUILDS.
+//
+// The two DECIMAL branches of cast_as ended their `default:` arm in a bare
+// assert(false && "incorrect type for conversion to decimal") -- no return, no error. In a
+// Debug build that is SIGABRT. Under NDEBUG the assert is compiled out and control walks
+// off the end of the switch, out of the else-if chain and into the function's trailing
+// `return NA`, so the SAME call answers a silent NULL. Neither answer is the one a caller
+// can act on, and the two builds disagreeing is worse than either. These cases pin the
+// VALUE, which is what the NDEBUG build actually produces, rather than the crash.
+TEST_CASE("components::types::logical_value::cast_to_decimal_answers_every_numeric_width") {
+    std::pmr::monotonic_buffer_resource resource;
+    const auto decimal_type = make_decimal(10, 2);
+
+    SECTION("the 8-bit widths are the ones the switch forgot") {
+        // TINYINT and UTINYINT are is_numeric(), so they enter the DECIMAL branch, and the
+        // arm list runs USMALLINT..DOUBLE without them. CAST(<tinyint> AS NUMERIC(10,2)) is
+        // ordinary SQL; it must produce 7.00, scaled, like every other integer width.
+        logical_value_t tiny(&resource, int8_t{7});
+        auto casted = tiny.cast_as(decimal_type, {});
+        REQUIRE_FALSE(casted.has_error());
+        CHECK(casted.value().type().type() == logical_type::DECIMAL);
+        CHECK(casted.value().value<int64_t>() == 700);
+
+        logical_value_t utiny(&resource, uint8_t{7});
+        auto ucasted = utiny.cast_as(decimal_type, {});
+        REQUIRE_FALSE(ucasted.has_error());
+        CHECK(ucasted.value().value<int64_t>() == 700);
+
+        // THE ENDS OF BOTH WIDTHS, which is what separates the two arms from each other: 255
+        // read through int8_t is -1, and -128 has no unsigned reading at all. A single arm
+        // covering both would pass the 7 above and fail here.
+        for (const auto [source, scaled] : std::initializer_list<std::pair<int8_t, int64_t>>{{-128, -12800},
+                                                                                            {127, 12700}}) {
+            auto edge = logical_value_t(&resource, source).cast_as(decimal_type, {});
+            REQUIRE_FALSE(edge.has_error());
+            CHECK(edge.value().value<int64_t>() == scaled);
+        }
+        auto full_byte = logical_value_t(&resource, uint8_t{255}).cast_as(decimal_type, {});
+        REQUIRE_FALSE(full_byte.has_error());
+        CHECK(full_byte.value().value<int64_t>() == 25500);
+    }
+
+    SECTION("BOOLEAN reaches the branch and has no decimal reading") {
+        // is_numeric(BOOLEAN) is true, so a boolean walks into the DECIMAL branch too -- but
+        // unlike the integer widths there is no meaningful scaled payload for it. It must
+        // REFUSE, in both builds, with the same conversion_failure the scalar guard uses.
+        logical_value_t flag(&resource, true);
+        auto casted = flag.cast_as(decimal_type, {});
+        REQUIRE(casted.has_error());
+        CHECK(casted.error().type == core::error_code_t::conversion_failure);
+    }
+}
+
+TEST_CASE("components::types::logical_value::cast_struct_keeps_null_fields_and_refuses_a_shape_change") {
+    std::pmr::monotonic_buffer_resource resource;
+
+    SECTION("a NULL field stays a NULL slot, as it already does inside ARRAY and LIST") {
+        // The ARRAY and LIST arms skip a NA child ("a NULL element stays a NULL slot").
+        // STRUCT had no such guard, so one NULL field made the scalar guard refuse the
+        // WHOLE row value -- a NULL is not a failed cast.
+        std::vector<logical_value_t> fields;
+        fields.emplace_back(&resource, int32_t{1});
+        fields.emplace_back(&resource, complex_logical_type{logical_type::NA});
+        auto source = logical_value_t::create_struct(&resource, "src", fields);
+
+        std::pmr::vector<complex_logical_type> target_fields(&resource);
+        target_fields.emplace_back(logical_type::BIGINT);
+        target_fields.emplace_back(logical_type::BIGINT);
+        auto target = complex_logical_type::create_struct("dst", target_fields);
+
+        auto casted = source.cast_as(target, {});
+        REQUIRE_FALSE(casted.has_error());
+        REQUIRE(casted.value().children().size() == 2);
+        CHECK(casted.value().children()[0].value<int64_t>() == 1);
+        CHECK(casted.value().children()[1].is_null());
+    }
+
+    SECTION("a different field count refuses instead of asserting") {
+        // Two fields cast to a one-field struct: a shape the caller got wrong, which is a
+        // conversion failure, not a broken invariant of this class.
+        std::vector<logical_value_t> fields;
+        fields.emplace_back(&resource, int32_t{1});
+        fields.emplace_back(&resource, int32_t{2});
+        auto source = logical_value_t::create_struct(&resource, "src", fields);
+
+        std::pmr::vector<complex_logical_type> target_fields(&resource);
+        target_fields.emplace_back(logical_type::BIGINT);
+        auto target = complex_logical_type::create_struct("dst", target_fields);
+
+        auto casted = source.cast_as(target, {});
+        REQUIRE(casted.has_error());
+        CHECK(casted.error().type == core::error_code_t::conversion_failure);
+    }
+}
+
+// P4 -- A UNION/VARIANT VALUE FROM THE PLAIN CONSTRUCTOR WAS HALF-BUILT.
+//
+// logical_value_t(resource, complex_logical_type) allocates the backing vector for every
+// vector-backed type -- TIME_TZ, INTERVAL, LIST, ARRAY, MAP, STRUCT -- and for UNION and
+// VARIANT it ran `assert(false && "UNION/VARIANT must be created via factory methods");
+// break;`. That is the shape this wave is about: Debug dies, Release walks on. Under NDEBUG
+// the assert is not compiled and the constructor RETURNED, leaving a value whose type is
+// UNION and whose data_ is 0 -- and children() guards only is_null() (type == NA), so it
+// dereferenced a null pointer on the next read.
+//
+// The assert was also false about its own file: create_union builds each member slot with
+// exactly this constructor (`union_values->emplace_back(r, types[i])`), so a union with a
+// UNION or VARIANT member reached the assert THROUGH the factory it named.
+//
+// BEFORE: the first case here aborted the test binary; under NDEBUG it null-dereferenced.
+TEST_CASE("logical_value: a UNION built through the plain constructor is well formed") {
+    std::pmr::monotonic_buffer_resource resource;
+
+    SECTION("UNION") {
+        logical_value_t value(&resource, complex_logical_type{logical_type::UNION});
+        CHECK(value.type().type() == logical_type::UNION);
+        CHECK_FALSE(value.is_null());
+        // The read that used to follow a null pointer.
+        CHECK(value.children().empty());
+    }
+
+    SECTION("VARIANT") {
+        logical_value_t value(&resource, complex_logical_type{logical_type::VARIANT});
+        CHECK(value.type().type() == logical_type::VARIANT);
+        CHECK(value.children().empty());
+    }
+
+    SECTION("a union whose member type is itself a union -- the factory's own path") {
+        // create_union fills every slot except `tag` with logical_value_t(r, types[i]), so a
+        // nested union type walks into the constructor above. This is the reachability the
+        // assert denied.
+        std::pmr::vector<complex_logical_type> inner_types(&resource);
+        inner_types.emplace_back(logical_type::BIGINT);
+        auto inner = complex_logical_type::create_union(inner_types);
+
+        std::pmr::vector<complex_logical_type> types(&resource);
+        types.emplace_back(logical_type::BIGINT);
+        types.emplace_back(inner);
+
+        auto value = logical_value_t::create_union(&resource, types, 0, logical_value_t(&resource, int64_t{7}));
+        CHECK(value.type().type() == logical_type::UNION);
+        REQUIRE(value.children().size() == 3); // the tag slot plus one per member type
+        CHECK(value.children()[1].value<int64_t>() == 7);
+        // The nested-union slot is present and readable rather than a null payload.
+        CHECK(value.children()[2].type().type() == logical_type::UNION);
+        CHECK(value.children()[2].children().empty());
+    }
+}
+
+// P3 -- THE SIXTEEN ARITHMETIC AND BIT ENTRY POINTS ANSWER WITH A VALUE, NOT AN EXCEPTION.
+//
+// Each of these ended in `throw std::runtime_error(...)` in a build that turns exceptions
+// off, and each is reachable from ordinary typing: `2.0 ^ 3.0`, `5.5 % 2` and bit_and over a
+// DOUBLE are not exotic inputs, they are the arms that were never written. The refusal is a
+// core::error_t now, on the same channel the caller already had
+// (components/sql/transformer/utils.cpp:826 evaluate_const_a_expr returns result_wrapper_t).
+TEST_CASE("logical_value: an unsupported operand type is a refusal, not a throw") {
+    std::pmr::monotonic_buffer_resource resource;
+
+    const logical_value_t two_point_oh(&resource, double{2.0});
+    const logical_value_t three(&resource, int64_t{3});
+
+    SECTION("modulus over a floating operand") {
+        auto result = logical_value_t::modulus(two_point_oh, two_point_oh);
+        REQUIRE(result.has_error());
+        CHECK(result.error().type == core::error_code_t::arithmetics_failure);
+    }
+
+    SECTION("exponent has no floating arm at all") {
+        auto result = logical_value_t::exponent(two_point_oh, two_point_oh);
+        REQUIRE(result.has_error());
+        CHECK(result.error().type == core::error_code_t::arithmetics_failure);
+    }
+
+    SECTION("bit_and over a floating operand") {
+        auto result = logical_value_t::bit_and(two_point_oh, two_point_oh);
+        REQUIRE(result.has_error());
+        CHECK(result.error().type == core::error_code_t::arithmetics_failure);
+    }
+
+    SECTION("a supported pair still answers with the value") {
+        auto sum = logical_value_t::sum(three, three);
+        REQUIRE_FALSE(sum.has_error());
+        CHECK(sum.value().value<int64_t>() == 6);
+
+        auto product = logical_value_t::mult(two_point_oh, two_point_oh);
+        REQUIRE_FALSE(product.has_error());
+        CHECK(product.value().value<double>() == 4.0);
+    }
+}

@@ -68,40 +68,57 @@ namespace services::index {
 
         // READS. Every answer is COMPLETE -- an index that reports a subset is a wrong
         // answer, not a fast one -- and every answer comes back in ASCENDING key order.
-        void find(const value_t& value, result& res) const;
+        //
+        // AND EVERY ANSWER CAN NOW BE "I COULD NOT READ THIS RECORD", which is the half that
+        // was missing. A leaf record is [key][uint64 row id] and this build verifies the
+        // b+tree's checksum only inside an assert (core/b_plus_tree/segment_tree.cpp:927,
+        // :1049), so under NDEBUG the key codec is the only guard there is. A record whose
+        // key the codec refuses used to come back as ROW ID 0 -- a legitimate row id -- and
+        // the reader had no way to tell it from a real one. data_corruption travels instead,
+        // and btree_index_agent_t::read_rows fails the QUERY with it.
+        [[nodiscard]] core::error_t find(const value_t& value, result& res) const;
         // The ordered contract in full: eq / ne / lt / lte / gt / gte, every one of them
         // an inclusive-bounded ascending walk of the tree. It is THE reason this family
         // exists, and it is why btree_index_agent_t answers supports_ordered_probe_v with
         // true where the hashed family answers false.
-        void scan_range(components::expressions::compare_type compare, const value_t& value, result& res) const;
+        [[nodiscard]] core::error_t
+        scan_range(components::expressions::compare_type compare, const value_t& value, result& res) const;
 
         // Shorthands for two of scan_range's six predicates, and their names are
         // HISTORICAL: they are not the STL iterator positions. lower_bound(k) is the open
         // ray BELOW k (key < k) and upper_bound(k) the open ray ABOVE it (key > k). The
         // inclusive halves -- key <= k and key >= k, which SQL's <= and >= need -- are
         // compare_type::lte and ::gte, asked of scan_range directly.
-        void lower_bound(const value_t& value, result& res) const {
-            scan_range(components::expressions::compare_type::lt, value, res);
+        [[nodiscard]] core::error_t lower_bound(const value_t& value, result& res) const {
+            return scan_range(components::expressions::compare_type::lt, value, res);
         }
-        void upper_bound(const value_t& value, result& res) const {
-            scan_range(components::expressions::compare_type::gt, value, res);
+        [[nodiscard]] core::error_t upper_bound(const value_t& value, result& res) const {
+            return scan_range(components::expressions::compare_type::gt, value, res);
         }
 
         // By-value shorthands, built on resource_. Never on a default-constructed
         // std::pmr::vector, which is std::pmr::get_default_resource() by consequence.
+        //
+        // THESE THREE ARE THE TEST-FACING FORM and are the only doors on this class that do
+        // not hand the refusal on -- there is nowhere for it to go in a `result`. That is not
+        // a swallowed error: no production caller uses them (btree_index_agent_t::read_rows
+        // and this class's own dedup probes all take the out-parameter form above), and a
+        // refusal still cannot pass unnoticed, because find/scan_range STOP at the record
+        // they could not read. The answer comes back SHORT, and every test that calls these
+        // asserts on its size.
         [[nodiscard]] result find(const value_t& value) const {
             result res(resource_);
-            find(value, res);
+            [[maybe_unused]] const auto unreported = find(value, res);
             return res;
         }
         [[nodiscard]] result lower_bound(const value_t& value) const {
             result res(resource_);
-            lower_bound(value, res);
+            [[maybe_unused]] const auto unreported = lower_bound(value, res);
             return res;
         }
         [[nodiscard]] result upper_bound(const value_t& value) const {
             result res(resource_);
-            upper_bound(value, res);
+            [[maybe_unused]] const auto unreported = upper_bound(value, res);
             return res;
         }
 

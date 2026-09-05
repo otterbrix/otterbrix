@@ -171,12 +171,14 @@ TEST_CASE("integration::cpp::test_index_key_type_gate::decimal_is_hash_only") {
     CHECK(with_idx->size() == 2);
 }
 
-// The rehydrate leg: a restart loads the in-memory index back from the on-disk b+tree
-// (bootstrap full_scan -> reverse_convert). The b+tree hands keys back as physical_value,
-// which has no temporal tag — a DATE key rehydrates as its raw INT32 day count and every
-// later DATE probe is cast into that locked domain, so answers must not change across the
-// restart. The NULL row rides along to pin the NA leg of reverse_convert (NULL keys are
-// legitimately in the tree; collapsing or refusing them on rehydrate would corrupt this).
+// The restart leg: the on-disk b+tree is reopened and every probe is answered straight out
+// of it (services::index::convert encodes the probe, read_logical_value_as_view decodes the
+// stored keys). There is no reverse_convert() and there never was — the name this comment
+// used to carry has no definition anywhere in the tree. The tree compares keys as
+// physical_value, which has no temporal tag: a DATE key is stored and compared as its raw
+// INT32 day count and every later DATE probe is encoded into that same domain, so answers
+// must not change across the restart. The NULL row rides along because a NULL key is
+// legitimately absent from the index; collapsing or refusing it on reopen would corrupt this.
 TEST_CASE("integration::cpp::test_index_key_type_gate::temporal_index_survives_restart") {
     auto config = make_test_config("/tmp/otterbrix/integration/test_index_key_type_gate/restart", true);
 

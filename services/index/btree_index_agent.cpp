@@ -24,9 +24,15 @@ namespace services::index {
         //
         // A STRING physical_value is a VIEW into `encoded`; every use below keeps the
         // owning buffer alive for the whole comparison.
-        components::types::physical_value decode_as_tree_key(std::string_view encoded) {
+        //
+        // `ok` IS READ HERE TOO, even though `encoded` never left this process: these bytes
+        // came out of encode_key() moments ago, so a refusal is an encoder/decoder DRIFT, not
+        // a flipped bit. It still must not answer with the NA physical_value, because NA is
+        // what numeric_limits<physical_value>::max() returns -- a staged key that failed to
+        // decode would sort after every real key and join every gte and upper-bound answer.
+        components::types::physical_value decode_as_tree_key(std::string_view encoded, bool& ok) {
             size_t pos = 0;
-            return codec::read_logical_value_as_view(encoded.data(), encoded.size(), pos);
+            return codec::read_logical_value_as_view(encoded.data(), encoded.size(), pos, &ok);
         }
 
         // Does `stored <compare> probe` hold? The six value comparisons an index can be
@@ -304,6 +310,12 @@ namespace services::index {
     // learn this; holding the type says it.
     template<typename ApplyFn>
     core::error_t btree_index_agent_t::publish_buckets(pending_txn_map_t& buckets, uint64_t txn_id, ApplyFn&& apply) {
+        // The bucket bytes were written by encode_key() in this same actor, so a refusal here
+        // is encoder/decoder drift rather than a flipped bit -- but the cost of publishing one
+        // is the same either way: `apply` would push an NA key into the tree, and an NA key is
+        // numeric_limits<index_t>::max(), so it joins every gte and upper-bound answer the tree
+        // gives from then on. It is refused instead of published.
+        bool decode_ok = true;
         const auto publish_one = [&](uint64_t bucket_id) {
             auto it = buckets.find(bucket_id);
             if (it == buckets.end()) {
@@ -311,13 +323,23 @@ namespace services::index {
             }
             for (const auto& [encoded, row_id] : it->second) {
                 size_t pos = 0;
-                apply(codec::read_logical_value(resource(), encoded, pos), static_cast<size_t>(row_id));
+                auto key = codec::read_logical_value(resource(), encoded, pos, &decode_ok);
+                if (!decode_ok) {
+                    return;
+                }
+                apply(key, static_cast<size_t>(row_id));
             }
             buckets.erase(it);
         };
         publish_one(txn_id);
-        if (txn_id != 0) {
+        if (txn_id != 0 && decode_ok) {
             publish_one(0);
+        }
+        if (!decode_ok) {
+            return core::error_t{
+                core::error_code_t::data_corruption,
+                std::pmr::string{"btree_index_agent_t: a staged key could not be decoded for publication",
+                                 resource()}};
         }
         // The rows are only in the index once this succeeds. Reporting no_error on a
         // failed flush would leave the statement believing the index matches the table
@@ -421,11 +443,21 @@ namespace services::index {
         //
         // btree_index_disk_t::result is size_t-wide; row ids are int64_t everywhere above
         // this actor. Convert once, here, so the reply carries the type the reader uses.
+        //
+        // AND THE STORE MAY REFUSE. A leaf record whose key the codec cannot decode used to
+        // arrive here as the row id 0 -- read_le_raw's T{} behind an unmoved `pos` -- which is
+        // a legitimate row id and therefore indistinguishable from a real answer. THIS is the
+        // reader that can say it out loud: read_rows already answers in a result_wrapper_t, so
+        // the refusal fails the QUERY instead of quietly naming row 0.
         btree_index_disk_t::result found(resource());
         if (compare == components::expressions::compare_type::eq) {
-            store_.find(key, found);
+            if (auto read_error = store_.find(key, found); read_error.contains_error()) {
+                co_return read_error;
+            }
         } else {
-            store_.scan_range(compare, key, found);
+            if (auto read_error = store_.scan_range(compare, key, found); read_error.contains_error()) {
+                co_return read_error;
+            }
         }
         std::pmr::vector<int64_t> rows(resource());
         rows.reserve(found.size());
@@ -453,7 +485,8 @@ namespace services::index {
         // uses. No normalization on either side: the tree stores and compares the column's
         // own type.
         const auto encoded_probe = encode_key(key);
-        const auto probe = decode_as_tree_key(encoded_probe);
+        bool staged_ok = true;
+        const auto probe = decode_as_tree_key(encoded_probe, staged_ok);
 
         const auto add_bucket = [&](uint64_t bucket_id) {
             auto it = pending_inserts_.find(bucket_id);
@@ -461,7 +494,7 @@ namespace services::index {
                 return;
             }
             for (const auto& [pending_key, row_id] : it->second) {
-                if (predicate_holds(compare, decode_as_tree_key(pending_key), probe)) {
+                if (predicate_holds(compare, decode_as_tree_key(pending_key, staged_ok), probe)) {
                     rows.push_back(row_id);
                 }
             }
@@ -475,7 +508,7 @@ namespace services::index {
                 // The key test is not redundant with the row-id erase: a row whose key does
                 // NOT satisfy the predicate was never in the committed half, so testing
                 // first keeps the erase from scanning `rows` for an id that cannot be there.
-                if (!predicate_holds(compare, decode_as_tree_key(pending_key), probe)) {
+                if (!predicate_holds(compare, decode_as_tree_key(pending_key, staged_ok), probe)) {
                     continue;
                 }
                 rows.erase(std::remove(rows.begin(), rows.end(), row_id), rows.end());
@@ -491,6 +524,14 @@ namespace services::index {
         drop_bucket(0);
         if (txn_id != 0) {
             drop_bucket(txn_id);
+        }
+        // ONE check for the probe and every bucket key: `staged_ok` is only ever set to false.
+        // A merge whose staged half could not be decoded is not a smaller answer, it is a
+        // wrong one -- the delete leg in particular would fail to remove rows it was asked to.
+        if (!staged_ok) {
+            co_return core::error_t{
+                core::error_code_t::data_corruption,
+                std::pmr::string{"btree_index_agent_t::read_rows: a staged key could not be decoded", resource()}};
         }
         co_return std::move(rows);
     }

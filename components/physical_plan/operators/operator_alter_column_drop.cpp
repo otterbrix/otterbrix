@@ -309,8 +309,10 @@ namespace components::operators {
             components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at,
             table_oid_,
             column_name_,
-            // rename_to_attname is the storage_rename kind's field; a DROP names no new name.
-            std::string{}});
+            // rename_to_attname is the storage_rename kind's field; a DROP names no new name,
+            // and added_column_type is the added_at kind's — a DROP creates no column either.
+            std::string{},
+            components::types::complex_logical_type{}});
 
         // Note: drop_column on a relkind='g' (computing) table is routed to
         // operator_computed_field_unregister_t in planner.cpp::rewrite_alter_table,

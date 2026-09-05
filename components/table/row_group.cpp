@@ -146,7 +146,8 @@ namespace components::table {
             return false;
         }
         state.max_row_group_row = std::min(start + group_count, state.max_row);
-        assert(!state.column_scans.empty());
+        // No assert on column_scans: a column-less scan (see table_scan_state::column_ids) is
+        // legal and leaves this vector empty, and the loop below then runs zero times.
         for (uint64_t i = 0; i < column_ids.size(); i++) {
             const auto& column = column_ids[i];
             if (!column.is_row_id_column()) {
@@ -167,7 +168,7 @@ namespace components::table {
         if (state.max_row_group_row == 0) {
             return false;
         }
-        assert(!state.column_scans.empty());
+        // Same as initialize_scan_with_offset: an empty column list is a row-count-only scan.
         for (uint64_t i = 0; i < column_ids.size(); i++) {
             auto column = column_ids[i];
             if (!column.is_row_id_column()) {
@@ -266,20 +267,48 @@ namespace components::table {
         auto* res = collection_->resource();
         // The chunk presents every bound column at its own storage ordinal, so a bound slot resolves
         // to it; the projected ctor allocates buffers ONLY for those, the rest stay placeholders.
+        //
+        // A BOUND ORDINAL PAST THE LAST MATERIALIZED COLUMN is not a bug and not out of bounds:
+        // the graph was typed against the CATALOG's column list (storage_types), and pg_attribute
+        // can legally name a column this storage has not materialized yet — ALTER TABLE ADD
+        // COLUMN writes the catalog row and stops, the physical column is created by the first
+        // INSERT that carries it. Such a column is NULL in every existing row, so it is fed to
+        // the graph as an all-invalid vector of the type the graph itself carries for that slot
+        // (the same "type + set_all_invalid" shape the append path uses for a column an incoming
+        // chunk omits). Calling get_column() on it would abort inside row_group_t::get_column.
+        const size_t materialized = get_column_count();
         std::vector<size_t> referenced;
         size_t width = 0;
+        std::pmr::vector<types::complex_logical_type> chunk_types(res);
         for (const auto& binding : filter.graph->input_bindings()) {
             referenced.push_back(binding.column);
             width = std::max(width, binding.column + 1);
+            if (binding.column >= chunk_types.size()) {
+                chunk_types.resize(binding.column + 1, types::complex_logical_type{types::logical_type::BIGINT});
+            }
+            chunk_types[binding.column] = filter.graph->slot_type(binding.slot);
         }
-        std::pmr::vector<types::complex_logical_type> chunk_types(res);
-        chunk_types.reserve(width);
-        for (size_t column = 0; column < width; column++) {
-            chunk_types.push_back(get_column(column).type());
+        // Unbound ordinals below `width` are gaps the graph never reads; they only need a type to
+        // construct a (buffer-less) placeholder with, and the storage's own is the honest one.
+        for (size_t column = 0; column < width && column < materialized; column++) {
+            bool bound = false;
+            for (size_t r : referenced) {
+                if (r == column) {
+                    bound = true;
+                    break;
+                }
+            }
+            if (!bound) {
+                chunk_types[column] = get_column(column).type();
+            }
         }
         vector::data_chunk_t rows{res, chunk_types, referenced, count};
         column_fetch_state fetch_state;
         for (size_t column : referenced) {
+            if (column >= materialized) {
+                rows.data[column].validity().set_all_invalid(count);
+                continue;
+            }
             for (uint64_t row = 0; row < count; row++) {
 #ifdef DEV_MODE
                 g_predicate_row_fetches.fetch_add(1, std::memory_order_relaxed);

@@ -156,7 +156,8 @@ namespace services::disk {
                                                                        &agent_disk_t::note_column_identity_inner,
                                                                        b.release_table_oid,
                                                                        b.release_attname,
-                                                                       static_cast<std::uint32_t>(b.attoid));
+                                                                       static_cast<std::uint32_t>(b.attoid),
+                                                                       b.added_column_type);
             [[maybe_unused]] auto dropped_note_future = std::move(note_fut);
             if (owner_sched) {
                 scheduler_disk_->enqueue(owner.get());

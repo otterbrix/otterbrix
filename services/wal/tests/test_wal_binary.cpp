@@ -20,8 +20,9 @@ to_chunk_batch(const components::vector::data_chunk_t& chunk) {
     return batch;
 }
 
-// WAL binary serialization supports fixed-size and STRING types.
-// ARRAY/LIST not yet supported in binary format — use explicit types.
+// The flat column set the framing cases below use: gen_data_chunk fills fixed-size and STRING
+// columns, so these types keep the record-level cases about the RECORD rather than about the
+// column codec. Nested columns are covered by the payload cases at the end of this file.
 static std::pmr::vector<components::types::complex_logical_type> wal_test_types(std::pmr::memory_resource* r) {
     using namespace components::types;
     std::pmr::vector<complex_logical_type> types(r);
@@ -289,8 +290,8 @@ TEST_CASE("wal_binary::data_chunk_binary_with_nulls") {
 // carries the canonical type spec (types::encode_type_spec / decode_type_spec), which
 // round-trips every persistable type exactly — struct fields, decimal width/scale,
 // nested children and aliases — so a new type can never again decode into a
-// crash-shaped half-type. (The nested column PAYLOAD is still not carried by this
-// codec — a separate known gap — but the TYPE and the null mask must round-trip.)
+// crash-shaped half-type. This case gates the TYPE and the null mask on their own; the
+// nested column PAYLOAD has its own cases further down.
 TEST_CASE("wal_binary::data_chunk_binary_struct_type_roundtrip") {
     std::pmr::monotonic_buffer_resource resource(1024 * 64);
 
@@ -343,5 +344,354 @@ TEST_CASE("wal_binary::data_chunk_binary_struct_type_roundtrip") {
     // The scalar column's data still round-trips alongside the struct column.
     for (uint64_t row = 0; row < 3; row++) {
         REQUIRE(result.value(0, row).value<int64_t>() == static_cast<int64_t>(row + 1));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NESTED COLUMN PAYLOAD.
+//
+// The codec sized every column through fixed_type_size(), which answers 0 for LIST, STRUCT and
+// ARRAY. Writer and reader agreed on that zero — `data_size = 0`, no bytes written, no bytes
+// read — so a replayed insert rebuilt a correctly-SHAPED nested column in which every element
+// was the zero the constructor left behind. Nothing reported a failure; the type round-tripped,
+// the top-level null mask round-tripped, and only the CONTENT was gone.
+//
+// The payload is now written recursively, in the checkpoint's own child order —
+// [validity, ...children] — so the cases below gate the CELL CONTENTS of each of the three
+// nested shapes, plus the interior validity that rides with them.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("wal_binary::data_chunk_binary_array_payload_roundtrip") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+
+    auto element_type = complex_logical_type{logical_type::BIGINT};
+    auto array_type = complex_logical_type::create_array(element_type, 3);
+
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.emplace_back(logical_type::BIGINT, "id");
+    types.push_back(array_type);
+
+    data_chunk_t chunk(&resource, types, 4);
+    chunk.set_cardinality(4);
+    for (uint64_t row = 0; row < 4; row++) {
+        chunk.set_value(0, row, logical_value_t{&resource, static_cast<int64_t>(row + 1)});
+    }
+    // row 0/1/3 carry values; row 2 is a whole-cell NULL; row 3 holds an interior NULL.
+    for (uint64_t row : {uint64_t{0}, uint64_t{1}}) {
+        std::vector<logical_value_t> elements;
+        for (uint64_t i = 0; i < 3; i++) {
+            elements.emplace_back(&resource, static_cast<int64_t>(row * 10 + i));
+        }
+        chunk.set_value(1, row, logical_value_t::create_array(&resource, element_type, elements));
+    }
+    chunk.set_value(1, 2, logical_value_t{&resource, nullptr});
+    {
+        std::vector<logical_value_t> elements;
+        elements.emplace_back(&resource, static_cast<int64_t>(70));
+        elements.emplace_back(&resource, nullptr); // NULL element
+        elements.emplace_back(&resource, static_cast<int64_t>(90));
+        chunk.set_value(1, 3, logical_value_t::create_array(&resource, element_type, elements));
+    }
+
+    // Precondition, asserted rather than assumed: the chunk going IN carries the interior
+    // NULL. Without this the round-trip claim below could pass for the wrong reason.
+    REQUIRE(chunk.value(1, 3).children()[1].is_null());
+
+    buffer_t buffer(&resource);
+    serialize_binary(chunk, buffer);
+
+    bool ok = false;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
+
+    REQUIRE(ok);
+    REQUIRE(result.column_count() == 2);
+    REQUIRE(result.size() == 4);
+    REQUIRE(result.data[1].type().type() == logical_type::ARRAY);
+
+    for (uint64_t row = 0; row < 4; row++) {
+        INFO("row " << row);
+        REQUIRE(result.value(0, row).value<int64_t>() == static_cast<int64_t>(row + 1));
+    }
+
+    for (uint64_t row : {uint64_t{0}, uint64_t{1}}) {
+        INFO("array row " << row);
+        auto cell = result.value(1, row);
+        REQUIRE(cell.children().size() == 3);
+        for (uint64_t i = 0; i < 3; i++) {
+            INFO("element " << i);
+            REQUIRE(cell.children()[i].value<int64_t>() == static_cast<int64_t>(row * 10 + i));
+        }
+    }
+
+    INFO("the whole-cell NULL is still NULL");
+    REQUIRE_FALSE(result.data[1].validity().row_is_valid(2));
+
+    INFO("the interior NULL survives beside its present neighbours");
+    {
+        auto cell = result.value(1, 3);
+        REQUIRE(cell.children().size() == 3);
+        REQUIRE(cell.children()[0].value<int64_t>() == 70);
+        REQUIRE(cell.children()[1].is_null());
+        REQUIRE(cell.children()[2].value<int64_t>() == 90);
+    }
+}
+
+TEST_CASE("wal_binary::data_chunk_binary_list_payload_roundtrip") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+
+    auto element_type = complex_logical_type{logical_type::BIGINT};
+    auto list_type = complex_logical_type::create_list(element_type);
+
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.emplace_back(logical_type::BIGINT, "id");
+    types.push_back(list_type);
+
+    data_chunk_t chunk(&resource, types, 4);
+    chunk.set_cardinality(4);
+    for (uint64_t row = 0; row < 4; row++) {
+        chunk.set_value(0, row, logical_value_t{&resource, static_cast<int64_t>(row + 1)});
+    }
+
+    // Deliberately RAGGED, and longer than the row count: a reader that sizes the child from
+    // the number of rows instead of from the written span comes up short on row 2.
+    const std::vector<std::vector<int64_t>> rows = {{10, 20}, {}, {30, 40, 50, 60, 70}, {80}};
+    for (uint64_t row = 0; row < rows.size(); row++) {
+        std::vector<logical_value_t> elements;
+        for (auto value : rows[row]) {
+            elements.emplace_back(&resource, value);
+        }
+        chunk.set_value(1, row, logical_value_t::create_list(&resource, element_type, elements));
+    }
+
+    buffer_t buffer(&resource);
+    serialize_binary(chunk, buffer);
+
+    bool ok = false;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
+
+    REQUIRE(ok);
+    REQUIRE(result.column_count() == 2);
+    REQUIRE(result.size() == 4);
+    REQUIRE(result.data[1].type().type() == logical_type::LIST);
+
+    for (uint64_t row = 0; row < rows.size(); row++) {
+        INFO("list row " << row << " expected length " << rows[row].size());
+        auto cell = result.value(1, row);
+        REQUIRE(cell.children().size() == rows[row].size());
+        for (uint64_t i = 0; i < rows[row].size(); i++) {
+            INFO("element " << i);
+            REQUIRE(cell.children()[i].value<int64_t>() == rows[row][i]);
+        }
+    }
+}
+
+TEST_CASE("wal_binary::data_chunk_binary_struct_payload_roundtrip") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+
+    std::pmr::vector<complex_logical_type> fields(&resource);
+    fields.emplace_back(logical_type::BIGINT, "a");
+    fields.emplace_back(logical_type::BIGINT, "b");
+    auto pair_type = complex_logical_type::create_struct("np_pair", fields);
+
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.emplace_back(logical_type::BIGINT, "id");
+    types.push_back(pair_type);
+
+    data_chunk_t chunk(&resource, types, 3);
+    chunk.set_cardinality(3);
+    for (uint64_t row = 0; row < 3; row++) {
+        chunk.set_value(0, row, logical_value_t{&resource, static_cast<int64_t>(row + 1)});
+    }
+    {
+        std::vector<logical_value_t> members;
+        members.emplace_back(&resource, static_cast<int64_t>(11));
+        members.emplace_back(&resource, static_cast<int64_t>(12));
+        chunk.set_value(1, 0, logical_value_t::create_struct(&resource, pair_type, members));
+    }
+    chunk.set_value(1, 1, logical_value_t{&resource, nullptr}); // whole-struct NULL
+    {
+        std::vector<logical_value_t> members;
+        members.emplace_back(&resource, static_cast<int64_t>(31));
+        members.emplace_back(&resource, nullptr); // NULL field
+        chunk.set_value(1, 2, logical_value_t::create_struct(&resource, pair_type, members));
+    }
+
+    // Precondition, asserted rather than assumed: the chunk going IN carries the NULL field.
+    // Read off the FIELD vector, not through data_chunk_t::value(): reconstructing a whole
+    // struct value derives its type from the field VALUES, so a NULL field yields a struct
+    // typed <BIGINT, NA> and trips vector_t::value()'s type-identity assert. That is a
+    // pre-existing limitation of the struct read-back and has nothing to do with the codec —
+    // going through the field vector keeps this case about the payload.
+    REQUIRE_FALSE(chunk.data[1].entries()[1]->validity().row_is_valid(2));
+
+    buffer_t buffer(&resource);
+    serialize_binary(chunk, buffer);
+
+    bool ok = false;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
+
+    REQUIRE(ok);
+    REQUIRE(result.column_count() == 2);
+    REQUIRE(result.size() == 3);
+
+    INFO("both fields of the populated row carry their values");
+    {
+        auto cell = result.value(1, 0);
+        REQUIRE(cell.children().size() == 2);
+        REQUIRE(cell.children()[0].value<int64_t>() == 11);
+        REQUIRE(cell.children()[1].value<int64_t>() == 12);
+    }
+
+    INFO("the whole-struct NULL is still NULL");
+    REQUIRE_FALSE(result.data[1].validity().row_is_valid(1));
+
+    INFO("a present field beside a NULL one");
+    {
+        REQUIRE(result.data[1].entries().size() == 2);
+        REQUIRE(result.data[1].entries()[0]->value(2).value<int64_t>() == 31);
+        REQUIRE_FALSE(result.data[1].entries()[1]->validity().row_is_valid(2));
+    }
+}
+
+// SECOND-LEVEL NESTING. The payload codec descends by physical type rather than enumerating the
+// shapes it knows, so a container inside a container is the same code path taken twice. This is
+// the case that would fail on any "handle LIST, ARRAY and STRUCT" fix written as three flat
+// legs: a list of structs and a struct holding a list each need the recursion to re-enter.
+TEST_CASE("wal_binary::data_chunk_binary_second_level_nesting_roundtrip") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 128);
+
+    std::pmr::vector<complex_logical_type> fields(&resource);
+    fields.emplace_back(logical_type::BIGINT, "a");
+    fields.emplace_back(logical_type::STRING_LITERAL, "s");
+    auto pair_type = complex_logical_type::create_struct("np_pair", fields);
+    auto list_of_structs = complex_logical_type::create_list(pair_type);
+
+    auto inner_list_type = complex_logical_type::create_list(complex_logical_type{logical_type::BIGINT});
+    std::pmr::vector<complex_logical_type> holder_fields(&resource);
+    holder_fields.push_back(inner_list_type);
+    holder_fields.back().set_alias("l");
+    auto struct_of_list = complex_logical_type::create_struct("np_holder", holder_fields);
+
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.emplace_back(logical_type::BIGINT, "id");
+    types.push_back(list_of_structs);
+    types.push_back(struct_of_list);
+
+    data_chunk_t chunk(&resource, types, 2);
+    chunk.set_cardinality(2);
+    for (uint64_t row = 0; row < 2; row++) {
+        chunk.set_value(0, row, logical_value_t{&resource, static_cast<int64_t>(row + 1)});
+
+        // list-of-structs: row 0 gets two members, row 1 gets one.
+        std::vector<logical_value_t> members;
+        for (uint64_t i = 0; i < 2 - row; i++) {
+            std::vector<logical_value_t> pair;
+            pair.emplace_back(&resource, static_cast<int64_t>(row * 100 + i));
+            pair.emplace_back(&resource, std::string("s") + std::to_string(row * 100 + i));
+            members.push_back(logical_value_t::create_struct(&resource, pair_type, pair));
+        }
+        chunk.set_value(1, row, logical_value_t::create_list(&resource, pair_type, members));
+
+        // struct-of-list: the inner list length varies with the row.
+        std::vector<logical_value_t> inner;
+        for (uint64_t i = 0; i <= row; i++) {
+            inner.emplace_back(&resource, static_cast<int64_t>(row * 1000 + i));
+        }
+        std::vector<logical_value_t> holder;
+        holder.push_back(
+            logical_value_t::create_list(&resource, complex_logical_type{logical_type::BIGINT}, inner));
+        chunk.set_value(2, row, logical_value_t::create_struct(&resource, struct_of_list, holder));
+    }
+
+    buffer_t buffer(&resource);
+    serialize_binary(chunk, buffer);
+
+    bool ok = false;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
+
+    REQUIRE(ok);
+    REQUIRE(result.column_count() == 3);
+    REQUIRE(result.size() == 2);
+
+    for (uint64_t row = 0; row < 2; row++) {
+        INFO("row " << row);
+        REQUIRE(result.value(0, row).value<int64_t>() == static_cast<int64_t>(row + 1));
+
+        INFO("list of structs");
+        auto list_cell = result.value(1, row);
+        REQUIRE(list_cell.children().size() == 2 - row);
+        for (uint64_t i = 0; i < 2 - row; i++) {
+            INFO("member " << i);
+            const auto& member = list_cell.children()[i];
+            REQUIRE(member.children().size() == 2);
+            REQUIRE(member.children()[0].value<int64_t>() == static_cast<int64_t>(row * 100 + i));
+            REQUIRE(member.children()[1].value<std::string_view>() ==
+                    std::string_view(std::string("s") + std::to_string(row * 100 + i)));
+        }
+
+        INFO("struct holding a list");
+        auto holder_cell = result.value(2, row);
+        REQUIRE(holder_cell.children().size() == 1);
+        const auto& inner_list = holder_cell.children()[0];
+        REQUIRE(inner_list.children().size() == row + 1);
+        for (uint64_t i = 0; i <= row; i++) {
+            INFO("inner element " << i);
+            REQUIRE(inner_list.children()[i].value<int64_t>() == static_cast<int64_t>(row * 1000 + i));
+        }
+    }
+}
+
+// The full WAL record framing, not just the bare chunk codec: an INSERT carrying a nested
+// column has to come back out of decode_record with its payload, because that is the call
+// replay actually makes.
+TEST_CASE("wal_binary::encode_decode_insert_carries_nested_payload") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+
+    auto element_type = complex_logical_type{logical_type::BIGINT};
+    auto array_type = complex_logical_type::create_array(element_type, 4);
+
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.emplace_back(logical_type::BIGINT, "id");
+    types.push_back(array_type);
+
+    data_chunk_t chunk(&resource, types, 3);
+    chunk.set_cardinality(3);
+    for (uint64_t row = 0; row < 3; row++) {
+        chunk.set_value(0, row, logical_value_t{&resource, static_cast<int64_t>(row)});
+        std::vector<logical_value_t> elements;
+        for (uint64_t i = 0; i < 4; i++) {
+            elements.emplace_back(&resource, static_cast<int64_t>(row * 100 + i));
+        }
+        chunk.set_value(1, row, logical_value_t::create_array(&resource, element_type, elements));
+    }
+
+    buffer_t buffer(&resource);
+    encode_insert(buffer,
+                  &resource,
+                  /*last_crc32=*/0,
+                  /*wal_id=*/7,
+                  /*txn_id=*/42,
+                  kTestTableOid,
+                  to_chunk_batch(chunk),
+                  /*row_start=*/0,
+                  /*row_count=*/3);
+
+    auto record = decode_record(buffer, &resource);
+    REQUIRE(record.is_valid());
+    REQUIRE_FALSE(record.is_corrupt);
+    REQUIRE(record.physical_data.size() == 1);
+
+    const auto& decoded = record.physical_data[0];
+    REQUIRE(decoded.column_count() == 2);
+    REQUIRE(decoded.size() == 3);
+    for (uint64_t row = 0; row < 3; row++) {
+        INFO("row " << row);
+        REQUIRE(decoded.value(0, row).value<int64_t>() == static_cast<int64_t>(row));
+        auto cell = decoded.value(1, row);
+        REQUIRE(cell.children().size() == 4);
+        for (uint64_t i = 0; i < 4; i++) {
+            INFO("element " << i);
+            REQUIRE(cell.children()[i].value<int64_t>() == static_cast<int64_t>(row * 100 + i));
+        }
     }
 }

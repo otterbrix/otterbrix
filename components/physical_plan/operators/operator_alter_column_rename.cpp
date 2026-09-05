@@ -220,7 +220,9 @@ namespace components::operators {
                 components::pg_attribute_commit_id_backfill_t::kind_t::storage_rename,
                 table_oid_,
                 old_name_,
-                new_name_});
+                new_name_,
+                // added_column_type belongs to the added_at kind; a RENAME creates no column.
+                components::types::complex_logical_type{}});
         }
 
         mark_executed();

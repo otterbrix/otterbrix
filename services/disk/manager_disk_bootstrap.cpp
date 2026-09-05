@@ -925,7 +925,9 @@ namespace services::disk {
                     }
                 }
                 if (!in_storage) {
-                    owned->note_column_identity(def.name(), def.attoid());
+                    // The TYPE travels with the identity: this same list is what the storage
+                    // adapter reads to answer the column with NULLs until an INSERT materialises it.
+                    owned->note_column_identity(def.name(), def.attoid(), def.type());
                     trace(log_,
                           "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} published identity "
                           "attoid={} for catalog-only column '{}'",

@@ -103,8 +103,12 @@ namespace services::disk {
               static_cast<unsigned>(oid),
               otbx_path.string(),
               static_cast<uint64_t>(sidecar_wal_id));
-        auto entry =
-            std::make_unique<collection_storage_entry_t>(resource(), otbx_path, std::move(catalog_columns), is_computed);
+        // `catalog_columns` is copied rather than moved: it is ALSO the input to the oid-set
+        // difference below, which is what re-derives "the catalog has it, this storage does not"
+        // on every load. Doing it here rather than only in the bootstrap walk is what covers the
+        // LAZY load — after bootstrap only the pg_catalog.* tables are resident, so a user table
+        // ALTERed in a previous run is first seen right here.
+        auto entry = std::make_unique<collection_storage_entry_t>(resource(), otbx_path, catalog_columns, is_computed);
         // The DISK load ctor records io_error/data_corruption instead of throwing (this helper is noexcept
         // and reachable on the agent thread). Drop a failed-construction entry so we never emplace a
         // half-loaded storage; the manager-side probe has already refused an unopenable file before this.
@@ -120,6 +124,7 @@ namespace services::disk {
         if (sidecar_wal_id > wal::id_t{0}) {
             entry->table_storage.set_checkpoint_wal_id(sidecar_wal_id);
         }
+        entry->adopt_catalog_columns(catalog_columns);
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
@@ -2839,9 +2844,11 @@ namespace services::disk {
     // parks the identity of a column the catalog has already created and the storage has not
     // materialised yet, so that whichever INSERT does materialise it stamps the right attoid
     // instead of leaving a 0 the bootstrap reconciliation would have to refuse.
-    agent_disk_t::unique_future<void> agent_disk_t::note_column_identity_inner(components::catalog::oid_t table_oid,
-                                                                              std::string attname,
-                                                                              std::uint32_t attoid) {
+    agent_disk_t::unique_future<void>
+    agent_disk_t::note_column_identity_inner(components::catalog::oid_t table_oid,
+                                             std::string attname,
+                                             std::uint32_t attoid,
+                                             components::types::complex_logical_type type) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr) {
             trace(log_,
@@ -2850,7 +2857,7 @@ namespace services::disk {
                   static_cast<unsigned>(table_oid));
             co_return;
         }
-        it->second->note_column_identity(std::move(attname), attoid);
+        it->second->note_column_identity(std::move(attname), attoid, type);
         co_return;
     }
 

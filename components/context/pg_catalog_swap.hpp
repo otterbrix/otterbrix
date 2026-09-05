@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/types/types.hpp>
 #include <cstdint>
 #include <string>
 
@@ -74,6 +75,11 @@ namespace components {
         catalog::oid_t release_table_oid{catalog::INVALID_OID};
         std::string release_attname;
         std::string rename_to_attname;
+        // added_at only: the type of the column the ALTER created. It travels with the identity
+        // to the owning agent, because the storage that has not materialised the column yet has
+        // to be able to ANSWER it — as NULLs of this type — until an INSERT does
+        // (table_storage_adapter_t). Unset for the other two kinds.
+        types::complex_logical_type added_column_type;
     };
 
 } // namespace components

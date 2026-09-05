@@ -294,6 +294,11 @@ namespace services::disk {
     // Ownership migrates across actors by rvalue unique_ptr move only.
     struct collection_storage_entry_t {
         table_storage_t table_storage;
+        // Columns pg_attribute publishes that this storage has not materialised yet. Declared
+        // BEFORE `storage` because every adapter built below borrows it; see the long note at
+        // note_column_identity for who fills it and why the list is authoritative rather than a
+        // hint. Owned here, so it survives every add_column / drop_column adapter rebuild.
+        std::vector<components::table::column_definition_t> unmaterialized_columns;
         std::unique_ptr<components::storage::storage_t> storage;
         // Actual on-disk path of this table's .otbx. Used by checkpoint_all (sidecar
         // lands next to .otbx) and drop_storage_one_local (physical file removal).
@@ -316,7 +321,9 @@ namespace services::disk {
                                    const std::filesystem::path& otbx_path_in,
                                    bool is_computed_create)
             : table_storage(resource, std::move(columns), otbx_path_in)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
+            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                     resource,
+                                                                                     &unmaterialized_columns))
             , otbx_path(otbx_path_in)
             , is_computed(is_computed_create) {}
 
@@ -330,14 +337,22 @@ namespace services::disk {
                                    std::vector<components::table::column_definition_t> catalog_columns,
                                    bool is_computed_load = false)
             : table_storage(resource, otbx_path_in, std::move(catalog_columns), is_computed_load)
-            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), resource))
+            , storage(std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                     resource,
+                                                                                     &unmaterialized_columns))
             , otbx_path(otbx_path_in)
             , is_computed(is_computed_load) {}
 
         /// Update the live schema: add new column to table_ and recreate the storage adapter.
         void add_column(components::table::column_definition_t& col, std::pmr::memory_resource* res) {
             table_storage.add_column(col);
-            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), res);
+            // The column now HAS rows; it must stop being answered with NULLs. take_column_identity
+            // already drops it on the materialising path, but the erase belongs next to the
+            // materialisation itself so no future caller can add a column and leave the claim behind.
+            drop_unmaterialized(col.name());
+            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                     res,
+                                                                                     &unmaterialized_columns);
         }
 
         /// Physical column compaction: drop the column from the live table_ and
@@ -347,7 +362,9 @@ namespace services::disk {
             if (!table_storage.drop_column(attname)) {
                 return false;
             }
-            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(), res);
+            storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
+                                                                                     res,
+                                                                                     &unmaterialized_columns);
             return true;
         }
 
@@ -386,38 +403,94 @@ namespace services::disk {
         // A pending entry is consumed on use. It is NOT durable and does not need to be: it
         // describes a column that does not exist yet, and bootstrap re-derives it from the two
         // durable facts every time.
-        struct pending_column_identity_t {
-            std::string attname;
-            std::uint32_t attoid{0};
-        };
-
-        void note_column_identity(std::string attname, std::uint32_t attoid) {
+        //
+        // THE SAME LIST ALSO ANSWERS THE READS. A published-but-unmaterialised column is not only
+        // an identity waiting for its column: for the duration it is a column pg_attribute SHOWS
+        // and no row group holds, and every reader has to survive naming it. So the entry carries
+        // the column's TYPE alongside its identity and hands the whole list to the storage
+        // adapter, which presents those columns as trailing all-NULL ones (see
+        // table_storage_adapter_t). Publishing therefore has to be complete, not best-effort, and
+        // it is: the ALTER's own commit covers the live case, and adopt_catalog_columns() re-derives
+        // the set on EVERY load — bootstrap and lazy alike — from the same oid-set difference.
+        void note_column_identity(std::string attname,
+                                  std::uint32_t attoid,
+                                  const components::types::complex_logical_type& type) {
             if (attname.empty() || attoid == 0) {
                 return;
             }
-            for (auto& p : pending_column_identities) {
-                if (p.attname == attname) {
-                    p.attoid = attoid;
+            // A column the storage already carries is materialised, whatever a stale note says.
+            // Claiming it here would give every chunk a second, all-NULL copy of a column that
+            // has data.
+            for (const auto& column : table_storage.table().columns()) {
+                if (column.name() == attname) {
                     return;
                 }
             }
-            pending_column_identities.push_back(pending_column_identity_t{std::move(attname), attoid});
+            for (auto& p : unmaterialized_columns) {
+                if (p.name() == attname) {
+                    if (p.attoid() == 0) {
+                        p.set_attoid(attoid);
+                    }
+                    return;
+                }
+            }
+            components::table::column_definition_t def(std::move(attname), type);
+            def.set_attoid(attoid);
+            unmaterialized_columns.push_back(std::move(def));
         }
 
         // 0 = nothing published for this name. The caller is the one materialising the column,
-        // so the entry is dropped on the way out: it has served its single purpose.
+        // so the entry is dropped on the way out: it has served its single purpose — and dropping
+        // it is also what stops the adapter answering NULLs for a column that now has rows.
         std::uint32_t take_column_identity(const std::string& attname) {
-            for (auto it = pending_column_identities.begin(); it != pending_column_identities.end(); ++it) {
-                if (it->attname == attname) {
-                    const auto attoid = it->attoid;
-                    pending_column_identities.erase(it);
+            for (auto it = unmaterialized_columns.begin(); it != unmaterialized_columns.end(); ++it) {
+                if (it->name() == attname) {
+                    const auto attoid = it->attoid();
+                    unmaterialized_columns.erase(it);
                     return attoid;
                 }
             }
             return 0;
         }
 
-        std::vector<pending_column_identity_t> pending_column_identities;
+        void drop_unmaterialized(const std::string& attname) {
+            for (auto it = unmaterialized_columns.begin(); it != unmaterialized_columns.end(); ++it) {
+                if (it->name() == attname) {
+                    unmaterialized_columns.erase(it);
+                    return;
+                }
+            }
+        }
+
+        // Re-derive the published set from a catalog column list, by the SAME oid-set difference
+        // rearm_dropped_column_blocks_sync uses: every live pg_attribute column whose attoid no
+        // storage column carries is a column the catalog has and this storage has not materialised.
+        // Called on every LOAD (bootstrap and lazy), which is what makes the set complete after a
+        // restart — the pg_attribute row is durable, the parked note is not.
+        //
+        // The NAME is checked alongside the oid, and not as a second identity: it is the guard
+        // against a storage whose columns carry attoid 0 (a state the bootstrap walk refuses
+        // rather than pretends away). On the oid alone such a storage would match nothing and the
+        // whole catalog would be published as unmaterialised, doubling every column in every chunk
+        // this adapter fills. A name collision means the column is physically there whatever its
+        // identity says, and the reader must not invent a second one.
+        void adopt_catalog_columns(const std::vector<components::table::column_definition_t>& catalog_columns) {
+            for (const auto& def : catalog_columns) {
+                if (def.attoid() == 0) {
+                    continue; // relkind='g' columns live in pg_computed_column and carry none
+                }
+                bool in_storage = false;
+                for (const auto& column : table_storage.table().columns()) {
+                    if (column.attoid() == def.attoid() || column.name() == def.name()) {
+                        in_storage = true;
+                        break;
+                    }
+                }
+                if (!in_storage) {
+                    note_column_identity(def.name(), def.attoid(), def.type());
+                }
+            }
+        }
     };
 
     // One tombstoned pg_class row, as scan_dropped_oids_sync reports it: the table's own oid,

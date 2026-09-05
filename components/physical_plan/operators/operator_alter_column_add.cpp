@@ -155,7 +155,12 @@ namespace components::operators {
                 // instead of with a 0 the bootstrap reconciliation would have to refuse.
                 table_oid_,
                 std::string(column_.name()),
-                std::string{}});
+                std::string{},
+                // ...and the column's TYPE with it. Until an INSERT materialises the column, the
+                // storage still has to ANSWER it — pg_attribute shows it from this statement on,
+                // so `SELECT <it>` is a legal query with a legal answer (NULL in every existing
+                // row) and the agent has no catalog to type it from.
+                column_.type()});
         }
 
         // resolve_table rebuilds columns from pg_attribute on each call, so

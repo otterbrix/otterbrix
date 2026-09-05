@@ -78,11 +78,19 @@ namespace {
     // there is truncated and no loader is ever consulted. Refusing rather than answering
     // false makes that a checked assertion instead of a comment. The store's own reads pass
     // the store's own loader (key_loader()).
-    constexpr auto loader_must_not_be_consulted = [](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
-        return core::error_t(core::error_code_t::io_error,
-                             std::pmr::string{"the loader must not be consulted: every key in this case is inline",
-                                              std::pmr::new_delete_resource()});
-    };
+    // IT TAKES THE RESOURCE rather than reaching for the process default one: the case that
+    // passes this loader opens with a live `resource` of its own, and the refusal's message
+    // is an allocation like any other. A factory and not a variable, because a namespace-scope
+    // object has no case's arena to see; disk_hash_table_t takes the loader as `const
+    // loader_t&` and calls it inline without ever storing it, so the temporary this returns
+    // outlives every use it is put to.
+    auto loader_must_not_be_consulted(std::pmr::memory_resource* resource) {
+        return [resource](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"the loader must not be consulted: every key in this case is inline",
+                                                  resource});
+        };
+    }
 
     // Empty committed set: the segment-only fixtures below never recover a
     // txn-log, so the recover gate is never consulted — an empty set is the
@@ -1427,7 +1435,7 @@ TEST_CASE("services::index::bitcask_index_disk::find_refuses_when_a_long_keys_re
             ++keydir_loader_calls;
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"the record carrying the whole key is unreadable",
-                                                  std::pmr::new_delete_resource()});
+                                                  &resource});
         };
         auto keydir_walk = index.hash_storage().get_all(encoded_long_key, keydir_loader_refuses);
         REQUIRE(keydir_walk.has_error());
@@ -1720,7 +1728,18 @@ TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage"
         logical_value_t(&resource, int64_t(987)).cast_as(complex_logical_type(logical_type::BIGINT), {});
     REQUIRE_FALSE(encoded_cast.has_error());
     const auto encoded = codec::encode_disk_hash_key(encoded_cast.value());
-    REQUIRE(rows_of(shared_ptr->get(encoded, loader_must_not_be_consulted)).has_value());
+    REQUIRE(rows_of(shared_ptr->get(encoded, loader_must_not_be_consulted(&resource))).has_value());
+
+    // THE REFUSAL THIS CASE HANDS THE KEYDIR IS ON THIS CASE'S RESOURCE, asked at the
+    // PRODUCER by calling the loader directly. A consumer cannot be asked: a refusal that
+    // has crossed a walk went through VALUE_OR_RETURN's `return tmp.error()`, which binds
+    // result_wrapper_t(const error_t&) and copies -- and std::pmr::string's copy constructor
+    // does not propagate the allocator, so the message reads as the default resource
+    // whatever its producer chose. Straight off the lambda it is the error_t&& constructor,
+    // which moves and keeps the allocator.
+    auto refusal = loader_must_not_be_consulted(&resource)(0, 0);
+    REQUIRE(refusal.has_error());
+    REQUIRE(refusal.error().what.get_allocator().resource() == &resource);
 
     // clear() answers with the reason it could not finish now; over a healthy directory
     // that reason is no_error, and saying so is what keeps this case honest about which
@@ -1730,10 +1749,10 @@ TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage"
     // The identity half: clear() wipes the keydir in place instead of replacing it, so
     // the store's own pointer to it stays valid across the wipe.
     REQUIRE(&index.hash_storage() == shared_ptr);
-    REQUIRE_FALSE(rows_of(shared_ptr->get(encoded, loader_must_not_be_consulted)).has_value());
+    REQUIRE_FALSE(rows_of(shared_ptr->get(encoded, loader_must_not_be_consulted(&resource))).has_value());
 
     index.insert(logical_value_t(&resource, int64_t(987)), 986);
-    REQUIRE(rows_of(shared_ptr->get(encoded, loader_must_not_be_consulted)).has_value());
+    REQUIRE(rows_of(shared_ptr->get(encoded, loader_must_not_be_consulted(&resource))).has_value());
     const auto rows = rows_of(index.find(logical_value_t(&resource, int64_t(987))));
     REQUIRE(rows.size() == 1);
     REQUIRE(rows.front() == 986);

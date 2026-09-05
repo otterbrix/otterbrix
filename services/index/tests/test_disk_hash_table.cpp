@@ -40,17 +40,30 @@ namespace {
     // long key would stop returning "no such row" for reasons unrelated to what it tests
     // and start failing at the walk, where it belongs. A value, not a Catch2 FAIL: rules 2
     // and 9 keep exceptions out, and the value form is loud for free.
-    constexpr auto loader_must_not_be_consulted = [](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
-        return core::error_t(core::error_code_t::io_error,
-                             std::pmr::string{"the loader must not be consulted: every key in this case is inline",
-                                              std::pmr::new_delete_resource()});
-    };
+    //
+    // IT TAKES THE RESOURCE rather than reaching for the process default one: every case
+    // that passes this loader opens with a live `resource` of its own, and the refusal's
+    // message is an allocation like any other. A factory and not a variable, because a
+    // namespace-scope object has no case's arena to see; the walks take the loader as
+    // `const loader_t&` and never store it (disk_hash_table.hpp: get_all/get/erase/keys_equal
+    // all take it by const reference and call it inline), so the temporary this returns
+    // outlives every use it is put to.
+    auto loader_must_not_be_consulted(std::pmr::memory_resource* resource) {
+        return [resource](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"the loader must not be consulted: every key in this case is inline",
+                                                  resource});
+        };
+    }
 
     // The loader answers with a std::pmr::string now (rule 8, and it is the CONCEPT that
     // demands it). Every case here has a plain std::string to hand back, so the crossing is
-    // spelled once, here, on an explicit resource -- never on the process default one.
-    std::pmr::string as_loader_key(std::string_view key) {
-        return std::pmr::string(key.data(), key.size(), std::pmr::new_delete_resource());
+    // spelled once, here, on the CALLER'S resource -- never on the process default one. The
+    // resource is a parameter for the same reason it is one above: this sits at namespace
+    // scope, where the only arena in reach would be the process-wide heap, and the arena
+    // that should own the answer belongs to the case doing the asking.
+    std::pmr::string as_loader_key(std::pmr::memory_resource* resource, std::string_view key) {
+        return std::pmr::string(key.data(), key.size(), resource);
     }
 
     // THE WALKS ANSWER WITH A core::result_wrapper_t NOW: a chain they could not finish
@@ -125,19 +138,19 @@ TEST_CASE("services::index::disk_hash_table::put_get_erase_roundtrip") {
     REQUIRE_FALSE(table.put("alpha", 10, 1, 100).contains_error());
     REQUIRE_FALSE(table.put("beta", 20, 1, 200).contains_error());
 
-    auto alpha = must_read(table.get("alpha", loader_must_not_be_consulted));
+    auto alpha = must_read(table.get("alpha", loader_must_not_be_consulted(&resource)));
     REQUIRE(alpha.has_value());
     REQUIRE(alpha->value == 10);
     REQUIRE(alpha->log_file_id == 1);
     REQUIRE(alpha->log_offset == 100);
 
-    auto beta = must_read(table.get("beta", loader_must_not_be_consulted));
+    auto beta = must_read(table.get("beta", loader_must_not_be_consulted(&resource)));
     REQUIRE(beta.has_value());
     REQUIRE(beta->value == 20);
 
-    REQUIRE(must_read(table.erase("alpha", loader_must_not_be_consulted)));
-    REQUIRE_FALSE(must_read(table.get("alpha", loader_must_not_be_consulted)).has_value());
-    REQUIRE(must_read(table.get("beta", loader_must_not_be_consulted)).has_value());
+    REQUIRE(must_read(table.erase("alpha", loader_must_not_be_consulted(&resource))));
+    REQUIRE_FALSE(must_read(table.get("alpha", loader_must_not_be_consulted(&resource))).has_value());
+    REQUIRE(must_read(table.get("beta", loader_must_not_be_consulted(&resource))).has_value());
 }
 
 TEST_CASE("services::index::disk_hash_table::persist_reopen") {
@@ -154,12 +167,12 @@ TEST_CASE("services::index::disk_hash_table::persist_reopen") {
 
     {
         disk_hash_table_t reopened(path, 32, &resource);
-        auto v1 = must_read(reopened.get("k1", loader_must_not_be_consulted));
+        auto v1 = must_read(reopened.get("k1", loader_must_not_be_consulted(&resource)));
         REQUIRE(v1.has_value());
         REQUIRE(v1->value == 111);
         REQUIRE(v1->log_file_id == 2);
         REQUIRE(v1->log_offset == 1234);
-        auto v2 = must_read(reopened.get("k2", loader_must_not_be_consulted));
+        auto v2 = must_read(reopened.get("k2", loader_must_not_be_consulted(&resource)));
         REQUIRE(v2.has_value());
         REQUIRE(v2->value == 222);
     }
@@ -175,7 +188,7 @@ TEST_CASE("services::index::disk_hash_table::multiple_values_per_key") {
     REQUIRE_FALSE(table.put("dup", 20, 2, 200).contains_error());
     REQUIRE_FALSE(table.put("dup", 10, 3, 300).contains_error());
 
-    const auto values = must_read(table.get_all("dup", loader_must_not_be_consulted));
+    const auto values = must_read(table.get_all("dup", loader_must_not_be_consulted(&resource)));
     REQUIRE(values.size() == 3);
 }
 
@@ -193,14 +206,14 @@ TEST_CASE("services::index::disk_hash_table::long_key_prefix_and_loader") {
     const auto source_1 = [&](uint32_t file_id, uint64_t offset) -> core::result_wrapper_t<std::pmr::string> {
         REQUIRE(file_id == 7);
         REQUIRE(offset == 700);
-        return as_loader_key(long_key);
+        return as_loader_key(&resource, long_key);
     };
     auto with_loader = must_read(table.get(long_key, source_1));
     REQUIRE(with_loader.has_value());
     REQUIRE(with_loader->value == 777);
 
     const auto source_2 = [&](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
-        return as_loader_key(long_key);
+        return as_loader_key(&resource, long_key);
     };
     auto mismatch = must_read(table.get(other_key, source_2));
     REQUIRE_FALSE(mismatch.has_value());
@@ -220,7 +233,7 @@ TEST_CASE("services::index::disk_hash_table::truncated_collision_requires_loader
     size_t loader_calls = 0;
     const auto source_3 = [&](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
         ++loader_calls;
-        return as_loader_key(enc_a);
+        return as_loader_key(&resource, enc_a);
     };
 
     REQUIRE(must_read(table.get_all(enc_b, source_3)).empty());
@@ -267,10 +280,25 @@ TEST_CASE("services::index::disk_hash_table::a_colliding_stranger_that_cannot_be
     REQUIRE_FALSE(table.put(enc_b, 555, 2, 200).contains_error());
     REQUIRE_FALSE(table.put(enc_a, 777, 1, 100).contains_error());
 
+    // WHERE THE KEY THE LOADER HANDS BACK LIVES, asked at the PRODUCER. The concept spells
+    // std::pmr::string precisely so the one allocation an answer costs belongs to the
+    // caller's arena, and this case HAS one -- so the crossing helper must be given it
+    // rather than reaching for the process default. enc_a is 205 bytes, past any small-string
+    // buffer, so this is a real allocation and not just a stored allocator.
+    //
+    // ASKED HERE AND NOT AT A CONSUMER because the answer would not survive the trip: a
+    // walk hands its refusal on through VALUE_OR_RETURN, which returns error() by const
+    // reference into result_wrapper_t(const error_t&) -- a COPY, and std::pmr::string's copy
+    // constructor does not propagate the allocator (core/result_wrapper.hpp:190 says so in
+    // its own DEBT note). This is the success path, where nothing copies, so the allocator
+    // reaches the comparison intact.
+    const auto produced_key = as_loader_key(&resource, enc_a);
+    REQUIRE(produced_key.get_allocator().resource() == &resource);
+
     // The baseline, so the refusal below is a CHANGE of answer rather than an empty bucket:
     // with both records readable the probe gets its one row and the stranger is rejected.
     const auto both_readable = [&](uint32_t, uint64_t offset) -> core::result_wrapper_t<std::pmr::string> {
-        return as_loader_key(offset == 200 ? enc_b : enc_a);
+        return as_loader_key(&resource, offset == 200 ? enc_b : enc_a);
     };
     const auto complete = must_read(table.get_all(enc_b, both_readable));
     REQUIRE(complete.size() == 1);
@@ -280,11 +308,11 @@ TEST_CASE("services::index::disk_hash_table::a_colliding_stranger_that_cannot_be
     const auto stranger_unreadable = [&](uint32_t, uint64_t offset) -> core::result_wrapper_t<std::pmr::string> {
         consulted.push_back(offset);
         if (offset == 200) {
-            return as_loader_key(enc_b);
+            return as_loader_key(&resource, enc_b);
         }
         return core::error_t(core::error_code_t::io_error,
                              std::pmr::string{"the stranger's record is unreadable",
-                                              std::pmr::new_delete_resource()});
+                                              &resource});
     };
 
     auto walked = table.get_all(enc_b, stranger_unreadable);
@@ -311,7 +339,7 @@ TEST_CASE("services::index::disk_hash_table::get_invokes_key_loader_for_truncate
         ++loader_calls;
         REQUIRE(file_id == 7);
         REQUIRE(offset == 700);
-        return as_loader_key(long_key);
+        return as_loader_key(&resource, long_key);
     };
 
     const auto value = must_read(table.get(long_key, source_4));
@@ -331,7 +359,7 @@ TEST_CASE("services::index::disk_hash_table::get_skips_key_loader_for_inline_ent
     size_t loader_calls = 0;
     const auto source_5 = [&](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
         ++loader_calls;
-        return as_loader_key("short-key");
+        return as_loader_key(&resource, "short-key");
     };
 
     const auto value = must_read(table.get("short-key", source_5));
@@ -354,7 +382,7 @@ TEST_CASE("services::index::disk_hash_table::erase_invokes_key_loader_for_trunca
         ++loader_calls;
         REQUIRE(file_id == 9);
         REQUIRE(offset == 900);
-        return as_loader_key(long_key);
+        return as_loader_key(&resource, long_key);
     };
 
     REQUIRE(must_read(table.erase(long_key, source_6)));
@@ -400,9 +428,9 @@ TEST_CASE("services::index::disk_hash_table::truncated_entry_refuses_when_the_re
                       .contains_error());
     REQUIRE(truncated_entries == 1);
 
-    const auto refuses = [](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
+    const auto refuses = [&resource](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
         return core::error_t(core::error_code_t::io_error,
-                             std::pmr::string{"record unreadable", std::pmr::new_delete_resource()});
+                             std::pmr::string{"record unreadable", &resource});
     };
 
     // R1a. Both readers of keys_equal hand the refusal on instead of reading it as
@@ -420,7 +448,7 @@ TEST_CASE("services::index::disk_hash_table::truncated_entry_refuses_when_the_re
     // the two lines before it reports success, so a refusal from the middle of a walk has
     // no half-done removal behind it.
     const auto source = [&](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
-        return as_loader_key(long_key);
+        return as_loader_key(&resource, long_key);
     };
     const auto still_there = must_read(table.get(long_key, source));
     REQUIRE(still_there.has_value());
@@ -449,7 +477,7 @@ TEST_CASE("services::index::disk_hash_table::truncated_entry_answers_no_when_the
     size_t loader_calls = 0;
     const auto answers = [&](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
         ++loader_calls;
-        return as_loader_key(different_key);
+        return as_loader_key(&resource, different_key);
     };
 
     const auto missing = must_read(table.get(long_key, answers));
@@ -468,12 +496,23 @@ TEST_CASE("services::index::disk_hash_table::inline_entry_never_reaches_a_refusi
     disk_hash_table_t table(path, 8, &resource);
     REQUIRE_FALSE(table.put("short-key", 5, 1, 100).contains_error());
 
-    const auto value = must_read(table.get("short-key", loader_must_not_be_consulted));
+    const auto value = must_read(table.get("short-key", loader_must_not_be_consulted(&resource)));
     REQUIRE(value.has_value());
     REQUIRE(value->value == 5);
 
-    REQUIRE(must_read(table.erase("short-key", loader_must_not_be_consulted)));
-    REQUIRE_FALSE(must_read(table.get("short-key", loader_must_not_be_consulted)).has_value());
+    REQUIRE(must_read(table.erase("short-key", loader_must_not_be_consulted(&resource))));
+    REQUIRE_FALSE(must_read(table.get("short-key", loader_must_not_be_consulted(&resource))).has_value());
+
+    // AND THE REFUSAL IT WOULD HAVE MADE IS ON THIS CASE'S RESOURCE. Asked by calling the
+    // loader DIRECTLY, which is the only place the answer can be asked: once a refusal
+    // crosses a walk it travels through VALUE_OR_RETURN, whose `return tmp.error()` binds
+    // result_wrapper_t(const error_t&) -- a copy, and std::pmr::string's copy constructor
+    // does not propagate the allocator, so every message that has passed one boundary reads
+    // as the default resource no matter what its producer chose. The error_t&& constructor
+    // one line below it moves and keeps the allocator, which is why this hop is honest.
+    auto refusal = loader_must_not_be_consulted(&resource)(0, 0);
+    REQUIRE(refusal.has_error());
+    REQUIRE(refusal.error().what.get_allocator().resource() == &resource);
 }
 TEST_CASE("services::index::disk_hash_table::rehash_preserves_entries") {
     auto resource = core::pmr::otterbrix_resource();
@@ -494,7 +533,7 @@ TEST_CASE("services::index::disk_hash_table::rehash_preserves_entries") {
 
     for (int i = 0; i < 300; ++i) {
         const auto key = "k." + std::to_string(i);
-        auto v = must_read(table.get(key, loader_must_not_be_consulted));
+        auto v = must_read(table.get(key, loader_must_not_be_consulted(&resource)));
         REQUIRE(v.has_value());
         REQUIRE(v->value == static_cast<int64_t>(i));
     }
@@ -520,13 +559,13 @@ TEST_CASE("services::index::disk_hash_table::rehash_truncated_keys_without_loade
     // for keys that were put), and stating it that way is what keeps it unreachable.
     const auto source_7 = [&](uint32_t file_id, uint64_t offset) -> core::result_wrapper_t<std::pmr::string> {
         if (file_id == 5 && offset == 500) {
-            return as_loader_key(key1);
+            return as_loader_key(&resource, key1);
         }
         if (file_id == 6 && offset == 600) {
-            return as_loader_key(key2);
+            return as_loader_key(&resource, key2);
         }
         return core::error_t(core::error_code_t::io_error,
-                             std::pmr::string{"no record at this location", std::pmr::new_delete_resource()});
+                             std::pmr::string{"no record at this location", &resource});
     };
     auto v1 = must_read(table.get(key1, source_7));
     REQUIRE(v1.has_value());
@@ -566,14 +605,14 @@ TEST_CASE("services::index::disk_hash_table::linear_hashing_progression") {
         const auto source_8 = [&](uint32_t file_id, uint64_t offset) -> core::result_wrapper_t<std::pmr::string> {
             if (file_id != 42) {
                 return core::error_t(core::error_code_t::io_error,
-                                     std::pmr::string{"no record at this location", std::pmr::new_delete_resource()});
+                                     std::pmr::string{"no record at this location", &resource});
             }
             const auto it = full_key_by_offset.find(offset);
             if (it == full_key_by_offset.end()) {
                 return core::error_t(core::error_code_t::io_error,
-                                     std::pmr::string{"no record at this location", std::pmr::new_delete_resource()});
+                                     std::pmr::string{"no record at this location", &resource});
             }
-            return as_loader_key(it->second);
+            return as_loader_key(&resource, it->second);
         };
 
         for (uint32_t target = 5; target <= 9; ++target) {
@@ -595,14 +634,14 @@ TEST_CASE("services::index::disk_hash_table::linear_hashing_progression") {
         const auto source_9 = [&](uint32_t file_id, uint64_t offset) -> core::result_wrapper_t<std::pmr::string> {
             if (file_id != 42) {
                 return core::error_t(core::error_code_t::io_error,
-                                     std::pmr::string{"no record at this location", std::pmr::new_delete_resource()});
+                                     std::pmr::string{"no record at this location", &resource});
             }
             const auto it = full_key_by_offset.find(offset);
             if (it == full_key_by_offset.end()) {
                 return core::error_t(core::error_code_t::io_error,
-                                     std::pmr::string{"no record at this location", std::pmr::new_delete_resource()});
+                                     std::pmr::string{"no record at this location", &resource});
             }
-            return as_loader_key(it->second);
+            return as_loader_key(&resource, it->second);
         };
 
         for (uint32_t target = 10; target <= 12; ++target) {
@@ -660,7 +699,7 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_copy_sync") {
         disk_hash_table_t reopened(path, 4, &resource);
         REQUIRE(reopened.bucket_count() == 4);
         for (int i = 0; i < 300; ++i) {
-            auto v = must_read(reopened.get(keys[static_cast<size_t>(i)], loader_must_not_be_consulted));
+            auto v = must_read(reopened.get(keys[static_cast<size_t>(i)], loader_must_not_be_consulted(&resource)));
             REQUIRE(v.has_value());
             REQUIRE(v->value == static_cast<int64_t>(i));
         }
@@ -689,7 +728,7 @@ TEST_CASE("services::index::disk_hash_table::split_crash_after_header_sync") {
         disk_hash_table_t reopened(path, 4, &resource);
         REQUIRE(reopened.bucket_count() == 5);
         for (int i = 0; i < 300; ++i) {
-            auto v = must_read(reopened.get(keys[static_cast<size_t>(i)], loader_must_not_be_consulted));
+            auto v = must_read(reopened.get(keys[static_cast<size_t>(i)], loader_must_not_be_consulted(&resource)));
             REQUIRE(v.has_value());
             REQUIRE(v->value == static_cast<int64_t>(i));
         }
@@ -723,7 +762,7 @@ TEST_CASE("services::index::disk_hash_table::split_crash_recovery_continues_prog
         REQUIRE(reopened.bucket_count() == 6);
 
         for (int i = 0; i < 400; ++i) {
-            auto v = must_read(reopened.get(keys[static_cast<size_t>(i)], loader_must_not_be_consulted));
+            auto v = must_read(reopened.get(keys[static_cast<size_t>(i)], loader_must_not_be_consulted(&resource)));
             REQUIRE(v.has_value());
             REQUIRE(v->value == static_cast<int64_t>(i));
         }
@@ -761,7 +800,7 @@ TEST_CASE("services::index::disk_hash_table::create_returns_a_usable_table") {
     auto table = std::move(result.value());
     REQUIRE(table);
     REQUIRE_FALSE(table->put("k", 42, 0, 0).contains_error());
-    auto found = must_read(table->get("k", loader_must_not_be_consulted));
+    auto found = must_read(table->get("k", loader_must_not_be_consulted(&resource)));
     REQUIRE(found.has_value());
     REQUIRE(found->value == 42);
 }
@@ -817,7 +856,7 @@ TEST_CASE("services::index::disk_hash_table::for_each_walks_duplicates_in_insert
 
     // Independent oracle: get_all walks the same chain by the same rule and is NOT
     // touched by this task, so the two orders must agree.
-    auto all = must_read(table.get_all("dup", loader_must_not_be_consulted));
+    auto all = must_read(table.get_all("dup", loader_must_not_be_consulted(&resource)));
     REQUIRE(all.size() == seen.size());
     for (size_t i = 0; i < all.size(); ++i) {
         REQUIRE(all[i].value == seen[i].value);
@@ -973,7 +1012,7 @@ TEST_CASE("services::index::disk_hash_table::for_each_delivers_every_entry_befor
 
     // ... and nothing keeps calling it afterwards: later work on the same table must
     // not append one more entry through the capture.
-    REQUIRE(must_read(table.get("k0", loader_must_not_be_consulted)).has_value());
+    REQUIRE(must_read(table.get("k0", loader_must_not_be_consulted(&resource))).has_value());
     REQUIRE_FALSE(table.sync().contains_error());
     REQUIRE(collected.size() == size_on_return);
     REQUIRE(calls == size_on_return);
@@ -1058,7 +1097,7 @@ TEST_CASE("services::index::disk_hash_table::reads_refuse_when_an_overflow_page_
     REQUIRE(std::filesystem::file_size(overflow_path) >= disk_hash_table_t::page_size);
 
     REQUIRE_FALSE(table.sync().contains_error());
-    const auto whole = must_read(table.get_all(key, loader_must_not_be_consulted));
+    const auto whole = must_read(table.get_all(key, loader_must_not_be_consulted(&resource)));
     REQUIRE(whole.size() == static_cast<size_t>(entry_count));
 
     const auto overflow_bytes = read_file_bytes(overflow_path);
@@ -1066,14 +1105,14 @@ TEST_CASE("services::index::disk_hash_table::reads_refuse_when_an_overflow_page_
 
     // THE PROPERTY. Not "answers fewer rows" -- answering fewer rows IS the defect: before
     // this was fixed the line below came back with 40 of the 200 rows and no way to say so.
-    auto after = table.get_all(key, loader_must_not_be_consulted);
+    auto after = table.get_all(key, loader_must_not_be_consulted(&resource));
     INFO("get_all met an unreadable overflow page and must REFUSE, not answer with the primary page alone");
     REQUIRE(after.has_error());
     REQUIRE(after.error().type == core::error_code_t::io_error);
 
     // get() is get_all()'s front element, so it refuses through the same value rather
     // than reporting the key missing.
-    auto single = table.get(key, loader_must_not_be_consulted);
+    auto single = table.get(key, loader_must_not_be_consulted(&resource));
     REQUIRE(single.has_error());
 
     size_t seen = 0;
@@ -1087,13 +1126,13 @@ TEST_CASE("services::index::disk_hash_table::reads_refuse_when_an_overflow_page_
     // bitcask_index_disk_t::erase_all_refs_for_key's loop as if it were done. Probed with
     // a key that is NOT in the table, because that is the probe which has to walk the
     // chain all the way to the unreadable page before it can answer.
-    auto erased = table.erase("absent-" + key, loader_must_not_be_consulted);
+    auto erased = table.erase("absent-" + key, loader_must_not_be_consulted(&resource));
     REQUIRE(erased.has_error());
 
     // The damage was to the FILE, not to the table: put the bytes back and every row is
     // there again, which is what proves the refusal above was the injection biting.
     restore_file_bytes(overflow_path, overflow_bytes);
-    const auto restored = must_read(table.get_all(key, loader_must_not_be_consulted));
+    const auto restored = must_read(table.get_all(key, loader_must_not_be_consulted(&resource)));
     REQUIRE(restored.size() == static_cast<size_t>(entry_count));
 }
 
@@ -1145,7 +1184,7 @@ TEST_CASE("services::index::disk_hash_table::split_refuses_when_an_entry_cannot_
         // STILL COMPLETE, and still addressed the old way: every key answers from the
         // source bucket, because the source bucket is still where the table looks.
         for (size_t i = 0; i < keys.size(); ++i) {
-            auto v = must_read(table.get(keys[i], loader_must_not_be_consulted));
+            auto v = must_read(table.get(keys[i], loader_must_not_be_consulted(&resource)));
             REQUIRE(v.has_value());
             REQUIRE(v->value == static_cast<int64_t>(i));
         }
@@ -1159,7 +1198,7 @@ TEST_CASE("services::index::disk_hash_table::split_refuses_when_an_entry_cannot_
     REQUIRE_FALSE(reopened.rehash(2).contains_error());
     REQUIRE(reopened.bucket_count() == 2);
     for (size_t i = 0; i < keys.size(); ++i) {
-        const auto rows = must_read(reopened.get_all(keys[i], loader_must_not_be_consulted));
+        const auto rows = must_read(reopened.get_all(keys[i], loader_must_not_be_consulted(&resource)));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front().value == static_cast<int64_t>(i));
     }
@@ -1198,7 +1237,7 @@ TEST_CASE("services::index::disk_hash_table::split_refuses_when_a_source_page_ca
 
     restore_file_bytes(overflow_path, overflow_bytes);
     for (size_t i = 0; i < keys.size(); ++i) {
-        const auto rows = must_read(table.get_all(keys[i], loader_must_not_be_consulted));
+        const auto rows = must_read(table.get_all(keys[i], loader_must_not_be_consulted(&resource)));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front().value == static_cast<int64_t>(i));
     }
@@ -1206,7 +1245,7 @@ TEST_CASE("services::index::disk_hash_table::split_refuses_when_a_source_page_ca
     REQUIRE_FALSE(table.rehash(2).contains_error());
     REQUIRE(table.bucket_count() == 2);
     for (size_t i = 0; i < keys.size(); ++i) {
-        const auto rows = must_read(table.get_all(keys[i], loader_must_not_be_consulted));
+        const auto rows = must_read(table.get_all(keys[i], loader_must_not_be_consulted(&resource)));
         REQUIRE(rows.size() == 1);
         REQUIRE(rows.front().value == static_cast<int64_t>(i));
     }
@@ -1409,7 +1448,7 @@ TEST_CASE("services::index::disk_hash_table::an_erased_slot_is_reused_by_the_nex
     // 500 put/erase rounds of one identically-sized entry: live size never exceeds 1.
     for (int64_t i = 0; i < 500; ++i) {
         REQUIRE_FALSE(table.put("steady-key", i, 1, static_cast<uint64_t>(1000 + i)).contains_error());
-        auto erased = table.erase("steady-key", loader_must_not_be_consulted);
+        auto erased = table.erase("steady-key", loader_must_not_be_consulted(&resource));
         REQUIRE_FALSE(erased.has_error());
         REQUIRE(erased.value());
     }
@@ -1422,7 +1461,7 @@ TEST_CASE("services::index::disk_hash_table::an_erased_slot_is_reused_by_the_nex
 
     // And the table still answers correctly through the reused slot.
     REQUIRE_FALSE(table.put("steady-key", 42, 3, 4242).contains_error());
-    auto found = must_read(table.get("steady-key", loader_must_not_be_consulted));
+    auto found = must_read(table.get("steady-key", loader_must_not_be_consulted(&resource)));
     REQUIRE(found.has_value());
     REQUIRE(found->value == 42);
     REQUIRE(found->log_file_id == 3);

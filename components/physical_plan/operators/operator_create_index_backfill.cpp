@@ -331,18 +331,9 @@ namespace components::operators {
                 old_chunks[fetch_slots[i]] = std::move(fetched_r.value());
             }
             if (fetch_error.contains_error()) {
-                // Release the WAL retention guard before failing (mirrors the streaming-scan exit) so the
-                // next checkpoint can truncate freely.
-                if (build_start_registered) {
-                    auto [_u, uf] =
-                        actor_zeta::otterbrix::send(ctx->wal_address,
-                                                    &services::wal::manager_wal_replicate_t::unregister_active_build,
-                                                    ctx->session,
-                                                    build_start_wal_position);
-                    co_await std::move(uf);
-                    build_start_registered = false;
-                }
                 set_error(std::move(fetch_error));
+                mark_failed();
+                co_await abandon_build(resource_);
                 co_return;
             }
 

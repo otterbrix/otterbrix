@@ -177,7 +177,7 @@ namespace services::disk {
         co_return std::move(deleted_per_spec);
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::update_pg_attribute_commit_id_fields(
+    manager_disk_t::unique_future<core::error_t> manager_disk_t::update_pg_attribute_commit_id_fields(
         execution_context_t ctx,
         std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
         std::uint64_t commit_id) {
@@ -185,15 +185,43 @@ namespace services::disk {
         // physical_update WAL record. pg_attribute always routes to agents_[0].
         // Serialized (co_await per item) so the per-backfill WAL records are emitted
         // in order.
+        //
+        // THE TWO ROUTING LEGS ARE REFUSALS, NOT NO-OPS, and both used to be a bare co_return —
+        // the same reading direct_delete_sync's router already rejects one file over. A
+        // caller's markers do not evaporate because this manager has no agents.
+        //
+        // AND THE ONE LEGITIMATE EMPTY IS SPLIT OFF FIRST, the same split direct_append_sync and
+        // storage_delete_rows_inner keep: a batch that names no marker asks for nothing, and
+        // must not be answered with the refusal that belongs to a batch with nowhere to land.
         constexpr auto pg_attr_oid = components::catalog::well_known_oid::pg_attribute_table;
+        if (backfills.empty()) {
+            co_return core::error_t::no_error();
+        }
         if (agents_.empty()) {
-            co_return;
+            co_return core::error_t{
+                core::error_code_t::io_error,
+                std::pmr::string{"update_pg_attribute_commit_id_fields: no disk agents; no commit_id stamp "
+                                 "was applied",
+                                 resource()}};
         }
         const std::size_t idx = pool_idx_for_oid(pg_attr_oid, agents_.size());
         auto& agent = agents_[idx];
         if (agent == nullptr) {
-            co_return;
+            co_return core::error_t{
+                core::error_code_t::io_error,
+                std::pmr::string{"update_pg_attribute_commit_id_fields: the agent owning pg_attribute is null; "
+                                 "no commit_id stamp was applied",
+                                 resource()}};
         }
+        // EVERY MARKER IS ATTEMPTED, and the answer carries the COUNT of refusals with the
+        // FIRST one's text. Stopping at the first would cost the remaining markers a stamp
+        // they could have had, on a path that is already below the durable commit marker and
+        // cannot be retried by aborting — and an answer that names only the first refusal
+        // reads, one level up, as if the WHOLE batch went unstamped: on a mixed batch that is
+        // the old "patched in-place" lie with the sign flipped. The counts make "1 of N" and
+        // "N of N" different answers.
+        core::error_t first_refusal = core::error_t::no_error();
+        std::size_t refused_count = 0;
         for (const auto& b : backfills) {
             auto [needs_sched, fut] =
                 actor_zeta::otterbrix::send(agent->address(),
@@ -205,7 +233,13 @@ namespace services::disk {
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
-            co_await std::move(fut);
+            auto stamped = co_await std::move(fut);
+            if (stamped.contains_error()) {
+                ++refused_count;
+                if (!first_refusal.contains_error()) {
+                    first_refusal = core::error_on(resource(), stamped);
+                }
+            }
         }
 
         // RN-oid — the added_at marker's SECOND half, and the only leg of "every storage column
@@ -250,7 +284,21 @@ namespace services::disk {
                 scheduler_disk_->enqueue(owner.get());
             }
         }
-        co_return;
+        // The RN-oid notes above are deliberately fire-and-forget (see the block comment), so
+        // the answer carries only what the STAMPS did: how many of the batch were refused,
+        // how many landed, and the first refusal's own words.
+        if (refused_count > 0) {
+            std::pmr::string what{"update_pg_attribute_commit_id_fields: ", resource()};
+            what.append(std::to_string(refused_count).c_str());
+            what.append(" of ");
+            what.append(std::to_string(backfills.size()).c_str());
+            what.append(" commit_id stamp(s) were refused (");
+            what.append(std::to_string(backfills.size() - refused_count).c_str());
+            what.append(" applied); first refusal: ");
+            what.append(first_refusal.what.c_str());
+            co_return core::error_t{first_refusal.type, std::move(what)};
+        }
+        co_return core::error_t::no_error();
     }
 
     manager_disk_t::unique_future<std::uint64_t>

@@ -348,13 +348,46 @@ namespace components::operators {
                                              backfill_ctx,
                                              std::move(backfill_markers),
                                              commit_id_);
-            co_await std::move(bf);
-            trace(log_,
-                  "operator_commit_transaction: OPTION X drained {} pg_attribute backfill markers "
-                  "for txn {} commit_id {} (patched in-place)",
-                  backfill_count,
-                  txn_data.transaction_id,
-                  commit_id_);
+            // THE ANSWER IS READ, AND IT IS NOT ALLOWED TO REFUSE THE COMMIT. The handler was
+            // unique_future<void>, so "the stamp did not land" was a log line inside the disk
+            // agent and the trace below claimed all `backfill_count` markers were "patched
+            // in-place" whether or not any of them were. It answers now — but this is STEP 4,
+            // and the ordering block at the top of this function is the authority on what may
+            // be done with it: the durable commit marker is already on the device (STEP 2, or
+            // the DDL prefix), the commit_id is stamped, and "nothing below may refuse it". A
+            // set_error + co_return here would strand commit_id_ in in_flight_commits_ with no
+            // one left to take it out — the unbounded horizon pin STEP 1 and STEP 2 were
+            // hoisted above this line to prevent — and would tell the client a committed,
+            // journalled transaction failed.
+            //
+            // WHAT A REFUSAL ACTUALLY COSTS, so the choice is not a shrug: the marker's
+            // pg_attribute row keeps added_at/dropped_at_commit_id == 0, and the agent declines
+            // the storage patch whenever it was the JOURNAL that refused, so memory, platter
+            // and journal agree on that 0. Zero reads as "added before every snapshot", i.e.
+            // the new column is visible to snapshots older than the ALTER — a bounded
+            // visibility error, self-consistent across a restart, and exactly the state this
+            // branch shipped for as long as the backfill's scan could not see its own row.
+            // THE COUNT IN THE LINE IS THE MANAGER'S, NOT THE BATCH SIZE. The manager attempts
+            // every marker and its answer says "K of N stamp(s) were refused (N-K applied)" —
+            // sized to the batch, this line claimed all `backfill_count` markers went unstamped
+            // on exactly the mixed batch the every-marker loop exists for.
+            if (auto backfill_result = co_await std::move(bf); backfill_result.contains_error()) {
+                error(log_,
+                      "operator_commit_transaction: the pg_attribute backfill of {} marker(s) for txn {} "
+                      "commit_id {} reported refused stamp(s); each refused column keeps commit_id 0 and is "
+                      "visible to older snapshots: {}",
+                      backfill_count,
+                      txn_data.transaction_id,
+                      commit_id_,
+                      backfill_result.what.c_str());
+            } else {
+                trace(log_,
+                      "operator_commit_transaction: OPTION X drained {} pg_attribute backfill markers "
+                      "for txn {} commit_id {} (patched in-place)",
+                      backfill_count,
+                      txn_data.transaction_id,
+                      commit_id_);
+            }
         }
 
         // STEP 5 — the per-table index delete-commits. NOT the mirror of commit_inserts

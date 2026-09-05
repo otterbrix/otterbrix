@@ -254,25 +254,17 @@ namespace components::storage {
             return true;
         }
 
-        // Replay/legacy path (no txn). The table-layer append chain returns result_wrapper_t
-        // (write_conflict / out_of_memory); replay records are already schema-aligned and
-        // single-threaded, so a failure here is a hard bug — bind the wrappers and assert success.
-        uint64_t append(vector::data_chunk_t& data) override {
-            table::table_append_state append_state(resource_);
-            [[maybe_unused]] auto lock_r = table_.append_lock(append_state);
-            assert(!lock_r.has_error() && "replay append_lock conflict");
-            [[maybe_unused]] auto init_r = table_.initialize_append(append_state);
-            assert(!init_r.has_error() && "replay initialize_append OOM");
-            auto start_row = static_cast<uint64_t>(append_state.current_row);
-            [[maybe_unused]] auto app_r = table_.append(data, append_state);
-            assert(!app_r.has_error() && "replay append OOM");
-            table_.finalize_append(append_state, table::transaction_data{0, 0});
-            return start_row;
-        }
-
         // Returns the start_row on success, or write_conflict / out_of_memory surfaced by the
         // table-layer append chain. The agent_disk append handler reads the wrapper and turns
         // any error into a graceful txn abort.
+        //
+        // THIS IS ALSO THE REPLAY APPEND. There used to be a second `append(data)` above with
+        // this exact body, every wrapper bound to a [[maybe_unused]] local and asserted rather
+        // than returned, on the reasoning that "replay records are already schema-aligned and
+        // single-threaded, so a failure here is a hard bug". out_of_memory is not a bug, and
+        // under NDEBUG the asserts are not there at all: the caller got the start_row of an
+        // append that never happened. The direct-write caller passes transaction_data{0, 0},
+        // which is what that overload's finalize_append used.
         [[nodiscard]] core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data,
                                                               table::transaction_data txn) override {
             table::table_append_state append_state(resource_);
@@ -293,16 +285,55 @@ namespace components::storage {
             return start_row;
         }
 
-        void update(vector::vector_t& row_ids, vector::data_chunk_t& data) override {
-            // Replay leg. The journalled payload was written by the txn update below, which
-            // already refused any value in an unmaterialized column, so the trim here can only
-            // be dropping all-NULL columns — but it still has to happen: the WAL record carries
-            // the CATALOG-wide chunk, and at replay time the storage is narrower still.
-            [[maybe_unused]] auto trimmed = trim_unmaterialized_payload(data);
-            assert(!trimmed.contains_error() && "replay update carries a value for an unmaterialized column");
+        // Replay leg — an IN-PLACE update, unlike the MVCC delete+append below it. The
+        // journalled payload was written by the txn update below, which already refused any
+        // value in an unmaterialized column, so the trim here SHOULD only be dropping all-NULL
+        // columns — but it still has to happen: the WAL record carries the CATALOG-wide chunk,
+        // and at replay time the storage is narrower still.
+        //
+        // "SHOULD" IS NOT A CHANNEL, AND THAT IS WHAT CHANGED. Both refusals used to be
+        // asserts over [[maybe_unused]] locals — absent entirely under NDEBUG — so a replayed
+        // committed row that this leg declined to write was reported to
+        // agent_disk_t::direct_update_sync as written, and from there to base_spaces' replay
+        // loop as restored. Recovery cannot tell "there was nothing to do" from "I could not do
+        // it" unless this says so.
+        //
+        // AND ON THIS PATH THE ANSWER IS RECOVER-THEN-REPORT, NOT REFUSE-UP-FRONT. A value in
+        // an unmaterialized column at REPLAY time means the column's materialising INSERT was
+        // itself refused earlier in the replay (and logged) — the value has no column to land
+        // in either way. The row's materialized columns are still addressable, and the
+        // NDEBUG build this channel replaced DID restore them (data_table_t::update builds
+        // its column list from its own column_count() and never reads the chunk's trailing
+        // columns), so refusing before table_.update would restore LESS than the silent code
+        // it replaced. The trim is applied unconditionally, the materialized part is written
+        // IN PLACE, and the answer names the value that could not be restored — the txn
+        // overload below keeps the up-front refusal, because there the statement can still
+        // be refused BEFORE anything is journalled.
+        [[nodiscard]] core::error_t update(vector::vector_t& row_ids, vector::data_chunk_t& data) override {
+            core::error_t lost = trim_unmaterialized_payload_for_replay(data);
+            const auto requested = data.size();
             auto update_state = table_.initialize_update({});
-            [[maybe_unused]] auto upd_r = table_.update(*update_state, row_ids, data);
-            assert(!upd_r.has_error() && "replay update conflict/OOM");
+            auto upd_r = table_.update(*update_state, row_ids, data);
+            if (upd_r.has_error()) {
+                return core::error_on(resource_, upd_r.error());
+            }
+            // {0, applied-count} is the half of the answer the old void signature dropped:
+            // data_table_t::update filters row ids at or past MAX_ROW_ID, so "applied to 0
+            // of them" used to report exactly like "applied to all of them".
+            const uint64_t applied = upd_r.value().second;
+            if (applied != requested) {
+                std::pmr::string what{"replay update applied ", resource_};
+                what.append(std::to_string(applied).c_str());
+                what.append(" of ");
+                what.append(std::to_string(requested).c_str());
+                what.append(" journalled row update(s); the rest named rows this storage cannot hold");
+                if (lost.contains_error()) {
+                    what.append("; additionally: ");
+                    what.append(lost.what.c_str());
+                }
+                return core::error_t{core::error_code_t::io_error, std::move(what)};
+            }
+            return lost;
         }
 
         // Returns {start_row, count} on success, or write_conflict / out_of_memory surfaced by
@@ -411,6 +442,58 @@ namespace components::storage {
             // erase, not resize: vector_t is not default-constructible, so resize() does not compile.
             data.data.erase(data.data.begin() + static_cast<std::ptrdiff_t>(physical), data.data.end());
             return core::error_t::no_error();
+        }
+
+        // REPLAY-SIDE MIRROR of the trim above, with the refusal turned into a report: the
+        // trailing columns are dropped UNCONDITIONALLY (recovery goes on to restore the
+        // materialized part of the row), and the answer names any journalled value that had
+        // to be dropped with them, so the replay loop can say what was lost instead of
+        // either losing it silently (the pre-channel shape) or refusing the whole row (which
+        // restores less than the silent shape did). See the replay `update` for the full
+        // reasoning.
+        [[nodiscard]] core::error_t trim_unmaterialized_payload_for_replay(vector::data_chunk_t& data) const {
+            const size_t physical = table_.column_count();
+            if (data.column_count() <= physical) {
+                return core::error_t::no_error();
+            }
+            const auto& declared = unmaterialized_columns();
+            std::pmr::string lost_columns{resource_};
+            for (size_t i = physical; i < data.column_count(); i++) {
+                for (uint64_t row = 0; row < data.size(); row++) {
+                    if (data.is_null(i, row)) {
+                        continue;
+                    }
+                    if (!lost_columns.empty()) {
+                        lost_columns.append(", ");
+                    }
+                    lost_columns.append("'");
+                    // The payload's own alias is the WAL record's name for the column and is
+                    // always present on a replayed chunk; the declared list only knows columns
+                    // pg_attribute has published to THIS entry, which a failed upstream replay
+                    // may never have done.
+                    const size_t declared_idx = i - physical;
+                    if (data.data[i].type().has_alias()) {
+                        lost_columns.append(data.data[i].type().alias().c_str());
+                    } else if (declared_idx < declared.size()) {
+                        lost_columns.append(declared[declared_idx].name().c_str());
+                    } else {
+                        lost_columns.append("?");
+                    }
+                    lost_columns.append("'");
+                    break;
+                }
+            }
+            // erase, not resize: vector_t is not default-constructible, so resize() does not compile.
+            data.data.erase(data.data.begin() + static_cast<std::ptrdiff_t>(physical), data.data.end());
+            if (lost_columns.empty()) {
+                return core::error_t::no_error();
+            }
+            std::pmr::string what{"replay update restored the row's materialized columns, but the journalled "
+                                  "value(s) for unmaterialized column(s) ",
+                                  resource_};
+            what.append(lost_columns.c_str());
+            what.append(" were dropped — the column's materialising INSERT did not replay");
+            return core::error_t{core::error_code_t::unimplemented_yet, std::move(what)};
         }
 
         // The caller's (catalog) ordinals reduced to the ones a row group can actually read.

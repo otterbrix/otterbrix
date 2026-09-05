@@ -624,7 +624,22 @@ namespace services::disk {
         //   by attoid: read the full row, mutate col 10 (added_at) or 11 (dropped_at) to
         //   commit_id, WAL physical_update full-width, then write back via the agent's
         //   own direct_update_sync.
-        unique_future<void>
+        //
+        //   THE SAME HOLE delete_pg_catalog_rows_inner CLOSED, ONE METHOD OVER. This was
+        //   unique_future<void>: no pg_attribute on this agent, no row that answers to that
+        //   attoid, a patch column past the end of the row, a REFUSED journal record, a refused
+        //   storage write — all five ended in a bare `co_return` behind a log line, so a COMMIT
+        //   whose ALTER never got its commit_id stamped reported success and nothing above the
+        //   agent could tell. The refused journal record now also STOPS the storage patch, for
+        //   the reason stated at delete_pg_catalog_rows_inner: storage must not move one state
+        //   ahead of a journal that has no record to replay it from.
+        //
+        //   WHAT THE CALLER MAY DO WITH THE ANSWER IS NOT "ABORT". This runs at STEP 4 of
+        //   operator_commit_transaction_t, BELOW the durable commit marker that step's own
+        //   ordering block calls "the commit is now durable; nothing below may refuse it" —
+        //   refusing here would orphan the commit_id in in_flight_commits_ and pin the horizon
+        //   for the life of the process. The caller reports; it does not un-commit.
+        unique_future<core::error_t>
         update_pg_attribute_commit_id_field_inner(execution_context_t ctx,
                                                   components::catalog::oid_t attoid,
                                                   components::pg_attribute_commit_id_backfill_t::kind_t kind,

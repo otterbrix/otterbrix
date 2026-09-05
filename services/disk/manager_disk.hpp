@@ -966,7 +966,12 @@ namespace services::disk {
         // insert_id == txn_id, so each is a metadata-only write nobody else can
         // observe. Emits one physical_update WAL record per backfill so replay
         // re-applies each after the matching physical_insert.
-        unique_future<void>
+        //
+        // Answers with the FIRST refusal any marker met, after attempting them all: one
+        // unpatchable marker must not cost the others their stamp. It was unique_future<void>,
+        // so a backfill that did not happen was a log line and a COMMIT that said success. See
+        // agent_disk.hpp for why the caller reports rather than refuses.
+        unique_future<core::error_t>
         update_pg_attribute_commit_id_fields(execution_context_t ctx,
                                              std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
                                              std::uint64_t commit_id);

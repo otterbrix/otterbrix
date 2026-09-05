@@ -224,9 +224,25 @@ namespace services::disk {
                                                    const std::pmr::vector<int64_t>& row_ids,
                                                    uint64_t count,
                                                    const components::table::transaction_data& txn) {
-        if (row_ids.empty()) {
-            // The one legitimate no-op: the record names no rows.
+        if (row_ids.empty() && count == 0) {
+            // The one legitimate no-op: the record names no rows AND counts none.
             return core::error_t::no_error();
+        }
+        // THE COUNT AND THE ID LIST TRAVEL SEPARATELY, so they can disagree — and this guard
+        // covers the largest index read below it: the id vector is built `count` wide and the
+        // storage reads all `count` cells, so a count that outruns the ids used to delete
+        // UNINITIALISED cells (the old fill loop stopped at row_ids.size() and left the tail
+        // as whatever the fresh vector held), and a count short of the ids silently dropped
+        // the surplus ids' deletes.
+        if (static_cast<uint64_t>(row_ids.size()) != count) {
+            std::pmr::string what{"agent_disk::direct_delete_sync: the record counts ", resource()};
+            what.append(std::to_string(count).c_str());
+            what.append(" row(s) but names ");
+            what.append(std::to_string(row_ids.size()).c_str());
+            what.append(" row id(s) for table oid ");
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            what.append(" — the journalled delete is NOT replayed");
+            return core::error_t{core::error_code_t::io_error, std::move(what)};
         }
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
@@ -237,18 +253,52 @@ namespace services::disk {
             resource(),
             components::types::complex_logical_type(components::types::logical_type::BIGINT),
             count);
-        for (uint64_t i = 0; i < count && i < row_ids.size(); i++) {
+        for (uint64_t i = 0; i < count; i++) {
             ids_vec.set_value(i, row_ids[i]);
         }
-        entry->storage->delete_rows(ids_vec, count, txn.transaction_id);
+        // THE COUNT IS THE ANSWER, and it used to go on the floor: delete_rows reports how
+        // many of the named rows it actually stamped, and a replayed PHYSICAL_DELETE that
+        // stamped fewer than it named — rows whose materialising INSERT was refused at
+        // replay, or rows already gone — reported success while rows the journal says are
+        // dead stayed alive. append and update on this path already answer; delete was the
+        // one router left without a channel.
+        const uint64_t deleted = entry->storage->delete_rows(ids_vec, count, txn.transaction_id);
+        if (deleted != count) {
+            std::pmr::string what{"agent_disk::direct_delete_sync: the storage deleted ", resource()};
+            what.append(std::to_string(deleted).c_str());
+            what.append(" of ");
+            what.append(std::to_string(count).c_str());
+            what.append(" journalled row(s) for table oid ");
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            what.append(" — the rest are NOT replayed");
+            return core::error_t{core::error_code_t::io_error, std::move(what)};
+        }
         return core::error_t::no_error();
     }
 
     core::error_t agent_disk_t::direct_update_sync(components::catalog::oid_t table_oid,
                                                    const std::pmr::vector<int64_t>& row_ids,
                                                    components::vector::data_chunk_t& new_data) {
-        if (row_ids.empty()) {
+        if (row_ids.empty() && new_data.size() == 0) {
+            // The one legitimate no-op: the record names no rows AND carries none. An empty
+            // id list under a NON-empty chunk falls to the mismatch below — it used to take
+            // this door, which is how a committed update whose ids were lost reported success.
             return core::error_t::no_error();
+        }
+        // ROW IDS PAIR WITH CHUNK ROWS BY POSITION, and nothing below re-checks the pairing:
+        // data_table_t::update reads `data.size()` entries out of the id vector (it takes its
+        // count from the CHUNK), so a record with fewer ids than rows sent the update reading
+        // past the ids it was given — this guard covers that largest read. More ids than rows
+        // is the same disagreement from the other side: the surplus ids' updates would vanish.
+        if (row_ids.size() != static_cast<std::size_t>(new_data.size())) {
+            std::pmr::string what{"agent_disk::direct_update_sync: the record carries ", resource()};
+            what.append(std::to_string(new_data.size()).c_str());
+            what.append(" row(s) but names ");
+            what.append(std::to_string(row_ids.size()).c_str());
+            what.append(" row id(s) for table oid ");
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            what.append(" — the journalled update is NOT replayed");
+            return core::error_t{core::error_code_t::io_error, std::move(what)};
         }
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
@@ -269,8 +319,13 @@ namespace services::disk {
         // on Debug builds. See docs/wal-recovery-pmr-mismatch.md.
         components::vector::data_chunk_t local(resource(), new_data.types(), new_data.size());
         new_data.copy(local, 0);
-        entry->storage->update(ids_vec, local);
-        return core::error_t::no_error();
+        // THE ANSWER, NOT no_error(). This used to be a void call followed by an unconditional
+        // `return core::error_t::no_error()`, so the storage's refusal -- out_of_memory, a
+        // write_conflict, a payload naming a column this storage has not materialised -- had
+        // nowhere to go, and every one of them was an assert inside the adapter that NDEBUG
+        // deletes. base_spaces' replay loop reads this value and reports on it; until now the
+        // only thing it could read was a constant.
+        return entry->storage->update(ids_vec, local);
     }
 
     core::error_t agent_disk_t::direct_add_column_sync(components::catalog::oid_t table_oid,
@@ -756,20 +811,25 @@ namespace services::disk {
         //     handler's only one (a second sequential cross-actor await would risk a
         //     lost-wakeup hang). The WAL record was already written; on a materialize failure
         //     the txn aborts and storage_revert_appends unwinds it.
-        uint64_t materialized_start;
-        if (txn.transaction_id != 0) {
-            auto append_r = s->append(*data, txn);
-            if (append_r.has_error()) {
-                trace(log_,
-                      "agent_disk[{}]::storage_append_inner: materialize failed for oid={} — surfacing error",
-                      pool_idx_,
-                      static_cast<unsigned>(table_oid));
-                co_return append_r.convert_error<std::pair<uint64_t, uint64_t>>();
-            }
-            materialized_start = append_r.value();
-        } else {
-            materialized_start = s->append(*data);
+        //
+        //     THE DIRECT-WRITE LEG TAKES THE SAME DOOR NOW. It used to call a second,
+        //     argument-less storage_t::append whose body was this one with the wrappers
+        //     asserted instead of returned -- so under NDEBUG a bootstrap/replay append that
+        //     failed handed back the start_row it had reserved and this handler answered with
+        //     it. That overload is deleted; transaction_data{0, 0} is exactly the
+        //     finalize_append it performed, and is passed explicitly rather than forwarding
+        //     `txn` so the value written is the same one it wrote (a direct write can carry a
+        //     non-zero start_time).
+        auto append_r =
+            s->append(*data, txn.transaction_id != 0 ? txn : components::table::transaction_data{0, 0});
+        if (append_r.has_error()) {
+            trace(log_,
+                  "agent_disk[{}]::storage_append_inner: materialize failed for oid={} — surfacing error",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid));
+            co_return append_r.convert_error<std::pair<uint64_t, uint64_t>>();
         }
+        const uint64_t materialized_start = append_r.value();
         assert(materialized_start == start_row &&
                "WAL-first append: materialized start_row diverged from the reserved start_row");
         co_return std::make_pair(materialized_start, actual_count);
@@ -2780,7 +2840,7 @@ namespace services::disk {
     // unconditionally), so a "patch one column" chunk would NULL out the others. We
     // read the full row, mutate the target field in the read-back chunk, and write the
     // whole chunk back.
-    agent_disk_t::unique_future<void>
+    agent_disk_t::unique_future<core::error_t>
     agent_disk_t::update_pg_attribute_commit_id_field_inner(execution_context_t ctx,
                                                             components::catalog::oid_t attoid,
                                                             components::pg_attribute_commit_id_backfill_t::kind_t kind,
@@ -2788,7 +2848,16 @@ namespace services::disk {
         constexpr auto pg_attr_oid = components::catalog::well_known_oid::pg_attribute_table;
         auto it = storages_.find(pg_attr_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            co_return;
+            // There is no legitimate empty on this leg. Every marker names a pg_attribute row
+            // the same transaction has already written, and pg_attribute always routes to the
+            // agent this message was addressed to; an agent that does not hold it is a misroute,
+            // not a backfill with nothing to do. It used to be a bare co_return.
+            std::pmr::string what{"update_pg_attribute_commit_id_field: this agent holds no pg_attribute; "
+                                  "the commit_id stamp for attoid ",
+                                  resource()};
+            what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
+            what.append(" was not applied");
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
         auto& entry = it->second;
 
@@ -2851,24 +2920,50 @@ namespace services::disk {
                                 return false; // single-row identity — short-circuit
                             });
         if (row_ids.empty()) {
-            trace(log_,
-                  "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: attoid={} not found (skipping)",
-                  pool_idx_,
-                  static_cast<unsigned>(attoid));
-            co_return;
+            // "not found (skipping)" WAS THE WHOLE BUG, and it was a trace line. The scan now
+            // carries ctx.txn (see above), so the row the caller just wrote is exactly the row
+            // this sees; an empty result therefore means the stamp cannot be applied at all —
+            // never "there was nothing to stamp".
+            std::pmr::string what{"update_pg_attribute_commit_id_field: no pg_attribute row visible to this "
+                                  "transaction carries attoid ",
+                                  resource()};
+            what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
+            what.append("; its commit_id stamp was not applied");
+            co_return core::error_t{core::error_code_t::do_not_exists, std::move(what)};
+        }
+        // THE WHOLE ROW WIDTH, not just the patch column's ordinal. The scan callback pushes
+        // exactly col_count values per matched row, so a shorter row_values here should be
+        // impossible — but the two chunk-fill loops below guard against exactly that shape
+        // (`c < row_values.size()`), and a fill loop that stops early leaves the TAIL cells of
+        // the patch chunk uninitialised with their validity defaulting to VALID: garbage
+        // written into pg_attribute. If the width is ever short, refusing is the only honest
+        // answer; the reactive guards below then never fire.
+        if (row_values.size() != col_count) {
+            std::pmr::string what{"update_pg_attribute_commit_id_field: the scan returned ", resource()};
+            what.append(std::to_string(row_values.size()).c_str());
+            what.append(" value(s) for a pg_attribute row of ");
+            what.append(std::to_string(col_count).c_str());
+            what.append(" column(s) (attoid ");
+            what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
+            what.append("); refusing to write a partially-initialised patch");
+            co_return core::error_t{core::error_code_t::schema_error, std::move(what)};
         }
 
         // Patch the target column: 10 = added_at_commit_id, 11 = dropped_at_commit_id.
         const std::size_t patch_col_idx =
             (kind == components::pg_attribute_commit_id_backfill_t::kind_t::added_at) ? 10u : 11u;
         if (patch_col_idx >= row_values.size()) {
-            trace(log_,
-                  "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: patch_col_idx={} out of range "
-                  "(col_count={})",
-                  pool_idx_,
-                  patch_col_idx,
-                  col_count);
-            co_return;
+            // pg_attribute narrower than its own schema: the row cannot carry a commit_id at
+            // all. A trace line here meant the stamp silently stayed 0.
+            std::pmr::string what{"update_pg_attribute_commit_id_field: pg_attribute row for attoid ",
+                                  resource()};
+            what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
+            what.append(" has no commit_id column at index ");
+            what.append(std::to_string(patch_col_idx).c_str());
+            what.append(" (row width ");
+            what.append(std::to_string(row_values.size()).c_str());
+            what.append(")");
+            co_return core::error_t{core::error_code_t::schema_error, std::move(what)};
         }
         row_values[patch_col_idx] =
             components::types::logical_value_t(resource(), static_cast<std::int64_t>(commit_id));
@@ -2921,37 +3016,54 @@ namespace services::disk {
                                              components::catalog::well_known_oid::main_database);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
-                // This handler's contract is still unique_future<void>, so the refusal has
-                // nowhere to travel and is reported at error level rather than dropped. Where
-                // delete_pg_catalog_rows_inner stood a moment ago: the same hole, one method
-                // over, and closing it is the same kind of signature change through its own
-                // callers (operator_commit_transaction_t's backfill drain).
+                // WAL-FIRST, AND THE PATCH BELOW DOES NOT RUN. This used to log at error level
+                // and then apply the storage patch anyway — the exact shape
+                // delete_pg_catalog_rows_inner had ("logged the refusal and then DELETED THE
+                // ROWS ANYWAY, leaving storage one state ahead of a journal that has no record
+                // of the delete to replay") and the exact shape storage_append_inner refuses
+                // one screen up. Declining the patch keeps the two in agreement: the stamp
+                // stays at its placeholder in memory, on the platter and in the journal, which
+                // is the state the branch shipped with until this backfill first ran against a
+                // real row.
                 error(log_,
                       "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: the PHYSICAL_UPDATE did not "
-                      "reach the journal for attoid={}: {}",
+                      "reach the journal for attoid={}, the stamp is NOT applied: {}",
                       pool_idx_,
                       static_cast<unsigned>(attoid),
                       wal_result.error().what);
-            } else if (wal_result.value() == wal::id_t{}) {
+                co_return core::error_on(resource(), wal_result.error());
+            }
+            // A ZERO ID IS A LEGAL ANSWER, NOT A QUIET REFUSAL, and the patch below runs over
+            // it on purpose: the WAL manager's write_physical_* legs answer wal::id_t{0} for
+            // exactly two states — the journal is DISABLED by configuration, or the record
+            // carried no rows — and their own contract comment says so ("a zero id from these
+            // two legs means 'nothing was asked to be written' ... the wrapper is what a
+            // REFUSAL travels in", manager_wal_replicate.cpp). This chunk always carries one
+            // row, so zero here means WAL-off, where there is no journal for the patch to
+            // stay in agreement with; declining the patch on it would turn every backfill of
+            // a journal-less deployment into a refusal.
+            if (wal_result.value() == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: WAL write returned zero id "
-                      "for attoid={}",
+                      "for attoid={} (journal disabled — the patch proceeds without a record)",
                       pool_idx_,
                       static_cast<unsigned>(attoid));
             }
         }
 
-        // The row was READ from this slice a few lines up, so the refusal is unreachable here —
-        // and, this handler having no error channel of its own yet, it is reported rather than
-        // dropped.
+        // The row was READ from this slice a few lines up, so a refusal here is not expected —
+        // which is not the same as impossible (out_of_memory in the update segment is neither
+        // a bug nor visible from the read), and until this handler grew an answer the
+        // difference was a log line.
         if (auto upd_err = direct_update_sync(pg_attr_oid, row_ids, patch); upd_err.contains_error()) {
             error(log_,
                   "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: the slice it had just read "
                   "refused the update: {}",
                   pool_idx_,
                   upd_err.what);
+            co_return std::move(upd_err);
         }
-        co_return;
+        co_return core::error_t::no_error();
     }
 
     // Whole-op intra-agent compaction: read own slice, compute the columns NOT in

@@ -1,6 +1,7 @@
 #include "base_spaces.hpp"
 #include <actor-zeta.hpp>
 #include <actor-zeta/spawn.hpp>
+#include <algorithm>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/logical_plan/node_checkpoint.hpp>
@@ -619,17 +620,48 @@ namespace otterbrix {
                                     }
                                     // physical_row_ids is flat across the batch; slice it per
                                     // chunk in vector order to match each chunk's rows.
+                                    //
+                                    // A RECORD CAN NAME FEWER IDS THAN IT CARRIES ROWS — a torn
+                                    // or damaged record, exactly what recovery meets — and the
+                                    // old bound `i < n && id_base + i < size` ABSORBED that
+                                    // silently: a fully-short slice handed an empty id list to
+                                    // the legitimate-no-op door (the committed update vanished
+                                    // with a success report), and a partial one handed
+                                    // MISMATCHED sizes to data_table_t::update, which reads
+                                    // ids by the CHUNK's row count — past the end of the ids.
+                                    // Now the rows that HAVE ids are restored (recover what is
+                                    // addressable), the chunk is truncated to keep the 1:1
+                                    // pairing the router refuses to go without, and the rows
+                                    // beyond the ids are reported LOUDLY as not replayed.
                                     std::size_t id_base = 0;
                                     for (auto& chunk : r->physical_data) {
                                         const std::size_t n = chunk.size();
-                                        std::pmr::vector<int64_t> ids(r->physical_row_ids.get_allocator().resource());
-                                        ids.reserve(n);
-                                        for (std::size_t i = 0;
-                                             i < n && id_base + i < r->physical_row_ids.size();
-                                             ++i) {
-                                            ids.push_back(r->physical_row_ids[id_base + i]);
+                                        const std::size_t have = r->physical_row_ids.size() > id_base
+                                                                     ? r->physical_row_ids.size() - id_base
+                                                                     : 0;
+                                        const std::size_t take = std::min(n, have);
+                                        if (take < n) {
+                                            error(log,
+                                                  "spaces::replay: PHYSICAL_UPDATE for table oid={} carries {} "
+                                                  "row(s) in a chunk but only {} row id(s) for them; {} committed "
+                                                  "row update(s) are NOT replayed",
+                                                  static_cast<unsigned>(table_oid),
+                                                  n,
+                                                  take,
+                                                  n - take);
                                         }
                                         id_base += n;
+                                        if (take == 0) {
+                                            continue;
+                                        }
+                                        std::pmr::vector<int64_t> ids(r->physical_row_ids.get_allocator().resource());
+                                        ids.reserve(take);
+                                        for (std::size_t i = 0; i < take; ++i) {
+                                            ids.push_back(r->physical_row_ids[id_base - n + i]);
+                                        }
+                                        if (take < n) {
+                                            chunk.set_cardinality(take);
+                                        }
                                         if (auto upd_err = disk_ptr->direct_update_sync(table_oid, ids, chunk);
                                             upd_err.contains_error()) {
                                             error(log, "spaces::replay: {}", upd_err.what);

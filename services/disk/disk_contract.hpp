@@ -142,7 +142,10 @@ namespace services::disk {
         // into the added_at or dropped_at column (selected by the marker's kind).
         // Drained by operator_commit_transaction_t once the commit_id is allocated;
         // each backfill pairs with its own physical_update WAL record.
-        actor_zeta::unique_future<void>
+        //
+        // Answers with the first refusal (after attempting every marker). The drain reads it and
+        // REPORTS: it sits below the durable commit marker, so it may not take the commit back.
+        actor_zeta::unique_future<core::error_t>
         update_pg_attribute_commit_id_fields(execution_context_t ctx,
                                              std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
                                              std::uint64_t commit_id);

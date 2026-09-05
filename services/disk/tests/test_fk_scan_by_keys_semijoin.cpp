@@ -66,10 +66,13 @@ namespace {
         // here — the tests never reach them through this wrapper); without the
         // using-declarations the derived overrides HIDE them and gcc's
         // -Woverloaded-virtual fails the -Werror build.
-        using storage_t::append;
+        // (no `using storage_t::append;` and no `using storage_t::update;` — the base
+        // declares no default bodies for those any more; both overloads of update are
+        // overridden below, forwarding to the inner storage like everything else. The
+        // base's defaulted update used to exist ONLY to keep this double concrete — a
+        // fallback living in the production interface for a test's sake.)
         using storage_t::delete_rows;
         using storage_t::scan;
-        using storage_t::update;
 
         std::pmr::vector<complex_logical_type> types() const override { return inner_.types(); }
         const std::vector<column_definition_t>& columns() const override { return inner_.columns(); }
@@ -87,8 +90,12 @@ namespace {
                                                          fetch_visibility_t visibility) override {
             return inner_.fetch(o, ids, c, p, txn, visibility);
         }
-        uint64_t append(data_chunk_t& d) override { return inner_.append(d); }
-        void update(vector_t& ids, data_chunk_t& d) override { inner_.update(ids, d); }
+        core::result_wrapper_t<uint64_t> append(data_chunk_t& d, transaction_data txn) override {
+            return inner_.append(d, txn);
+        }
+        core::error_t update(vector_t& ids, data_chunk_t& d) override { return inner_.update(ids, d); }
+        core::result_wrapper_t<std::pair<int64_t, uint64_t>>
+        update(vector_t& ids, data_chunk_t& d, transaction_data txn) override { return inner_.update(ids, d, txn); }
         uint64_t delete_rows(vector_t& ids, uint64_t c) override { return inner_.delete_rows(ids, c); }
         std::pmr::memory_resource* resource() const override { return inner_.resource(); }
 

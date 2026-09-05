@@ -1241,22 +1241,21 @@ namespace services::disk {
         // (3) Pipeline context for group.push/finalize. Build IN PLACE (its move-ctor DROPS
         //     txn/function_registry — NEVER move it). No parameters/session_tz are needed: the
         //     WHERE is already baked into `filter`, and builtin SUM/COUNT/... read neither.
-        //     THIS CONTEXT IS DELIBERATELY UNWIRED, AND IT IS THE NARROWEST CASE OF A KNOWN TRAP.
-        //     context_t defaults disk_address, index_address and wal_address to empty_address(),
-        //     so the object below has NO mailbox at all — only address_ (self) and the txn. It is
-        //     sound for exactly one reason: the single operator driven here is
-        //     operator_hash_group_t, whose push/finalize send nothing (step 4 says "send-free" and
-        //     means it). Swap in an operator that sends, or grow one inside hash_group, and this
-        //     stops being sound. What it does NOT do any more is fail quietly: every addressed
-        //     send in this tree goes through actor_zeta::otterbrix::send, which refuses an empty
-        //     target with a message and abort() in Debug and Release alike, so the breakage would
-        //     announce itself instead of dereferencing a null mailbox.
+        //     THIS CONTEXT IS DELIBERATELY UNWIRED: the three no_mailbox() arguments below leave
+        //     it with only address_ (self) and the txn. Sound for exactly one reason — the single
+        //     operator driven here is operator_hash_group_t, whose push/finalize send nothing
+        //     (step 4 says "send-free" and means it). Swap in an operator that sends, or grow one
+        //     inside hash_group, and this stops being sound; the send would announce itself,
+        //     since actor_zeta::otterbrix::send refuses an empty target in Debug and Release alike.
         components::logical_plan::storage_parameters params{resource};
         components::pipeline::context_t ctx{session,
                                             self_address,
                                             actor_zeta::address_t::empty_address(),
                                             &reg,
-                                            params};
+                                            params,
+                                            components::pipeline::no_mailbox(),
+                                            components::pipeline::no_mailbox(),
+                                            components::pipeline::no_mailbox()};
         ctx.txn = txn;
 
         // (4) Send-free streaming drive: re-seek + read ONE batch from `storage` (applying the

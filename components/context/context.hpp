@@ -25,6 +25,10 @@ namespace components::pipeline {
     // context.hpp). subplan_runner.hpp itself stays out of this header.
     struct subplan_runner_t;
 
+    // A mailbox a context deliberately does not have. Spelled as a word so a call site that
+    // drives send-free operators, or runs with the WAL off, reads as a choice.
+    inline actor_zeta::address_t no_mailbox() { return actor_zeta::address_t::empty_address(); }
+
     class context_t {
     public:
         using disk_future_t = actor_zeta::unique_future<void>;
@@ -34,17 +38,13 @@ namespace components::pipeline {
         const compute::function_registry_t* function_registry = nullptr;
         logical_plan::storage_parameters parameters;
 
-        // These three default to empty ("no mailbox"); neither constructor requires them, so a
-        // context can ship partially unwired -- safe today only because the operators driven
-        // through such a context never send to the ones left empty. Not restructured into
-        // required constructor arguments here (touches every construction site: dispatcher,
-        // collection executor, agent_disk, tests). Containment instead: an addressed send goes
-        // through actor_zeta::otterbrix::send (core/executor.hpp), which aborts on an empty
-        // target rather than walking a null resource into the mailbox; sites that may
-        // legitimately stay unwired still keep their own `!= empty_address()` check (~57 of them).
-        actor_zeta::address_t disk_address{actor_zeta::address_t::empty_address()};
-        actor_zeta::address_t index_address{actor_zeta::address_t::empty_address()};
-        actor_zeta::address_t wal_address{actor_zeta::address_t::empty_address()};
+        // Constructor arguments, never defaults: address_t is not default-constructible, so a
+        // context that leaves one unnamed does not compile. manager_disk_t and manager_index_t
+        // are spawned unconditionally, so those two are always a live mailbox; wal_address is
+        // no_mailbox() exactly when config.wal.on == false.
+        actor_zeta::address_t disk_address;
+        actor_zeta::address_t index_address;
+        actor_zeta::address_t wal_address;
 
         table::transaction_data txn{0, 0};
         components::graph_execution_context execution_context{};
@@ -136,7 +136,10 @@ namespace components::pipeline {
         // default-constructed allocator (get_default_resource()), freezing the process-global
         // arena into `parameters` on every parameterised statement. Both constructors rebuild
         // the map on the caller's own arena instead; see parameters_on_their_own_arena in context.cpp.
-        explicit context_t(const logical_plan::storage_parameters& init_parameters);
+        context_t(const logical_plan::storage_parameters& init_parameters,
+                  actor_zeta::address_t disk,
+                  actor_zeta::address_t index,
+                  actor_zeta::address_t wal);
         // Defaulted so every member moves: a hand-written ctor drops whatever it forgets to
         // list (txn, the DML range lists, committed_id, ...) and stays wrong as members are added.
         context_t(context_t&& context) noexcept = default;
@@ -144,7 +147,10 @@ namespace components::pipeline {
                   actor_zeta::address_t address,
                   actor_zeta::address_t sender,
                   const compute::function_registry_t* function_registry,
-                  const logical_plan::storage_parameters& init_parameters);
+                  const logical_plan::storage_parameters& init_parameters,
+                  actor_zeta::address_t disk,
+                  actor_zeta::address_t index,
+                  actor_zeta::address_t wal);
 
         const actor_zeta::address_t& address() const noexcept { return address_; }
 

@@ -1477,8 +1477,10 @@ namespace services::collection::executor {
                                                      actor_zeta::address_t::empty_address(),
                                                      actor_zeta::address_t::empty_address(),
                                                      &local_fn_registry,
-                                                     local_params};
-                pctx.disk_address = disk_address_;
+                                                     local_params,
+                                                     disk_address_,
+                                                     index_address_,
+                                                     wal_address_};
                 pctx.txn = components::table::transaction_data{0, 0};
                 op->prepare();
                 // operator_allocate_oids_t is a sourceless sink (role()==sink,
@@ -2823,10 +2825,10 @@ namespace services::collection::executor {
                                                              address(),
                                                              parent_address_,
                                                              &function_registry_,
-                                                             *plan_data.parameters};
-            pipeline_context.disk_address = disk_address_;
-            pipeline_context.index_address = index_address_;
-            pipeline_context.wal_address = wal_address_;
+                                                             *plan_data.parameters,
+                                                             disk_address_,
+                                                             index_address_,
+                                                             wal_address_};
             pipeline_context.txn = txn;
             pipeline_context.execution_context = plan_data.context_storage_.execution_context;
             // VACUUM/MVCC GC threshold. operator_vacuum_t reads this to gate

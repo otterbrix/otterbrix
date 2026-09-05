@@ -67,7 +67,10 @@ TEST_CASE("fk cascade: SET DEFAULT with fewer default specs than columns is refu
     op->set_children(operators::operator_ptr(
         new cascade_source_operator_t(&resource, operators::make_operator_data(&resource, std::move(parent_rows)))));
 
-    pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
+    pipeline::context_t ctx(logical_plan::storage_parameters{&resource},
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox());
     auto fut = op->await_async_and_resume(&ctx);
     REQUIRE(fut.is_ready());
     std::move(fut).take_ready();

@@ -60,7 +60,10 @@ namespace {
             new operators::operator_unique_constraint_t(resource, log_t{}, catalog::INVALID_OID, std::move(groups)));
         op->set_children(make_child(resource, std::move(write_set)));
 
-        pipeline::context_t ctx(logical_plan::storage_parameters{resource});
+        pipeline::context_t ctx(logical_plan::storage_parameters{resource},
+                                pipeline::no_mailbox(),
+                                pipeline::no_mailbox(),
+                                pipeline::no_mailbox());
         auto fut = op->await_async_and_resume(&ctx);
         REQUIRE(fut.is_ready());
         std::move(fut).take_ready();
@@ -281,7 +284,10 @@ TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the f
         new operators::operator_unique_constraint_t(&resource, log_t{}, catalog::INVALID_OID, {{"k"}}));
     op->set_children(operators::operator_ptr(new constraint_source_operator_t(&resource, std::move(data))));
 
-    pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
+    pipeline::context_t ctx(logical_plan::storage_parameters{&resource},
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox());
     auto fut = op->await_async_and_resume(&ctx);
     REQUIRE(fut.is_ready());
     std::move(fut).take_ready();
@@ -316,11 +322,13 @@ TEST_CASE("unique constraint operator: an unresolved table oid does not disable 
         new operators::operator_unique_constraint_t(&resource, log_t{}, catalog::INVALID_OID, {{"a"}}));
     op->set_children(make_child(&resource, std::move(chunk)));
 
-    pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
     // Any non-null pointer reads as "not the empty address" for the topology check; nothing
     // is enqueued on it since the refusal lands before the first send.
     int disk_actor_stand_in = 0;
-    ctx.disk_address = actor_zeta::address_t{&resource, &disk_actor_stand_in};
+    pipeline::context_t ctx(logical_plan::storage_parameters{&resource},
+                            actor_zeta::address_t{&resource, &disk_actor_stand_in},
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox());
 
     auto fut = op->await_async_and_resume(&ctx);
     REQUIRE(fut.is_ready());

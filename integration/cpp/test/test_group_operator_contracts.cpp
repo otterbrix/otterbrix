@@ -79,7 +79,10 @@ TEST_CASE("group operator contracts: unresolved column key surfaces operator err
     group->add_key(std::move(key));
     group->set_children(make_child(&resource, std::move(chunk)));
 
-    pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
+    pipeline::context_t ctx(logical_plan::storage_parameters{&resource},
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox());
     drive_group(group.get(), &resource, &ctx);
 
     REQUIRE(group->has_error());
@@ -134,7 +137,10 @@ TEST_CASE("group operator contracts: struct-field key type comes from input sche
     group->add_output(expressions::make_scalar_expression(&resource, expressions::scalar_type::get_field, output_key));
     group->set_children(make_child(&resource, std::move(chunk)));
 
-    pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
+    pipeline::context_t ctx(logical_plan::storage_parameters{&resource},
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox());
     drive_group(group.get(), &resource, &ctx);
 
     REQUIRE_FALSE(group->has_error());
@@ -187,7 +193,7 @@ TEST_CASE("group operator contracts: aggregator error on empty-input global aggr
 
     logical_plan::storage_parameters params{&resource};
     logical_plan::add_parameter(params, core::parameter_id_t(1), std::string("not_a_number"));
-    pipeline::context_t ctx(std::move(params));
+    pipeline::context_t ctx(std::move(params), pipeline::no_mailbox(), pipeline::no_mailbox(), pipeline::no_mailbox());
     drive_group(group.get(), &resource, &ctx);
 
     REQUIRE(group->has_error());

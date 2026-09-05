@@ -3,6 +3,7 @@ project(test_context)
 add_definitions(-DDEV_MODE)
 
 set(${PROJECT_NAME}_SOURCES
+        test_context_mailboxes_required.cpp
         test_context_pmr_residency.cpp
 )
 

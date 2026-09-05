@@ -157,13 +157,19 @@ TEST_CASE("components::pipeline::context_t::the parameter map keeps the arena th
     std::optional<components::pipeline::context_t> executor_ctx;
     {
         default_resource_window_t window{&probe};
-        ctx.emplace(params);
+        ctx.emplace(params,
+                    components::pipeline::no_mailbox(),
+                    components::pipeline::no_mailbox(),
+                    components::pipeline::no_mailbox());
         // The shape the executor actually builds (executor.cpp, execute_sub_plan_).
         executor_ctx.emplace(components::session::session_id_t{},
                              actor_zeta::address_t::empty_address(),
                              actor_zeta::address_t::empty_address(),
                              nullptr,
-                             params);
+                             params,
+                             components::pipeline::no_mailbox(),
+                             components::pipeline::no_mailbox(),
+                             components::pipeline::no_mailbox());
     }
 
     REQUIRE(ctx.has_value());

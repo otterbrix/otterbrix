@@ -58,9 +58,11 @@ namespace {
         operators::operator_ptr op(
             new operators::operator_resolve_constraint_t(resource, log_t{}, pair.constraints.get(), pair.tables.get()));
 
-        pipeline::context_t ctx(logical_plan::storage_parameters{resource});
         int disk_actor_stand_in = 0;
-        ctx.disk_address = actor_zeta::address_t{resource, &disk_actor_stand_in};
+        pipeline::context_t ctx(logical_plan::storage_parameters{resource},
+                                actor_zeta::address_t{resource, &disk_actor_stand_in},
+                                pipeline::no_mailbox(),
+                                pipeline::no_mailbox());
 
         auto fut = op->await_async_and_resume(&ctx);
         REQUIRE(fut.is_ready());

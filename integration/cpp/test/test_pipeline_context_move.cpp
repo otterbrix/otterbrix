@@ -13,7 +13,10 @@ using namespace components;
 
 TEST_CASE("integration::cpp::pipeline_context::move_keeps_every_member", "[context_move]") {
     auto resource = core::pmr::otterbrix_resource();
-    pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
+    pipeline::context_t ctx(logical_plan::storage_parameters{&resource},
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox(),
+                            pipeline::no_mailbox());
 
     ctx.txn = table::transaction_data{7, 9};
     ctx.lowest_active_start_time = 42;

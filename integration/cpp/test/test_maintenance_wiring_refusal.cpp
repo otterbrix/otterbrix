@@ -51,7 +51,10 @@ TEST_CASE("integration::cpp::maintenance_wiring::drop_index_with_nothing_to_scru
     boost::intrusive_ptr<ops::operator_t> op{
         new ops::operator_drop_index_t(res, log_t{}, some_table_oid, some_index_oid, {})};
 
-    components::pipeline::context_t ctx{lp::storage_parameters{res}};
+    components::pipeline::context_t ctx{lp::storage_parameters{res},
+                                        components::pipeline::no_mailbox(),
+                                        components::pipeline::no_mailbox(),
+                                        components::pipeline::no_mailbox()};
     auto fut = op->await_async_and_resume(&ctx);
     REQUIRE(fut.is_ready());
     std::move(fut).take_ready();
@@ -83,7 +86,10 @@ TEST_CASE("integration::cpp::maintenance_wiring::index_scan_without_index_servic
                        lp::limit_t::unlimit(),
                        {}};
 
-    components::pipeline::context_t ctx{lp::storage_parameters{res}};
+    components::pipeline::context_t ctx{lp::storage_parameters{res},
+                                        components::pipeline::no_mailbox(),
+                                        components::pipeline::no_mailbox(),
+                                        components::pipeline::no_mailbox()};
     auto fut = op.source_next(&ctx);
     REQUIRE(fut.is_ready());
     auto first = std::move(fut).take_ready();

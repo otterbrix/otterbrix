@@ -693,8 +693,10 @@ namespace services::dispatcher {
                                              actor_zeta::address_t::empty_address(),
                                              actor_zeta::address_t::empty_address(),
                                              &fn_registry,
-                                             params};
-        pctx.disk_address = disk_address_;
+                                             params,
+                                             disk_address_,
+                                             index_address_,
+                                             wal_address_};
         pctx.txn = components::table::transaction_data{0, 0};
 
         op->prepare();
@@ -871,8 +873,10 @@ namespace services::dispatcher {
                                              actor_zeta::address_t::empty_address(),
                                              actor_zeta::address_t::empty_address(),
                                              &fn_registry,
-                                             params};
-        pctx.disk_address = disk_address_;
+                                             params,
+                                             disk_address_,
+                                             index_address_,
+                                             wal_address_};
         pctx.txn = components::table::transaction_data{0, 0};
 
         op->prepare();
@@ -1039,8 +1043,10 @@ namespace services::dispatcher {
                                              actor_zeta::address_t::empty_address(),
                                              actor_zeta::address_t::empty_address(),
                                              &fn_registry,
-                                             params};
-        pctx.disk_address = disk_address_;
+                                             params,
+                                             disk_address_,
+                                             index_address_,
+                                             wal_address_};
         pctx.txn = components::table::transaction_data{0, 0};
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
@@ -1164,8 +1170,10 @@ namespace services::dispatcher {
                                              actor_zeta::address_t::empty_address(),
                                              actor_zeta::address_t::empty_address(),
                                              &fn_registry,
-                                             params};
-        pctx.disk_address = disk_address_;
+                                             params,
+                                             disk_address_,
+                                             index_address_,
+                                             wal_address_};
         pctx.txn = components::table::transaction_data{0, 0};
         op->prepare();
         co_await op->await_async_and_resume(&pctx);

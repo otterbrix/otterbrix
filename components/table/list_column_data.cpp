@@ -1,5 +1,7 @@
 #include "list_column_data.hpp"
 
+#include "persistent_column_data.hpp"
+
 namespace components::table {
 
     list_column_data_t::list_column_data_t(std::pmr::memory_resource* resource,
@@ -85,6 +87,11 @@ namespace components::table {
         vector::vector_t offset_vector(result.resource(), types::logical_type::UBIGINT, count);
         uint64_t scan_count = scan_vector(state, offset_vector, count, scan_vector_type::SCAN_FLAT_VECTOR);
         assert(scan_count > 0);
+        // The validity child writes into `result` (not the local offset_vector), so it targets
+        // the REAL result base — the offset saved above, not the temporary 0. Without the sync
+        // a scan spanning multiple vectors into one growing chunk folded whole-list NULL bits
+        // to offset 0 (see standard_column_data_t::scan).
+        state.child_states[0].result_offset = prev_state_result_offset;
         validity.scan_count(state.child_states[0], result, count);
         state.result_offset = prev_state_result_offset;
 
@@ -385,5 +392,50 @@ namespace components::table {
         validity.get_column_segment_info(row_group_index, col_path, result);
         col_path.back() = 1;
         child_column->get_column_segment_info(row_group_index, col_path, result);
+    }
+
+    core::result_wrapper_t<bool>
+    list_column_data_t::checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
+                                            persistent_column_data_t& persistent) {
+        // v1 convention: child_columns[0] is the list's own validity bitmap (whole-cell
+        // NULLs), child_columns[1] the element column (whose own record carries the
+        // element-level validity in turn).
+        auto valid = validity.checkpoint(partial_block_manager);
+        if (valid.has_error()) {
+            return valid.convert_error<bool>(); // out_of_memory
+        }
+        persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(std::move(valid.value())));
+        auto child = child_column->checkpoint(partial_block_manager);
+        if (child.has_error()) {
+            return child.convert_error<bool>(); // out_of_memory
+        }
+        persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(std::move(child.value())));
+        return true;
+    }
+
+    core::result_wrapper_t<bool>
+    list_column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
+        // Own segments hold the per-row cumulative child offsets; the validity bitmap is the
+        // persisted child_columns[0], the element column child_columns[1]. Any other shape is
+        // data_corruption — never "assume all-valid".
+        auto own = column_data_t::initialize_column(persistent_data);
+        if (own.has_error()) {
+            return own;
+        }
+        if (persistent_data.child_columns.size() != 2) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("list column load: checkpoint must carry validity + the element child", resource()));
+        }
+        auto valid = validity.initialize_column(*persistent_data.child_columns[0]);
+        if (valid.has_error()) {
+            return valid;
+        }
+        if (validity.count() != count()) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("list column load: validity row count does not match the column", resource()));
+        }
+        return child_column->initialize_column(*persistent_data.child_columns[1]);
     }
 } // namespace components::table

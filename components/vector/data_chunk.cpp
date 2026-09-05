@@ -10,6 +10,36 @@ namespace {
     using namespace components;
     using namespace components::vector;
 
+    // Drop the vector's validity mask (all-valid == no mask allocated) and recurse into
+    // every nested child vector that carries its own mask: list/array elements, struct
+    // fields, and a dictionary's referenced child. Used by data_chunk_t::reset() — see the
+    // rationale there.
+    void reset_validity_recursive(vector_t& vec) {
+        vec.validity().reset();
+        auto aux = vec.auxiliary();
+        if (!aux) {
+            return;
+        }
+        switch (aux->type()) {
+            case vector_buffer_type::LIST:
+                reset_validity_recursive(static_cast<list_vector_buffer_t*>(aux.get())->nested_data());
+                break;
+            case vector_buffer_type::ARRAY:
+                reset_validity_recursive(static_cast<array_vector_buffer_t*>(aux.get())->nested_data());
+                break;
+            case vector_buffer_type::STRUCT:
+                for (auto& entry : static_cast<struct_vector_buffer_t*>(aux.get())->entries()) {
+                    reset_validity_recursive(*entry);
+                }
+                break;
+            case vector_buffer_type::VECTOR_CHILD:
+                reset_validity_recursive(static_cast<child_vector_buffer_t*>(aux.get())->nested_data());
+                break;
+            default:
+                break;
+        }
+    }
+
     struct resolved_path_t {
         const vector_t* array; // ARRAY/LIST the path ends up indexing; null unless it does
         size_t index;          // which of its elements, meaningful only alongside `array`
@@ -128,6 +158,16 @@ namespace components::vector {
         return v.type().type() != types::logical_type::NA && v.data() == nullptr && v.auxiliary() == nullptr;
     }
 
+    // An NA-typed column carries NO payload: every value is null by definition, and
+    // vector_t's ctor deliberately builds it CONSTANT rather than FLAT (vector.cpp:71).
+    // Copying such a column is a no-op, so the FLAT-destination assert below must not
+    // fire on it. Without this, `INSERT ... VALUES (…, NULL)` aborted at plan creation
+    // (operator_raw_data_t -> data_chunk_t::copy) under DEV_MODE asserts, taking the
+    // whole test binary with it.
+    static bool is_null_typed(const vector_t& v) noexcept {
+        return v.type().type() == types::logical_type::NA;
+    }
+
     uint64_t data_chunk_t::allocation_size() const {
         uint64_t total_size = 0;
         auto cardinality = size();
@@ -143,6 +183,16 @@ namespace components::vector {
         }
         capacity_ = DEFAULT_VECTOR_CAPACITY;
         set_cardinality(0);
+        // reset() promises a CLEAN chunk for the next fill, and stale NULL bits are the
+        // leftover that actually corrupts: the storage validity scan ACCUMULATES invalid
+        // bits into the result mask (validity_scan_partial ANDs), so a mask surviving
+        // reset() unions the previous fill's NULL pattern into the next one (observed as a
+        // reloaded multi-row-group table reading back the union of two row groups' NULL
+        // patterns). Dropping the mask is cheap — all-valid is represented by NO allocated
+        // mask — and recurses into nested children, whose masks accumulate the same way.
+        for (auto& vec : data) {
+            reset_validity_recursive(vec);
+        }
     }
 
     void data_chunk_t::drop_unprojected_placeholders() {
@@ -253,7 +303,7 @@ namespace components::vector {
         assert(other.size() == 0);
 
         for (uint64_t i = 0; i < column_count(); i++) {
-            if (is_unprojected_placeholder(data[i]))
+            if (is_unprojected_placeholder(data[i]) || is_null_typed(other.data[i]))
                 continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], size(), offset, 0);
@@ -272,7 +322,7 @@ namespace components::vector {
         assert(source_count <= size());
 
         for (uint64_t i = 0; i < column_count(); i++) {
-            if (is_unprojected_placeholder(data[i]))
+            if (is_unprojected_placeholder(data[i]) || is_null_typed(other.data[i]))
                 continue;
             assert(other.data[i].get_vector_type() == vector_type::FLAT);
             vector_ops::copy(data[i], other.data[i], indexing, source_count, offset, 0);

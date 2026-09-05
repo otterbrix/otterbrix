@@ -50,6 +50,12 @@ namespace components::table {
                                           vector::vector_t& result,
                                           uint64_t target_count) {
         assert(state.row_index == state.child_states[0].row_index);
+        // The validity child writes into the SAME result vector as the main data, so its scan
+        // state must target the same result base. Without this sync a scan that spans multiple
+        // vectors into one growing chunk (collection_scan_state::scan — compact's rebuild) wrote
+        // every vector's NULL bits at offset 0, folding the whole table's NULL pattern into the
+        // first 1024 rows (and reading every later row as non-NULL) while the data landed right.
+        state.child_states[0].result_offset = state.result_offset;
         auto scan_count = column_data_t::scan(vector_index, state, result, target_count);
         validity.scan(vector_index, state.child_states[0], result, target_count);
         return scan_count;
@@ -61,12 +67,14 @@ namespace components::table {
                                                     bool allow_updates,
                                                     uint64_t target_count) {
         assert(state.row_index == state.child_states[0].row_index);
+        state.child_states[0].result_offset = state.result_offset; // see scan(): validity targets the same base
         auto scan_count = column_data_t::scan_committed(vector_index, state, result, allow_updates, target_count);
         validity.scan_committed(vector_index, state.child_states[0], result, allow_updates, target_count);
         return scan_count;
     }
 
     uint64_t standard_column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
+        state.child_states[0].result_offset = state.result_offset; // see scan(): validity targets the same base
         auto scan_count = column_data_t::scan_count(state, result, count);
         validity.scan_count(state.child_states[0], result, count);
         return scan_count;
@@ -169,11 +177,45 @@ namespace components::table {
         validity.get_column_segment_info(row_group_index, std::move(col_path), result);
     }
 
-    void standard_column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
-        column_data_t::initialize_column(persistent_data);
+    core::result_wrapper_t<bool>
+    standard_column_data_t::checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
+                                                persistent_column_data_t& persistent) {
+        // The validity bitmap is persisted as the single child column (v1 convention:
+        // child_columns[0] is validity). Its segments are flushed through the SAME
+        // partial_block_manager as the main data, so the bitmap is packed into shared
+        // blocks and lands disk-backed + reloadable on reload.
+        auto child = validity.checkpoint(partial_block_manager);
+        if (child.has_error()) {
+            return child.convert_error<bool>(); // out_of_memory
+        }
+        persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(std::move(child.value())));
+        return true;
+    }
 
-        // create matching transient validity segments for each data segment
-        validity.initialize_column_validity(persistent_data);
+    core::result_wrapper_t<bool>
+    standard_column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
+        auto own = column_data_t::initialize_column(persistent_data);
+        if (own.has_error()) {
+            return own;
+        }
+        // v1 checkpoints carry the REAL validity bitmap as the single child column. A missing
+        // or mismatched record is data_corruption — never "assume all-valid": that silent
+        // fallback is exactly the bug that lost every checkpointed NULL.
+        if (persistent_data.child_columns.size() != 1) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("column load: checkpoint does not carry the validity child", resource()));
+        }
+        auto valid = validity.initialize_column(*persistent_data.child_columns[0]);
+        if (valid.has_error()) {
+            return valid;
+        }
+        if (validity.count() != count()) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("column load: validity row count does not match the column", resource()));
+        }
+        return true;
     }
 
 } // namespace components::table

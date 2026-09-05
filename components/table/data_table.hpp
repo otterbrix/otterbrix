@@ -8,6 +8,16 @@
 
 namespace components::table {
 
+#ifdef DEV_MODE
+    // Test-observable count of rows delivered by data_table_t::scan — the materializing
+    // chunk scan behind storage_t::scan. A write-path handler must never pay a read that
+    // grows with the table (B0: the insert-batch `_id` dedup full-scanned the table per
+    // batch); the scaling test resets this, runs one INSERT batch, and asserts the rows
+    // streamed do not grow with the rows already stored.
+    uint64_t table_scan_rows_streamed() noexcept;
+    void reset_table_scan_rows_streamed() noexcept;
+#endif
+
     class data_table_t {
     public:
         data_table_t(std::pmr::memory_resource* resource,
@@ -95,9 +105,6 @@ namespace components::table {
         void revert_append(int64_t row_start, uint64_t count);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id);
-        void scan_table_segment(int64_t start_row,
-                                uint64_t count,
-                                const std::function<void(vector::data_chunk_t& chunk)>& function);
 
         void merge_storage(collection_t& data);
 
@@ -135,7 +142,8 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> checkpoint(storage::metadata_writer_t& writer);
         // Returns data_corruption when the on-disk metadata chain is truncated/corrupt (the reader records
         // a sticky error during deserialize, checked here at the boundary) instead of throwing on the
-        // load path. The caller (bootstrap/load) maps the error onto its .prev recovery flow.
+        // load path. The caller (bootstrap/load) reports the refusal loudly and leaves the file untouched
+        // (A7.5: no external backup recovery exists).
         [[nodiscard]] static core::result_wrapper_t<std::unique_ptr<data_table_t>>
         load_from_disk(std::pmr::memory_resource* resource,
                        storage::block_manager_t& block_manager,

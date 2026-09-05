@@ -54,7 +54,18 @@ namespace components::table {
                                      std::vector<uint64_t> col_path,
                                      std::vector<column_segment_info>& result) override;
 
+        // Disk load: own offset segments + the persisted validity bitmap (child_columns[0])
+        // + the persisted element child (child_columns[1]).
+        [[nodiscard]] core::result_wrapper_t<bool>
+        initialize_column(const persistent_column_data_t& persistent_data) override;
+
     private:
+        // Checkpoint NVI hook: child_columns[0] = validity, child_columns[1] = the element
+        // column's persistent form.
+        [[nodiscard]] core::result_wrapper_t<bool>
+        checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
+                            persistent_column_data_t& persistent) override;
+
         uint64_t fetch_list_offset(int64_t row_idx);
         std::pmr::vector<int64_t> gather_child_update(vector::vector_t& update_vector,
                                                       int64_t* row_ids,

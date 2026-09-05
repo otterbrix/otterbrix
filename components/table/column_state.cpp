@@ -55,12 +55,17 @@ namespace components::table {
     }
 
     storage::buffer_handle_t* column_fetch_state::get_or_insert_handle(column_segment_t& segment) {
-        auto primary_id = segment.block->block_id();
+        return get_or_insert_handle(segment.block);
+    }
+
+    storage::buffer_handle_t*
+    column_fetch_state::get_or_insert_handle(std::shared_ptr<storage::block_handle_t>& block) {
+        auto primary_id = block->block_id();
 
         auto entry = handles.find(primary_id);
         if (entry == handles.end()) {
-            auto& buffer_manager = segment.block->block_manager.buffer_manager;
-            auto pinned = buffer_manager.pin(segment.block);
+            auto& buffer_manager = block->block_manager.buffer_manager;
+            auto pinned = buffer_manager.pin(block);
             if (pinned.has_error()) {
                 fetch_error = pinned.error();
                 return nullptr;
@@ -79,8 +84,7 @@ namespace components::table {
     }
 
     std::shared_ptr<storage::block_handle_t>
-    uncompressed_string_segment_state::handle(storage::block_manager_t& manager, uint32_t block_id) {
-        std::lock_guard lock(block_lock_);
+    uncompressed_string_segment_state::handle(storage::block_manager_t& manager, uint64_t block_id) {
         auto entry = handles_.find(block_id);
         if (entry != handles_.end()) {
             return entry->second;
@@ -90,16 +94,32 @@ namespace components::table {
         return result;
     }
 
-    void uncompressed_string_segment_state::register_block(storage::block_manager_t& manager, uint32_t block_id) {
-        std::lock_guard lock(block_lock_);
-        auto entry = handles_.find(block_id);
-        if (entry != handles_.end()) {
-            throw std::runtime_error("uncompressed_string_segment_state::register_block - block id " +
-                                     std::to_string(block_id) + " already exists");
+    bool uncompressed_string_segment_state::register_block(storage::block_manager_t& manager, uint64_t block_id) {
+        if (handles_.find(block_id) != handles_.end()) {
+            // Already registered: the persisted list named the same block twice. The writer
+            // dedupes (persist_string_overflow), so this is a corrupt pointer stream, and the
+            // caller must SEE it -- it latches the false and column_data_t::initialize_column
+            // reports data_corruption. Not a throw: this runs while a table is being opened,
+            // where an exception would take the host process down (rules 2/6).
+            return false;
         }
+        // register_block() only hands out (or revives) a weak-registry entry for an EXISTING
+        // file block -- it allocates nothing from the free list, so reopening a table with
+        // big strings still allocates ZERO new blocks. The handle is UNLOADED and
+        // is_reloadable() (id < MAXIMUM_BLOCK), so the pool may evict and re-read it exactly
+        // like a packed data/validity block.
         auto result = manager.register_block(block_id);
         handles_.insert(std::make_pair(block_id, std::move(result)));
         on_disk_blocks.push_back(block_id);
+        return true;
+    }
+
+    std::shared_ptr<storage::block_handle_t> uncompressed_string_segment_state::registered_handle(uint64_t block_id) {
+        auto entry = handles_.find(block_id);
+        if (entry == handles_.end()) {
+            return nullptr;
+        }
+        return entry->second;
     }
 
 } // namespace components::table

@@ -127,7 +127,11 @@ namespace components::table {
         // the row group pointer on success.
         [[nodiscard]] core::result_wrapper_t<storage::row_group_pointer_t>
         write_to_disk(storage::partial_block_manager_t& partial_block_manager);
-        void create_from_pointer(const storage::row_group_pointer_t& pointer);
+        // Disk load: rebuilds every column (with its persisted validity and nested children)
+        // from the row-group pointer. A malformed pointer — wrong column count, a column tree
+        // missing its validity child, a short validity record — is data_corruption; the load
+        // fails loudly instead of returning a half-valid table.
+        [[nodiscard]] core::result_wrapper_t<bool> create_from_pointer(const storage::row_group_pointer_t& pointer);
 
         // Write-through: re-point every COMPLETE managed column segment of this row group to a
         // disk-backed segment (call once the row group is closed -> its segments are final). No-op for

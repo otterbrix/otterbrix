@@ -460,7 +460,14 @@ namespace components::table {
             pointers.push_back(std::move(pointer.value()));
         }
 
-        partial_block_manager.flush_partial_blocks();
+        // Rule 19 / the L1 family: THIS is where every column segment of the checkpoint
+        // reaches the file, and the answer used to go nowhere. The durability latch inside the
+        // block manager still refuses to commit a header over the hole, but the caller was told
+        // the row-group pointers were good — so the failure only surfaced two layers later, with
+        // nothing left to attribute it to.
+        if (auto flushed = partial_block_manager.flush_partial_blocks(); flushed.has_error()) {
+            return flushed.convert_error<std::vector<storage::row_group_pointer_t>>(); // io_error
+        }
         return pointers;
     }
 

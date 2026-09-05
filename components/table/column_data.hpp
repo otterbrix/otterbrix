@@ -161,11 +161,20 @@ namespace components::table {
         base_statistics_t& statistics() noexcept { return statistics_; }
 
         // CHECKPOINT chain returns out_of_memory when pinning a segment buffer fails during flush;
-        // the persistent data on success.
+        // the persistent data on success. Flushes this node's own segments, records count_, then
+        // hands the persistent record to checkpoint_children (the NVI hook below) so nested
+        // columns (LIST/STRUCT/ARRAY) append their child columns' persistent form recursively —
+        // and every column WITH a validity child (standard/struct/list/array) persists that
+        // child FIRST, so NULL bits survive the checkpoint (see checkpoint_children).
         [[nodiscard]] core::result_wrapper_t<persistent_column_data_t>
         checkpoint(storage::partial_block_manager_t& partial_block_manager);
-        virtual void initialize_column(const persistent_column_data_t& persistent_data);
-        void initialize_column_validity(const persistent_column_data_t& persistent_data);
+        // LOAD chain: rebuilds this column node (and, in overrides, its validity child and its
+        // nested children) from the checkpointed record. Fed by bytes read from DISK, so every
+        // malformed shape — a missing validity child, a validity row count that does not match
+        // the column, an oversized segment — is a data_corruption error_t, never an assert
+        // (asserts vanish under NDEBUG) and never a silent "assume all-valid" fallback.
+        [[nodiscard]] virtual core::result_wrapper_t<bool>
+        initialize_column(const persistent_column_data_t& persistent_data);
 
         // Write-through: re-point every COMPLETE managed (in-memory, non-reloadable) segment of this column
         // to a disk-backed segment so the pool can evict+reload them (bounded memory). Called when a row
@@ -231,6 +240,21 @@ namespace components::table {
         int64_t start_;
         std::atomic<uint64_t> count_;
         storage::block_manager_t& block_manager_;
+
+    private:
+        // NVI hook of checkpoint(): a column with sub-columns checkpoints each of them and
+        // appends its persistent form to `persistent.child_columns`, in the same order
+        // initialize_column consumes them on load. Convention (v1, on-disk): the VALIDITY
+        // child is always child_columns[0] — standard = [validity], struct = [validity,
+        // field...], list/array = [validity, element] — mirroring the in-memory scan-state
+        // layout where child_states[0] is validity. Without the persisted validity child the
+        // reload manufactured an all-valid bitmap and every checkpointed NULL was lost.
+        // Default: no children (only validity_column_data_t itself, which has no sub-columns).
+        [[nodiscard]] virtual core::result_wrapper_t<bool>
+        checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
+                            persistent_column_data_t& persistent);
+
+    protected:
         uint64_t column_index_;
         types::complex_logical_type type_;
         column_data_t* parent_;

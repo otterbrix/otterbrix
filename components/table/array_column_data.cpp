@@ -1,4 +1,5 @@
 #include "array_column_data.hpp"
+#include "persistent_column_data.hpp"
 #include "row_group.hpp"
 #include <components/vector/vector.hpp>
 #include <components/vector/vector_operations.hpp>
@@ -65,6 +66,10 @@ namespace components::table {
         size_t arr_size = array_size();
         // Scan the array-level validity into the result first (mirrors struct/scan_count);
         // without this a row stored as a whole-array NULL reads back as a non-null array.
+        // The validity child writes into the parent result vector, so it targets the parent's
+        // result base — NOT the element offset (the old `+= element_count` bookkeeping drifted
+        // it by arr_size per row and folded NULL bits on any multi-vector scan into one chunk).
+        state.child_states[0].result_offset = state.result_offset;
         validity.scan(vector_index, state.child_states[0], result, count);
         size_t remaining_count = arr_size * count;
         uint64_t remaining_vector_index = vector_index * arr_size;
@@ -78,13 +83,11 @@ namespace components::table {
                                                        vector::DEFAULT_VECTOR_CAPACITY);
                 remaining_count -= result_count;
                 remaining_vector_index++;
-                state.child_states[0].result_offset += result_count;
                 state.child_states[1].result_offset += result_count;
             } else {
                 auto result_count =
                     child_column->scan(remaining_vector_index, state.child_states[1], result.entry(), remaining_count);
                 remaining_count -= result_count;
-                state.child_states[0].result_offset += result_count;
                 state.child_states[1].result_offset += result_count;
                 break;
             }
@@ -102,6 +105,7 @@ namespace components::table {
     }
 
     uint64_t array_column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
+        state.child_states[0].result_offset = state.result_offset; // see scan(): validity targets the parent base
         auto scan_count = validity.scan_count(state.child_states[0], result, count);
         auto& child_vec = result.entry();
         auto size = array_size();
@@ -290,6 +294,49 @@ namespace components::table {
 
     size_t array_column_data_t::array_size() const {
         return static_cast<const types::array_logical_type_extension*>(type_.extension())->size();
+    }
+
+    core::result_wrapper_t<bool>
+    array_column_data_t::checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
+                                             persistent_column_data_t& persistent) {
+        // v1 convention: child_columns[0] is the array's own validity bitmap (whole-cell
+        // NULLs), child_columns[1] the element column (rows * array_size entries, carrying
+        // the element-level validity in its own record).
+        auto valid = validity.checkpoint(partial_block_manager);
+        if (valid.has_error()) {
+            return valid.convert_error<bool>(); // out_of_memory
+        }
+        persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(std::move(valid.value())));
+        auto child = child_column->checkpoint(partial_block_manager);
+        if (child.has_error()) {
+            return child.convert_error<bool>(); // out_of_memory
+        }
+        persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(std::move(child.value())));
+        return true;
+    }
+
+    core::result_wrapper_t<bool>
+    array_column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
+        // An array node owns no segments of its own: its row count comes from the persisted
+        // count, its validity is the persisted child_columns[0] bitmap, and the elements
+        // (rows * array_size) live in the persisted child_columns[1]. Any other shape is
+        // data_corruption — never "assume all-valid".
+        count_ = persistent_data.count;
+        if (persistent_data.child_columns.size() != 2) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("array column load: checkpoint must carry validity + the element child", resource()));
+        }
+        auto valid = validity.initialize_column(*persistent_data.child_columns[0]);
+        if (valid.has_error()) {
+            return valid;
+        }
+        if (validity.count() != count_) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("array column load: validity row count does not match the column", resource()));
+        }
+        return child_column->initialize_column(*persistent_data.child_columns[1]);
     }
 
 } // namespace components::table

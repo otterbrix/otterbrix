@@ -26,13 +26,14 @@ namespace components::table {
     };
 
     // An index a CREATE INDEX in this txn brought into being, identified by the
-    // owning table oid + index name. Parked until COMMIT publishes it / ABORT
+    // owning table oid + the index's pg_index.indexrelid (rule 16: the name never
+    // travels below the planner). Parked until COMMIT publishes it / ABORT
     // un-marks it (the rollback path drops the still-uncommitted index). Mirrors
     // dml_delete_range_t's shape — a plain value struct that crosses no mailbox
     // itself but rides the txn accumulate/drain payloads.
     struct created_index_t {
         components::catalog::oid_t table_oid;
-        std::string name;
+        components::catalog::oid_t index_oid;
     };
 
     class transaction_t {

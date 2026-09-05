@@ -344,6 +344,19 @@ namespace components::table {
                 // segment so we can re-point it to disk. state.current is moved to the new segment below, so the
                 // filled segment is no longer referenced by the append state.
                 const uint64_t filled_index = data_.segment_count(l) - 1;
+                // Release the append state's pin on the just-filled segment BEFORE
+                // transition_segment_to_disk swaps it out: the swap frees the old
+                // column_segment_t and with it the block_handle_t the pin points at
+                // (a raw pointer inside buffer_handle_t), so a pin that outlives the
+                // swap unpins through freed memory when initialize_append below
+                // finally replaces it (the [appendpin] lifetime test; fatal on the
+                // B1a disk-only path — test_collection::insert hit the freed
+                // handle's destroyed mutex). transition_segment_to_disk releases its
+                // OWN pin before the swap for exactly this reason; it cannot release
+                // ours. The filled segment's block is a managed (non-reloadable)
+                // transient block the pool can never unload, so dropping the pin
+                // before the transition's own pin cannot lose the payload.
+                state.handle.reset();
                 auto created =
                     apend_transient_segment(l, state.current->start + static_cast<int64_t>(state.current->count));
                 if (created.has_error()) {
@@ -377,9 +390,14 @@ namespace components::table {
             offset += copied_elements;
             append_count -= copied_elements;
         }
-        // Make every re-pointed filled segment's packed block durable before returning (flush-before-evict).
+        // Make every re-pointed filled segment's packed block durable before returning
+        // (flush-before-evict). Rule 19 / the L1 family: this answer used to be dropped, so a
+        // failed write left a LIVE segment pointing at a block that never reached the file and
+        // the next scan or eviction read whatever was there before.
         if (any_transitioned) {
-            pbm.flush_partial_blocks();
+            if (auto flushed = pbm.flush_partial_blocks(); flushed.has_error()) {
+                return flushed; // io_error
+            }
         }
         return true;
     }
@@ -428,6 +446,13 @@ namespace components::table {
         vector::vector_t base_vector(resource_, type_, count_);
         column_scan_state state;
         auto fetch_count = fetch(state, row_ids[0], base_vector);
+        // The pre-image is the row's PRIOR version, handed to update_internal as the version
+        // chain's base. A failed read used to arrive as an empty string_view with the reason
+        // parked in state.scan_error and nobody looking, so a rollback or an older snapshot
+        // materialised "" where the stored value was — silently. Surface it instead.
+        if (state.has_error()) {
+            return state.scan_error;
+        }
 
         base_vector.flatten(fetch_count);
         return update_internal(column_index, update_vector, row_ids, update_count, base_vector);
@@ -686,9 +711,22 @@ namespace components::table {
         // dedicated-block-only discriminator (block_offset()==0 && segment_size() > 0.8*block) leaked nearly
         // every block on each compaction -> unbounded file growth. We now emit one entry per reloadable
         // segment; the caller DEDUPES before freeing (multiple packed segments report the SAME block id).
+        //
+        // F1: a segment's payload is not always confined to its own block. A reloaded STRING
+        // segment's big strings live in separate overflow blocks, recorded in its segment state
+        // (rebuilt from data_pointer_t::overflow_blocks on load) and reported through
+        // additional_blocks(). Those blocks are referenced ONLY by this collection, exactly like
+        // the segment blocks above, so they are freeable on the same terms -- and if they are
+        // not collected here the file grows by the whole big-string payload on every compact
+        // round, forever.
         for (auto& segment : const_cast<segment_tree_t<column_segment_t>&>(data_).segments()) {
             if (segment.block && segment.block->is_reloadable()) {
                 out.push_back(segment.block->block_id());
+            }
+            if (auto* state = segment.segment_state()) {
+                for (uint64_t extra_id : state->additional_blocks()) {
+                    out.push_back(extra_id);
+                }
             }
         }
     }
@@ -840,6 +878,16 @@ namespace components::table {
         if (persistent.has_error()) {
             return persistent;
         }
+        // Own entry count: nested nodes (STRUCT/ARRAY without own segments, LIST children
+        // whose entry count is the sum of list lengths) cannot re-derive it on load.
+        persistent.value().count = count_.load();
+        // Nested columns append their children's persistent form here (NVI hook; no-op for
+        // flat columns). Without this the checkpoint silently dropped list elements, struct
+        // fields and array elements — a reloaded nested column scanned an EMPTY child.
+        auto children = checkpoint_children(partial_block_manager, persistent.value());
+        if (children.has_error()) {
+            return children.convert_error<persistent_column_data_t>();
+        }
         // Re-point the still-managed LIVE segments (the open tail that was not filled during append, and
         // so never went through the on-fill write-through) to disk-backed, evictable blocks so the
         // post-checkpoint live table stays bounded. The on-disk metadata returned above is independent of
@@ -856,30 +904,67 @@ namespace components::table {
         if (repointed.has_error()) {
             return repointed.convert_error<persistent_column_data_t>();
         }
-        repoint_pbm.flush_partial_blocks();
+        if (auto flushed = repoint_pbm.flush_partial_blocks(); flushed.has_error()) {
+            return flushed.convert_error<persistent_column_data_t>(); // io_error
+        }
         return persistent;
     }
 
-    void column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
+    core::result_wrapper_t<bool>
+    column_data_t::checkpoint_children(storage::partial_block_manager_t& /*partial_block_manager*/,
+                                       persistent_column_data_t& /*persistent*/) {
+        return true; // flat column: no child columns to persist
+    }
+
+    core::result_wrapper_t<bool> column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
         auto l = data_.lock();
         for (uint32_t i = 0; i < persistent_data.data_pointers.size(); i++) {
             const auto& dp = persistent_data.data_pointers[i];
+            // Disk-fed sanity: a corrupt segment_size would otherwise only trip a DEV-mode
+            // assert in the column_segment_t ctor (gone under NDEBUG) and then overrun the
+            // block on the first scan. Loud data_corruption instead.
+            if (dp.segment_size > block_manager_.block_size()) {
+                return core::error_t(
+                    core::error_code_t::data_corruption,
+                    std::pmr::string("column load: segment_size exceeds the block size", resource_));
+            }
             auto block_handle = block_manager_.register_block(dp.block_pointer.block_id);
-
+            // F1: hand the segment the big-string overflow blocks the checkpoint recorded. The
+            // ctor registers them so a marker in the reloaded dictionary resolves; without this
+            // the STRING branch built a state with an EMPTY overflow map and the first read of a
+            // checkpointed big string aborted the process. Left null for every segment with no
+            // big strings (the overwhelmingly common case), which keeps the ctor's fast path.
+            std::unique_ptr<column_segment_state> overflow_state;
+            if (!dp.overflow_blocks.empty()) {
+                overflow_state = std::make_unique<column_segment_state>();
+                overflow_state->blocks = dp.overflow_blocks;
+            }
             auto segment = std::make_unique<column_segment_t>(block_handle,
                                                               type_,
                                                               static_cast<int64_t>(dp.row_start),
                                                               dp.tuple_count,
                                                               static_cast<uint32_t>(dp.block_pointer.block_id),
                                                               dp.block_pointer.offset,
-                                                              dp.segment_size);
+                                                              dp.segment_size,
+                                                              std::move(overflow_state));
+            // The reload constructor's only failure mode: a corrupt big-string overflow list.
+            // It has no return channel, so it latches; this is the channel it latches INTO.
+            if (segment->has_construction_error()) {
+                return core::error_t(segment->construction_error());
+            }
             segment->set_compression(dp.compression);
             if (i < persistent_data.segment_statistics.size() && persistent_data.segment_statistics[i].has_stats()) {
                 segment->set_segment_statistics(persistent_data.segment_statistics[i]);
             }
             data_.append_segment(l, std::move(segment));
         }
-        if (!persistent_data.data_pointers.empty()) {
+        if (persistent_data.count != 0) {
+            // v1 checkpoints persist the node's own entry count (authoritative for nested
+            // nodes, identical to the segment sum for flat ones).
+            count_ = persistent_data.count;
+        } else if (!persistent_data.data_pointers.empty()) {
+            // A zero persisted count with segments present: derive it from the segment sum
+            // (which is then also zero for a checkpointed empty column's empty segment).
             uint64_t total = 0;
             for (const auto& dp : persistent_data.data_pointers) {
                 total += dp.tuple_count;
@@ -889,53 +974,7 @@ namespace components::table {
         if (persistent_data.statistics.has_stats()) {
             statistics_ = persistent_data.statistics;
         }
-    }
-
-    void column_data_t::initialize_column_validity(const persistent_column_data_t& persistent_data) {
-        // Validity is not persisted separately (a checkpoint flushes only the main column's
-        // segments); on reopen the bitmap is implicitly all-valid. We materialize one validity
-        // segment per main-column data pointer and, on a DISK-backed table, write each all-valid
-        // bitmap THROUGH to the data file and swap it for a disk-backed (reloadable) segment via
-        // transition_segment_to_disk -- the same mechanism used on the append fill path. Without
-        // this the reopen-rebuilt validity segments stay managed (block_id >= MAXIMUM_BLOCK), so
-        // the eviction guard pins them all resident and reopening a large table under a small pool
-        // exhausts it. The transient segment's column_segment_t ctor 0xFF-fills the bitmap
-        // (all-valid) before the transition copies it to disk, so reloaded validity reads all-valid.
-        //
-        // Own a partial_block_manager so the all-valid validity segments are PACKED into shared blocks
-        // (segment packing) and flush it at the end of the loop -- the flush is the flush-before-evict
-        // guarantee: every re-pointed validity segment's block is durable before the reopened table is
-        // scanned/evicted.
-        storage::partial_block_manager_t pbm(block_manager_);
-        auto l = data_.lock();
-        for (const auto& dp : persistent_data.data_pointers) {
-            // Disk-load path: segments are sized for known on-disk tuple counts. An OOM here
-            // is not threaded to an agent boundary; assert and skip the row on exhaustion.
-            auto created = apend_transient_segment(l, static_cast<int64_t>(dp.row_start));
-            assert(!created.has_error() && "initialize_column_validity: transient segment OOM");
-            if (created.has_error()) {
-                continue;
-            }
-            const uint64_t seg_index = data_.segment_count(l) - 1;
-            auto* seg = data_.last_segment(l);
-            if (seg) {
-                seg->count = dp.tuple_count;
-            }
-            // Write the all-valid bitmap through to disk and re-point the live segment to a
-            // disk-backed, evictable+reloadable block (no-op for in-memory tables). A write/alloc
-            // failure surfaces as io_error/out_of_memory; the disk-load path is not threaded to an
-            // agent boundary, so assert and keep the managed segment on failure.
-            auto transitioned = transition_segment_to_disk(l, seg_index, pbm);
-            assert(!transitioned.has_error() && "initialize_column_validity: write-through failed");
-        }
-        pbm.flush_partial_blocks();
-        if (!persistent_data.data_pointers.empty()) {
-            uint64_t total = 0;
-            for (const auto& dp : persistent_data.data_pointers) {
-                total += dp.tuple_count;
-            }
-            count_ = total;
-        }
+        return true;
     }
 
 } // namespace components::table

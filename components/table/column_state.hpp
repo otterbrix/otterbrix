@@ -96,7 +96,12 @@ namespace components::table {
             return reinterpret_cast<const TARGET&>(*this);
         }
 
-        std::vector<uint32_t> blocks;
+        // Ids of the extra (non-segment) DISK blocks this segment's payload lives in --
+        // for STRING that is the big-string overflow list read back from data_pointer_t.
+        // uint64_t, not uint32_t: a block id shares its domain with the transient ids
+        // (>= storage::MAXIMUM_BLOCK == 1<<62), and truncating to 32 bits is exactly the
+        // bug class that made the overflow map unlookupable before.
+        std::vector<uint64_t> blocks;
     };
 
     struct column_append_state {
@@ -156,6 +161,11 @@ namespace components::table {
 
         // Returns nullptr and sets fetch_error on buffer-pool exhaustion.
         storage::buffer_handle_t* get_or_insert_handle(column_segment_t& segment);
+        // Same, for a block that is not a segment's own block -- a big string's overflow block.
+        // Keyed by block id like the segment case, so an overflow block PACKED into the same
+        // partial block as segment data resolves to the one shared pin, and the pin survives
+        // for as long as the fetch state does (the returned bytes are borrowed, not copied).
+        storage::buffer_handle_t* get_or_insert_handle(std::shared_ptr<storage::block_handle_t>& block);
     };
 
     struct string_block_t {
@@ -170,7 +180,10 @@ namespace components::table {
 
         virtual std::string segment_info() const { return ""; }
 
-        virtual std::vector<uint32_t> additional_blocks() const { return std::vector<uint32_t>(); }
+        // DISK blocks this segment references besides its own block. data_table_t::compact
+        // reclaims them through column_data_t::collect_disk_block_ids, so a state that owns
+        // off-segment disk payload MUST report it here or the file grows every compact round.
+        virtual std::vector<uint64_t> additional_blocks() const { return std::vector<uint64_t>(); }
         template<typename TARGET>
         TARGET& cast() {
             return reinterpret_cast<TARGET&>(*this);
@@ -185,16 +198,52 @@ namespace components::table {
         ~uncompressed_string_segment_state() override;
 
         std::unique_ptr<string_block_t> head;
-        std::unordered_map<uint32_t, string_block_t*> overflow_blocks;
-        std::vector<uint32_t> on_disk_blocks;
+        // TRANSIENT overflow blocks written by write_string_memory, keyed by the FULL 64-bit
+        // transient block id (>= storage::MAXIMUM_BLOCK). A uint32 key silently truncated the
+        // id at insert, so lookups with the real id could never hit (A0b).
+        //
+        // The two maps are the two halves of ONE id domain and they never overlap:
+        //   * id >= storage::MAXIMUM_BLOCK -> transient, still in memory -> overflow_blocks;
+        //   * id <  storage::MAXIMUM_BLOCK -> a real file block -> handles_ (below), filled by
+        //     register_block from the persisted list on reload.
+        // The checkpoint rewrites every marker from the first domain into the second, so a
+        // reloaded segment's markers are unambiguously disk ids.
+        std::unordered_map<uint64_t, string_block_t*> overflow_blocks;
+        // Persisted (via data_pointer_t::overflow_blocks) ids of the DISK blocks holding this
+        // segment's big-string payload. Reported through additional_blocks() so compact can
+        // reclaim them.
+        std::vector<uint64_t> on_disk_blocks;
 
-        std::shared_ptr<storage::block_handle_t> handle(storage::block_manager_t& manager, uint32_t block_id);
+        std::vector<uint64_t> additional_blocks() const override { return on_disk_blocks; }
 
-        void register_block(storage::block_manager_t& manager, uint32_t block_id);
+        std::shared_ptr<storage::block_handle_t> handle(storage::block_manager_t& manager, uint64_t block_id);
+
+        // Registers a persisted overflow block so a marker naming it resolves. Returns FALSE
+        // when the id was already registered -- and that is a corruption report, not a
+        // pleasantry: persist_string_overflow dedupes the list it writes, so a duplicate can
+        // only come from a corrupt pointer stream, and accepting it silently leaves
+        // on_disk_blocks disagreeing with the file about what this segment owns (which is what
+        // drives compact's reclaim). The caller (column_segment_t's reload constructor) latches
+        // the false and column_data_t::initialize_column turns it into data_corruption on its
+        // result_wrapper_t. Never a throw: this runs on the table-open path, where an exception
+        // is fatal (rules 2/6).
+        [[nodiscard]] bool register_block(storage::block_manager_t& manager, uint64_t block_id);
+
+        // Lookup-only: the handle for an ALREADY registered on-disk overflow block, or nullptr.
+        // A marker naming an unregistered disk block is corruption and must surface as an error
+        // rather than silently registering (and then reading) an arbitrary block of the file.
+        std::shared_ptr<storage::block_handle_t> registered_handle(uint64_t block_id);
 
     private:
-        std::mutex block_lock_;
-        std::unordered_map<uint32_t, std::shared_ptr<storage::block_handle_t>> handles_;
+        // NO LOCK HERE (rule 12). This map belongs to ONE column segment, which belongs to one
+        // data_table_t, which belongs to one disk agent -- and actor-zeta resumes an agent on
+        // at most one thread at a time. Every caller (the reload constructor, the string read
+        // path, the checkpoint's marker rewrite) runs inside that agent's handler; buffer-pool
+        // eviction is inline on the allocating thread, not a background one. A caller from
+        // another thread has taken a segment across a mailbox boundary, which is a DEFECT IN
+        // THAT CALLER -- the mutex that used to sit here hid that rather than fixing it, and it
+        // never covered the read-modify-write across handle()/register_block anyway.
+        std::unordered_map<uint64_t, std::shared_ptr<storage::block_handle_t>> handles_;
     };
 
     struct column_segment_info {
@@ -207,7 +256,7 @@ namespace components::table {
         uint64_t segment_count;
         bool has_updates;
         uint32_t block_id;
-        std::vector<uint32_t> additional_blocks;
+        std::vector<uint64_t> additional_blocks;
         uint64_t block_offset;
         std::string segment_info;
     };

@@ -6,6 +6,9 @@
 namespace components::table {
 
     void persistent_column_data_t::serialize(storage::metadata_writer_t& writer) const {
+        // own entry count (see the header: not derivable from data_pointers for nested nodes)
+        writer.write<uint64_t>(count);
+
         // data pointers
         writer.write<uint32_t>(static_cast<uint32_t>(data_pointers.size()));
         for (const auto& dp : data_pointers) {
@@ -40,6 +43,8 @@ namespace components::table {
     persistent_column_data_t persistent_column_data_t::deserialize(std::pmr::memory_resource* resource,
                                                                    storage::metadata_reader_t& reader) {
         persistent_column_data_t result(resource);
+
+        result.count = reader.read<uint64_t>();
 
         auto dp_count = reader.read<uint32_t>();
         result.data_pointers.resize(dp_count);

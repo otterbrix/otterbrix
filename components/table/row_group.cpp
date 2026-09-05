@@ -904,6 +904,36 @@ namespace components::table {
         delete_count += actual_delete_count;
         count = 0;
     }
+    namespace {
+        // persistent_column_data_t <-> column_data_pointers_t: the row-group pointer stores
+        // the recursive segment layout (count + own segments + children) of every column
+        // NODE, so nested columns (LIST/STRUCT/ARRAY) round-trip their children. Statistics
+        // are intentionally not part of the row-group pointer (as before).
+        storage::column_data_pointers_t to_column_pointers(const persistent_column_data_t& persistent) {
+            storage::column_data_pointers_t out;
+            out.count = persistent.count;
+            out.segments = persistent.data_pointers;
+            out.children.reserve(persistent.child_columns.size());
+            for (const auto& child : persistent.child_columns) {
+                out.children.push_back(to_column_pointers(*child));
+            }
+            return out;
+        }
+
+        persistent_column_data_t from_column_pointers(std::pmr::memory_resource* resource,
+                                                      const storage::column_data_pointers_t& pointers) {
+            persistent_column_data_t persistent(resource);
+            persistent.count = pointers.count;
+            persistent.data_pointers = pointers.segments;
+            persistent.child_columns.reserve(pointers.children.size());
+            for (const auto& child : pointers.children) {
+                persistent.child_columns.push_back(
+                    std::make_unique<persistent_column_data_t>(from_column_pointers(resource, child)));
+            }
+            return persistent;
+        }
+    } // namespace
+
     core::result_wrapper_t<storage::row_group_pointer_t>
     row_group_t::write_to_disk(storage::partial_block_manager_t& partial_block_manager) {
         storage::row_group_pointer_t pointer;
@@ -911,14 +941,14 @@ namespace components::table {
         pointer.tuple_count = count;
 
         auto col_count = get_column_count();
-        pointer.data_pointers.resize(col_count);
+        pointer.data_pointers.reserve(col_count);
 
         for (uint64_t i = 0; i < col_count; i++) {
             auto persistent = columns_[i]->checkpoint(partial_block_manager);
             if (persistent.has_error()) {
                 return persistent.convert_error<storage::row_group_pointer_t>(); // out_of_memory
             }
-            pointer.data_pointers[i] = std::move(persistent.value().data_pointers);
+            pointer.data_pointers.push_back(to_column_pointers(persistent.value()));
         }
 
         return pointer;
@@ -945,21 +975,33 @@ namespace components::table {
         // so once it returns every re-pointed segment's packed block is durable on disk and a subsequent scan
         // or eviction can safely load() it. THIS is the flush-before-evict point for the per-row-group-close
         // append path (and, transitively, for compact, which rebuilds via this same append path).
-        pbm.flush_partial_blocks();
+        if (auto flushed = pbm.flush_partial_blocks(); flushed.has_error()) {
+            return flushed; // io_error: the re-pointed segments' blocks are not on disk
+        }
         return true;
     }
 
-    void row_group_t::create_from_pointer(const storage::row_group_pointer_t& pointer) {
+    core::result_wrapper_t<bool> row_group_t::create_from_pointer(const storage::row_group_pointer_t& pointer) {
         count = pointer.tuple_count;
         auto col_count = get_column_count();
-        auto ptrs_count = pointer.data_pointers.size();
-        auto min_count = std::min(col_count, static_cast<uint64_t>(ptrs_count));
-
-        for (uint64_t i = 0; i < min_count; i++) {
-            persistent_column_data_t pcd(columns_[i]->resource());
-            pcd.data_pointers = pointer.data_pointers[i];
-            columns_[i]->initialize_column(pcd);
+        // The table was just built from the SAME metadata stream this pointer came from, so
+        // the counts can only diverge on a corrupt stream. The old std::min() silently loaded
+        // a subset — a half-valid table is worse than a loud failure.
+        if (pointer.data_pointers.size() != col_count) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("row group load: column tree count does not match the table's columns",
+                                 collection().resource()));
         }
+
+        for (uint64_t i = 0; i < col_count; i++) {
+            auto pcd = from_column_pointers(columns_[i]->resource(), pointer.data_pointers[i]);
+            auto initialized = columns_[i]->initialize_column(pcd);
+            if (initialized.has_error()) {
+                return initialized; // data_corruption
+            }
+        }
+        return true;
     }
 
 } // namespace components::table

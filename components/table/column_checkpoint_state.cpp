@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <map>
+#include <memory_resource>
 #include <vector>
 
 #include <components/table/column_data.hpp>
@@ -296,6 +297,7 @@ namespace components::table {
         auto segment_size = segment.segment_size();
         auto allocation = partial_block_manager_.get_block_allocation(segment_size);
 
+        storage::data_pointer_t dp;
         if (data && segment_size > 0) {
             // Read from the segment's OWN payload within its (possibly shared) block. A segment that the
             // write-through re-pointed via partial-block packing (B2) lives at a NON-ZERO block_offset in a
@@ -304,19 +306,43 @@ namespace components::table {
             // add block_offset(); this UNCOMPRESSED branch (BIT/validity, STRING, single-tuple fixed-size)
             // must too. Pre-B2 every re-pointed segment was at offset 0 so this was latent.
             auto* segment_data = data + segment.block_offset();
-            partial_block_manager_.write_to_block(allocation.block_id,
-                                                  allocation.offset_in_block,
-                                                  segment_data,
-                                                  segment_size);
+
+            // F1: a STRING segment whose dictionary holds big-string markers is NOT self-contained.
+            // Copying its block verbatim persists markers whose payload lives in a TRANSIENT block
+            // that dies with the process, so the reloaded segment could not resolve them at all
+            // (the read path aborted). Take a writable copy, move each payload into a real file
+            // block through the SAME partial_block_manager that packs everything else, and rewrite
+            // the markers in the copy to name those blocks. dp.overflow_blocks records them so the
+            // reload can register them and compact can reclaim them.
+            if (segment.references_string_overflow(segment_data, segment_size, tuple_count)) {
+                std::pmr::vector<std::byte> rewritten(segment_size, std::byte{0}, column_data_.resource());
+                std::memcpy(rewritten.data(), segment_data, segment_size);
+                auto persisted = segment.persist_string_overflow(rewritten.data(),
+                                                                 segment_size,
+                                                                 tuple_count,
+                                                                 partial_block_manager_,
+                                                                 dp.overflow_blocks);
+                if (persisted.has_error()) {
+                    return persisted;
+                }
+                partial_block_manager_.write_to_block(allocation.block_id,
+                                                      allocation.offset_in_block,
+                                                      rewritten.data(),
+                                                      segment_size);
+            } else {
+                partial_block_manager_.write_to_block(allocation.block_id,
+                                                      allocation.offset_in_block,
+                                                      segment_data,
+                                                      segment_size);
+            }
         }
 
-        storage::data_pointer_t dp;
         dp.row_start = row_start;
         dp.tuple_count = tuple_count;
         dp.block_pointer = storage::block_pointer_t(allocation.block_id, allocation.offset_in_block);
         dp.compression = compression::compression_type::UNCOMPRESSED;
         dp.segment_size = segment_size;
-        data_pointers_.push_back(dp);
+        data_pointers_.push_back(std::move(dp));
         return true;
     }
 

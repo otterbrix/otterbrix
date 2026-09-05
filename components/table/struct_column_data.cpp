@@ -1,5 +1,6 @@
 #include "struct_column_data.hpp"
 
+#include "persistent_column_data.hpp"
 #include "row_group.hpp"
 
 namespace components::table {
@@ -70,6 +71,10 @@ namespace components::table {
                                         column_scan_state& state,
                                         vector::vector_t& result,
                                         uint64_t target_count) {
+        // Validity and every field write at the parent's result base. Without the sync a scan
+        // spanning multiple vectors into one growing chunk folded all NULL bits to offset 0
+        // (see standard_column_data_t::scan).
+        state.child_states[0].result_offset = state.result_offset;
         auto scan_count = validity.scan(vector_index, state.child_states[0], result, target_count);
         auto& child_entries = result.entries();
         for (uint64_t i = 0; i < sub_columns.size(); i++) {
@@ -90,6 +95,7 @@ namespace components::table {
                                                   vector::vector_t& result,
                                                   bool allow_updates,
                                                   uint64_t target_count) {
+        state.child_states[0].result_offset = state.result_offset; // see scan(): children target the same base
         auto scan_count =
             validity.scan_committed(vector_index, state.child_states[0], result, allow_updates, target_count);
         auto& child_entries = result.entries();
@@ -100,6 +106,7 @@ namespace components::table {
                 target_vector.set_null(true);
                 continue;
             }
+            state.child_states[i + 1].result_offset = state.result_offset;
             sub_columns[i]->scan_committed(vector_index,
                                            state.child_states[i + 1],
                                            target_vector,
@@ -110,6 +117,7 @@ namespace components::table {
     }
 
     uint64_t struct_column_data_t::scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count) {
+        state.child_states[0].result_offset = state.result_offset; // see scan(): children target the same base
         auto scan_count = validity.scan_count(state.child_states[0], result, count);
         auto& child_entries = result.entries();
         for (uint64_t i = 0; i < sub_columns.size(); i++) {
@@ -119,6 +127,7 @@ namespace components::table {
                 target_vector.set_null(true);
                 continue;
             }
+            state.child_states[i + 1].result_offset = state.result_offset;
             sub_columns[i]->scan_count(state.child_states[i + 1], target_vector, count);
         }
         return scan_count;
@@ -264,6 +273,57 @@ namespace components::table {
             col_path.back() = i + 1;
             sub_columns[i]->get_column_segment_info(row_group_index, col_path, result);
         }
+    }
+
+    core::result_wrapper_t<bool>
+    struct_column_data_t::checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
+                                              persistent_column_data_t& persistent) {
+        // v1 convention: child_columns[0] is the struct's own validity bitmap (the whole-cell
+        // NULLs), then one child per field — the same order initialize_column consumes.
+        auto valid = validity.checkpoint(partial_block_manager);
+        if (valid.has_error()) {
+            return valid.convert_error<bool>(); // out_of_memory
+        }
+        persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(std::move(valid.value())));
+        for (auto& sub_column : sub_columns) {
+            auto child = sub_column->checkpoint(partial_block_manager);
+            if (child.has_error()) {
+                return child.convert_error<bool>(); // out_of_memory
+            }
+            persistent.child_columns.push_back(std::make_unique<persistent_column_data_t>(std::move(child.value())));
+        }
+        return true;
+    }
+
+    core::result_wrapper_t<bool>
+    struct_column_data_t::initialize_column(const persistent_column_data_t& persistent_data) {
+        // A struct node owns no segments of its own: its row count comes from the persisted
+        // count, its validity is the persisted child_columns[0] bitmap (whole-cell NULLs),
+        // and every field lives in a persisted sub-column after it. A record with the wrong
+        // child count is data_corruption — the shapes are fixed by the checkpoint writer.
+        count_ = persistent_data.count;
+        if (persistent_data.child_columns.size() != sub_columns.size() + 1) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("struct column load: checkpoint must carry validity + one child per field",
+                                 resource()));
+        }
+        auto valid = validity.initialize_column(*persistent_data.child_columns[0]);
+        if (valid.has_error()) {
+            return valid;
+        }
+        if (validity.count() != count_) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("struct column load: validity row count does not match the column", resource()));
+        }
+        for (size_t i = 0; i < sub_columns.size(); i++) {
+            auto field = sub_columns[i]->initialize_column(*persistent_data.child_columns[i + 1]);
+            if (field.has_error()) {
+                return field;
+            }
+        }
+        return true;
     }
 
 } // namespace components::table

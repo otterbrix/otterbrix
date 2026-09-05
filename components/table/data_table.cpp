@@ -1,7 +1,9 @@
 #include "data_table.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <components/table/storage/partial_block_manager.hpp>
+#include <components/types/type_spec_codec.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <cstdlib>
@@ -10,6 +12,65 @@
 #include "row_group.hpp"
 
 namespace components::table {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<uint64_t> g_table_scan_rows_streamed{0};
+    } // namespace
+    uint64_t table_scan_rows_streamed() noexcept { return g_table_scan_rows_streamed.load(std::memory_order_relaxed); }
+    void reset_table_scan_rows_streamed() noexcept {
+        g_table_scan_rows_streamed.store(0, std::memory_order_relaxed);
+    }
+#endif
+
+    namespace {
+        // A7.3. The DISK block ids one persisted column-pointer tree names: its segments'
+        // blocks plus, for a STRING segment, the separate blocks its big-string payloads were
+        // moved into. Recursive, because a nested column keeps its payload in child nodes
+        // (validity is always children[0]) and a flat walk would silently miss every one of
+        // them.
+        //
+        // This is deliberately the ONLY place the engine turns a row_group_pointer_t into block
+        // ids, and both callers of it are the two ends of the same stream: the checkpoint that
+        // WRITES the pointers, and load_from_disk which READS them back. The set therefore
+        // cannot drift from what a reload would actually address -- which is exactly what
+        // column_data_t::initialize_column registers, one block_handle_t per data_pointer_t
+        // plus the overflow blocks handed to the segment.
+        void collect_pointer_blocks(const storage::column_data_pointers_t& node,
+                                    std::pmr::vector<uint64_t>& out) {
+            for (const auto& segment : node.segments) {
+                out.push_back(segment.block_pointer.block_id);
+                for (uint64_t overflow : segment.overflow_blocks) {
+                    out.push_back(overflow);
+                }
+            }
+            for (const auto& child : node.children) {
+                collect_pointer_blocks(child, out);
+            }
+        }
+
+        void collect_root_blocks(const std::vector<storage::row_group_pointer_t>& row_groups,
+                                 std::pmr::vector<uint64_t>& out) {
+            for (const auto& rgp : row_groups) {
+                for (const auto& column : rgp.data_pointers) {
+                    collect_pointer_blocks(column, out);
+                }
+                // The delete bitmaps are part of the root too: a block that holds one is as
+                // reachable as a data block, and reclaiming it would drop committed deletes.
+                for (const auto& deletes : rgp.deletes_pointers) {
+                    out.push_back(deletes.block_pointer.block_id);
+                    for (uint64_t overflow : deletes.overflow_blocks) {
+                        out.push_back(overflow);
+                    }
+                }
+            }
+            // One physical block backs many segments (B2 packs a whole row group into a
+            // handful of 256 KiB blocks), so the raw walk repeats ids heavily. Dedup: the
+            // consumers are set-shaped and a repeated id would only cost work.
+            std::sort(out.begin(), out.end());
+            out.erase(std::unique(out.begin(), out.end()), out.end());
+        }
+    } // namespace
 
     data_table_t::data_table_t(std::pmr::memory_resource* resource,
                                storage::block_manager_t& block_manager,
@@ -134,6 +195,28 @@ namespace components::table {
             return true;
         }
 
+        // A DEGRADED block manager must not be rebuilt on top of.
+        //
+        // Both of the manager's latches (a write/fsync that did not reach the device, a free
+        // list proven corrupt) are sticky BY DESIGN, and both make write_header return before
+        // it promotes pending_free_. So after ONE transient EIO/ENOSPC the pool free_block_id
+        // draws from never refills: this rebuild would allocate a whole fresh copy of the
+        // table by extending the file, the checkpoint after it would refuse to commit, and the
+        // next round would do it again — the table grows by its own full size every round, for
+        // the life of the process. Measured: +19 blocks per round on a 12k-row table after a
+        // single failed fsync.
+        //
+        // Refusing HERE, rather than only at the checkpoint, is the point: the growth is the
+        // rebuild's, not the header's. `false` is the channel this function already has for
+        // "not this round" (the MVCC gate uses it), and every caller already handles it by
+        // deferring the entry and keeping its WAL records — which is exactly right, because a
+        // degraded file must not have anything sealed away from it. Loud, not fatal (rule 6):
+        // the table keeps serving reads and writes, and every checkpoint keeps reporting the
+        // latched error until the file is rebuilt.
+        if (row_groups_->block_manager().degraded()) {
+            return false;
+        }
+
         // MVCC safety gate (all-or-nothing). The rebuild below scans with the
         // txn-less "see all committed" view and re-stamps every surviving row
         // with transaction_data{0,0} — it collapses the version history. That is
@@ -182,6 +265,18 @@ namespace components::table {
             vector::data_chunk_t chunk(resource_, scan_types, vector::DEFAULT_VECTOR_CAPACITY);
             while (true) {
                 state.table_state.scan(chunk);
+                // A scan failure must NOT look like the end of the table. collection_scan_state
+                // ::scan gives up on error AFTER templated_scan has already folded earlier
+                // vectors into `chunk`, so the next round hands back an empty one — which this
+                // loop used to read as "drained". It then swapped the TRUNCATED collection in
+                // and mark_as_free'd every block of the old one: the rows were gone and their
+                // blocks recycled, with compact still reporting success. Reachable on an
+                // UNCORRUPTED database, because a buffer-pool OOM in initialize_scan lands in
+                // this same channel. Refuse the round instead; the caller treats false as
+                // "not compacted this time" and leaves the collection untouched.
+                if (state.table_state.has_error()) {
+                    return false;
+                }
                 if (chunk.size() == 0) {
                     break;
                 }
@@ -214,8 +309,19 @@ namespace components::table {
         // live block_handle for that id lingers in the block manager's blocks_ registry is an ABA hazard -- a
         // later free_block_id()/register_block() that reuses the id would resurrect the STALE handle (pointing at
         // OLD data) instead of creating a fresh one. unregister_block drops only the registry's weak_ptr entry;
-        // the old collection's segments still own the block_handle objects (dropped when old_collection releases),
-        // and their dtors call unregister_block again -- a harmless no-op erase on an already-removed id.
+        // the old collection's segments still own the block_handle objects.
+        //
+        // ITEM C corrects what this comment used to claim about those objects' destructors. It said their later
+        // unregister_block was "a harmless no-op erase on an already-removed id" -- true only while nothing
+        // re-registered the id in between, and A7.2/A7.3 made re-registration the NORMAL case: the ids released
+        // here land in pending_free_, a committed header promotes them to reusable_, and the next round hands one
+        // back out and register_block()s a FRESH handle for it. A holder that outlives this swap (row_group()
+        // returns shared_ptr copies BY VALUE) then destroyed the stale handle AFTER that, and the id-only erase
+        // took the LIVE handle's slot with it -- turning registry_alive(id) false while a live segment was still
+        // reading the block, which is exactly the subtraction reclaim_superseded_root relies on. The handle
+        // destructor's erase is now identity-checked (block_manager_t::unregister_block(block_handle_t&)), so it
+        // really is a no-op for a slot that belongs to someone else. The by-ID erase below is the deliberate one
+        // and stays: it is what makes the reuse safe in the first place.
         if (old_collection) {
             auto& block_manager = old_collection->block_manager();
             if (!block_manager.in_memory()) {
@@ -228,6 +334,20 @@ namespace components::table {
                 std::sort(reclaimable.begin(), reclaimable.end());
                 reclaimable.erase(std::unique(reclaimable.begin(), reclaimable.end()), reclaimable.end());
                 for (uint64_t block_id : reclaimable) {
+                    // Same domain guard reclaim_superseded_root applies, and for the same
+                    // reason: these ids are DISK-FED. collect_disk_block_ids emits
+                    // state->additional_blocks() unfiltered, and those come from
+                    // data_pointer_t::overflow_blocks, read off the file as a raw uint64 with
+                    // no check. mark_as_free screens its OWN input and returns — it does not
+                    // stop the next statement — so without this `continue` a corrupt id in the
+                    // transient domain reaches unregister_block's assert: an abort on the agent
+                    // thread inside the checkpoint coroutine (rule 9) in a debug build, and
+                    // silence under NDEBUG. mark_as_free has already latched the corruption,
+                    // which is what stops the next write_header from committing.
+                    if (block_id >= storage::MAXIMUM_BLOCK) {
+                        block_manager.mark_as_free(block_id);
+                        continue;
+                    }
                     block_manager.mark_as_free(block_id);
                     block_manager.unregister_block(block_id);
                 }
@@ -236,7 +356,12 @@ namespace components::table {
         return true;
     }
 
-    void data_table_t::scan(vector::data_chunk_t& result, table_scan_state& state) { state.table_state.scan(result); }
+    void data_table_t::scan(vector::data_chunk_t& result, table_scan_state& state) {
+        state.table_state.scan(result);
+#ifdef DEV_MODE
+        g_table_scan_rows_streamed.fetch_add(result.size(), std::memory_order_relaxed);
+#endif
+    }
 
     void data_table_t::scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
                                     const std::vector<size_t>* projected_cols,
@@ -393,59 +518,6 @@ namespace components::table {
 
     void data_table_t::revert_all_deletes(uint64_t txn_id) { row_groups_->revert_all_deletes(txn_id); }
 
-    void data_table_t::scan_table_segment(int64_t row_start,
-                                          uint64_t count,
-                                          const std::function<void(vector::data_chunk_t& chunk)>& function) {
-        if (count == 0) {
-            return;
-        }
-        int64_t end = row_start + static_cast<int64_t>(count);
-
-        std::vector<storage_index_t> column_ids;
-        std::pmr::vector<types::complex_logical_type> types(resource_);
-        for (uint64_t i = 0; i < this->column_definitions_.size(); i++) {
-            auto& col = this->column_definitions_[i];
-            column_ids.emplace_back(i);
-            types.push_back(col.type());
-        }
-        vector::data_chunk_t chunk(resource_, types);
-
-        create_index_scan_state state(resource_);
-
-        initialize_scan_with_offset(state, column_ids, row_start, row_start + static_cast<int64_t>(count));
-        // vector_index is stamped in collection-absolute space by initialize_scan_with_offset, so
-        // vector_index*CAP is already the vector-aligned absolute start row (do NOT re-add row_group
-        // start — that would double-count the group origin).
-        auto row_start_aligned = static_cast<int64_t>(state.table_state.vector_index * vector::DEFAULT_VECTOR_CAPACITY);
-
-        int64_t current_row = row_start_aligned;
-        while (current_row < end) {
-            state.table_state.scan_committed(chunk, table_scan_type::COMMITTED_ROWS);
-            if (chunk.size() == 0) {
-                break;
-            }
-            int64_t end_row = current_row + static_cast<int64_t>(chunk.size());
-            int64_t chunk_start = std::max(current_row, row_start);
-            int64_t chunk_end = std::min(end_row, end);
-            assert(chunk_start < chunk_end);
-            uint64_t chunk_count = static_cast<uint64_t>(chunk_end - chunk_start);
-            if (chunk_count != chunk.size()) {
-                assert(chunk_count <= chunk.size());
-                uint64_t start_in_chunk;
-                if (current_row >= row_start) {
-                    start_in_chunk = 0;
-                } else {
-                    start_in_chunk = static_cast<uint64_t>(row_start - current_row);
-                }
-                vector::indexing_vector_t indexing(resource_, start_in_chunk, chunk_count);
-                chunk.slice(indexing, chunk_count);
-            }
-            function(chunk);
-            chunk.reset();
-            current_row = end_row;
-        }
-    }
-
     void data_table_t::merge_storage(collection_t& data) { row_groups_->merge_storage(data); }
 
     std::unique_ptr<table_delete_state>
@@ -587,11 +659,20 @@ namespace components::table {
         // write table metadata
         writer.write_string(name_);
 
-        // write column definitions
+        // write column definitions. The type is the FULL spec (types::encode_type_spec),
+        // not a bare logical_type byte: a one-byte tag loses DECIMAL width/scale and every
+        // nested child type, which made the reload rebuild a different (UB-adjacent) type.
         writer.write<uint32_t>(static_cast<uint32_t>(column_definitions_.size()));
+        std::pmr::vector<std::byte> type_spec(resource_);
         for (const auto& col : column_definitions_) {
             writer.write_string(col.name());
-            writer.write<uint8_t>(static_cast<uint8_t>(col.type().type()));
+            type_spec.clear();
+            auto encoded = types::encode_type_spec(col.type(), type_spec);
+            if (encoded.has_error()) {
+                return encoded; // schema_error: this column type cannot be persisted
+            }
+            writer.write<uint32_t>(static_cast<uint32_t>(type_spec.size()));
+            writer.write_data(type_spec.data(), type_spec.size());
             writer.write<uint8_t>(col.is_not_null() ? 1 : 0);
         }
 
@@ -601,7 +682,36 @@ namespace components::table {
             rgp.serialize(writer);
         }
 
-        writer.flush();
+        // The flush is what actually puts this table's metadata on the device; returning true
+        // without looking at it would report a checkpointed table whose description never
+        // landed.
+        if (auto flush_r = writer.flush(); flush_r.has_error()) {
+            return flush_r;
+        }
+
+        // A7.3. Every block of the root under construction is now allocated and written, so
+        // this is the earliest point at which the SUPERSEDED root can be taken down -- and it
+        // has to be the LATEST one too: table_storage_t::checkpoint serializes the free list
+        // immediately after this call, and that list is the new root's own statement about what
+        // it does not reference. Reclaiming after it would publish a root that still claims
+        // blocks nothing reads; reclaiming before the pointers exist would have nothing to
+        // subtract against.
+        //
+        // The ids go to pending_free_, never to reusable_ (that is reclaim_superseded_root's
+        // job, composing with A7.2): until write_header commits, the root a crash recovers is
+        // still root N and still reads every one of them.
+        //
+        // No-op for an in-memory table (base-class default) and for the first checkpoint of a
+        // fresh file (no durable root yet).
+        std::pmr::vector<uint64_t> new_root_blocks(resource_);
+        collect_root_blocks(row_group_pointers, new_root_blocks);
+        auto reclaimed = row_groups_->block_manager().reclaim_superseded_root(new_root_blocks);
+        if (reclaimed.has_error()) {
+            // Root N's chains could not be walked. That is corrupt input, not a hiccup: the
+            // checkpoint must not commit a root on top of accounting it cannot close, and the
+            // caller already knows how to defer a failed round.
+            return reclaimed.convert_error<bool>();
+        }
         return true;
     }
 
@@ -614,28 +724,53 @@ namespace components::table {
         auto col_count = reader.read<uint32_t>();
         std::vector<column_definition_t> columns;
         columns.reserve(col_count);
+        std::pmr::vector<std::byte> type_spec(resource);
         for (uint32_t i = 0; i < col_count; i++) {
             auto col_name = reader.read_string();
-            auto logical_type = static_cast<types::logical_type>(reader.read<uint8_t>());
+            auto spec_size = reader.read<uint32_t>();
+            if (reader.has_error()) {
+                return core::error_t(reader.error()); // bail before sizing a buffer off garbage
+            }
+            type_spec.resize(spec_size);
+            reader.read_data(type_spec.data(), spec_size);
             auto not_null = reader.read<uint8_t>() != 0;
-            types::complex_logical_type col_type(logical_type);
-            col_type.set_alias(col_name);
-            columns.emplace_back(col_name, std::move(col_type), not_null);
+            if (reader.has_error()) {
+                return core::error_t(reader.error());
+            }
+            // Full type spec decode — restores DECIMAL width/scale, nested child types and
+            // aliases exactly as checkpointed. No set_alias here: the alias (when any) is
+            // part of the spec, and set_alias on a bare DECIMAL would fabricate a GENERIC
+            // extension that to_physical_type() later misreads as a decimal extension (UB).
+            auto col_type = types::decode_type_spec(resource, type_spec.data(), type_spec.size());
+            if (col_type.has_error()) {
+                return col_type.convert_error<std::unique_ptr<data_table_t>>(); // data_corruption
+            }
+            columns.emplace_back(std::move(col_name), std::move(col_type.value()), not_null);
         }
 
         auto table = std::make_unique<data_table_t>(resource, block_manager, std::move(columns), std::move(name));
 
         uint64_t total_loaded_rows = 0;
         auto rg_count = reader.read<uint32_t>();
+        // A7.3: the LOADER defines what the durable root references. Collected here, out of the
+        // very pointer stream the table is being built from, so the block manager's idea of
+        // "root N's data blocks" is the loader's own answer and cannot drift from it.
+        std::pmr::vector<uint64_t> durable_blocks(resource);
+        std::vector<storage::row_group_pointer_t> loaded_pointers;
+        loaded_pointers.reserve(rg_count);
         for (uint32_t i = 0; i < rg_count; i++) {
             auto pointer = storage::row_group_pointer_t::deserialize(reader);
 
             // create a new row group and populate from disk pointer
             auto* rg = table->row_groups_->append_row_group(static_cast<int64_t>(pointer.row_start));
             if (rg) {
-                rg->create_from_pointer(pointer);
+                auto created = rg->create_from_pointer(pointer);
+                if (created.has_error()) {
+                    return created.convert_error<std::unique_ptr<data_table_t>>(); // data_corruption
+                }
                 total_loaded_rows += pointer.tuple_count;
             }
+            loaded_pointers.push_back(std::move(pointer));
         }
         table->row_groups_->set_total_rows(total_loaded_rows);
 
@@ -645,6 +780,11 @@ namespace components::table {
         if (reader.has_error()) {
             return core::error_t(reader.error());
         }
+
+        // Only now, with the stream proven whole: a half-read pointer list would hand the block
+        // manager a bogus "this is what root N owns" and A7.3 would reclaim live blocks off it.
+        collect_root_blocks(loaded_pointers, durable_blocks);
+        block_manager.adopt_durable_root_data_blocks(durable_blocks);
 
         return table;
     }

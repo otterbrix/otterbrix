@@ -23,6 +23,7 @@ namespace components::index {
         class impl_t final : public index_t::iterator::iterator_impl_t {
         public:
             explicit impl_t(const_iterator iterator);
+            kind_t kind() const noexcept final { return kind_t::ram_single_field; }
             index_t::iterator::reference value_ref() const final;
             iterator_impl_t* next() final;
             bool equals(const iterator_impl_t* other) const final;

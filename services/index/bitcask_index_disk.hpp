@@ -71,10 +71,13 @@ namespace services::index {
         [[nodiscard]] core::error_t force_flush() override;
         void load_entries(entries_t& entries) const;
         void enqueue_task(std::function<void()> task);
-        // bitcask-internal rehash-suppression window (pre-existing optimization, called
-        // via the bitcask path in index_agent_disk::insert_many). Not part of the
-        // index_disk_t interface — btree needs no such window.
-        void set_bulk_mode(bool enabled);
+        // bitcask is the backend that owns a durable txn log, so a committed statement
+        // reaches it through apply_txn_* rather than the bulk path. This is the answer
+        // index_agent_disk_t used to obtain with dynamic_cast.
+        [[nodiscard]] bool has_txn_log() const noexcept override { return true; }
+        // bitcask-internal rehash-suppression window (pre-existing optimization, opened
+        // around the bulk run in index_agent_disk::insert_many).
+        void set_bulk_mode(bool enabled) override;
         // M3.5 error channel: the txn-log write path can fail on a file open /
         // write / sync, and surfaces a core::error_t so the manager's commit
         // handler can return an index-side abort instead of taking the whole
@@ -82,9 +85,9 @@ namespace services::index {
         // logic invariants (corrupt magic, bad op_kind) stay asserts in the
         // recovery path.
         [[nodiscard]] core::error_t apply_txn_inserts(uint64_t txn_id,
-                                                      const std::vector<std::pair<value_t, size_t>>& values);
+                                                      const std::vector<std::pair<value_t, size_t>>& values) override;
         [[nodiscard]] core::error_t apply_txn_deletes(uint64_t txn_id,
-                                                      const std::vector<std::pair<value_t, size_t>>& values);
+                                                      const std::vector<std::pair<value_t, size_t>>& values) override;
         void insert_bulk_unchecked(const value_t& key, size_t value) override;
         // bitcask remove is already O(1) (hash lookup) and honours bulk mode
         // (flush_if_needed skips while bulk), so the bulk remove is the normal

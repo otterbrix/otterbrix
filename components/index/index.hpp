@@ -4,6 +4,7 @@
 #include <actor-zeta.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <core/pmr.hpp>
+#include <cstdint>
 #include <functional>
 
 namespace components::index {
@@ -70,12 +71,41 @@ namespace components::index {
 
             class iterator_impl_t {
             public:
+                // Which concrete implementation stands behind the pointer.
+                //
+                // equals/not_equals compare two impls' INNER iterators, which is only
+                // meaningful when both impls are the same implementation. That check used
+                // to be a dynamic_cast — which also answered nullptr on a mismatch, and
+                // every call site dereferenced that nullptr without looking.
+                //
+                // Pure virtual, with no default enumerator: a default would let two
+                // unrelated implementations report the same kind and then be cast into
+                // each other, which is the silent wrong answer this replaces.
+                enum class kind_t : uint8_t
+                {
+                    ram_single_field,
+                    ram_hash_single_field,
+                    disk_hash_single_field,
+                    // Not a production backend. The fake index in components/index/test
+                    // needs an identity of its own instead of borrowing a real one.
+                    test_fake
+                };
+
                 virtual ~iterator_impl_t() = default;
+                [[nodiscard]] virtual kind_t kind() const noexcept = 0;
                 virtual reference value_ref() const = 0;
                 virtual iterator_impl_t* next() = 0;
                 virtual bool equals(const iterator_impl_t* other) const = 0;
                 virtual bool not_equals(const iterator_impl_t* other) const = 0;
                 virtual iterator_impl_t* copy() const = 0;
+
+            protected:
+                // Stops the process where the bug is when `other` is a different
+                // implementation, or null: the two inner iterators are then unrelated
+                // types, there is no comparison to make, and returning either answer would
+                // be a fabricated one. Unconditional — std::abort() runs under NDEBUG too,
+                // so this does not evaporate in a release build.
+                void abort_unless_same_kind(const iterator_impl_t* other) const;
             };
 
         private:

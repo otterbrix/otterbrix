@@ -113,29 +113,25 @@ namespace services::index {
               values.size(),
               txn_id,
               session.data());
-        auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
-        if (bitcask && txn_id != 0) {
-            // Propagate the bitcask txn-log IO error straight back to commit_inserts.
-            co_return bitcask->apply_txn_inserts(txn_id, values);
+        // The backend answers for itself which route this statement takes; the router
+        // does not inspect its type. has_txn_log() is pure virtual precisely so that no
+        // backend can arrive here silently defaulted onto the wrong leg (see index_disk.hpp).
+        if (txn_id != 0 && index_disk_->has_txn_log()) {
+            // Propagate the txn-log IO error straight back to commit_inserts.
+            co_return index_disk_->apply_txn_inserts(txn_id, values);
         }
         // Bulk fast path via the index_disk_t interface: insert_bulk_unchecked skips the
         // per-insert dedup find() (btree's O(rows^2) source) and the per-insert flush;
-        // force_flush() persists once. bitcask additionally gets its pre-existing
-        // rehash-suppression window (a bitcask-only optimization; btree needs none).
-        // bulk_guard_t closes that window on scope exit so a mid-loop bail-out is clean.
-        // btree / txn_id==0 direct path stays assert+abort terminal: an insert itself has no
-        // recoverable failure to surface.
+        // force_flush() persists once. set_bulk_mode opens whatever window the backend
+        // keeps for a bulk run (bitcask suppresses rehashing; the btree has none and says
+        // so in its own override). bulk_guard_t closes it on scope exit so a mid-loop
+        // bail-out is clean. The no-txn-log / txn_id==0 direct path stays assert+abort
+        // terminal: an insert itself has no recoverable failure to surface.
         struct bulk_guard_t {
-            bitcask_index_disk_t* ptr{nullptr};
-            ~bulk_guard_t() {
-                if (ptr) {
-                    ptr->set_bulk_mode(false);
-                }
-            }
-        } guard{bitcask};
-        if (bitcask) {
-            bitcask->set_bulk_mode(true);
-        }
+            index_disk_t& index;
+            ~bulk_guard_t() { index.set_bulk_mode(false); }
+        } guard{*index_disk_};
+        index_disk_->set_bulk_mode(true);
         for (const auto& [key, row_id] : values) {
             index_disk_->insert_bulk_unchecked(key, row_id);
         }
@@ -153,14 +149,14 @@ namespace services::index {
               values.size(),
               txn_id,
               session.data());
-        auto* bitcask = dynamic_cast<bitcask_index_disk_t*>(index_disk_.get());
-        if (bitcask && txn_id != 0) {
-            // Propagate the bitcask txn-log IO error to commit_deletes.
-            co_return bitcask->apply_txn_deletes(txn_id, values);
+        // Same contract-driven split as insert_many above.
+        if (txn_id != 0 && index_disk_->has_txn_log()) {
+            // Propagate the txn-log IO error to commit_deletes.
+            co_return index_disk_->apply_txn_deletes(txn_id, values);
         }
         // Bulk fast path: remove_bulk_unchecked skips btree's per-remove find() guard and
         // the per-remove flush; force_flush() persists once.
-        // btree / txn_id==0 direct path stays assert+abort terminal.
+        // The no-txn-log / txn_id==0 direct path stays assert+abort terminal.
         for (const auto& [key, row_id] : values) {
             index_disk_->remove_bulk_unchecked(key, row_id);
         }

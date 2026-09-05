@@ -1,6 +1,9 @@
 #include "index.hpp"
 #include <components/expressions/forward.hpp>
 
+#include <cassert>
+#include <cstdlib>
+
 namespace components::index {
 
     std::pmr::vector<int64_t> index_t::search(expressions::compare_type compare,
@@ -300,6 +303,14 @@ namespace components::index {
         delete impl_;
         impl_ = other.impl_->copy();
         return *this;
+    }
+
+    void index_t::iterator_t::iterator_impl_t::abort_unless_same_kind(const iterator_impl_t* other) const {
+        if (other != nullptr && other->kind() == kind()) {
+            return;
+        }
+        assert(false && "index iterator comparison across different index implementations");
+        std::abort();
     }
 
     index_t::~index_t() = default;

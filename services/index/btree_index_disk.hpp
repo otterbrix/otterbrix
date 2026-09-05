@@ -49,6 +49,27 @@ namespace services::index {
         void insert_bulk_unchecked(const value_t& key, size_t value) override;
         void remove_bulk_unchecked(const value_t& key, size_t row_id) override;
 
+        // The ordered b+tree owns no transaction log: a committed statement reaches it
+        // through the bulk path, exactly as it did when index_agent_disk_t decided this
+        // with a dynamic_cast that simply failed to match bitcask.
+        [[nodiscard]] bool has_txn_log() const noexcept override { return false; }
+
+        // Unreachable by contract -- the router calls these only when has_txn_log() is
+        // true. They exist, and fail LOUDLY, because the alternative (inheriting a
+        // do-nothing default) is a backend silently reporting success for writes it never
+        // journalled and never made. The assert stops a debug build at the bug site; the
+        // returned error is the release-build equivalent, and [[nodiscard]] plus the
+        // agent's co_return carry it out to the failing statement.
+        [[nodiscard]] core::error_t apply_txn_inserts(uint64_t txn_id,
+                                                      const std::vector<std::pair<value_t, size_t>>& values) override;
+        [[nodiscard]] core::error_t apply_txn_deletes(uint64_t txn_id,
+                                                      const std::vector<std::pair<value_t, size_t>>& values) override;
+
+        // No window to open: the b+tree bulk methods already skip the per-op find() and
+        // never call flush_if_needed, so there is nothing to suppress and nothing to
+        // restore. Stated here rather than inherited, so a reader sees the decision.
+        void set_bulk_mode(bool enabled) override;
+
     private:
         void flush_if_needed();
 

@@ -20,11 +20,13 @@ namespace components::index {
     }
 
     bool single_field_index_t::impl_t::equals(const iterator_impl_t* other) const {
-        return iterator_ == dynamic_cast<const impl_t*>(other)->iterator_; //todo
+        abort_unless_same_kind(other);
+        return iterator_ == static_cast<const impl_t*>(other)->iterator_;
     }
 
     bool single_field_index_t::impl_t::not_equals(const iterator_impl_t* other) const {
-        return iterator_ != dynamic_cast<const impl_t*>(other)->iterator_; //todo
+        abort_unless_same_kind(other);
+        return iterator_ != static_cast<const impl_t*>(other)->iterator_;
     }
 
     index_t::iterator::iterator_impl_t* single_field_index_t::impl_t::copy() const { return new impl_t(*this); }

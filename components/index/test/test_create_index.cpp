@@ -45,6 +45,7 @@ private:
     class impl_t final : public iterator::iterator_impl_t {
     public:
         explicit impl_t(const_iterator) {}
+        kind_t kind() const noexcept override { return kind_t::test_fake; }
         iterator::reference value_ref() const override { return NULL_INDEX_VALUE; }
         iterator_t::iterator_impl_t* next() override { return nullptr; }
         bool equals(const iterator::iterator_impl_t* other) const override { return this == other; }

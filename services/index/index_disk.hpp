@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory_resource>
+#include <utility>
 #include <vector>
 
 namespace services::index {
@@ -51,6 +52,41 @@ namespace services::index {
         // find() is not O(1). Pure virtual: each backend supplies a real bulk path.
         virtual void insert_bulk_unchecked(const value_t& key, size_t value) = 0;
         virtual void remove_bulk_unchecked(const value_t& key, size_t row_id) = 0;
+
+        // Backend dispatch, asked of the backend instead of guessed from its type.
+        //
+        // Does this backend own a durable transaction log? index_agent_disk_t routes a
+        // committed statement on this answer alone: true means apply_txn_inserts /
+        // apply_txn_deletes journal the whole statement under its txn_id (which is what
+        // arms the crash-recover gate, replaying only WAL-committed frames); false means
+        // the bulk path above. The router used to ask
+        // dynamic_cast<bitcask_index_disk_t*> instead.
+        //
+        // Pure virtual on purpose, and so are the three hooks below: there is NO default
+        // for a backend to fall into. A default `false` here is precisely the silent
+        // regression the no-fallback rule forbids -- a backend that does own a log would
+        // inherit it, quietly take the bulk path, and lose txn semantics with nothing
+        // anywhere reporting a problem. A default no-op apply_txn_* would be the same
+        // failure one level down. Every backend states its own answer and the compiler
+        // enforces that it does.
+        [[nodiscard]] virtual bool has_txn_log() const noexcept = 0;
+
+        // Journal a whole statement's inserts / deletes under txn_id and apply them.
+        // Called ONLY when has_txn_log() is true. A backend that answers false still
+        // implements these, and implements them as a LOUD failure -- never as a quiet
+        // no-op, which would report success for writes it never made.
+        // Returns an error when the journal or the data did not reach disk; the caller
+        // fails the statement.
+        [[nodiscard]] virtual core::error_t
+        apply_txn_inserts(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values) = 0;
+        [[nodiscard]] virtual core::error_t
+        apply_txn_deletes(uint64_t txn_id, const std::vector<std::pair<value_t, size_t>>& values) = 0;
+
+        // Opens (true) and closes (false) the backend's bulk-load window around a run of
+        // insert_bulk_unchecked / remove_bulk_unchecked. A backend with a window to open
+        // must not inherit a do-nothing one by accident; a backend with no window says so
+        // explicitly in its own override.
+        virtual void set_bulk_mode(bool enabled) = 0;
 
     protected:
         static constexpr uint64_t default_flush_threshold_{1000};

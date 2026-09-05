@@ -4,6 +4,8 @@
 
 #include <components/index/logical_value_binary_codec.hpp>
 
+#include <cassert>
+
 namespace services::index {
 
     using namespace core::b_plus_tree;
@@ -229,6 +231,33 @@ namespace services::index {
         db_ = std::make_unique<btree_t>(resource_, fs_, path_, item_key_getter);
         db_->load();
         reset_flush_state();
+    }
+
+    namespace {
+        // One message for both legs of the unreachable txn path. Naming the guard that
+        // was supposed to keep the caller away is what makes the failure diagnosable:
+        // the bug is upstream, in whoever skipped has_txn_log().
+        core::error_t no_txn_log_error(std::pmr::memory_resource* resource, const char* leg) {
+            std::pmr::string what{"btree_index_disk_t owns no txn log: ", resource};
+            what.append(leg);
+            what.append(" reached without the has_txn_log() guard");
+            return core::error_t{core::error_code_t::index_create_fail, std::move(what)};
+        }
+    } // namespace
+
+    core::error_t btree_index_disk_t::apply_txn_inserts(uint64_t, const std::vector<std::pair<value_t, size_t>>&) {
+        assert(false && "btree_index_disk_t::apply_txn_inserts reached: it owns no txn log");
+        return no_txn_log_error(resource_, "apply_txn_inserts");
+    }
+
+    core::error_t btree_index_disk_t::apply_txn_deletes(uint64_t, const std::vector<std::pair<value_t, size_t>>&) {
+        assert(false && "btree_index_disk_t::apply_txn_deletes reached: it owns no txn log");
+        return no_txn_log_error(resource_, "apply_txn_deletes");
+    }
+
+    void btree_index_disk_t::set_bulk_mode(bool) {
+        // Intentionally empty; see the declaration. insert_bulk_unchecked /
+        // remove_bulk_unchecked already bypass everything a window would suppress.
     }
 
 } // namespace services::index

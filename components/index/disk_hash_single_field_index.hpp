@@ -34,16 +34,19 @@ namespace components::index {
         public:
             explicit impl_t(const_iterator iterator)
                 : iterator_(iterator) {}
+            kind_t kind() const noexcept final { return kind_t::disk_hash_single_field; }
             index_t::iterator::reference value_ref() const final { return *iterator_; }
             iterator_impl_t* next() final {
                 ++iterator_;
                 return this;
             }
             bool equals(const iterator_impl_t* other) const final {
-                return iterator_ == dynamic_cast<const impl_t*>(other)->iterator_;
+                abort_unless_same_kind(other);
+                return iterator_ == static_cast<const impl_t*>(other)->iterator_;
             }
             bool not_equals(const iterator_impl_t* other) const final {
-                return iterator_ != dynamic_cast<const impl_t*>(other)->iterator_;
+                abort_unless_same_kind(other);
+                return iterator_ != static_cast<const impl_t*>(other)->iterator_;
             }
             iterator_impl_t* copy() const final { return new impl_t(*this); }
 

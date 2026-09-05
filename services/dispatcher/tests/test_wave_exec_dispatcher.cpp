@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 #include <unistd.h>
 #include <sys/wait.h>
 
@@ -34,9 +35,8 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
-// Wave "executor & dispatcher": red-first tests for the queue entries closed on this
-// branch. Each test names the entry it guards in a comment. The fixture path carries
-// ::getpid() so parallel ctest shards never share a disk directory.
+// Dispatcher/executor guards. The fixture path carries ::getpid() so parallel ctest
+// shards never share a disk directory.
 
 using namespace services;
 using namespace services::wal;
@@ -49,8 +49,8 @@ using components::types::logical_type;
 
 namespace {
 
-    // Entry #23 probe: a host optimizer pass that counts its invocations. A plain
-    // fn-ptr per the optimizer_pass_t contract; the counter is a test-local global.
+    // A host optimizer pass that counts its invocations. A plain fn-ptr per the
+    // optimizer_pass_t contract; the counter is a test-local global.
     std::atomic<uint64_t> g_host_pass_calls{0};
 
     components::logical_plan::node_ptr counting_host_pass(std::pmr::memory_resource*,
@@ -73,7 +73,7 @@ namespace {
         return std::string{err.what.c_str()}.find(needle) != std::string::npos;
     }
 
-    // One-arg BIGINT -> BIGINT row UDF (entry #11 probe).
+    // One-arg BIGINT -> BIGINT row UDF.
     core::error_t probe_exec(components::compute::kernel_context& ctx,
                              const std::pmr::vector<components::types::logical_value_t>& in,
                              std::pmr::vector<components::types::logical_value_t>& out) {
@@ -197,7 +197,7 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
 
     // Write a pg_proc (+ pg_depend) row straight into the catalog, bypassing register_udf.
     // The operator's cross-namespace conflict read then refuses a later CREATE FUNCTION of
-    // the same name — AFTER the per-executor fan-out already registered it (entry #11).
+    // the same name — AFTER the per-executor fan-out already registered it.
     void seed_pg_proc_row(const std::string& fname) {
         auto ctx = read_ctx();
         components::catalog::oid_batch_t batch;
@@ -232,7 +232,6 @@ private:
     std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;
 };
 
-// ===== Entry #346 =====
 // INSERT ... SELECT into a computed (relkind='g') table must register its columns in
 // pg_computed_column exactly like the VALUES form does. The observable half of the
 // divergence: storage HAS the column (SELECT projects it) while the catalog does not
@@ -256,9 +255,9 @@ TEST_CASE("services::dispatcher::wave3::insert_select_registers_computed_columns
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
     }
-    // Catalog side: DROP COLUMN must find the column. RED before the fix: the register
-    // wrap collected columns only from VALUES chunks, so pg_computed_column got no rows
-    // and this refuses with "does not exist".
+    // Catalog side: DROP COLUMN must find the column. Collecting the registered columns
+    // from VALUES chunks alone leaves pg_computed_column empty here, and this refuses
+    // with "does not exist".
     {
         auto cur = test.execute_sql("ALTER TABLE cdc.docs DROP COLUMN price;");
         if (cur->is_error()) {
@@ -268,10 +267,9 @@ TEST_CASE("services::dispatcher::wave3::insert_select_registers_computed_columns
     }
 }
 
-// ===== Entries #107 + #355 =====
 // ALTER TABLE on a table the enrich pass could not resolve must be refused loudly, not
-// answered with an empty SUCCESS cursor. The planner's rewrite_alter_table already bails
-// ("let execute_ddl error out"); the executor guard was the silent half.
+// answered with an empty SUCCESS cursor. The planner's rewrite_alter_table only bails
+// ("let execute_ddl error out"), so the refusal has to come from the executor guard.
 TEST_CASE("services::dispatcher::wave3::alter_unresolved_table_is_refused") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("alter_unresolved"));
@@ -279,16 +277,16 @@ TEST_CASE("services::dispatcher::wave3::alter_unresolved_table_is_refused") {
     REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
 
     auto cur = test.execute_sql("ALTER TABLE db.no_such_table ADD COLUMN extra bigint;");
-    // RED before the fix: empty success cursor — the client is told the ALTER applied.
+    // Without the executor guard: an empty success cursor — the client is told the ALTER
+    // applied.
     REQUIRE(cur->is_error());
     REQUIRE(mentions(cur->get_error(), "no_such_table"));
 }
 
-// ===== Entry #106 (site 1: boolean-required) =====
 // A boolean-context scalar sub-query whose plan the validator left schema-unstamped
 // (an empty resolved schema — reachable through a computed table with no registered
-// columns) must be refused with an error cursor. Under NDEBUG the old assert compiled
-// away and output_types().front() read an empty vector.
+// columns) must be refused with an error cursor: an assert compiles away under NDEBUG and
+// output_types().front() then reads an empty vector.
 TEST_CASE("services::dispatcher::wave3::boolean_subquery_unstamped_schema_is_refused") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("bool_subq_unstamped"));
@@ -299,14 +297,13 @@ TEST_CASE("services::dispatcher::wave3::boolean_subquery_unstamped_schema_is_ref
     REQUIRE(test.execute_sql("CREATE TABLE db.docs ();")->is_success());
 
     auto cur = test.execute_sql("SELECT * FROM db.t WHERE (SELECT * FROM db.docs);");
-    // RED before the fix (Debug): assert "boolean-required sub-query must be
-    // schema-stamped" aborts the whole binary.
+    // An assert here ("boolean-required sub-query must be schema-stamped") would abort the
+    // whole binary in Debug and read past an empty vector under NDEBUG.
     REQUIRE(cur->is_error());
 }
 
-// ===== Entry #106 (site 2: ARRAY-equality) =====
 // Same mechanism through the `col = ARRAY(SELECT ...)` form: a 0-row result over an
-// unstamped sub-plan reached assert + output_types().front() on an empty vector.
+// unstamped sub-plan reaches output_types().front() on an empty vector.
 TEST_CASE("services::dispatcher::wave3::array_equality_subquery_unstamped_schema_is_refused") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("array_subq_unstamped"));
@@ -320,10 +317,9 @@ TEST_CASE("services::dispatcher::wave3::array_equality_subquery_unstamped_schema
     REQUIRE(cur->is_error());
 }
 
-// ===== Entry #23 =====
 // The host-injected optimizer pass (ctor chain: dispatcher -> executor) must actually be
-// forwarded into components::planner::optimize. RED before the fix: the executor stored
-// optimizer_pass_ and never passed it — a silently-ignored host customization.
+// forwarded into components::planner::optimize: an executor that stores optimizer_pass_
+// and never passes it silently ignores the host customization.
 TEST_CASE("services::dispatcher::wave3::host_optimizer_pass_reaches_optimize") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     g_host_pass_calls.store(0, std::memory_order_relaxed);
@@ -337,10 +333,9 @@ TEST_CASE("services::dispatcher::wave3::host_optimizer_pass_reaches_optimize") {
     REQUIRE(g_host_pass_calls.load(std::memory_order_relaxed) > 0);
 }
 
-// ===== Entry #206 =====
 // A cross-database foreign key: the transformer registers the referenced table's resolve
-// under its own database, but bind_catalog_data used to look it up under the CHILD's
-// database — `REFERENCES otherdb.parent` could never bind.
+// under its OWN database, so bind_catalog_data must look it up there — under the CHILD's
+// database `REFERENCES otherdb.parent` can never bind.
 TEST_CASE("services::dispatcher::wave3::cross_db_foreign_key_binds") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("cross_db_fk"));
@@ -357,7 +352,8 @@ TEST_CASE("services::dispatcher::wave3::cross_db_foreign_key_binds") {
         if (cur->is_error()) {
             WARN("ADD CONSTRAINT error: " << cur->get_error().what);
         }
-        // RED before the fix: "referenced relation \"db1.parent\" does not exist".
+        // Bound under the child's database instead, this answers
+        // "referenced relation \"db1.parent\" does not exist".
         REQUIRE(cur->is_success());
     }
     // The FK it bound must actually be the cross-database one: an orphan is refused,
@@ -372,7 +368,6 @@ TEST_CASE("services::dispatcher::wave3::cross_db_foreign_key_binds") {
     }
 }
 
-// ===== Entry #11 =====
 // register_udf fans the function out to every per-executor registry BEFORE the operator's
 // catalog work. When the operator then refuses (here: a pre-existing pg_proc row trips its
 // cross-namespace conflict read), the fan-out must be unwound — otherwise a RETRY of the
@@ -394,8 +389,8 @@ TEST_CASE("services::dispatcher::wave3::register_udf_operator_refusal_unwinds_ex
         REQUIRE(err.contains_error());
         REQUIRE(mentions(err, "already exists in the catalog"));
     }
-    // Retry: MUST hit the operator's catalog refusal again. RED before the fix: the
-    // leaked per-executor registration answers "already registered with this signature"
+    // Retry: MUST hit the operator's catalog refusal again. A leaked per-executor
+    // registration answers "already registered with this signature"
     // (function_registry_error) instead.
     {
         auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
@@ -408,7 +403,6 @@ TEST_CASE("services::dispatcher::wave3::register_udf_operator_refusal_unwinds_ex
     components::compute::function_registry_t::reset_default();
 }
 
-// ===== Entry #208 =====
 // ALTER TABLE ADD COLUMN carries a column type into the durable catalog exactly like
 // CREATE TABLE does, so it must pass the same gate_persistable_type. The SQL surface
 // cannot spell a too-deep type today (CREATE TYPE gates its own depth), so the probe
@@ -435,18 +429,17 @@ TEST_CASE("services::dispatcher::wave3::alter_add_column_gates_persistable_type"
                                                     components::logical_plan::make_parameter_node(mr.get())};
 
     auto cur = test.execute_plan(std::move(plan));
-    // RED before the fix: no validation gate — the statement proceeds into the DDL
-    // pipeline with a type the durable form refuses.
+    // Without the validation gate the statement proceeds into the DDL pipeline with a
+    // type the durable form refuses.
     REQUIRE(cur->is_error());
     REQUIRE(mentions(cur->get_error(), "cannot be persisted"));
 }
 
-// ===== Entry #227 =====
-// core/executor.hpp's otterbrix::send must refuse an empty target LOUDLY. The old
-// shorthand answered a ready future with a default value ("answered, with nothing") built
-// on the empty address's null resource. The contract now: an empty target dies with a
-// message, never answers. The child process exercises it so the abort cannot take the
-// test runner down.
+// core/executor.hpp's otterbrix::send must refuse an empty target LOUDLY: answering a
+// ready future with a default value ("answered, with nothing") builds it on the empty
+// address's null resource. The contract is that an empty target dies with a message and
+// never answers. The child process exercises it so the abort cannot take the test runner
+// down.
 TEST_CASE("services::dispatcher::wave3::empty_target_send_dies_loudly") {
     const pid_t child = fork();
     REQUIRE(child >= 0);
@@ -465,15 +458,12 @@ TEST_CASE("services::dispatcher::wave3::empty_target_send_dies_loudly") {
     REQUIRE(WIFSIGNALED(status));
 }
 
-// ===== ЗАПИСЬ #365 =====
-// The column list of INSERT ... SELECT into a computed (relkind='g') table was
-// silently IGNORED: validate skipped set_column_bindings for relkind='g', the
-// insert operator renames nothing without bindings, so
-// `INSERT INTO g (x, y) SELECT a, b` landed and REGISTERED columns a and b — the
-// written (x, y) vanished without a word. PR #568 carried the rename through
-// rename_targets for every table kind; the #585 bindings rework kept it only for
-// relational targets. The name semantics come back here, and a list whose arity
-// disagrees with the projection is a refusal, not a silent partial mapping.
+// The column list of INSERT ... SELECT into a computed (relkind='g') table carries the
+// same NAME semantics as everywhere else. Skipping set_column_bindings for relkind='g'
+// leaves the insert operator with nothing to rename by, so `INSERT INTO g (x, y) SELECT
+// a, b` lands and REGISTERS columns a and b — the written (x, y) vanishing without a
+// word. A list whose arity disagrees with the projection is a refusal, not a silent
+// partial mapping.
 TEST_CASE("services::dispatcher::wave4::insert_select_column_list_renames_into_computed_table") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("insert_select_rename_computed"));
@@ -514,14 +504,12 @@ TEST_CASE("services::dispatcher::wave4::insert_select_column_list_renames_into_c
     }
 }
 
-// ===== ЗАПИСЬ #235 =====
-// Nothing checked the relname of a new index: duplicate detection is by
-// (keys, type) only, so CREATE INDEX under a name that pg_class already holds —
-// another index, or even a table — минтed a SECOND pg_class row with the same
-// relname. DROP INDEX resolves by name and then answers about WHICHEVER row the
-// resolve found. The name check rides the same resolve channel DROP INDEX uses:
-// the transformer registers a {db, indexname} demand, enrich stamps the
-// conflicting oid, and the planner refuses the statement.
+// The relname of a new index needs its own check: duplicate detection is by
+// (keys, type) only, so CREATE INDEX under a name pg_class already holds — another
+// index, or even a table — mints a SECOND pg_class row with the same relname, and
+// DROP INDEX resolves by name and then answers about WHICHEVER row it found. The name
+// check rides the same resolve channel DROP INDEX uses: the transformer registers a
+// {db, indexname} demand, enrich stamps the conflicting oid, and the planner refuses.
 TEST_CASE("services::dispatcher::wave4::create_index_refuses_a_taken_name") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("create_index_name_unique"));
@@ -546,31 +534,36 @@ TEST_CASE("services::dispatcher::wave4::create_index_refuses_a_taken_name") {
     REQUIRE(test.execute_sql("CREATE INDEX idx2 ON cdi.t (b);")->is_success());
 }
 
-// ===== ЗАПИСЬ: DEFAULT У ALTER TABLE ... ADD COLUMN =====
-// CHARACTERIZATION, not a repair. The entry read: "ALTER ADD COLUMN does not run its
-// DEFAULT through a cast to the column's type, while CREATE TABLE does". Half of that is
-// true and the harmful half is not, and the split is what this test pins by EXECUTION:
+// The two spellings of a DEFAULT diverge, and this pins the split by EXECUTION:
 //
-//   * CREATE TABLE really does cast. `c integer DEFAULT 7` writes INTEGER 7 although the
-//     literal 7 is BIGINT (numeric_literal_value's T_Integer arm), because
-//     executor.cpp:1093-1102 hands the column list to convert_column_defaults, which
-//     resolves an assignment cast and REPLACES the stored value.
-//   * ALTER TABLE ADD COLUMN really has no such leg — executor.cpp:1254-1306 gates the
-//     column TYPE and nothing else. BUT the divergence is not accepted either: it is
-//     REFUSED, loudly and before the first catalog write, by
-//     catalog::alter_column_validators::validate_default_value_type, called from
-//     operator_alter_column_add.cpp:51. So a divergently-typed default is never
-//     persisted, and there is no wrong answer to read back. The entry's DEFECT does not
-//     exist; what remains is a PARITY gap between two spellings of the same DEFAULT.
+//   * CREATE TABLE casts. `c integer DEFAULT 7` stores INTEGER 7 although the literal 7 is
+//     BIGINT (numeric_literal_value's T_Integer arm), because services/collection's executor
+//     hands the column list to convert_column_defaults, which resolves an assignment cast and
+//     REPLACES the stored value.
+//   * ALTER TABLE ADD COLUMN has no such leg — its executor arm gates the column TYPE and
+//     nothing else. The divergence is REFUSED instead, loudly and before the first catalog
+//     write, by catalog::alter_column_validators::validate_default_value_type (called from
+//     operator_alter_column_add), so a divergently-typed default is never persisted and there
+//     is no wrong answer to read back; what remains is a PARITY gap. Closing it means casting
+//     the subcommand's default IN PLACE, which needs mutating access to
+//     node_alter_table_t::subcommands().
 //
-// Closing that gap means casting the subcommand's default IN PLACE, which needs mutating
-// access to node_alter_table_t::subcommands() (node_alter_table.hpp:60) — not a line of
-// this PR, so the gap is pinned here rather than closed.
+// attdefspec is a TYPE-DIRECTED codec: the payload SHAPE is still derived from the column type
+// it is decoded against. But read_typed_value (components/index/logical_value_binary_codec.hpp)
+// also stores, and checks, one logical tag byte per present value, so it refuses a SAME-WIDTH
+// divergence (BIGINT read as TIMESTAMP) as well as the WIDTH divergence (BIGINT read as
+// INTEGER) it always caught.
 //
-// The last section is why the refusal has to survive any future cast: attdefspec is a
-// TYPE-DIRECTED codec with no type tag of its own (logical_value_binary_codec.hpp:928,
-// read_typed_value), so it catches a WIDTH divergence and cannot catch a SAME-WIDTH one.
-// Neither arm asserts, so Debug and NDEBUG give the same answer.
+// THAT DEMOTES validate_default_value_type TO THE SECOND LINE OF DEFENCE, AND IT MUST NOT BE
+// READ AS "NOW REMOVABLE": the two refuse at different moments. The validator refuses at ALTER
+// time, before the first catalog write — the divergence never reaches disk and the statement
+// fails with "default value type mismatch". The codec guarantees only that a divergence which
+// somehow DID reach disk cannot be read back as a valid value of the wrong type, and says so as
+// data_corruption. Dropping the validator would turn a rejected statement into a persisted row
+// nobody can read afterwards.
+//
+// Neither codec arm asserts, so Debug and NDEBUG give the same answer. The one pair the section
+// below spells out is the worst of a space the next TEST_CASE walks whole.
 TEST_CASE("services::dispatcher::wave4::alter_add_column_default_type_divergence_is_refused") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     wave_fixture test(mr.get(), wave_dir("alter_add_default_type"));
@@ -620,14 +613,17 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_type_divergence
         CHECK(cur->is_error());
     }
 
-    // --- Why the refusal cannot be dropped in favour of "the codec will notice".
-    // attdefspec carries no type tag; decode reads the payload AGAINST the column type.
+    // --- What the codec itself refuses, and why that does not retire the validator.
+    // attdefspec reads the payload AGAINST the column type, and checks a stored logical
+    // tag byte against it before reading anything else.
     {
         const components::types::logical_value_t bigint_seven{mr.get(), static_cast<int64_t>(7)};
         std::string spec;
         REQUIRE_FALSE(components::catalog::encode_default_spec(mr.get(), bigint_seven, spec).contains_error());
 
-        // Widths differ (8 vs 4) — the trailing bytes are what gives it away.
+        // Widths differ (8 vs 4). Caught even before the tag byte existed — the four
+        // leftover bytes gave it away through `pos != payload.size()` — and still
+        // caught. This arm is the standing proof the codec always held THIS class.
         std::optional<components::types::logical_value_t> as_integer;
         auto ec_int = components::catalog::decode_default_spec(mr.get(),
                                                                complex_logical_type{logical_type::INTEGER},
@@ -635,16 +631,225 @@ TEST_CASE("services::dispatcher::wave4::alter_add_column_default_type_divergence
                                                                as_integer);
         CHECK(ec_int.contains_error());
 
-        // Widths AGREE (int64 both) — the codec reads it happily as the wrong type, with
-        // no assert to lose under NDEBUG. Only validate_default_value_type stands between
-        // this and a persisted `timestamp DEFAULT 7`.
+        // Widths AGREE (int64 both), so the leftover-bytes check above sees nothing: this
+        // is the arm the tag byte carries. Without it the payload decodes into a perfectly
+        // valid TIMESTAMP — with no assert to lose under NDEBUG — leaving
+        // validate_default_value_type the ONLY thing between this and a persisted
+        // `timestamp DEFAULT 7`. The stored tag says BIGINT, the column says TIMESTAMP,
+        // and the read is refused before the payload is touched.
         std::optional<components::types::logical_value_t> as_timestamp;
         auto ec_ts = components::catalog::decode_default_spec(mr.get(),
                                                               complex_logical_type{logical_type::TIMESTAMP},
                                                               spec,
                                                               as_timestamp);
-        REQUIRE_FALSE(ec_ts.contains_error());
-        REQUIRE(as_timestamp.has_value());
-        CHECK(as_timestamp->type().type() == logical_type::TIMESTAMP);
+        CHECK(ec_ts.contains_error());
+        CHECK_FALSE(as_timestamp.has_value());
+    }
+}
+
+
+// The type tag, over the WHOLE pair space. The section above pins the single worst pair;
+// this pins every one of them — the pair that mattered was found by ENUMERATING the
+// space, not by reading the code, and an enumeration is what keeps it closed. The
+// sixteen scalars attdefspec can carry give 240 ordered wrong-type pairs; all 240 must
+// be refused, and the 16 self-pairs must still round-trip.
+//
+// Before the tag byte, 50 of the 240 were accepted SILENTLY — they decoded into a
+// perfectly valid value of the WRONG type: BIGINT read as UBIGINT / TIME / TIMESTAMP /
+// TIMESTAMP_TZ / DOUBLE, INTEGER as UINTEGER / DATE / FLOAT, BOOLEAN / TINYINT /
+// UTINYINT interchangeably, and SMALLINT with USMALLINT. BIGINT/DOUBLE was the worst of
+// them: a bit-pattern reinterpretation rather than a relabelling. The other 190 were
+// caught only because their widths happened to disagree, which is a length check and not
+// a type check — it is the reason this case counts pairs instead of trusting that one.
+//
+// This needs no dispatcher fixture: it drives the catalog encode/decode boundary
+// (components/catalog/system_table_schemas.cpp) over the codec in
+// components/index/logical_value_binary_codec.hpp. It lives beside the case above
+// because it is that case generalised, and because a reader who weakens one must see
+// the other.
+TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_refuses_every_wrong_type_pair") {
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    auto* resource = mr.get();
+    using components::types::logical_value_t;
+
+    struct scalar_case {
+        const char* name;
+        complex_logical_type type;
+        logical_value_t value;
+    };
+
+    // One value per scalar, all of them SMALL and non-negative on purpose: those are
+    // exactly the payloads that reinterpret cleanly into another type of the same width,
+    // so a pair that survives here survives on the type check and not on a lucky bit.
+    const std::vector<scalar_case> cases{
+        {"BOOLEAN", complex_logical_type{logical_type::BOOLEAN}, logical_value_t{resource, true}},
+        {"TINYINT", complex_logical_type{logical_type::TINYINT}, logical_value_t{resource, std::int8_t{1}}},
+        {"UTINYINT", complex_logical_type{logical_type::UTINYINT}, logical_value_t{resource, std::uint8_t{1}}},
+        {"SMALLINT", complex_logical_type{logical_type::SMALLINT}, logical_value_t{resource, std::int16_t{7}}},
+        {"USMALLINT", complex_logical_type{logical_type::USMALLINT}, logical_value_t{resource, std::uint16_t{7}}},
+        {"INTEGER", complex_logical_type{logical_type::INTEGER}, logical_value_t{resource, std::int32_t{7}}},
+        {"UINTEGER", complex_logical_type{logical_type::UINTEGER}, logical_value_t{resource, std::uint32_t{7}}},
+        {"BIGINT", complex_logical_type{logical_type::BIGINT}, logical_value_t{resource, std::int64_t{7}}},
+        {"UBIGINT", complex_logical_type{logical_type::UBIGINT}, logical_value_t{resource, std::uint64_t{7}}},
+        {"FLOAT", complex_logical_type{logical_type::FLOAT}, logical_value_t{resource, 7.0F}},
+        {"DOUBLE", complex_logical_type{logical_type::DOUBLE}, logical_value_t{resource, 7.0}},
+        {"STRING_LITERAL",
+         complex_logical_type{logical_type::STRING_LITERAL},
+         logical_value_t{resource, std::string{"seven"}}},
+        {"DATE",
+         complex_logical_type{logical_type::DATE},
+         logical_value_t{resource, core::date::date_t{core::date::days{7}}}},
+        {"TIME",
+         complex_logical_type{logical_type::TIME},
+         logical_value_t{resource, core::date::time_t{core::date::microseconds{7}}}},
+        {"TIMESTAMP",
+         complex_logical_type{logical_type::TIMESTAMP},
+         logical_value_t{resource, core::date::timestamp_t{core::date::microseconds{7}}}},
+        {"TIMESTAMP_TZ",
+         complex_logical_type{logical_type::TIMESTAMP_TZ},
+         logical_value_t{resource, core::date::timestamptz_t{core::date::microseconds{7}}}},
+    };
+    REQUIRE(cases.size() == 16); // 16 * 15 = 240 ordered wrong-type pairs
+
+    std::string accepted; // every wrong-type pair that still decodes, named
+    int accepted_count = 0;
+    int refused_count = 0;
+    int self_round_trips = 0;
+
+    for (const auto& src : cases) {
+        std::string spec;
+        INFO("encoding a " << src.name << " default");
+        REQUIRE_FALSE(components::catalog::encode_default_spec(resource, src.value, spec).contains_error());
+        REQUIRE_FALSE(spec.empty());
+
+        for (const auto& dst : cases) {
+            std::optional<logical_value_t> out;
+            const auto ec = components::catalog::decode_default_spec(resource, dst.type, spec, out);
+
+            if (&src == &dst) {
+                // The value keeps its own type: the tag is a CHECK, never a source. A
+                // codec that refused its own output would be worse than the hole.
+                INFO("self round trip: " << src.name);
+                REQUIRE_FALSE(ec.contains_error());
+                REQUIRE(out.has_value());
+                CHECK(out->type().type() == dst.type.type());
+                ++self_round_trips;
+                continue;
+            }
+
+            if (ec.contains_error()) {
+                CHECK_FALSE(out.has_value()); // a refusal leaves NOTHING behind
+                ++refused_count;
+            } else {
+                ++accepted_count;
+                accepted += std::string{src.name} + "->" + dst.name + " ";
+            }
+        }
+    }
+
+    INFO("wrong-type pairs still accepted: " << accepted);
+    CHECK(accepted_count == 0);
+    CHECK(refused_count == 240);
+    CHECK(self_round_trips == 16);
+}
+
+// NULL and the nested types, against the same tag. Two things have to stay true that a
+// per-value tag could plausibly have broken.
+//
+// NULL carries NO tag, and must not: presence 0 ends the value, and a NULL is NA-typed
+// in this engine (logical_value_t::is_null() IS type() == NA), so there is no type for a
+// tag to agree with. Writing the column's type there would invent one.
+//
+// Nested values carry the tag at EVERY level, not just the outermost, and this is the
+// case that earns the extra byte per leaf. The divergence a DEFAULT can carry is
+// per-leaf: a STRUCT<BIGINT, STRING> payload read against STRUCT<TIMESTAMP, STRING> is
+// the same same-width swap as the scalar one, one level down. An outer-only tag would
+// see two STRUCTs, agree, and let the field underneath reinterpret silently.
+TEST_CASE("services::dispatcher::wave4::attdefspec_type_tag_spares_null_and_reaches_every_leaf") {
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    auto* resource = mr.get();
+    using components::types::logical_value_t;
+
+    INFO("an explicit DEFAULT NULL still decodes against any column type");
+    {
+        std::string null_spec;
+        REQUIRE_FALSE(components::catalog::encode_default_spec(
+                          resource,
+                          logical_value_t{resource, complex_logical_type{logical_type::NA}},
+                          null_spec)
+                          .contains_error());
+        for (const auto t : {logical_type::BIGINT, logical_type::TIMESTAMP, logical_type::STRING_LITERAL}) {
+            std::optional<logical_value_t> out;
+            REQUIRE_FALSE(
+                components::catalog::decode_default_spec(resource, complex_logical_type{t}, null_spec, out)
+                    .contains_error());
+            REQUIRE(out.has_value());
+            CHECK(out->is_null());
+        }
+    }
+
+    INFO("ARRAY / LIST round trip, and refuse on the ELEMENT type");
+    {
+        const std::vector<logical_value_t> elems{logical_value_t{resource, std::int64_t{7}},
+                                                 logical_value_t{resource, std::int64_t{8}}};
+        const complex_logical_type bigint{logical_type::BIGINT};
+        const complex_logical_type timestamp{logical_type::TIMESTAMP};
+
+        for (const bool as_array : {true, false}) {
+            const auto value = as_array ? logical_value_t::create_array(resource, bigint, elems)
+                                        : logical_value_t::create_list(resource, bigint, elems);
+            const auto good = as_array ? complex_logical_type::create_array(bigint, 2)
+                                       : complex_logical_type::create_list(bigint);
+            const auto bad = as_array ? complex_logical_type::create_array(timestamp, 2)
+                                      : complex_logical_type::create_list(timestamp);
+
+            std::string spec;
+            REQUIRE_FALSE(components::catalog::encode_default_spec(resource, value, spec).contains_error());
+
+            std::optional<logical_value_t> out;
+            REQUIRE_FALSE(components::catalog::decode_default_spec(resource, good, spec, out).contains_error());
+            REQUIRE(out.has_value());
+            REQUIRE(out->children().size() == 2);
+            CHECK(out->children()[0].value<std::int64_t>() == 7);
+            CHECK(out->children()[1].value<std::int64_t>() == 8);
+
+            // Same outer type, same width, WRONG element type. Only a per-leaf tag sees it.
+            std::optional<logical_value_t> wrong;
+            CHECK(components::catalog::decode_default_spec(resource, bad, spec, wrong).contains_error());
+            CHECK_FALSE(wrong.has_value());
+        }
+    }
+
+    INFO("STRUCT round trip, and refuse on a FIELD type");
+    {
+        std::pmr::vector<complex_logical_type> good_fields{resource};
+        good_fields.emplace_back(complex_logical_type{logical_type::BIGINT, "n"});
+        good_fields.emplace_back(complex_logical_type{logical_type::STRING_LITERAL, "s"});
+        const auto good = complex_logical_type::create_struct("s", good_fields);
+
+        // The ONLY difference is field 0: BIGINT becomes TIMESTAMP, same eight bytes.
+        std::pmr::vector<complex_logical_type> bad_fields{resource};
+        bad_fields.emplace_back(complex_logical_type{logical_type::TIMESTAMP, "n"});
+        bad_fields.emplace_back(complex_logical_type{logical_type::STRING_LITERAL, "s"});
+        const auto bad = complex_logical_type::create_struct("s", bad_fields);
+
+        const std::vector<logical_value_t> fields{logical_value_t{resource, std::int64_t{42}},
+                                                  logical_value_t{resource, std::string{"x"}}};
+        const auto value = logical_value_t::create_struct(resource, good, fields);
+
+        std::string spec;
+        REQUIRE_FALSE(components::catalog::encode_default_spec(resource, value, spec).contains_error());
+
+        std::optional<logical_value_t> out;
+        REQUIRE_FALSE(components::catalog::decode_default_spec(resource, good, spec, out).contains_error());
+        REQUIRE(out.has_value());
+        REQUIRE(out->children().size() == 2);
+        CHECK(out->children()[0].value<std::int64_t>() == 42);
+        CHECK(out->children()[1].value<std::string_view>() == "x");
+
+        // The outer STRUCT agrees; field 0 does not, and its width does not give it away.
+        std::optional<logical_value_t> wrong;
+        CHECK(components::catalog::decode_default_spec(resource, bad, spec, wrong).contains_error());
+        CHECK_FALSE(wrong.has_value());
     }
 }

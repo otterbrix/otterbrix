@@ -180,3 +180,28 @@ target_link_libraries(profile_arithmetic PRIVATE
         ZLIB::ZLIB
         BZip2::BZip2
 )
+
+# Storage-cost measurement harness (plan tasks T1 / B7). Deliberately NOT a
+# Catch2 test and NOT registered with CTest: it prints numbers and asserts
+# nothing, so a slow machine can never turn it red.
+add_executable(measure_storage_costs measure_storage_costs.cpp)
+target_link_libraries(measure_storage_costs PRIVATE
+        cpp_otterbrix
+        otterbrix::test_generaty
+        otterbrix::log
+        otterbrix::cursor
+        otterbrix::session
+        otterbrix::services
+        otterbrix::planner
+        otterbrix::locks
+        spdlog::spdlog
+        Catch2::Catch2
+        absl::crc32c
+        absl::int128
+        benchmark::benchmark
+        actor-zeta::actor-zeta
+        Boost::boost
+        fmt::fmt
+        ZLIB::ZLIB
+        BZip2::BZip2
+)

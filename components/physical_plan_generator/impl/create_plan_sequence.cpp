@@ -138,12 +138,21 @@ namespace services::planner::impl {
                     // Build the chain so children[0] (the first user-written clause)
                     // ends up at the DEEPEST nesting level — executor runs left children
                     // first (depth-first via left_/right_ traversal), so the deepest leaf
-                    // executes first. Walk children in reverse, set each as the left child of the
-                    // previous; the last-built operator (head) wraps everything and
-                    // becomes the root returned to the caller.
+                    // executes first. Walk children FORWARD, wrapping the chain built so
+                    // far as the new operator's left child: the first clause sinks to the
+                    // bottom, the last clause becomes the root. (A reverse walk with the
+                    // same wrap put children[0] at the ROOT — the clauses of a
+                    // multi-clause ALTER TABLE ran back to front, which is user-visible:
+                    // two ADD COLUMNs decide their attnum order by who runs first.)
                     components::operators::operator_ptr head;
-                    for (auto it = node->children().rbegin(); it != node->children().rend(); ++it) {
-                        auto op = create_plan(context, function_registry, *it, {}, params);
+                    for (const auto& child : node->children()) {
+                        auto op = create_plan(context, function_registry, child, {}, params);
+                        if (!op) {
+                            // A child that fails to lower refuses the WHOLE statement:
+                            // a null root maps to create_physical_plan_error in the
+                            // executor. Chaining past it would run a truncated ALTER.
+                            return {};
+                        }
                         if (head) {
                             // op wraps `head` (op runs after head's chain executes).
                             op->set_children(head, nullptr);
@@ -172,6 +181,14 @@ namespace services::planner::impl {
             components::operators::operator_ptr head;
             for (const auto& child : node->children()) {
                 auto op = create_plan(context, function_registry, child, {}, params);
+                if (!op) {
+                    // A child with no lowering refuses the WHOLE sequence (null root →
+                    // create_physical_plan_error in the executor). The unchecked loop
+                    // used to silently drop a null FIRST child from the chain — the
+                    // statement then ran with a step missing — and dereferenced a null
+                    // LATER child (`op->left()`) outright.
+                    return {};
+                }
                 if (head) {
                     // op consumes left_ as its DATA source (e.g. operator_insert
                     // reads left_->output() — the case for catalog-write node_insert_t

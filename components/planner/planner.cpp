@@ -523,22 +523,33 @@ namespace components::planner {
         // Pre-conditions: enrich_logical_plan has stamped namespace_oid, table_oid,
         // column_names, column_attoids, indkey on the node. The dispatcher has
         // allocated a 1-OID batch for the index_oid.
-        node_ptr rewrite_create_index(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
+        core::result_wrapper_t<node_ptr>
+        rewrite_create_index(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* ci = static_cast<logical_plan::node_create_index_t*>(node.get());
             const catalog::oid_t ns_oid = ci->namespace_oid();
             const catalog::oid_t table_oid = ci->table_oid();
+
+            // enrich stamps these OIDs from the statement's resolved entries and
+            // stamps NOTHING when the named table is not in the catalog — it never
+            // refuses by itself. This rewrite is the first reader of the identity,
+            // so the miss is answered here: refuse the statement (rule 6). The
+            // shape this replaces passed the bare create_index_t through "to
+            // preserve the original silent no-op", and the executor then reported
+            // success for an index that was never created.
+            if (ns_oid == catalog::INVALID_OID || table_oid == catalog::INVALID_OID) {
+                std::pmr::string msg{r};
+                msg.append("CREATE INDEX ");
+                msg.append(ci->name());
+                msg.append(": table ");
+                msg.append(ci->dbname());
+                msg.append(".");
+                msg.append(ci->relname());
+                msg.append(" does not exist");
+                return core::error_t{core::error_code_t::table_not_exists, std::move(msg)};
+            }
+
             const catalog::oid_t index_oid = oid_batch.allocate();
             ci->set_index_oid(index_oid);
-
-            // If enrich could not resolve the namespace/table (e.g. table missing),
-            // skip the rewrite — leave the create_index_t as-is so the executor
-            // returns a no-op and the upper layer can surface the appropriate error.
-            // The original behavior was a silent no-op; preserve it.
-            if (ns_oid == catalog::INVALID_OID || table_oid == catalog::INVALID_OID) {
-                auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
-                seq->append_child(node);
-                return seq;
-            }
 
             auto writes = catalog::build_create_index_writes(r,
                                                              ci->name(),
@@ -565,27 +576,46 @@ namespace components::planner {
         // the trailing drop_index_t carries the index name and OID so
         // operator_drop_index_t can call manager_index_t::drop_index.
         //
-        // If enrich could not resolve the index oid (DROP INDEX on a missing
-        // index), the rewrite still emits the drop_index_t so the index actor
-        // call no-ops on a missing engine entry (silent success).
-        node_ptr rewrite_drop_index(std::pmr::memory_resource* r, node_ptr node) {
+        // An unresolved index oid means enrich found no pg_class row answering to
+        // the name: the index does not exist. That is a refusal — with one carve-out:
+        // `DROP INDEX IF EXISTS` (missing_ok) lowers to an empty sequence, the
+        // no-op success PostgreSQL grants that form. The shape this replaces
+        // emitted the trailing drop_index_t anyway, whose engine teardown
+        // tolerates an unknown oid by design — so DROP INDEX over garbage
+        // reported success, and operator_drop_index_t's no-identity-row-deleted
+        // verdict never fired because not one delete spec was emitted.
+        core::result_wrapper_t<node_ptr> rewrite_drop_index(std::pmr::memory_resource* r, node_ptr node) {
             auto* di = static_cast<logical_plan::node_drop_t*>(node.get());
             const catalog::oid_t index_oid = di->index_oid();
+
+            if (index_oid == catalog::INVALID_OID) {
+                if (di->missing_ok()) {
+                    // IF EXISTS: nothing to drop, nothing to run.
+                    return node_ptr{boost::intrusive_ptr(new logical_plan::node_sequence_t(r))};
+                }
+                std::pmr::string msg{r};
+                msg.append("DROP INDEX: index ");
+                msg.append(di->dbname());
+                msg.append(".");
+                msg.append(di->relname());
+                msg.append(".");
+                msg.append(di->index_name());
+                msg.append(" does not exist");
+                return core::error_t{core::error_code_t::index_not_exists, std::move(msg)};
+            }
 
             constexpr catalog::oid_t pg_idx_coll = catalog::well_known_oid::pg_index_table;
             constexpr catalog::oid_t pg_dep_coll = catalog::well_known_oid::pg_depend_table;
             constexpr catalog::oid_t pg_class_coll = catalog::well_known_oid::pg_class_table;
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
-            if (index_oid != catalog::INVALID_OID) {
-                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_idx_coll, std::int64_t{0}, index_oid));
-                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_dep_coll, std::int64_t{1}, index_oid));
-                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_dep_coll, std::int64_t{3}, index_oid));
-                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_class_coll, std::int64_t{0}, index_oid));
-            }
+            seq->append_child(logical_plan::make_node_catalog_delete(r, pg_idx_coll, std::int64_t{0}, index_oid));
+            seq->append_child(logical_plan::make_node_catalog_delete(r, pg_dep_coll, std::int64_t{1}, index_oid));
+            seq->append_child(logical_plan::make_node_catalog_delete(r, pg_dep_coll, std::int64_t{3}, index_oid));
+            seq->append_child(logical_plan::make_node_catalog_delete(r, pg_class_coll, std::int64_t{0}, index_oid));
             // Trailing drop_index_t marker → operator_drop_index_t.
             seq->append_child(node);
-            return seq;
+            return node_ptr{seq};
         }
 
         // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO → one
@@ -692,7 +722,12 @@ namespace components::planner {
                         drop->set_computed(true);
                     } else {
                         drop->set_namespace_oid(catalog::INVALID_OID);
-                        drop->set_behavior(catalog::drop_behavior_t::cascade_);
+                        // RESTRICT/CASCADE comes from the subcommand (defaulted to
+                        // cascade_ until the transformer copies the grammar's
+                        // AlterTableCmd::behavior); the operator refuses blocked
+                        // drops under restrict_. The hardcoded cascade_ that stood
+                        // here made RESTRICT unreachable by construction.
+                        drop->set_behavior(sub.behavior);
                     }
                     seq->append_child(drop);
                 }
@@ -700,8 +735,11 @@ namespace components::planner {
             return seq;
         }
 
-        // DDL-aware walk: handles DDL nodes in addition to DML rewrites.
-        node_ptr walk_ddl(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
+        // DDL-aware walk: handles DDL nodes in addition to DML rewrites. Returns
+        // an error when a rewrite refuses (unresolved CREATE INDEX / DROP INDEX
+        // target); the caller drops the half-walked tree and surfaces the error.
+        core::result_wrapper_t<node_ptr>
+        walk_ddl(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             using namespace logical_plan;
             switch (node->type()) {
                 case node_type::insert_t:
@@ -751,7 +789,11 @@ namespace components::planner {
                     return node;
                 default:
                     for (auto& child : node->children()) {
-                        child = walk_ddl(r, child, oid_batch);
+                        auto rewritten_child = walk_ddl(r, child, oid_batch);
+                        if (rewritten_child.has_error()) {
+                            return rewritten_child.error();
+                        }
+                        child = std::move(rewritten_child.value());
                     }
                     return node;
             }
@@ -773,7 +815,13 @@ namespace components::planner {
             return batch.error();
         }
         auto& oid_batch = batch.value();
-        auto rewritten = walk_ddl(resource, std::move(node), oid_batch);
+        auto walked = walk_ddl(resource, std::move(node), oid_batch);
+        // A rewrite refusal (unresolved CREATE INDEX / DROP INDEX target) — the
+        // error carries the object names; nothing built so far survives.
+        if (walked.has_error()) {
+            return walked.error();
+        }
+        auto rewritten = std::move(walked.value());
         // The rewrite asked for more OIDs than `need` — i.e. compute_oid_demand and the
         // rewrite_* functions have drifted apart. Everything built above this line was
         // stamped from a batch that ran out, so parts of it carry INVALID_OID; refuse the

@@ -170,9 +170,10 @@ namespace components::planner::optimizer {
         // This routes a conjunct whose bare column name ALSO exists on the other side
         // (e.g. t1.id when t2 also has id) — the name-based test below cannot, because
         // the name is a subset of BOTH sides' alias sets, so it always fell to residual.
-        // Fallback (an unvalidated plan whose keys carry no path, or an unknown
-        // left_width): the original alias-subset test. A conjunct that references BOTH
-        // sides (or no column) is unclassified => residual.
+        // An unvalidated plan (keys carry no path, or left_width unknown) is the OTHER
+        // sanctioned input shape, not a degraded one: it is classified by the
+        // alias-subset test, the only identity such a plan carries. A conjunct that
+        // references BOTH sides (or no column) is unclassified => residual.
         conj_side classify_conjunct(const expression_ptr& conj,
                                     size_t left_width,
                                     bool left_width_known,
@@ -202,7 +203,8 @@ namespace components::planner::optimizer {
                 return conj_side::unclassified; // straddles both sides
             }
 
-            // Name-based fallback (validate_schema has not stamped paths on these keys).
+            // Name-based classification — the sanctioned path for plans validate_schema
+            // has not stamped (their keys carry no merged paths to read).
             auto cols = collect_referenced_columns(conj);
             bool in_left = !cols.empty() && std::includes(left_cols.begin(), left_cols.end(), cols.begin(), cols.end());
             bool in_right =

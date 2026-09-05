@@ -62,9 +62,22 @@ namespace components::logical_plan {
         components::catalog::oid_t index_oid() const noexcept { return index_oid_; }
         void set_index_oid(components::catalog::oid_t oid) noexcept { index_oid_ = oid; }
 
-        // No setter — DROP is always-CASCADE; RESTRICT/CASCADE is not wired
-        // from the parser, so behavior_ stays at its default.
+        // RESTRICT/CASCADE. The dynamic cascade operator already refuses a
+        // dependent-blocked drop under restrict_; the transformer does not copy
+        // DropStmt.behavior yet, so today every DROP carries the DEFAULT — kept
+        // at cascade_ (the pre-existing always-CASCADE shape) because flipping
+        // it to PostgreSQL's restrict_ changes every DROP TABLE's semantics and
+        // is the owner's call.
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
+        void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
+
+        // `DROP ... IF EXISTS`. The grammar carries DropStmt.missing_ok; the
+        // planner reads this flag when the target did not resolve: a missing
+        // target refuses the statement UNLESS the user wrote IF EXISTS — the one
+        // form PostgreSQL lets pass. Defaults to false (the loud path), so a
+        // programmatic plan that never sets it gets the refusal.
+        bool missing_ok() const noexcept { return missing_ok_; }
+        void set_missing_ok(bool v) noexcept { missing_ok_ = v; }
 
     private:
         hash_t hash_impl() const override;
@@ -78,6 +91,7 @@ namespace components::logical_plan {
         components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};
         components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::cascade_};
+        bool missing_ok_{false};
     };
 
     using node_drop_ptr = boost::intrusive_ptr<node_drop_t>;

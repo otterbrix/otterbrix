@@ -2414,3 +2414,62 @@ TEST_CASE("optimizer::eager_aggregation::cross_side_reference_is_not_pushed") {
     components::planner::optimizer::eager_aggregation(&resource, outer);
     REQUIRE(eag::pushed_partial(outer) == nullptr);
 }
+
+// ================================================================
+// Constant folding refusals: unfoldable kinds and non-numeric operands.
+//
+// try_fold_compare used to `assert(false)` when eval_compare answered "this
+// comparison kind is not foldable" — an assert on ordinary plan data (any
+// constant-vs-constant regex/ANY/ALL comparison the transformer emits), which
+// aborted Debug builds and was Release-erased into the very skip it forbade.
+// Not folding is the CORRECT outcome for such a kind: the runtime evaluator is
+// the canonical answer for it, folding is only an optimization.
+//
+// try_fold_scalar used to box both constants into 1-element vectors because the
+// logical_value_t arithmetic entry points threw; compute_binary_arithmetic
+// still throws std::logic_error on non-numeric operands, so a constant
+// `'a' + 1` aborted plan-time folding instead of being refused by value.
+// ================================================================
+TEST_CASE("optimizer::constant_folding::unfoldable_comparison_kind_is_left_unfolded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(std::string("abc"));
+    auto id1 = params->add_parameter(std::string("b.*"));
+
+    // Both sides constant, kind regex: eval_compare cannot fold it. The rule
+    // must leave the expression for the runtime matcher — no assert, no abort.
+    auto comp = make_compare_expression(&resource, compare_type::regex, id0, id1);
+    auto node = make_match_with_expr(&resource, comp);
+
+    components::planner::optimize(&resource, node, params.get());
+
+    REQUIRE(comp->type() == compare_type::regex);
+    REQUIRE(std::holds_alternative<core::parameter_id_t>(comp->left()));
+    REQUIRE(std::holds_alternative<core::parameter_id_t>(comp->right()));
+}
+
+TEST_CASE("optimizer::constant_folding::non_numeric_constant_arithmetic_is_declined_not_folded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(std::string("a"));
+    auto id1 = params->add_parameter(int64_t(1));
+
+    auto scalar = make_scalar_expression(&resource, scalar_type::add);
+    scalar->append_param(id0);
+    scalar->append_param(id1);
+
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
+                                        expression_ptr(scalar));
+    auto node = make_match_with_expr(&resource, comp);
+
+    // A mixed STRING/BIGINT constant pair: the fold declines (no throw, no
+    // silent NULL constant) and the expression survives for the runtime
+    // evaluator. The retired vector-boxing path folded this to a constant NULL.
+    components::planner::optimize(&resource, node, params.get());
+
+    auto* s = static_cast<scalar_expression_t*>(scalar.get());
+    REQUIRE(s->params().size() == 2);
+    REQUIRE(s->type() == scalar_type::add);
+}

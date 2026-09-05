@@ -3,10 +3,10 @@
 #include "node.hpp"
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/results/ddl_result.hpp>
 #include <components/table/column_definition.hpp>
 
 #include <string>
-#include <variant>
 
 namespace components::logical_plan {
 
@@ -28,6 +28,14 @@ namespace components::logical_plan {
         // moment the miss becomes an error: IF EXISTS is the ONE form PostgreSQL
         // lets pass, so without this flag the loud path would refuse it too.
         bool missing_ok{false};
+        // drop_column only: RESTRICT/CASCADE. gram.y fills AlterTableCmd::behavior;
+        // the planner forwards this onto the alter_column primitive, and
+        // operator_alter_column_drop_t already refuses a dependent-blocked drop
+        // under restrict_. The transformer does not copy the grammar's value yet,
+        // so today every clause carries this DEFAULT — kept at cascade_ (the
+        // pre-existing hardcode) because flipping it to PostgreSQL's restrict_
+        // changes the semantics of every DROP COLUMN and is the owner's call.
+        components::catalog::drop_behavior_t behavior{components::catalog::drop_behavior_t::cascade_};
         components::table::column_definition_t column;
         alter_table_subcommand_t()
             : column("", components::types::complex_logical_type{components::types::logical_type::UNKNOWN}) {}

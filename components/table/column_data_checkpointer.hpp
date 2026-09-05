@@ -19,7 +19,12 @@ namespace components::table {
     public:
         column_data_checkpointer_t(column_data_t& column_data, storage::partial_block_manager_t& partial_block_manager);
 
-        // Returns out_of_memory when a segment pin fails during flush; persistent data on success.
+        // Returns persistent data on success, out_of_memory when a segment pin fails during the
+        // flush, and unimplemented_yet when the column still carries a committed-update overlay:
+        // this walks segments only, and the overlay is not one, so serializing it would write the
+        // PRE-update bytes over a value only the WAL still holds. Folding the overlay in is the
+        // rebuild's job (data_table_t::compact), and the caller that skips the rebuild
+        // (agent_disk_t::checkpoint_inner's failed-round retry) asks first.
         [[nodiscard]] core::result_wrapper_t<persistent_column_data_t> checkpoint();
 
     private:

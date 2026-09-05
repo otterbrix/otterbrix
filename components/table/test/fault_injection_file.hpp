@@ -50,6 +50,22 @@ namespace otterbrix_test {
         // and never reached the device — the failure mode the checkpoint's second fsync
         // exists to catch.
         uint64_t fail_syncs_from{0};
+        // Fail every positional write that lands in a HEADER SLOT (offset SECTOR_SIZE or
+        // 2 * SECTOR_SIZE — the two slots write_header alternates between), and nothing else.
+        // The other write knobs above are COUNTED, so arming them for a checkpoint's header
+        // also fails the data and metadata writes that precede it; those latch
+        // durability_error_ and leave the block manager degraded, which is a different state
+        // with a different caller (agent_disk_t::checkpoint_inner defers a degraded entry
+        // instead of retrying it). This knob names the commit point directly, so it produces
+        // the RECOVERABLE checkpoint failure — write_header's case 2, where both slots read
+        // back as the iteration this manager already believed and nothing is latched.
+        //
+        // IT NAMES THE OFFSETS, NOT THE CALLER. create_new_database writes the very first
+        // header into header_slot_offset(0) == 2 * SECTOR_SIZE as well, so a plan armed while a
+        // file is being CREATED fails the creation instead ("Failed to write the initial
+        // database header"), which is a different failure with a different caller. Arm it
+        // around the round that must fail, not around the fixture.
+        bool fail_writes_at_header_slots{false};
         // Fail every positional READ that starts at this exact file offset. That offset is a
         // block location (single_file_block_manager_t::block_location), so this models ONE
         // rotten/unreadable block rather than a dead file — the shape a metadata-chain walk
@@ -62,6 +78,7 @@ namespace otterbrix_test {
         uint64_t writes_seen{0};
         uint64_t syncs_seen{0};
         uint64_t reads_failed{0};
+        uint64_t header_writes_failed{0};
     };
 
     class faulty_file_handle_t final : public core::filesystem::file_handle_t {
@@ -83,6 +100,12 @@ namespace otterbrix_test {
                 return false;
             }
             if (plan_.fail_writes_from != 0 && plan_.writes_seen >= plan_.fail_writes_from) {
+                return false;
+            }
+            if (plan_.fail_writes_at_header_slots &&
+                (location == components::table::storage::SECTOR_SIZE ||
+                 location == 2 * components::table::storage::SECTOR_SIZE)) {
+                plan_.header_writes_failed++;
                 return false;
             }
             record_undo(location, nr_bytes);

@@ -4,6 +4,7 @@ set(${PROJECT_NAME}_SOURCES
     test_config_layout.cpp
     test_table_storage.cpp
     test_torn_checkpoint.cpp
+    test_checkpoint_update_overlay.cpp
     test_wal_seal.cpp
     test_system_table_bootstrap.cpp
     test_resolve.cpp

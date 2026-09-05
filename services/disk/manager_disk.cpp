@@ -243,6 +243,29 @@ namespace services::disk {
         checkpoint_wal_id_known_ = true;
     }
 
+    bool table_storage_t::has_pending_update_overlay() {
+        // A failed construction leaves no table; such an entry is dropped by its caller and has
+        // nothing to answer for (same shape as storage_degraded() below).
+        if (!table_) {
+            return false;
+        }
+        for (const auto& info : table_->get_column_segment_info()) {
+            if (info.has_updates) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool table_storage_t::has_versions_above(uint64_t watermark) const {
+        // A failed construction leaves no table; such an entry is dropped by its caller and has
+        // nothing to answer for (same shape as storage_degraded() below).
+        if (!table_) {
+            return false;
+        }
+        return table_->row_group()->has_version_above(watermark);
+    }
+
     bool table_storage_t::storage_degraded() const noexcept {
         // A failed construction leaves block_manager_ null; such an entry is dropped by its
         // caller and has nothing to report.

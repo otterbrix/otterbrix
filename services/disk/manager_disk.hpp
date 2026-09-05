@@ -116,10 +116,47 @@ namespace services::disk {
         /// succeeds.
         [[nodiscard]] bool last_checkpoint_failed() const noexcept { return last_checkpoint_failed_; }
 
+        /// Does any column of this table hold a committed-update OVERLAY that only a rebuild can
+        /// fold into its segments?
+        ///
+        /// The overlay (column_data_t::updates_, written by data_table_t::update — the WAL-replay
+        /// PHYSICAL_UPDATE path) is not a segment, and the checkpoint serializes segments;
+        /// column_data_checkpointer_t::checkpoint refuses rather than write the pre-update bytes.
+        /// So the answer decides one thing only: whether the failed-round retry above may skip its
+        /// compact(). It may not while this is true — the space the gate exists to save is not
+        /// worth a committed value, and skipping the rebuild here would refuse the round anyway.
+        ///
+        /// Read through data_table_t::get_column_segment_info(), which is the only PUBLIC route
+        /// from a table to its columns' has_updates(), and which walks every segment of every
+        /// column (nested children included) building a description string per segment. That cost
+        /// is why this is asked ONLY on the failed-round path — a state one transient I/O error
+        /// wide — and never in the ordinary round.
+        ///
+        /// Over-reports in the SAFE direction: column_data_t::has_updates() answers "an
+        /// update_segment_t exists", so a column whose only update was rolled back reports true and
+        /// buys one rebuild it did not need. Under-reporting would cost a value.
+        [[nodiscard]] bool has_pending_update_overlay();
+
+        /// Does any row of this table still carry a version stamp ABOVE the watermark — an
+        /// uncommitted write, or a commit no older snapshot may see yet?
+        ///
+        /// THE SAME PREDICATE data_table_t::compact GATES ITSELF ON, asked separately because the
+        /// round has a path that does not call compact() at all. A .otbx stores no version
+        /// metadata: every row it holds reads back as plain committed. So a checkpoint taken over
+        /// a stamp above the watermark resurrects an uncommitted or deleted row at the next start,
+        /// and the failed-round retry (which deliberately skips the rebuild, see
+        /// last_checkpoint_failed) would do exactly that with the gate never consulted.
+        ///
+        /// Costs a walk of the row groups' version_info — no rebuild, no allocation — and is read
+        /// through the public data_table_t::row_group() / collection_t::has_version_above.
+        [[nodiscard]] bool has_versions_above(uint64_t watermark) const;
+
         /// Checkpoint.
         /// W-TORN: writes data blocks + fsync, then header + fsync (2 fsync — durability before header swap).
         /// Returns out_of_memory when a column flush pin fails in
-        /// data_table_t::checkpoint; true on success.
+        /// data_table_t::checkpoint, and unimplemented_yet when a column still carries a
+        /// committed-update overlay no rebuild folded into its segments
+        /// (column_data_checkpointer_t::checkpoint); true on success.
         [[nodiscard]] core::result_wrapper_t<bool> checkpoint();
         /// Same as checkpoint() + tracks W-TORN per-table wal_id snapshot.
         /// prev_checkpoint_wal_id_ ← old checkpoint_wal_id_; checkpoint_wal_id_ ← new_wal_id.
@@ -600,9 +637,10 @@ namespace services::disk {
         // travels the error side.
         //
         // "PRESENT BUT SHORT" IS A CRASH IMAGE, not corruption: even with the atomic writer
-        // (persist_checkpoint_sidecar in agent_disk.cpp) a crash between the staging write and the
-        // rename is legitimate. That is why an unreadable sidecar is reported rather than made fatal
-        // to the table's open — see table_storage_t::checkpoint_wal_id_known().
+        // (stage_checkpoint_sidecar + publish_checkpoint_sidecar in agent_disk.cpp) a crash
+        // between the staging write and the rename is legitimate. That is why an unreadable
+        // sidecar is reported rather than made fatal to the table's open — see
+        // table_storage_t::checkpoint_wal_id_known().
         core::result_wrapper_t<wal::id_t>
         peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
                                          components::catalog::oid_t database_oid) const;
@@ -821,8 +859,25 @@ namespace services::disk {
 
         // Per-item resolve methods. Each method scans the corresponding pg_* table
         // on the disk actor thread and returns the found object (or {found=false}).
-        // The since_version parameter is kept for message-dispatch compatibility
-        // (always ignored — versioning is no longer used).
+        //
+        // `since_version` IS RETIRED AND IGNORED: both implementations name it
+        // `std::uint64_t /*since_version*/` (manager_disk_resolve.cpp) and versioning is gone.
+        // IT IS NOT KEPT FOR MESSAGE DISPATCH, whatever the note that stood here used to say —
+        // that reason was invented, and the code says the opposite in three places. A message
+        // id is the INDEX of the method POINTER inside dispatch_traits::methods
+        // (actor_zeta::msg_id -> action_id_impl -> find_method_index), so dropping a PARAMETER
+        // moves no method and renumbers nothing; actor_zeta::implements<> requires the
+        // contract's and the actor's signatures to match element by element, so a one-sided
+        // edit is a COMPILE error; and send() static_asserts the argument count, so a missed
+        // sender cannot pass a silent zero either.
+        //
+        // What actually keeps the parameter is the SHAPE of its removal, not dispatch: it is
+        // one atomic edit over 6 declarations (here, disk_contract.hpp, manager_disk_resolve.cpp)
+        // plus every caller, and the callers live outside this component —
+        // components/physical_plan/operators/operator_register_udf.cpp and
+        // operator_unregister_udf.cpp, plus the tests under services/disk/tests,
+        // services/dispatcher/tests and integration/cpp/test, all passing std::uint64_t{0}.
+        // A rule-6 debt with an owner, then, and not a constraint of the mailbox.
         //
         // All four carry core::result_wrapper_t because the SCAN can fail, and "the read
         // failed" is not "the catalog does not have it". {found=false} / an empty vector /
@@ -1023,6 +1078,24 @@ namespace services::disk {
 
         void sync(disk_sync_pack_t pack);
 
+        /// A NAME THAT PROMISES DURABILITY AND DELIVERS NOTHING — said here rather than
+        /// discovered at the definition. The body traces and returns; it flushes no buffer, syncs
+        /// no file and touches no entry (manager_disk_io.cpp). Durability of a table is
+        /// checkpoint_all's, and only its; a caller that reads this call as "the writes are on the
+        /// device now" is reading a promise nothing in this class makes.
+        ///
+        /// It is not removed here because removal is not local, and the reason is the SHAPE of
+        /// the edit and not the mailbox: dropping the method breaks the three call sites that
+        /// still name it, all of them outside this component
+        /// (components/physical_plan/operators/operator_commit_transaction.cpp,
+        /// operator_update.cpp, operator_delete.cpp, plus the semantics documented at
+        /// components/logical_plan/node_transaction.hpp), so it is one atomic edit across three
+        /// components. Message ids do NOT stand in the way — they are computed from the position
+        /// of the method POINTER in dispatch_traits::methods at compile time, on the send side and
+        /// the dispatch side alike, so removing a method renumbers both together and a missed
+        /// sender is a compile error, never a silent misroute (see the note on since_version
+        /// above). Nor can it be given meaning from in here: what those three callers want
+        /// flushed is theirs to say, not this class's to guess.
         unique_future<void> flush(session_id_t session, wal::id_t wal_id);
 
         // compact_watermark (here and below): the dispatcher's visible-to-all

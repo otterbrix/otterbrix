@@ -867,7 +867,7 @@ TEST_CASE("services::disk::open::an_unreadable_relkind_does_not_open_a_document_
 // namespace — the next round would write over a file it did not create, and
 // verify_otbx_sidecars would need a permanent exemption for it.
 //
-// persist_checkpoint_sidecar states the contract: either the new id is published, or
+// publish_checkpoint_sidecar states the contract: either the new id is published, or
 // the sidecar already on disk is left byte-identical and nothing else is added next to it.
 // The refusal is forced here the one way a test can force it without a device — the rename
 // target is made un-renameable-over — and what is asserted is the invariant, not the cause.

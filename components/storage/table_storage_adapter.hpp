@@ -433,6 +433,13 @@ namespace components::storage {
         // refused instead. The refusal reaches the agent before any WAL record is written for the
         // update (operator_update journals only after storage_update succeeds), so a refused
         // statement leaves nothing behind.
+        //
+        // THE REFUSAL IS THE SANCTIONED CONTRACT, not a gap left open by accident:
+        // integration/cpp/test/test_alter_add_column_unmaterialized.cpp pins
+        // `UPDATE ... SET extra = 42` to an error cursor with the rows unchanged and the column
+        // still NULL. Teaching UPDATE the schema growth INSERT's stage 1b does (it owns the
+        // PHYSICAL_ADD_COLUMN record that keeps replay in schema-then-rows order) would flip that
+        // assertion, so it is a decision for the owner of that test and not a bug fix.
         [[nodiscard]] core::error_t trim_unmaterialized_payload(vector::data_chunk_t& data) const {
             const size_t physical = table_.column_count();
             if (data.column_count() <= physical) {

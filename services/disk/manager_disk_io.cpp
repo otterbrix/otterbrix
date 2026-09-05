@@ -33,6 +33,10 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::flush(session_id_t session, wal::id_t wal_id) {
+        // NOTHING IS FLUSHED HERE, AND THE DECLARATION SAYS SO AT LENGTH (manager_disk.hpp):
+        // durability belongs to checkpoint_all. This body is a trace so the call is at least
+        // visible; it is neither a stub waiting to be filled in from this side nor a step any
+        // caller may read as a barrier.
         trace(log_, "manager_disk_t::flush , session : {} , wal_id : {}", session.data(), wal_id);
         co_return;
     }
@@ -78,7 +82,7 @@ namespace services::disk {
             advanced += agent_result.advanced;
         }
 
-        if (deferred > 0 && rewritten == 0) {
+        if (deferred > 0) {
             // The state observed as "boundaries 31/55/55/135, one truncation deleting
             // nothing": every dirty entry sat behind a gate (usually the MVCC compact
             // gate under sustained writes), its unchanged prev pinned the floor, and the
@@ -86,13 +90,45 @@ namespace services::disk {
             // exactly what keeps the deferred tables' replay records alive — but it must
             // not be silent, or the WAL grows round after round with every health line
             // reporting success.
-            warn(log_,
-                 "manager_disk_t::checkpoint_all , session : {} , the round rewrote NOTHING and deferred {} "
-                 "entr{} ({} unchanged advanced) — the WAL floor cannot move past the deferred tables this round",
-                 session.data(),
-                 deferred,
-                 deferred == 1 ? "y" : "ies",
-                 advanced);
+            //
+            // THE MECHANISM, STATED CORRECTLY: the floor this round reports is min(prev) over
+            // EVERY entry, and a deferred entry's prev does not move. So the floor cannot be
+            // carried past a deferred table, whatever the other entries did — it is bounded by
+            // that entry, not necessarily equal to it. `deferred > 0` is therefore the exact
+            // condition for "some table is holding the floor", and the earlier
+            // `deferred > 0 && rewritten == 0` was a proxy that went blind in the MIXED round —
+            // one table held by a gate, another rewritten — where the floor is held just the
+            // same.
+            //
+            // THE LEVEL IS SPLIT BECAUSE THE TWO SHAPES ARE NOT THE SAME NEWS. A round that
+            // rewrote NOTHING is the state above: nothing moved, and if it repeats the WAL only
+            // grows. A round that rewrote something while one entry waited is the ordinary
+            // steady state of a busy database — an open streaming cursor or a live version stamp
+            // defers its table EVERY round, by design — so warning on it would put a line in the
+            // log on every round for the life of a cursor and teach every reader to skip it.
+            // Both carry min_prev_id, which is the number truncate_before actually acts on.
+            const auto floor_reported = static_cast<std::uint64_t>(min_prev_id);
+            if (rewritten == 0) {
+                warn(log_,
+                     "manager_disk_t::checkpoint_all , session : {} , the round rewrote NOTHING and deferred {} "
+                     "entr{} ({} unchanged advanced) — the WAL floor stays at {} and cannot move past the "
+                     "deferred tables this round",
+                     session.data(),
+                     deferred,
+                     deferred == 1 ? "y" : "ies",
+                     advanced,
+                     floor_reported);
+            } else {
+                info(log_,
+                     "manager_disk_t::checkpoint_all , session : {} , the round deferred {} entr{} and rewrote {} "
+                     "({} unchanged advanced) — the WAL floor is held at {} by the deferred tables",
+                     session.data(),
+                     deferred,
+                     deferred == 1 ? "y" : "ies",
+                     rewritten,
+                     advanced,
+                     floor_reported);
+            }
         }
 
         if (!agents_.empty()) {
@@ -357,7 +393,7 @@ namespace services::disk {
         // and the fact is the opposite one.
         //
         // WHAT IT IS *NOT* IS A REASON TO REFUSE THE TABLE. A short sidecar is not corruption:
-        // persist_checkpoint_sidecar (agent_disk.cpp) makes the write atomic, but a file written by
+        // the staged-then-published sidecar writer (agent_disk.cpp) makes the write atomic, but a file written by
         // an older build or damaged from outside can still be short — and the .otbx it sits next to
         // opens perfectly either way. Refusing the OPEN over it is a per-table refusal for a user
         // table and the END of the database for a system one (bootstrap_one throws, base_spaces.cpp

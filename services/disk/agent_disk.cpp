@@ -889,8 +889,54 @@ namespace services::disk {
             co_return append_r.convert_error<std::pair<uint64_t, uint64_t>>();
         }
         const uint64_t materialized_start = append_r.value();
-        assert(materialized_start == start_row &&
-               "WAL-first append: materialized start_row diverged from the reserved start_row");
+        // WAL-FIRST'S ONE PREMISE, CHECKED RATHER THAN ASSERTED.
+        //
+        // The PHYSICAL_INSERT record above already names `start_row`, reserved from
+        // total_rows() before the journal write; CREATE INDEX's backfill-from-WAL uses that
+        // number as the row-id base of the replayed chunk. The rows just landed at
+        // `materialized_start`. The two are equal because no other same-oid handler can run
+        // between the reservation and the append (mailbox-atomic handler) -- and if that ever
+        // stops holding, the journal describes these rows at a base they are not at.
+        //
+        // THIS WAS AN assert, AND UNDER NDEBUG AN assert IS NOTHING: the release build went on
+        // to answer with `materialized_start`, a number the record on disk does not name, and
+        // the divergence reached nobody. So it refuses instead.
+        //
+        // AND THE REFUSAL UNWINDS THE ROWS ITSELF, because nothing else will. This branch is
+        // NOT the materialize failure immediately above: there `s->append` failed and nothing
+        // landed, here it SUCCEEDED and the rows are in the table. The statement path cannot
+        // take them back — operator_insert returns flush_outcome_t{error} the moment
+        // storage_append answers with one, so the range never reaches
+        // execute_result_t::dml_appends, and executor_t's revert_failed_txn builds its
+        // storage_revert_appends list from exactly that vector. The direct leg
+        // (transaction_data{0, 0}: bootstrap and WAL replay) has no transaction to abort at
+        // all, and stamps its rows committed, so there they would be visible and permanent.
+        // Reverting here first is the only thing that makes the refusal true.
+        //
+        // revert_append is the same primitive storage_revert_appends_inner calls, and the
+        // range is this handler's own: it was appended a statement ago and no other handler
+        // can have run since (mailbox-atomic). data_corruption, not io_error, is the code: no
+        // file operation failed here, a row-addressing invariant did (the same reading
+        // collection_t::initialize_scan_with_offset gives "no row group brackets this row").
+        if (materialized_start != start_row) {
+            error(log_,
+                  "agent_disk[{}]::storage_append_inner: oid={} reserved start_row {} for the journal but the "
+                  "rows materialized at {} — the rows are REVERTED and the append is refused rather than "
+                  "answered with a base the journal does not name",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid),
+                  start_row,
+                  materialized_start);
+            s->revert_append(static_cast<int64_t>(materialized_start), actual_count);
+            std::pmr::string what{"agent_disk::storage_append_inner: journalled start_row ", resource()};
+            what.append(std::to_string(start_row).c_str());
+            what.append(" but the rows materialized at ");
+            what.append(std::to_string(materialized_start).c_str());
+            what.append(" for table oid ");
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            what.append("; the rows were reverted and nothing was appended");
+            co_return core::error_t{core::error_code_t::data_corruption, std::move(what)};
+        }
         co_return std::make_pair(materialized_start, actual_count);
     }
 
@@ -2149,42 +2195,71 @@ namespace services::disk {
         co_return entry->storage->total_rows();
     }
 
+    // THE CHECKPOINT SIDECAR WRITER, IN FOUR PIECES — the contract is the sequence, so it is
+    // stated once here and each function below carries only its own step.
+    //
+    // DURABLY PUBLISH A TABLE'S CHECKPOINT SIDECAR, or leave the one already there untouched.
+    // There is no third outcome, and that is the whole contract: every reader of a
+    // `.otbx.wal_id` decides what to replay from it, so a file that is neither the old id nor the
+    // new one is a state none of them can honestly interpret.
+    //
+    // Without the full sequence two ROUTINE paths produce a short or zero-length sidecar with no
+    // corruption anywhere: a full device or an I/O error during a checkpoint (no crash at all),
+    // and the classic rename-without-fsync, whose crash image is a zero-length file under the new
+    // name. The steps, in the order the guarantee needs:
+    //   * the bytes are counted (write_result_t reports both how much landed and whether it
+    //     finished -- a full device short-counts rather than refusing outright);
+    //   * the temp is fsynced BEFORE the rename, so the rename can never publish a name over data
+    //     that has not reached the device -- the step whose absence made the zero-length crash
+    //     image possible;
+    //   * on ANY failure before the rename the temp is removed and the rename is not attempted,
+    //     so the sidecar already on disk is left byte-identical;
+    //   * the directory is fsynced after the rename, so the rename itself survives a crash. Its
+    //     failure is a WARNING and not a refusal: the id is already published and the worst a
+    //     crash can then show is the PREVIOUS sidecar, a state readers understand.
+    // close() is not checked because this filesystem layer's close() returns void; the fsync
+    // above it is the check a checked close would have stood in for.
+    //
+    // AND THE SEQUENCE IS SPLIT AT THE ROUND'S COMMIT POINT. Everything up to and including the
+    // staging fsync is stage_checkpoint_sidecar and runs BEFORE the entry commits anything; only
+    // the rename (publish_checkpoint_sidecar) and the directory fsync
+    // (sync_checkpoint_sidecar_directory) run after. A checkpoint's atomic point is write_header's
+    // own fsync, so a failure after it cannot be taken back: the .otbx would hold round N while
+    // the DURABLE floor still named N-1, and a restart would re-apply every record the round
+    // absorbed. Running the whole sidecar write there put ENOSPC, EIO and a refused create inside
+    // that window -- none of which needs a crash. Staged first, those become an ordinary deferral
+    // with nothing committed. What remains after the commit point is the rename alone, and closing
+    // THAT needs the wal id inside database_header_t (one atomic point instead of two files),
+    // which is a format change and not this file's to make.
     namespace {
-        // DURABLY PUBLISH A TABLE'S CHECKPOINT SIDECAR, or leave the one already there untouched.
-        // There is no third outcome, and that is the whole contract: every reader of a
-        // `.otbx.wal_id` decides what to replay from it, so a file that is neither the old id nor
-        // the new one is a state none of them can honestly interpret.
-        //
-        // Without the full sequence below two ROUTINE paths produce a short or zero-length sidecar
-        // with no corruption anywhere: a full device or an I/O error during a checkpoint (no crash
-        // at all), and the classic rename-without-fsync, whose crash image is a zero-length file
-        // under the new name. The steps, in the order the guarantee needs:
-        //   * the bytes are counted (write_result_t reports both how much landed and whether it
-        //     finished -- a full device short-counts rather than refusing outright);
-        //   * the temp is fsynced BEFORE the rename, so the rename can never publish a name over
-        //     data that has not reached the device -- the step whose absence made the zero-length
-        //     crash image possible;
-        //   * the directory is fsynced after the rename, so the rename itself survives a crash.
-        //     Best-effort by design: if it fails, the data is still on the device and the crash
-        //     image is the PREVIOUS sidecar, a state readers understand;
-        //   * on ANY failure the temp is removed and the rename is not attempted, so the sidecar
-        //     already on disk is left byte-identical.
-        // close() is not checked because this filesystem layer's close() returns void; the fsync
-        // above it is the check a checked close would have stood in for.
-        [[nodiscard]] core::error_t persist_checkpoint_sidecar(std::pmr::memory_resource* resource,
-                                                               const std::filesystem::path& otbx_path,
-                                                               wal::id_t wal_id) {
-            auto sidecar_path = otbx_path;
-            sidecar_path += ".wal_id";
-            auto tmp_path = sidecar_path;
-            tmp_path += ".tmp";
+        std::filesystem::path checkpoint_sidecar_path(const std::filesystem::path& otbx_path) {
+            auto p = otbx_path;
+            p += ".wal_id";
+            return p;
+        }
+
+        std::filesystem::path checkpoint_sidecar_staging_path(const std::filesystem::path& otbx_path) {
+            auto p = checkpoint_sidecar_path(otbx_path);
+            p += ".tmp";
+            return p;
+        }
+
+        // STEP ONE: put the successor id on the device under the staging name, published to
+        // nobody. Removes any stump a previously refused round left, creates the temp fresh,
+        // counts the bytes, fsyncs it. Every failure leg removes the temp, so a refusal leaves
+        // the live sidecar byte-identical and no new name next to it.
+        [[nodiscard]] core::error_t stage_checkpoint_sidecar(std::pmr::memory_resource* resource,
+                                                            const std::filesystem::path& otbx_path,
+                                                            wal::id_t wal_id) {
+            const auto sidecar_path = checkpoint_sidecar_path(otbx_path);
+            const auto tmp_path = checkpoint_sidecar_staging_path(otbx_path);
 
             core::filesystem::local_file_system_t fs;
             auto refuse = [&](std::string reason) {
                 std::error_code rm_ec;
                 std::filesystem::remove(tmp_path, rm_ec);
                 return core::error_t(core::error_code_t::io_error,
-                                     std::pmr::string{"persist_checkpoint_sidecar: " + sidecar_path.string() +
+                                     std::pmr::string{"stage_checkpoint_sidecar: " + sidecar_path.string() +
                                                           " was NOT updated: " + std::move(reason),
                                                       resource});
             };
@@ -2210,16 +2285,71 @@ namespace services::disk {
                 return refuse("the staging file could not be fsynced");
             }
             tmp.reset(); // closes the descriptor; the fsync above is what made the bytes durable
-            if (!core::filesystem::move_files(fs, tmp_path, sidecar_path)) {
-                return refuse("the rename over the live sidecar was refused");
+            return core::error_t::no_error();
+        }
+
+        // Drop the staged bytes without publishing them. Called on every path that stages and
+        // then decides not to commit the entry after all, so a deferred table does not leave its
+        // successor id lying in the staging file.
+        //
+        // The std::error_code is read and reported, not swallowed: a staging file that CANNOT be
+        // removed is not harmless. stage_checkpoint_sidecar's own stale-tmp remove hits the same
+        // obstacle next round, so the entry stops being able to stage at all — it defers with
+        // nothing committed, round after round, and its WAL records are never released. That is
+        // recoverable and it is not this function's to fix, but it must be visible; the removal
+        // itself stays advisory, because a name nothing reads cannot make the round wrong.
+        void discard_staged_checkpoint_sidecar(log_t& log,
+                                               std::size_t pool_idx,
+                                               const std::filesystem::path& otbx_path) {
+            const auto staging = checkpoint_sidecar_staging_path(otbx_path);
+            std::error_code ec;
+            std::filesystem::remove(staging, ec);
+            if (ec) {
+                warn(log,
+                     "agent_disk[{}]: the staged checkpoint sidecar {} could not be removed ({}) — the next "
+                     "round's staging will fail on the same obstacle and keep deferring this entry",
+                     pool_idx,
+                     staging.string(),
+                     ec.message());
             }
-            // The rename is published. Its own durability is a separate question, and losing it
-            // costs only a restart that reads the PREVIOUS id -- so this reports without
-            // undoing anything, and never removes the sidecar it just wrote.
+        }
+
+        // The second half, part one: rename the staged bytes over the live name. This runs AFTER
+        // the entry's commit point, so its failure cannot be undone -- see the note above for
+        // what that costs and what would be needed to remove the last of it.
+        [[nodiscard]] core::error_t publish_checkpoint_sidecar(std::pmr::memory_resource* resource,
+                                                              const std::filesystem::path& otbx_path) {
+            const auto sidecar_path = checkpoint_sidecar_path(otbx_path);
+            const auto tmp_path = checkpoint_sidecar_staging_path(otbx_path);
+
+            core::filesystem::local_file_system_t fs;
+            if (!core::filesystem::move_files(fs, tmp_path, sidecar_path)) {
+                std::error_code rm_ec;
+                std::filesystem::remove(tmp_path, rm_ec);
+                return core::error_t(core::error_code_t::io_error,
+                                     std::pmr::string{"publish_checkpoint_sidecar: " + sidecar_path.string() +
+                                                          " was NOT updated: the rename over the live sidecar was "
+                                                          "refused",
+                                                      resource});
+            }
+            return core::error_t::no_error();
+        }
+
+        // The second half, part two, AND A DIFFERENT OUTCOME FROM THE ONE ABOVE — which is the
+        // whole reason it is a separate function. When the rename is refused the durable floor
+        // is SPLIT: the .otbx names this round's root and the sidecar still names the previous
+        // id, so a restart re-applies records the round already absorbed. When only this fsync
+        // is refused the id IS published; what is in doubt is whether it survives a crash, and
+        // the worst a crash can then show is the previous id. Reporting both through one error
+        // made the caller say "the durable floor may be split" about a floor that is not.
+        [[nodiscard]] core::error_t sync_checkpoint_sidecar_directory(std::pmr::memory_resource* resource,
+                                                                     const std::filesystem::path& otbx_path) {
+            const auto sidecar_path = checkpoint_sidecar_path(otbx_path);
+            core::filesystem::local_file_system_t fs;
             auto dir = core::filesystem::open_file(fs, sidecar_path.parent_path(), core::filesystem::file_flags::READ);
             if (dir == nullptr || !core::filesystem::file_sync(fs, *dir)) {
                 return core::error_t(core::error_code_t::io_error,
-                                     std::pmr::string{"persist_checkpoint_sidecar: " + sidecar_path.string() +
+                                     std::pmr::string{"sync_checkpoint_sidecar_directory: " + sidecar_path.string() +
                                                           " was written and renamed, but its directory could not be "
                                                           "fsynced -- a crash may still surface the previous id",
                                                       resource});
@@ -2232,9 +2362,15 @@ namespace services::disk {
     agent_disk_t::checkpoint_inner(session_id_t /*session*/, wal::id_t current_wal_id, uint64_t compact_watermark) {
         trace(log_, "agent_disk[{}]::checkpoint_inner: {} entries in local slice", pool_idx_, storages_.size());
         // Per DISK entry, crash-safe checkpoint sequence (order matters):
-        //   compact (MVCC-gated), checkpoint(wal_id) — whose header write IS the
-        //   atomic commit point under shadow paging; no external backup copy
-        //   is taken — then persist the .wal_id sidecar via tmp+rename.
+        //   the free refusals first (degraded storage, an open cursor, version stamps above the
+        //   watermark) — each of them ends the entry's round without touching the device — then
+        //   STAGE the .wal_id sidecar (tmp + fsync, nothing published), then compact, then
+        //   checkpoint(wal_id) — whose header write IS the atomic commit point under shadow
+        //   paging; no external backup copy is taken — then PUBLISH the sidecar (rename +
+        //   directory fsync). The staging sits between the free refusals and the first thing
+        //   that commits: everything which can fail on a full or failing device fails while the
+        //   entry can still be deferred with nothing committed, and only the rename is left on
+        //   the far side of the commit point.
         //   Tally min(prev_checkpoint_wal_id_) for the manager's
         //   cross-agent std::min. Null entries are skipped.
         // An entry that is UNCHANGED since its durable root skips the compact and the rewrite —
@@ -2318,15 +2454,9 @@ namespace services::disk {
             // What counts as changed is table_storage_t::needs_checkpoint's business. The gate
             // sits AFTER the two refusals above so that a degraded or cursor-held entry keeps its
             // own, more conservative treatment.
-            if (!entry->table_storage.needs_checkpoint()) {
-                trace(log_,
-                      "agent_disk[{}]::checkpoint_inner oid={} is unchanged since its durable root — advancing "
-                      "its wal id without rewriting it",
-                      pool_idx_,
-                      static_cast<unsigned>(tbl_oid));
-                entry->table_storage.advance_wal_id_without_rewrite(current_wal_id);
-                ++advanced;
-            } else {
+            const bool unchanged = !entry->table_storage.needs_checkpoint();
+            bool skip_compact_this_round = false;
+            if (!unchanged) {
                 // Failed-round gate: the previous checkpoint attempt on this entry failed. Retry
                 // the checkpoint below — a transient error must be able to recover — but do NOT
                 // rebuild first. A compact whose header never commits cannot return space under
@@ -2336,29 +2466,122 @@ namespace services::disk {
                 // persistent write error at the header offset — which deliberately does not latch,
                 // so storage_degraded() stays false — costs a full copy of the table every round,
                 // forever, with every health indicator reporting the file healthy.
-                const bool skip_compact_this_round = entry->table_storage.last_checkpoint_failed();
+                //
+                // AND THE ONE THING THAT OUTRANKS THAT SPACE. The rebuild is not only
+                // maintenance: it is the ONLY thing that folds a committed-update overlay
+                // (column_data_t::updates_, written by the WAL-replay PHYSICAL_UPDATE path)
+                // into the segments a checkpoint serializes. Skipping it with an overlay
+                // outstanding used to write the PRE-update bytes and report success, and the
+                // sidecar below then advanced past the journal record that was the only
+                // remaining copy of the value — a silent rollback at the next start. Today
+                // column_data_checkpointer_t::checkpoint refuses that write, so skipping the
+                // rebuild here would not save the copy anyway: it would only turn a table with
+                // a replayed update into an entry that can never checkpoint again. So the gate
+                // asks the entry first; the question costs a walk of the column segments and is
+                // asked only on this path (see table_storage_t::has_pending_update_overlay).
+                skip_compact_this_round =
+                    entry->table_storage.last_checkpoint_failed() && !entry->table_storage.has_pending_update_overlay();
                 if (skip_compact_this_round) {
                     warn(log_,
                          "agent_disk[{}]::checkpoint_inner oid={} previous checkpoint failed — retrying WITHOUT "
                          "compaction; the rebuild resumes once a checkpoint commits",
                          pool_idx_,
                          static_cast<unsigned>(tbl_oid));
+                } else if (entry->table_storage.last_checkpoint_failed()) {
+                    warn(log_,
+                         "agent_disk[{}]::checkpoint_inner oid={} previous checkpoint failed, but the table "
+                         "carries a committed-update overlay — rebuilding anyway, because only the rebuild "
+                         "folds it into the segments a checkpoint can write",
+                         pool_idx_,
+                         static_cast<unsigned>(tbl_oid));
                 }
 
-                // MVCC gate FIRST: compact() refuses the rebuild when any version
-                // stamp is above the watermark (an active snapshot or an in-flight
-                // commit still needs the history, or a positional commit_append is
-                // pending). Persisting a non-compacted table would resurrect dead /
-                // uncommitted rows on recovery (.otbx has no version metadata), so
-                // the entry's checkpoint is deferred to a later round; the WAL keeps
-                // its replay records because the old sidecar/prev ids stay in the min.
-                if (!skip_compact_this_round && !entry->table_storage.table().compact(compact_watermark)) {
+                // MVCC GATE, ASKED OF THE ENTRY AND NOT ONLY OF compact().
+                //
+                // A version stamp above the watermark means an active snapshot or an in-flight
+                // commit still needs the history: a pending txn id (an uncommitted write, or a
+                // positional commit_append still to come), or a commit id some older snapshot
+                // must not see yet. A .otbx carries NO version metadata — every row in it reads
+                // back as plain committed — so a round that writes such a table resurrects
+                // uncommitted or deleted rows at the next start.
+                //
+                // compact() gates ITSELF on exactly this predicate, and while every round
+                // compacted, asking compact() was asking the gate. The failed-round retry above
+                // does not compact, and there the gate was not asked AT ALL: an uncommitted
+                // append landing between a failed round and its retry was checkpointed as
+                // committed data. So the question is put to the entry directly, on both paths.
+                //
+                // Asked BEFORE the sidecar is staged, because this is the round's most ordinary
+                // deferral (under sustained writes it is the usual answer) and it must stay free:
+                // the entry keeps its file, its ids and its WAL records, and a later round takes
+                // it once the stamps age below the watermark.
+                if (entry->table_storage.has_versions_above(compact_watermark)) {
                     trace(log_,
                           "agent_disk[{}]::checkpoint_inner oid={} has version stamps above watermark {} — "
                           "skipping this round",
                           pool_idx_,
                           static_cast<unsigned>(tbl_oid),
                           compact_watermark);
+                    min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                    ++deferred;
+                    continue;
+                }
+            }
+
+            // STAGE THE SIDECAR — AFTER EVERY GATE THAT CAN STILL DEFER FOR FREE, AND BEFORE THE
+            // FIRST THING THIS ENTRY COMMITS.
+            //
+            // Both branches below reach a point of no return — the header write inside
+            // table_storage_t::checkpoint for a rewritten entry, advance_wal_id_without_rewrite
+            // for an unchanged one — and both advance checkpoint_wal_id_, whose DURABLE half is
+            // this sidecar. Written afterwards, a sidecar that could not be created left the two
+            // halves out of step with no way back: the .otbx at this round's root while the
+            // durable floor still named the previous one, so a restart re-applies every record
+            // the round absorbed. It took no crash to get there, only a full device or a refused
+            // create.
+            //
+            // Staged here, that whole class is an ordinary deferral with nothing committed: the
+            // entry keeps its file, its ids and its WAL records, and a later round retries. What
+            // is left after the commit point is the rename alone (publish_checkpoint_sidecar).
+            //
+            // THE POSITION IS THE COST, TOO. This is create + write + fsync + (on a deferral)
+            // unlink, per entry per round; the gates above it are the ones that answer "not this
+            // round" routinely — a held cursor, a table with live version stamps — and they now
+            // answer before the device is touched. Below it sits only compact(), which cannot
+            // defer for free anyway (it has already rebuilt by the time it can fail).
+            if (auto staged = stage_checkpoint_sidecar(resource(), entry->otbx_path, current_wal_id);
+                staged.contains_error()) {
+                warn(log_,
+                     "agent_disk[{}]::checkpoint_inner oid={} could not stage its checkpoint sidecar — deferring "
+                     "this entry with NOTHING committed: {}",
+                     pool_idx_,
+                     static_cast<unsigned>(tbl_oid),
+                     staged.what.c_str());
+                min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
+                ++deferred;
+                continue;
+            }
+
+            if (unchanged) {
+                trace(log_,
+                      "agent_disk[{}]::checkpoint_inner oid={} is unchanged since its durable root — advancing "
+                      "its wal id without rewriting it",
+                      pool_idx_,
+                      static_cast<unsigned>(tbl_oid));
+                entry->table_storage.advance_wal_id_without_rewrite(current_wal_id);
+                ++advanced;
+            } else {
+                // The rebuild itself. Its MVCC precondition was settled above; what can still
+                // refuse it here is the rebuild running out of room or its scan failing —
+                // compact() reports both as false and leaves the collection untouched. Defer the
+                // entry and discard the staged sidecar, same as the checkpoint failure below.
+                if (!skip_compact_this_round && !entry->table_storage.table().compact(compact_watermark)) {
+                    trace(log_,
+                          "agent_disk[{}]::checkpoint_inner oid={} could not be rebuilt (the scan or the "
+                          "rebuild append refused) — skipping this round",
+                          pool_idx_,
+                          static_cast<unsigned>(tbl_oid));
+                    discard_staged_checkpoint_sidecar(log_, pool_idx_, entry->otbx_path);
                     min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
                     ++deferred;
                     continue;
@@ -2376,11 +2599,14 @@ namespace services::disk {
                 // any failure below the durable root N is still on the device, intact, inside the
                 // .otbx itself.
                 //
-                // checkpoint(wal_id) returns out_of_memory on a column flush pin failure; it
-                // aborts BEFORE the header swap and leaves the wal_id fields unchanged. On error,
-                // defer this entry to a later round (same as the MVCC-gate skip above): do NOT
-                // persist the sidecar, and feed the unchanged prev_checkpoint_wal_id into the
-                // min() so the WAL keeps this table's replay records.
+                // checkpoint(wal_id) returns out_of_memory on a column flush pin failure, and
+                // unimplemented_yet when a column still carries an update overlay the rebuild did
+                // not fold; either way it aborts BEFORE the header swap and leaves the wal_id
+                // fields unchanged. On error, defer this entry to a later round (same as the
+                // gates above): DISCARD the staged sidecar so its unpublished successor id does
+                // not sit next to a file that never moved, and feed the unchanged
+                // prev_checkpoint_wal_id into the min() so the WAL keeps this table's replay
+                // records.
                 auto cp_r = entry->table_storage.checkpoint(current_wal_id);
                 if (cp_r.has_error()) {
                     warn(log_,
@@ -2388,34 +2614,51 @@ namespace services::disk {
                          "round",
                          pool_idx_,
                          static_cast<unsigned>(tbl_oid));
+                    discard_staged_checkpoint_sidecar(log_, pool_idx_, entry->otbx_path);
                     min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
                     ++deferred;
                     continue;
                 }
                 ++rewritten;
             }
-
             const auto& otbx_path = entry->otbx_path;
 
-            // Persist the sidecar wal_id durably. Reached by BOTH branches above: the sidecar
-            // is the durable half of checkpoint_wal_id_, and an entry that skipped its rewrite
-            // advanced that id just the same, so leaving the file behind would put the two
-            // halves out of step for no gain.
-            if (auto sidecar_err = persist_checkpoint_sidecar(resource(), otbx_path, current_wal_id);
-                sidecar_err.contains_error()) {
+            // PUBLISH the sidecar wal_id staged before the commit point above. Reached by BOTH
+            // branches: the sidecar is the durable half of checkpoint_wal_id_, and an entry that
+            // skipped its rewrite advanced that id just the same, so leaving the file behind would
+            // put the two halves out of step for no gain.
+            if (auto rename_err = publish_checkpoint_sidecar(resource(), otbx_path); rename_err.contains_error()) {
                 // NOT SILENT, AND NOT A ROLLBACK EITHER. The header for this round is already
-                // committed inside the .otbx, so the round cannot be taken back here; what the
-                // failure costs is that the DURABLE floor may stay at the previous
-                // checkpoint's id while the in-memory one moved on. A restart would then read
-                // a floor that is too LOW and re-apply the records this round absorbed -- loud
-                // is the most this layer can do about it, and the next successful round
-                // repairs it. The message says which of the two states the file is in; this
-                // line does not guess.
+                // committed inside the .otbx, so the round cannot be taken back here; what a
+                // refused RENAME costs is that the DURABLE floor stays at the previous
+                // checkpoint's id while the in-memory one moved on. A restart then reads a floor
+                // that is too LOW and re-applies the records this round absorbed -- loud is the
+                // most this layer can do about it, and the next successful round repairs it.
+                //
+                // WHAT IS STILL IN THIS WINDOW, precisely: the rename, and nothing else. The
+                // bytes are already on the device (staged and fsynced before the commit point),
+                // so the ENOSPC / EIO / refused-create class that used to land here now lands as
+                // a deferral with nothing committed. Closing the last of it means putting the wal
+                // id INSIDE database_header_t -- one atomic point instead of two files -- which
+                // changes the file format and the header checksum.
                 error(log_,
                       "agent_disk[{}]::checkpoint_inner oid={} checkpoint sidecar: {}",
                       pool_idx_,
                       static_cast<unsigned>(tbl_oid),
-                      sidecar_err.what.c_str());
+                      rename_err.what.c_str());
+            } else if (auto dir_err = sync_checkpoint_sidecar_directory(resource(), otbx_path);
+                       dir_err.contains_error()) {
+                // A DIFFERENT OUTCOME, AND IT IS NOT A SPLIT FLOOR. The new id IS published --
+                // every reader that opens this table now reads it. Only its survival of a crash
+                // is unproven, and the worst such a crash can surface is the PREVIOUS id, which
+                // is a floor that is too low: replay re-applies records already absorbed, which
+                // costs work and not correctness. warn, not error, because nothing here is
+                // wrong right now.
+                warn(log_,
+                     "agent_disk[{}]::checkpoint_inner oid={} checkpoint sidecar: {}",
+                     pool_idx_,
+                     static_cast<unsigned>(tbl_oid),
+                     dir_err.what.c_str());
             }
 
             min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());
@@ -2562,6 +2805,25 @@ namespace services::disk {
                               sec.message());
                     }
                 }
+                // AND THE PER-OID DIRECTORY, exactly as the runtime DROP path does
+                // (drop_storage_one_local). Every file the engine owns under it has just been
+                // named above, so an empty directory is what is left; leaving it behind made a
+                // dropped table's oid outlive the table in the layout, and the transactional
+                // DROP and the immediate DROP disagree about the same tree.
+                //
+                // The non-recursive remove is the point: it fails, harmlessly, on a directory
+                // that still holds something this engine did not put there, and that is the one
+                // case where the directory must stay. std::filesystem::remove does not set the
+                // code for an absent path, so an entry whose file was already gone is silent.
+                std::error_code dec;
+                std::filesystem::remove(entry.path.parent_path(), dec);
+                if (dec) {
+                    trace(log_,
+                          "agent_disk[{}]::on_horizon_advanced_inner , remove oid directory failed for {} : {}",
+                          pool_idx_,
+                          entry.path.parent_path().string(),
+                          dec.message());
+                }
             } else {
                 kept.push_back(std::move(entry));
             }
@@ -2679,9 +2941,14 @@ namespace services::disk {
             // sweep is only the secondary net; this is the primary cleanup.)
             std::error_code ec;
             std::filesystem::remove(otbx_path, ec);
-            auto sidecar = otbx_path;
-            sidecar += ".wal_id";
-            std::filesystem::remove(sidecar, ec);
+            std::filesystem::remove(checkpoint_sidecar_path(otbx_path), ec);
+            // AND THE STAGING FILE, which is the OTHER name this engine owns here. A crash
+            // between stage_checkpoint_sidecar's fsync and publish_checkpoint_sidecar's rename
+            // legitimately leaves `<table>.otbx.wal_id.tmp` behind — verify_otbx_sidecars says so
+            // by name, which is exactly why nothing else cleans it up. Left here it survives the
+            // DROP, and because the directory is then not empty the remove below fails and the
+            // whole per-oid directory outlives the table it belonged to.
+            std::filesystem::remove(checkpoint_sidecar_staging_path(otbx_path), ec);
             std::filesystem::remove(otbx_path.parent_path(), ec);
         }
     }
@@ -3358,9 +3625,13 @@ namespace services::disk {
         if (auto it = storages_.find(table_oid); it != storages_.end() && it->second != nullptr) {
             otbx_path = it->second->otbx_path;
             if (!otbx_path.empty()) {
-                auto wal_id_sidecar = otbx_path;
-                wal_id_sidecar += ".wal_id";
-                sidecars.push_back(std::move(wal_id_sidecar));
+                // Both names the engine owns next to the .otbx, not just the published one: a
+                // crash between stage_checkpoint_sidecar's fsync and publish_checkpoint_sidecar's
+                // rename leaves `<table>.otbx.wal_id.tmp` behind, verify_otbx_sidecars declares
+                // that name legitimate, and nothing else ever removes it — so a DROP that named
+                // only the published sidecar left the staging file to outlive the table.
+                sidecars.push_back(checkpoint_sidecar_path(otbx_path));
+                sidecars.push_back(checkpoint_sidecar_staging_path(otbx_path));
             }
         }
         // An entry whose construction failed leaves otbx_path/sidecars empty, but we still

@@ -61,13 +61,23 @@ namespace components::table::storage {
         std::memcpy(it->second->buffer() + offset, data, size);
     }
 
-    void partial_block_manager_t::flush_partial_blocks() {
-        // write all accumulated block buffers to disk
+    core::result_wrapper_t<bool> partial_block_manager_t::flush_partial_blocks() {
+        // Write all accumulated block buffers to disk. The FIRST failure ends the flush and is
+        // returned: continuing would pile more unobserved writes on top of a file that already
+        // has a hole in it, and the caller's checkpoint is over either way. The buffers are
+        // still cleared, because the segments they belong to have already been re-pointed at
+        // these block ids — holding them would only pretend the round can be resumed.
+        core::result_wrapper_t<bool> result = true;
         for (auto& [block_id, block] : block_buffers_) {
-            block_manager_.write(*block, block_id);
+            auto written = block_manager_.write(*block, block_id);
+            if (written.has_error()) {
+                result = written.error();
+                break;
+            }
         }
         block_buffers_.clear();
         partial_blocks_.clear();
+        return result;
     }
 
 } // namespace components::table::storage

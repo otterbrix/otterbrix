@@ -197,7 +197,13 @@ namespace components::table::storage {
         if (intermediate_buffer.has_error()) {
             return intermediate_buffer.convert_error<bool>();
         }
-        block_manager.read_blocks(intermediate_buffer.value().file_buffer(), first_block, block_count);
+        // Rule 19: a failed batch read leaves the intermediate buffer holding whatever was in
+        // it, and the loop below then copies those bytes into every block handle as if they had
+        // come off the disk. Dropping this answer turned an I/O error into silently wrong data.
+        if (auto read = block_manager.read_blocks(intermediate_buffer.value().file_buffer(), first_block, block_count);
+            read.has_error()) {
+            return read; // io_error / data_corruption
+        }
 
         for (uint64_t block_idx = 0; block_idx < block_count; block_idx++) {
             uint64_t block_id = first_block + block_idx;

@@ -5,6 +5,8 @@
 #include <type_traits>
 #include <vector>
 
+#include <core/result_wrapper.hpp>
+
 #include "metadata_manager.hpp"
 
 namespace components::table::storage {
@@ -29,7 +31,27 @@ namespace components::table::storage {
 
         meta_block_pointer_t get_block_pointer() const { return start_pointer_; }
 
-        void flush();
+        // Returns io_error when the underlying metadata block writes failed — the chain this
+        // writer just built is then NOT on disk and get_block_pointer() names nothing.
+        [[nodiscard]] core::result_wrapper_t<bool> flush();
+
+        // How many sub-blocks a payload of `payload_bytes` occupies in a chain of sub-blocks of
+        // `sub_block_size`, counting the 12-byte chain header every sub-block carries. Exact,
+        // not an estimate: write_data fills each sub-block to the byte and lets a value straddle
+        // the boundary.
+        //
+        // Exists so a caller can pre-allocate a whole chain BEFORE it starts writing — see
+        // single_file_block_manager_t::serialize_free_list, where an allocation made mid-write
+        // would come out of the very free list being published. Returns 0 for a sub_block_size
+        // too small to hold its own header, which no caller may treat as "zero sub-blocks
+        // needed": it means the block geometry is unusable and is reported as such.
+        static constexpr uint64_t sub_blocks_for(uint64_t payload_bytes, uint64_t sub_block_size) {
+            if (sub_block_size <= SUB_BLOCK_HEADER_SIZE) {
+                return 0;
+            }
+            const uint64_t usable = sub_block_size - SUB_BLOCK_HEADER_SIZE;
+            return (payload_bytes + usable - 1) / usable;
+        }
 
     private:
         void ensure_space(uint64_t needed);

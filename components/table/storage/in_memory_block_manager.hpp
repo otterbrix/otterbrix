@@ -47,14 +47,28 @@ namespace components::table::storage {
                 core::error_code_t::io_error,
                 std::pmr::string{"in-memory block manager cannot perform disk read", buffer_manager.resource()});
         }
-        void read_blocks(file_buffer_t&, uint64_t, uint64_t) override {
-            throw std::logic_error("Cannot perform IO in in-memory database - read_blocks!");
+        [[nodiscard]] core::result_wrapper_t<bool> read_blocks(file_buffer_t&, uint64_t, uint64_t) override {
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"in-memory block manager cannot perform a batched disk read",
+                                 buffer_manager.resource()});
         }
-        void write(file_buffer_t&, uint64_t) override {
-            throw std::logic_error("Cannot perform IO in in-memory database - write!");
+        // Rules 2/6/9: these three sit on the same virtual interface the DISK manager uses for
+        // the checkpoint durability chain, and that chain now runs on a result channel. A throw
+        // here would cross an actor boundary; report instead, exactly like read() above. They
+        // stay unreachable — table_storage_t::checkpoint early-returns for a non-DISK mode — so
+        // the error is the loud statement of a caller bug, not a fallback path.
+        [[nodiscard]] core::result_wrapper_t<bool> write(file_buffer_t&, uint64_t) override {
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"in-memory block manager cannot perform a disk write", buffer_manager.resource()});
         }
         bool in_memory() override { return true; }
-        void file_sync() override { throw std::logic_error("Cannot perform IO in in-memory database - file_sync!"); }
+        [[nodiscard]] core::result_wrapper_t<bool> file_sync() override {
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"in-memory block manager cannot fsync", buffer_manager.resource()});
+        }
         uint64_t total_blocks() override {
             throw std::logic_error("Cannot perform IO in in-memory database - total_blocks!");
         }

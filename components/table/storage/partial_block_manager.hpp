@@ -33,8 +33,12 @@ namespace components::table::storage {
         // Write segment data into a managed block buffer (does NOT write to disk yet)
         void write_to_block(uint64_t block_id, uint32_t offset, const void* data, uint64_t size);
 
-        // Flush all managed block buffers to disk, then clear
-        void flush_partial_blocks();
+        // Flush all managed block buffers to disk, then clear. Returns io_error when any of
+        // those writes failed. This is the DATA half of the checkpoint's block writes — every
+        // column segment in the system reaches the file through here — and it used to be a
+        // `void` over a `void` over a discarded bool, which is why a failed data-block write
+        // was invisible all the way up to a committed header.
+        [[nodiscard]] core::result_wrapper_t<bool> flush_partial_blocks();
 
     private:
         struct partial_block_t {

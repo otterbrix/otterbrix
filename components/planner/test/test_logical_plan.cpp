@@ -372,7 +372,8 @@ TEST_CASE("components::planner::node_drop_hash_folds_names_and_flags") {
     }
     SECTION("RESTRICT hashes differently from CASCADE") {
         auto b = base();
-        b->set_behavior(components::catalog::drop_behavior_t::restrict_);
+        // The node default IS restrict_ (#638), so the differing side is CASCADE.
+        b->set_behavior(components::catalog::drop_behavior_t::cascade_);
         REQUIRE(a->hash() != b->hash());
     }
     SECTION("a different index name hashes differently") {

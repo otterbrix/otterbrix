@@ -154,12 +154,11 @@ namespace components::operators {
             dep_graph.insert_or_assign(k, std::move(deps));
         }
 
-        // plan_drop: a written RESTRICT is a GATE, not a smaller drop — it returns
-        // restrict_blocked on the first 'n' (normal external) dependency and
-        // otherwise plans exactly what CASCADE would, seed last. CASCADE and the
-        // unspecified form (a statement that named neither word) skip the gate.
-        // Any of the three reports cycle_detected (blocking_oid = offending oid)
-        // on a pg_depend cycle.
+        // plan_drop: RESTRICT (written or defaulted) is a GATE, not a smaller
+        // drop — it returns restrict_blocked on the first 'n' (normal external)
+        // dependency and otherwise plans exactly what CASCADE would, seed last.
+        // A written CASCADE skips the gate. Either reports cycle_detected
+        // (blocking_oid = offending oid) on a pg_depend cycle.
         const auto plan = catalog::plan_drop(
             resource_,
             seed_classid_,

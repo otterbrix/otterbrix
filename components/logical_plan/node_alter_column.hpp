@@ -92,10 +92,9 @@ namespace components::logical_plan {
         std::string new_name_;
         // drop
         std::string column_name_;
-        // Default is `unspecified` — "the clause named neither RESTRICT nor
-        // CASCADE" — which resolves to CASCADE today
-        // (components/catalog/results/ddl_result.hpp). See node_alter_table.hpp.
-        components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::unspecified};
+        // Defaults to restrict_ — the unwritten form IS RESTRICT (PostgreSQL
+        // parity, #638). See node_alter_table.hpp.
+        components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::restrict_};
         bool missing_ok_{false};
         // rename + drop
         components::catalog::oid_t attoid_{components::catalog::INVALID_OID};

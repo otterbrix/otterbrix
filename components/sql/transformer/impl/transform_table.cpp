@@ -250,10 +250,8 @@ namespace components::sql::transform {
             // loud default, which makes the one no-op success PostgreSQL grants the
             // IF EXISTS form unreachable from SQL.
             drop->set_missing_ok(node.missing_ok);
-            // RESTRICT/CASCADE/neither. One choke-point for all six DROP arms —
-            // drop_behavior_of is where the grammar's two-value reading collapses onto the
-            // three forms node_drop_t carries, and why a written RESTRICT is still not
-            // separable from silence at this layer.
+            // RESTRICT/CASCADE. One drop_behavior_of choke-point for all six DROP
+            // arms (bare = restrict_, PostgreSQL parity).
             drop->set_behavior(drop_behavior_of(node.behavior));
             register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
             return n;

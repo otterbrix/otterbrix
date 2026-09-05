@@ -1,32 +1,13 @@
 // ============================================================================
 // WHAT `RESTRICT` AND `CASCADE` MEAN ONCE THE WRITTEN WORD IS HONOURED.
 //
-// Everything from the logical node DOWN is wired — node_drop_t::behavior() reaches
-// node_dynamic_cascade_delete_t and alter_table_subcommand_t::behavior reaches
-// node_alter_column_t (both components/planner/planner.cpp), and both operators
-// implement the restrict_ leg. TWO hops above the node are still missing, and
-// both live in components/sql/**:
-//
-//   (a) gram.y's `opt_drop_behavior` empty alternative fills DROP_RESTRICT for a
-//       statement that wrote NEITHER word (components/sql/parser/gram.y ~:3111,
-//       and a second hardcoded `ds->behavior = DROP_RESTRICT` ~:3545). A third
-//       DropBehavior member is needed so "unwritten" stays distinguishable from
-//       a written RESTRICT; it must be added LAST — gram.y has initializers that
-//       depend on the existing order.
-//   (b) the transformer copying that value onto the node. transform_table.cpp
-//       builds node_drop_t in THREE places, each of which copies missing_ok and
-//       nothing else — wrap_one (~:245), wrap_index for DROP INDEX (~:304) and
-//       the DROP TYPE arm (~:364) — plus transform_alter_table.cpp's
-//       AT_DropColumn arm (~:391). A recipe that wires only wrap_one leaves
-//       `DROP INDEX ... RESTRICT` and `DROP TYPE ... RESTRICT` silently
-//       cascading.
-//
-// So this file builds the two plans BY HAND with behavior = restrict_ — the same
-// nodes the transformer will produce — and runs them through the ordinary
-// execute_plan channel. Plain SQL still carries the node default, which is
-// `unspecified` ("the statement named neither word") and resolves to CASCADE
-// (components/catalog/results/ddl_result.hpp; moving that default is #638), so
-// the tree's bare DROP statements are unaffected by anything here.
+// The whole chain is wired: gram.y's opt_drop_behavior yields DROP_RESTRICT for
+// the written word and the empty alternative alike (in PostgreSQL they are one
+// thing), drop_behavior_of reads it as restrict_ (#638, PostgreSQL parity), and
+// node_drop_t::behavior() / alter_table_subcommand_t::behavior reach the two
+// operators through components/planner/planner.cpp. This file still builds the
+// two plans BY HAND with behavior = restrict_ so the pins hold independently of
+// the SQL front end; test_drop_default_restrict.cpp pins the SQL route.
 //
 // The three cases below were CHARACTERIZATION of three measured defects and are
 // now the pins on their fixes:
@@ -499,10 +480,11 @@ TEST_CASE("integration::cpp::drop_restrict::allowed_restrict_drop_removes_nothin
 }
 
 // ---------------------------------------------------------------------------
-// The control the cases above need: the behaviour every bare SQL statement in
-// the tree gets — the node default, `unspecified`, resolved to CASCADE — is
-// unaffected by any of it. If a restrict_ defect above were ever "fixed" by
-// weakening the cascade leg instead, this case is what would catch it.
+// The control the cases above need: a bare DROP TABLE of a computing table
+// whose only inbound edges are 'a' (auto) still drops it — the restrict_
+// default gates on 'n' edges only. If a restrict_ defect above were ever
+// "fixed" by widening the gate to every deptype, this case is what would
+// catch it.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::drop_restrict::cascade_still_drops_the_computing_table") {
     auto config = make_test_config(fixture_path("cascade_control"));
@@ -514,8 +496,8 @@ TEST_CASE("integration::cpp::drop_restrict::cascade_still_drops_the_computing_ta
     run_ok(d, "CREATE TABLE dr.docs();");
     run_ok(d, "INSERT INTO dr.docs (id, n) VALUES (1, 42);");
 
-    // Plain SQL: the transformer leaves node_drop_t at its `unspecified` default,
-    // which resolves to CASCADE.
+    // Plain SQL: bare DROP is RESTRICT, and a computing table's own 'a' edges
+    // do not block it.
     run_ok(d, "DROP TABLE dr.docs;");
 
     auto gone = exec(d, "SELECT * FROM dr.docs;");

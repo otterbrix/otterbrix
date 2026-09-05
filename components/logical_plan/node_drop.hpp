@@ -62,22 +62,11 @@ namespace components::logical_plan {
         components::catalog::oid_t index_oid() const noexcept { return index_oid_; }
         void set_index_oid(components::catalog::oid_t oid) noexcept { index_oid_ = oid; }
 
-        // RESTRICT/CASCADE/neither. The dynamic cascade operator refuses a
-        // dependent-blocked drop when the statement WROTE restrict_. The
-        // transformer copies DropStmt.behavior through transform::drop_behavior_of
-        // at the single wrap_one choke-point every DROP arm passes, so a written
-        // CASCADE arrives as cascade_.
-        //
-        // A written RESTRICT does NOT arrive as restrict_ and cannot yet: the
-        // grammar's opt_drop_behavior gives its EMPTY alternative the same
-        // DROP_RESTRICT token the word gives, so `DROP TABLE t RESTRICT` and
-        // `DROP TABLE t` are one value at that layer and both land on
-        // `unspecified` — the form for "the statement named neither word".
-        // `unspecified` resolves to CASCADE today
-        // (components/catalog/results/ddl_result.hpp, owner decision; moving it is
-        // GitHub #638), so nothing about a bare DROP changed. The remaining step is
-        // a third DropBehavior value for the grammar's empty alternative; a
-        // programmatic plan can already set restrict_ directly.
+        // RESTRICT (written or defaulted — PostgreSQL parity, #638) or a written
+        // CASCADE. The transformer copies DropStmt.behavior through
+        // transform::drop_behavior_of at the single wrap_one choke-point every
+        // DROP arm passes; DROP DATABASE, whose grammar takes no behavior, is
+        // stamped cascade_ by its own transform.
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
 
@@ -100,7 +89,7 @@ namespace components::logical_plan {
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};
-        components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::unspecified};
+        components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::restrict_};
         bool missing_ok_{false};
     };
 

@@ -196,8 +196,10 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::planned_step_without_a_catal
             1);
 
     // The cascade walks the surviving edge, plans the constraint step, and the step's own
-    // row deletes 0 rows. That zero is the statement's answer.
-    auto cur = exec(d, "DROP TABLE lost.parent;");
+    // row deletes 0 rows. That zero is the statement's answer. CASCADE is written
+    // since #638: bare = RESTRICT, whose gate would refuse on the forged 'n' edge
+    // before the walk could ever reach the ghost step this case is about.
+    auto cur = exec(d, "DROP TABLE lost.parent CASCADE;");
     INFO("DROP over the lost constraint row: "
          << (cur->is_error() ? std::string{cur->get_error().what.begin(), cur->get_error().what.end()}
                              : std::string{"reported success"}));

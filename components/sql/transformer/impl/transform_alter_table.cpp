@@ -390,13 +390,8 @@ namespace components::sql::transform {
                     // `DROP COLUMN IF EXISTS` — carried through to the node. It is
                     // observable only because a missing column no longer succeeds silently.
                     sub.missing_ok = cmd->missing_ok;
-                    // RESTRICT/CASCADE/neither, per clause. drop_behavior_of is the single
-                    // place the grammar's TWO values collapse onto the three forms: a
-                    // written CASCADE arrives as cascade_, and DROP_RESTRICT arrives as
-                    // `unspecified` because the empty alternative of opt_drop_behavior
-                    // produces that same token — so a written RESTRICT is not yet separable
-                    // from silence, and pretending otherwise would flip every bare DROP
-                    // COLUMN in the tree.
+                    // RESTRICT/CASCADE, per clause, through the one drop_behavior_of
+                    // choke-point (bare = restrict_, PostgreSQL parity).
                     sub.behavior = drop_behavior_of(cmd->behavior);
                     subs.push_back(std::move(sub));
                     break;
@@ -569,53 +564,32 @@ namespace components::sql::transform {
                     }
                 }
                 case AT_DropConstraint: {
-                    // The grammar accepts DROP CONSTRAINT, nothing below it implements it.
-                    // Falling through to `default:` leaves `subs` empty, which the tail of
-                    // this function turns into an empty-named DROP COLUMN node that
-                    // operator_alter_column_drop_t no-ops on — the statement would report
-                    // SUCCESS while the pg_constraint row and every pg_depend edge under it
-                    // stayed exactly where they were. Rule 6: a statement that removes
-                    // nothing does not get to say it removed something, least of all when
-                    // what it claims to have removed is an integrity constraint.
-                    //
-                    // WHY THE REFUSAL STANDS RATHER THAN A SUBCOMMAND BEING BUILT HERE, and
-                    // what closing it costs — measured against the tree, not guessed:
-                    //   * a `drop_constraint` subcommand would reach planner.cpp
-                    //     rewrite_alter_table, whose clause chain has NO else — an unknown
-                    //     kind yields an EMPTY sequence node, i.e. exactly the silent
-                    //     success this refusal exists to prevent. Building the front half
-                    //     alone is strictly worse than refusing;
-                    //   * the name-to-OID hop is not MISSING, it is not CARRIED — re-checked
-                    //     2026-09-05 against the operator itself, because the smaller true
-                    //     statement is the one the next implementer needs.
-                    //     operator_resolve_constraint.cpp already decodes
-                    //     pg_constraint.oid AND pg_constraint.conname for every 'f', 'u' and
-                    //     'p' row it walks (fk.constraint_oid, and pending.constraint_oid /
-                    //     pending.constraint_name for the unique/PK leg) — it just spends
-                    //     them on refusal texts and drops them on the floor. What is absent
-                    //     is the field to carry them out: resolve_entry_t
-                    //     (components/logical_plan/node_catalog_resolve.hpp) stamps fks,
-                    //     check_exprs, unique_constraints and pk_columns, and no
-                    //     conname->oid pair among them. Without that field the plan has
-                    //     nothing to delete a pg_constraint row BY;
-                    //   * the TEAR-DOWN, on the other hand, already exists and would not have
-                    //     to be written: operator_dynamic_cascade_delete.cpp's
-                    //     deletes_for_classid has a pg_constraint arm that deletes the
-                    //     pg_constraint row and both pg_depend legs from a bare
-                    //     (classid, objid) seed. What that arm does NOT do is drop the index
-                    //     a 'p'/'u' row is supported by — it lists no pg_class/pg_index
-                    //     step — so a PRIMARY KEY drop needs that leg on top of the seed.
-                    // That is one transformer clause against four files no single owner
-                    // holds — the enum in node_alter_table.hpp, the clause in planner.cpp's
-                    // rewrite_alter_table that would seed node_dynamic_cascade_delete_t with
-                    // (pg_constraint, conoid), the carrier field, and the stamp. Until it is
-                    // done, the only repair for a table that took two PRIMARY KEYs is
-                    // dropping a key COLUMN (integration/cpp/test/
-                    // test_multiple_primary_keys.cpp pins that route) or the table.
-                    std::pmr::string msg{"ALTER TABLE ... DROP CONSTRAINT ", resource_};
-                    msg.append(cmd->name ? cmd->name : "");
-                    msg.append(" is not implemented; the constraint is still in force");
-                    return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
+                    // The grammar always fills the name; an empty one would make enrich
+                    // look up "" and refuse with a nameless message — refuse it here.
+                    if (!cmd->name || cmd->name[0] == '\0') {
+                        return core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"ALTER TABLE ... DROP CONSTRAINT requires a constraint name",
+                                             resource_});
+                    }
+                    logical_plan::alter_table_subcommand_t sub;
+                    sub.kind = logical_plan::alter_table_kind::drop_constraint;
+                    sub.constraint_name = cmd->name;
+                    // `IF EXISTS`: a missing name is an error, IF EXISTS is the one
+                    // no-op success PostgreSQL grants (enrich reads this flag).
+                    sub.missing_ok = cmd->missing_ok;
+                    sub.behavior = drop_behavior_of(cmd->behavior);
+                    subs.push_back(std::move(sub));
+                    // The name-to-oid hop rides a names-only constraint gather: enrich
+                    // reads constraint_oids off the resolved entry and stamps the
+                    // subcommand. names_only, so a doubled-PRIMARY-KEY catalog cannot
+                    // refuse its own repair statement.
+                    register_catalog_resolve_table(resource_,
+                                                   &catalog_resolves_,
+                                                   db,
+                                                   rel,
+                                                   constraint_resolve_kind::names_only);
+                    break;
                 }
                 default: {
                     // A `break` here swallows every subcommand this switch does not

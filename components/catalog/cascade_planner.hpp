@@ -43,18 +43,17 @@ namespace components::catalog {
     //   Implemented by disk as a closure over collect_dependents(); the catalog owns
     //   only the traversal logic, not the storage scan.
     //
-    // behavior: the three forms collapse through catalog::refuses_on_dependency
+    // behavior: collapses through catalog::refuses_on_dependency
     //   (components/catalog/results/ddl_result.hpp), never by comparing against a
     //   single enumerator:
-    //     restrict_    — a written RESTRICT. GATE ONLY: if any DIRECT 'n' (normal)
-    //                    dependency reaches the seed, the plan comes back
-    //                    restrict_blocked with blocking_oid and NO steps. Past the
-    //                    gate it falls through to the same order computation as
-    //                    CASCADE — refusing is all RESTRICT does differently; it
-    //                    never shrinks an accepted drop.
+    //     restrict_    — RESTRICT, written or defaulted (PostgreSQL parity, #638).
+    //                    GATE ONLY: if any DIRECT 'n' (normal) dependency reaches
+    //                    the seed, the plan comes back restrict_blocked with
+    //                    blocking_oid and NO steps. Past the gate it falls through
+    //                    to the same order computation as CASCADE — refusing is
+    //                    all RESTRICT does differently; it never shrinks an
+    //                    accepted drop.
     //     cascade_     — a written CASCADE. No gate, full topological drop order.
-    //     unspecified  — the statement named neither word. Resolves to CASCADE in
-    //                    this build (owner decision; moving it is GitHub #638).
     cascade_plan_t plan_drop(std::pmr::memory_resource* resource,
                              oid_t seed_classid,
                              oid_t seed_oid,

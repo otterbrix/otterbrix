@@ -357,10 +357,10 @@ namespace components::operators {
             co_return;
         }
 
-        // A written RESTRICT refuses when a BLOCKING dependent exists. CASCADE (and the unspecified form, which
-        // this build resolves to CASCADE — see catalog::drop_behavior_t) drops each dependent object below.
-        // `restrict_blockers` is already the filtered subset; the FK-parent gate above ran unconditionally and
-        // refuses under every behavior, so nothing here can let a foreign key through.
+        // RESTRICT (written or defaulted — PostgreSQL parity) refuses when a BLOCKING dependent exists; a
+        // written CASCADE drops each dependent object below. `restrict_blockers` is already the filtered
+        // subset; the FK-parent gate above ran unconditionally and refuses under every behavior, so nothing
+        // here can let a foreign key through.
         if (catalog::refuses_on_dependency(behavior_) && !restrict_blockers.empty()) {
             // No structured DDL-refusal cursor exists: the message string is the only channel, so it names the
             // blocking oid itself.

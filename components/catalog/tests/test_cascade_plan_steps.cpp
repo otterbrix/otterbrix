@@ -168,46 +168,39 @@ TEST_CASE("catalog::cascade_plan::a_back_edge_is_reported_as_a_cycle") {
 }
 
 // ---------------------------------------------------------------------------
-// THE THIRD FORM. `unspecified` is what a statement that wrote NEITHER word
-// carries. Owner decision (2026-09-04): it keeps this build's historical CASCADE
-// meaning, so the tree's bare DROP statements are untouched by wiring the two
-// written words up; moving the default is GitHub #638. These two cases are the
-// pin on that decision — if #638 flips it, THEY are what turn red, not ~205
-// statements failing somewhere downstream.
+// THE UNWRITTEN FORM IS RESTRICT. Owner decision (2026-09-05, GitHub #638,
+// queue #209): a statement that wrote neither word means RESTRICT, exactly as
+// in PostgreSQL — drop_behavior_of maps the grammar's shared DROP_RESTRICT
+// token straight to restrict_, and no third enum value exists. This case was
+// the pin on the previous decision (bare = CASCADE) and flipped with it.
 // ---------------------------------------------------------------------------
-TEST_CASE("catalog::cascade_plan::the_unwritten_form_still_means_cascade") {
+TEST_CASE("catalog::cascade_plan::the_unwritten_form_means_restrict") {
     core::pmr::otterbrix_resource resource;
-    // A NORMAL dependency: the one thing a written RESTRICT refuses.
+    // A NORMAL dependency: the one thing RESTRICT refuses.
     const std::vector<edge_t> edges{
         {kClass, oid_t{16400}, {kConstraint, oid_t{16402}, deptype::normal}},
     };
 
-    auto written = plan_drop(&resource, kClass, oid_t{16400}, drop_behavior_t::restrict_, make_fetch(edges));
-    REQUIRE(written.status == ddl_status::restrict_blocked);
+    // restrict_ — written or defaulted, they are one value — is refused.
+    auto bare = plan_drop(&resource, kClass, oid_t{16400}, drop_behavior_t::restrict_, make_fetch(edges));
+    REQUIRE(bare.status == ddl_status::restrict_blocked);
+    CHECK(bare.blocking_oid == oid_t{16402});
+    CHECK(bare.steps.empty());
 
-    // The same statement without the word is NOT refused — it cascades.
-    auto unwritten = plan_drop(&resource, kClass, oid_t{16400}, drop_behavior_t::unspecified, make_fetch(edges));
-    REQUIRE(unwritten.status == ddl_status::ok);
-    CHECK(has_step(unwritten, kConstraint, oid_t{16402}));
-    REQUIRE(unwritten.steps.size() == 2);
-    CHECK(unwritten.steps.back().objid == oid_t{16400});
-
-    // ...and it produces exactly what a written CASCADE would.
+    // Only a written CASCADE drops through the 'n' edge, seed last.
     auto cascaded = plan_drop(&resource, kClass, oid_t{16400}, drop_behavior_t::cascade_, make_fetch(edges));
-    REQUIRE(cascaded.steps.size() == unwritten.steps.size());
-    for (std::size_t i = 0; i < cascaded.steps.size(); ++i) {
-        CHECK(cascaded.steps[i].classid == unwritten.steps[i].classid);
-        CHECK(cascaded.steps[i].objid == unwritten.steps[i].objid);
-    }
+    REQUIRE(cascaded.status == ddl_status::ok);
+    CHECK(has_step(cascaded, kConstraint, oid_t{16402}));
+    REQUIRE(cascaded.steps.size() == 2);
+    CHECK(cascaded.steps.back().objid == oid_t{16400});
 }
 
 TEST_CASE("catalog::cascade_plan::only_a_written_restrict_refuses") {
-    // refuses_on_dependency is the ONE place the three forms collapse into the
-    // two things a planner can do; pin it directly so a future edit that adds a
-    // fourth form has to come through here.
+    // refuses_on_dependency is the ONE place behavior collapses into the two
+    // things a planner can do; pin it directly so a future edit that adds a
+    // third form has to come through here.
     CHECK(refuses_on_dependency(drop_behavior_t::restrict_));
     CHECK_FALSE(refuses_on_dependency(drop_behavior_t::cascade_));
-    CHECK_FALSE(refuses_on_dependency(drop_behavior_t::unspecified));
 }
 
 // ---------------------------------------------------------------------------

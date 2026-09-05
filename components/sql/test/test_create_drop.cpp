@@ -634,18 +634,12 @@ TEST_CASE("components::sql::drop_carries_missing_ok") {
     }
 }
 
-// The word the statement wrote about its dependents, as far as this layer can read it.
+// The word the statement wrote about its dependents.
 //
 // gram.y's opt_drop_behavior has THREE alternatives and TWO values: the empty one yields
-// DROP_RESTRICT, the same token the written word yields. So `DROP TABLE t RESTRICT` and
-// `DROP TABLE t` are one value here, and both are read as `unspecified` — "the statement
-// named neither word". Reading DROP_RESTRICT as restrict_ instead would flip every bare
-// DROP in the tree from CASCADE to a dependency refusal in one hop.
-//
-// A written CASCADE is separable, and is carried. It resolves the same way `unspecified`
-// does today (catalog::refuses_on_dependency), so no outcome moves; what changes is that
-// the plan node now says what the statement said, and stays right when GitHub #638 moves
-// the unwritten default to RESTRICT.
+// DROP_RESTRICT, the same token the written word yields — in PostgreSQL the bare form IS
+// RESTRICT, so the two are deliberately one value and both are read as restrict_
+// (GitHub #638, PostgreSQL parity). A written CASCADE is separable and carried.
 TEST_CASE("components::sql::drop_carries_written_behavior") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -665,13 +659,13 @@ TEST_CASE("components::sql::drop_carries_written_behavior") {
     SECTION("DROP TABLE CASCADE") {
         REQUIRE(behavior_of("DROP TABLE db.t CASCADE;") == drop_behavior_t::cascade_);
     }
-    SECTION("bare DROP TABLE names neither word") {
-        REQUIRE(behavior_of("DROP TABLE db.t;") == drop_behavior_t::unspecified);
+    SECTION("bare DROP TABLE defaults to RESTRICT") {
+        REQUIRE(behavior_of("DROP TABLE db.t;") == drop_behavior_t::restrict_);
     }
-    SECTION("DROP TABLE RESTRICT is not yet separable from the bare form") {
-        // NOT a wish: the grammar hands both spellings the same token. Pinned so that the
-        // day gram.y grows a third value, this line fails and points at what to change.
-        REQUIRE(behavior_of("DROP TABLE db.t RESTRICT;") == drop_behavior_t::unspecified);
+    SECTION("DROP TABLE RESTRICT is the same value as the bare form") {
+        // The grammar hands both spellings the same token; in PostgreSQL they are
+        // the same thing.
+        REQUIRE(behavior_of("DROP TABLE db.t RESTRICT;") == drop_behavior_t::restrict_);
     }
     SECTION("DROP VIEW CASCADE") {
         REQUIRE(behavior_of("DROP VIEW db.v CASCADE;") == drop_behavior_t::cascade_);
@@ -710,21 +704,21 @@ TEST_CASE("components::sql::alter_drop_column_carries_written_behavior") {
         REQUIRE(subs.size() == 1);
         REQUIRE(subs.front().behavior == drop_behavior_t::cascade_);
     }
-    SECTION("bare DROP COLUMN names neither word") {
+    SECTION("bare DROP COLUMN defaults to RESTRICT") {
         auto subs = subcommands_of("ALTER TABLE db.t DROP COLUMN c;");
         REQUIRE(subs.size() == 1);
-        REQUIRE(subs.front().behavior == drop_behavior_t::unspecified);
+        REQUIRE(subs.front().behavior == drop_behavior_t::restrict_);
     }
-    SECTION("DROP COLUMN RESTRICT is not yet separable from the bare form") {
+    SECTION("DROP COLUMN RESTRICT is the same value as the bare form") {
         auto subs = subcommands_of("ALTER TABLE db.t DROP COLUMN c RESTRICT;");
         REQUIRE(subs.size() == 1);
-        REQUIRE(subs.front().behavior == drop_behavior_t::unspecified);
+        REQUIRE(subs.front().behavior == drop_behavior_t::restrict_);
     }
     SECTION("one word per clause, not one per statement") {
         auto subs = subcommands_of("ALTER TABLE db.t DROP COLUMN a CASCADE, DROP COLUMN b;");
         REQUIRE(subs.size() == 2);
         REQUIRE(subs.front().behavior == drop_behavior_t::cascade_);
-        REQUIRE(subs.back().behavior == drop_behavior_t::unspecified);
+        REQUIRE(subs.back().behavior == drop_behavior_t::restrict_);
         // IF EXISTS is per-clause too, and must not have been swapped with the behavior.
         REQUIRE_FALSE(subs.front().missing_ok);
         REQUIRE_FALSE(subs.back().missing_ok);

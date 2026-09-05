@@ -226,7 +226,7 @@ namespace components::compute {
 
     core::result_wrapper_t<std::unique_ptr<detail::kernel_executor_t>>
     function::get_best_executor(std::pmr::memory_resource* resource, std::pmr::vector<complex_logical_type>) const {
-        detail::kernel_executor_visitor vis;
+        detail::kernel_executor_visitor vis(resource);
         accept_visitor(vis);
 
         if (!vis.result) {
@@ -405,9 +405,8 @@ namespace components::compute {
 
     core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
         if (!function) {
-            core::error_t(core::error_code_t::function_registry_error,
-
-                          std::pmr::string{"Cannot add null function", resource_});
+            return core::error_t(core::error_code_t::function_registry_error,
+                                 std::pmr::string{"Cannot add null function", resource_});
         }
 
         auto uid = current_uid_++;
@@ -485,18 +484,21 @@ namespace components::compute {
 
         void kernel_nth_visitor::visit(const expand_function& func) { result = &func.kernels()[nth_].get(); }
 
-        kernel_executor_visitor::kernel_executor_visitor()
-            : function_visitor_with_result<std::unique_ptr<detail::kernel_executor_t>>(nullptr) {}
+        kernel_executor_visitor::kernel_executor_visitor(std::pmr::memory_resource* resource)
+            : function_visitor_with_result<std::unique_ptr<detail::kernel_executor_t>>(nullptr)
+            , resource_(resource) {}
 
         void kernel_executor_visitor::visit(const compute::vector_function&) {
-            result = detail::kernel_executor_t::make_vector();
+            result = detail::kernel_executor_t::make_vector(resource_);
         }
 
         void kernel_executor_visitor::visit(const compute::aggregate_function&) {
-            result = detail::kernel_executor_t::make_aggregate();
+            result = detail::kernel_executor_t::make_aggregate(resource_);
         }
 
-        void kernel_executor_visitor::visit(const row_function&) { result = detail::kernel_executor_t::make_row(); }
+        void kernel_executor_visitor::visit(const row_function&) {
+            result = detail::kernel_executor_t::make_row(resource_);
+        }
 
         void kernel_executor_visitor::visit(const expand_function&) {}
 

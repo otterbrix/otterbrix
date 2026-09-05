@@ -663,3 +663,197 @@ TEST_CASE("components::compute::string::regexp_replace_null") {
     REQUIRE(vals.size() == 1);
     REQUIRE(vals[0].type().type() == logical_type::NA);
 }
+
+// Builds the one-slot INTEGER->INTEGER vector function the cases below drive.
+static std::unique_ptr<vector_function> multiplying_vector_function(std::pmr::memory_resource* resource,
+                                                                    const std::string& name) {
+    auto fn = std::make_unique<vector_function>(name, arity::unary(), function_doc_with_options(), 1);
+    kernel_signature_t sig(function_type_t::vector,
+                           {parameter_type::exact(logical_type::INTEGER)},
+                           {output_type::fixed(logical_type::INTEGER)});
+    vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
+    REQUIRE_FALSE(fn->add_kernel(resource, std::move(k)).contains_error());
+    return fn;
+}
+
+static data_chunk_t one_int(std::pmr::memory_resource* resource, int value) {
+    data_chunk_t chunk(resource, {logical_type::INTEGER});
+    chunk.set_value(0, 0, value);
+    chunk.set_cardinality(1);
+    return chunk;
+}
+
+// The batch overload fuses the per-chunk outputs into one chunk but never stamped a row count,
+// so the fused chunk carried the values and reported zero rows to everyone who asked size().
+TEST_CASE("components::compute::vector::batch_reports_the_rows_it_carries") {
+    core::pmr::otterbrix_resource resource;
+    test_options opts;
+    opts.multiplier = MAGIC_MULTIPLIER;
+
+    auto fn = multiplying_vector_function(&resource, "vec_batch_rows");
+
+    std::vector<data_chunk_t> batch;
+    batch.emplace_back(one_int(&resource, 1));
+    batch.emplace_back(one_int(&resource, 10));
+
+    auto res = fn->execute(batch, &opts);
+    REQUIRE_FALSE(res.has_error());
+    const auto& out = std::get<data_chunk_t>(res.value());
+    REQUIRE(out.data.size() == 2);
+    REQUIRE(out.size() == 1);
+}
+
+// Fusing per-chunk outputs side by side only describes a chunk when every input chunk is the
+// same height. Unequal inputs have no honest row count, so the call must refuse rather than
+// pick one and mislabel the rest.
+TEST_CASE("components::compute::vector::batch_refuses_chunks_of_unequal_height") {
+    core::pmr::otterbrix_resource resource;
+    test_options opts;
+    opts.multiplier = MAGIC_MULTIPLIER;
+
+    auto fn = multiplying_vector_function(&resource, "vec_batch_ragged");
+
+    std::vector<data_chunk_t> batch;
+    batch.emplace_back(one_int(&resource, 1));
+    batch.emplace_back(two_ints(&resource, 2, 3));
+
+    auto res = fn->execute(batch, &opts);
+    REQUIRE(res.has_error());
+    REQUIRE(res.error().type == core::error_code_t::kernel_error);
+}
+
+// The vector executor collected its per-chunk outputs in a member it never cleared, and each
+// call read results_.front(). execution_dag keeps ONE executor per function node and pushes
+// every chunk through it, so the second chunk was answered with the moved-from remains of the
+// first. Both results are held alive on purpose: that keeps the stale read pointing at live
+// memory, so the case fails on the wrong VALUE instead of on freed bytes.
+TEST_CASE("components::compute::vector::a_reused_executor_answers_the_current_chunk") {
+    core::pmr::otterbrix_resource resource;
+    test_options opts;
+    opts.multiplier = MAGIC_MULTIPLIER;
+
+    auto fn = multiplying_vector_function(&resource, "vec_reused");
+
+    std::pmr::vector<complex_logical_type> in_types(&resource);
+    in_types.emplace_back(logical_type::INTEGER);
+    auto executor = fn->make_executor(&resource, in_types, &opts);
+    REQUIRE_FALSE(executor.has_error());
+
+    auto first_chunk = one_int(&resource, 3);
+    auto first = executor.value()->execute(first_chunk);
+    REQUIRE_FALSE(first.has_error());
+    REQUIRE(std::get<data_chunk_t>(first.value()).data[0].data<int>()[0] == MAGIC_MULTIPLIER * 3);
+
+    auto second_chunk = one_int(&resource, 7);
+    auto second = executor.value()->execute(second_chunk);
+    REQUIRE_FALSE(second.has_error());
+    const auto& out = std::get<data_chunk_t>(second.value());
+    REQUIRE(out.size() == 1);
+    REQUIRE(out.data[0].data<int>()[0] == MAGIC_MULTIPLIER * 7);
+}
+
+// UDFs in this project are row_function objects carrying a user-supplied row_exec_fn (see
+// integration/cpp/test/test_udfs.cpp), so foreign code decides what lands in `output`. A kernel
+// that reports success and writes nothing is ordinary foreign-code behaviour, not a fiction.
+static core::error_t row_double_silent_on_two(kernel_context&,
+                                              const std::pmr::vector<logical_value_t>& inputs,
+                                              std::pmr::vector<logical_value_t>& output) {
+    if (inputs[0].value<int>() == 2) {
+        return core::error_t::no_error();
+    }
+    output.emplace_back(inputs[0].resource(), inputs[0].value<int>() * 2);
+    return core::error_t::no_error();
+}
+
+// The other side of the same contract: a kernel that writes more than one value for one row.
+static core::error_t row_double_and_triple(kernel_context&,
+                                           const std::pmr::vector<logical_value_t>& inputs,
+                                           std::pmr::vector<logical_value_t>& output) {
+    output.emplace_back(inputs[0].resource(), inputs[0].value<int>() * 2);
+    output.emplace_back(inputs[0].resource(), inputs[0].value<int>() * 3);
+    return core::error_t::no_error();
+}
+
+static std::unique_ptr<row_function>
+unary_row_function(std::pmr::memory_resource* resource, const std::string& name, row_exec_fn exec) {
+    auto fn = std::make_unique<row_function>(name, arity::unary(), function_doc{}, 1);
+    kernel_signature_t sig(function_type_t::row,
+                           {parameter_type::exact(logical_type::INTEGER)},
+                           {output_type::fixed(logical_type::INTEGER)});
+    row_kernel k(std::move(sig), exec);
+    REQUIRE_FALSE(fn->add_kernel(resource, std::move(k)).contains_error());
+    return fn;
+}
+
+static data_chunk_t three_ints(std::pmr::memory_resource* resource, int first, int second, int third) {
+    data_chunk_t chunk(resource, {logical_type::INTEGER}, 3);
+    chunk.set_value(0, 0, first);
+    chunk.set_value(0, 1, second);
+    chunk.set_value(0, 2, third);
+    chunk.set_cardinality(3);
+    return chunk;
+}
+
+// The row executor declared "one scalar output per call" in a comment and then, on seeing the
+// contract broken, silently skipped the row: `results` came back SHORTER than the chunk.
+// components/execution_dag/execution_dag.cpp only catches that with an assert() and then walks
+// `values` by row index, so under -DNDEBUG the rows the kernel never answered keep whatever the
+// output vector held before. The claim is therefore about what the caller receives, not merely
+// about the return code, so the length is checked first and the refusal second.
+TEST_CASE("components::compute::row::a_row_the_kernel_left_empty_is_refused_not_skipped") {
+    core::pmr::otterbrix_resource resource;
+    auto fn = unary_row_function(&resource, "row_silent", row_double_silent_on_two);
+
+    auto chunk = three_ints(&resource, 1, 2, 3);
+    auto res = fn->execute(chunk);
+
+    if (!res.has_error()) {
+        const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+        INFO("execute() succeeded with " << vals.size() << " values for " << chunk.size() << " rows");
+        REQUIRE(vals.size() == chunk.size());
+    }
+    REQUIRE(res.has_error());
+    REQUIRE(res.error().type == core::error_code_t::kernel_error);
+    // The refusal has to say WHICH row broke the contract and what it produced instead.
+    const std::string refusal(res.error().what.data(), res.error().what.size());
+    INFO("refusal reads: " << refusal);
+    REQUIRE(res.error().what.find("row 1") != std::pmr::string::npos);
+}
+
+// The same skip discarded surplus values: everything past front() was dropped and the call
+// still reported success, so a kernel returning two values per row looked exactly like a
+// well-behaved one.
+TEST_CASE("components::compute::row::a_row_with_several_outputs_is_refused") {
+    core::pmr::otterbrix_resource resource;
+    auto fn = unary_row_function(&resource, "row_two_outputs", row_double_and_triple);
+
+    auto chunk = three_ints(&resource, 1, 2, 3);
+    auto res = fn->execute(chunk);
+
+    REQUIRE(res.has_error());
+    REQUIRE(res.error().type == core::error_code_t::kernel_error);
+    const std::string refusal(res.error().what.data(), res.error().what.size());
+    INFO("refusal reads: " << refusal);
+    REQUIRE(res.error().what.find("row 0") != std::pmr::string::npos);
+}
+
+// The multi-chunk overload walks the same per-row loop, so a contract break in a later chunk
+// must reach the caller too rather than shortening the concatenated result.
+TEST_CASE("components::compute::row::a_broken_contract_in_a_later_chunk_still_refuses") {
+    core::pmr::otterbrix_resource resource;
+    auto fn = unary_row_function(&resource, "row_silent_batch", row_double_silent_on_two);
+
+    std::vector<data_chunk_t> batch;
+    batch.emplace_back(three_ints(&resource, 1, 3, 5));
+    batch.emplace_back(three_ints(&resource, 7, 2, 9));
+
+    auto res = fn->execute(batch);
+
+    if (!res.has_error()) {
+        const auto& vals = std::get<std::pmr::vector<logical_value_t>>(res.value());
+        INFO("execute() succeeded with " << vals.size() << " values for 6 rows");
+        REQUIRE(vals.size() == 6);
+    }
+    REQUIRE(res.has_error());
+    REQUIRE(res.error().type == core::error_code_t::kernel_error);
+}

@@ -222,12 +222,17 @@ namespace components::compute {
         class kernel_executor_visitor
             : public function_visitor_with_result<std::unique_ptr<detail::kernel_executor_t>> {
         public:
-            kernel_executor_visitor();
+            // The resource the caller resolved the executor with: the built executor keeps it so
+            // that a refusal raised before init() still has a real resource to word itself with.
+            explicit kernel_executor_visitor(std::pmr::memory_resource* resource);
 
             void visit(const vector_function& func) override;
             void visit(const aggregate_function& func) override;
             void visit(const row_function& func) override;
             void visit(const expand_function& func) override;
+
+        private:
+            std::pmr::memory_resource* resource_;
         };
 
         const compute_kernel* dispatch_exact_impl(const function& func,

@@ -50,3 +50,29 @@ TEST_CASE("components::compute::registry::basic") {
 
     SECTION("non-existent function") { REQUIRE(reg->get_function(invalid_function_uid) == nullptr); }
 }
+// add_function() built the refusal for a null payload but never returned it, so the null landed
+// in functions_ and the caller was handed a uid. Two independent claims — what the call REPORTS
+// and what the registry HOLDS — so two cases, each able to go red on its own.
+TEST_CASE("components::compute::registry::add_function_refuses_a_null_payload") {
+    core::pmr::otterbrix_resource resource;
+    function_registry_t registry(&resource);
+
+    auto added = registry.add_function(nullptr);
+    REQUIRE(added.has_error());
+    REQUIRE(added.error().type == core::error_code_t::function_registry_error);
+}
+
+TEST_CASE("components::compute::registry::a_refused_null_payload_never_enters_the_registry") {
+    core::pmr::otterbrix_resource resource;
+    function_registry_t registry(&resource);
+
+    auto added = registry.add_function(nullptr);
+    INFO("add_function reported " << (added.has_error() ? "a refusal" : "a uid"));
+
+    // A fresh registry hands out uid 0 first, so that is where a wrongly-accepted null lands.
+    // Probed through remove_function() and not through get_functions(): get_functions()
+    // dereferences every stored pointer, so on the broken build it takes the whole test binary
+    // down instead of failing this assertion.
+    REQUIRE_FALSE(registry.remove_function(0));
+    REQUIRE(registry.get_functions().empty());
+}

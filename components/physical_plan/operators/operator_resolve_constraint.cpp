@@ -41,7 +41,21 @@ namespace components::operators {
             std::pmr::vector<std::uint64_t> cols(resource);
             cols.emplace_back(catalog::pg_attribute_col::attoid);
             cols.emplace_back(catalog::pg_attribute_col::attname);
+            // attisdropped: DROP COLUMN is a SOFT delete — the tombstone keeps both
+            // attname and attoid (operator_alter_column_drop_t), so without this column
+            // the match below happily binds an FK to a column that no longer exists and
+            // the failure surfaces one layer down as "keyed read: table has no column
+            // <name>". Unprojected columns come back as ordinal-stable placeholders
+            // that read as empty, so leaving it out makes the filter a silent no-op.
+            cols.emplace_back(catalog::pg_attribute_col::attisdropped);
             return cols;
+        }
+
+        // True when this pg_attribute row is a DROP COLUMN tombstone.
+        bool attribute_row_is_dropped(const components::vector::data_chunk_t& chunk, uint64_t row) {
+            return chunk.column_count() > catalog::pg_attribute_col::attisdropped &&
+                   !chunk.is_null(catalog::pg_attribute_col::attisdropped, row) &&
+                   chunk.get_value<bool>(catalog::pg_attribute_col::attisdropped, row);
         }
     } // namespace
 
@@ -125,6 +139,9 @@ namespace components::operators {
                 // parse_oid_csv returns std::vector (not pmr), so these mirror that type.
                 std::vector<catalog::oid_t> child_attoids;
                 std::vector<catalog::oid_t> parent_attoids;
+                // conname, carried for the unresolved-column error below only —
+                // fk_info_t does not keep it and nothing else here needs it.
+                std::string constraint_name;
             };
             std::pmr::vector<pending_fk_t> pending_fks(resource_);
             std::pmr::vector<catalog::oid_t> child_oids(resource_);
@@ -160,6 +177,10 @@ namespace components::operators {
                         catalog::fk_info_t& fk = pending.fk;
                         fk.constraint_oid = static_cast<catalog::oid_t>(
                             con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci));
+                        if (!con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
+                            pending.constraint_name.assign(
+                                con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
+                        }
                         if (direction == direction_t::outgoing) {
                             fk.child_table_oid = table_oid;
                             fk.parent_table_oid = static_cast<catalog::oid_t>(
@@ -277,6 +298,19 @@ namespace components::operators {
                     catalog::fk_info_t fk = std::move(pending_fks[k].fk);
                     const auto& child_attoids = pending_fks[k].child_attoids;
                     const auto& parent_attoids = pending_fks[k].parent_attoids;
+                    const auto& con_name = pending_fks[k].constraint_name;
+                    // Names the constraint in the two unresolved-column errors below.
+                    // A constraint written without a name still has to be nameable.
+                    auto describe_constraint = [&]() {
+                        std::string out;
+                        if (con_name.empty()) {
+                            out = "oid ";
+                            out += std::to_string(fk.constraint_oid);
+                        } else {
+                            out = con_name;
+                        }
+                        return out;
+                    };
                     std::pmr::vector<components::vector::data_chunk_t> empty_child(resource_);
                     std::pmr::vector<components::vector::data_chunk_t> empty_parent(resource_);
                     auto& child_attr = k < child_results.size() ? child_results[k] : empty_child;
@@ -292,6 +326,9 @@ namespace components::operators {
                                 }
                                 bool found = false;
                                 for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
+                                    if (attribute_row_is_dropped(attr_chunk, ai)) {
+                                        continue;
+                                    }
                                     auto row_attoid = static_cast<catalog::oid_t>(
                                         attr_chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, ai));
                                     if (row_attoid == wanted_oid) {
@@ -306,6 +343,25 @@ namespace components::operators {
                                     break;
                                 }
                             }
+                        }
+                        // LENGTH GUARD — mandatory, and it is the tombstone filter above
+                        // that makes it so. An attoid that resolves to nothing used to
+                        // append nothing and leave `names` SHORTER than `child_attoids`,
+                        // which every consumer then reads positionally: enrich pairs
+                        // child_col_names[i] with parent_col_names[i], so a silently
+                        // shortened list re-points the constraint at the wrong columns or
+                        // (at length 0) makes it enforce nothing at all. The neighbouring
+                        // UNIQUE/PK loop already compares the two lengths; it merely drops
+                        // the group, which is the same silence one level up. A constraint
+                        // that cannot be resolved must fail the statement, not shrink.
+                        if (names.size() != child_attoids.size()) {
+                            std::string msg = "foreign key constraint \"";
+                            msg += describe_constraint();
+                            msg += "\": referencing column list cannot be resolved — a column it is "
+                                   "declared on no longer exists";
+                            set_error(core::error_t{core::error_code_t::schema_error,
+                                                    std::pmr::string{std::move(msg), resource_}});
+                            co_return;
                         }
                         fk.child_col_names = std::move(names);
                     }
@@ -376,6 +432,9 @@ namespace components::operators {
                                 }
                                 bool found = false;
                                 for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
+                                    if (attribute_row_is_dropped(attr_chunk, ai)) {
+                                        continue;
+                                    }
                                     auto row_attoid = static_cast<catalog::oid_t>(
                                         attr_chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, ai));
                                     if (row_attoid == wanted_oid) {
@@ -390,6 +449,21 @@ namespace components::operators {
                                     break;
                                 }
                             }
+                        }
+                        // Same guard, referenced side. This is also the last line of
+                        // defence for a catalog written BEFORE confkey had per-column
+                        // pg_depend edges: such a database can already hold a dropped
+                        // parent column, and this error names the constraint that lost it
+                        // instead of leaving the child to fail later, in the parent probe,
+                        // with "keyed read: table has no column <name>".
+                        if (names.size() != parent_attoids.size()) {
+                            std::string msg = "foreign key constraint \"";
+                            msg += describe_constraint();
+                            msg += "\": referenced column list cannot be resolved — a parent column it "
+                                   "points at no longer exists";
+                            set_error(core::error_t{core::error_code_t::schema_error,
+                                                    std::pmr::string{std::move(msg), resource_}});
+                            co_return;
                         }
                         fk.parent_col_names = std::move(names);
                     }

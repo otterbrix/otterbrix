@@ -6,6 +6,18 @@ using namespace components::catalog;
 using namespace components::types;
 
 namespace {
+    // create_decimal reports an out-of-window (width, scale) through core::error_t now,
+    // instead of an assert that vanished under NDEBUG. Every literal these tests use is
+    // inside the window, so the helper checks the result and hands back the type.
+    components::types::complex_logical_type
+    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created = components::types::complex_logical_type::create_decimal(width, scale, std::move(alias));
+        REQUIRE_FALSE(created.has_error());
+        return std::move(created.value());
+    }
+} // namespace
+
+namespace {
     auto* g_resource = std::pmr::new_delete_resource();
 } // namespace
 
@@ -81,7 +93,7 @@ TEST_CASE("catalog::type_spec::blob_uuid_oid_roundtrip") {
 }
 
 TEST_CASE("catalog::type_spec::decimal_roundtrip") {
-    auto t = complex_logical_type::create_decimal(10, 2);
+    auto t = make_decimal(10, 2);
     auto spec = encode_type_spec(t);
     REQUIRE(spec == "numeric(10,2)");
 

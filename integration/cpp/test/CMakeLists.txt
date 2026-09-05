@@ -50,6 +50,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_fk_cascade_row_identity.cpp
         test_fk_arity_mismatch.cpp
         test_fk_omitted_ref_columns.cpp
+        test_fk_parent_column_drop.cpp
         test_inline_constraints.cpp
         test_text_column_storage.cpp
         test_update.cpp
@@ -58,6 +59,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_alter_drop_column_reclaim.cpp
         test_alter_rename_column.cpp
         test_wal_nested_payload_replay.cpp
+        test_type_spec_write_gate.cpp
         test_alter_add_column_unmaterialized.cpp
         test_sql_features.cpp
         test_unique_constraint_operator.cpp

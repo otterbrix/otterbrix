@@ -1003,6 +1003,23 @@ namespace services::collection::executor {
                             }
                         }
                     }
+                    // Every column TYPE is now fully resolved (UDTs inlined above), which
+                    // is the earliest point the durable shape of the type is knowable.
+                    // Refuse here what the persistent form refuses: a CREATE TABLE that
+                    // fails is recoverable, a checkpoint that succeeds and a startup that
+                    // then fails with data_corruption is not.
+                    if (!error) {
+                        for (const auto& col_def : n->column_definitions()) {
+                            if (auto type_err =
+                                    services::dispatcher::gate_persistable_type(resource(),
+                                                                                "column '" + col_def.name() + "'",
+                                                                                col_def.type());
+                                type_err.contains_error()) {
+                                error = make_cursor(resource(), type_err);
+                                break;
+                            }
+                        }
+                    }
                     if (!error) {
                         if (auto default_err =
                                 services::dispatcher::convert_column_defaults(resource(),
@@ -1069,6 +1086,18 @@ namespace services::collection::executor {
                     if (error) {
                         break;
                     }
+                }
+                // The fields are inlined now — `CREATE TYPE t_n AS (a t_{n-1})` carries a
+                // whole copy of t_{n-1}, so a chain of CREATE TYPE statements grows the
+                // nesting one level per statement. pg_type.typdefspec would take any depth;
+                // the durable column form would not, and the failure landed on the NEXT
+                // startup. Refuse the statement that crosses the line instead.
+                if (auto type_err = services::dispatcher::gate_persistable_type(resource(),
+                                                                                "type '" + n->type().type_name() + "'",
+                                                                                n->type());
+                    type_err.contains_error()) {
+                    error = make_cursor(resource(), type_err);
+                    break;
                 }
                 n->set_namespace_oid(target_ns);
                 break;

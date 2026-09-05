@@ -731,9 +731,26 @@ namespace components::catalog {
             result.push_back(make_write(pg_constraint_oid, std::move(chunk)));
         }
 
-        // pg_depend: constraint→table 'i' + per-column 'i' deps + (FK only)
-        // constraint→ref_table 'n'. All in one chunk, same insertion order as
-        // the pre-batching version.
+        // pg_depend: constraint→table 'i' + per-conkey-column 'i' deps + (FK only)
+        // constraint→ref_table 'n' + (FK only) per-confkey-column 'n' deps. All in
+        // one chunk, same insertion order as the pre-batching version, with the
+        // confkey block appended last.
+        //
+        // WHY confkey gets per-column edges at all, and why 'n' and not 'i'.
+        // operator_alter_column_drop_t discovers what depends on a column by reading
+        // pg_depend keyed on (refclassid = pg_attribute, refobjid = attoid) — a
+        // per-column edge is the ONLY way a column-level dependency is visible to it.
+        // conkey had those edges; confkey had none, so `ALTER TABLE parent DROP COLUMN
+        // id` under a live `FOREIGN KEY (pid) REFERENCES parent (id)` read an empty
+        // dependent set and was accepted, after which every insert into the child died
+        // in the parent probe with "keyed read: table has no column id" — the table
+        // bricked by a column dropped in a different table.
+        // The deptype separates the two halves, exactly as PostgreSQL does. A
+        // constraint's OWN columns are 'i' (internal): the constraint cannot outlive
+        // them, so dropping one takes the constraint with it. The REFERENCED columns
+        // are 'n' (normal): the constraint belongs to another table and is not implied
+        // by them, so dropping one is refused instead of silently repealing the
+        // constraint. operator_alter_column_drop_t reads that char to tell the two apart.
         if (const auto* dep_def = find_system_table(pg_depend_oid)) {
             std::size_t dep_count = 1; // constraint → table
             for (const oid_t col_attoid : fk_column_attoids) {
@@ -741,8 +758,13 @@ namespace components::catalog {
                     ++dep_count;
             }
             const bool emit_fk_ref = (is_fk && ref_table_oid != INVALID_OID);
-            if (emit_fk_ref)
+            if (emit_fk_ref) {
                 ++dep_count;
+                for (const oid_t ref_attoid : ref_column_attoids) {
+                    if (ref_attoid != INVALID_OID)
+                        ++dep_count;
+                }
+            }
 
             auto chunk = make_pg_rows(resource,
                                       dep_def->columns,
@@ -774,6 +796,18 @@ namespace components::catalog {
                                               set_oid(c, 2, i, well_known_oid::pg_class_table);
                                               set_oid(c, 3, i, ref_table_oid);
                                               set_str(c, 4, i, "n", r);
+                                              ++i;
+                                              // FK only: per-confkey-column 'n' normal deps.
+                                              for (const oid_t ref_attoid : ref_column_attoids) {
+                                                  if (ref_attoid == INVALID_OID)
+                                                      continue;
+                                                  set_oid(c, 0, i, well_known_oid::pg_constraint_table);
+                                                  set_oid(c, 1, i, constraint_oid);
+                                                  set_oid(c, 2, i, well_known_oid::pg_attribute_table);
+                                                  set_oid(c, 3, i, ref_attoid);
+                                                  set_str(c, 4, i, "n", r);
+                                                  ++i;
+                                              }
                                           }
                                       });
             result.push_back(make_write(pg_depend_oid, std::move(chunk)));

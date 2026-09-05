@@ -15,6 +15,13 @@ namespace components::types {
         // Nesting deeper than this cannot come from a legitimate column type; a corrupt
         // buffer could otherwise drive unbounded recursion (stack overflow instead of an
         // error). Matches nothing the SQL surface can produce — real types are < 10 deep.
+        //
+        // THE WINDOW IS SHARED. encode_one carries the same `depth` counter and applies
+        // the same predicate, because a writer that accepts more than the reader does
+        // manufactures a file that cannot be opened. Nesting is not hypothetical: every
+        // `CREATE TYPE t_n AS (a t_{n-1})` INLINES t_{n-1} whole, so a chain of CREATE
+        // TYPE statements walks the depth up one level at a time until a checkpoint
+        // succeeds and the next load fails forever.
         constexpr uint32_t MAX_SPEC_DEPTH = 64;
 
         // ---- encode helpers -------------------------------------------------------
@@ -117,8 +124,6 @@ namespace components::types {
             }
         }
 
-        constexpr uint8_t DECIMAL_MAX_WIDTH = 38;
-
         // Fetches the extension and verifies it is the kind the logical type implies. A
         // mismatch (e.g. a DECIMAL whose extension is GENERIC because set_alias ran on a
         // bare type) is exactly the in-memory corruption this codec exists to prevent on
@@ -132,8 +137,17 @@ namespace components::types {
             return ext;
         }
 
-        core::result_wrapper_t<bool> encode_one(const complex_logical_type& type, std::pmr::vector<std::byte>& out) {
+        core::result_wrapper_t<bool>
+        encode_one(const complex_logical_type& type, std::pmr::vector<std::byte>& out, uint32_t depth) {
             auto* resource = out.get_allocator().resource();
+
+            // The write side validates EXACTLY the window the read side accepts. Refusing
+            // here costs a failed DDL or a failed checkpoint, both of which leave the
+            // database open; letting the bytes through costs a database that never opens
+            // again. Same predicate, same constant, same depth accounting as decode_one.
+            if (depth > MAX_SPEC_DEPTH) {
+                return encode_error(resource, "type spec encode: nesting exceeds the format depth limit");
+            }
 
             put_u8(out, static_cast<uint8_t>(type.type()));
             const bool aliased = type.has_alias();
@@ -153,6 +167,14 @@ namespace components::types {
                         return encode_error(resource, "type spec encode: DECIMAL without a decimal extension");
                     }
                     const auto* dec = static_cast<const decimal_logical_type_extension*>(ext);
+                    // Mirror of the decode-side window check below, and the reason it can
+                    // never drift: both call is_valid_decimal_spec. create_decimal refuses
+                    // an out-of-window pair outright, so reaching this is already an
+                    // in-memory type nobody could have built through the factory — refuse
+                    // to make it durable rather than write bytes decode_one will reject.
+                    if (!is_valid_decimal_spec(dec->width(), dec->scale())) {
+                        return encode_error(resource, "type spec encode: DECIMAL width/scale out of range");
+                    }
                     put_u8(out, dec->width());
                     put_u8(out, dec->scale());
                     return true;
@@ -165,7 +187,7 @@ namespace components::types {
                     const auto* list = static_cast<const list_logical_type_extension*>(ext);
                     put_pod<uint64_t>(out, list->field_id());
                     put_u8(out, list->required() ? 1 : 0);
-                    return encode_one(list->node(), out);
+                    return encode_one(list->node(), out, depth + 1);
                 }
                 case logical_type::ARRAY: {
                     const auto* ext = checked_extension(type, logical_type_extension::extension_type::ARRAY);
@@ -174,7 +196,7 @@ namespace components::types {
                     }
                     const auto* arr = static_cast<const array_logical_type_extension*>(ext);
                     put_pod<uint64_t>(out, static_cast<uint64_t>(arr->size()));
-                    return encode_one(arr->internal_type(), out);
+                    return encode_one(arr->internal_type(), out, depth + 1);
                 }
                 case logical_type::MAP: {
                     const auto* ext = checked_extension(type, logical_type_extension::extension_type::MAP);
@@ -185,11 +207,11 @@ namespace components::types {
                     put_pod<uint64_t>(out, map->key_id());
                     put_pod<uint64_t>(out, map->value_id());
                     put_u8(out, map->value_required() ? 1 : 0);
-                    auto key_res = encode_one(map->key(), out);
+                    auto key_res = encode_one(map->key(), out, depth + 1);
                     if (key_res.has_error()) {
                         return key_res;
                     }
-                    return encode_one(map->value(), out);
+                    return encode_one(map->value(), out, depth + 1);
                 }
                 case logical_type::STRUCT: {
                     const auto* ext = checked_extension(type, logical_type_extension::extension_type::STRUCT);
@@ -201,7 +223,7 @@ namespace components::types {
                     const auto& fields = strct->child_types();
                     put_pod<uint32_t>(out, static_cast<uint32_t>(fields.size()));
                     for (const auto& field : fields) {
-                        auto field_res = encode_one(field, out);
+                        auto field_res = encode_one(field, out, depth + 1);
                         if (field_res.has_error()) {
                             return field_res;
                         }
@@ -222,7 +244,7 @@ namespace components::types {
                     }
                     put_pod<uint32_t>(out, static_cast<uint32_t>(children.size() - 1));
                     for (size_t i = 1; i < children.size(); ++i) {
-                        auto member_res = encode_one(children[i], out);
+                        auto member_res = encode_one(children[i], out, depth + 1);
                         if (member_res.has_error()) {
                             return member_res;
                         }
@@ -306,9 +328,10 @@ namespace components::types {
                     if (!in.ok) {
                         return corrupt(resource, "type spec decode: truncated DECIMAL payload");
                     }
-                    // Validate BEFORE create_decimal: garbage width would hit its
-                    // storage-type resolution (width > 38 has no physical type).
-                    if (width == 0 || width > DECIMAL_MAX_WIDTH || scale > width) {
+                    // Validate BEFORE create_decimal so the failure is reported as what it
+                    // is — corrupt DISK BYTES, not a bad argument. create_decimal refuses
+                    // the same pair; this arm only decides which error code the caller sees.
+                    if (!is_valid_decimal_spec(width, scale)) {
                         return corrupt(resource, "type spec decode: DECIMAL width/scale out of range");
                     }
                     return complex_logical_type::create_decimal(width, scale, std::move(alias));
@@ -451,7 +474,7 @@ namespace components::types {
     } // namespace
 
     core::result_wrapper_t<bool> encode_type_spec(const complex_logical_type& type, std::pmr::vector<std::byte>& out) {
-        return encode_one(type, out);
+        return encode_one(type, out, 0);
     }
 
     core::result_wrapper_t<complex_logical_type>

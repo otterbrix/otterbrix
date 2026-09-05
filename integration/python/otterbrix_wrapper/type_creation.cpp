@@ -100,9 +100,19 @@ namespace otterbrix { namespace type_creation {
     }
 
     std::shared_ptr<otterbrix_py_type_t> decimal_type(int width, int scale) {
+        // Range-check before narrowing, then let create_decimal own the window: an
+        // out-of-window DECIMAL built here would be a python-side type the engine can
+        // write and never read back.
+        if (width < 0 || scale < 0 || width > components::types::DECIMAL_MAX_WIDTH ||
+            scale > components::types::DECIMAL_MAX_WIDTH) {
+            throw std::runtime_error("decimal_type: width and scale are out of range");
+        }
         auto decimal_type =
             complex_logical_type::create_decimal(static_cast<uint8_t>(width), static_cast<uint8_t>(scale));
-        return std::make_shared<otterbrix_py_type_t>(decimal_type);
+        if (decimal_type.has_error()) {
+            throw std::runtime_error(std::string(decimal_type.error().what));
+        }
+        return std::make_shared<otterbrix_py_type_t>(std::move(decimal_type.value()));
     }
 
     std::shared_ptr<otterbrix_py_type_t> string_type(const std::string& /*collation*/) {

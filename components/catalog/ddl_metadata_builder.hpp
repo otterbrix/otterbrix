@@ -131,8 +131,13 @@ namespace components::catalog {
                                                           oid_t target_type_oid);
 
     // Writes pg_constraint + pg_depend(→table 'i') +
-    //   N×pg_depend(→fk_col 'i') + if FK: pg_depend(→ref_table 'n').
+    //   N×pg_depend(→fk_col 'i') + if FK: pg_depend(→ref_table 'n') +
+    //   if FK: M×pg_depend(→ref_col 'n').
     // ref_table_oid == INVALID_OID for non-FK constraints.
+    // The deptype tells the two column blocks apart and is load-bearing:
+    // conkey columns are 'i' (the constraint dies with them), confkey columns are
+    // 'n' (the constraint lives in another table, so dropping one is refused —
+    // see operator_alter_column_drop_t).
     std::vector<catalog_write_t> build_create_constraint_writes(std::pmr::memory_resource* resource,
                                                                 const std::string& constraint_name,
                                                                 oid_t table_oid,

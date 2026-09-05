@@ -102,7 +102,14 @@ namespace services::dispatcher {
             if (family.type() != logical_type::DECIMAL) {
                 return std::nullopt;
             }
-            return complex_logical_type::create_decimal(context.decimal_width, context.decimal_scale);
+            // The session's DECIMAL width/scale are settings, not literals: an
+            // out-of-window pair means "no materialization for this family", never a
+            // decimal type nothing can persist.
+            auto materialized = complex_logical_type::create_decimal(context.decimal_width, context.decimal_scale);
+            if (materialized.has_error()) {
+                return std::nullopt;
+            }
+            return std::move(materialized.value());
         }
 
         std::optional<complex_logical_type> constrain_to_domain(const cast_registry_t& cast_registry,

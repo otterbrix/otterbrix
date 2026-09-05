@@ -46,25 +46,30 @@ namespace components::types {
 
         const auto physical_type_table = make_physical_type_table();
 
-        physical_type decimal_storage_type(uint8_t width) {
-            static constexpr uint8_t max_width_16 = 4;
-            static constexpr uint8_t max_width_32 = 9;
-            static constexpr uint8_t max_width_64 = 18;
-            static constexpr uint8_t max_width_128 = 38;
-            if (width <= max_width_16) {
-                return physical_type::INT16;
-            } else if (width <= max_width_32) {
-                return physical_type::INT32;
-            } else if (width <= max_width_64) {
-                return physical_type::INT64;
-            } else if (width <= max_width_128) {
-                return physical_type::INT128;
-            } else {
-                throw std::runtime_error("can not create decimal with width bigger than: " +
-                                         std::to_string(static_cast<int>(max_width_128)));
-            }
-        }
     } // anonymous namespace
+
+    // The throw this replaced was reachable from ordinary SQL — `NUMERIC(39,0)` walked
+    // straight into it through create_decimal — and from the DECIMAL arm of the index-key
+    // decoder, which reads width from disk bytes. Rule 2: no exceptions. The out-of-window
+    // answer is INVALID, and create_decimal (the only path that reaches the extension
+    // constructor with a caller-supplied width) refuses before ever getting here.
+    physical_type decimal_storage_for_width(uint8_t width) noexcept {
+        static constexpr uint8_t max_width_16 = 4;
+        static constexpr uint8_t max_width_32 = 9;
+        static constexpr uint8_t max_width_64 = 18;
+        if (width == 0) {
+            return physical_type::INVALID;
+        } else if (width <= max_width_16) {
+            return physical_type::INT16;
+        } else if (width <= max_width_32) {
+            return physical_type::INT32;
+        } else if (width <= max_width_64) {
+            return physical_type::INT64;
+        } else if (width <= DECIMAL_MAX_WIDTH) {
+            return physical_type::INT128;
+        }
+        return physical_type::INVALID;
+    }
 
     physical_type to_physical_type(logical_type type) { return physical_type_table[static_cast<uint8_t>(type)]; }
 
@@ -534,8 +539,21 @@ namespace components::types {
                (type >= logical_type::UTINYINT && type <= logical_type::UHUGEINT);
     }
 
-    complex_logical_type complex_logical_type::create_decimal(uint8_t width, uint8_t scale, std::string alias) {
-        assert(width >= scale);
+    core::result_wrapper_t<complex_logical_type>
+    complex_logical_type::create_decimal(uint8_t width, uint8_t scale, std::string alias) {
+        if (!is_valid_decimal_spec(width, scale)) {
+            // No resource parameter reaches this factory and adding one would push a
+            // memory_resource through every type-construction site in the tree. The
+            // message is built on the explicitly named new/delete resource — never
+            // std::pmr::get_default_resource() (rule 14) — and only on the refusal path.
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"DECIMAL(" + std::to_string(static_cast<unsigned>(width)) + "," +
+                                                      std::to_string(static_cast<unsigned>(scale)) +
+                                                      ") is out of range: width must be between 1 and " +
+                                                      std::to_string(static_cast<unsigned>(DECIMAL_MAX_WIDTH)) +
+                                                      " and scale must not exceed width",
+                                                  std::pmr::new_delete_resource()});
+        }
         return complex_logical_type(logical_type::DECIMAL,
                                     std::make_unique<decimal_logical_type_extension>(width, scale),
                                     std::move(alias));
@@ -720,7 +738,7 @@ namespace components::types {
 
     decimal_logical_type_extension::decimal_logical_type_extension(uint8_t width, uint8_t scale)
         : logical_type_extension(extension_type::DECIMAL)
-        , stored_as_(decimal_storage_type(width))
+        , stored_as_(decimal_storage_for_width(width))
         , width_(width)
         , scale_(scale) {}
 

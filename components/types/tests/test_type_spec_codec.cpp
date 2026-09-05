@@ -7,9 +7,22 @@
 
 #include <cstddef>
 #include <memory_resource>
+#include <utility>
 #include <vector>
 
 using namespace components::types;
+
+namespace {
+    // create_decimal reports an out-of-window (width, scale) through core::error_t now,
+    // instead of an assert that vanished under NDEBUG. Every literal these tests use is
+    // inside the window, so the helper checks the result and hands back the type.
+    components::types::complex_logical_type
+    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created = components::types::complex_logical_type::create_decimal(width, scale, std::move(alias));
+        REQUIRE_FALSE(created.has_error());
+        return std::move(created.value());
+    }
+} // namespace
 
 namespace {
 
@@ -76,7 +89,7 @@ TEST_CASE("types::type_spec_codec::decimal_roundtrips_width_scale_and_storage") 
     };
     for (const auto& c : cases) {
         INFO("DECIMAL(" << int(c.width) << "," << int(c.scale) << ")");
-        auto back = roundtrip(&resource, complex_logical_type::create_decimal(c.width, c.scale));
+        auto back = roundtrip(&resource, make_decimal(c.width, c.scale));
         REQUIRE(back.type() == logical_type::DECIMAL);
         const auto* ext = back.extension_as<decimal_logical_type_extension>();
         REQUIRE(ext != nullptr);
@@ -100,7 +113,7 @@ TEST_CASE("types::type_spec_codec::list_roundtrips_child_type") {
     }
     {
         // Nested list + a decimal element: both layers of extension must survive.
-        auto inner = complex_logical_type::create_list(complex_logical_type::create_decimal(12, 3));
+        auto inner = complex_logical_type::create_list(make_decimal(12, 3));
         auto back = roundtrip(&resource, complex_logical_type::create_list(inner));
         REQUIRE(back.child_type().type() == logical_type::LIST);
         const auto* dec = back.child_type().child_type().extension_as<decimal_logical_type_extension>();
@@ -146,7 +159,7 @@ TEST_CASE("types::type_spec_codec::struct_roundtrips_fields_and_names") {
     std::pmr::vector<complex_logical_type> fields(&resource);
     fields.emplace_back(logical_type::INTEGER, "a");
     fields.emplace_back(logical_type::STRING_LITERAL, "b");
-    fields.push_back(complex_logical_type::create_decimal(9, 3, "c"));
+    fields.push_back(make_decimal(9, 3, "c"));
     auto strct = complex_logical_type::create_struct("point", fields);
 
     auto back = roundtrip(&resource, strct);
@@ -275,7 +288,7 @@ TEST_CASE("types::type_spec_codec::aliases_roundtrip_at_every_level") {
         REQUIRE(back.alias() == "my_col");
     }
     {
-        auto back = roundtrip(&resource, complex_logical_type::create_decimal(10, 2, "price"));
+        auto back = roundtrip(&resource, make_decimal(10, 2, "price"));
         REQUIRE(back.alias() == "price");
         REQUIRE(back.extension_as<decimal_logical_type_extension>()->width() == 10);
     }
@@ -395,5 +408,64 @@ TEST_CASE("types::type_spec_codec::encode_refuses_unpersistable_types") {
         auto encoded = encode_type_spec(broken, spec);
         REQUIRE(encoded.has_error());
         REQUIRE(encoded.error().type == core::error_code_t::schema_error);
+    }
+}
+
+// The write side must refuse EXACTLY the values the read side refuses. Every decode-side
+// rejection that is about a VALUE (rather than about a truncated or lying buffer) needs a
+// mirror here, because a value the encoder accepts and the decoder rejects is a file that
+// can be written and never read — and the read failure lands at startup, where no
+// statement is left to blame and no retry is possible.
+TEST_CASE("types::type_spec_codec::encode_refuses_what_decode_refuses") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    INFO("DECIMAL width/scale: the window is closed on the way IN, not only on the way OUT");
+    {
+        // create_decimal is the upstream half of the same window, so an out-of-window
+        // DECIMAL cannot even be built to hand to the encoder.
+        for (const auto& [width, scale] : std::vector<std::pair<uint8_t, uint8_t>>{{0, 0}, {39, 0}, {5, 7}, {255, 255}}) {
+            INFO("DECIMAL(" << int(width) << "," << int(scale) << ")");
+            auto created = complex_logical_type::create_decimal(width, scale);
+            REQUIRE(created.has_error());
+            REQUIRE(created.error().type == core::error_code_t::invalid_parameter);
+        }
+        // ... and both ends of the legal window still build and still round-trip.
+        for (const auto& [width, scale] : std::vector<std::pair<uint8_t, uint8_t>>{{1, 0}, {1, 1}, {38, 0}, {38, 38}}) {
+            INFO("DECIMAL(" << int(width) << "," << int(scale) << ")");
+            auto back = roundtrip(&resource, make_decimal(width, scale));
+            const auto* ext = back.extension_as<decimal_logical_type_extension>();
+            REQUIRE(ext != nullptr);
+            REQUIRE(ext->width() == width);
+            REQUIRE(ext->scale() == scale);
+        }
+    }
+
+    INFO("nesting depth: the encoder stops where the decoder stops");
+    {
+        // Build a LIST chain one level at a time and find the deepest type the ENCODER
+        // accepts. Whatever that depth is, the DECODER must accept the bytes it produced —
+        // and one level deeper must be refused by the encoder rather than written.
+        complex_logical_type nested{logical_type::BIGINT};
+        unsigned deepest_encodable = 0;
+        std::pmr::vector<std::byte> deepest_spec(&resource);
+        for (unsigned depth = 1; depth < 200; ++depth) {
+            nested = complex_logical_type::create_list(nested);
+            std::pmr::vector<std::byte> spec(&resource);
+            auto encoded = encode_type_spec(nested, spec);
+            if (encoded.has_error()) {
+                REQUIRE(encoded.error().type == core::error_code_t::schema_error);
+                break;
+            }
+            deepest_encodable = depth;
+            deepest_spec = spec;
+        }
+        INFO("deepest encodable LIST nesting: " << deepest_encodable);
+        REQUIRE(deepest_encodable > 0);
+        REQUIRE(deepest_encodable < 199); // the encoder must have refused, not run out of loop
+
+        // Everything the encoder let through decodes. This is the property the whole
+        // exercise exists for: no writable spec is unreadable.
+        auto decoded = decode_type_spec(&resource, deepest_spec.data(), deepest_spec.size());
+        REQUIRE_FALSE(decoded.has_error());
     }
 }

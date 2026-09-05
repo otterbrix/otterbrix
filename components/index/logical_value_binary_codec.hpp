@@ -132,7 +132,16 @@ namespace components::index::codec {
     inline logical_value_t read_decimal_payload(std::pmr::memory_resource* resource, ReadFn&& read) {
         const auto width = read.template operator()<uint8_t>();
         const auto scale = read.template operator()<uint8_t>();
-        const auto decimal_type = components::types::complex_logical_type::create_decimal(width, scale);
+        // width/scale arrive from STORED BYTES. create_decimal used to reach a throw for
+        // width > 38 from right here, and an exception on this path unwinds into an actor
+        // coroutine with an empty unhandled_exception() — a corrupt key became a HANG.
+        // The refusal now has the same shape as every other refusal in this file.
+        auto decimal_result = components::types::complex_logical_type::create_decimal(width, scale);
+        if (decimal_result.has_error()) {
+            assert(false && "logical value codec: DECIMAL width/scale out of range during decode");
+            std::abort(); // NDEBUG drops the assert; without this control continues with no type
+        }
+        const auto decimal_type = std::move(decimal_result.value());
         switch (decimal_type.to_physical_type()) {
             case physical_type_t::INT16:
                 return logical_value_t::create_decimal(resource, decimal_type, read.template operator()<int16_t>());
@@ -455,8 +464,10 @@ namespace components::index::codec {
         if (logical == logical_type_t::DECIMAL) {
             const auto width = read_le_raw<uint8_t>(data, size, pos);
             read_le_raw<uint8_t>(data, size, pos);
-            const auto decimal_type = components::types::complex_logical_type::create_decimal(width, 0);
-            switch (decimal_type.to_physical_type()) {
+            // Only the payload WIDTH matters for a skip, so ask the storage table directly
+            // instead of building a type: an out-of-window width answers INVALID and falls
+            // into the default arm below, where it used to reach create_decimal's throw.
+            switch (components::types::decimal_storage_for_width(width)) {
                 case physical_type_t::INT16:
                     pos += sizeof(int16_t);
                     break;

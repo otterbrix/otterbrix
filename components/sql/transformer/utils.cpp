@@ -509,8 +509,27 @@ namespace components::sql::transform {
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"Incorrect width or scale for DECIMAL, must be integer", resource});
                 }
-                column = types::complex_logical_type::create_decimal(static_cast<uint8_t>(intVal(&width->val)),
-                                                                     static_cast<uint8_t>(intVal(&scale->val)));
+                // Range-check BEFORE narrowing. The bare static_cast<uint8_t> that used to
+                // stand here silently wrapped: NUMERIC(256,0) became DECIMAL(0,0) and
+                // NUMERIC(-1,0) became DECIMAL(255,0) — both of them types the persistence
+                // codec writes and then refuses to read back. This is the EARLIEST point
+                // that owns an error channel, and refusing here costs one failed statement
+                // instead of a catalog row that makes the database unopenable.
+                const auto raw_width = intVal(&width->val);
+                const auto raw_scale = intVal(&scale->val);
+                if (raw_width < 0 || raw_scale < 0 || raw_width > types::DECIMAL_MAX_WIDTH ||
+                    raw_scale > types::DECIMAL_MAX_WIDTH) {
+                    return core::error_t(core::error_code_t::invalid_parameter,
+                                         std::pmr::string{"DECIMAL width must be between 1 and " +
+                                                              std::to_string(types::DECIMAL_MAX_WIDTH) +
+                                                              " and scale must not exceed width",
+                                                          resource});
+                }
+                // In uint8 range now, so create_decimal owns the window decision and its
+                // message — one authority, not a second copy that can drift from it.
+                VALUE_OR_RETURN(column,
+                                types::complex_logical_type::create_decimal(static_cast<uint8_t>(raw_width),
+                                                                            static_cast<uint8_t>(raw_scale)));
             }
         } else {
             types::logical_type t = get_logical_type(linint_name);

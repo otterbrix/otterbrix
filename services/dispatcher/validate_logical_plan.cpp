@@ -17,6 +17,7 @@
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
 #include <components/index/logical_value_binary_codec.hpp>
+#include <components/types/type_spec_codec.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -597,6 +598,20 @@ namespace services::dispatcher {
             if (auto ec = gate_persistable(column); ec.contains_error()) {
                 return ec;
             }
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t gate_persistable_type(std::pmr::memory_resource* resource,
+                                        const std::string& subject,
+                                        const components::types::complex_logical_type& type) {
+        std::pmr::vector<std::byte> spec(resource);
+        auto encoded = components::types::encode_type_spec(type, spec);
+        if (encoded.has_error()) {
+            return core::error_t(core::error_code_t::schema_error,
+                                 std::pmr::string{subject + " cannot be persisted: " +
+                                                      std::string(encoded.error().what.c_str()),
+                                                  resource});
         }
         return core::error_t::no_error();
     }

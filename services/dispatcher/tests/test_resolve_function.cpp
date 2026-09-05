@@ -8,6 +8,18 @@ using components::types::complex_logical_type;
 using components::types::logical_type;
 
 namespace {
+    // create_decimal reports an out-of-window (width, scale) through core::error_t now,
+    // instead of an assert that vanished under NDEBUG. Every literal these tests use is
+    // inside the window, so the helper checks the result and hands back the type.
+    components::types::complex_logical_type
+    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created = components::types::complex_logical_type::create_decimal(width, scale, std::move(alias));
+        REQUIRE_FALSE(created.has_error());
+        return std::move(created.value());
+    }
+} // namespace
+
+namespace {
 
     std::pmr::memory_resource* resource() { return std::pmr::get_default_resource(); }
 
@@ -167,7 +179,7 @@ TEST_CASE("dispatcher::resolve_function: mergeable rides along from the matched 
 // the argument keeps its own parameters and nothing is converted. The runtime agrees --
 // operator_switch sums the raw integer and rebuilds a decimal from the input's type.
 TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's parameters") {
-    auto decimal = complex_logical_type::create_decimal(10, 2);
+    auto decimal = make_decimal(10, 2);
     std::pmr::vector<complex_logical_type> arguments(resource());
     arguments.emplace_back(decimal);
 
@@ -248,7 +260,7 @@ TEST_CASE("dispatcher::resolve_function: abs resolves per argument type") {
     REQUIRE_FALSE(real.has_error());
     REQUIRE(real.value().result.type() == logical_type::DOUBLE);
 
-    auto decimal = complex_logical_type::create_decimal(12, 4);
+    auto decimal = make_decimal(12, 4);
     std::pmr::vector<complex_logical_type> decimal_arg(resource());
     decimal_arg.emplace_back(decimal);
     auto scaled = resolve_function(resource(),

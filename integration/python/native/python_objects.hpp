@@ -62,11 +62,14 @@ namespace otterbrix {
     struct py_decimal_t {
         struct py_decimal_scale_converter_t {
             template<typename T, typename = std::enable_if<std::numeric_limits<T>::is_integer, T>>
+            // Takes the ALREADY-BUILT decimal type: create_decimal reports an
+            // out-of-window (width, scale) as an error, and this function has no error
+            // channel to report it through, so the caller does the construction.
             static components::types::logical_value_t Operation(std::pmr::memory_resource* r,
                                                                 bool signed_value,
                                                                 std::vector<uint8_t>& digits,
-                                                                uint8_t width,
-                                                                uint8_t scale) {
+                                                                const components::types::complex_logical_type& type,
+                                                                uint8_t /*scale*/) {
                 T value = 0;
                 for (auto it = digits.begin(); it != digits.end(); it++) {
                     value = value * 10 + *it;
@@ -74,10 +77,7 @@ namespace otterbrix {
                 if (signed_value) {
                     value = -value;
                 }
-                return components::types::logical_value_t::create_decimal(
-                    r,
-                    components::types::complex_logical_type::create_decimal(width, scale),
-                    value);
+                return components::types::logical_value_t::create_decimal(r, type, value);
             }
         };
 
@@ -100,13 +100,12 @@ namespace otterbrix {
             static components::types::logical_value_t Operation(std::pmr::memory_resource* r,
                                                                 bool signed_value,
                                                                 std::vector<uint8_t>& digits,
-                                                                uint8_t width,
+                                                                const components::types::complex_logical_type& type,
                                                                 uint8_t scale) {
                 T value = 0;
                 for (auto& digit : digits) {
                     value = value * 10 + digit;
                 }
-                assert(scale >= 0);
 
                 constexpr uint8_t CACHED_POWERS_OF_TEN = 19;
                 constexpr auto POWERS_OF_TEN = make_pow10_sequence(std::make_index_sequence<CACHED_POWERS_OF_TEN>{});
@@ -119,10 +118,7 @@ namespace otterbrix {
                 if (signed_value) {
                     value = -value;
                 }
-                return components::types::logical_value_t::create_decimal(
-                    r,
-                    components::types::complex_logical_type::create_decimal(width, scale),
-                    value);
+                return components::types::logical_value_t::create_decimal(r, type, value);
             }
         };
 

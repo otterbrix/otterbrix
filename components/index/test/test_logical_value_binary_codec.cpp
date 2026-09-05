@@ -5,6 +5,17 @@
 #include <core/date/date_types.hpp>
 #include <core/pmr.hpp>
 
+namespace {
+    // create_decimal reports an out-of-window (width, scale) through core::error_t now,
+    // instead of an assert that vanished under NDEBUG. Every literal these tests use is
+    // inside the window, so the helper checks the result and hands back the type.
+    components::types::complex_logical_type make_decimal(uint8_t width, uint8_t scale) {
+        auto created = components::types::complex_logical_type::create_decimal(width, scale);
+        REQUIRE_FALSE(created.has_error());
+        return std::move(created.value());
+    }
+} // namespace
+
 TEST_CASE("logical_value_binary_codec: roundtrip_supported_types") {
     using components::index::codec::append_logical_value;
     using components::index::codec::read_logical_value;
@@ -33,9 +44,9 @@ TEST_CASE("logical_value_binary_codec: roundtrip_supported_types") {
     values.emplace_back(&resource, core::date::timestamp_t{core::date::microseconds{7777777}});
     values.emplace_back(&resource, core::date::timestamptz_t{core::date::microseconds{-5555555}});
     values.emplace_back(
-        logical_value_t::create_decimal(&resource, complex_logical_type::create_decimal(18, 2), 123456789));
+        logical_value_t::create_decimal(&resource, make_decimal(18, 2), 123456789));
     values.emplace_back(logical_value_t::create_decimal(&resource,
-                                                        complex_logical_type::create_decimal(38, 8),
+                                                        make_decimal(38, 8),
                                                         components::types::int128_t{1234567890123456789LL}));
     for (const auto& input : values) {
         std::pmr::string encoded(&resource);
@@ -150,9 +161,9 @@ TEST_CASE("logical_value_binary_codec: skip_logical_value") {
     values.emplace_back(&resource, 3.5);
     values.emplace_back(&resource, std::string("hello-codec"));
     values.emplace_back(
-        logical_value_t::create_decimal(&resource, complex_logical_type::create_decimal(18, 2), 123456789));
+        logical_value_t::create_decimal(&resource, make_decimal(18, 2), 123456789));
     values.emplace_back(logical_value_t::create_decimal(&resource,
-                                                        complex_logical_type::create_decimal(38, 8),
+                                                        make_decimal(38, 8),
                                                         components::types::int128_t{1234567890123456789LL}));
 
     for (const auto& input : values) {

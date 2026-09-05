@@ -29,6 +29,18 @@ using namespace components::catalog;
 using namespace components::types;
 
 namespace {
+    // create_decimal reports an out-of-window (width, scale) through core::error_t now,
+    // instead of an assert that vanished under NDEBUG. Every literal these tests use is
+    // inside the window, so the helper checks the result and hands back the type.
+    components::types::complex_logical_type
+    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created = components::types::complex_logical_type::create_decimal(width, scale, std::move(alias));
+        REQUIRE_FALSE(created.has_error());
+        return std::move(created.value());
+    }
+} // namespace
+
+namespace {
     auto* g_resource = std::pmr::new_delete_resource();
 
     // The persisted path, both directions: encode as CREATE TABLE would, decode as the
@@ -96,7 +108,7 @@ TEST_CASE("catalog::default_spec::temporal_and_decimal_round_trip") {
 
     // DECIMAL keeps width and scale: they come from the column type, which the decoder
     // is handed rather than having to find in the payload.
-    const auto dec_type = complex_logical_type::create_decimal(10, 2);
+    const auto dec_type = make_decimal(10, 2);
     const auto dec = logical_value_t::create_decimal(g_resource, dec_type, std::int64_t{1234});
     auto dec_back = round_trip(dec, dec_type);
     REQUIRE(dec_back.has_value());
@@ -104,7 +116,7 @@ TEST_CASE("catalog::default_spec::temporal_and_decimal_round_trip") {
     CHECK(dec_back->value<std::int64_t>() == 1234);
 
     // A 38-digit DECIMAL is INT128-backed; the scaled integer survives whole.
-    const auto wide_type = complex_logical_type::create_decimal(38, 4);
+    const auto wide_type = make_decimal(38, 4);
     const auto wide =
         logical_value_t::create_decimal(g_resource,
                                         wide_type,

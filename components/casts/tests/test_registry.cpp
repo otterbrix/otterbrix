@@ -10,6 +10,18 @@ using types::complex_logical_type;
 using types::logical_type;
 
 namespace {
+    // create_decimal reports an out-of-window (width, scale) through core::error_t now,
+    // instead of an assert that vanished under NDEBUG. Every literal these tests use is
+    // inside the window, so the helper checks the result and hands back the type.
+    components::types::complex_logical_type
+    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created = components::types::complex_logical_type::create_decimal(width, scale, std::move(alias));
+        REQUIRE_FALSE(created.has_error());
+        return std::move(created.value());
+    }
+} // namespace
+
+namespace {
 
     core::error_t
     noop_cast(const vector::vector_t&, vector::vector_t*, const graph_execution_context&, uint64_t) noexcept {
@@ -125,8 +137,8 @@ TEST_CASE("cast_registry: targets_from enumerates every target of a source") {
 TEST_CASE("cast_registry: DECIMAL identity collapses width/scale") {
     cast_registry_t registry{std::pmr::get_default_resource()};
 
-    const complex_logical_type decimal_a = complex_logical_type::create_decimal(6, 2);
-    const complex_logical_type decimal_b = complex_logical_type::create_decimal(10, 4);
+    const complex_logical_type decimal_a = make_decimal(6, 2);
+    const complex_logical_type decimal_b = make_decimal(10, 4);
     const complex_logical_type double_type{logical_type::DOUBLE};
 
     // A single (DECIMAL, DOUBLE) entry answers for every DECIMAL(p,s): the

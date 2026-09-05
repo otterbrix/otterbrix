@@ -2,6 +2,7 @@
 
 #include <components/casts/default_casts.hpp>
 
+#include <cassert>
 #include <memory_resource>
 
 using namespace components;
@@ -46,7 +47,9 @@ namespace {
     // by evaluating that rule rather than reading a stored cost.
     void common_type_decimal_left(benchmark::State& state) {
         const cast_registry_t& registry = default_registry();
-        const complex_logical_type left = complex_logical_type::create_decimal(10, 2);
+        auto left_result = complex_logical_type::create_decimal(10, 2);
+        assert(!left_result.has_error() && "benchmark: DECIMAL(10,2) is inside the DECIMAL window");
+        const complex_logical_type left = std::move(left_result.value());
         const complex_logical_type right{logical_type::BOOLEAN};
         for (auto _ : state) {
             benchmark::DoNotOptimize(registry.find_best_common_type(left, right));

@@ -199,6 +199,20 @@ namespace components::sql::transform {
                     }
                     break;
                 }
+                case AT_DropConstraint: {
+                    // The grammar accepts DROP CONSTRAINT, nothing below it implements
+                    // it. Falling through to `default:` left `subs` empty, which the tail
+                    // of this function turns into an empty-named DROP COLUMN node, which
+                    // operator_alter_column_drop_t no-ops on — so the statement reported
+                    // SUCCESS while the pg_constraint row and every pg_depend edge under
+                    // it stayed exactly where they were. Rule 6: a statement that removes
+                    // nothing does not get to say it removed something, least of all when
+                    // what it claims to have removed is an integrity constraint.
+                    std::pmr::string msg{"ALTER TABLE ... DROP CONSTRAINT ", resource_};
+                    msg.append(cmd->name ? cmd->name : "");
+                    msg.append(" is not implemented; the constraint is still in force");
+                    return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
+                }
                 default:
                     break;
             }

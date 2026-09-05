@@ -12,6 +12,8 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -153,18 +155,112 @@ namespace components::operators {
 
         // ABORT-on-error gate: validate dependents BEFORE the first mutating
         // delete/append below, so a rejected DROP leaves the catalog untouched.
+        //
+        // `blocking` is the subset this operator may NOT cascade over: a constraint
+        // that depends on this column through a 'n' (normal) edge. Only one writer
+        // emits that shape — build_create_constraint_writes, for the confkey columns
+        // of a FOREIGN KEY, i.e. the PARENT columns a constraint on ANOTHER table
+        // references. Everything else reaching here is 'i' (internal): an index or a
+        // constraint whose own key column this is, which cannot outlive the column and
+        // is therefore dropped with it, below.
         std::pmr::vector<std::pair<int, catalog::oid_t>> dependents{resource_};
         dependents.reserve(dep_row_count);
+        std::pmr::vector<catalog::oid_t> blocking{resource_};
         for (auto& chunk : dep_batches) {
             if (chunk.column_count() < 2)
                 continue;
+            const bool has_deptype = chunk.column_count() > catalog::pg_depend_col::deptype;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
                 const auto dep_cls = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 const auto dep_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                 dependents.emplace_back(static_cast<int>(dep_cls), dep_oid);
+                if (dep_cls != catalog::well_known_oid::pg_constraint_table || !has_deptype ||
+                    chunk.is_null(catalog::pg_depend_col::deptype, i))
+                    continue;
+                const auto deptype_cell = chunk.get_value<std::string_view>(catalog::pg_depend_col::deptype, i);
+                if (!deptype_cell.empty() && deptype_cell[0] == 'n')
+                    blocking.push_back(dep_oid);
             }
+        }
+        if (!blocking.empty()) {
+            // Rule 6: name the cause, not the symptom. Without this the statement was
+            // ACCEPTED and the damage surfaced later, in a different table, as
+            // "keyed read: table has no column <name>" on every subsequent insert.
+            // Resolve the blocking constraint's name and owning table so the message
+            // names objects the user can act on. Both reads are on the refusal path
+            // only, so the accepted path pays nothing for them.
+            std::string con_name;
+            catalog::oid_t con_relid = catalog::INVALID_OID;
+            std::pmr::vector<std::uint64_t> pc_keys(resource_);
+            pc_keys.emplace_back(catalog::pg_constraint_col::oid);
+            auto [_pc, pcf] = actor_zeta::send(ctx->disk_address,
+                                               &services::disk::manager_disk_t::read_chunks_by_key,
+                                               exec_ctx,
+                                               pg_con_oid,
+                                               std::move(pc_keys),
+                                               components::operators::make_key_chunk(resource_, blocking.front()),
+                                               std::pmr::vector<std::uint64_t>{resource_});
+            auto con_batches_r = co_await std::move(pcf);
+            if (con_batches_r.has_error()) {
+                set_error(con_batches_r.error());
+                co_return;
+            }
+            for (auto& chunk : con_batches_r.value()) {
+                if (chunk.size() == 0 || chunk.column_count() <= catalog::pg_constraint_col::conrelid)
+                    continue;
+                if (!chunk.is_null(catalog::pg_constraint_col::conname, 0))
+                    con_name.assign(chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, 0));
+                if (!chunk.is_null(catalog::pg_constraint_col::conrelid, 0))
+                    con_relid = static_cast<catalog::oid_t>(
+                        chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::conrelid, 0));
+                break;
+            }
+            std::string con_table;
+            if (con_relid != catalog::INVALID_OID) {
+                std::pmr::vector<std::uint64_t> cl_keys(resource_);
+                cl_keys.emplace_back(catalog::pg_class_col::oid);
+                auto [_cl, clf] = actor_zeta::send(ctx->disk_address,
+                                                   &services::disk::manager_disk_t::read_chunks_by_key,
+                                                   exec_ctx,
+                                                   pg_class_oid,
+                                                   std::move(cl_keys),
+                                                   components::operators::make_key_chunk(resource_, con_relid),
+                                                   std::pmr::vector<std::uint64_t>{resource_});
+                auto cls_batches_r = co_await std::move(clf);
+                if (cls_batches_r.has_error()) {
+                    set_error(cls_batches_r.error());
+                    co_return;
+                }
+                for (auto& chunk : cls_batches_r.value()) {
+                    if (chunk.size() == 0 || chunk.column_count() <= catalog::pg_class_col::relname)
+                        continue;
+                    if (!chunk.is_null(catalog::pg_class_col::relname, 0))
+                        con_table.assign(chunk.get_value<std::string_view>(catalog::pg_class_col::relname, 0));
+                    break;
+                }
+            }
+            // A blocking edge with no readable constraint row still blocks: fall back
+            // to the oid in the text, never to letting the drop through.
+            if (con_name.empty()) {
+                con_name = "oid ";
+                con_name += std::to_string(blocking.front());
+            }
+            if (con_table.empty()) {
+                con_table = "oid ";
+                con_table += std::to_string(con_relid);
+            }
+            std::string msg = "cannot drop column \"";
+            msg += column_name_;
+            msg += "\": foreign key constraint \"";
+            msg += con_name;
+            msg += "\" on table \"";
+            msg += con_table;
+            msg += "\" references it; drop that constraint or that table first";
+            set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+            mark_executed();
+            co_return;
         }
         auto ec_cascade =
             components::catalog::alter_column_validators::validate_cascade_dependencies(resource_, dependents);

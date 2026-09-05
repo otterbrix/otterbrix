@@ -132,7 +132,14 @@ namespace components::casts {
 
         // A placeholder DECIMAL used only as the registry key
         // Actual resolution will depend on a given width and scale
-        [[nodiscard]] complex_logical_type decimal_key() { return complex_logical_type::create_decimal(18, 0); }
+        // (18, 0) is inside the DECIMAL window by inspection, so create_decimal cannot
+        // refuse it; the check is here because the compiler cannot know that and rule 6
+        // forbids reading a result without looking at its error.
+        [[nodiscard]] complex_logical_type decimal_key() {
+            auto created = complex_logical_type::create_decimal(18, 0);
+            assert(!created.has_error() && "decimal_key: DECIMAL(18,0) is inside the window");
+            return std::move(created.value());
+        }
 
         // Likewise a placeholder ENUM: identity collapses the labels, so this one key stands for
         // every enum CREATE TYPE will ever make. The cast reads the labels off the TARGET vector's

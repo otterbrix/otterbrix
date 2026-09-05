@@ -569,7 +569,19 @@ namespace components::catalog {
             if (wec != std::errc{} || scec != std::errc{}) {
                 return types::complex_logical_type{LT::UNKNOWN};
             }
-            return types::complex_logical_type::create_decimal(static_cast<uint8_t>(wv), static_cast<uint8_t>(scv));
+            // Range-check BEFORE narrowing: "numeric(256,0)" would otherwise wrap to
+            // DECIMAL(0,0). An out-of-window pair reads back as UNKNOWN, the same answer
+            // this parser already gives every other unparsable spec, and the callers that
+            // care refuse an UNKNOWN column type loudly.
+            if (wv < 0 || scv < 0 || wv > types::DECIMAL_MAX_WIDTH || scv > types::DECIMAL_MAX_WIDTH) {
+                return types::complex_logical_type{LT::UNKNOWN};
+            }
+            auto decimal = types::complex_logical_type::create_decimal(static_cast<uint8_t>(wv),
+                                                                       static_cast<uint8_t>(scv));
+            if (decimal.has_error()) {
+                return types::complex_logical_type{LT::UNKNOWN};
+            }
+            return std::move(decimal.value());
         }
         if (name == "UNKNOWN") {
             std::string tname = read_token(s, pos);

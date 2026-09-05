@@ -43,6 +43,14 @@ namespace components::types {
     // Appends the spec for `type` to `out`. Fails (schema_error) for types that cannot be
     // persisted — FUNCTION/LAMBDA/TABLE/USER/INVALID, or a composite type whose extension
     // is missing/mismatched; `out` is left in an unspecified state on error.
+    //
+    // THE WRITER VALIDATES THE READER'S WINDOW. Every value-range refusal decode_type_spec
+    // makes has its mirror here — the DECIMAL width/scale window (is_valid_decimal_spec)
+    // and the nesting depth limit — because a refusal on the way IN costs a failed
+    // statement or a failed checkpoint, while bytes that only the reader refuses cost a
+    // database that never opens again. The remaining decode refusals are structural
+    // (truncation, lying counts, trailing bytes, unknown flag bits): a stream this encoder
+    // produced cannot exhibit them, so they need no mirror.
     [[nodiscard]] core::result_wrapper_t<bool> encode_type_spec(const complex_logical_type& type,
                                                                 std::pmr::vector<std::byte>& out);
 

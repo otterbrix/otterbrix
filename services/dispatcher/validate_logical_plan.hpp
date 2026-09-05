@@ -74,6 +74,22 @@ namespace services::dispatcher {
                                                         const components::graph_execution_context& execution_context,
                                                         std::vector<components::table::column_definition_t>& columns);
 
+    // Rule 6 gate for a TYPE the DDL is about to make durable — the type half of what
+    // convert_column_defaults does for a DEFAULT value.
+    //
+    // The persistent form of a column type (components::types::encode_type_spec, which
+    // writes the table checkpoint and every WAL chunk header) refuses a DECIMAL outside
+    // the width/scale window and nesting past the format depth limit. Both are reachable
+    // from ordinary SQL, and both used to be refused only by the READER: the checkpoint
+    // succeeded and the next startup failed with data_corruption, permanently, with no
+    // statement left to blame. Asking the real encoder here — not a copy of its rules —
+    // is what keeps the DDL window and the durable window the same window.
+    //
+    // `subject` names what is being refused ("column 'c'", "type 'deep'").
+    [[nodiscard]] core::error_t gate_persistable_type(std::pmr::memory_resource* resource,
+                                                      const std::string& subject,
+                                                      const components::types::complex_logical_type& type);
+
     // `cte_schemas` carries recursive-CTE anchor schemas between the recursive_cte_t and
     // cte_scan_t arms; callers pass nullptr and the map is owned internally.
     [[nodiscard]] core::result_wrapper_t<named_schema>

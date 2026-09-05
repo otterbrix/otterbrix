@@ -8,6 +8,18 @@
 
 using namespace components::types;
 
+namespace {
+    // create_decimal reports an out-of-window (width, scale) through core::error_t now,
+    // instead of an assert that vanished under NDEBUG. Every literal these tests use is
+    // inside the window, so the helper checks the result and hands back the type.
+    components::types::complex_logical_type
+    make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
+        auto created = components::types::complex_logical_type::create_decimal(width, scale, std::move(alias));
+        REQUIRE_FALSE(created.has_error());
+        return std::move(created.value());
+    }
+} // namespace
+
 TEST_CASE("components::types::physical_value") {
     std::vector<physical_value> values;
     std::string_view str1 = "test string";
@@ -99,7 +111,7 @@ TEST_CASE("components::types::decimal") {
         static constexpr uint8_t width = 3;
         static constexpr uint8_t scale = 1;
         // verify storage size
-        REQUIRE(complex_logical_type::create_decimal(width, scale).to_physical_type() == physical_type::INT16);
+        REQUIRE(make_decimal(width, scale).to_physical_type() == physical_type::INT16);
 
         SECTION("convert") {
             // round up
@@ -136,7 +148,7 @@ TEST_CASE("components::types::decimal") {
         static constexpr uint8_t width = 8;
         static constexpr uint8_t scale = 2;
         // verify storage size
-        REQUIRE(complex_logical_type::create_decimal(width, scale).to_physical_type() == physical_type::INT32);
+        REQUIRE(make_decimal(width, scale).to_physical_type() == physical_type::INT32);
 
         SECTION("convert") {
             // round up
@@ -172,7 +184,7 @@ TEST_CASE("components::types::decimal") {
         static constexpr uint8_t width = 12;
         static constexpr uint8_t scale = 3;
         // verify storage size
-        REQUIRE(complex_logical_type::create_decimal(width, scale).to_physical_type() == physical_type::INT64);
+        REQUIRE(make_decimal(width, scale).to_physical_type() == physical_type::INT64);
 
         SECTION("convert") {
             // round up
@@ -209,7 +221,7 @@ TEST_CASE("components::types::decimal") {
         static constexpr uint8_t width = 20;
         static constexpr uint8_t scale = 4;
         // verify storage size
-        REQUIRE(complex_logical_type::create_decimal(width, scale).to_physical_type() == physical_type::INT128);
+        REQUIRE(make_decimal(width, scale).to_physical_type() == physical_type::INT128);
 
         SECTION("convert") {
             // round up

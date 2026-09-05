@@ -212,9 +212,70 @@ namespace components::planner {
                                                              rk);
             cc->set_table_oid(table_oid);
 
+            // Constraints declared inside this CREATE TABLE. They arrive as
+            // create_constraint_t children (transformer) whose names enrich already
+            // checked against the declared column list; the ATTOIDS come into existence
+            // just above, in build_create_table_writes, so this is the only place that
+            // can pair the two. Same builder, same rows, as ALTER TABLE ADD CONSTRAINT —
+            // they land in the same catalog-write sequence, so the table and everything
+            // constraining it are written under one operator, in one transaction.
+            auto attoid_of = [cc](const std::string& name) {
+                for (const auto& col : cc->column_definitions()) {
+                    if (col.name() == name) {
+                        return static_cast<catalog::oid_t>(col.attoid());
+                    }
+                }
+                return catalog::INVALID_OID;
+            };
+            std::vector<catalog::catalog_write_t> constraint_writes;
+            for (const auto& child : cc->children()) {
+                if (!child || child->type() != logical_plan::node_type::create_constraint_t) {
+                    continue;
+                }
+                auto* cstr = static_cast<logical_plan::node_create_constraint_t*>(child.get());
+                std::vector<catalog::oid_t> fk_attoids;
+                fk_attoids.reserve(cstr->local_col_names().size());
+                for (const auto& col_name : cstr->local_col_names()) {
+                    fk_attoids.push_back(attoid_of(col_name));
+                }
+                catalog::oid_t ref_table_oid = cstr->ref_table_oid();
+                std::vector<catalog::oid_t> ref_attoids = cstr->ref_col_attoids();
+                if (cstr->kind() == logical_plan::constraint_kind::foreign_key && cstr->self_reference()) {
+                    // Both ends of the key are the table this statement is creating.
+                    ref_table_oid = table_oid;
+                    ref_attoids.clear();
+                    ref_attoids.reserve(cstr->ref_col_names().size());
+                    for (const auto& col_name : cstr->ref_col_names()) {
+                        ref_attoids.push_back(attoid_of(col_name));
+                    }
+                }
+                const catalog::oid_t constraint_oid = oid_batch.allocate();
+                auto cwrites = catalog::build_create_constraint_writes(r,
+                                                                       std::string(cstr->name()),
+                                                                       table_oid,
+                                                                       constraint_oid,
+                                                                       static_cast<char>(cstr->kind()),
+                                                                       ref_table_oid,
+                                                                       fk_attoids,
+                                                                       ref_attoids,
+                                                                       cstr->match_type(),
+                                                                       cstr->del_action(),
+                                                                       cstr->upd_action(),
+                                                                       std::string(cstr->check_expr()));
+                for (auto& w : cwrites) {
+                    constraint_writes.push_back(std::move(w));
+                }
+            }
+            // The declaration has been lowered to rows; the create node goes on to
+            // physical storage creation carrying nothing but its columns.
+            cc->children().clear();
+
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             seq->append_child(node); // child 0: physical storage creation
             for (auto& w : writes) {
+                seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
+            }
+            for (auto& w : constraint_writes) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
             return seq;
@@ -706,9 +767,19 @@ namespace components::planner {
             return 0;
         }
         switch (node->type()) {
-            case nt::create_collection_t:
-                return std::size_t{1} +
-                       static_cast<const logical_plan::node_create_collection_t*>(node)->column_definitions().size();
+            case nt::create_collection_t: {
+                // One oid for pg_class, one per column for pg_attribute, and one per
+                // constraint declared inside the CREATE TABLE (they are children of the
+                // create node and rewrite_create_table allocates one oid for each).
+                const auto* cc = static_cast<const logical_plan::node_create_collection_t*>(node);
+                std::size_t need = std::size_t{1} + cc->column_definitions().size();
+                for (const auto& child : cc->children()) {
+                    if (child && child->type() == nt::create_constraint_t) {
+                        ++need;
+                    }
+                }
+                return need;
+            }
             case nt::create_database_t:
                 return 1;
             case nt::create_type_t: {

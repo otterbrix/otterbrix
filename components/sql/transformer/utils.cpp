@@ -919,6 +919,45 @@ namespace components::sql::transform {
         return std::move(out);
     }
 
+    namespace {
+        // The referenced half of a FOREIGN KEY, identical whichever syntax spelled it:
+        // `FOREIGN KEY (a) REFERENCES p (b)` names its referencing columns in fk_attrs,
+        // `a bigint REFERENCES p (b)` names exactly the column it decorates. Everything
+        // to the right of REFERENCES is the same Constraint node in both cases.
+        void decode_fk_reference(const Constraint* constraint, table::table_constraint_t& tc) {
+            if (constraint->pk_attrs) {
+                for (auto col : constraint->pk_attrs->lst) {
+                    tc.ref_columns.emplace_back(strVal(col.data));
+                }
+            }
+            if (constraint->pktable) {
+                if (constraint->pktable->catalogname) {
+                    tc.ref_database = constraint->pktable->catalogname;
+                } else if (constraint->pktable->schemaname) {
+                    tc.ref_database = constraint->pktable->schemaname;
+                }
+                if (constraint->pktable->relname) {
+                    tc.ref_collection = constraint->pktable->relname;
+                }
+            }
+            // PostgreSQL stores ' ' / '\0' for unspecified MATCH/action; normalize to
+            // SQL-standard defaults ('s' SIMPLE, 'a' NO ACTION) so downstream code never
+            // sees an unexpected sentinel.
+            if (constraint->fk_matchtype == 'f' || constraint->fk_matchtype == 'p' ||
+                constraint->fk_matchtype == 's') {
+                tc.fk_matchtype = constraint->fk_matchtype;
+            }
+            const auto da = constraint->fk_del_action;
+            if (da == 'a' || da == 'r' || da == 'c' || da == 'n' || da == 'd') {
+                tc.fk_del_action = da;
+            }
+            const auto ua = constraint->fk_upd_action;
+            if (ua == 'a' || ua == 'r' || ua == 'c' || ua == 'n' || ua == 'd') {
+                tc.fk_upd_action = ua;
+            }
+        }
+    } // namespace
+
     core::result_wrapper_t<std::vector<table::table_constraint_t>>
     extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts) {
         std::vector<table::table_constraint_t> result;
@@ -928,6 +967,9 @@ namespace components::sql::transform {
             }
             auto constraint = pg_ptr_cast<Constraint>(data.data);
             table::table_constraint_t tc;
+            if (constraint->conname) {
+                tc.name = constraint->conname;
+            }
             switch (constraint->contype) {
                 case CONSTR_PRIMARY:
                     tc.type = table::table_constraint_type::PRIMARY_KEY;
@@ -942,48 +984,11 @@ namespace components::sql::transform {
                             tc.columns.emplace_back(strVal(col.data));
                         }
                     }
-                    if (constraint->pk_attrs) {
-                        for (auto col : constraint->pk_attrs->lst) {
-                            tc.ref_columns.emplace_back(strVal(col.data));
-                        }
-                    }
-                    if (constraint->pktable) {
-                        if (constraint->pktable->catalogname) {
-                            tc.ref_database = constraint->pktable->catalogname;
-                        } else if (constraint->pktable->schemaname) {
-                            tc.ref_database = constraint->pktable->schemaname;
-                        }
-                        if (constraint->pktable->relname) {
-                            tc.ref_collection = constraint->pktable->relname;
-                        }
-                    }
-                    if (constraint->conname) {
-                        tc.name = constraint->conname;
-                    }
-                    // PostgreSQL stores ' ' / '\0' for unspecified MATCH/action; normalize to
-                    // SQL-standard defaults ('s' SIMPLE, 'a' NO ACTION) so downstream code never
-                    // sees an unexpected sentinel.
-                    if (constraint->fk_matchtype == 'f' || constraint->fk_matchtype == 'p' ||
-                        constraint->fk_matchtype == 's') {
-                        tc.fk_matchtype = constraint->fk_matchtype;
-                    }
-                    {
-                        auto da = constraint->fk_del_action;
-                        if (da == 'a' || da == 'r' || da == 'c' || da == 'n' || da == 'd') {
-                            tc.fk_del_action = da;
-                        }
-                        auto ua = constraint->fk_upd_action;
-                        if (ua == 'a' || ua == 'r' || ua == 'c' || ua == 'n' || ua == 'd') {
-                            tc.fk_upd_action = ua;
-                        }
-                    }
+                    decode_fk_reference(constraint, tc);
                     result.push_back(std::move(tc));
                     continue; // skip the unique-keys-based code below
                 case CONSTR_CHECK:
                     tc.type = table::table_constraint_type::CHECK;
-                    if (constraint->conname) {
-                        tc.name = constraint->conname;
-                    }
                     if (constraint->raw_expr) {
                         if (auto expr_res = deparse_check_expr(resource, constraint->raw_expr); expr_res.has_error()) {
                             return expr_res.convert_error<std::vector<table::table_constraint_t>>();
@@ -1002,6 +1007,62 @@ namespace components::sql::transform {
                 }
             }
             result.push_back(std::move(tc));
+        }
+        return result;
+    }
+
+    core::result_wrapper_t<std::vector<table::table_constraint_t>>
+    extract_column_constraints(std::pmr::memory_resource* resource, PGList& table_elts) {
+        std::vector<table::table_constraint_t> result;
+        for (auto data : table_elts.lst) {
+            if (nodeTag(data.data) != T_ColumnDef) {
+                continue;
+            }
+            auto coldef = pg_ptr_cast<ColumnDef>(data.data);
+            if (!coldef->constraints || !coldef->colname) {
+                continue;
+            }
+            const std::string colname{coldef->colname};
+            for (auto cdata : coldef->constraints->lst) {
+                auto constraint = pg_ptr_cast<Constraint>(cdata.data);
+                table::table_constraint_t tc;
+                if (constraint->conname) {
+                    tc.name = constraint->conname;
+                }
+                switch (constraint->contype) {
+                    case CONSTR_PRIMARY:
+                        tc.type = table::table_constraint_type::PRIMARY_KEY;
+                        tc.columns.emplace_back(colname);
+                        break;
+                    case CONSTR_UNIQUE:
+                        tc.type = table::table_constraint_type::UNIQUE;
+                        tc.columns.emplace_back(colname);
+                        break;
+                    case CONSTR_FOREIGN:
+                        tc.type = table::table_constraint_type::FOREIGN_KEY;
+                        // The decorated column IS the referencing column list; the grammar
+                        // leaves fk_attrs empty for this form.
+                        tc.columns.emplace_back(colname);
+                        decode_fk_reference(constraint, tc);
+                        break;
+                    case CONSTR_CHECK:
+                        tc.type = table::table_constraint_type::CHECK;
+                        if (constraint->raw_expr) {
+                            if (auto expr_res = deparse_check_expr(resource, constraint->raw_expr);
+                                expr_res.has_error()) {
+                                return expr_res.convert_error<std::vector<table::table_constraint_t>>();
+                            } else {
+                                tc.check_expression = std::move(expr_res.value());
+                            }
+                        }
+                        break;
+                    default:
+                        // NOT NULL / DEFAULT / everything else that is a column property
+                        // rather than a pg_constraint row — get_column_definitions owns those.
+                        continue;
+                }
+                result.push_back(std::move(tc));
+            }
         }
         return result;
     }

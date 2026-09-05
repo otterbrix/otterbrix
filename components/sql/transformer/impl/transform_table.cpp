@@ -1,5 +1,6 @@
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_create_constraint.hpp>
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/sql/parser/pg_functions.h>
@@ -21,6 +22,23 @@ namespace components::sql::transform {
         uuid_database_schema_table = 4
     };
 
+    namespace {
+        logical_plan::constraint_kind constraint_kind_of(components::table::table_constraint_type type) {
+            using components::table::table_constraint_type;
+            switch (type) {
+                case table_constraint_type::PRIMARY_KEY:
+                    return logical_plan::constraint_kind::primary_key;
+                case table_constraint_type::UNIQUE:
+                    return logical_plan::constraint_kind::unique;
+                case table_constraint_type::FOREIGN_KEY:
+                    return logical_plan::constraint_kind::foreign_key;
+                case table_constraint_type::CHECK:
+                    break;
+            }
+            return logical_plan::constraint_kind::check;
+        }
+    } // namespace
+
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_table(CreateStmt& node) {
         auto coldefs = reinterpret_cast<List*>(node.tableElts);
 
@@ -29,13 +47,18 @@ namespace components::sql::transform {
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string dbname = qn.dbname;
 
-        logical_plan::node_ptr created;
-        if (col_defs.empty()) {
-            created =
-                logical_plan::make_node_create_collection(resource_, core::relname_t{qn.relname}, node.if_not_exists);
+        // Both syntaxes land in ONE list. A constraint written on a column
+        // (`code bigint UNIQUE`) and one written as its own element (`UNIQUE (code)`)
+        // differ only in where the constrained column name is spelled; everything
+        // downstream — the node, the enrich guards, the pg_constraint row — is the same.
+        // Column-level first, in declaration order, then the table-level ones.
+        VALUE_OR_RETURN(auto constraints, extract_column_constraints(resource_, *coldefs));
+        {
+            VALUE_OR_RETURN(auto table_level, extract_table_constraints(resource_, *coldefs));
+            constraints.insert(constraints.end(),
+                               std::make_move_iterator(table_level.begin()),
+                               std::make_move_iterator(table_level.end()));
         }
-
-        VALUE_OR_RETURN(auto constraints, extract_table_constraints(resource_, *coldefs));
 
         // B1a: every table is disk-backed; the WITH (storage = ...) option is gone.
         // A user writing it believes it still selects a storage mode, so refuse it
@@ -55,26 +78,85 @@ namespace components::sql::transform {
             }
         }
 
-        created = logical_plan::make_node_create_collection(resource_,
-                                                            core::relname_t{qn.relname},
-                                                            std::move(col_defs),
-                                                            std::move(constraints),
-                                                            node.if_not_exists);
+        logical_plan::node_ptr created = logical_plan::make_node_create_collection(resource_,
+                                                                                   core::relname_t{qn.relname},
+                                                                                   std::move(col_defs),
+                                                                                   std::move(constraints),
+                                                                                   node.if_not_exists);
+        // Every declared constraint becomes the SAME node ALTER TABLE ADD CONSTRAINT
+        // produces — hung off the create node as a child, because the table it
+        // constrains is this statement's own product and has no catalog identity yet.
+        // enrich runs the guards through the parent (which owns the declared column
+        // list); rewrite_create_table mints the attoids and writes the pg_constraint
+        // rows into the same catalog-write sequence as pg_class / pg_attribute.
+        auto* cn = static_cast<logical_plan::node_create_collection_t*>(created.get());
+        {
+            for (const auto& tc : cn->constraints()) {
+                const auto kind = constraint_kind_of(tc.type);
+                // Rule 6: a CHECK whose expression did not survive deparsing would be a
+                // constraint that enforces nothing. Refuse the CREATE TABLE instead —
+                // the same refusal ALTER TABLE ADD CONSTRAINT makes.
+                if (kind == logical_plan::constraint_kind::check && tc.check_expression.empty()) {
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"CHECK constraint expression contains unsupported constructs; "
+                                         "allowed: comparisons, AND/OR/NOT, IS NULL/IS NOT NULL, "
+                                         "column references, and constants",
+                                         resource_});
+                }
+                const std::string ref_db = tc.ref_database.empty() ? dbname : tc.ref_database;
+                auto cstr = logical_plan::make_node_create_constraint(resource_,
+                                                                      dbname,
+                                                                      qn.relname,
+                                                                      core::constraint_name_t{tc.name},
+                                                                      kind,
+                                                                      ref_db);
+                cstr->set_inline_with_table(true);
+                cstr->set_local_col_names(tc.columns);
+                if (kind == logical_plan::constraint_kind::check) {
+                    cstr->set_check_expr(tc.check_expression);
+                }
+                if (kind == logical_plan::constraint_kind::foreign_key) {
+                    cstr->set_ref_relname(tc.ref_collection);
+                    cstr->set_ref_col_names(tc.ref_columns);
+                    cstr->set_match_type(tc.fk_matchtype);
+                    cstr->set_del_action(tc.fk_del_action);
+                    cstr->set_upd_action(tc.fk_upd_action);
+                    // A key pointing back at the table being created has nothing to look
+                    // up: both column lists are in this declaration, and both oids are
+                    // minted by the same rewrite. Registering a lookup for it would
+                    // resolve to nothing and read as "referenced relation does not exist".
+                    const bool self_ref = !tc.ref_collection.empty() && tc.ref_collection == qn.relname &&
+                                          ref_db == dbname;
+                    cstr->set_self_reference(self_ref);
+                    if (!self_ref && !tc.ref_collection.empty()) {
+                        register_catalog_resolve_table(resource_, &catalog_resolves_, ref_db, tc.ref_collection);
+                        // `REFERENCES parent` with the column list omitted binds to the
+                        // parent's PRIMARY KEY, which lives in that table's pg_constraint
+                        // rows — ask for its constraint gather, exactly as the ALTER path does.
+                        if (tc.ref_columns.empty()) {
+                            register_catalog_resolve_table(resource_,
+                                                           &catalog_resolves_,
+                                                           ref_db,
+                                                           tc.ref_collection,
+                                                           constraint_resolve_kind::outgoing);
+                        }
+                    }
+                }
+                created->append_child(logical_plan::node_ptr{std::move(cstr)});
+            }
+        }
         // Collect every UDT type_name referenced by the column defs
         // (including nested STRUCT children) so Pass 1's resolve_type
         // operator can stamp pg_type metadata into the plan-tree idx.
         std::set<std::string> udt_names;
         // Re-read col_defs from the constructed node (we moved it above).
-        if (auto* cn = dynamic_cast<logical_plan::node_create_collection_t*>(created.get())) {
-            for (const auto& col : cn->column_definitions()) {
-                components::types::walk_user_type_refs(col.type(), [&](std::string_view nm) { udt_names.emplace(nm); });
-            }
+        for (const auto& col : cn->column_definitions()) {
+            components::types::walk_user_type_refs(col.type(), [&](std::string_view nm) { udt_names.emplace(nm); });
         }
         // The target namespace stays ON the node: enrich binds it to a resolved
         // namespace entry by name and stamps namespace_oid() from there.
-        if (auto* cn = dynamic_cast<logical_plan::node_create_collection_t*>(created.get())) {
-            cn->set_dbname(dbname);
-        }
+        cn->set_dbname(dbname);
         register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
         // Probe the "public" namespace by default (resolve_one_type's first hit).
         // pg_catalog builtins are not in udt_names since walk_user_type_refs only

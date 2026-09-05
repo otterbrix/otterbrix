@@ -349,8 +349,18 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<std::vector<table::column_definition_t>>
     get_column_definitions(std::pmr::memory_resource* resource, PGList& table_elts);
+    // Constraints written as a separate element of the CREATE TABLE column list
+    // (`PRIMARY KEY (id)`, `UNIQUE (code)`, `CHECK (...)`, `FOREIGN KEY (...) REFERENCES ...`).
     core::result_wrapper_t<std::vector<table::table_constraint_t>>
     extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts);
+
+    // Constraints written ON a column (`code bigint UNIQUE`, `pid bigint REFERENCES p (id)`).
+    // Same result shape as extract_table_constraints — the two syntaxes differ only in where
+    // the constrained column name comes from, so everything downstream reads one list.
+    // NOT NULL / DEFAULT / PRIMARY-KEY-implies-NOT-NULL stay with get_column_definitions:
+    // they are properties of the column, not rows in pg_constraint.
+    core::result_wrapper_t<std::vector<table::table_constraint_t>>
+    extract_column_constraints(std::pmr::memory_resource* resource, PGList& table_elts);
 
     // Transformer catalog-resolve emission.
     //

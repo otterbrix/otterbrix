@@ -835,6 +835,218 @@ namespace services::catalog_resolve {
 
 namespace services::dispatcher { namespace {
 
+    // A table's columns as the constraint guards need to see them: a name to match,
+    // and the attoid that name resolves to. A table created by the SAME statement has
+    // no attoids yet — rewrite_create_table mints them — so `attoids_minted` says
+    // whether the oid half is readable, and the guard stamps only when it is.
+    struct constraint_column_view_t {
+        std::string_view name;
+        components::catalog::oid_t attoid{components::catalog::INVALID_OID};
+    };
+
+    struct constraint_table_view_t {
+        std::string_view name;
+        std::vector<constraint_column_view_t> columns;
+        // PRIMARY KEY column names, read only when this view is the REFERENCED side of
+        // a foreign key that omitted its column list.
+        std::vector<std::string> pk_columns;
+        bool attoids_minted{true};
+    };
+
+    constraint_table_view_t table_view_of(const components::logical_plan::resolved_table_metadata_t& md) {
+        constraint_table_view_t out;
+        out.name = md.name;
+        out.columns.reserve(md.columns.size());
+        for (const auto& ci : md.columns) {
+            out.columns.push_back(constraint_column_view_t{ci.attname, ci.attoid});
+        }
+        return out;
+    }
+
+    // The guards every constraint passes, whichever statement declared it: ALTER TABLE
+    // ADD CONSTRAINT and the inline forms of CREATE TABLE both come through here. A
+    // constraint that cannot be resolved is REFUSED, never trimmed — see the reasoning
+    // on each branch: a column list shorter than the one written enforces a different
+    // constraint than the one the user was told was accepted.
+    [[nodiscard]] core::error_t resolve_constraint_columns(std::pmr::memory_resource* resource,
+                                                           components::logical_plan::node_create_constraint_t* node,
+                                                           const constraint_table_view_t* local,
+                                                           const constraint_table_view_t* referenced) {
+        using components::logical_plan::constraint_kind;
+        // Names the constraint in every refusal below. A constraint written
+        // without a name (`ALTER TABLE t ADD UNIQUE (x)`) still has to be
+        // nameable, so fall back to what kind of constraint it is.
+        auto describe_constraint = [&]() {
+            std::string out;
+            if (!node->name().empty()) {
+                out = "constraint \"";
+                out += node->name();
+                out += "\"";
+                return out;
+            }
+            switch (node->kind()) {
+                case constraint_kind::primary_key:
+                    return std::string{"PRIMARY KEY constraint"};
+                case constraint_kind::unique:
+                    return std::string{"UNIQUE constraint"};
+                case constraint_kind::foreign_key:
+                    return std::string{"FOREIGN KEY constraint"};
+                case constraint_kind::check:
+                    return std::string{"CHECK constraint"};
+                default:
+                    return std::string{"constraint"};
+            }
+        };
+        if (local == nullptr) {
+            // Unreachable through SQL — the executor runs check_collection_exists
+            // on this node's own (db, rel) BEFORE enrich, so a constraint on a
+            // table that does not exist is already refused there. Skipping it
+            // here nevertheless let the planner write a pg_constraint row whose
+            // conrelid is INVALID_OID: a constraint nailed to no table, which no
+            // reader can ever key on. Rule 6 — the last line of defence refuses
+            // rather than writes something dead.
+            std::string msg = describe_constraint();
+            msg += ": table \"";
+            msg += node->relname();
+            msg += "\" carries no resolved metadata";
+            return core::error_t(core::error_code_t::invalid_constraint, std::pmr::string{std::move(msg), resource});
+        }
+
+        // Resolve local (child) column names → attoids. EVERY declared name
+        // must resolve.
+        //
+        // A name that matched nothing used to append nothing and leave the
+        // attoid list SHORTER than what the user wrote — and conkey is read
+        // POSITIONALLY from there on (operator_resolve_constraint pairs
+        // child_col_names[i] with parent_col_names[i]; the UNIQUE/PK groups are
+        // enforced as ordered tuples). Shorter than declared, the engine
+        // enforces a DIFFERENT constraint than the one written; at length 0 it
+        // enforces nothing at all, because both the FK path and the UNIQUE path
+        // skip a constraint whose column list is empty. Either way the user was
+        // told "ok". Same guard, same reason, as the two column-name guards in
+        // operator_resolve_constraint.
+        std::vector<components::catalog::oid_t> fk_attoids;
+        fk_attoids.reserve(node->local_col_names().size());
+        for (const auto& col_name : node->local_col_names()) {
+            bool found = false;
+            for (const auto& ci : local->columns) {
+                if (ci.name == col_name) {
+                    fk_attoids.push_back(ci.attoid);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                std::string msg = describe_constraint();
+                msg += ": column \"";
+                msg += col_name;
+                msg += "\" does not exist in table \"";
+                msg.append(local->name);
+                msg += "\"";
+                return core::error_t(core::error_code_t::invalid_constraint,
+                                     std::pmr::string{std::move(msg), resource});
+            }
+        }
+        if (local->attoids_minted) {
+            node->set_fk_col_attoids(std::move(fk_attoids));
+        }
+
+        if (node->kind() != constraint_kind::foreign_key) {
+            return core::error_t::no_error();
+        }
+
+        // FK only — resolve referenced table + parent column attoids.
+        // ref_table_oid was pasted by bind_catalog_data from the entry
+        // naming (ref_dbname, ref_relname).
+        //
+        // An unresolved referenced table used to skip this WHOLE branch,
+        // and the planner wrote the pg_constraint row anyway: confrelid
+        // INVALID_OID, confkey empty. operator_resolve_constraint needs BOTH
+        // name lists, so it dropped that row on the floor — `REFERENCES
+        // nosuchtable` was accepted and then guarded nothing. PostgreSQL
+        // answers `relation "nosuchtable" does not exist`; so does this.
+        if (referenced == nullptr) {
+            // Name the reference AS WRITTEN, qualifier included. The
+            // referenced table is looked up under the REFERENCING table's
+            // dbname, so `REFERENCES otherdb.parent` from a table in `db`
+            // does not resolve either — and an unqualified "parent does not
+            // exist" would be a lie there. Spelling the qualifier back at the
+            // user points at the half that did not match.
+            std::string msg = describe_constraint();
+            msg += ": referenced relation \"";
+            if (!node->ref_dbname().empty()) {
+                msg += node->ref_dbname();
+                msg += ".";
+            }
+            msg += node->ref_relname();
+            msg += "\" does not exist";
+            return core::error_t(core::error_code_t::invalid_constraint, std::pmr::string{std::move(msg), resource});
+        }
+        // `REFERENCES parent` with the referenced column list omitted binds to
+        // the parent's PRIMARY KEY.
+        //
+        // Leaving the list empty is what used to write a pg_constraint row
+        // with an empty confkey. operator_resolve_constraint drops such a row
+        // (it needs BOTH name lists), so the FK the user declared enforced
+        // nothing at all: orphans went in and ON DELETE RESTRICT let the
+        // parent go.
+        if (node->ref_col_names().empty()) {
+            if (referenced->pk_columns.empty()) {
+                return core::error_t(core::error_code_t::invalid_constraint,
+                                     std::pmr::string{describe_constraint() +
+                                                          ": there is no primary key for referenced table \"" +
+                                                          std::string(referenced->name) + "\"",
+                                                      resource});
+            }
+            // The referencing list is paired with the primary key
+            // POSITIONALLY, so a length disagreement has no pairing to
+            // make. operator_fk_check / operator_fk_cascade catch this
+            // shape at DML time; caught here it never reaches the
+            // catalog, and the message can name the primary key.
+            if (node->local_col_names().size() != referenced->pk_columns.size()) {
+                return core::error_t(
+                    core::error_code_t::invalid_constraint,
+                    std::pmr::string{describe_constraint() + ": foreign key column count mismatch — " +
+                                         std::to_string(node->local_col_names().size()) +
+                                         " referencing column(s) vs " +
+                                         std::to_string(referenced->pk_columns.size()) +
+                                         " column(s) in the primary key of referenced table \"" +
+                                         std::string(referenced->name) + "\"",
+                                     resource});
+            }
+            node->set_ref_col_names(referenced->pk_columns);
+        }
+        // Same guard as the referencing list above, referenced side: a
+        // name that matched nothing left confkey short (at length 0 the
+        // FK enforced nothing), and confkey is read positionally too.
+        std::vector<components::catalog::oid_t> ref_attoids;
+        ref_attoids.reserve(node->ref_col_names().size());
+        for (const auto& col_name : node->ref_col_names()) {
+            bool found = false;
+            for (const auto& ci : referenced->columns) {
+                if (ci.name == col_name) {
+                    ref_attoids.push_back(ci.attoid);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                std::string msg = describe_constraint();
+                msg += ": column \"";
+                msg += col_name;
+                msg += "\" does not exist in referenced table \"";
+                msg.append(referenced->name);
+                msg += "\"";
+                return core::error_t(core::error_code_t::invalid_constraint,
+                                     std::pmr::string{std::move(msg), resource});
+            }
+        }
+        if (referenced->attoids_minted) {
+            node->set_ref_col_attoids(std::move(ref_attoids));
+        }
+        return core::error_t::no_error();
+    }
+
     // Per-node enrichment worker, recursing through children. Threads a
     // core::error_t through the recursion (no-error state on success).
     // bind_catalog_data has already run over the whole tree, so every node's
@@ -970,6 +1182,97 @@ namespace services::dispatcher { namespace {
                 // STRUCT fields, ARRAY/LIST element types) with concrete types, so
                 // validation only ever sees resolved ones.
                 resolve_column_definitions(node->column_definitions(), resolves);
+
+                // Constraints declared INSIDE this CREATE TABLE. They hang off this node
+                // as create_constraint_t children (the transformer built them), and their
+                // table is this statement's own product — there is nothing in the catalog
+                // to bind the local side to. So the local side is the DECLARED column
+                // list, and the attoids stay unstamped: rewrite_create_table mints them
+                // and reads the names back off this same list. The referenced side of a
+                // foreign key is an ordinary catalog lookup and goes through the very
+                // guards ALTER TABLE ADD CONSTRAINT goes through.
+                bool has_inline_constraints = false;
+                for (const auto& child : root->children()) {
+                    if (child && child->type() == node_type::create_constraint_t) {
+                        has_inline_constraints = true;
+                        break;
+                    }
+                }
+                if (!has_inline_constraints) {
+                    break;
+                }
+                if (node->column_definitions().empty()) {
+                    // No declared columns means relkind='g' (dynamic schema): the table
+                    // has no pg_attribute rows at all, so a conkey attoid written for it
+                    // could never be matched back to a column. Same refusal, same reason,
+                    // as the relkind='g' gate ALTER TABLE ADD CONSTRAINT passes.
+                    co_return core::error_t(
+                        core::error_code_t::schema_error,
+                        std::pmr::string{"constraints are not supported on dynamic-schema (relkind='g') tables: "
+                                         "CREATE TABLE declared a constraint but no columns. Constraint "
+                                         "enforcement requires stable column attoids.",
+                                         resource});
+                }
+                constraint_table_view_t local;
+                local.name = node->relname();
+                local.attoids_minted = false;
+                local.columns.reserve(node->column_definitions().size());
+                for (const auto& col : node->column_definitions()) {
+                    local.columns.push_back(constraint_column_view_t{col.name(), components::catalog::INVALID_OID});
+                }
+                // A self-referencing foreign key that omitted its column list binds to
+                // the primary key declared in this very statement.
+                for (const auto& child : root->children()) {
+                    if (!child || child->type() != node_type::create_constraint_t) {
+                        continue;
+                    }
+                    const auto* cstr = static_cast<const node_create_constraint_t*>(child.get());
+                    if (cstr->kind() == constraint_kind::primary_key) {
+                        local.pk_columns = cstr->local_col_names();
+                        break;
+                    }
+                }
+                for (const auto& child : root->children()) {
+                    if (!child || child->type() != node_type::create_constraint_t) {
+                        continue;
+                    }
+                    auto* cstr = static_cast<node_create_constraint_t*>(child.get());
+                    constraint_table_view_t referenced;
+                    const constraint_table_view_t* referenced_ptr = nullptr;
+                    if (cstr->kind() == constraint_kind::foreign_key) {
+                        if (cstr->self_reference()) {
+                            referenced_ptr = &local;
+                        } else {
+                            const auto* rrt =
+                                (cstr->ref_table_oid() != components::catalog::INVALID_OID && resolves)
+                                    ? resolves->table_md(cstr->ref_table_oid())
+                                    : nullptr;
+                            if (rrt) {
+                                if (rrt->relkind == 'g') {
+                                    co_return core::error_t(
+                                        core::error_code_t::schema_error,
+                                        std::pmr::string{
+                                            "Foreign key constraints are not supported when the referencing or "
+                                            "referenced table is dynamic-schema (relkind='g'). FK enforcement "
+                                            "requires stable column attoids; dynamic-schema columns may evolve. "
+                                            "Convert involved tables to static schema first.",
+                                            resource});
+                                }
+                                referenced = table_view_of(*rrt);
+                                const auto* parent_constraints =
+                                    resolves->constraints_for(cstr->ref_table_oid(), resolve_direction::outgoing);
+                                if (parent_constraints) {
+                                    referenced.pk_columns = parent_constraints->pk_columns;
+                                }
+                                referenced_ptr = &referenced;
+                            }
+                        }
+                    }
+                    if (auto ec = resolve_constraint_columns(resource, cstr, &local, referenced_ptr);
+                        ec.contains_error()) {
+                        co_return ec;
+                    }
+                }
                 break;
             }
             case node_type::create_sequence_t:
@@ -1009,182 +1312,44 @@ namespace services::dispatcher { namespace {
             }
             case node_type::create_constraint_t: {
                 auto* node = static_cast<node_create_constraint_t*>(root.get());
-                // Names the constraint in every refusal below. A constraint written
-                // without a name (`ALTER TABLE t ADD UNIQUE (x)`) still has to be
-                // nameable, so fall back to what kind of constraint it is.
-                auto describe_constraint = [&]() {
-                    std::string out;
-                    if (!node->name().empty()) {
-                        out = "constraint \"";
-                        out += node->name();
-                        out += "\"";
-                        return out;
-                    }
-                    switch (node->kind()) {
-                        case constraint_kind::primary_key:
-                            return std::string{"PRIMARY KEY constraint"};
-                        case constraint_kind::unique:
-                            return std::string{"UNIQUE constraint"};
-                        case constraint_kind::foreign_key:
-                            return std::string{"FOREIGN KEY constraint"};
-                        case constraint_kind::check:
-                            return std::string{"CHECK constraint"};
-                        default:
-                            return std::string{"constraint"};
-                    }
-                };
+                // Written inside a CREATE TABLE: the parent create_collection_t case
+                // already ran the guards against the declared column list, because the
+                // table this names does not exist and never will as a separate object.
+                if (node->inline_with_table()) {
+                    break;
+                }
                 const auto* tbl = node->table_metadata();
-                if (!tbl) {
-                    // Unreachable through SQL — the executor runs check_collection_exists
-                    // on this node's own (db, rel) BEFORE enrich, so a constraint on a
-                    // table that does not exist is already refused there. Skipping it
-                    // here nevertheless let the planner write a pg_constraint row whose
-                    // conrelid is INVALID_OID: a constraint nailed to no table, which no
-                    // reader can ever key on. Rule 6 — the last line of defence refuses
-                    // rather than writes something dead.
-                    std::string msg = describe_constraint();
-                    msg += ": table \"";
-                    msg += node->relname();
-                    msg += "\" carries no resolved metadata";
-                    co_return core::error_t(core::error_code_t::invalid_constraint,
-                                            std::pmr::string{std::move(msg), resource});
+                constraint_table_view_t local;
+                if (tbl) {
+                    local = table_view_of(*tbl);
                 }
-
-                // Resolve local (child) column names → attoids. EVERY declared name
-                // must resolve.
-                //
-                // A name that matched nothing used to append nothing and leave the
-                // attoid list SHORTER than what the user wrote — and conkey is read
-                // POSITIONALLY from there on (operator_resolve_constraint pairs
-                // child_col_names[i] with parent_col_names[i]; the UNIQUE/PK groups are
-                // enforced as ordered tuples). Shorter than declared, the engine
-                // enforces a DIFFERENT constraint than the one written; at length 0 it
-                // enforces nothing at all, because both the FK path and the UNIQUE path
-                // skip a constraint whose column list is empty. Either way the user was
-                // told "ok". Same guard, same reason, as the two column-name guards in
-                // operator_resolve_constraint.
-                std::vector<components::catalog::oid_t> fk_attoids;
-                fk_attoids.reserve(node->local_col_names().size());
-                for (const auto& col_name : node->local_col_names()) {
-                    bool found = false;
-                    for (const auto& ci : tbl->columns) {
-                        if (ci.attname == col_name) {
-                            fk_attoids.push_back(ci.attoid);
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) {
-                        std::string msg = describe_constraint();
-                        msg += ": column \"";
-                        msg += col_name;
-                        msg += "\" does not exist in table \"";
-                        msg += tbl->name;
-                        msg += "\"";
-                        co_return core::error_t(core::error_code_t::invalid_constraint,
-                                                std::pmr::string{std::move(msg), resource});
-                    }
-                }
-                node->set_fk_col_attoids(std::move(fk_attoids));
-
-                // FK only — resolve referenced table + parent column attoids.
-                // ref_table_oid was pasted by bind_catalog_data from the entry
-                // naming (ref_dbname, ref_relname).
+                constraint_table_view_t referenced;
+                const constraint_table_view_t* referenced_ptr = nullptr;
                 if (node->kind() == constraint_kind::foreign_key) {
-                    // An unresolved referenced table used to skip this WHOLE branch,
-                    // and the planner wrote the pg_constraint row anyway: confrelid
-                    // INVALID_OID, confkey empty. operator_resolve_constraint needs BOTH
-                    // name lists, so it dropped that row on the floor — `REFERENCES
-                    // nosuchtable` was accepted and then guarded nothing. PostgreSQL
-                    // answers `relation "nosuchtable" does not exist`; so does this.
                     const auto* rrt = (node->ref_table_oid() != components::catalog::INVALID_OID && resolves)
                                           ? resolves->table_md(node->ref_table_oid())
                                           : nullptr;
-                    if (rrt == nullptr) {
-                        // Name the reference AS WRITTEN, qualifier included. The
-                        // referenced table is looked up under the REFERENCING table's
-                        // dbname, so `REFERENCES otherdb.parent` from a table in `db`
-                        // does not resolve either — and an unqualified "parent does not
-                        // exist" would be a lie there. Spelling the qualifier back at the
-                        // user points at the half that did not match.
-                        std::string msg = describe_constraint();
-                        msg += ": referenced relation \"";
-                        if (!node->ref_dbname().empty()) {
-                            msg += node->ref_dbname();
-                            msg += ".";
-                        }
-                        msg += node->ref_relname();
-                        msg += "\" does not exist";
-                        co_return core::error_t(core::error_code_t::invalid_constraint,
-                                                std::pmr::string{std::move(msg), resource});
-                    }
-                    // `REFERENCES parent` with the referenced column list omitted
-                    // binds to the parent's PRIMARY KEY. The transformer registered
-                    // the parent's constraint gather for exactly this case, so the
-                    // key is already here as pk_columns — a pure entry read, the
-                    // same shape as the DML branches above.
-                    //
-                    // Leaving the list empty is what used to write a pg_constraint
-                    // row with an empty confkey. operator_resolve_constraint drops
-                    // such a row (it needs BOTH name lists), so the FK the user
-                    // declared enforced nothing at all: orphans went in and
-                    // ON DELETE RESTRICT let the parent go.
-                    if (node->ref_col_names().empty()) {
+                    if (rrt) {
+                        referenced = table_view_of(*rrt);
+                        // `REFERENCES parent` with the referenced column list omitted
+                        // binds to the parent's PRIMARY KEY. The transformer registered
+                        // the parent's constraint gather for exactly this case, so the
+                        // key is already here as pk_columns — a pure entry read, the
+                        // same shape as the DML branches above.
                         const auto* parent_constraints =
                             resolves->constraints_for(node->ref_table_oid(), resolve_direction::outgoing);
-                        if (parent_constraints == nullptr || parent_constraints->pk_columns.empty()) {
-                            co_return core::error_t(
-                                core::error_code_t::invalid_constraint,
-                                std::pmr::string{describe_constraint() +
-                                                     ": there is no primary key for referenced table \"" +
-                                                     rrt->name + "\"",
-                                                 resource});
+                        if (parent_constraints) {
+                            referenced.pk_columns = parent_constraints->pk_columns;
                         }
-                        // The referencing list is paired with the primary key
-                        // POSITIONALLY, so a length disagreement has no pairing to
-                        // make. operator_fk_check / operator_fk_cascade catch this
-                        // shape at DML time; caught here it never reaches the
-                        // catalog, and the message can name the primary key.
-                        if (node->local_col_names().size() != parent_constraints->pk_columns.size()) {
-                            co_return core::error_t(
-                                core::error_code_t::invalid_constraint,
-                                std::pmr::string{
-                                    describe_constraint() +
-                                        ": foreign key column count mismatch — " +
-                                        std::to_string(node->local_col_names().size()) +
-                                        " referencing column(s) vs " +
-                                        std::to_string(parent_constraints->pk_columns.size()) +
-                                        " column(s) in the primary key of referenced table \"" + rrt->name + "\"",
-                                    resource});
-                        }
-                        node->set_ref_col_names(parent_constraints->pk_columns);
+                        referenced_ptr = &referenced;
                     }
-                    // Same guard as the referencing list above, referenced side: a
-                    // name that matched nothing left confkey short (at length 0 the
-                    // FK enforced nothing), and confkey is read positionally too.
-                    std::vector<components::catalog::oid_t> ref_attoids;
-                    ref_attoids.reserve(node->ref_col_names().size());
-                    for (const auto& col_name : node->ref_col_names()) {
-                        bool found = false;
-                        for (const auto& ci : rrt->columns) {
-                            if (ci.attname == col_name) {
-                                ref_attoids.push_back(ci.attoid);
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found) {
-                            std::string msg = describe_constraint();
-                            msg += ": column \"";
-                            msg += col_name;
-                            msg += "\" does not exist in referenced table \"";
-                            msg += rrt->name;
-                            msg += "\"";
-                            co_return core::error_t(core::error_code_t::invalid_constraint,
-                                                    std::pmr::string{std::move(msg), resource});
-                        }
-                    }
-                    node->set_ref_col_attoids(std::move(ref_attoids));
+                }
+                if (auto ec = resolve_constraint_columns(resource,
+                                                         node,
+                                                         tbl ? &local : nullptr,
+                                                         referenced_ptr);
+                    ec.contains_error()) {
+                    co_return ec;
                 }
                 break;
             }

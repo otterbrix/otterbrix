@@ -238,7 +238,8 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
     transform::transformer transformer(&resource);
 
     // Table-level CHECK constraints go through extract_table_constraints → deparse_check_expr.
-    // Column-level CHECK (inside T_ColumnDef) is a separate path not handled yet.
+    // Column-level CHECK (inside T_ColumnDef) reaches the same deparser through
+    // extract_column_constraints; the two extractors feed one list on the create node.
 
     SECTION("simple comparison is allowed") {
         auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(x > 0))"));

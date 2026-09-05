@@ -1192,3 +1192,246 @@ TEST_CASE("components::table::mvcc::revert_append_array_child_row_group_1") {
     REQUIRE(table->row_group()->total_rows() == 1056);
     verify_array_rows(*table, env, 1056, 1044, 1'000'000);
 }
+
+// ---------------------------------------------------------------------------
+// VACUUM must not resurrect committed deletes.
+//
+// row_version_manager_t::cleanup_append processes a vector ONLY when it is FULL
+// (vcount == DEFAULT_VECTOR_CAPACITY), and the default row_group_size is
+// DEFAULT_VECTOR_CAPACITY too — so the vectors that reach chunk_info::cleanup at all
+// are exactly the full row groups of a table. Every MVCC test above runs on 10..100
+// rows and is turned away by that guard before cleanup is ever called, which is why
+// the cases below insist on a FULL 1024-row vector.
+//
+// The hazard cleanup_append carries: `cleanup() == true` INSTALLS `result` into the
+// slot, and `result` may be empty. An empty slot is not "no history left", it is
+// "every row here is visible" — row_version_manager_t::indexing_vector returns
+// max_count and fetch returns true when get_chunk_info gives nullptr. Dropping a
+// committed delete stamp therefore un-deletes the rows for every reader, with no
+// crash and no restart in the way.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+    // Commits a DELETE of the contiguous row-id range [first_row, first_row+count) the way
+    // the DELETE statement does: delete_rows stamps the pending txn id, commit+publish
+    // allocate the commit id, commit_all_deletes stamps it in.
+    void delete_range_committed(data_table_t& table,
+                                test_env& env,
+                                transaction_manager_t& mgr,
+                                int64_t first_row,
+                                uint64_t count) {
+        auto session = components::session::session_id_t::generate_uid();
+        auto& txn = mgr.begin_transaction(session);
+        auto txn_id = txn.data().transaction_id;
+
+        auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), count);
+        for (uint64_t i = 0; i < count; i++) {
+            row_ids.set_value(i, logical_value_t(&env.resource, first_row + static_cast<int64_t>(i)));
+        }
+        auto del_state = table.initialize_delete({});
+        REQUIRE(table.delete_rows(*del_state, row_ids, count, txn_id) == count);
+
+        auto commit_id = mgr.commit(session);
+        mgr.publish(commit_id);
+        table.commit_all_deletes(txn_id, commit_id);
+    }
+
+    // Full ordered drain of the visible set. These cases check CONTENTS, not only the
+    // count: a resurrected row is recognisable only by its value, and a count alone
+    // cannot tell "the deleted rows came back" from "different rows survived".
+    std::vector<int64_t> scan_all_values(data_table_t& table, test_env& env) {
+        std::vector<storage_index_t> column_ids;
+        column_ids.emplace_back(0);
+
+        table_scan_state scan_state(&env.resource);
+        table.initialize_scan(scan_state, column_ids);
+
+        auto types = table.copy_types();
+        std::vector<int64_t> values;
+        while (true) {
+            auto result = data_chunk_t(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+            table.scan(result, scan_state);
+            if (result.size() == 0) {
+                break;
+            }
+            for (uint64_t i = 0; i < result.size(); i++) {
+                values.push_back(result.data[0].get_value<int64_t>(i));
+            }
+        }
+        return values;
+    }
+
+    std::vector<int64_t> make_vector_range(int64_t first, int64_t last) {
+        std::vector<int64_t> v;
+        for (int64_t x = first; x <= last; x++) {
+            v.push_back(x);
+        }
+        return v;
+    }
+
+} // anonymous namespace
+
+// Leg 1 — PARTIAL deletes in a full vector. ONE cleanup_versions pass is enough:
+// chunk_vector_info::cleanup used to fall through its partial-delete branch to
+// `return true` while leaving `result` empty, so the vector's 500 committed delete
+// stamps were thrown away and the rows became visible again.
+TEST_CASE("components::table::mvcc::vacuum_keeps_partial_committed_deletes") {
+    test_env env;
+    auto table = make_int_table(env);
+    transaction_manager_t mgr(&env.resource);
+
+    // Exactly one FULL row group / one FULL vector: values 0..1023 at row ids 0..1023.
+    append_rows(*table, env, 0, 1024);
+    REQUIRE(scan_all_values(*table, env) == make_vector_range(0, 1023));
+
+    // Committed DELETE of the first 500 rows.
+    delete_range_committed(*table, env, mgr, 0, 500);
+    const auto survivors = make_vector_range(500, 1023);
+    REQUIRE(scan_all_values(*table, env) == survivors);
+
+    // The count goes first so a resurrection reads as "524 became 1024" rather than as a
+    // 1024-element diff; the contents then say WHICH rows are there.
+    auto check_survivors = [&] {
+        auto visible = scan_all_values(*table, env);
+        REQUIRE(visible.size() == survivors.size());
+        REQUIRE(visible == survivors);
+    };
+
+    // VACUUM. No other transaction is active, so the horizon is already past the
+    // delete's commit — exactly the state that made cleanup drop the stamps.
+    table->cleanup_versions(mgr.lowest_active_start_time());
+    check_survivors();
+
+    // A second pass must be just as harmless.
+    table->cleanup_versions(mgr.lowest_active_start_time());
+    check_survivors();
+}
+
+// Leg 2 — a FULLY deleted vector. It takes TWO cleanup_versions passes: the first
+// legitimately collapses the 1024-stamp chunk_vector_info into a chunk_constant_info
+// that keeps the delete_id; the second then hit chunk_constant_info::cleanup, which
+// returned true on a committed delete_id with an empty `result` and brought all 1024
+// rows back at once.
+TEST_CASE("components::table::mvcc::vacuum_keeps_fully_deleted_vector_deleted") {
+    test_env env;
+    auto table = make_int_table(env);
+    transaction_manager_t mgr(&env.resource);
+
+    append_rows(*table, env, 0, 1024);
+    REQUIRE(scan_all_values(*table, env) == make_vector_range(0, 1023));
+
+    delete_range_committed(*table, env, mgr, 0, 1024);
+    REQUIRE(scan_all_values(*table, env).size() == 0);
+
+    // First VACUUM: the vector collapses to a constant. The rows stay deleted.
+    table->cleanup_versions(mgr.lowest_active_start_time());
+    REQUIRE(scan_all_values(*table, env).size() == 0);
+
+    // Second VACUUM: the constant must keep its delete stamp too.
+    table->cleanup_versions(mgr.lowest_active_start_time());
+    REQUIRE(scan_all_values(*table, env).size() == 0);
+
+    // And a third, in case the collapse is ever staged differently.
+    table->cleanup_versions(mgr.lowest_active_start_time());
+    REQUIRE(scan_all_values(*table, env).size() == 0);
+}
+
+// The other half of the contract, driven straight at chunk_info::cleanup: GC must still
+// RECLAIM what it legitimately may, or tightening it would just be a leak. `true` with an
+// empty `result` drops the slot; `true` with a `result` replaces it; `false` keeps what is
+// there. Insert history visible to every reader is droppable — the fact of a delete is not.
+TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history") {
+    constexpr uint64_t kLowest = 1000;
+    constexpr uint64_t kOldCommit = 10;
+
+    // (a) A full vector with no delete at all: the case cleanup exists for. The 1024
+    // insert stamps are visible to everyone, so the whole slot goes.
+    {
+        chunk_vector_info info(0);
+        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
+        std::unique_ptr<chunk_info> result;
+        REQUIRE(info.cleanup(kLowest, result));
+        REQUIRE(result == nullptr);
+    }
+
+    // (b) A fully deleted vector still collapses 1024 stamps into one constant — but the
+    // constant must KEEP the delete, so the rows stay invisible to a see-all-committed reader.
+    {
+        chunk_vector_info info(0);
+        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
+        info.any_deleted = true;
+        for (uint64_t i = 0; i < DEFAULT_VECTOR_CAPACITY; i++) {
+            info.deleted[i] = kOldCommit + 1;
+        }
+        std::unique_ptr<chunk_info> result;
+        REQUIRE(info.cleanup(kLowest, result));
+        REQUIRE(result != nullptr);
+        REQUIRE(result->type == chunk_info_type::CONSTANT_INFO);
+        REQUIRE(result->cast<chunk_constant_info>().delete_id == kOldCommit + 1);
+        REQUIRE_FALSE(result->fetch(transaction_data{}, 0));
+        REQUIRE_FALSE(result->fetch(transaction_data{}, DEFAULT_VECTOR_CAPACITY - 1));
+    }
+
+    // (b2) The same vector deleted by TWO transactions. A constant can carry ONE delete
+    // stamp, and neither of the two is right for the rows the other deleted, so the
+    // collapse is off and the per-row stamps stay.
+    {
+        chunk_vector_info info(0);
+        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
+        info.any_deleted = true;
+        for (uint64_t i = 0; i < DEFAULT_VECTOR_CAPACITY; i++) {
+            info.deleted[i] = (i % 2 == 0) ? kOldCommit + 1 : kOldCommit + 2;
+        }
+        std::unique_ptr<chunk_info> result;
+        REQUIRE_FALSE(info.cleanup(kLowest, result));
+        REQUIRE(result == nullptr);
+    }
+
+    // (c) revert_all_deletes leaves any_deleted set as a conservative hint with not one
+    // surviving stamp. Nothing is being hidden, so the slot is still reclaimable.
+    {
+        chunk_vector_info info(0);
+        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
+        info.any_deleted = true;
+        std::unique_ptr<chunk_info> result;
+        REQUIRE(info.cleanup(kLowest, result));
+        REQUIRE(result == nullptr);
+    }
+
+    // (d) A delete-free CONSTANT slot is reclaimable on the same terms.
+    {
+        chunk_constant_info info(0);
+        info.insert_id = kOldCommit;
+        std::unique_ptr<chunk_info> result;
+        REQUIRE(info.cleanup(kLowest, result));
+        REQUIRE(result == nullptr);
+    }
+
+    // (e) Refusals that already held and must keep holding: an insert newer than the
+    // floor, and a delete still pending under a live txn id.
+    {
+        chunk_vector_info info(0);
+        info.append(0, DEFAULT_VECTOR_CAPACITY, kLowest + 1);
+        std::unique_ptr<chunk_info> result;
+        REQUIRE_FALSE(info.cleanup(kLowest, result));
+        REQUIRE(result == nullptr);
+    }
+    {
+        chunk_vector_info info(0);
+        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
+        info.any_deleted = true;
+        info.deleted[7] = TRANSACTION_ID_START + 3;
+        std::unique_ptr<chunk_info> result;
+        REQUIRE_FALSE(info.cleanup(kLowest, result));
+        REQUIRE(result == nullptr);
+    }
+    {
+        chunk_constant_info info(0);
+        info.insert_id = kOldCommit;
+        info.delete_id = TRANSACTION_ID_START + 3;
+        std::unique_ptr<chunk_info> result;
+        REQUIRE_FALSE(info.cleanup(kLowest, result));
+        REQUIRE(result == nullptr);
+    }
+}

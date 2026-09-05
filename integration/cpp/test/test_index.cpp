@@ -761,6 +761,114 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 48;", 0);
 }
 
+// VACUUM must not resurrect committed deletes, and the seq-scan path and the index
+// path must not disagree about which rows exist.
+//
+// The version-info GC (row_version_manager_t::cleanup_append -> chunk_info::cleanup)
+// only ever looks at a FULL vector — vcount == DEFAULT_VECTOR_CAPACITY — and the default
+// row_group_size is DEFAULT_VECTOR_CAPACITY too, so it is exactly the full row groups of a
+// table that reach it. vacuum_rebuild_visible above runs on 50 rows and never gets there;
+// this case fills a whole row group so it does.
+//
+// The shape is plain SQL with no crash and no restart in it: insert 1024 rows, commit a
+// DELETE of the first 500, then VACUUM with no other transaction active (so the GC floor
+// is already past the delete's commit). Both the unqualified scan and the indexed
+// predicates must still report the 524 survivors. Two VACUUMs, because the two legs of the
+// defect ripen at different depths: a partially deleted vector loses its stamps on the
+// first pass, a fully deleted one only after the second.
+//
+// MEASURED, about the index leg specifically: the two paths did NOT disagree while the
+// GC was dropping the stamps — they lied together. `SELECT WHERE count < 500` returned
+// the same 500 resurrected rows the bare scan did. operator_vacuum_t runs vacuum_all
+// (the heap-side GC) BEFORE it rebuilds each table's index through
+// manager_index_t::repopulate_table, and that rebuild feeds off a fresh scan of the heap
+// — so it faithfully re-indexed the resurrected rows. manager_index_t::cleanup_all_versions
+// deletes nothing on its own (it is a documented no-op since the in-memory index went
+// away). The index predicates stay in this test anyway: they pin the agreement, so a
+// future change that reclaims index entries without the heap agreeing shows up here.
+TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row_group") {
+    constexpr int kRows = 1024;  // exactly one full row group / one full vector
+    constexpr int kDeleted = 500;
+
+    auto config =
+        test_create_config("/tmp/otterbrix/integration/test_index/vacuum_keeps_committed_deletes_full_row_group");
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    {
+        auto session = otterbrix::session_id_t();
+        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection (count bigint);");
+        REQUIRE(cur->is_success());
+    }
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE INDEX idx_count ON TestDatabase.TestCollection (count);");
+        REQUIRE(cur->is_success());
+    }
+
+    // count = 0..1023, loaded in batches so each INSERT stays within one data_chunk.
+    {
+        constexpr int kBatch = 512;
+        static_assert(kBatch <= kRows);
+        int inserted = 0;
+        while (inserted < kRows) {
+            const int batch = std::min(kBatch, kRows - inserted);
+            auto session = otterbrix::session_id_t();
+            std::stringstream q;
+            q << "INSERT INTO TestDatabase.TestCollection (count) VALUES ";
+            for (int i = 0; i < batch; ++i) {
+                q << "(" << (inserted + i) << ")" << (i + 1 == batch ? ";" : ", ");
+            }
+            auto cur = dispatcher->execute_sql(session, q.str());
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == static_cast<std::size_t>(batch));
+            inserted += batch;
+        }
+    }
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kRows);
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 500;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == static_cast<std::size_t>(kDeleted));
+    }
+    CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kRows - kDeleted);
+
+    // Both paths must agree, before and after every VACUUM: the seq scan on the left,
+    // the index predicates on the right.
+    auto check_both_paths = [&] {
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kRows - kDeleted);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count < 500;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count >= 500;", kRows - kDeleted);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 499;", 0);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 500;", 1);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 1023;", 1);
+    };
+
+    check_both_paths();
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "VACUUM;");
+        REQUIRE(cur->is_success());
+    }
+    check_both_paths();
+
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "VACUUM;");
+        REQUIRE(cur->is_success());
+    }
+    check_both_paths();
+}
+
 // CREATE INDEX backfill scans the table via the streaming fetch-next leg, which emits
 // chunks of at most DEFAULT_VECTOR_CAPACITY (1024) rows. A regression that
 // overwrites the scan buffer on each chunk leaves only the last chunk indexed

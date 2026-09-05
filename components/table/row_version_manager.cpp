@@ -112,10 +112,19 @@ namespace components::table {
         if (insert_id > lowest_transaction) {
             return false;
         }
-        // Committed deletes are fine — they're visible to all active transactions
-        if (delete_id != NOT_DELETED_ID && delete_id > lowest_transaction) {
+        // ANY delete stamp pins this slot, committed or not. GC may drop version HISTORY —
+        // the record of which older transactions could still see a row — but never the FACT
+        // of a deletion. "The delete is visible to every active transaction" is not the same
+        // claim as "the rows are visible to every active transaction": a committed delete
+        // means the rows are visible to NOBODY, and this stamp is the only thing left saying
+        // so. Answering true here would leave `result` empty, and cleanup_append installs
+        // that empty result into the slot — where a null chunk_info means "all rows visible"
+        // (row_version_manager_t::indexing_vector returns max_count, fetch returns true).
+        // All DEFAULT_VECTOR_CAPACITY rows would come back for every reader.
+        if (delete_id != NOT_DELETED_ID) {
             return false;
         }
+        // Delete-free and old enough: nothing here is hiding anything, so the slot goes.
         return true;
     }
 
@@ -274,9 +283,10 @@ namespace components::table {
 
         if (any_deleted) {
             // Check if ALL deletes are committed (< TRANSACTION_ID_START) and old enough
-            bool all_committed = true;
+            bool any_delete_stamp = false;
             bool all_deleted = true;
-            uint64_t min_delete_id = NOT_DELETED_ID;
+            bool same_delete_id = true;
+            uint64_t first_delete_id = NOT_DELETED_ID;
             for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; i++) {
                 if (deleted[i] == NOT_DELETED_ID) {
                     all_deleted = false;
@@ -284,26 +294,49 @@ namespace components::table {
                 }
                 if (deleted[i] >= TRANSACTION_ID_START || deleted[i] > lowest_transaction) {
                     // Uncommitted or too recent delete — can't cleanup
-                    all_committed = false;
-                    break;
+                    return false;
                 }
-                if (deleted[i] < min_delete_id) {
-                    min_delete_id = deleted[i];
+                if (!any_delete_stamp) {
+                    first_delete_id = deleted[i];
+                } else if (deleted[i] != first_delete_id) {
+                    same_delete_id = false;
                 }
+                any_delete_stamp = true;
             }
-            if (!all_committed) {
-                return false;
-            }
-            // All deletes are committed and old enough.
-            // If every row is deleted, convert to chunk_constant_info
-            if (all_deleted) {
+            // All deletes are committed and old enough. Every one of them still has to
+            // SURVIVE this call: the caller (cleanup_append) replaces the slot with
+            // `result` whenever we answer true, and a null slot means "all rows visible",
+            // not "no history left". Dropping a committed delete stamp un-deletes the rows.
+            if (all_deleted && same_delete_id) {
+                // The one real reclaim available here: DEFAULT_VECTOR_CAPACITY insert and
+                // delete stamps collapse into two ids. The delete is CARRIED OVER, so the
+                // rows stay gone.
+                //
+                // Only ONE delete id may collapse this way. Two transactions can between
+                // them delete the whole vector, and a constant can carry a single stamp:
+                // picking either of theirs rewrites the other rows' delete time, and BOTH
+                // directions are wrong for some snapshot — an earlier stamp hides rows a
+                // still-running older snapshot is entitled to see, a later one reveals rows
+                // a newer snapshot must not. So mixed ids keep the per-row vector.
                 auto constant = std::make_unique<chunk_constant_info>(start);
                 constant->insert_id = same_inserted_id ? insert_id : inserted[0];
-                constant->delete_id = min_delete_id;
+                constant->delete_id = first_delete_id;
                 result = std::move(constant);
+                return true;
             }
-            // else: partial deletes — still allow cleanup (version info no longer needed
-            //       because all versions are visible to all active transactions)
+            if (any_delete_stamp) {
+                // Partial deletes, or a whole vector deleted under mixed commit ids. The
+                // per-row stamps are the ONLY record of which rows went and when — no
+                // coarser slot can hold "rows 0..499 deleted, the rest alive" — so the
+                // vector stays exactly as it is. Nothing about it is reclaimable, and
+                // saying otherwise resurrects the deleted rows. The physical reclaim of
+                // these rows is data_table_t::compact's job, which rebuilds the row group
+                // without them and drops this whole manager with it.
+                return false;
+            }
+            // any_deleted survived revert_all_deletes as a conservative hint: the flag is
+            // set but not one stamp is left, so nothing is being hidden and the slot is
+            // reclaimable on the insert-only terms below.
         }
         return true;
     }

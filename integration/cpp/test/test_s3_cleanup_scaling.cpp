@@ -17,36 +17,34 @@
 // Where does a disk-backed table's dead-row reclaim happen, and what does a small commit pay
 // for it?
 //
-// These two cases used to answer a narrower question. agent_disk_t::maybe_cleanup_inner rode
-// the COMMIT fan-out and asked collection_t::committed_row_count() on every commit to decide
-// whether to compact; that call reaches chunk_vector_info::committed_deleted_count, which
-// re-scans all 1024 slots of EVERY vector still carrying a committed tombstone. UPDATE here is
-// tombstone+append, so a table under a long UPDATE workload accumulates them — and every later
-// commit, however small, paid for all of them. The pair measured that walk and bounded its
-// growth.
+// These two cases used to answer a narrower question. agent_disk_t::maybe_cleanup_inner rode the
+// COMMIT fan-out and asked collection_t::committed_row_count() on every commit to decide whether
+// to compact; that call reaches chunk_vector_info::committed_deleted_count, which re-scans all
+// 1024 slots of EVERY vector still carrying a committed tombstone. UPDATE here is
+// tombstone+append, so a table under a long UPDATE workload accumulates them and every later
+// commit, however small, paid for all of them.
 //
 // That walk is no longer on the write path for a DISK-backed table, which is every user table
-// (operator_create_collection_t: "B1a: every table is disk-backed"). Under A7.2's split free
-// pool a compact whose header never commits cannot RETURN space, only spend it — measured at
-// +2.9 MB per call — so compaction of a disk table was made one indivisible unit with the
-// checkpoint that commits it, and maybe_cleanup_inner now turns disk entries away. The old
-// probes therefore read a flat zero, and their positive controls (`REQUIRE(control > 0)`,
-// `REQUIRE(series.back() > 0)`) failed for the one reason a positive control exists to catch:
-// the instrument was wired to a path deliberately not taken.
+// (operator_create_collection_t). Under the split free pool a compact whose header never commits
+// cannot RETURN space, only spend it — measured at +2.9 MB per call — so compaction of a disk
+// table was made one indivisible unit with the checkpoint that commits it, and
+// maybe_cleanup_inner now turns disk entries away. The old probes therefore read a flat zero and
+// their positive controls (`REQUIRE(control > 0)`, `REQUIRE(series.back() > 0)`) failed for the
+// one reason a positive control exists to catch: the instrument was wired to a path deliberately
+// not taken.
 //
 // Retargeted, with the owner's per-test consent, to measure the reclaim where it now happens.
 // Each case asserts BOTH halves, because either alone is satisfiable by a broken engine:
 //
-//   * the commit pays NOTHING — cleanup_slots_visited() stays 0 across the whole workload, no
-//     matter how many tombstones earlier statements piled up. This is the strict form of the
-//     bound the tests used to state as a ratio, and it goes red the moment the walk returns to
-//     the write path;
-//   * the reclaim still HAPPENS — after CHECKPOINT the durable root holds exactly the live
-//     rows. Measured with the engine down against a freshly loaded .otbx, because that is the
-//     only reading that cannot be produced by in-memory state, and because a checkpoint whose
-//     compact was refused defers the whole entry, leaving the OLD row count on disk. This is
-//     the new positive control: a number that must move from 200000 to the live count, and
-//     that reads wrong rather than zero if the apparatus comes unwired.
+//   * the commit pays NOTHING — cleanup_slots_visited() stays 0 across the whole workload no
+//     matter how many tombstones earlier statements piled up; it goes red the moment the walk
+//     returns to the write path;
+//   * the reclaim still HAPPENS — after CHECKPOINT the durable root holds exactly the live rows.
+//     Measured with the engine down against a freshly loaded .otbx, the only reading that cannot
+//     be produced by in-memory state, and because a checkpoint whose compact was refused defers
+//     the whole entry, leaving the OLD row count on disk. This is the new positive control: a
+//     number that must move from 200000 to the live count, and that reads wrong rather than zero
+//     if the apparatus comes unwired.
 //
 // Hidden by default ([.]): repeated 200k-row update passes. Run them with [s3cleanup].
 
@@ -207,8 +205,8 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::contiguous_tombstones_recl
 // The case the contiguous one above cannot reach.
 //
 // Deleting a contiguous range takes whole vectors out at once, and a fully deleted vector is
-// recorded as a chunk_constant_info whose committed_deleted_count is O(1) — which is why the
-// contiguous probe used to read a flat 1024 (just the one partially-hit boundary vector).
+// recorded as a chunk_constant_info whose committed_deleted_count is O(1) — so the contiguous
+// case leaves just the one partially-hit boundary vector behind.
 //
 // A SCATTERED update leaves every vector partially tombstoned, so every vector keeps a
 // chunk_vector_info with any_deleted set, and the old cleanup re-walked all 1024 slots of each

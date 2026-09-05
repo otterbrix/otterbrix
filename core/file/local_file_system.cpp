@@ -280,24 +280,21 @@ namespace core::filesystem {
     public:
         void close() override {
             if (fd != -1) {
-                // ::close CAN FAIL, and its failure is not cosmetic: on a write-back
-                // filesystem this is where a deferred write error (EIO) is finally reported,
-                // so a discarded return is a lost write reported as a clean close. It used to
-                // be discarded outright.
+                // ::close CAN FAIL, and its failure is not cosmetic: on a write-back filesystem
+                // this is where a deferred write error (EIO) is finally reported, so a discarded
+                // return is a lost write reported as a clean close.
                 //
-                // THIS IS ONLY HALF THE FIX, and the missing half is not in this file:
-                // file_handle_t::close() is declared `virtual void`
-                // (core/file/file_handle.hpp:104), so there is no channel to hand the refusal
-                // back on — and the destructor below is one of the callers, where there would
-                // be nothing to hand it to anyway. Until that signature carries a
-                // core::error_t, the loudest honest answer is to SAY it (rule 6: loud, not
-                // fatal, and never silent).
+                // REPORTING IT IS ONLY HALF THE ANSWER, and the missing half is not in this file:
+                // file_handle_t::close() is declared `virtual void` (core/file/file_handle.hpp),
+                // so there is no channel to hand the refusal back on — and the destructor below is
+                // one of the callers, where there would be nothing to hand it to anyway. Until
+                // that signature carries a core::error_t, the loudest honest answer is to SAY it
+                // (rule 6: loud, not fatal, and never silent).
                 //
                 // The descriptor is released either way, including on EINTR: on this platform
-                // (and on Linux) close() consumes the descriptor before it can report, so
-                // keeping fd set would invite a second close of a number the kernel may have
-                // already handed to another opener. Clearing it is not "cleaning up before
-                // success" — the descriptor IS gone.
+                // (and on Linux) close() consumes the descriptor before it can report, so keeping
+                // fd set would invite a second close of a number the kernel may have already
+                // handed to another opener.
                 const int rc = ::close(fd);
                 if (rc != 0) {
                     const int err = errno;
@@ -461,10 +458,10 @@ namespace core::filesystem {
             if (current_bytes_written <= 0) {
                 // THE COUNT SURVIVES THE REFUSAL. write(2) short-counts before it refuses --
                 // a file-size rlimit, a filling volume and a signal all produce that shape --
-                // and this line used to answer with the refusing call's -1, dropping every
-                // byte the earlier iterations had already put on the device and moved the
-                // descriptor past. The caller was told "nothing", could not tell a stump from
-                // an untouched file, and so could neither truncate it nor rewind to it.
+                // so answering with the refusing call's -1 would drop every byte the earlier
+                // iterations already put on the device and moved the descriptor past. The
+                // caller would be told "nothing", could not tell a stump from an untouched
+                // file, and so could neither truncate it nor rewind to it.
                 return write_result_t::refused(bytes_written);
             }
             bytes_written += static_cast<uint64_t>(current_bytes_written);
@@ -704,11 +701,11 @@ namespace core::filesystem {
             if (!fd_) {
                 return;
             }
-            // NOT FIXED HERE, deliberately, and the POSIX twin above says why the fix is only
-            // half a fix anyway: CloseHandle's BOOL is discarded exactly like ::close's int
-            // used to be. This arm cannot be compiled or exercised from this tree's CI (macOS
-            // and Linux only), so it is named rather than changed blind — see
-            // core/file/file_handle.hpp:104 for where both halves end.
+            // CloseHandle's BOOL is discarded here, unlike the POSIX twin above, which reports
+            // its ::close failure. This arm cannot be compiled or exercised from this tree's CI
+            // (macOS and Linux only), so it is named rather than changed blind — and the real
+            // channel is missing in both arms anyway; see file_handle_t::close() in
+            // core/file/file_handle.hpp.
             CloseHandle(fd_);
             fd_ = nullptr;
         };
@@ -829,11 +826,10 @@ namespace core::filesystem {
         return bytes_written;
     }
 
-    // Same contract as the POSIX loop above, and it dropped the count too -- by a different
-    // route. FSInternalWrite answers a refusal with `DWORD()`, an UNSIGNED zero, so this loop
-    // returned 0 rather than the -1 its POSIX twin returned; either way the bytes the earlier
-    // iterations had accumulated were discarded, and 0 is the same answer a request that
-    // wrote nothing gives.
+    // Same contract as the POSIX loop above, reached by a different route: FSInternalWrite
+    // answers a refusal with `DWORD()`, an UNSIGNED zero rather than the POSIX twin's -1, and
+    // 0 is also the answer a request that wrote nothing gives. So the accumulated count has to
+    // be carried out of the loop explicitly.
     static write_result_t
     FSWrite(file_handle_t& handle, HANDLE hFile, void* buffer, int64_t nr_bytes, uint64_t location) {
         uint64_t bytes_written = 0;
@@ -860,13 +856,13 @@ namespace core::filesystem {
         HANDLE hFile = reinterpret_cast<windows_file_handle_t&>(handle).fd_;
         auto& pos = reinterpret_cast<windows_file_handle_t&>(handle).position_;
         auto result = FSWrite(handle, hFile, buffer, nr_bytes, pos);
-        // The tracked position advances by WHAT LANDED. It used to advance by FSWrite's
-        // return, and on a refusal that return was ZERO, not -1: FSInternalWrite's DWORD is
-        // unsigned and its failure value is `DWORD()`. So `pos` did not move at all while the
-        // bytes of the earlier iterations WERE on the device -- the handle's idea of its
-        // place was left BEHIND them, and the next sequential write on that handle overwrote
-        // them. (This overload is positional underneath: `pos` is the only record of where
-        // the file is, so a stale one is a silent overwrite rather than a wrong seek.)
+        // The tracked position advances by WHAT LANDED, not by a raw FSWrite return: on a
+        // refusal that return is ZERO, not -1 (FSInternalWrite's DWORD is unsigned and its
+        // failure value is `DWORD()`), so `pos` would not move at all while the bytes of the
+        // earlier iterations ARE on the device -- the handle's idea of its place left BEHIND
+        // them, and the next sequential write on that handle overwriting them. (This overload
+        // is positional underneath: `pos` is the only record of where the file is, so a stale
+        // one is a silent overwrite rather than a wrong seek.)
         pos += result.bytes_written;
         return result;
     }

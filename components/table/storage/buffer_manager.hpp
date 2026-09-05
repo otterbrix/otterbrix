@@ -60,15 +60,12 @@ namespace components::table::storage {
         [[nodiscard]] virtual core::result_wrapper_t<std::shared_ptr<block_handle_t>>
         register_small_memory(memory_tag tag, uint64_t size);
 
-        // Returns true when the reservation was made, out_of_memory when it could not be.
-        // This used to be `void`, so "the pool granted `size`" and "eviction could free
-        // nothing and the reservation never happened" were the SAME observation, and the
-        // caller went on to spend memory it had not been given — the same defect class as the
-        // pre-L1 `void write()` one layer down. result_wrapper_t<bool> rather than <void>
-        // because result_wrapper_t forbids void.
-        //
-        // NVI: the public face is non-virtual; the customization point is reserve_memory_impl
-        // (private, below). The neighbours predate the idiom and are left as they stand.
+        // Returns true when the reservation was made, out_of_memory when it could not be. A `void`
+        // here would make "the pool granted `size`" and "eviction freed nothing, so the reservation
+        // never happened" the SAME observation, and the caller would spend memory it had not been
+        // given — the defect class of a `void write()` one layer down. <bool> rather than <void>
+        // because result_wrapper_t forbids void. NVI: the customization point is reserve_memory_impl
+        // (private, below); the neighbours predate the idiom.
         [[nodiscard]] core::result_wrapper_t<bool> reserve_memory(uint64_t size) { return reserve_memory_impl(size); }
         // Stays void: it releases a reservation this manager already granted, and a decrement
         // of a counter has nothing to fail at. Call it only after a reserve_memory that

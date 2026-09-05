@@ -124,9 +124,9 @@ namespace components::table {
     // fetch_update_row, updates_->fetch_committed_range in scan_count_with_updates), which is
     // where a channel would have to start. column_scan_state::scan_error is already that
     // channel for the two scan_vector legs (it carries the outstanding-updates refusal);
-    // fetch_update_row has none. Threading it is a signature change in column_data.{hpp,cpp}
-    // and its own callers, which this change does not own, so this reports and stops the walk
-    // instead of reading through a fabricated pointer.
+    // fetch_update_row has none: threading one is a signature change across column_data.{hpp,cpp}
+    // and its own callers, so this reports and stops the walk instead of reading through a
+    // fabricated pointer.
     void report_unreachable_update_node(const char* where, const core::error_t& error);
 
     struct undo_buffer_allocator_t {
@@ -685,12 +685,12 @@ namespace components::table {
 
         for (uint64_t i = 0; i < update_info.N; i++) {
             // The update vector holds exactly the caller's `count` values, addressed by the
-            // indexing vector ALONE. The `+ base_info.vector_index * DEFAULT_VECTOR_CAPACITY`
-            // that used to be added here confused row space with vector space: for any row in
-            // vector 1+ of a column it read `count + 1024`-ish elements into a `count`-element
-            // buffer, and the ROOT node -- the values every later read merges over the base --
-            // was initialized from heap garbage. The sibling validity leg
-            // (initialize_update_validity) never added the offset; this leg now matches it.
+            // indexing vector ALONE. Adding `base_info.vector_index * DEFAULT_VECTOR_CAPACITY`
+            // here confuses row space with vector space: for any row in vector 1+ of a column it
+            // reads `count + 1024`-ish elements out of a `count`-element buffer, and the ROOT
+            // node -- the values every later read merges over the base -- is initialized from
+            // heap garbage. The sibling validity leg (initialize_update_validity) adds no offset
+            // either.
             auto idx = indexing.get_index(i);
             tuple_data[i] = update_select_element_t::operation<T>(update_info.segment, update_data[idx]);
         }
@@ -837,25 +837,24 @@ namespace components::table {
 
         result_offset = 0;
         // update_select_element_t::operation, NOT the raw extractor result. Its string_view
-        // specialisation copies the bytes into the segment's own heap, and every other route
-        // into an update_info_t goes through it -- initialize_update_data on the first-update
-        // leg, and phase 1's base branch a few lines up. This one did not, so a merged row was
-        // left holding a view into the CALLER's update vector, which is a temporary at every
-        // caller (agent_disk_t::direct_update_sync builds a local data_chunk_t and returns).
-        // The row then read back as whatever reused that memory -- surfacing not as a crash but
-        // as a pg_attribute row with a garbage attname.
+        // specialisation copies the bytes into the segment's own heap, and every other route into
+        // an update_info_t goes through it -- initialize_update_data on the first-update leg, and
+        // phase 1's base branch a few lines up. Skip it here and the merged row is left holding a
+        // view into the CALLER's update vector, which is a temporary at every caller
+        // (agent_disk_t::direct_update_sync builds a local data_chunk_t and returns). The row then
+        // reads back as whatever reused that memory -- surfacing not as a crash but as a
+        // pg_attribute row with a garbage attname.
         //
         // GROWTH (declared, because this is a behaviour change on the update hot path): for
-        // T = std::string_view that operation is heap().insert(), and update_segment_t::heap_
-        // is a core::string_buffer_t -- a monotonic arena whose only release is a wholesale
-        // reset(), which nothing in this tree ever calls. So every merged string update
-        // ALLOCATES a fresh copy and abandons the previous one; updating the same row N times
-        // in the same vector retains ~N * strlen bytes (plus the arena's geometric block
-        // slack, up to ~2x) until the owning column_data_t dies with its row group. A 64-byte
-        // value rewritten a million times in one vector is therefore ~64 MB held, not ~64
-        // bytes. The first-update leg (initialize_update_data) has always paid this; what
-        // changed is that the MERGE leg pays it too. It is the deliberate half of the trade:
-        // a bounded leak instead of a read of freed memory.
+        // T = std::string_view that operation is heap().insert(), and update_segment_t::heap_ is a
+        // core::string_buffer_t -- a monotonic arena whose only release is a wholesale reset(),
+        // which nothing in this tree ever calls. Every merged string update therefore ALLOCATES a
+        // fresh copy and abandons the previous one: updating the same row N times in one vector
+        // retains ~N * strlen bytes (plus the arena's geometric block slack, up to ~2x) until the
+        // owning column_data_t dies with its row group -- a 64-byte value rewritten a million
+        // times is ~64 MB held, not ~64 bytes. The first-update leg (initialize_update_data) has
+        // always paid this; what changed is that the MERGE leg pays it too. That is the deliberate
+        // half of the trade: a bounded leak instead of a read of freed memory.
         auto pick_new = [&](uint64_t id, uint64_t aidx) {
             result_values[result_offset] =
                 update_select_element_t::operation<T>(base_info.segment, extractor(update_vector_data, aidx));
@@ -885,16 +884,15 @@ namespace components::table {
                 bidx++;
             }
         }
-        // `count` is the BOUND -- how many row ids came in -- and must not move. This loop used
-        // to advance it in lockstep with aidx, so it never terminated: it walked
-        // indexing.get_index past the indexing vector, dereferenced ids at whatever that
-        // returned, and pushed result_values/result_ids off their 2048-entry stack arrays and
-        // through this frame's own parameters. Entered whenever an incoming id sorts after every
-        // id already in base_info, i.e. on the second update of a vector at a higher row.
+        // `count` is the BOUND -- how many row ids came in -- and must not move. Advancing it in
+        // lockstep with aidx never terminates: the loop walks indexing.get_index past the
+        // indexing vector, dereferences ids at whatever that returns, and pushes
+        // result_values/result_ids off their 2048-entry stack arrays and through this frame's own
+        // parameters. Entered whenever an incoming id sorts after every id already in base_info,
+        // i.e. on the second update of a vector at a higher row.
         //
         // There is no running output counter here at all: result_offset, which the two lambdas
-        // above own, is the only cursor either tail needs. The `counter` this loop used to carry
-        // was passed to a parameter neither lambda read.
+        // above own, is the only cursor either tail needs.
         for (; aidx < count; aidx++) {
             auto a_index = indexing.get_index(aidx);
             pick_new(static_cast<uint64_t>(ids[a_index]) - base_id, a_index);

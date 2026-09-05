@@ -8,30 +8,26 @@ namespace core::maintenance {
     //
     // Everything reaches storage through ONE pipeline:
     //   logical plan -> planner -> optimizer -> physical plan generator -> executor -> disk or index.
-    // A path that mutates disk or index state without a statement behind it is a BYPASS. Three
-    // exist in this tree and each is enumerated below, with the reason it is there next to it.
-    // Two of them are legal for a reason that can be checked: they run where the pipeline does not
-    // exist yet (the pre-scheduler bootstrap window) or where there is nothing for a plan to
-    // describe (a service message that carries no rows). The third — the WAL auto-checkpoint — is
-    // declared because it EXISTS, not because it was judged unavoidable; see its entry. Every
-    // other write MUST be an operator.
+    // A path that mutates disk or index state without a statement behind it is a BYPASS. Three exist
+    // in this tree, each enumerated below with the reason it is there. Two are legal for a reason
+    // that can be checked: they run where the pipeline does not exist yet (the pre-scheduler
+    // bootstrap window) or where there is nothing for a plan to describe (a service message that
+    // carries no rows). The third — the WAL auto-checkpoint — is declared because it EXISTS, not
+    // because it was judged unavoidable. Every other write MUST be an operator.
     //
-    // WHY THIS IS CODE AND NOT A COMMENT. A comment does not survive a rename, does not answer a
-    // grep, and — the point — does not stand between the bypass and its next caller. The callable
-    // that performs a bypass is passed through `pipeline_bypass<site>` below, so the bypass lives
-    // INSIDE something that names its site: a reviewer greps the marker and gets the complete list
-    // of them, and a FOURTH one cannot be introduced quietly, because it has to add an enumerator to
-    // `bypass_site` here — one line, in a header nobody edits by accident.
-    //
-    // THE MARKER IS NOT A LICENCE. It says "this bypass is known and named", not "this code is safe
-    // to call" — and for (3) not even "this was judged unavoidable". Each site below documents, next
-    // to itself, what breaks if it is called from somewhere new. Read that before adding a caller.
+    // WHY THIS IS CODE AND NOT A COMMENT: a comment does not survive a rename, does not answer a
+    // grep, and does not stand between the bypass and its next caller. The callable that performs a
+    // bypass is passed through `pipeline_bypass<site>` below, so a reviewer greps the marker and
+    // gets the complete list, and a FOURTH one cannot be introduced quietly — it has to add an
+    // enumerator to `bypass_site` here. THE MARKER IS NOT A LICENCE: it says "this bypass is known
+    // and named", not "this code is safe to call", and for (3) not even "this was judged
+    // unavoidable". Each site below documents what breaks if it is called from somewhere new.
     //
     // HOW TO CHECK THE COUNT. Grep the tree for the fully-qualified form of the function below
     // (namespace, then `pipeline_bypass`): it must return exactly as many hits as there are
-    // enumerators here — today three, one per bypass. This header never spells that qualified form,
-    // so the grep answers with call sites only, and a mismatch means a bypass was added, moved or
-    // lost its declaration.
+    // enumerators here — today three. This header never spells that qualified form, so the grep
+    // answers with call sites only, and a mismatch means a bypass was added, moved or lost its
+    // declaration.
 
     // One enumerator per bypass that exists in the tree. Adding one is the review gate; this list IS
     // the permission set, and it is deliberately short.
@@ -52,21 +48,18 @@ namespace core::maintenance {
         horizon_gc_sweep,
 
         // (3) The WAL auto-checkpoint, fired from manager_wal_replicate_t::commit_txn once WAL
-        //     growth since the last checkpoint trips the configured threshold. THIS ONE IS NOT
-        //     LIKE THE OTHER TWO, and the entry exists so that the difference is on the record
-        //     rather than in nobody's head: it runs with the engine fully up, so the pipeline it
-        //     goes around is RIGHT THERE, and it has a statement-shaped twin that already does
-        //     the same work through the pipeline — operator_checkpoint, which ~base_otterbrix_t
-        //     reaches by building a node_checkpoint plan. What it does is a full checkpoint:
-        //     flush every index, compact and rewrite the .otbx files (renumbering physical row
-        //     ids), clear and rebuild every index of every compacted table, then unlink WAL
-        //     segments. It is declared here because a bypass that no grep can find is the thing
-        //     this header exists to prevent — NOT because its legality was settled. The open
-        //     question, for whoever settles it: route the trigger through a node_checkpoint plan
-        //     the way shutdown does, or keep the self-send and accept a maintenance round that no
-        //     statement can be blamed for (its own code concedes the cost — "nothing above this
-        //     frame is a statement that could carry the error", so a failed index rebuild is
-        //     logged and dropped).
+        //     growth since the last checkpoint trips the configured threshold. THIS ONE IS NOT LIKE
+        //     THE OTHER TWO: it runs with the engine fully up, so the pipeline it goes around is
+        //     RIGHT THERE, and a statement-shaped twin already does the same work through it —
+        //     operator_checkpoint, which ~base_otterbrix_t reaches by building a node_checkpoint
+        //     plan. The work is a full checkpoint: flush every index, compact and rewrite the .otbx
+        //     files (renumbering physical row ids), clear and rebuild every index of every compacted
+        //     table, then unlink WAL segments. It is declared here because a bypass that no grep can
+        //     find is the thing this header exists to prevent — NOT because its legality was
+        //     settled. The open question, for whoever settles it: route the trigger through a
+        //     node_checkpoint plan the way shutdown does, or keep the self-send and accept a
+        //     maintenance round that no statement can be blamed for (nothing above that frame is a
+        //     statement that could carry an error, so a failed index rebuild is logged and dropped).
         wal_auto_checkpoint,
     };
 

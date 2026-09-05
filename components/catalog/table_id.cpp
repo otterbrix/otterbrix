@@ -28,9 +28,9 @@ namespace components::catalog {
     void table_id::set_oid(oid_t oid) {
         // OID is immutable after first assignment. Re-stamping the SAME value is an
         // idempotent no-op; a DIFFERENT value is a programmer error and dies loudly in
-        // EVERY build (same pattern as oid_generator::allocate) — the old arm asserted
-        // in debug and silently kept the first value under NDEBUG, while the header
-        // promised a std::logic_error nobody threw (rule 2: no exceptions).
+        // EVERY build (same pattern as oid_generator::allocate). An assert in debug that
+        // silently keeps the first value under NDEBUG would let two identities of one
+        // table diverge unseen, and there is no exception to throw either (rule 2).
         if (oid_ != INVALID_OID && oid_ != oid) [[unlikely]] {
             assert(false && "table_id::set_oid: OID is immutable after assignment");
             std::abort();

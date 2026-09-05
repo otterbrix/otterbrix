@@ -111,8 +111,8 @@ TEST_CASE("services::disk::pg_depend::table_to_namespace_cascade") {
 }
 
 // 2. DROP NAMESPACE under RESTRICT refuses when child tables exist.
-//    NOTE: restrict/cascade distinction is no longer available via the helper API;
-//    this test now verifies that a committed drop removes the namespace rows.
+//    NOTE: the helper API carries no restrict/cascade distinction, so despite its name this
+//    case only verifies that a committed drop removes the namespace rows.
 TEST_CASE("services::disk::pg_depend::drop_namespace_restrict_blocks") {
     fixture fx;
     auto [ns_oid, t_oid] = fx.make_ns_table("ns_b", "t1");

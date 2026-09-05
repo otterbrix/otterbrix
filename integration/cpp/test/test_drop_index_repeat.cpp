@@ -1,36 +1,32 @@
 // ============================================================================
 // A REPEATED `DROP INDEX` MUST GIVE THE SAME ANSWER, NOT A SILENT SUCCESS.
 //
-// ЗАПИСЬ [302] as filed describes a shape that is no longer in the tree, and
-// this file is the end-to-end pin that keeps it out. The filed mechanism was:
-// `rewrite_drop_index` receives index_oid == INVALID_OID, emits NO catalog
-// delete specification, appends the drop_index_t marker anyway, and
-// operator_drop_index_t — whose `if (!specs.empty())` guard skipped its own
-// no-identity-row-deleted verdict when there were no specs — ran off the end
-// into mark_executed(). The statement removed nothing and said it had.
+// The shape below is no longer in the tree, and this file is the end-to-end pin
+// that keeps it out. The mechanism was: `rewrite_drop_index` receives index_oid ==
+// INVALID_OID, emits NO catalog delete specification, appends the drop_index_t
+// marker anyway, and operator_drop_index_t — whose `if (!specs.empty())` guard
+// skipped its own no-identity-row-deleted verdict when there were no specs — ran
+// off the end into mark_executed(). The statement removed nothing and said it had.
 //
 // Both halves now refuse:
-//   components/planner/planner.cpp:627-641 — an unresolved oid is
-//     index_not_exists, with `DROP INDEX IF EXISTS` the single carve-out
-//     (an honest empty sequence).
-//   components/physical_plan/operators/operator_drop_index.cpp:37-47 — empty
-//     specs (or no disk actor) is a refusal before any work; :115-129 refuses
-//     "specs ran, zero identity rows deleted".
+//   components/planner/planner.cpp, rewrite_drop_index — an unresolved oid is
+//     index_not_exists, with `DROP INDEX IF EXISTS` the single carve-out (an
+//     honest empty sequence).
+//   components/physical_plan/operators/operator_drop_index.cpp:37-47 — empty specs
+//     (or no disk actor) is a refusal before any work; :115-129 refuses "specs ran,
+//     zero identity rows deleted".
 //
-// The filed framing also names a "planner catalog cache". There is none:
-// planner_t is stateless (components/planner/planner.hpp) and catalog_snapshot_t
-// was removed — every statement re-resolves live through operator_resolve_table
-// under its own transaction. So there is no cache that could survive a failed
-// DROP, and the residual risk is only that the two refusals above regress.
+// There is no planner catalog cache to go stale: planner_t is stateless and
+// catalog_snapshot_t was removed — every statement re-resolves live through
+// operator_resolve_table under its own transaction. So the residual risk is only
+// that the two refusals above regress.
 //
 // The unit-level refusals are pinned already (components/planner/test/
-// test_ddl_unresolved_refusal.cpp, integration/cpp/test/
-// test_maintenance_wiring_refusal.cpp). What was NOT pinned anywhere is the
-// sequence the record is actually about — a DROP INDEX that fails, followed by
+// test_ddl_unresolved_refusal.cpp, test_maintenance_wiring_refusal.cpp). What is
+// NOT pinned anywhere else is the SEQUENCE — a DROP INDEX that fails, followed by
 // the same DROP INDEX again — at the SQL level. The one repeat-drop site in the
-// suite, test_index.cpp:316-320, fires DROP_INDEX five times on an
-// already-dropped index and discards every cursor, so a regression to silent
-// success there is invisible.
+// suite, test_index.cpp, fires DROP_INDEX five times on an already-dropped index
+// and discards every cursor, so a regression to silent success there is invisible.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -78,9 +74,9 @@ namespace {
 
 } // namespace
 
-// The sequence the record is about: the first DROP INDEX succeeds, so the
-// second one has no index left to drop and must say so. Under the filed defect
-// the second call reported SUCCESS having emitted not one delete spec.
+// The sequence: the first DROP INDEX succeeds, so the second one has no index
+// left to drop and must say so. The defect this guards is a second call that
+// reports SUCCESS having emitted not one delete spec.
 TEST_CASE("integration::cpp::drop_index_repeat::dropping_twice_refuses_the_second_time") {
     auto config = make_test_config(fixture_path("twice"));
     config.log.level = log_t::level::off;

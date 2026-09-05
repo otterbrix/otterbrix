@@ -5,7 +5,7 @@
 #include <integration/cpp/catalog_listing.hpp>
 
 // ---------------------------------------------------------------------------
-// Task B9. `listTables()` (integration/python/pyconnection) enumerates user
+// `listTables()` (integration/python/pyconnection) enumerates user
 // tables by running kListTablesQuery over pg_class and decoding the cursor.
 // It used to collapse `!cursor || cursor->is_error() || size()==0` into a
 // single "return an empty list", so a FAILED query and an EMPTY DATABASE were
@@ -65,9 +65,9 @@ namespace {
 
 } // namespace
 
-// RED before the fix: the decoder flattened an engine error into an empty list,
-// so the caller could not tell "the catalog read failed" from "there are no
-// tables". The error must survive as an error.
+// A decoder that flattens an engine error into an empty list leaves the caller
+// unable to tell "the catalog read failed" from "there are no tables". The error
+// must survive as an error.
 TEST_CASE("integration::cpp::list_tables::failed_query_is_not_an_empty_database") {
     core::pmr::otterbrix_resource resource;
     auto cursor = make_failed_cursor(&resource);

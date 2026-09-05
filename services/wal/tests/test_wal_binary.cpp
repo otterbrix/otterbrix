@@ -699,12 +699,12 @@ TEST_CASE("wal_binary::encode_decode_insert_carries_nested_payload") {
 // ===========================================================================
 // ROW-ID LENGTHS THAT ARE NOT WHOLE ROW IDS ARE CORRUPTION, NOT ARITHMETIC.
 //
-// decode_record used to size the row-id vector as payload_size / 8 and then memcpy
-// payload_size BYTES into it — for any length that is not a multiple of 8 that writes up to
-// 7 bytes past the heap allocation, silently, on both the PHYSICAL_DELETE payload and the
-// row-id half of PHYSICAL_UPDATE. The UPDATE bounds check `4 + row_ids_bytes > payload_size`
-// additionally wrapped in 32-bit arithmetic, so a row_ids_bytes near UINT32_MAX slipped past
-// the check and drove a multi-gigabyte resize+memcpy from a 16-byte buffer.
+// Sizing the row-id vector as payload_size / 8 and then memcpy'ing payload_size BYTES into it
+// writes, for any length that is not a multiple of 8, up to 7 bytes past the heap allocation,
+// silently, on both the PHYSICAL_DELETE payload and the row-id half of PHYSICAL_UPDATE. The
+// UPDATE bounds check `4 + row_ids_bytes > payload_size` additionally wraps in 32-bit
+// arithmetic, so a row_ids_bytes near UINT32_MAX slips past the check and drives a
+// multi-gigabyte resize+memcpy from a 16-byte buffer.
 //
 // The records below are byte-crafted with VALID CRCs: the checksum is precisely the guard
 // that does NOT protect against these lengths, because a legitimately-CRC'd record with a
@@ -753,8 +753,8 @@ namespace {
 TEST_CASE("wal_binary::a_delete_payload_that_is_not_whole_row_ids_is_corrupt") {
     core::pmr::otterbrix_resource resource;
 
-    // 12 bytes: one and a half row ids. count = 12/8 = 1 allocates 8 bytes; the memcpy of 12
-    // bytes used to overrun the allocation by 4.
+    // 12 bytes: one and a half row ids. count = 12/8 = 1 allocates 8 bytes, so a memcpy of 12
+    // bytes into it overruns the allocation by 4.
     std::vector<char> payload(12, '\x5a');
     auto record_bytes = craft_dml_record(wal_record_type::PHYSICAL_DELETE, payload);
 

@@ -98,20 +98,16 @@ namespace {
         }
 
         // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton. This is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only
-        // thing that would report a chunk still alive after the manager is gone. Production
-        // hands the manager chunks off the executor's arena; this is that shape.
-        //
-        // resource_ outlives the asynchronous processing for three independent reasons:
-        // ~journal_writer_t stops the scheduler and resets manager_ -- destroying the mailbox
-        // and any message still holding this batch -- inside its own body; resource_ is
-        // declared FIRST, so it is destroyed LAST; and otterbrix_resource is thread-safe in
-        // both builds (synchronized_pool_resource normally, the mutex-guarded
-        // resource_tracer_t under ASAN). manager_ itself is already allocated on it.
-        //
-        // Extracted so a test can assert the ARENA of a REAL payload: the batch is moved
-        // into the message and is unobservable after send.
+        // singleton: this is real load, and off resource_ it never reaches
+        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
+        // that would report a chunk still alive after the manager is gone. Production hands the manager
+        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
+        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
+        // over: ~journal_writer_t stops the scheduler and resets manager_
+        // (destroying the mailbox and any message still holding this batch) inside its own body,
+        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
+        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
+        // the batch is moved into the message and is unobservable after send.
         // to_batch takes the vector's arena from the chunk, so &resource_ carries all the
         // way through to the batch the message holds.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
@@ -240,16 +236,10 @@ TEST_CASE("wal::classification::segment_index_parses_the_whole_suffix_or_refuses
 }
 
 // ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA.
-//
-// gen_data_chunk output is REAL load, and on the process-global new_delete_resource
-// singleton it escapes core::pmr::otterbrix_resource entirely -- which under ASAN IS
-// resource_tracer_t, so nothing accounts for it. Production hands the manager chunks
-// off the executor's arena; the fixture has to model that.
-//
-// The batch is moved into the message, so it is unobservable after send. The assertion
-// is therefore made on the object make_insert_batch produces -- the same call, on the
-// same path, that send_insert makes -- and not on a value handed in by the test.
+// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
+// make_insert_batch above. The batch is moved into the message and is unobservable after
+// send, so the assertion is made on the object make_insert_batch produces: the same call, on
+// the same path, that send_insert makes -- not a value handed in by the test.
 // ===========================================================================
 TEST_CASE("wal::classification::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";

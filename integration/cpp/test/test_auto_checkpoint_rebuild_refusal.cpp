@@ -26,68 +26,53 @@
 
 // WHAT THE WAL AUTO-CHECKPOINT MAY NOT DO WHEN ITS INDEX REBUILD REFUSES.
 //
-// manager_wal_replicate_t::run_auto_checkpoint is the self-orchestrated analogue of the
-// CHECKPOINT statement: (a) flush the indexes, (c) checkpoint_all the storage -- which
-// COMPACTS every entry the MVCC gate lets it and hands every surviving row a NEW physical
-// id -- (c2) rebuild the indexes against those new ids, (d) truncate the WAL below the
-// boundary the checkpoint reported.
+// manager_wal_replicate_t::run_auto_checkpoint is the self-orchestrated analogue of CHECKPOINT:
+// (a) flush the indexes, (c) checkpoint_all the storage -- compacting every entry the MVCC gate
+// lets it and handing every surviving row a NEW physical id -- (c2) rebuild the indexes against
+// those new ids, (d) truncate the WAL below the boundary the checkpoint reported.
 //
-// Step (d) is the only step of the round that DESTROYS anything, and step (c2) is the
-// round's last chance to fail recoverably. The ORDER was already right here -- (c2) sits
-// ahead of (d) -- but the ERROR HANDLING was not: a refused rebuild was logged and the round
-// fell through into the truncation. Both outcomes leave a stale index (nothing rebuilds one
-// at startup: base_spaces does not, and WAL replay maintains none), but only the truncation
-// ALSO unlinks journal segments. A stale index is something a later round repairs; a stale
-// index whose journal has been trimmed underneath it is not.
+// (d) is the only destructive step and (c2) is the round's last chance to fail recoverably. The
+// ORDER was already right; the ERROR HANDLING was not -- a refused rebuild was logged and the
+// round fell through into the truncation. Both outcomes leave a stale index (nothing rebuilds one
+// at startup: base_spaces does not, WAL replay maintains none), but only truncation ALSO unlinks
+// journal segments, and a stale index whose journal was trimmed underneath it is beyond repair by
+// a later round. No statement sits above this frame, so "fail the query" is not on the menu; the
+// answer is what step (a) already does for a refused index flush -- log, rebase the byte window,
+// release the dedup guard, abandon the round -- and stay repeatable, which this case pins too.
 //
-// THERE IS NO STATEMENT ABOVE THIS FRAME, so "fail the query" is not on the menu -- the
-// path's own comment says so. The available answer is the one step (a) already takes for a
-// refused index flush: LOG IT, REBASE THE BYTE WINDOW, RELEASE THE DEDUP GUARD AND ABANDON
-// THE ROUND. Loud, not fatal, and REPEATABLE -- which this case pins too, because an
-// abandoned round that could never be retried would just be a slower way to lose.
+// HOW THE REBUILD IS MADE TO REFUSE. repopulate_table -> index_agent_contract::clear, and for the
+// bitcask (index_type::hashed) backend clear() begins with collect_segments(), a std::filesystem
+// listing of the index directory -- also the ONE early return in clear(): a directory it cannot
+// list leaves the store untouched (handles open, keydir intact, segments intact) and reports the
+// refusal by value. Stripping the read bit off that directory for one automatic round therefore
+// yields a genuinely refused rebuild AND a healthy store to retry it with. chmod does not reach an
+// already-open descriptor, so nothing merely writing or fsyncing notices it.
 //
-// HOW THE REBUILD IS MADE TO REFUSE WITHOUT A DEBUGGER. The rebuild's last leg is
-// manager_index_t::repopulate_table -> index_agent_contract::clear, and for the bitcask
-// (index_type::hashed) backend clear() begins with collect_segments(), a plain
-// std::filesystem listing of the index directory. That listing is also the ONE early return
-// in clear(): a directory it cannot list leaves the store exactly as it was -- handles open,
-// keydir intact, segments intact -- and reports the refusal by value. So stripping the read
-// bit off the index directory for the length of one automatic round produces a genuinely
-// refused rebuild AND a healthy store to retry it with, which is exactly what the
-// "abandoned rounds are repeatable" half needs. chmod does not reach an already-open
-// descriptor, so nothing that is merely writing or fsyncing notices it.
-//
-// HOW THE TRUNCATION IS DETECTED, and why not by counting files. Whether a given round
-// DESTROYS a segment depends on the boundary it was handed, and that boundary is
-// min(prev_checkpoint_wal_id) over every table -- so a round in which the MVCC gate deferred
-// one busy table reports the PREVIOUS boundary and removes nothing, however faithfully it
-// ran step (d). Measured that way the case went green over an unfixed build about half the
-// time. What does not depend on the boundary is that step (d) READS: truncate_before opens
-// every candidate segment through wal_page_reader_t to find the highest wal id in it, before
-// it decides anything. The writer, meanwhile, only ever opens the segment it is appending to,
-// and a rotation opens a HIGHER ordinal than any seen so far. So "a WAL segment below the
-// high-water mark was opened" separates the truncation step from every other WAL file access
-// in a running engine, and it is the same T3 seam (dev_set_wal_file_interposer) the
-// neighbouring truncate cases use -- here counting rather than refusing, so the round stays
-// free to do whatever it was going to do and the file-level check below stays honest.
+// HOW THE TRUNCATION IS DETECTED, and why not by counting files. Whether a round destroys a
+// segment depends on the boundary it was handed, min(prev_checkpoint_wal_id) over every table: a
+// round where the MVCC gate deferred one busy table reports the PREVIOUS boundary and removes
+// nothing, however faithfully it ran (d). Measured that way the case went green over an unfixed
+// build about half the time. Boundary-independent is that (d) READS -- truncate_before opens every
+// candidate segment through wal_page_reader_t for its highest wal id before deciding anything --
+// while the writer only opens the segment it appends to, and a rotation opens a HIGHER ordinal
+// than any seen so far. So "a WAL segment below the high-water mark was opened" isolates the
+// truncation step from every other WAL file access, through the same dev_set_wal_file_interposer
+// seam the neighbouring truncate cases use -- counting rather than refusing, so the round stays
+// free to do whatever it was going to do.
 //
 // GUARDS, because a case in this family can go green for several wrong reasons:
-//   * THE ROUND MUST HAVE RUN AND FINISHED -- a disk agent counted it, and the WAL manager
-//     counted its exit. Reading the journal at "started", or on a timer, reads a round that
-//     has not reached its destructive step yet;
-//   * THE ROUND MUST HAVE REACHED ITS REBUILD -- index_repopulations();
-//   * AND THAT REBUILD MUST HAVE REFUSED, over a table that really was renumbered -- the
-//     index must DISAGREE with the full scan afterwards. That single fact covers both halves:
-//     a round that compacted nothing, and a rebuild that quietly succeeded, both leave the
-//     two agreeing;
-//   * THE LOOKUP MUST GO THROUGH THE INDEX -- EXPLAIN on the same query text the value
-//     assertions use must say Index Scan;
-//   * THE DETECTOR MUST BE ABLE TO FIRE AT ALL -- the unfaulted round at the end must trip
-//     the very counter the armed round is required to leave at zero.
+//   * the round RAN AND FINISHED -- a disk agent counted it, the WAL manager counted its exit;
+//     reading the journal at "started", or on a timer, reads a round short of its destructive step;
+//   * it REACHED ITS REBUILD -- index_repopulations();
+//   * that rebuild REFUSED over a table that really was renumbered -- the index must disagree with
+//     the full scan afterwards, which covers both a round that compacted nothing and a rebuild
+//     that quietly succeeded;
+//   * the lookup GOES THROUGH THE INDEX -- EXPLAIN on the same query text must say Index Scan;
+//   * the detector CAN FIRE AT ALL -- the unfaulted round at the end trips the very counter the
+//     armed round is required to leave at zero.
 //
-// The WAL is churned through a SECOND, UNINDEXED table, so no churn statement opens a
-// bitcask file and the only listing of the index directory inside the armed window is the
-// rebuild's own.
+// The WAL is churned through a SECOND, UNINDEXED table, so no churn statement opens a bitcask file
+// and the only listing of the index directory inside the armed window is the rebuild's own.
 
 using namespace test_helpers;
 
@@ -400,8 +385,6 @@ namespace {
 
 } // namespace
 
-// RED before the fix.
-//
 // Step (c2) called repopulate_indexes_after_compaction, logged whatever it returned and
 // carried straight on into step (d). With the rebuild refused the round still went to the
 // journal: the seam below counted truncate_before reading the superseded segments, and on the

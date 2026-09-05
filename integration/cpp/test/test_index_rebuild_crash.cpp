@@ -5,25 +5,24 @@
 #include <filesystem>
 #include <string>
 
-// T4 (plan): what a lookup THROUGH THE INDEX must answer after a crash that left a
-// tombstone in the middle of the table.
+// What a lookup THROUGH THE INDEX must answer after a crash that left a tombstone in the
+// middle of the table.
 //
-// The shift these cases were written against was a numbering one: the startup rebuild
-// scanned with VISIBILITY FILTERING, which compacts POSITIONS while physical row ids keep
-// their gaps, and then keyed each rebuilt entry by its position in the scan, while
-// collection_t::fetch resolves row ids PHYSICALLY. Every row after the tombstone was
-// therefore indexed one row low. The numbering was fixed (entries are keyed by the
-// scan's own chunk.row_ids) and the startup rebuild pass itself has since been removed:
-// once the last in-memory index went away it cleared and refilled a buffer it then
-// erased, i.e. did nothing, at the cost of a full scan of every table on every start.
+// The shift these cases were written against was a numbering one: the startup rebuild scanned
+// with VISIBILITY FILTERING, which compacts POSITIONS while physical row ids keep their gaps,
+// and then keyed each rebuilt entry by its position in the scan, while collection_t::fetch
+// resolves row ids PHYSICALLY — so every row after the tombstone was indexed one row low. The
+// numbering was fixed (entries are keyed by the scan's own chunk.row_ids) and the startup
+// rebuild pass has since been removed: once the last in-memory index went away it cleared and
+// refilled a buffer it then erased, at the cost of a full scan of every table on every start.
 //
-// The cases stay because their SUBJECT is the answer, not the mechanism: a lookup through
-// the index after this crash must not name the deleted row, must not shift, and must not
-// resurrect a table that was emptied.
+// The cases stay because their SUBJECT is the answer, not the mechanism: a lookup through the
+// index after this crash must not name the deleted row, must not shift, and must not resurrect
+// a table that was emptied.
 //
-// kill -9 is simulated with the T3 crash mechanism: COPY the live data directory while the
-// engine is up (the destructor checkpoint then mutates only the ORIGINAL, hiding nothing on
-// the copy) and reopen the COPY under a fresh engine. No test lays out files by hand.
+// kill -9 is simulated by COPYing the live data directory while the engine is up (the
+// destructor checkpoint then mutates only the ORIGINAL) and reopening the COPY under a fresh
+// engine. No test lays out files by hand.
 
 namespace {
 

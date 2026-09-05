@@ -21,7 +21,7 @@ namespace components::types {
         requires(core::IsBufferLike<T>) explicit physical_value(const T& value)
             : physical_value(value.data(), static_cast<uint32_t>(value.size())) {}
         explicit physical_value(const char* data, uint32_t size);
-        // all integral types, including the 16-byte absl int128 family (C3)
+        // all integral types, including the 16-byte absl int128 family
         template<typename T>
         requires(!core::IsBufferLike<T>) explicit physical_value(T value)
             : type_(physical_value::get_type_<T>()) {
@@ -33,12 +33,12 @@ namespace components::types {
             }
         }
 
-        // NOTE on DECIMAL (C3): there is deliberately NO decimal tag here. A DECIMAL's
-        // physical representation IS its storage integer (INT64 for width<=18, INT128
-        // beyond — decimal_storage_type), and an index tree holds ONE column's keys, so
-        // encoding the raw scaled integer as INT64/INT128 gives exactly the scan's
-        // compare_rows<T> semantics. The planner guarantees the index is only consulted
-        // when the unified comparison type equals the column type (one scale per tree).
+        // NOTE on DECIMAL: there is deliberately NO decimal tag here. A DECIMAL's physical
+        // representation IS its storage integer (INT16/INT32/INT64/INT128 by width —
+        // decimal_storage_for_width), and an index tree holds ONE column's keys, so encoding the
+        // raw scaled integer as that integer type gives exactly the scan's compare_rows<T>
+        // semantics. The planner guarantees the index is only consulted when the unified
+        // comparison type equals the column type (one scale per tree).
 
         ~physical_value() = default;
 
@@ -60,7 +60,7 @@ namespace components::types {
         physical_type type() const noexcept;
 
     private:
-        // C3: the 16-byte-family comparison arm of operator<.
+        // The 16-byte-family comparison arm of operator<.
         // The 128-bit comparison recomputes both operand kinds from type_, so it takes no
         // pre-computed flags: the caller's lhs128/rhs128 exist only to GATE the call.
         bool less_128_(const physical_value& other) const noexcept;
@@ -110,11 +110,10 @@ namespace components::types {
             else if constexpr (std::is_same_v<T, uint128_t>)
                 return physical_type::UINT128;
             else
-                // The commented-out assert that stood here fell through to `return
-                // physical_type::NA`: constructing a physical_value from any type outside the
-                // list above (`long` on LP64, an enum, a pointer) silently produced an NA-typed
-                // value carrying a memcpy'd payload. Unsupported payload types are a COMPILE
-                // error now.
+                // Falling through to `return physical_type::NA` here would let a
+                // physical_value be constructed from any type outside the list above (`long` on
+                // LP64, an enum, a pointer), silently producing an NA-typed value carrying a
+                // memcpy'd payload. An unsupported payload type is a COMPILE error instead.
                 static_assert(sizeof(T) == 0, "physical_value: unsupported payload type");
         }
 
@@ -125,7 +124,7 @@ namespace components::types {
         uint64_t data_hi_ = 0;         // high word of the 16-byte payloads (INT128/UINT128/DECIMAL)
     };
 
-    // 16 -> 24 with the int128 family (C3). The sizeof is baked into two PERSISTENT
+    // 16 -> 24 with the int128 family. The sizeof is baked into two PERSISTENT
     // structures (b_plus_tree/block.hpp metadata, segment_tree block_metadata); the change is
     // a disk-format break; the format is pre-release and changes in place at version 0
     // (see main_header_t::CURRENT_VERSION).

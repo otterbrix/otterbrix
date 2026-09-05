@@ -57,7 +57,7 @@ namespace components::operators {
             guard_types_.clear();
         }
 
-        // A4: same abandoned-cursor hazard as full_scan — see operator_t::release_cursor.
+        // Same abandoned-cursor hazard as full_scan — see operator_t::release_cursor.
         [[nodiscard]] actor_zeta::unique_future<void> release_cursor(pipeline::context_t* ctx) override;
         [[nodiscard]] bool holds_open_cursor() const noexcept override { return cursor_id_ != 0 && !drained_; }
 

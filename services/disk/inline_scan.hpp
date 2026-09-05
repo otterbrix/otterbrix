@@ -23,8 +23,8 @@ namespace services::disk::detail {
     // indices.  Calls fn(chunk, row_index) for every visible row; returning false from
     // fn stops the scan early.
     //
-    // THE TRANSACTION IS NOT OPTIONAL, and it used not to be passed at all. The scan
-    // this helper drives is a REGULAR one (data_table_t::scan -> row_group_t::scan ->
+    // THE TRANSACTION IS NOT OPTIONAL. The scan this helper drives is a REGULAR one
+    // (data_table_t::scan -> row_group_t::scan ->
     // templated_scan<REGULAR>), so collection_scan_state::txn is what decides which rows
     // exist for it, and a default-constructed transaction_data{0, 0} is NOT "see
     // everything": row_version_manager_t reads it as horizon 0 with no owning

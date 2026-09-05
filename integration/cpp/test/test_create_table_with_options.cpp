@@ -1,7 +1,7 @@
 // ============================================================================
 // `CREATE TABLE ... WITH (...)` MUST NOT SWALLOW AN OPTION IT DOES NOT IMPLEMENT.
 //
-// ЗАПИСЬ [271]. The option loop in
+// The option loop in
 // components/sql/transformer/impl/transform_table.cpp compared each DefElem's
 // name against exactly one string, "storage", and `continue`d past everything
 // else. `storage` was refused because every table is disk-backed and a user
@@ -88,9 +88,9 @@ TEST_CASE("integration::cpp::create_table_with_options::unknown_option_is_refuse
     CHECK_FALSE(gone->is_success());
 }
 
-// A typo of `storage` used to be the worst case: it carried the belief the
-// `storage` refusal exists to correct, and was the one shape guaranteed to slip
-// past a single-name comparison.
+// A typo of `storage` is the worst case: it carries the very belief the `storage`
+// refusal exists to correct, and it is the one shape guaranteed to slip past a
+// single-name comparison.
 TEST_CASE("integration::cpp::create_table_with_options::a_typo_of_storage_is_refused") {
     auto config = make_test_config(fixture_path("typo"));
     config.log.level = log_t::level::off;

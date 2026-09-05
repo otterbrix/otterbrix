@@ -132,10 +132,9 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::legal_decimal_boundaries
         // The far end of the window must still be ACCEPTED — the gate refuses what the
         // decoder refuses and nothing beyond it. The wide half (width 19..38, stored as a
         // 128-bit scaled integer) is carried through the SAME checkpoint and restart as the
-        // narrow half: it used to be excluded here because column_segment_t::scan and
-        // ::scan_partial had no int128 arm and threw std::logic_error out of the
-        // checkpoint's compaction scan, which crossed an actor coroutine and killed the
-        // process. Both arms exist now, so there is nothing left to route around.
+        // narrow half: without an int128 arm in column_segment_t::scan and ::scan_partial the
+        // checkpoint's compaction scan throws std::logic_error across an actor coroutine and
+        // kills the process, so leaving the wide half out here would hide exactly that.
         REQUIRE(exec(d,
                      "CREATE TABLE w.widest (id BIGINT, d38 NUMERIC(38,38), d38z NUMERIC(38,0), "
                      "d38s NUMERIC(38,20), d19 NUMERIC(19,0));")

@@ -175,14 +175,12 @@ namespace components::table::storage {
         if (has_temp_copy()) {
             // Spilled: rebuild a buffer of THIS handle's type (never a block_t — the destructor and
             // the eviction queues both key off buffer_type_) and read the scratch slot back into it.
-            // temp_user_size_ is the buffer's own size() as recorded at spill time. Rebuilding from
-            // it reproduces the identical allocation: size() is (allocation - header), and the
-            // allocation is already sector-aligned, so aligning it up again is a no-op.
-            //
-            // reusable_buffer is deliberately not consumed here: pin() sizes it against
-            // memory_usage_ (a user size) while construct_manager_buffer compares allocations, so
-            // adopting it would compare two different units. Letting it go costs one allocation on
-            // a path that has just done disk I/O.
+            // temp_user_size_ is the buffer's size() at spill time, and rebuilding from it reproduces
+            // the identical allocation: size() is (allocation - header) over an already
+            // sector-aligned allocation. reusable_buffer is deliberately not consumed: pin() sizes it
+            // against memory_usage_ (a user size) while construct_manager_buffer compares
+            // allocations, so adopting it would compare two different units, and letting it go costs
+            // one allocation on a path that has just done disk I/O.
             auto restored =
                 block_manager.buffer_manager.construct_manager_buffer(temp_user_size_, nullptr, buffer_type_);
             if (!block_manager.buffer_manager.buffer_pool().read_temporary(temp_slot_,
@@ -230,8 +228,8 @@ namespace components::table::storage {
         }
         assert(!unswizzled_);
         // Either the bytes are already on disk, or they were just written to the pool's scratch
-        // file. Dropping a buffer that is in neither state loses rows — and under NDEBUG the
-        // assert that used to guard this dropped it anyway. Freeing rows to reclaim memory is
+        // file. Dropping a buffer that is in neither state loses rows — and an assert guarding
+        // it drops the buffer anyway under NDEBUG. Freeing rows to reclaim memory is
         // the unrecoverable direction (a leak is recoverable, lost rows are not), so the unload
         // is REFUSED: the buffer stays resident and charged, the caller gets nothing to take.
         // Every current caller already tolerates nullptr (unload() resets it; the eviction pass

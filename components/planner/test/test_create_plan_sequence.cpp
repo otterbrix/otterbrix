@@ -17,21 +17,17 @@
 
 // A SEQUENCE CHILD THAT FAILS TO LOWER REFUSES THE WHOLE STATEMENT.
 //
-// create_plan's contract for "cannot lower this node" is a null operator_ptr:
-// the executor maps a null physical root to create_physical_plan_error
-// ("invalid query plan"). create_plan_sequence's generic child loop used to
-// consume each child's operator UNCHECKED:
+// create_plan's contract for "cannot lower this node" is a null operator_ptr: the executor maps a null
+// physical root to create_physical_plan_error ("invalid query plan"). Consuming each child's operator
+// UNCHECKED in create_plan_sequence's generic child loop breaks that contract twice:
 //
-//   * a FIRST child that lowered to null was silently dropped from the chain —
-//     the statement then executed with one of its steps missing and reported
-//     success on the remainder;
-//   * a LATER null child was dereferenced (`op->left()` / `op->set_children`)
-//     — a crash, not a refusal.
+//   * a FIRST child that lowered to null is silently dropped from the chain — the statement then executes
+//     with one of its steps missing and reports success on the remainder;
+//   * a LATER null child is dereferenced (`op->left()` / `op->set_children`) — a crash, not a refusal.
 //
-// These cases pin the propagation: one unlowerable child nulls the whole
-// sequence, so the executor refuses the statement instead of running a
-// truncated one. A bare drop_t is the unlowerable probe — it has no case in
-// create_plan's dispatch (DROP lowers only through its own rewritten shapes).
+// These cases pin the propagation: one unlowerable child nulls the whole sequence, so the executor refuses
+// the statement instead of running a truncated one. A bare drop_t is the unlowerable probe — it has no case
+// in create_plan's dispatch (DROP lowers only through its own rewritten shapes).
 
 namespace {
 
@@ -81,7 +77,7 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_later_child_refuses
     seq->append_child(make_lowerable_alter_add(res, "c1"));
     seq->append_child(make_unlowerable_leaf(res));
 
-    // Before the guard this dereferenced the null second operator (op->left()).
+    // Without the guard this dereferences the null second operator (op->left()).
     auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
 
     REQUIRE(plan == nullptr);
@@ -124,12 +120,10 @@ TEST_CASE("physical_plan_generator::sequence::the_first_written_clause_executes_
     auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
     REQUIRE(plan != nullptr);
 
-    // The executor drives the chain bottom-up: the DEEPEST-left operator runs
-    // first. Clause order is user-visible (two ADD COLUMNs decide attnum order),
-    // so children[0] — the first user-written clause — must sit at the deepest
-    // level, exactly as the generic sequence loop already arranges and as the
-    // chain builder's own comment states. The reversed walk used to put
-    // children[0] at the ROOT instead, running the clauses back to front.
+    // The executor drives the chain bottom-up: the DEEPEST-left operator runs first. Clause order is
+    // user-visible (two ADD COLUMNs decide attnum order), so children[0] — the first user-written clause —
+    // must sit at the deepest level, exactly as the generic sequence loop already arranges it. A reversed
+    // walk puts children[0] at the ROOT instead, running the clauses back to front.
     REQUIRE(plan->type() == components::operators::operator_type::alter_column_rename);
     REQUIRE(plan->left() != nullptr);
     REQUIRE(plan->left()->type() == components::operators::operator_type::alter_column_add);

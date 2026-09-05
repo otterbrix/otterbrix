@@ -2,42 +2,42 @@
 // A CHECK THE ENGINE CANNOT EVALUATE MUST NOT BE ACCEPTED AS IF IT COULD.
 //
 // The CHECK text stored in pg_constraint is compiled at DML time by a small
-// recogniser in operator_check_constraint. It understands exactly four shapes:
+// recogniser in operator_check_constraint that understands exactly four shapes:
 //
 //     column OP constant        (OP one of  =  <>  <  >  <=  >= )
 //     column IS [NOT] NULL
 //     (A) AND (B) / (A) OR (B)
 //     NOT (A)
 //
-// Everything else used to compile to the constant TRUE — the constraint was in
-// the catalog, the user was told the declaration succeeded, and no row was ever
-// judged by it. The forms below all survive deparsing (so the declaration is
-// accepted today) and all fail to reach that recogniser:
+// Everything else used to compile to the constant TRUE — constraint in the
+// catalog, declaration reported successful, no row ever judged by it. The forms
+// below all survive deparsing (so they are accepted today) and all fail to reach
+// that recogniser:
 //
 //   * an arithmetic operand      CHECK (a + b > 0)   — "a + b" is not a column
-//                                                      name, so the whole
-//                                                      predicate is TRUE;
+//                                                      name, so the predicate is
+//                                                      TRUE;
 //   * an arithmetic constant     CHECK (a > 1 + 1)   — the constant parser reads
 //                                                      "1 + 1" as 1, so a > 1 is
 //                                                      enforced instead;
 //   * column against column      CHECK (lo <= hi)    — "hi" is not a number, so
-//                                                      the constant parser reads
-//                                                      0 and lo <= 0 is enforced
-//                                                      instead: rows that satisfy
-//                                                      the declared constraint are
+//                                                      the constant parser reads 0
+//                                                      and lo <= 0 is enforced:
+//                                                      rows that SATISFY the
+//                                                      declared constraint are
 //                                                      rejected.
 //
-// Each case is written as the pair that must never happen, so the test states
-// the invariant rather than where the refusal is made: it is satisfied by a
-// refusal at declaration (which is what this branch does — a rejected CREATE
-// TABLE / ALTER TABLE is recoverable, a constraint sitting unenforced in the
-// catalog is not) and equally by a refusal at the first write.
+// Each case is written as the pair that must never happen, so it states the
+// invariant rather than where the refusal is made: it is satisfied by a refusal
+// at declaration (what this branch does — a rejected CREATE/ALTER TABLE is
+// recoverable, an unenforced constraint in the catalog is not) and equally by a
+// refusal at the first write.
 //
 // The last case is the opposite shape: `name = 'a > b'` IS one of the four
-// recognised forms, and must keep being accepted AND enforced. It is here
-// because the operator used to scan for its comparison operator without regard
-// for quoting, so the " > " INSIDE the string literal was taken for the
-// predicate's operator and the whole CHECK collapsed to TRUE.
+// recognised forms and must keep being accepted AND enforced. The operator used
+// to scan for its comparison operator without regard for quoting, so the " > "
+// INSIDE the string literal was taken for the predicate's operator and the whole
+// CHECK collapsed to TRUE.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -97,7 +97,7 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::arithmetic_constant", "[c
     INFO("a constant the engine folds wrongly is a constraint it does not enforce");
     CHECK(declared->is_error());
 
-    // a = 2 violates `a > 1 + 1`; the recogniser used to read the bound as 1 and let it in.
+    // a = 2 violates `a > 1 + 1`; a recogniser that reads the bound as 1 lets it in.
     const bool admitted = exec("INSERT INTO c.t (a) VALUES (2);")->is_success();
     INFO("declared=" << declared->is_success() << " admitted=" << admitted);
     CHECK_FALSE((declared->is_success() && admitted));
@@ -173,17 +173,15 @@ TEST_CASE("integration::cpp::check_expr_unenforceable::operator_inside_a_string_
 // cannot find in the written row instead of returning constant TRUE: the write
 // fails loudly rather than being admitted against a constraint enforced by
 // nothing. The IDEAL closure — refusing the typo at the declaration by carrying
-// the mentioned names onto the constraint node and into conkey — lives in
-// components/sql/transformer + the enrich-time DDL guard, which are outside this
-// wave's files and are handed off. What this wave guarantees is that the silent
-// pass is gone: a CHECK the engine cannot bind to a column is loud, not TRUE.
+// the mentioned names onto the constraint node and into conkey — belongs to
+// components/sql/transformer plus the enrich-time DDL guard and is not done. What
+// IS guaranteed here: a CHECK the engine cannot bind to a column is loud, not TRUE.
 // ============================================================================
 
 TEST_CASE("integration::cpp::check_expr_unenforceable::unknown_column_alter_refuses_at_write", "[checkexpr]") {
     MAKE_ENV("unknown_col_alter");
     REQUIRE(exec("CREATE TABLE c.t (a bigint);")->is_success());
-    // Declaration is accepted today (the DDL-level refusal is handed off); the
-    // floor is at the write.
+    // Declaration is accepted (there is no DDL-level refusal); the floor is at the write.
     exec("ALTER TABLE c.t ADD CONSTRAINT chk_typo CHECK (nosuchcol > 0);");
 
     auto ins = exec("INSERT INTO c.t (a) VALUES (-1);");

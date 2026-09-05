@@ -132,7 +132,7 @@ TEST_CASE("services::disk::persistence::test_type_persistence_across_restart") {
 }
 
 // 2. test_function_persistence: CREATE FUNCTION → checkpoint → restart → resolve_function
-// returns the same OID. Functions used to be in-memory only; now they live in pg_proc.
+// returns the same OID: functions live in pg_proc, not in memory.
 TEST_CASE("services::disk::persistence::test_function_persistence") {
     auto dir = persist_dir() + "/func";
     std::filesystem::remove_all(dir);
@@ -405,7 +405,7 @@ TEST_CASE("services::disk::persistence::test_computing_table_persists_restart") 
         REQUIRE(rr.found);
         REQUIRE(rr.oid == comp_oid);
         REQUIRE(rr.relkind == components::catalog::relkind::computed);
-        // V4 resolve_table for relkind='g' fills `columns` from pg_computed_column
+        // resolve_table for relkind='g' fills `columns` from pg_computed_column
         // (latest version per attname with refcount > 0). Two appends in fixture →
         // two columns survive restart.
         REQUIRE(rr.columns.size() == 2);
@@ -855,14 +855,13 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
     std::filesystem::remove_all(dir);
 }
 
-// --- H1 caller audit: what agent_disk_t::checkpoint_inner does with the answer ----------
+// --- CALLER AUDIT: what agent_disk_t::checkpoint_inner does with the answer -------------
 //
 // checkpoint_inner calls table_storage_t::checkpoint(wal_id) and on success writes the
-// .wal_id sidecar. Until H1 that "success" was unconditional:
-// single_file_block_manager_t::write_header was void and discarded both the write() and the
-// sync() bool, so a header that never reached the platter still advanced the sidecar to WAL
-// position N+1 — while the durable root was still N. Every row between N and N+1 then
-// existed in no file at all.
+// .wal_id sidecar, so that "success" must not be unconditional. Were
+// single_file_block_manager_t::write_header to discard the write() and sync() results, a header
+// that never reached the platter would still advance the sidecar to WAL position N+1 while the
+// durable root stayed at N — and every row between N and N+1 would exist in no file at all.
 namespace {
 
     // The T3 interposer seam is process-wide, and this fixture opens one .otbx per catalog
@@ -956,13 +955,11 @@ TEST_CASE("services::disk::persistence::failed_checkpoint_does_not_advance_wal_i
     std::filesystem::remove_all(dir);
 }
 
-// H1 caller audit, second finding — reshaped by A7.5. checkpoint_inner's failure branch
-// used to juggle an external whole-file backup (restore it over the .otbx, then delete it),
-// and this case used to pin the one sub-branch where that juggling would have destroyed the
-// last durable root. Under A7.5 there is nothing to juggle: the durable root lives INSIDE
-// the .otbx (two-slot shadow-paged header) and a failed round must leave the filesystem
-// exactly as the committed round left it — no backup created, no restore attempted, no
-// quarantine files, the per-table directory byte-for-byte the committed state plus nothing.
+// There is no external whole-file backup for checkpoint_inner's failure branch to juggle: the
+// durable root lives INSIDE the .otbx (two-slot shadow-paged header), and a failed round must
+// leave the filesystem exactly as the committed round left it — no backup created, no restore
+// attempted, no quarantine files, the per-table directory byte-for-byte the committed state
+// plus nothing.
 TEST_CASE("services::disk::persistence::failed_checkpoint_leaves_no_backup_or_quarantine_files") {
     auto dir = persist_dir() + "/nobackup";
     std::filesystem::remove_all(dir);

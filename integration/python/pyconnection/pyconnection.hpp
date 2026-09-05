@@ -113,8 +113,8 @@ namespace otterbrix {
         pycursor_ptr cursor();
 
         // Runs `query` and hands back its rows. Returns py_result_t rather than
-        // the connection: the connection has no way to carry a result set, and
-        // returning it was why a SELECT produced nothing a caller could read.
+        // the connection: the connection has no way to carry a result set, so
+        // returning it leaves a SELECT with nothing a caller could read.
         // A statement the engine rejected raises instead of returning -- Python's
         // only error channel is an exception (same translation point `connect`
         // and `listTables` use).

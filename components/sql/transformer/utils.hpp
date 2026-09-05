@@ -55,7 +55,7 @@ namespace components::sql::transform {
     // The index is read BY NODE TAG: an int32-sized literal arrives as a
     // T_Integer in `ival`, a wider one as a T_Float carrying its original
     // digits in `str` — the same union slot, so reading `ival` unconditionally
-    // rendered the BIT PATTERN OF A POINTER into the column path for
+    // renders the BIT PATTERN OF A POINTER into the column path for
     // arr[3000000000]. A non-literal or fractional subscript, and the slice
     // form arr[a:b], are refusals: there is no integer to address a segment by.
     core::result_wrapper_t<std::pmr::string> indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices);
@@ -327,9 +327,9 @@ namespace components::sql::transform {
     //     (A) AND (B) / (A) OR (B) / NOT (A) of those
     //
     // Anything else is REFUSED here, at the declaration. It has to be refused
-    // somewhere: what the recogniser cannot read it used to compile to the constant
-    // TRUE, so an arithmetic operand or a column-against-column comparison became a
-    // constraint the catalog holds and no row is ever judged by. A rejected
+    // somewhere: what the recogniser cannot read compiles to the constant TRUE, so an
+    // arithmetic operand or a column-against-column comparison becomes a constraint
+    // the catalog holds and no row is ever judged by. A rejected
     // CREATE TABLE / ALTER TABLE costs the user one statement; an unenforced
     // constraint in the catalog cannot be recovered from at all.
     core::result_wrapper_t<std::string> deparse_check_expr(std::pmr::memory_resource* resource, Node* node);
@@ -343,8 +343,7 @@ namespace components::sql::transform {
     // lexer hands it on as a T_Float holding its original digits (process_integer_literal
     // in components/sql/parser/scan.l). This is the boundary where those digits become a
     // number again, and it is the only one: reading them with atof would round
-    // 9223372036854775807 to 9223372036854775808 and put the truncation bug back in a
-    // different shape.
+    // 9223372036854775807 to 9223372036854775808.
     enum class integer_text_t
     {
         not_an_integer, // a fraction or an exponent — a real float, atof is correct for it
@@ -361,9 +360,8 @@ namespace components::sql::transform {
     // Reads `text` (optional sign, decimal digits, optional '.' + digits; surrounding
     // spaces allowed, no exponent) as the EXACT scaled integer of a DECIMAL(width,
     // scale): the value times 10^scale, digit for digit, rounding only the digits past
-    // `scale` (half away from zero, PostgreSQL's rule). This is the second half of the
-    // wide-literal repair: the integer half reads digits exactly through
-    // parse_exact_integer, and this is the fractional half — atof would flatten a
+    // `scale` (half away from zero, PostgreSQL's rule). The integer half reads digits
+    // exactly through parse_exact_integer; this is the fractional half — atof would flatten a
     // NUMERIC(38,20) literal with more than ~15 significant digits into the nearest
     // double, a silently different number. A value whose integer part needs more than
     // (width - scale) digits is a refusal (PostgreSQL's "numeric field overflow"), and
@@ -374,7 +372,8 @@ namespace components::sql::transform {
     // The value a numeric literal (T_Integer or T_Float Value node) denotes, exactly.
     // BIGINT when it fits int64, HUGEINT when it needs the full 128 bits, DOUBLE only for
     // literals that are genuinely fractional, and a refusal for a plain integer too wide
-    // for either — silently rounding that one into a double is the defect, not the fix.
+    // for either — silently rounding that one into a double is the wrong answer this path
+    // exists to remove.
     core::result_wrapper_t<types::logical_value_t> numeric_literal_value(std::pmr::memory_resource* resource,
                                                                          Value* value);
 

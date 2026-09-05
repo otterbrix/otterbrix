@@ -18,8 +18,8 @@ namespace services::wal {
     struct wal_contract {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
-        // Every reply below that used to be a bare id_t or void now carries a refusal,
-        // because each of them is a claim about the journal that could be false: a wal_id for
+        // Every reply below carries a refusal rather than a bare id_t or void, because each of
+        // them is a claim about the journal that could be false: a wal_id for
         // a record the page writer refused, a durable commit over a failed fsync, a completed
         // truncate that deleted a segment it could not read, and a record list that is empty
         // because a segment would not open.

@@ -177,7 +177,7 @@ namespace components::table {
             }
             // The visibility question, asked BEFORE the gather so an invisible row costs no
             // column read. `row_id` stays collection-absolute: row_version_manager_t::fetch
-            // keeps the absolute contract for this one method and rebases internally (A6).
+            // keeps the absolute contract for this one method and rebases internally.
             if (visibility == fetch_visibility_t::SNAPSHOT && !row_group->is_visible(txn, row_id)) {
                 continue;
             }
@@ -393,7 +393,7 @@ namespace components::table {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(ids[start]);
             if (!row_group) {
-                // get_segment no longer throws on a miss. This walk has NO error channel (the
+                // get_segment answers a miss with null. This walk has NO error channel (the
                 // return is the deleted-row count read by the caller's reply), so the refusal
                 // is reported and the walk stops: deleting "some nearby rows" instead is worse
                 // than deleting fewer, and the short count is visible to the caller (rule 6).
@@ -426,7 +426,7 @@ namespace components::table {
             uint64_t start = pos;
             auto row_group = row_groups_->get_segment(ids[pos]);
             if (!row_group) {
-                // get_segment no longer throws on a miss; the refusal rides the channel this
+                // get_segment answers a miss with null; the refusal rides the channel this
                 // function already returns (rules 2/9).
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
@@ -482,10 +482,9 @@ namespace components::table {
             }
             // THE PATH GOES TO update_column, NOT update. row_group_t::update reads its last
             // argument as a list of TOP-LEVEL column ordinals — one per updates column — so a
-            // column_path of depth 2 made it treat the child ordinal as a second table column
-            // and index updates.data[1] of a one-column chunk. row_group_t::update_column is
-            // the entry that walks the path INTO the column (depth 1 below the root ordinal);
-            // it had no caller at all before this line.
+            // column_path of depth 2 makes it treat the child ordinal as a second table column
+            // and index updates.data[1] of a one-column chunk. row_group_t::update_column is the
+            // entry that walks the path INTO the column (depth 1 below the root ordinal).
             auto updated = row_group->update_column(updates, row_ids, column_path, start, pos - start);
             if (updated.has_error()) {
                 return updated;
@@ -578,11 +577,11 @@ namespace components::table {
             pointers.push_back(std::move(pointer.value()));
         }
 
-        // Rule 19 / the L1 family: THIS is where every column segment of the checkpoint
-        // reaches the file, and the answer used to go nowhere. The durability latch inside the
-        // block manager still refuses to commit a header over the hole, but the caller was told
-        // the row-group pointers were good — so the failure only surfaced two layers later, with
-        // nothing left to attribute it to.
+        // Rule 19, and the durability chain: THIS is where every column segment of the checkpoint
+        // reaches the file, so its answer must travel. Dropping it still leaves the block
+        // manager's durability latch refusing to commit a header over the hole, but the caller
+        // is told the row-group pointers are good — so the failure surfaces two layers later,
+        // with nothing left to attribute it to.
         if (auto flushed = partial_block_manager.flush_partial_blocks(); flushed.has_error()) {
             return flushed.convert_error<std::vector<storage::row_group_pointer_t>>(); // io_error
         }

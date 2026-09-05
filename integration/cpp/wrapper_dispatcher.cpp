@@ -144,11 +144,10 @@ namespace otterbrix {
 
         // parser.h's contract on this exact seam: the returned list may be EMPTY —
         // the grammar accepted the text and found no statement in it — and it may
-        // hold MORE than one statement. linitial() alone answered both with the
-        // FRONT cell: on an empty list that is a read past the end of the pmr::list
-        // (the old "unknown parser error" arm only ever fired because that read
-        // happens to land on a zero), and on a multi-statement query it silently
-        // executed the FIRST statement, dropped the rest, and reported success.
+        // hold MORE than one statement. linitial() alone answers both with the
+        // FRONT cell: on an empty list that is a read past the end of the pmr::list,
+        // and on a multi-statement query it silently executes the FIRST statement,
+        // drops the rest, and reports success.
         if (list_length(parse_tree) == 0) {
             return make_cursor(resource(),
                                core::error_t(core::error_code_t::sql_parse_error,
@@ -202,7 +201,7 @@ namespace otterbrix {
 
         // Same seam and same contract as execute_sql above: an empty list is
         // success-with-no-statement, a longer list is more statements than this
-        // call can honestly execute. Both used to fall into linitial().
+        // call can honestly execute. Unguarded, both fall into linitial().
         if (list_length(parse_tree) == 0) {
             return make_cursor(resource(),
                                core::error_t(core::error_code_t::sql_parse_error,

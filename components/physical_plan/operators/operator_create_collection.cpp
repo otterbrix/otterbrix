@@ -21,16 +21,13 @@ namespace components::operators {
         , catalog_writes_(std::move(catalog_writes)) {}
 
     actor_zeta::unique_future<void> operator_create_collection_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // B1a: every table is disk-backed. A schemaless (computed, relkind='g')
-        // table creates its .otbx with an empty column set; the schema is adopted
-        // from the first appended chunk and serialized by the next checkpoint.
-        // B1b: the computed flag is passed EXPLICITLY. `columns_.empty()` here is not a
-        // storage-side heuristic — it is the planner's own relkind definition
-        // (planner.cpp rewrite_create_table: relkind='g' ⇔ empty column_definitions),
-        // applied to the very list plan-gen copied verbatim into this operator, so the
-        // flag and the pg_class row written below cannot disagree. The pg_class row
-        // does not exist yet at this point (catalog writes follow), so relkind cannot
-        // be scanned instead.
+        // Every table is disk-backed. A schemaless (computed, relkind='g') table creates its .otbx with an
+        // empty column set; the schema is adopted from the first appended chunk and serialized by the next
+        // checkpoint. The computed flag is passed EXPLICITLY. `columns_.empty()` here is not a storage-side
+        // heuristic — it is the planner's own relkind definition (planner.cpp rewrite_create_table:
+        // relkind='g' <=> empty column_definitions), applied to the very list plan-gen copied verbatim into
+        // this operator, so the flag and the pg_class row written below cannot disagree. The pg_class row does
+        // not exist yet at this point (catalog writes follow), so relkind cannot be scanned instead.
         {
             const bool is_computed = columns_.empty();
             auto [_, f] = actor_zeta::send(ctx->disk_address,
@@ -75,12 +72,10 @@ namespace components::operators {
                                            std::move(row));
             append_futures.push_back(std::move(f));
         }
-        // READ THE REPLIES. These are the pg_class / pg_attribute / pg_depend rows that ARE
-        // the table: a CREATE TABLE whose pg_class row was refused has created nothing the
-        // catalog can resolve, and the range alone cannot say so — a zero count means "nothing
-        // asked to be written", which is how a failed append used to be reported. Every future
-        // is drained before the first refusal is acted on, so no reply is left addressed to a
-        // statement that has already returned; the first error is the one carried.
+        // READ THE REPLIES. These are the pg_class / pg_attribute / pg_depend rows that ARE the table: a CREATE
+        // TABLE whose pg_class row was refused has created nothing the catalog can resolve, and the range alone
+        // cannot say so — a zero count means "nothing asked to be written", not "an append that failed". Every
+        // future is drained before the first refusal is acted on, and the first error is the one carried.
         core::error_t append_error = core::error_t::no_error();
         for (auto& f : append_futures) {
             auto rng_r = co_await std::move(f);

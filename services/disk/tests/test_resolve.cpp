@@ -330,10 +330,10 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
 
 // 8. A keyed read that CANNOT BE PERFORMED must not be reported as "no rows".
 //
-// The keyed catalog reads used to return a bare vector with no error slot, so every
-// failure — an unknown key column, a key-arity mismatch, and (the dangerous one) a
-// scan_local io_error/data_corruption from a failed block pin — collapsed into "one
-// empty entry per key", indistinguishable from a legitimate miss: operator_resolve_table
+// A bare vector with no error slot collapses every failure of a keyed catalog read — an
+// unknown key column, a key-arity mismatch, and (the dangerous one) a scan_local
+// io_error/data_corruption from a failed block pin — into "one empty entry per key",
+// indistinguishable from a legitimate miss: operator_resolve_table
 // read that as "Database does not exist", operator_resolve_constraint built FK metadata
 // out of it. Test 7 above pins the other half: key 99, which genuinely matches nothing,
 // yields an EMPTY entry — empty already means "not found".
@@ -475,15 +475,15 @@ TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
     REQUIRE(projected[0].value(0, 0).value<std::int64_t>() == std::int64_t{7});
 }
 
-// --- D1: THE CATALOG-READ FUNNEL --------------------------------------------------------
+// --- THE CATALOG-READ FUNNEL ------------------------------------------------------------
 //
 // manager_disk_t::scan_table is the single door every catalog read goes through
-// (manager_disk_resolve.cpp:19) — namespace resolve, function resolve, cast lookup,
-// namespace enumeration. It had three legs that answered a read it COULD NOT PERFORM with an
-// EMPTY batch list: no agents, no owning agent, and a scan that came back with an error. An
-// empty batch list is also what "there are no matching rows" looks like, so every caller read
-// a failed read as a negative answer. The two cases below are the two shapes of that lie,
-// each pinned against CONTENT that is provably on disk.
+// (manager_disk_resolve.cpp) — namespace resolve, function resolve, cast lookup,
+// namespace enumeration. Three of its legs can fail to perform the read at all: no agents, no
+// owning agent, and a scan that came back with an error. NONE of them may answer with an EMPTY
+// batch list, because an empty batch list is also what "there are no matching rows" looks like,
+// and a caller handed one reads a failed read as a negative answer. The two cases below are the
+// two shapes of that lie, each pinned against CONTENT that is provably on disk.
 namespace {
 
     // The T3 interposer seam is process-wide and this fixture opens one .otbx per catalog
@@ -577,7 +577,7 @@ namespace {
 
 } // namespace
 
-// D1a. A pg_proc scan that CANNOT BE PERFORMED must not be reported as "no such function".
+// CASE 1. A pg_proc scan that CANNOT BE PERFORMED must not be reported as "no such function".
 //
 // Phase 1 lays down a clean database and CHECKPOINTS it, so the five builtin pg_proc rows
 // live in the FILE and not merely in this process's memory. Phase 2 reopens it with the fault
@@ -625,10 +625,10 @@ TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
     std::filesystem::remove_all(dir);
 }
 
-// D1b. The same lie, one floor down and through a different reader: agent_disk_t::scan_local's
+// CASE 2. The same lie, one floor down and through a different reader: agent_disk_t::scan_local's
 // "this agent does not own the oid" leg. A manager that never bootstrapped owns no pg_cast, so
 // find_cast_oid's scan cannot run at all — and INVALID_OID is the value the caller
-// (operator_unregister_cast, operator_register_cast.cpp:94) reads as "there is no such cast
+// (operator_unregister_cast, operator_register_cast.cpp) reads as "there is no such cast
 // row", which is a statement about the catalog that nobody was in a position to make.
 TEST_CASE("services::disk::resolve::an_unowned_catalog_scan_is_not_no_rows") {
     const auto dir = std::filesystem::path(resolve_dir() + "_unowned");

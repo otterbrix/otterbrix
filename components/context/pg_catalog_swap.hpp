@@ -24,7 +24,7 @@ namespace components {
     // post-commit and patches the column in place. `kind` selects the column
     // (added_at = index 10 for ADD/RENAME, dropped_at = index 11 for DROP tombstone).
     //
-    // B3c1 — a dropped_at marker carries a SECOND piece of unfinished business, and it rides
+    // A dropped_at marker carries a SECOND piece of unfinished business, and it rides
     // here rather than on a channel of its own because it is the same event with the same
     // lifetime. The marker already IS "an ALTER wrote a pg_attribute row this txn has to
     // finish applying once the commit_id exists"; for a DROP, finishing it means both patching
@@ -40,7 +40,7 @@ namespace components {
     //   * dropped_at     — the physical release of the column's blocks (operator_alter_column_drop_t,
     //                      relkind='r'); an empty release_attname means "nothing physical to release";
     //   * storage_rename — the OLD name, with rename_to_attname carrying the new one (below);
-    //   * added_at       — RN-oid. ALTER TABLE ADD COLUMN writes pg_attribute and stops; the
+    //   * added_at       — ALTER TABLE ADD COLUMN writes pg_attribute and stops; the
     //                      STORAGE column is materialised later, by the schema-growth stage of
     //                      an INSERT, on an agent that cannot read pg_attribute. So the marker
     //                      carries the (table, attname) the freshly minted `attoid` belongs to,

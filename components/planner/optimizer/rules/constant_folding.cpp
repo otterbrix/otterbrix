@@ -46,17 +46,15 @@ namespace components::planner::optimizer {
                    std::holds_alternative<core::parameter_id_t>(expr.params()[1]);
         }
 
-        // Try to fold a scalar arithmetic expression with constant params.
-        // On success, replaces the expression's params with a single parameter_id_t
-        // that holds the computed result (reusing left_id slot).
+        // Try to fold a scalar arithmetic expression with constant params. On success, replaces the
+        // expression's params with a single parameter_id_t that holds the computed result (reusing left_id).
         //
-        // Channel: `true` = folded, `false` = the shape is not foldable (non-arithmetic
-        // op, non-constant params, NULL operand), error = both sides ARE constant but
-        // the arithmetic refused them (unsupported operand types). The refusal is the
-        // logical_value_t entry points' own — they answer by value now, which is what
-        // retired the 1-element-vector boxing that stood here: compute_binary_arithmetic
-        // has no error channel and silently answered a typed NA for e.g. 'a' + 1, so the
-        // fold rewrote the expression into a constant NULL instead of declining.
+        // Channel: `true` = folded, `false` = the shape is not foldable (non-arithmetic op, non-constant
+        // params, NULL operand), error = both sides ARE constant but the arithmetic refused them (unsupported
+        // operand types). The refusal is the logical_value_t entry points' own, which is why the operands are
+        // not boxed into 1-element vectors for compute_binary_arithmetic: that has no error channel and
+        // silently answers a typed NA for e.g. 'a' + 1, so the fold would rewrite the expression into a
+        // constant NULL instead of declining.
         core::result_wrapper_t<bool>
         try_fold_scalar(std::pmr::memory_resource* resource, scalar_expression_t& expr, parameter_node_t* parameters) {
             arithmetic_op op;
@@ -78,15 +76,12 @@ namespace components::planner::optimizer {
                 return false;
             }
 
-            // Fold only operand shapes the scalar evaluator dispatches soundly:
-            // both numeric (it promotes them to a common type first) or the same
-            // type (one switch arm reads both). A MIXED pair outside that — e.g.
-            // 'a' + 1, DATE + INTERVAL — is declined: logical_value_t's arithmetic
-            // dispatches those on the LEFT type alone and reads the right operand
-            // through the left arm's getter, which throws value<T>() on the
-            // mismatch (a components/types defect this rule must not trip at plan
-            // time). Declining loses nothing but the fold: the runtime evaluator
-            // answers the expression.
+            // Fold only operand shapes the scalar evaluator dispatches soundly: both numeric (it promotes
+            // them to a common type first) or the same type (one switch arm reads both). A MIXED pair outside
+            // that — 'a' + 1, DATE + INTERVAL — is declined: logical_value_t's arithmetic dispatches those on
+            // the LEFT type alone and reads the right operand through the left arm's getter, which throws
+            // value<T>() on the mismatch (a components/types defect this rule must not trip at plan time).
+            // Declining loses nothing but the fold: the runtime evaluator answers the expression.
             const auto left_type = left_val.type().type();
             const auto right_type = right_val.type().type();
             if (left_type != right_type && !(is_numeric(left_type) && is_numeric(right_type))) {
@@ -180,8 +175,7 @@ namespace components::planner::optimizer {
             // !ok: this comparison KIND has no fold (regex / ANY / ALL / IS [NOT]
             // NULL over constants). That is ordinary transformer output, not a
             // broken invariant — the runtime evaluator answers it; folding is only
-            // an optimization. The assert that stood here aborted Debug builds on
-            // such plans and was Release-erased into this very skip.
+            // an optimization, so this is a skip and not an assert.
         }
 
         // Check if a union expression's children are all folded to a specific type
@@ -251,12 +245,10 @@ namespace components::planner::optimizer {
             }
             auto folded = try_fold_scalar(resource, *scalar, parameters);
             if (folded.has_error()) {
-                // Both sides are constants and the arithmetic refused them
-                // (unsupported operand types). Declining the fold is the whole
-                // answer HERE: this rule is an optimization pass with no path to
-                // the user (optimize() returns a plan, not a result), so the
-                // expression is left standing and the runtime evaluator — the
-                // canonical evaluation point — answers it on execution.
+                // Both sides are constants and the arithmetic refused them (unsupported operand types).
+                // Declining the fold is the whole answer HERE: this rule is an optimization pass with no
+                // path to the user (optimize() returns a plan, not a result), so the expression is left
+                // standing and the runtime evaluator — the canonical evaluation point — answers it.
                 return;
             }
         }
@@ -276,13 +268,11 @@ namespace components::planner::optimizer {
             }
             try_fold_compare(*comp, parameters);
             simplify_union(comp);
-            // NOT over a fully folded single child folds to the complementary
-            // constant: NOT(all_false) scans everything, NOT(all_true) is the
-            // short-circuited empty scan. Only the single-child form folds —
-            // multi-child union_not means NOT(child1 AND child2 ...) and keeps
-            // its children. Without this, `WHERE NOT (1=2)` survived folding
-            // into filter construction, whose all_false / key-shape guards
-            // were Release-erased asserts.
+            // NOT over a fully folded single child folds to the complementary constant: NOT(all_false)
+            // scans everything, NOT(all_true) is the short-circuited empty scan. Only the single-child
+            // form folds — multi-child union_not means NOT(child1 AND child2 ...) and keeps its children.
+            // Without this, `WHERE NOT (1=2)` survived folding into filter construction, whose all_false /
+            // key-shape guards were Release-erased asserts.
             if (comp->type() == compare_type::union_not && comp->children().size() == 1 &&
                 comp->children().front()->group() == expression_group::compare) {
                 const auto child_type =

@@ -31,11 +31,10 @@ namespace components::sql::transform {
     // CREATE FUNCTION is lowered to a MACRO: one name, a list of NAMED parameters,
     // and the AS body it expands to. That is everything node_create_macro_t can
     // carry, so everything else in the statement must either fit that shape or be
-    // refused out loud (rule 6) — this function used to drop every unrepresentable
-    // piece without a word, and the worst case dropped the NAME itself: a
-    // three-part funcname matched neither the one-part nor the two-part arm (there
-    // was no else), so the macro was registered under the EMPTY string and the
-    // statement reported success.
+    // refused out loud (rule 6). Dropping an unrepresentable piece without a word
+    // costs the NAME itself in the worst case: a three-part funcname matches neither
+    // the one-part nor the two-part arm, so with no else the macro is registered
+    // under the EMPTY string and the statement reports success.
     //
     // Deliberately NOT refused: `RETURNS <type>`. The grammar requires either a
     // RETURNS clause or none at all, the macro itself is untyped (its result type
@@ -47,9 +46,9 @@ namespace components::sql::transform {
         // The replace flag was never read, and nothing downstream can act on it:
         // node_create_macro_t has no replace field, and build_create_macro_writes
         // (ddl_metadata_builder.cpp) only ever ADDS the pg_class/pg_depend/pg_rewrite rows for
-        // a new macro — there is no replace-or-update write anywhere on the path. So
-        // `OR REPLACE` executed as plain CREATE and nothing said so. Refuse the flag
-        // itself rather than promise a replacement that cannot happen.
+        // a new macro — there is no replace-or-update write anywhere on the path, so
+        // `OR REPLACE` would execute as a plain CREATE with nothing saying so. Refuse
+        // the flag itself rather than promise a replacement that cannot happen.
         if (node.replace) {
             return core::error_t(core::error_code_t::unimplemented_yet,
                                  std::pmr::string{"CREATE OR REPLACE FUNCTION is not implemented: the function "
@@ -71,9 +70,8 @@ namespace components::sql::transform {
             qn.dbname = strVal(it++->data);
             qn.relname = strVal(it->data);
         } else {
-            // THE defect: this arm did not exist. A macro is addressed by
-            // (namespace, name); a third part has nowhere to go, and the old code
-            // went on with BOTH fields empty.
+            // A macro is addressed by (namespace, name); a third part has nowhere to
+            // go, and without this arm both fields stay empty.
             std::pmr::string msg{"CREATE FUNCTION ", resource_};
             msg += dotted;
             msg += ": a function name has at most two parts (namespace.name) — nothing was created";
@@ -82,10 +80,10 @@ namespace components::sql::transform {
 
         // A macro parameter is addressed BY NAME when the body is expanded, so a
         // parameter must have one, must be a plain input, and must not carry a
-        // default. Each unrepresentable form used to be dropped: an unnamed
-        // parameter was skipped (the macro's arity lied), OUT/TABLE parameters
-        // (including the columns of RETURNS TABLE, which the grammar merges into
-        // this list) became input parameters, and DEFAULT expressions vanished.
+        // default. Dropping an unrepresentable form instead skips an unnamed parameter
+        // (the macro's arity then lies), turns OUT/TABLE parameters — including the
+        // columns of RETURNS TABLE, which the grammar merges into this list — into
+        // input parameters, and loses DEFAULT expressions.
         std::vector<std::string> params;
         if (node.parameters) {
             for (auto data : node.parameters->lst) {
@@ -119,8 +117,8 @@ namespace components::sql::transform {
 
         // Options: the AS clause is the macro body, and it is the ONLY option that
         // has a representation. Everything else (LANGUAGE, WINDOW, volatility,
-        // STRICT, COST, ...) used to be dropped silently — accepted syntax whose
-        // meaning never reached the engine.
+        // STRICT, COST, ...) would be dropped silently — accepted syntax whose meaning
+        // never reaches the engine.
         std::string body_sql;
         if (node.options) {
             for (auto data : node.options->lst) {
@@ -145,7 +143,7 @@ namespace components::sql::transform {
                 }
                 // func_as (gram.y): one Sconst — the body — or two Sconst, the C-loader
                 // form (object file, link symbol), which has no macro meaning at all.
-                // The old code took the front string of the pair and dropped the symbol.
+                // Taking the front string of the pair drops the symbol.
                 if (def->arg && nodeTag(def->arg) == T_List) {
                     auto list = reinterpret_cast<List*>(def->arg);
                     if (list->lst.size() > 1) {
@@ -167,7 +165,7 @@ namespace components::sql::transform {
         if (body_sql.empty()) {
             // Reached with no AS clause at all, with `AS ''`, and with a malformed AS
             // payload alike: there is no body to expand, and a macro that expands to
-            // nothing used to be created and to report success.
+            // nothing would be created and report success.
             std::pmr::string msg{"CREATE FUNCTION ", resource_};
             msg += dotted;
             msg += " has no AS body to expand — nothing was created";

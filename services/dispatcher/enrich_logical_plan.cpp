@@ -68,8 +68,7 @@ namespace services::dispatcher { namespace {
     // paths hand the constraint operator a row that carries every column — the INSERT
     // because its omissions are expanded above the journal, the UPDATE because its
     // write-set IS the gathered storage row — so each one has a materialised value to
-    // judge. (The INSERT used to skip DEFAULT-backed columns because nothing above the
-    // storage layer knew what would land in them.)
+    // judge.
     void fill_not_null(const components::logical_plan::resolved_table_metadata_t& md, std::vector<std::string>& out) {
         for (const auto& col : md.columns) {
             if (col.attnotnull) {
@@ -126,8 +125,8 @@ namespace services::dispatcher { namespace {
             std::optional<components::types::logical_value_t> decoded;
             if (col.atthasdefault) {
                 // A default that does not decode is catalog corruption, and it fails the
-                // statement. Reading it as "no default" is what put NULL into a column the
-                // constraint layer had already cleared on the strength of its DEFAULT.
+                // statement. Reading it as "no default" would put NULL into a column the
+                // constraint layer has already cleared on the strength of its DEFAULT.
                 if (auto ec = components::catalog::decode_default_spec(resource, col.type, col.attdefspec, decoded);
                     ec.contains_error()) {
                     return ec;
@@ -154,11 +153,11 @@ namespace services::dispatcher { namespace {
     // fill-list order. Before validate_schema has built the bindings, the written key
     // list is that same first run.
     //
-    // Resolving a foreign key's referencing columns against the statement's key list
-    // alone left every column the statement OMITTED unresolved, and an unresolved
-    // position took operator_fk_check's quietest path: the row qualified for no parent
-    // lookup, the qualifying count stayed 0, and 0 is that operator's success path. So
-    // `pid bigint DEFAULT 42` went in with no parent row 42 anywhere.
+    // A foreign key's referencing columns are resolved against THIS list, not against the
+    // statement's own columns alone: an unresolved position takes operator_fk_check's
+    // quietest path — the row qualifies for no parent lookup, the qualifying count stays 0,
+    // and 0 is that operator's success path — so `pid bigint DEFAULT 42` would go in with no
+    // parent row 42 anywhere.
     std::vector<std::string> insert_chunk_column_names(const components::logical_plan::node_insert_t* node) {
         std::vector<std::string> names;
         const auto& bindings = node->column_bindings();
@@ -251,10 +250,9 @@ namespace services::catalog_resolve {
             // `dbname` (a cross-database `REFERENCES otherdb.parent`). Empty means
             // "same as dbname" — the name-resolution default, not a fallback. The
             // transformer registers the referenced table's resolve under its own
-            // (effective_ref_db) database; looking it up under the CHILD's database
-            // meant the resolve was never found, so a cross-database FK either
-            // refused a parent that exists or — with a same-named table in the
-            // child's database — bound to the WRONG parent.
+            // (effective_ref_db) database, so looking it up under the CHILD's
+            // database finds nothing — or, with a same-named table there, the
+            // WRONG parent.
             std::string_view secondary_dbname{};
         };
 
@@ -318,30 +316,20 @@ namespace services::catalog_resolve {
                 }
                 case node_type::create_collection_t: {
                     const auto* d = static_cast<const node_create_collection_t*>(node);
-                    // THE NAME BEING CREATED IS A TARGET. Returning an empty relname
-                    // here made register_plan_targets skip it (its `if (relname.empty())
-                    // continue`), so the plan carried NO table demand for the relation
-                    // it was about to create — and the duplicate check that already
-                    // exists downstream (services/collection/executor.cpp, the
-                    // create_collection_t arm: check_collection_exists → either the
-                    // if_not_exists no-op or table_already_exists) reads ONLY the plan's
-                    // resolved entries. With nothing registered it always answered "does
-                    // not exist", so a second `CREATE TABLE t` wrote a SECOND pg_class
-                    // row under the same (relname, relnamespace) and reported success,
-                    // in one session and across processes alike. Two rows then made
-                    // `t` ambiguous: operator_resolve_table binds whichever the scan
-                    // reaches first, while the new storage was created under the other
-                    // oid.
-                    //
-                    // The asymmetry this leaves behind is the proof it is the right
-                    // place: an inline constraint hangs a create_constraint_t child off
-                    // this node, and THAT node's target_names_of does name the table —
-                    // so `CREATE TABLE t (id bigint PRIMARY KEY)` was already refused on
-                    // the second run while `CREATE TABLE t (id bigint)` was not.
+                    // THE NAME BEING CREATED IS A TARGET. register_plan_targets skips
+                    // an empty relname, and the duplicate check downstream
+                    // (services/collection/executor.cpp, the create_collection_t arm:
+                    // check_collection_exists → either the if_not_exists no-op or
+                    // table_already_exists) reads ONLY the plan's resolved entries — so
+                    // without this demand it always answers "does not exist" and a second
+                    // `CREATE TABLE t` writes a SECOND pg_class row under the same
+                    // (relname, relnamespace). Two rows make `t` ambiguous:
+                    // operator_resolve_table binds whichever the scan reaches first, while
+                    // the new storage was created under the other oid.
                     //
                     // A miss on this demand is the NORMAL case (the name is free) and
                     // refuses nothing — the same contract CREATE INDEX's name probe
-                    // relies on (components/sql/transformer/impl/transform_index.cpp:93-101).
+                    // relies on.
                     return {d->dbname(), d->relname(), {}};
                 }
                 case node_type::create_sequence_t: {
@@ -759,8 +747,8 @@ namespace services::catalog_resolve {
                 resolves->ensure(resource, resolve_kind::namespace_).add(std::move(entry));
             }
             // The secondary relation registers under ITS database (empty = same as
-            // dbname) — registering an FK's referenced table under the CHILD's
-            // database produced a request that could never resolve.
+            // dbname): an FK's referenced table registered under the CHILD's database
+            // makes a request that can never resolve.
             const auto secondary_dbname = names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname;
             for (const auto& [db, relname] : {std::pair{names.dbname, names.relname},
                                               std::pair{secondary_dbname, names.secondary_relname}}) {
@@ -928,8 +916,8 @@ namespace services::dispatcher { namespace {
         if (local == nullptr) {
             // Unreachable through SQL — the executor runs check_collection_exists
             // on this node's own (db, rel) BEFORE enrich, so a constraint on a
-            // table that does not exist is already refused there. Skipping it
-            // here nevertheless let the planner write a pg_constraint row whose
+            // table that does not exist is already refused there. Skipping it here
+            // would nevertheless let the planner write a pg_constraint row whose
             // conrelid is INVALID_OID: a constraint nailed to no table, which no
             // reader can ever key on. Rule 6 — the last line of defence refuses
             // rather than writes something dead.
@@ -940,18 +928,15 @@ namespace services::dispatcher { namespace {
             return core::error_t(core::error_code_t::invalid_constraint, std::pmr::string{std::move(msg), resource});
         }
 
-        // Resolve local (child) column names → attoids. EVERY declared name
-        // must resolve.
-        //
-        // A name that matched nothing used to append nothing and leave the
-        // attoid list SHORTER than what the user wrote — and conkey is read
-        // POSITIONALLY from there on (operator_resolve_constraint pairs
-        // child_col_names[i] with parent_col_names[i]; the UNIQUE/PK groups are
-        // enforced as ordered tuples). Shorter than declared, the engine
-        // enforces a DIFFERENT constraint than the one written; at length 0 it
-        // enforces nothing at all, because both the FK path and the UNIQUE path
-        // skip a constraint whose column list is empty. Either way the user was
-        // told "ok". Same guard, same reason, as the two column-name guards in
+        // Resolve local (child) column names → attoids. EVERY declared name must
+        // resolve, and a name that matches nothing REFUSES rather than being
+        // skipped: conkey is read POSITIONALLY from here on
+        // (operator_resolve_constraint pairs child_col_names[i] with
+        // parent_col_names[i]; the UNIQUE/PK groups are enforced as ordered
+        // tuples), so a list shorter than the one written enforces a DIFFERENT
+        // constraint, and at length 0 nothing at all — both the FK path and the
+        // UNIQUE path skip a constraint whose column list is empty. Same guard,
+        // same reason, as the two column-name guards in
         // operator_resolve_constraint.
         std::vector<components::catalog::oid_t> fk_attoids;
         fk_attoids.reserve(node->local_col_names().size());
@@ -987,12 +972,12 @@ namespace services::dispatcher { namespace {
         // ref_table_oid was pasted by bind_catalog_data from the entry
         // naming (ref_dbname, ref_relname).
         //
-        // An unresolved referenced table used to skip this WHOLE branch,
-        // and the planner wrote the pg_constraint row anyway: confrelid
-        // INVALID_OID, confkey empty. operator_resolve_constraint needs BOTH
-        // name lists, so it dropped that row on the floor — `REFERENCES
-        // nosuchtable` was accepted and then guarded nothing. PostgreSQL
-        // answers `relation "nosuchtable" does not exist`; so does this.
+        // An unresolved referenced table REFUSES here instead of skipping the
+        // branch: skipping writes a pg_constraint row with confrelid INVALID_OID
+        // and an empty confkey, and operator_resolve_constraint needs BOTH name
+        // lists, so it drops that row on the floor — `REFERENCES nosuchtable`
+        // would be accepted and then guard nothing. PostgreSQL answers
+        // `relation "nosuchtable" does not exist`; so does this.
         if (referenced == nullptr) {
             // Name the reference AS WRITTEN, qualifier included. The
             // referenced table is looked up under ITS OWN database now
@@ -1011,13 +996,10 @@ namespace services::dispatcher { namespace {
             return core::error_t(core::error_code_t::invalid_constraint, std::pmr::string{std::move(msg), resource});
         }
         // `REFERENCES parent` with the referenced column list omitted binds to
-        // the parent's PRIMARY KEY.
-        //
-        // Leaving the list empty is what used to write a pg_constraint row
-        // with an empty confkey. operator_resolve_constraint drops such a row
-        // (it needs BOTH name lists), so the FK the user declared enforced
-        // nothing at all: orphans went in and ON DELETE RESTRICT let the
-        // parent go.
+        // the parent's PRIMARY KEY. Leaving the list empty writes a
+        // pg_constraint row with an empty confkey, which operator_resolve_constraint
+        // drops (it needs BOTH name lists) — the declared FK would then enforce
+        // nothing: orphans go in and ON DELETE RESTRICT lets the parent go.
         if (node->ref_col_names().empty()) {
             if (referenced->pk_columns.empty()) {
                 return core::error_t(core::error_code_t::invalid_constraint,
@@ -1044,9 +1026,9 @@ namespace services::dispatcher { namespace {
             }
             node->set_ref_col_names(referenced->pk_columns);
         }
-        // Same guard as the referencing list above, referenced side: a
-        // name that matched nothing left confkey short (at length 0 the
-        // FK enforced nothing), and confkey is read positionally too.
+        // Same guard as the referencing list above, referenced side: confkey is read
+        // positionally too, and a name that matches nothing leaves it short (at
+        // length 0 the FK enforces nothing).
         std::vector<components::catalog::oid_t> ref_attoids;
         ref_attoids.reserve(node->ref_col_names().size());
         for (const auto& col_name : node->ref_col_names()) {
@@ -1140,10 +1122,10 @@ namespace services::dispatcher { namespace {
                 if (constraints) {
                     auto fks = constraints->fks;
                     // Resolve the child column NAMES to their positions, the same way the INSERT
-                    // branch does through key_translation(). Handing the node unresolved foreign
-                    // keys left child_col_indices empty, and operator_fk_check reads that as "no
-                    // key column to address" and skips the row — so every row was skipped, the
-                    // qualifying count stayed zero, and zero is its success path.
+                    // branch does through key_translation(). An unresolved foreign key leaves
+                    // child_col_indices empty, and operator_fk_check reads that as "no key column
+                    // to address" and skips the row — every row skipped, the qualifying count
+                    // zero, and zero is its success path.
                     //
                     // An UPDATE is fed the scanned base row, so a child column is at its storage
                     // chunk_position rather than at a position in an INSERT tuple.

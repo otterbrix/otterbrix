@@ -18,10 +18,10 @@ namespace {
 
     // The refusal every unconvertible (source, target) pair below shares. These pairs are
     // outside the promotion oracle's contract — reaching one means promote_type answered a
-    // type this ladder cannot climb to. The arms used to assert(false) AND THEN RETURN THE
-    // UNWIDENED VALUE: under NDEBUG the assert vanishes and a value of the wrong logical
-    // type went into the promoted column vector — the exact silent-wrong-answer class this
-    // file exists to keep out.
+    // type this ladder cannot climb to. An assert(false) followed by a return of the
+    // UNWIDENED VALUE is not enough: under NDEBUG the assert vanishes and a value of the
+    // wrong logical type goes into the promoted column vector — the exact silent wrong
+    // answer this file exists to keep out.
     core::error_t no_numeric_conversion(std::pmr::memory_resource* resource,
                                         components::types::logical_type source,
                                         components::types::logical_type target) {
@@ -133,7 +133,7 @@ namespace {
             }
         } else if (target == LT::HUGEINT) {
             // The 128-bit rung of the same ladder. It exists because an integer literal past
-            // int64 now reaches VALUES as a HUGEINT (numeric_literal_value in
+            // int64 reaches VALUES as a HUGEINT (numeric_literal_value in
             // components/sql/transformer/utils.cpp): mixing one with a narrower row —
             // VALUES (12345678901234567890123456789), (1) — promotes the whole column here.
             // Without this arm promote_type would answer HUGEINT and the switch below would
@@ -170,7 +170,7 @@ namespace {
             // Signed integer target. A HUGEINT source is deliberately absent: every caller
             // passes a target from promote_type, which is never NARROWER than the source, so
             // reaching here with 128 bits in hand would mean the promotion oracle lied — and
-            // quietly cutting the value down is the bug class this file is being repaired for.
+            // quietly cutting the value down is the silent wrong answer this file keeps out.
             int64_t ival;
             switch (val.type().type()) {
                 case LT::BOOLEAN:
@@ -272,7 +272,7 @@ namespace {
         std::optional<components::vector::vector_t> casted;
         const components::vector::vector_t* elems = &src_child;
         if (src_child.type().to_physical_type() != elem_type.to_physical_type()) {
-            // cast_vector range-checks every element now; a stored value that does not fit
+            // cast_vector range-checks every element; a stored value that does not fit
             // the promoted element type refuses the INSERT instead of truncating silently.
             auto casted_result =
                 components::vector::vector_ops::cast_vector(resource, src_child, elem_type, num_rows * stride);

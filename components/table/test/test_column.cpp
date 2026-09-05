@@ -55,13 +55,10 @@ TEST_CASE("components::table::column") {
         return std::string{"long_string_with_index_" + number};
     };
 
-    // B4: every block below runs on a real .otbx, re-created fresh for each one. The
-    // file-less block manager these used to hold was kept harmless by a block_manager_t
-    // predicate that went with the in-memory table mode it named, and its every I/O virtual
-    // now aborts rather than pretending. The blocks DO reach the disk
-    // path: a nested column's child segment holds 1024 values, so a 1024-row append of a
-    // 128-element ARRAY fills (and writes through) 128 of them. Substrate only — no assertion
-    // below changes.
+    // Every block below runs on a real .otbx, re-created fresh for each one, and they DO reach
+    // the disk path: a nested column's child segment holds 1024 values, so a 1024-row append of
+    // a 128-element ARRAY fills (and writes through) 128 of them. Substrate only — no assertion
+    // below is about it.
     const std::string db_path = "/tmp/test_otterbrix_column_" + std::to_string(::getpid()) + ".otbx";
 
     std::pmr::vector<complex_logical_type> fields(&resource);

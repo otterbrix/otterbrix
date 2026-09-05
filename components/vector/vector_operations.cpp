@@ -1041,11 +1041,11 @@ namespace components::vector::vector_ops {
                     }
                 }
             } else {
-                // The leg that stood here was `assert(false)` with no else: under NDEBUG it
-                // copied NOTHING and wrote no validity, while the caller (operator_update's
-                // ARRAY-element leg) reported success -- an UPDATE of one element of a
-                // string-array column silently changed nothing. Strings copy like every other
-                // leg now; set_value deep-copies the payload into the target's own string heap.
+                // `assert(false)` with no else here copies NOTHING and writes no validity
+                // under NDEBUG, while the caller (operator_update's ARRAY-element leg) reports
+                // success -- an UPDATE of one element of a string-array column silently changes
+                // nothing. Strings copy like every other leg; set_value deep-copies the payload
+                // into the target's own string heap.
                 auto sdata = source.data<std::string_view>();
                 auto& smask = source.validity();
                 auto& tmask = target.validity();
@@ -1148,9 +1148,9 @@ namespace components::vector::vector_ops {
                     bool valid = smask.row_is_valid(i);
                     tmask.set(i, valid);
                     if (valid) {
-                        // The bare static_cast that stood here TRUNCATED silently: INT32 70000
-                        // -> INT16 4464, and an out-of-range index key hashed equal to an
-                        // unrelated stored key. Out of range is a refusal now (rule 6).
+                        // A bare static_cast TRUNCATES silently: INT32 70000 -> INT16 4464,
+                        // and an out-of-range index key then hashes equal to an unrelated stored
+                        // key. Out of range is a refusal (rule 6).
                         if (!cast_value_fits<DstType, SrcType>(sdata[i])) {
                             return i;
                         }
@@ -1240,10 +1240,9 @@ namespace components::vector::vector_ops {
         const auto source_physical = source.type().to_physical_type();
         const auto target_physical = target_type.to_physical_type();
 
-        // What stood here dispatched every pair straight into the switch, whose string leg
-        // was `assert(false)` with no else: under NDEBUG a CAST into or out of a string
-        // answered a freshly allocated vector with UNINITIALISED data and validity, as a
-        // normal value with no error channel at all.
+        // String pairs are separated out BEFORE the switch, whose string leg is
+        // `assert(false)` with no else: dispatching them into it answers under NDEBUG with a
+        // freshly allocated vector of UNINITIALISED data and validity, as a normal value.
         if (source_physical == types::physical_type::STRING && target_physical == types::physical_type::STRING) {
             vector_t target(resource, target_type, count);
             auto sdata = source.data<std::string_view>();

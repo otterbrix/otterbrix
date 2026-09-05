@@ -182,7 +182,7 @@ TEST_CASE("integration::cpp::null_3vl::string_column_null") {
 //
 //   * INDEX SCAN route. `CREATE INDEX idx_x ON t (x)` then `WHERE x = 0` returns 0 rows — it
 //     loses id=3, whose value genuinely IS 0. A pure compare on an indexed column is planned
-//     as an index_scan (create_plan_match.cpp:112-127), bypassing the scan filter entirely,
+//     as an index_scan (create_plan_match.cpp), bypassing the scan filter entirely,
 //     and the index mishandles a column containing NULLs.
 //   * `UPDATE t SET x = NULL` does not mark the row NULL: afterwards, `x IS NULL` still does
 //     not see it.

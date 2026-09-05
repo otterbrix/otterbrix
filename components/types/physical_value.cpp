@@ -86,7 +86,7 @@ namespace components::types {
             return data_ < other.data_;
         }
 
-        // handle the 16-byte family (C3): INT128 / UINT128. (DECIMAL has no tag of its own:
+        // handle the 16-byte family: INT128 / UINT128. (DECIMAL has no tag of its own:
         // its physical representation is the storage integer, INT64 or INT128.)
         {
             const bool lhs128 = type_ == physical_type::INT128 || type_ == physical_type::UINT128;

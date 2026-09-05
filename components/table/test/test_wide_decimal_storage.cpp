@@ -186,7 +186,7 @@ namespace {
             append_decimal_rows(*table, &env.resource, decimal_type, width);
             REQUIRE(table->calculate_size() == ROW_COUNT);
 
-            // Reader 1 -- a plain scan of the live table. This alone used to throw.
+            // Reader 1 -- a plain scan of the live table.
             verify_decimal_rows(*table, width, "after append");
 
             // Reader 2 -- the rebuild the disk agent runs before every checkpoint. It scans

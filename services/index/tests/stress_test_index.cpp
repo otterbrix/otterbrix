@@ -29,17 +29,15 @@ namespace {
     template<typename found_t>
     auto rows_of(found_t&& found) {
         if constexpr (core::detail::result_like<std::remove_reference_t<found_t>>) {
-            // AND IT SAYS WHICH REFUSAL. A bare REQUIRE_FALSE prints "!true" and nothing
-            // else, which was the whole diagnosis a reader got for a case that fails
-            // intermittently -- while the refusal itself names the segment, the offset and
-            // the reason. Dropping them here is the same silence the store was audited for.
+            // AND IT SAYS WHICH REFUSAL. A bare REQUIRE_FALSE prints "!true" and nothing else,
+            // which was the whole diagnosis a reader got for a case that fails intermittently --
+            // while the refusal itself names the segment, the offset and the reason. Dropping them
+            // here is the same silence the store was audited for.
             //
-            // THE TWO LINES ARE NOT TWO CHECKS OF THE SAME THING. Catch2's FAIL ENDS THE CASE
-            // -- it throws -- so nothing after it runs on the refusing path: that branch IS
-            // the assertion when a find refuses, and the REQUIRE_FALSE underneath is the
-            // assertion on every call that did not. (An earlier note here claimed the
-            // REQUIRE_FALSE stayed "unconditional so every call still counts", which is true
-            // only of the calls that reach it.)
+            // THE TWO LINES ARE NOT TWO CHECKS OF THE SAME THING. Catch2's FAIL ENDS THE CASE -- it
+            // throws -- so nothing after it runs on the refusing path: that branch IS the assertion
+            // when a find refuses, and the REQUIRE_FALSE underneath is the assertion on every call
+            // that did not reach it.
             if (found.has_error()) {
                 FAIL("find refused: " << std::string_view{found.error().what});
             }
@@ -73,25 +71,18 @@ namespace {
 
 // A LONG RANDOMIZED RUN AGAINST THE STORE, ON ONE THREAD.
 //
-// THE THREADS ARE GONE, AND THAT IS THE POINT. This used to drive
-// bitcask_index_disk_t from eight threads at once, because the store carried a
-// shared_mutex and could be driven that way. It cannot any more, and nothing in the
-// engine ever did: the store is a by-value member of bitcask_index_agent_t, reached only
-// through that agent's mailbox, which serializes every door it has. A multi-threaded
-// fixture over it would not be testing production, it would be testing a second
-// serialization domain that production does not have — and, after C6b, would simply be a
-// data race.
+// ONE THREAD, DELIBERATELY. The store is a by-value member of bitcask_index_agent_t, reached only
+// through that agent's mailbox, which serializes every door it has, and it carries no lock of its
+// own. A multi-threaded fixture over it would not be testing production -- it would be a data race.
 //
-// What it always really tested survives whole, because none of it was about threads: a
-// long randomized insert/remove/find mixture over a small key space, the invariant that a
-// key's row list never contains a duplicate, and — the durable half — that closing and
-// re-opening the store answers exactly what it answered before.
+// What is under test is a long randomized insert/remove/find mixture over a small key space, the
+// invariant that a key's row list never contains a duplicate, and -- the durable half -- that
+// closing and re-opening the store answers exactly what it answered before.
 //
-// The CONCURRENT claim is made where it is now true: through the dispatcher, over the
-// agent's mailbox, by integration/cpp/test/test_index_concurrent_merge.cpp. That fixture
-// also drives enough traffic to rotate and merge segments repeatedly, which this one
-// deliberately does not (its segment limit is set high so the mixture, not the merger, is
-// what is under test).
+// The CONCURRENT claim is made where it is now true: through the dispatcher, over the agent's
+// mailbox, by integration/cpp/test/test_index_concurrent_merge.cpp. That fixture also drives enough
+// traffic to rotate and merge segments repeatedly, which this one deliberately does not (its
+// segment limit is set high so the mixture, not the merger, is what is under test).
 TEST_CASE("services::index::bitcask_index_disk::randomized_insert_remove_find_stress", "[stress][long]") {
     auto resource = core::pmr::otterbrix_resource();
 

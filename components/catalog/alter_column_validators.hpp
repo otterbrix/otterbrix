@@ -40,7 +40,7 @@ namespace components::catalog::alter_column_validators {
 
     // Error-returning wrapper over encode_default_spec (system_table_schemas.hpp).
     // Writes the encoded form into `out_spec`. `out_spec` is empty ONLY when no default
-    // was supplied: a default whose type the value codec cannot carry now fails the
+    // was supplied: a default whose type the value codec cannot carry fails the
     // statement (rule 6) instead of encoding to "" and being read back as "no default".
     core::error_t encode_default_spec_ec(std::pmr::memory_resource* resource,
                                          const std::optional<components::types::logical_value_t>& default_value,

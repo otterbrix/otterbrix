@@ -24,7 +24,7 @@ static std::string mirror_gate_plan_text(const components::cursor::cursor_t_ptr&
 // against an empty index list.
 //
 // THE PLAN SHAPE IS HALF THE CASE, and it is the half the disk layout made load-bearing. An
-// index is a disk-backed engine now (C6a: there is no in-memory one left), so "the table has no
+// index is a disk-backed engine (there is no in-memory one), so "the table has no
 // index on this key" has exactly one correct consequence -- has_index_on says no, the planner
 // builds a full scan, and the rows come from the heap. The forbidden outcome is an Index Scan
 // over a key nothing indexes: manager_index_t would answer index_not_exists and the statement

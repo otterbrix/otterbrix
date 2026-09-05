@@ -25,28 +25,28 @@
 // `co_await std::move(df);` — there was no answer to read. Underneath, the agent body had the
 // mirror-image hole: when the journal REFUSED the PHYSICAL_DELETE record it logged the refusal
 // at error level and then DELETED THE ROWS ANYWAY, leaving storage one state ahead of a journal
-// that has no record of the delete to replay. Both halves show in one statement: DROP INDEX
+// with no record of the delete to replay. Both halves show in one statement: DROP INDEX
 // reported success while its scrub had no journal record behind it.
 //
 // THE INJECTION, and why it lands where it does. Inside a statement the catalog delete's only
-// device write is the WAL PHYSICAL_DELETE record — the .otbx is not touched until a checkpoint —
-// so this case uses the WAL's own DEV_MODE seam (services/wal/wal_page.hpp) rather than the
-// .otbx one, exactly as integration/cpp/test/test_wal_write_refusal.cpp does. The plan is armed
-// AFTER the setup DDL, so the only writes it can refuse belong to the DROP.
+// device write is the WAL PHYSICAL_DELETE record — the .otbx is not touched until a checkpoint
+// — so this uses the WAL's own DEV_MODE seam (services/wal/wal_page.hpp), as
+// test_wal_write_refusal.cpp does. The plan is armed AFTER the setup DDL, so the only writes it
+// can refuse belong to the DROP.
 //
 // AND WHY THE TABLE IS 700 COLUMNS WIDE. wal_page_writer_t::append only touches the device when
-// a record fills a 4 KiB page: a short record is buffered and the refusal would not be seen
-// until some later flush, in a different statement. A PHYSICAL_DELETE carries eight bytes per
-// row id, so the pg_attribute scrub of a 700-column table is a ~5.6 KiB record — it has to spill
-// a page mid-record, and that flush is the write this plan refuses. It is also the FIFTH of the
-// eleven specs the DROP cascade issues, ahead of the pg_class one, which is what makes the
-// content assertion below possible at all.
+// a record fills a 4 KiB page: a short record is buffered and the refusal would surface in some
+// later flush, in a different statement. A PHYSICAL_DELETE carries eight bytes per row id, so
+// the pg_attribute scrub of a 700-column table is a ~5.6 KiB record — it must spill a page
+// mid-record, and that flush is the write this plan refuses. It is also the FIFTH of the eleven
+// specs the DROP cascade issues, ahead of the pg_class one, which is what makes the content
+// assertion below possible at all.
 //
 // AND WHY THE DROP RUNS INSIDE AN EXPLICIT TRANSACTION. In autocommit the same statement ends
 // with a commit record of its own, and THAT write — refused by the same armed plan — fails the
-// statement for a reason that has nothing to do with the scrub, then the abort puts the rows
-// back. The defect would be invisible behind an accident. Inside BEGIN there is no commit record
-// yet, so the refused PHYSICAL_DELETE is the only thing that can decide the statement's answer.
+// statement for a reason unrelated to the scrub, after which the abort puts the rows back.
+// Inside BEGIN there is no commit record yet, so the refused PHYSICAL_DELETE is the only thing
+// that can decide the statement's answer.
 //
 // WHAT IS ASSERTED IS CONTENT. The transaction is COMMITTED (with the fault cleared, so the
 // commit itself is honest) and pg_class is then read back through the disk manager's own funnel:
@@ -323,10 +323,10 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_healthy_drop_table_s
 // ===========================================================================
 // A COLUMN ADDED AND DROPPED INSIDE ONE TRANSACTION MUST DROP.
 //
-// THE DEFECT, and it was introduced by the very wave the cases above belong to. Once
-// delete_pg_catalog_rows_many could report a per-spec count, operator_alter_column_drop_t
-// started reading a count of 0 on the live pg_attribute row as a refusal — "the column is
-// still live in the catalog" — on the stated ground that the operator had just READ that row.
+// THE DEFECT. Once delete_pg_catalog_rows_many could report a per-spec count,
+// operator_alter_column_drop_t read a count of 0 on the live pg_attribute row as a refusal —
+// "the column is still live in the catalog" — on the ground that the operator had just READ
+// that row.
 //
 // THE GROUND WAS WRONG, because the read and the delete did not see the same catalog:
 //   * the read goes through manager_disk_t::read_chunks_by_key with
@@ -337,8 +337,7 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_healthy_drop_table_s
 //     {0, 0} — which row_version_manager_t reads as "insert id 0 only", i.e. rows written
 //     outside any explicit transaction.
 // A pg_attribute row appended INSIDE a transaction carries insert_id == transaction_id until
-// the commit publishes it, so the read saw it and the delete could not. Zero deleted, and the
-// statement refused a sequence that is entirely legal.
+// the commit publishes it, so the read saw it and the delete could not.
 //
 // WHAT IS ASSERTED IS BOTH HALVES: the DROP COLUMN must SUCCEED, and after the COMMIT
 // pg_attribute must hold no LIVE row for the column — a tombstone, and nothing else. The
@@ -406,32 +405,31 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_column_added_and_dro
 }
 
 // ===========================================================================
-// THE SAME BLINDNESS, ONE METHOD OVER — NOW FIXED, AND PINNED HERE.
+// THE SAME BLINDNESS, ONE METHOD OVER.
 //
 // STEP 4 of operator_commit_transaction_t asks the disk to backfill
 // pg_attribute.added_at_commit_id on the rows an in-transaction ALTER ... ADD COLUMN wrote, and
 // hands it the transaction's own transaction_data. agent_disk_t::
 // update_pg_attribute_commit_id_field_inner used to look the row up with a detail::inline_scan
 // given components::table::transaction_data{} — and, as that step's own comment states, "the
-// rows still carry insert_id == transaction_id" at that moment. A default transaction_data is
-// not "horizon 0" (its snapshot_horizon is UINT64_MAX — it means "see all COMMITTED rows"); it
-// is its transaction_id 0 that blinded it, because use_inserted_version rejects every insert_id
-// at or above TRANSACTION_ID_START unless the reader owns it. So every backfill logged "attoid
-// not found (skipping)" and the column kept its placeholder 0. That reads as "added before every
-// snapshot" (the rule is added_at_commit_id <= snapshot horizon), i.e. the column showed up in
-// snapshots older than the ALTER that created it. The MVCC column-visibility rule pg_attribute
-// carries two columns for had therefore never once been exercised with a real id.
+// rows still carry insert_id == transaction_id" at that moment. A default
+// transaction_data is not "horizon 0" (its snapshot_horizon is UINT64_MAX, i.e. "see all
+// COMMITTED rows"); it is its transaction_id 0 that blinded it, because use_inserted_version
+// rejects every insert_id at or above TRANSACTION_ID_START unless the reader owns it. So every
+// backfill logged "attoid not found (skipping)" and the column kept its placeholder 0 — which
+// reads as "added before every snapshot" (the rule is added_at_commit_id <= snapshot horizon),
+// so the column showed up in snapshots older than the ALTER that created it. The MVCC
+// column-visibility rule pg_attribute carries two columns for had never once been exercised
+// with a real id.
 //
-// The scan now carries ctx.txn, the same change delete_pg_catalog_rows_inner took in the same
-// file. It could not be made until the floor under it was repaired: with a row the scan could
-// see, the direct_update_sync below it ran into a non-terminating tail loop in
-// components::table::update_segment_t::merge_update_loop_internal
-// (components/table/update_segment.hpp:830 — the loop advanced its own bound), which overran a
-// stack array through its caller's frame and surfaced as EXC_BAD_ACCESS "on a garbage
-// base_info". Red tests for the merge itself live in
+// The scan carries ctx.txn, as delete_pg_catalog_rows_inner does in the same file. That widening
+// is only safe on top of a repaired floor: with a row the scan CAN see, the direct_update_sync
+// below it reaches components::table::update_segment_t::merge_update_loop_internal, whose tail
+// loop once advanced its own bound, never terminated, and overran a stack array through its
+// caller's frame (EXC_BAD_ACCESS "on a garbage base_info"). Tests for the merge itself live in
 // components/table/test/test_update_merge.cpp.
 //
-// This case is the second red: the row survives the commit AND carries a real commit id.
+// Asserted here: the row survives the commit AND carries a real commit id.
 // ===========================================================================
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_add_column_row_carries_its_commit_id") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/added_at_backfill");
@@ -491,9 +489,9 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_autocommit_add_colu
 // TWO backfills, and this is the one that reaches the merge. The FIRST patch of a
 // pg_attribute column takes update_segment_t::update's else-leg and never merges; the second
 // patch of the same vector at a HIGHER row id takes merge_update_loop_internal, whose tail loop
-// advanced its own bound and never terminated (components/table/update_segment.hpp:830, red
-// proof in components/table/test/test_update_merge.cpp). One ALTER could not reach it -- which
-// is why widening the scan alone looked survivable on a single ALTER and was not.
+// once advanced its own bound and never terminated (floor-level proof in
+// components/table/test/test_update_merge.cpp). One ALTER cannot reach that leg, which is why a
+// single-ALTER case is not enough to cover it.
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::two_added_columns_each_carry_their_own_commit_id") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/added_at_backfill_twice");
     auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
@@ -581,33 +579,29 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::a_dropped_columns_tomb
 // THE STAMP HAS TO BE THERE AFTER A RESTART, NOT ONLY AFTER THE COMMIT.
 //
 // EVERYTHING past `if (row_ids.empty()) co_return;` in
-// agent_disk_t::update_pg_attribute_commit_id_field_inner (services/disk/agent_disk.cpp) had
-// never executed before this wave: the scan above that line could not see the row it was asked
-// to patch, so the body always returned there. That includes both legs that make the patch
-// outlive the session --
-//   * the write_physical_update send, i.e. the WAL record a replay would need, and
-//   * the direct_update_sync at the bottom, i.e. the storage write a CHECKPOINT folds into
-//     the .otbx.
-// The cases above prove the stamp is readable in the SAME session, which is exactly what those
-// two legs are NOT needed for: the checkpointer walks data segments and never flushes
-// update_segment_t's updates_, so an unjournalled, uncheckpointed patch is session-local and a
-// same-session assertion passes either way.
+// agent_disk_t::update_pg_attribute_commit_id_field_inner (services/disk/agent_disk.cpp) is
+// unreachable while the scan above that line cannot see the row it was asked to patch --
+// including both legs that make the patch outlive the session: the write_physical_update send
+// (the WAL record a replay would need) and the direct_update_sync at the bottom (the storage
+// write a CHECKPOINT folds into the .otbx). The cases above prove the stamp is readable in the
+// SAME session, which is exactly what those two legs are NOT needed for: the checkpointer walks
+// data segments and never flushes update_segment_t's updates_, so an unjournalled,
+// uncheckpointed patch is session-local and a same-session assertion passes either way.
 //
-// So this case restarts the engine and reads pg_attribute back. The id must be the SAME id --
-// a different one would mean the reopen re-derived a stamp rather than restoring one.
+// So this case restarts the engine and reads pg_attribute back. The id must be the SAME id -- a
+// different one would mean the reopen re-derived a stamp rather than restoring one.
 //
-// WHICH LEG THIS ACTUALLY PROVES, stated because the two are not interchangeable.
-// ~base_otterbrix_t (integration/cpp/base_spaces.cpp) CHECKPOINTs every disk table on a clean
-// shutdown, so closing the phase-1 scope folds the direct_update_sync patch into the .otbx
-// before phase 2 ever opens it. What is pinned here is therefore the direct_update_sync leg
-// plus that fold. Measured, not assumed: with the write_physical_update send stubbed out this
-// case still passes, and with the ctx.txn scan reverted to transaction_data{} it fails at the
-// phase-1 REQUIRE with `0 != 0`. Isolating the journal leg needs an UNCLEAN restart -- no
-// destructor, no shutdown checkpoint, replay as the only carrier -- which is a crash-injection
-// case of its own and is not this one.
+// WHICH LEG THIS ACTUALLY PROVES, since the two are not interchangeable: ~base_otterbrix_t
+// CHECKPOINTs every disk table on a clean shutdown, so closing the phase-1 scope folds the
+// direct_update_sync patch into the .otbx before phase 2 opens it. What is pinned is therefore
+// the direct_update_sync leg plus that fold. Measured, not assumed: with the write_physical_update
+// send stubbed out this case still passes, and with the ctx.txn scan reverted to
+// transaction_data{} it fails at the phase-1 REQUIRE with `0 != 0`. Isolating the journal leg
+// needs an UNCLEAN restart -- no destructor, no shutdown checkpoint, replay as the only carrier
+// -- which is a crash-injection case of its own.
 //
-// It is also the other half of what integration/cpp/test/test_persistence.cpp's
-// reopen_keeps_committed_deletes_invisible names: added_at_commit_id feeds
+// It is also the other half of test_persistence.cpp's
+// reopen_keeps_committed_deletes_invisible: added_at_commit_id feeds
 // manager_disk_t::max_persisted_commit_id_sync, the reopen commit-clock frontier, which while
 // the stamp was a permanent 0 could only ever contribute 0.
 // ===========================================================================
@@ -683,15 +677,15 @@ TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_added_columns_commi
 // Both of these read a row, delete it, and append a replacement carrying the same identity —
 // operator_alter_column_rename_t (pg_attribute, new attname) and
 // operator_create_index_backfill_t (pg_index, indisvalid=true). Their read carries the
-// transaction and their delete, before this change, did not: inside a BEGIN the row they were
-// replacing was invisible to the delete, so nothing was removed and the replacement was appended
-// ON TOP. One identity, two live rows, and a success reported over it — the singular route is
-// unique_future<void>, so neither operator could have been told otherwise.
+// transaction, and their delete must carry it too: a delete blind to the transaction cannot see
+// the row it is replacing inside a BEGIN, so nothing is removed and the replacement lands ON
+// TOP. One identity, two live rows, and a success reported over it — the singular route is
+// unique_future<void>, so neither operator can be told otherwise.
 //
-// These two cases are the reason the visibility fix is the fix and not a workaround: the
-// singular route still has no error channel (see the debt note in
-// services/disk/manager_disk_ddl.cpp), but with the delete looking at the same catalog as the
-// read, the delete no longer silently misses.
+// These two cases are why the visibility fix is the fix and not a workaround: the singular route
+// still has no error channel (see the debt note in services/disk/manager_disk_ddl.cpp), so the
+// delete looking at the same catalog as the read is the only thing keeping it from silently
+// missing.
 // ===========================================================================
 TEST_CASE("integration::cpp::test_catalog_delete_refusal::an_in_transaction_rename_leaves_one_attribute_row") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_delete_refusal/rename_in_txn");

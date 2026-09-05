@@ -285,13 +285,12 @@ TEST_CASE("pushdown_reduce: manager routes a storage_reduce and replies a well-f
 }
 
 // (e) MISSING/RECORD-ONLY SLICE — THE ROOT OF THE FAMILY case 17 in test_error_handling
-// names. This leg used to REDUCE OVER THE EMPTY INPUT and emit the scalar aggregate's
-// mandatory single row (SUM = NULL) for an oid no agent has a storage for, and the contract
-// said so in writing. That row is a FACT ABOUT A TABLE — "your SUM is NULL", "your COUNT is
-// 0" — synthesized from a read that never reached any storage, and it is bit-identical to
-// the row a real, really-empty table produces. Nothing above can tell them apart, so the
-// answer to "how many rows are in that table" was a routing failure wearing the table's
-// clothes.
+// names. This leg must not REDUCE OVER THE EMPTY INPUT and emit the scalar aggregate's
+// mandatory single row (SUM = NULL) for an oid no agent has a storage for. That row is a FACT
+// ABOUT A TABLE — "your SUM is NULL", "your COUNT is 0" — synthesized from a read that never
+// reached any storage, and it is bit-identical to the row a real, really-empty table produces.
+// Nothing above can tell them apart, so the answer to "how many rows are in that table" would
+// be a routing failure wearing the table's clothes.
 //
 // The pairing is the point, and both halves live here: a real table with no visible rows
 // still emits its one scalar row (case (b) above, unchanged), while an oid that names no
@@ -413,7 +412,7 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
 }
 
 // (g) THE ROUTER'S OWN REFUSAL. Case (e) removes the storage; this one removes the AGENT.
-// A manager configured with no disk agents used to answer a reduce with an empty chunk
+// A manager configured with no disk agents must not answer a reduce with an empty chunk
 // vector, which the coordinator reads as "this GROUP BY produced no groups" — the routing
 // twin of the empty fold (e) is about. Not reachable behind a statement today (an agentless
 // manager owns no storage, so no plan can resolve a table on it); pinned so the refusal

@@ -90,7 +90,7 @@ namespace components::table {
 
         uint64_t segment_size() const;
 
-        // --- F1: big-string overflow persistence -------------------------------------------
+        // --- Big-string overflow persistence -------------------------------------------
         // A STRING value >= DEFAULT_STRING_BLOCK_LIMIT does not fit the segment dictionary; the
         // dictionary holds a 16-byte (block id, offset) marker and the bytes live in a separate
         // overflow block. Checkpointing the segment block verbatim therefore persists MARKERS

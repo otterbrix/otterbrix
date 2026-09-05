@@ -119,8 +119,8 @@ namespace components::vector {
     private:
         core::string_buffer_t string_buffer_;
         // used for overflow strings. Sole owner of each heap: add_heap_reference is
-        // the only writer and hands over a unique_ptr — the shared_ptr that stood
-        // here (rule 14) implied a sharing that never existed.
+        // the only writer and hands over a unique_ptr — a shared_ptr here (rule 14)
+        // would imply a sharing that does not exist.
         std::pmr::vector<std::unique_ptr<vector_buffer_t>> refs_;
     };
 

@@ -66,11 +66,10 @@ namespace {
         // here — the tests never reach them through this wrapper); without the
         // using-declarations the derived overrides HIDE them and gcc's
         // -Woverloaded-virtual fails the -Werror build.
-        // (no `using storage_t::append;` and no `using storage_t::update;` — the base
-        // declares no default bodies for those any more; both overloads of update are
-        // overridden below, forwarding to the inner storage like everything else. The
-        // base's defaulted update used to exist ONLY to keep this double concrete — a
-        // fallback living in the production interface for a test's sake.)
+        // (no `using storage_t::append;` and no `using storage_t::update;` — the base declares
+        // no default bodies for those; both overloads of update are overridden below,
+        // forwarding to the inner storage like everything else. A defaulted update on the base
+        // would be a fallback living in the production interface for this double's sake.)
         using storage_t::delete_rows;
         using storage_t::scan;
 
@@ -144,9 +143,9 @@ namespace {
 
     std::set<int64_t> as_set(const std::pmr::vector<int64_t>& v) { return std::set<int64_t>(v.begin(), v.end()); }
 
-    // B4: table_storage_t is backed by a `.otbx` and nothing else — the file-less constructor
-    // these cases used went with the in-memory table mode. Each case gets a fresh file; the
-    // semi-join under test reads the table through the same storage adapter either way.
+    // table_storage_t is backed by a `.otbx` and nothing else — there is no file-less
+    // constructor. Each case gets a fresh file; the semi-join under test reads the table
+    // through the same storage adapter either way.
     std::filesystem::path semijoin_otbx() {
         static const std::filesystem::path path =
             std::filesystem::path("/tmp") /

@@ -32,11 +32,11 @@
 //
 // THE INJECTION. The allocation round is a message round-trip to the disk actor over an
 // in-memory atomic counter — no file, no page — so neither the .otbx interposer nor the WAL one
-// can reach it, and there is no device to make fail. The round therefore carries its own narrow
-// DEV_MODE seam (services::collection::executor::dev_set_oid_alloc_interposer), which
-// substitutes the batch the round hands back. The two armed shapes are not invented states:
-// an EMPTY batch is the exact value the round's real failure branches answered with, and a
-// SHORT batch is what nothing in the path ever checked for.
+// can reach it. The round therefore carries its own narrow DEV_MODE seam
+// (services::collection::executor::dev_set_oid_alloc_interposer), which substitutes the batch
+// the round hands back. The two armed shapes are not invented states: an EMPTY batch is the
+// exact value the round's real failure branches answered with, and a SHORT batch is what
+// nothing in the path ever checked for.
 //
 // SENSITIVITY IS PROVEN INSIDE EACH TEST, not assumed: the same seam object is installed for
 // the control statement (where it passes the batch through and the CREATE TABLE succeeds) and

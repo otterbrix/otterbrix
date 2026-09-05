@@ -96,29 +96,23 @@ namespace services::disk {
         }
 
         if (!agents_.empty()) {
-            // The sentinel means "no entry reported a WAL floor", NOT "no entry was
-            // checkpointed" — the predicate used to be called `all_disk_checkpointed`, and that
-            // name was wrong in both halves. EVERY entry an agent owns contributes its
-            // prev_checkpoint_wal_id to the min, in all three shapes:
+            // The sentinel means "no entry reported a WAL floor", NOT "no entry was checkpointed".
+            // EVERY entry an agent owns contributes its prev_checkpoint_wal_id to the min, in all
+            // three shapes:
             //   * the ones that committed a new root this round (prev <- the id the superseded
             //     root was taken at);
-            //   * the ones checkpoint_inner DEFERRED (degraded storage, open cursor, version
-            //     stamps above the watermark, a failed checkpoint) with their prev UNCHANGED. A
-            //     deferred table therefore pins the floor at the id its still-durable root was
-            //     taken at, which is exactly what keeps the records it would need for replay
-            //     out of truncate_before's reach;
-            //   * B6: the ones that were UNCHANGED and so were not rewritten. These are not
-            //     deferrals — the entry has nothing outstanding — so it advances prev <-
-            //     current exactly as a rewrite would have, and contributes that. Skipping the
-            //     work must not change the arithmetic: an unchanged entry that kept a frozen
-            //     prev would hold the floor at the last round that happened to write it and the
-            //     WAL would stop truncating altogether.
-            // So min_prev_id survives as max() only when the agents own nothing checkpointable
-            // at all. Sealing then would hand truncate_before max(), i.e. delete the whole WAL —
+            //   * the ones checkpoint_inner DEFERRED (degraded storage, open cursor, version stamps
+            //     above the watermark, a failed checkpoint) with their prev UNCHANGED, so the table
+            //     pins the floor at the id its still-durable root was taken at — which is what
+            //     keeps the records it would need for replay out of truncate_before's reach;
+            //   * the ones that were UNCHANGED and so were not rewritten. These are not deferrals —
+            //     nothing is outstanding — so prev <- current advances exactly as a rewrite would
+            //     have. Skipping the work must not change the arithmetic: an unchanged entry that
+            //     kept a frozen prev would hold the floor at the last round that happened to write
+            //     it and the WAL would stop truncating altogether.
+            // So min_prev_id survives as max() only when the agents own nothing checkpointable at
+            // all. Sealing then would hand truncate_before max(), i.e. delete the whole WAL —
             // report id 0 ("do not truncate") instead.
-            // (The second conjunct this guard used to carry — "and no in-memory twin exists
-            // anywhere" — is gone with the mode it guarded: every table is a file now, so no
-            // table can still be owed its replay records for that reason.)
             const bool wal_floor_reported = (min_prev_id != std::numeric_limits<wal::id_t>::max());
 
             trace(log_,
@@ -169,16 +163,15 @@ namespace services::disk {
     manager_disk_t::maybe_cleanup_many(execution_context_t /*ctx*/,
                                        std::pmr::vector<components::catalog::oid_t> table_oids,
                                        uint64_t compact_watermark) {
-        // Each table_oid routes to its owning agent's maybe_cleanup_inner so the
-        // threshold check + compact (row_group rebuild) is mailbox-serialized with
-        // every same-oid access. Running it manager-side via a storage_entry_sync
-        // borrow would duplicate the compact and race agent-side scans. INVALID_OID
-        // entries are skipped (callers guard against them but be defensive).
+        // Each table_oid routes to its owning agent's maybe_cleanup_inner so the threshold check +
+        // compact (row_group rebuild) is mailbox-serialized with every same-oid access. Running it
+        // manager-side via a storage_entry_sync borrow would duplicate the compact and race
+        // agent-side scans. INVALID_OID entries are skipped (defensively).
         //
-        // Two-phase fan-out: send every per-oid message collecting futures, then
-        // await all. maybe_cleanup_inner is per-oid, so co-owned oids that hash to
-        // the same agent enqueue several messages; same-target mailbox FIFO
-        // preserves their order, so awaiting is completion-sync only.
+        // Two-phase fan-out: send every per-oid message collecting futures, then await all.
+        // maybe_cleanup_inner is per-oid, so co-owned oids that hash to the same agent enqueue
+        // several messages; same-target mailbox FIFO preserves their order, so awaiting is
+        // completion-sync only.
         std::pmr::vector<unique_future<void>> agent_futures{resource()};
         agent_futures.reserve(table_oids.size());
         for (const auto table_oid : table_oids) {
@@ -226,26 +219,22 @@ namespace services::disk {
                                                   resource()});
         }
 
-        // RN-oid — the WAL-REPLAY SYNTHESIS leg of "every storage column carries its attoid".
+        // The WAL-REPLAY SYNTHESIS leg of "every storage column carries its attoid".
         //
-        // base_spaces' replay synthesises a storage for a table whose .otbx was lost (the
-        // directory entry of a freshly created file is not fsynced) out of the WAL chunk's
-        // COLUMN TYPES, which carry a name in the alias and nothing else. Left at 0, those
-        // columns are unidentified and the bootstrap reconciliation has to refuse the whole
-        // table for good.
+        // base_spaces' replay synthesises a storage for a table whose .otbx was lost (the directory
+        // entry of a freshly created file is not fsynced) out of the WAL chunk's COLUMN TYPES,
+        // which carry a name in the alias and nothing else. Left at 0, those columns are
+        // unidentified and the bootstrap reconciliation has to refuse the whole table for good.
         //
-        // The catalog is final at that point — system-table records replay first and
-        // sequentially, so pg_class and pg_attribute are already repopulated — so this is
-        // exactly the moment the identity IS knowable. Binding it by NAME here is not the
-        // comparison this task removed: nothing is destroyed on a miss, and a column that finds
-        // no catalog row simply stays unidentified (the relkind='g' case, whose columns are
-        // described by pg_computed_column and which the reconciliation never walks). Identity is
-        // established ONCE, at materialisation; from then on the oid is what everything keys on.
-        //
-        // A no-op on every other caller: bootstrap_system_tables_sync runs before pg_attribute
-        // holds anything (and system tables are below FIRST_USER_OID, outside the walk), and
-        // rehydrate_missing_user_storages_sync already passes columns stamped by
-        // collect_catalog_columns_sync — set_attoid is idempotent for the same value.
+        // The catalog is final at that point — system-table records replay first and sequentially,
+        // so pg_class and pg_attribute are already repopulated — which makes this exactly the
+        // moment the identity IS knowable. Binding it by NAME here destroys nothing on a miss: a
+        // column that finds no catalog row simply stays unidentified (the relkind='g' case, whose
+        // columns are described by pg_computed_column and which the reconciliation never walks).
+        // Identity is established ONCE, at materialisation; from then on the oid is what everything
+        // keys on. A no-op on every other caller — bootstrap_system_tables_sync runs before
+        // pg_attribute holds anything, and rehydrate_missing_user_storages_sync already passes
+        // columns stamped by collect_catalog_columns_sync (set_attoid is idempotent).
         {
             bool needs_identity = false;
             for (const auto& col : columns) {
@@ -306,19 +295,16 @@ namespace services::disk {
                   otbx_path.string());
             return core::error_t::no_error();
         }
-        // A REFUSAL MAY NOT LEAVE BEHIND THE ONE THING THAT BLOCKS THE RETRY. The create opens
-        // with FILE_CREATE_NEW, so a create whose very first write was refused still leaves the
-        // file the OPEN made: zero bytes, no header, no root. On the next start that file takes
-        // the LOAD leg and is refused as "not a database" — and with rehydrate now declining to
-        // create over a file that exists, a transient device error would have turned into a
-        // table nobody can ever open again. Removing it destroys no evidence: it never held a
-        // byte, this call made it seconds ago, and the log line below names it. A file that
-        // ALREADY EXISTED when this call started is not this call's to touch — the create never
-        // opened it (FILE_CREATE_NEW fails outright), so it is still every byte the operator has.
-        //
-        // bootstrap_one used to carry its own copy of this cleanup for the system-table leg;
-        // this is the single source now, and every caller — bootstrap, rehydrate, replay
-        // synthesis — gets it.
+        // A REFUSAL MAY NOT LEAVE BEHIND THE ONE THING THAT BLOCKS THE RETRY. The create opens with
+        // FILE_CREATE_NEW, so a create whose very first write was refused still leaves the file the
+        // OPEN made: zero bytes, no header, no root. On the next start that file takes the LOAD leg
+        // and is refused as "not a database" — and with rehydrate declining to create over a file
+        // that exists, a transient device error would have turned into a table nobody can ever open
+        // again. Removing it destroys no evidence: it never held a byte, this call made it seconds
+        // ago, and the log line below names it. A file that ALREADY EXISTED when this call started
+        // is not this call's to touch — the create never opened it (FILE_CREATE_NEW fails
+        // outright). This is the single place the cleanup lives, so every caller — bootstrap,
+        // rehydrate, replay synthesis — gets it.
         if (!existed_before) {
             std::error_code stump_ec;
             if (std::filesystem::exists(otbx_path, stump_ec) && !stump_ec &&
@@ -360,30 +346,25 @@ namespace services::disk {
               pool_idx,
               otbx_path.string());
 
-        // Pre-read the sidecar wal_id BEFORE constructing the SFBM so
-        // bootstrap_disk_inner_sync can seed set_checkpoint_wal_id atomically on the
-        // agent thread. These filesystem-only steps (sidecar scan + read) stay
-        // on the manager thread — pre-scheduler-start, no actor ownership.
+        // Pre-read the sidecar wal_id BEFORE constructing the SFBM so bootstrap_disk_inner_sync can
+        // seed set_checkpoint_wal_id atomically on the agent thread. These filesystem-only steps
+        // stay on the manager thread — pre-scheduler-start, no actor ownership.
         //
-        // ABSENT AND UNREADABLE ARE DIFFERENT ANSWERS. wal::id_t{0} is this table's word for
-        // "no checkpoint ever committed", and it is what seeds the storage's checkpoint floor
-        // and what disarms the young-file contradiction check below. Handing it back for a
-        // sidecar that EXISTS but could not be read reports a broken read as a fact about the
-        // table's history, and the fact is the opposite one.
+        // ABSENT AND UNREADABLE ARE DIFFERENT ANSWERS. wal::id_t{0} is this table's word for "no
+        // checkpoint ever committed", and it is what seeds the storage's checkpoint floor and what
+        // disarms the young-file contradiction check below. Handing it back for a sidecar that
+        // EXISTS but could not be read reports a broken read as a fact about the table's history,
+        // and the fact is the opposite one.
         //
-        // WHAT IT IS *NOT* IS A REASON TO REFUSE THE TABLE. This used to say a short sidecar
-        // "is corruption, not a crash image, and has no honest reading at all", on the strength
-        // of the writer being atomic. It was not: until persist_checkpoint_sidecar
-        // (agent_disk.cpp) it neither counted its bytes nor fsynced anything, so a full device
-        // during a checkpoint and a plain rename-without-fsync both left a short or
-        // zero-length sidecar with no corruption in sight. Even now that the writer does make
-        // that guarantee, a file written by an older build or damaged from outside can still
-        // be short — and the .otbx it sits next to opens perfectly either way. Refusing the
-        // OPEN over it is a per-table refusal for a user table and the END of the database for
-        // a system one (bootstrap_one throws, base_spaces.cpp:207 has no catch, and nothing in
-        // the process can repair the file). So the read reports, the caller opens the table
-        // with its floor marked UNREADABLE, and the replay filter — which already has a third
-        // answer for exactly this — drops that table's records instead of duplicating them.
+        // WHAT IT IS *NOT* IS A REASON TO REFUSE THE TABLE. A short sidecar is not corruption:
+        // persist_checkpoint_sidecar (agent_disk.cpp) makes the write atomic, but a file written by
+        // an older build or damaged from outside can still be short — and the .otbx it sits next to
+        // opens perfectly either way. Refusing the OPEN over it is a per-table refusal for a user
+        // table and the END of the database for a system one (bootstrap_one throws, base_spaces.cpp
+        // has no catch, and nothing in the process can repair the file). So the read reports, the
+        // caller opens the table with its floor marked UNREADABLE, and the replay filter — which
+        // already has a third answer for exactly this — drops that table's records instead of
+        // duplicating them.
         auto read_sidecar_wal_id = [&](const std::filesystem::path& base) -> core::result_wrapper_t<wal::id_t> {
             auto sidecar = base;
             sidecar += ".wal_id";
@@ -414,7 +395,7 @@ namespace services::disk {
                                  resource()});
         };
 
-        // A7.6: resolve the catalog schema overlay for a possibly-young file BEFORE any open.
+        // Resolve the catalog schema overlay for a possibly-young file BEFORE any open.
         // System-table callers pass the builtin schema; user-table callers pass {} and the
         // columns come from pg_attribute (agents_[0], same read rehydrate uses — this runs on
         // the single-threaded bootstrap/recovery path).
@@ -425,7 +406,7 @@ namespace services::disk {
             if (auto it = resolved.find(table_oid); it != resolved.end()) {
                 catalog_columns = std::move(it->second);
             }
-            // B1a: computed (relkind='g') tables are disk-backed like everything
+            // Computed (relkind='g') tables are disk-backed like everything
             // else, but their catalog schema is legitimately EMPTY (columns are
             // adopted from appended chunks and live in pg_computed_column, not
             // pg_attribute). Resolve the relkind so a young computed .otbx opens
@@ -433,19 +414,18 @@ namespace services::disk {
             // keeps its dynamic-schema append semantics across restarts.
             if (catalog_columns.empty()) {
                 // A relkind THAT COULD NOT BE READ IS NOT "REGULAR", and logging that while
-                // carrying on is the same conflation one line further down. The claim this
-                // used to make — that a broken read merely sends the file down the deferral
-                // leg — holds for exactly one file size: deferral needs `catalog_columns
-                // empty && !is_computed` AND an .otbx of exactly BLOCK_START bytes. A table
-                // that HAS been checkpointed is past that size, so the identical state opened
-                // it as an ordinary row-storage table with its dynamic-schema semantics gone,
-                // and the only thing the fix had changed was that a log line now appeared.
+                // carrying on is the same conflation one line further down. "A broken read merely
+                // sends the file down the deferral leg" holds for exactly one file size: deferral
+                // needs `catalog_columns empty && !is_computed` AND an .otbx of exactly BLOCK_START
+                // bytes. A table that HAS been checkpointed is past that size, so the identical
+                // state opens it as an ordinary row-storage table with its dynamic-schema semantics
+                // gone.
                 //
                 // Refusing is per-table and cannot brick: this whole block is guarded by
-                // `table_oid >= FIRST_USER_OID`, so no system table reaches it, and the three
-                // ways relkind_for_oid_sync reports (no catalog agent, pg_class not loaded,
-                // pg_class too short) are all repaired by pg_class coming up — which
-                // bootstrap_system_tables_sync refuses to start without.
+                // `table_oid >= FIRST_USER_OID`, so no system table reaches it, and the three ways
+                // relkind_for_oid_sync reports (no catalog agent, pg_class not loaded, pg_class too
+                // short) are all repaired by pg_class coming up — which bootstrap_system_tables_sync
+                // refuses to start without.
                 auto relkind_r = relkind_for_oid_sync(table_oid);
                 if (relkind_r.has_error()) {
                     error(log_,
@@ -523,7 +503,7 @@ namespace services::disk {
                                                   resource()});
         };
 
-        // A7.5: crash recovery is the two-slot shadow-paged root INSIDE the .otbx
+        // Crash recovery is the two-slot shadow-paged root INSIDE the .otbx
         // (load_existing_database's slot reconciliation); no external backup exists and no
         // file-shuffle recovery runs here any more. Refusals below share one contract: the
         // .otbx is reported and left byte-identical — no rename, no truncation, no quarantine
@@ -540,7 +520,7 @@ namespace services::disk {
         }
 
         // A stray sidecar in the engine-owned `table.otbx.*` namespace — e.g. the whole-file
-        // backup or quarantine files a build predating A7.5 left behind — makes the on-disk
+        // backup or quarantine files a build predating shadow paging left behind — makes the on-disk
         // state ambiguous. Guessing which file is authoritative is what rule 6 forbids, and
         // silently deleting the stray would destroy the operator's evidence: refuse loudly and
         // touch nothing.
@@ -549,36 +529,33 @@ namespace services::disk {
             return sidecar_err;
         }
 
-        // A7.6: a file of exactly BLOCK_START bytes is the never-checkpointed signature
-        // (three header sectors, no blocks — the witness load_existing_database itself
-        // trusts). A checkpointed file never has this size: its blocks put it past
-        // BLOCK_START. Two consequences, checked in the REFUSING-first order:
+        // A file of exactly BLOCK_START bytes is the never-checkpointed signature (three header
+        // sectors, no blocks — the witness load_existing_database itself trusts). A checkpointed
+        // file never has this size: its blocks put it past BLOCK_START. Two consequences, checked
+        // in the REFUSING-first order:
         //
-        //   1. Contradiction: a `.wal_id` sidecar only ever exists for a table that has
-        //      committed a root, so "no checkpointed content" and "a checkpoint committed at
-        //      wal id N" cannot both be true. Something rebuilt or truncated the .otbx out from
-        //      under its sidecar; opening it as empty would silently discard whatever that
-        //      checkpoint held. The sidecar is consulted in the refusing direction ONLY —
-        //      its absence proves nothing and legalises nothing (a separate file, losable on
-        //      its own), which is exactly why it is not the youth witness.
-        //      AN UNREADABLE SIDECAR DOES NOT ARM IT, and that is not a weakening. The check
-        //      needs the sidecar to RECORD a committed checkpoint; a file that yielded no wal
-        //      id records nothing. A zero-length one next to a young .otbx is precisely the
-        //      crash image of a FIRST checkpoint whose rename landed and whose data did not —
-        //      a legal state, not a contradiction — so refusing over it would refuse a
-        //      recoverable database, and for a system table refuse it forever.
-        //      B6 REFINED THE PREMISE without weakening it: the sidecar is now written by a
-        //      round that committed a header AND by one that skipped the rewrite because the
-        //      table was unchanged. The second cannot reach a young file — "unchanged" is
-        //      table_storage_t::needs_checkpoint, and a young file's table was BUILT rather
-        //      than loaded, so it is modified-since-checkpoint by construction and every round
-        //      writes it for real until one commits.
-        //   2. Defer: opening a young file as an empty table requires the catalog's schema;
-        //      when none could be resolved, this walk simply ran before the catalog knows
-        //      the table (the bootstrap walk precedes WAL replay). Defer rather than
-        //      refuse: the post-replay walk re-visits every unloaded .otbx once the catalog
-        //      is repopulated, and a file this size that is NOT a valid young database is
-        //      refused loudly there by the real open.
+        //   1. Contradiction: a `.wal_id` sidecar only ever exists for a table that has committed a
+        //      root, so "no checkpointed content" and "a checkpoint committed at wal id N" cannot
+        //      both be true. Something rebuilt or truncated the .otbx out from under its sidecar;
+        //      opening it as empty would silently discard whatever that checkpoint held. The
+        //      sidecar is consulted in the refusing direction ONLY — its absence proves nothing and
+        //      legalises nothing (a separate file, losable on its own), which is exactly why it is
+        //      not the youth witness.
+        //      AN UNREADABLE SIDECAR DOES NOT ARM IT, and that is not a weakening: the check needs
+        //      the sidecar to RECORD a committed checkpoint, and a file that yielded no wal id
+        //      records nothing. A zero-length one next to a young .otbx is precisely the crash image
+        //      of a FIRST checkpoint whose rename landed and whose data did not — a legal state, not
+        //      a contradiction — so refusing over it would refuse a recoverable database, and for a
+        //      system table refuse it forever.
+        //      THE SIDECAR IS ALSO WRITTEN BY A ROUND THAT SKIPPED ITS REWRITE because the table was
+        //      unchanged. That second kind cannot reach a young file: "unchanged" is
+        //      table_storage_t::needs_checkpoint, and a young file's table was BUILT rather than
+        //      loaded, so it is modified-since-checkpoint by construction.
+        //   2. Defer: opening a young file as an empty table requires the catalog's schema; when
+        //      none could be resolved, this walk simply ran before the catalog knows the table (the
+        //      bootstrap walk precedes WAL replay). Defer rather than refuse: the post-replay walk
+        //      re-visits every unloaded .otbx once the catalog is repopulated, and a file this size
+        //      that is NOT a valid young database is refused loudly there by the real open.
         {
             std::error_code size_ec;
             const auto file_bytes = std::filesystem::file_size(otbx_path, size_ec);
@@ -611,11 +588,9 @@ namespace services::disk {
         // rather than throwing (bootstrap_disk_inner_sync is noexcept and reachable on the agent
         // thread). We probe-construct on the manager thread to read that flag, then destroy the
         // probe to release the WRITE_LOCK before the agent reopens (per-process lock: closing this
-        // fd frees it entirely). The close-reopen window is single-threaded, no race. This function
-        // runs on the bootstrap thread (NOT the agent message thread); a failed open returns a
-        // core::error_t to the open/bootstrap caller instead of throwing, carrying the block
-        // manager's full slot diagnostics — with the external backup gone, that log line is the
-        // operator's only remaining tool.
+        // fd frees it entirely). The close-reopen window is single-threaded, no race. A failed open
+        // returns a core::error_t instead of throwing, carrying the block manager's full slot
+        // diagnostics — with no external backup, that log line is the operator's only tool.
         bool probe_failed = false;
         std::string probe_error;
         {
@@ -640,7 +615,7 @@ namespace services::disk {
         // complete set this build writes: the `.wal_id` checkpoint sidecar and its `.tmp`
         // staging file (a crash between the tmp write and the rename legitimately leaves the
         // latter behind). Anything else in that namespace — the whole-file backup / quarantine
-        // sidecars of builds predating A7.5 included — is refused, by name, without being
+        // sidecars of builds predating shadow paging included — is refused, by name, without being
         // renamed or deleted: the stray is the operator's evidence of WHICH build wrote the
         // directory, and guessing over an ambiguous on-disk state is forbidden (rule 6).
         // Files outside the namespace (unrelated droppings) are not this engine's to police.
@@ -701,18 +676,15 @@ namespace services::disk {
                 }
             }
         }
-        // No loaded entry: read the sidecar directly (the pre-replay bootstrap path). The
-        // second leg used to be called a "fall back" and behaved like one — an unchecked
-        // stream whose every failure answered wal::id_t{0}. That is not a fallback, it is a
-        // different claim: 0 tells the replay filter this table was never checkpointed, so
-        // every record it has is applied again, ON TOP of the checkpointed content the
-        // unreadable sidecar was describing. Only "no sidecar exists" may answer 0.
+        // No loaded entry: read the sidecar directly (the pre-replay bootstrap path). This second
+        // leg is NOT a "fall back" — an unchecked stream whose every failure answers wal::id_t{0}
+        // makes a different claim: 0 tells the replay filter this table was never checkpointed, so
+        // every record it has is applied again, ON TOP of the checkpointed content the unreadable
+        // sidecar was describing. Only "no sidecar exists" may answer 0.
         //
-        // AND THAT RULE APPLIES TO THESE THREE TOO. They used to share the same `return 0`,
-        // which re-committed the very conflation the paragraph above forbids: none of them
-        // establishes that no sidecar exists, they establish that this function was not given
-        // enough to go looking for one. An unnamed namespace cannot be turned into a path, and
-        // a path that was never built cannot be shown to be empty.
+        // AND THAT RULE APPLIES TO THESE THREE TOO. A shared `return 0` would re-commit the same
+        // conflation: none of them establishes that no sidecar exists, they establish that this
+        // function was not given enough to go looking for one.
         if (table_oid == components::catalog::INVALID_OID) {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"peek_checkpoint_wal_id_from_disk: asked for the checkpoint floor "
@@ -778,13 +750,13 @@ namespace services::disk {
             // caller's response to it is to CREATE a file at this path.
             return core::error_t::no_error();
         }
-        // A7.6: pass no overlay — load_storage_disk_sync resolves a user table's columns from
+        // Pass no overlay — load_storage_disk_sync resolves a user table's columns from
         // pg_attribute itself, and by replay time the catalog rows (checkpointed or replayed
         // ahead of every user record) are in place.
-        // COULD NOT READ. Swallowing this into a warn left replay walking on as if the table
-        // simply had no file yet — so it synthesised a fresh storage at this very path, over a
-        // file that exists and did not open, and the committed rows the .otbx already held
-        // stopped being reachable with one warn line to show for it. Report; the caller stops.
+        // COULD NOT READ. Swallowing this into a warn would leave replay walking on as if the
+        // table simply had no file yet — synthesising a fresh storage at this very path, over a
+        // file that exists and did not open, so the committed rows the .otbx already holds stop
+        // being reachable with one warn line to show for it. Report; the caller stops.
         if (auto err = load_storage_disk_sync(table_oid, database_oid, otbx_path, {}); err.contains_error()) {
             error(log_,
                   "load_storage_for_wal_replay_sync: failed to load {}: {}",

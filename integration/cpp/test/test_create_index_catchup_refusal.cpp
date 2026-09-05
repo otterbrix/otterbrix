@@ -3,30 +3,29 @@
 //
 // operator_create_index_backfill_t registers the index engine with manager_index_t
 // (create_index) BEFORE it backfills it, and the engine's registration -- not
-// pg_index.indisvalid -- is what create_plan_match consults: get_indexed_keys reports the
-// key, can_use_index says yes, and full_scan is replaced by index_scan.
+// pg_index.indisvalid -- is what create_plan_match consults: get_indexed_keys reports
+// the key, can_use_index says yes, and full_scan is replaced by index_scan.
 //
-// So every exit AFTER that registration has to take the engine back out. The executor does
-// not do it for us: all three undo_create_index calls sit inside the
-// `needs_ddl_txn && cursor->is_success()` block (executor.cpp:1968), which covers failures
-// AFTER the operator succeeded -- accumulate, commit, inline index-commit. A failure of the
-// OPERATOR ITSELF lands in the `else if (... is_error())` branch, which calls only
-// revert_failed_txn: that reverts the catalog appends and the PENDING index entries, and
-// leaves the engine REGISTERED AND EMPTY.
-//
-// The result is not a slow query, it is a WRONG ANSWER: the next equality predicate on the
-// indexed column is planned as an index_scan over an engine whose entries were just
-// reverted, and the table answers with nothing.
+// So every exit AFTER that registration has to take the engine back out, and the
+// executor does not: all three undo_create_index calls sit inside the
+// `needs_ddl_txn && cursor->is_success()` block of executor_t::execute_plan_full, which
+// covers failures AFTER the operator succeeded (accumulate, commit, inline
+// index-commit). A failure of the OPERATOR ITSELF lands in the `else if (... is_error())`
+// branch, which calls only revert_failed_txn -- reverting the catalog appends and the
+// PENDING index entries, and leaving the engine REGISTERED AND EMPTY. The result is not
+// a slow query but a WRONG ANSWER: the next equality predicate on the indexed column is
+// planned as an index_scan over an engine whose entries were just reverted, and the
+// table answers with nothing.
 //
 // THE INJECTION. The catchup's refusal is produced deterministically by the WAL's own
 // DEV_MODE seam (services/wal/wal_page.hpp): a segment file that will not open makes
-// wal_page_reader_t::read_all_records refuse, which makes wal_worker_t::load refuse, which
-// is exactly the branch operator_create_index_backfill.cpp takes on a refused catchup. It is
-// armed only around the CREATE INDEX, so the seeding traffic above it is untouched.
+// wal_page_reader_t::read_all_records refuse, which makes wal_worker_t::load refuse,
+// which is the branch operator_create_index_backfill.cpp takes on a refused catchup. It
+// is armed only around the CREATE INDEX, so the seeding traffic above it is untouched.
 //
-// This is the CONTENT-level witness for the wal_worker_t::load hole work: the unit proofs of
-// the hole itself are in services/wal/tests/test_wal_load_hole.cpp, and they assert on id
-// sets. This one asserts on the ROWS a table answers with afterwards.
+// This is the CONTENT-level witness for the wal_worker_t::load hole work: the unit proofs
+// are in services/wal/tests/test_wal_load_hole.cpp and assert on id sets; this one
+// asserts on the ROWS a table answers with afterwards.
 // ============================================================================
 
 #include "test_config.hpp"

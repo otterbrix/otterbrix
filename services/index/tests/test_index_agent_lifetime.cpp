@@ -1,35 +1,32 @@
-// An agent may not be destroyed while a request the manager itself issued is still
-// unanswered.
+// An agent may not be destroyed while a request the manager itself issued is still unanswered.
 //
-// WHY THIS IS NOT A STYLE POINT. A cross-actor reply travels in a shared_state whose
-// promise lives IN THE MESSAGE. Destroying an actor closes its mailbox, and closing a
-// mailbox deletes every message still queued in it; ~message() then runs the slot's
-// cleanup, which sets operation_canceled on the shared_state and releases the promise
-// (actor-zeta mailbox/message.hpp init_future_slot, impl/mailbox/default_mailbox.ipp
-// close_impl). state_flags::result_set is value_set|error_set, so THAT COUNTS AS A
-// RESULT: the waiter's co_await is resumed, and the awaiter's await_resume() does
+// WHY THIS IS NOT A STYLE POINT. A cross-actor reply travels in a shared_state whose promise lives
+// IN THE MESSAGE. Destroying an actor closes its mailbox, and closing a mailbox deletes every
+// message still queued in it; ~message() then runs the slot's cleanup, which sets
+// operation_canceled on the shared_state and releases the promise (actor-zeta mailbox/message.hpp
+// init_future_slot, impl/mailbox/default_mailbox.ipp close_impl). state_flags::result_set is
+// value_set|error_set, so THAT COUNTS AS A RESULT: the waiter's co_await is resumed, and the
+// awaiter's await_resume() does
 //
 //     assert(!state->has_error());  // <- compiled out under NDEBUG
 //     return state->take_value();   // <- moves out of an UNINITIALISED union
 //
-// (actor-zeta detail/future_awaiters.hpp owning_awaiter, detail/result_storage.hpp
-// take()). In a release build the reader of a std::pmr::vector<int64_t> reply gets a
-// vector with a garbage pointer: foreign "rows", then free() on a wild address. There is
-// no way to intercept that on our side -- actor-zeta's promise types offer await_transform
-// for unique_future and nothing else, so an actor coroutine cannot co_await a checked
-// wrapper, and it cannot inspect the state before await_resume has already taken from it.
-// The only place the hole can be closed is the LIFETIME: the agent must still be there.
+// In a release build the reader of a std::pmr::vector<int64_t> reply gets a vector with a garbage
+// pointer: foreign "rows", then free() on a wild address. There is no way to intercept that on our
+// side -- actor-zeta's promise types offer await_transform for unique_future and nothing else, so
+// an actor coroutine cannot co_await a checked wrapper, and it cannot inspect the state before
+// await_resume has already taken from it. The only place the hole can be closed is the LIFETIME:
+// the agent must still be there.
 //
-// The window that made it reachable: manager_index_t::drop_index awaited the agent's
-// drop() and only afterwards erased the owning pointer from the manager. A search
-// suspended on read_rows() -- or one that STARTED after the drop was sent, because the
-// index was still registered in the engine at that moment -- was left waiting on an agent
-// that got destroyed underneath it.
+// The window that made it reachable: manager_index_t::drop_index awaited the agent's drop() and
+// only afterwards erased the owning pointer from the manager. A search suspended on read_rows() --
+// or one that STARTED after the drop was sent, because the index was still registered at that
+// moment -- was left waiting on an agent that got destroyed underneath it.
 //
-// The test does not race for that window, it lays it out by hand: the agent is pumped one
-// message at a time (cooperative_actor::resume(1)), so "drop handled, read not yet" is a
-// state the test chooses, and the manager's own handlers are called directly so no loop
-// thread decides the interleaving.
+// The test does not race for that window, it lays it out by hand: the agent is pumped one message
+// at a time (cooperative_actor::resume(1)), so "drop handled, read not yet" is a state the test
+// chooses, and the manager's own handlers are called directly so no loop thread decides the
+// interleaving.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -177,7 +174,7 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
     agent_raw->resume(1);
 
     // (4) The drop reply is in; hand the manager's suspended drop_index its continuation.
-    //     This is where the owning pointer used to be erased, taking the agent with it.
+    //     This is where the owning pointer is erased, taking the agent with it.
     REQUIRE(resume_awaited(drop_future));
     REQUIRE(drop_future.is_ready());
     // agent_raw is dead from here on: whoever owns the agent, drop_index finishes by

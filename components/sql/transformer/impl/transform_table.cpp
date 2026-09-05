@@ -60,27 +60,21 @@ namespace components::sql::transform {
                                std::make_move_iterator(table_level.end()));
         }
 
-        // WITH (...) — NOT ONE OPTION IN THIS LIST IS IMPLEMENTED, so every one of
-        // them has to be refused, not just the one that used to be.
+        // WITH (...) — NOT ONE OPTION IN THIS LIST IS IMPLEMENTED, so every one of them is
+        // refused.
         //
-        // B1a: every table is disk-backed, so `storage` is gone and keeps its own
-        // sentence. But this loop only ever LOOKED at `storage`: every other name —
-        // `fillfactor`, `autovacuum_enabled`, a typo of `storage`, anything the user
-        // invented — fell out of the bottom and the CREATE TABLE proceeded as if the
-        // clause had not been written. That is the same silence rule 6 exists to
-        // forbid: the user wrote a directive, we acknowledged the statement, and the
-        // directive had no effect anywhere. A misspelt `storag = 'memory'` was the
-        // worst shape of it — the user believed they had selected a storage mode AND
-        // got no refusal, which is precisely what the `storage` refusal above was
-        // added to prevent.
+        // Every table is disk-backed, so `storage` is gone and keeps its own sentence. But looking
+        // only at `storage` lets every other name — `fillfactor`, `autovacuum_enabled`, a typo of
+        // `storage`, anything the user invented — fall out of the bottom, and the CREATE TABLE
+        // proceeds as if the clause had not been written: the user wrote a directive, the
+        // statement was acknowledged, and the directive had no effect anywhere. A misspelt
+        // `storag = 'memory'` is the worst shape of it — the user believes they selected a storage
+        // mode AND gets no refusal. An option with no defname cannot be named back to the user,
+        // but it is still an option this engine does not implement, so it is refused too.
         //
-        // An option with no defname cannot be named back to the user, but it is still
-        // an option this engine does not implement, so it is refused too rather than
-        // skipped.
-        // `storage` is looked for across the WHOLE list before anything else is
-        // refused, so the specific sentence wins wherever the user wrote it:
-        // `WITH (fillfactor = 1, storage = 'memory')` must still explain storage
-        // rather than stop at the first name it happens to meet.
+        // `storage` is looked for across the WHOLE list before anything else is refused, so the
+        // specific sentence wins wherever the user wrote it: `WITH (fillfactor = 1, storage =
+        // 'memory')` must still explain storage rather than stop at the first name it meets.
         if (node.options) {
             for (auto data : node.options->lst) {
                 auto def = pg_ptr_cast<DefElem>(data.data);
@@ -193,11 +187,11 @@ namespace components::sql::transform {
     }
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_drop(DropStmt& node) {
-        // THE defect. Every arm below reads `node.objects->lst.front()` and never looks
-        // at the rest, so `DROP TABLE a, b, c` planned one drop of `a`, executed
-        // cleanly, reported SUCCESS — and left `b` and `c` exactly where they were,
-        // with nothing in the answer to say so. `any_name_list` (gram.y) accepts the
-        // comma list for every drop_type, so this reaches all six arms.
+        // Every arm below reads `node.objects->lst.front()` and never looks at the rest,
+        // so `DROP TABLE a, b, c` would plan one drop of `a`, execute cleanly and report
+        // SUCCESS while leaving `b` and `c` exactly where they were, with nothing in the
+        // answer to say so. `any_name_list` (gram.y) accepts the comma list for every
+        // drop_type, so this reaches all six arms.
         //
         // One node_drop_t names one object, and execution_plan_t::sub_queries is a
         // sub-query chain feeding parameters into a single consumer — not a statement
@@ -252,10 +246,9 @@ namespace components::sql::transform {
             auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
             drop->set_dbname(db);
             drop->set_relname(rel);
-            // `IF EXISTS`. The grammar has set DropStmt.missing_ok since the rule was
-            // written; discarding it here left node_drop_t at its loud default, so the
-            // one no-op success PostgreSQL grants the IF EXISTS form was unreachable
-            // from SQL (the CREATE side has honoured IF NOT EXISTS all along).
+            // `IF EXISTS`. Discarding DropStmt.missing_ok here leaves node_drop_t at its
+            // loud default, which makes the one no-op success PostgreSQL grants the
+            // IF EXISTS form unreachable from SQL.
             drop->set_missing_ok(node.missing_ok);
             register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
             return n;

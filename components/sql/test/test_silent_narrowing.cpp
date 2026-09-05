@@ -1,16 +1,16 @@
-// The wave's contract: a clause the executor does not implement is REFUSED at
-// the transformer, never silently dropped, and a literal under a declared cast
-// carries the DECLARED type, never the one the literal happened to parse as.
+// The contract: a clause the executor does not implement is REFUSED at the
+// transformer, never silently dropped, and a literal under a declared cast carries
+// the DECLARED type, never the one the literal happened to parse as.
 //
-// Every REFUSAL case here was, before the repair, a statement that reported
-// success while quietly answering a different question:
-//   - a window function ran as a plain aggregate (one value per group);
-//   - SELECT ... INTO returned rows and created no table;
-//   - FOR UPDATE locked nothing;
-//   - a duplicate WITH name kept the FIRST body and dropped the second;
-//   - CREATE TABLE swallowed EXCLUDE and every constraint ATTRIBUTE;
-//   - CREATE SEQUENCE swallowed CYCLE / CACHE / OWNED BY / RESTART;
-//   - CAST(1.5 AS INT) answered a DOUBLE, CAST('123' AS BIGINT) a string.
+// Unrefused, every case here is a statement that reports success while quietly
+// answering a different question:
+//   - a window function runs as a plain aggregate (one value per group);
+//   - SELECT ... INTO returns rows and creates no table;
+//   - FOR UPDATE locks nothing;
+//   - a duplicate WITH name keeps the FIRST body and drops the second;
+//   - CREATE TABLE swallows EXCLUDE and every constraint ATTRIBUTE;
+//   - CREATE SEQUENCE swallows CYCLE / CACHE / OWNED BY / RESTART;
+//   - CAST(1.5 AS INT) answers a DOUBLE, CAST('123' AS BIGINT) a string.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_data.hpp>
@@ -108,8 +108,8 @@ TEST_CASE("components::sql::narrowing::duplicate_with_names_refused") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    // Before the repair the second `c` was a silent emplace no-op: the query
-    // ran against the FIRST body and reported success.
+    // A silent emplace no-op on the second `c` runs the query against the FIRST
+    // body and reports success.
     TEST_TRANSFORMER_ERROR(
         "WITH c AS (SELECT a FROM db.big), c AS (SELECT b FROM db.big) SELECT * FROM c;",
         R"_(WITH query name "c" specified more than once)_");
@@ -128,15 +128,15 @@ TEST_CASE("components::sql::narrowing::create_table_constraint_kinds_refused") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    // Table-level EXCLUDE parsed, then vanished in extract_table_constraints'
-    // `default: continue` — the table was created without it.
+    // Table-level EXCLUDE parses, and a `default: continue` in
+    // extract_table_constraints makes it vanish — the table created without it.
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT, EXCLUDE (a WITH =));",
         R"_(EXCLUDE constraints are not supported yet: the constraint would have been silently dropped)_");
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT, CONSTRAINT ex EXCLUDE (a WITH =));",
         R"_(EXCLUDE constraints are not supported yet: the constraint would have been silently dropped)_");
-    // Column-level constraint ATTRIBUTES (deferrability) rode the same seam in
+    // Column-level constraint ATTRIBUTES (deferrability) ride the same seam in
     // extract_column_constraints.
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT UNIQUE DEFERRABLE);",
@@ -194,7 +194,7 @@ TEST_CASE("components::sql::narrowing::cast_targets_honoured") {
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1.5 AS INT);", v(&resource, int32_t{2}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(2.4 AS SMALLINT);", v(&resource, int16_t{2}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS BIGINT);", v(&resource, int64_t{1}));
-    // Numeric literal, float target: 1 becomes 1.0 (it used to stay an int64).
+    // Numeric literal, float target: 1 becomes 1.0, not an int64.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS DOUBLE PRECISION);", v(&resource, double{1.0}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS REAL);", v(&resource, float{1.0f}));
     // String literal, numeric target: parsed, not passed through as a string.
@@ -220,8 +220,8 @@ TEST_CASE("components::sql::narrowing::cast_targets_honoured") {
                            R"_(invalid input for a cast to BOOLEAN: 1.5)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE x = CAST('x' AS UUID);",
                            R"_(a literal cast to UUID is not supported yet)_");
-    // A refused TARGET TYPE is a refusal, not a silent string: NUMERIC without
-    // (width, scale) was swallowed here before.
+    // A refused TARGET TYPE is a refusal, not a silent string — NUMERIC without
+    // (width, scale) is the case.
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE x = CAST(1.5 AS NUMERIC);",
                            R"_(Incorrect modifiers for DECIMAL, width and scale required)_");
 }
@@ -236,7 +236,7 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
 
     // 123456789.12345678901234567890 at scale 20:
     // 123456789 * 10^20 + 12345678901234567890 — 29 significant digits, more
-    // than a double can carry. This is the value atof used to mangle.
+    // than a double can carry — the shape atof mangles.
     const int128_t ten_to_10 = int128_t{10000000000LL};
     const int128_t scaled = int128_t{123456789} * ten_to_10 * ten_to_10 + int128_t{1234567890123456789LL} * 10 +
                             int128_t{0}; // 12345678901234567890 assembled inside int128
@@ -291,9 +291,9 @@ TEST_CASE("components::sql::narrowing::subscript_read_by_tag") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    // A subscript wider than int32 leaves the scanner as a T_Float carrying
-    // its digits; reading `ival` without looking at the tag rendered the BIT
-    // PATTERN OF A POINTER into the column path.
+    // A subscript wider than int32 leaves the scanner as a T_Float carrying its
+    // digits; reading `ival` without looking at the tag renders the BIT PATTERN OF
+    // A POINTER into the column path.
     SECTION("INSERT INTO db.tbl (arr[3000000000]) VALUES (5);") {
         auto select =
             linitial(raw_parser(&arena_resource, "INSERT INTO db.tbl (arr[3000000000]) VALUES (5);"));
@@ -318,8 +318,8 @@ TEST_CASE("components::sql::narrowing::subscript_read_by_tag") {
 
 TEST_CASE("components::sql::narrowing::get_type_refuses_an_absent_typename") {
     auto resource = core::pmr::otterbrix_resource();
-    // A null TypeName used to answer a default-constructed NA type — a failure
-    // reported as a value.
+    // A null TypeName must not answer a default-constructed NA type: that is a
+    // failure reported as a value.
     auto res = transform::get_type(&resource, nullptr);
     REQUIRE(res.has_error());
     REQUIRE(std::string_view{res.error().what} == R"_(cannot determine a type: the TypeName is absent)_");

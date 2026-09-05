@@ -336,12 +336,12 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::multi_chunk_straddle_ac
 
 // ---------------------------------------------------------------------------
 // An UPDATE that touches NO column of a UNIQUE / PRIMARY KEY group cannot make
-// that group collide: the stored key is unchanged. The existing-row layer used to
-// run anyway, and it costs one FULL pass over the target table per 1024 written
-// rows (manager_disk_t::scan_by_keys). On a 200k-row table an UPDATE of a non-key
-// column measured 519 ms with a PK against 57 ms without one — a 9x tax for a
-// check that cannot fail. The planner now drops such groups before the operator
-// is ever spliced in.
+// that group collide: the stored key is unchanged. Running the existing-row layer
+// anyway costs one FULL pass over the target table per 1024 written rows
+// (manager_disk_t::scan_by_keys) — on a 200k-row table an UPDATE of a non-key
+// column measured 519 ms with a PK against 57 ms without one, a 9x tax for a check
+// that cannot fail. The planner drops such groups before the operator is ever
+// spliced in.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_off_key_skips_existing_row_scan") {
     auto config = make_test_config(integration_fixture_path("test_unique_constraint_e2e/update_off_key"));
@@ -386,18 +386,16 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_off_key_skips_ex
 // (J) A DECLARED KEY IS NEVER A NO-OP — asserted on the TABLE CONTENTS, not on
 //     the statement status.
 //
-// The write-side operator used to have a quiet exit of its own: a group column
-// with no matching column in the write-set marked the group "void" and the loop
-// moved on, which is this operator's SUCCESS path. The rows are already written
-// when it runs, so a void group means the duplicate stays in the table and the
-// statement reports success — a declared UNIQUE / PRIMARY KEY enforcing nothing.
-// Status alone cannot see that; row COUNT under the key can.
+// A key column the write-set does not carry must be a REFUSAL, never a skipped
+// group: the rows are already written when this operator runs, so skipping leaves
+// the duplicate in the table and the statement reports success — a declared UNIQUE
+// / PRIMARY KEY enforcing nothing. Status alone cannot see that; row COUNT under
+// the key can.
 //
-// This is the sentinel for that condition. There is no SQL that reaches the void
-// branch on this tree (see the comment on the guard in
-// operator_unique_constraint.cpp), so what this test pins is the OTHER half of
-// the contract — the enforced path stays enforced, measured on contents — and its
-// sensitivity to the void condition was proven by injection.
+// This is the sentinel for that condition. No SQL reaches that guard on this tree
+// (see the comment on it in operator_unique_constraint.cpp), so what this test pins
+// is the OTHER half of the contract — the enforced path stays enforced, measured on
+// contents — and its sensitivity to the void condition was proven by injection.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_unique_constraint_e2e::declared_key_never_admits_a_duplicate_row") {
     auto config = make_test_config(

@@ -21,9 +21,8 @@ namespace configuration {
 
     struct config_wal final {
         std::filesystem::path path;
-        // Stays. The WAL can genuinely be switched off — manager_wal_replicate_t reads this
-        // into `enabled_` and base_spaces hands the dispatcher an empty address when it is
-        // false. Unlike config_disk::on, which after B4 selected nothing.
+        // The WAL can genuinely be switched off — manager_wal_replicate_t reads this into
+        // `enabled_` and base_spaces hands the dispatcher an empty address when it is false.
         bool on{true};
         bool sync_to_disk{true};
         uint32_t page_size{4096};
@@ -40,9 +39,9 @@ namespace configuration {
         // No default member initializer: the constructor below is the only way to build a
         // config_disk (the struct is not an aggregate, and the constructor's default argument
         // covers default-construction), so a second initializer here could only ever disagree
-        // with it. One did, from 96d5ffaa (2024-08-27) until it was removed: it said
-        // `<cwd>/disk` while the constructor said `<base>/wal`, and being unreachable it
-        // misled readers for two years — three call sites hand-assigned `<cwd>/disk` back.
+        // with it — an unreachable `<cwd>/disk` beside a constructor saying `<base>/wal`
+        // reads as the layout and is not, which is how call sites start hand-assigning
+        // `<cwd>/disk` back.
         std::filesystem::path path;
         int agent = 2;
         uint64_t bitcask_flush_threshold{1000};
@@ -50,8 +49,8 @@ namespace configuration {
         uint64_t btree_flush_threshold{1000};
 
         // `<base>/wal`, not `<base>/disk` — the table tree shares the WAL's directory. It
-        // reads like a copy-paste of config_wal above, and that is where it came from, but it
-        // is the shipped layout now: every database written since 96d5ffaa is under it,
+        // reads like a copy-paste of config_wal above, but it is the SHIPPED layout: every
+        // database written since 96d5ffaa is under it,
         // including every one the Python package made, since `Client(path)` goes straight to
         // `config::create_config`. Renaming the directory would not move those files, it would
         // strand them — a reopen would find an empty directory, bootstrap a fresh pg_catalog

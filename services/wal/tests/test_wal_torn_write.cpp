@@ -34,7 +34,7 @@ namespace {
 } // namespace
 
 // 1. wal::id_t is uint64. Tests in test_torn_checkpoint.cpp rely on this; this is the
-//    type contract reflected in services/wal/base.hpp:9.
+//    type contract reflected in services/wal/base.hpp.
 TEST_CASE("wal::torn::id_t_is_uint64") {
     static_assert(std::is_same_v<wal::id_t, std::uint64_t>, "wal::id_t must be uint64_t");
     REQUIRE(sizeof(wal::id_t) == 8);

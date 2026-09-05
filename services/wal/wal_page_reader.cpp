@@ -54,11 +54,11 @@ namespace services::wal {
     }
 
     // ONE PAGE, ONE READ. The header this answers comes from the SAME bytes the checksum
-    // verified. Its caller (truncate_before) used to verify the page with one read and then
-    // re-read the header with a second — and a second read that failed answered a ZEROED
-    // header, whose page_end_lsn == 0 is <= every checkpoint id: the segment was unlinked
-    // for a read failure. Returning false covers both "unreadable" and "does not verify";
-    // the caller cannot tell them apart and must not: both mean "this file's bound is
+    // verified. Verifying the page with one read and re-reading the header with a second — the
+    // shape its caller truncate_before would otherwise take — answers a ZEROED header when
+    // that second read fails, and page_end_lsn == 0 is <= every checkpoint id: the segment
+    // gets unlinked for a read failure. Returning false covers both "unreadable" and "does not
+    // verify"; the caller cannot tell them apart and must not: both mean "this file's bound is
     // unknown, keep it".
     bool wal_page_reader_t::read_verified_page_header(size_t page_index, wal_page_header_t& out) {
         alignas(4096) char page_buf[PAGE_SIZE];

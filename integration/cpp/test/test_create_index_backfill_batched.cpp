@@ -4,7 +4,7 @@
 // operator_create_index_backfill_t STREAMS the table through the
 // storage_fetch_next_batch cursor primitive (the same fetch-next source the
 // streaming scans use), so peak memory = one batch + index state — never the
-// whole table materialized in a single whole-table reply (that leg is gone: A1).
+// whole table materialized in a single whole-table reply (that leg is gone).
 //
 // WHAT THESE TESTS ASSERT:
 //   (a) BATCHING — a CREATE INDEX over a table LARGER than one scan batch

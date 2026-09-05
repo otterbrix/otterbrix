@@ -17,8 +17,8 @@ namespace core::filesystem {
 
         // THE ONLY WAY OUT TO THE FREE FUNCTIONS, and the reason every wrapper below spells
         // it. The wrappers take `file_system<FSC>&`, so an unqualified call on that argument
-        // selects the WRAPPER again -- each one of them was an unconditional infinite
-        // recursion, silent only because nothing in the tree instantiates them. The backend
+        // selects the WRAPPER again -- an unconditional infinite recursion, and a silent one
+        // for as long as nothing in the tree instantiates the template. The backend
         // is a PRIVATE base, so a cast from outside the class cannot reach it either; the
         // conversion is done here, where it is legal, once.
         FSC& backend() noexcept { return *this; }
@@ -74,10 +74,9 @@ namespace core::filesystem {
         return trim(fs.backend(), std::forward<Args>(args)...);
     }
 
-    // NAMED FOR THE FUNCTION IT FORWARDS TO. It was `directory_exist`, and no free
-    // `directory_exist` exists anywhere in the namespace -- so the one wrapper whose body
-    // was NOT a recursion was an unresolvable call instead, in a template nothing had
-    // instantiated yet.
+    // NAMED FOR THE FUNCTION IT FORWARDS TO: there is no free `directory_exist` anywhere in
+    // the namespace, so a wrapper spelled that way is an unresolvable call rather than a
+    // recursion -- equally invisible until something instantiates the template.
     template<class FSC, class... Args>
     bool directory_exists(file_system<FSC>& fs, Args&&... args) {
         return directory_exists(fs.backend(), std::forward<Args>(args)...);

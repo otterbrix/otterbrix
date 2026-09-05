@@ -560,8 +560,8 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
 }
 
 // Dynamic-schema (relkind='g' computed) tables grow their column set per-INSERT
-// (stage 1b in agent_disk::storage_append_inner). B1a made every table disk-backed;
-// B1b makes the computed flag itself durable, so growth still works after restart.
+// (stage 1b in agent_disk::storage_append_inner). Every table is disk-backed and the
+// computed flag is itself durable, so growth still works after restart.
 // The growth is made durable by emitting a PHYSICAL_ADD_COLUMN WAL record (the new
 // columns as a 0-row alias-tagged chunk) BEFORE the dependent PHYSICAL_INSERT, and
 // replaying it on restart (base_spaces replay loop -> direct_add_column_sync) so the
@@ -572,10 +572,8 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
 // growth and a PHYSICAL_ADD_COLUMN record — then the engine is restarted and ALL columns +
 // rows must survive.
 //
-// B1b: re-enabled. This test was disabled ("TODO: computed schema does not work for
-// now") while computed tables had no file behind them; its assertions are unchanged — the
-// table is now a disk-backed .otbx whose computed flag is restored from
-// pg_class.relkind on load.
+// Computed tables have a file behind them: a disk-backed .otbx whose computed flag is
+// restored from pg_class.relkind on load.
 TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recovery") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/computed_schema_growth_wal");
     test_clear_directory(config);
@@ -656,7 +654,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
     }
 }
 
-// B1b end-to-end gate, clean-restart leg: the computed (relkind='g') flag must
+// End-to-end gate, clean-restart leg: the computed (relkind='g') flag must
 // survive a restart, proven by the one behavior only the flag enables — merging a
 // NEW type variant of an existing field name into its OWN physical column. A table
 // that lost is_computed on reload would match the post-restart {a:bool} chunk by
@@ -829,7 +827,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
     }
 }
 
-// B1b end-to-end gate, crash leg: the computed flag must survive WAL replay
+// End-to-end gate, crash leg: the computed flag must survive WAL replay
 // SYNTHESIS, not only a clean reload of the .otbx. Crash model (same kill -9
 // simulation as test_persistence_gaps::create_then_kill_before_checkpoint): copy
 // the LIVE data directory, then delete the user table's storage directory from the
@@ -972,7 +970,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
     }
 }
 
-// B4 gate: WAL-replay synthesis must put the recreated `.otbx` where the table's own
+// WAL-replay synthesis must put the recreated `.otbx` where the table's own
 // resolve will look for it — under its pg_class.relnamespace.
 //
 // A table's file lives at ${disk_root}/${relnamespace}/${table_oid}/table.otbx: that is what
@@ -1085,7 +1083,7 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
             CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
         }
 
-        // Structural gate, and the one that fails on the pre-B4 hardwired oid: the recreated
+        // Structural gate, and the one a hardwired namespace oid fails: the recreated
         // file sits under the table's own namespace...
         REQUIRE(std::filesystem::exists(crash_config.disk.path / std::to_string(live_ns) /
                                         std::to_string(live_tbl) / "table.otbx"));
@@ -1105,7 +1103,7 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
     std::filesystem::remove_all(crash_dir);
 }
 
-// B1b guard: a ZERO-COLUMN REGULAR table (relkind='r' whose only column was
+// A ZERO-COLUMN REGULAR table (relkind='r' whose only column was
 // dropped) must NOT come back computed after a restart. Its pg_attribute schema is
 // empty — exactly the shape the load path once used as the computed heuristic — so
 // only the relkind check keeps it regular. Regular vs computed is observable
@@ -1619,7 +1617,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
     }
 }
 
-// A2b — SOURCE CONVERGENCE (1/2). What a diverged DEFAULT breaks is not the value but
+// SOURCE CONVERGENCE (1/2). What a diverged DEFAULT breaks is not the value but
 // the CONSTRAINT. `CHECK (c IS NOT NULL)` on a column with a DEFAULT is compiled against
 // the PLAN's copy of the default (pg_attribute.attdefspec, which survives a restart) and
 // therefore PASSES an INSERT that omits `c` — "the stored row will carry 5". The value
@@ -1698,7 +1696,7 @@ TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_a
     }
 }
 
-// A2b — SOURCE CONVERGENCE (2/2). Uniqueness diverges symmetrically: an omitted key
+// SOURCE CONVERGENCE (2/2). Uniqueness diverges symmetrically: an omitted key
 // column is compared as its DEFAULT (from the catalog, which survives) while NULL is what
 // lands on disk. Before the fix two inserts omitting the column both succeed after a
 // restart — the duplicate-key decision was made about 5 and NULL was stored twice. The
@@ -2407,34 +2405,31 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
 // REGRESSION — MVCC commit-clock restore on reopen (the durable WAL-COMMIT-marker
 // frontier → published_horizon_ + current_timestamp_). What the restore guards:
 //
-//   * Committed DML stamps each row version with a real commit-id (insert_id for
-//     an INSERT, delete_id for a DELETE), drawn from the prior session's commit
-//     clock. CHECKPOINT folds those stamps into the .otbx.
+//   * Committed DML stamps each row version with a real commit-id (insert_id for an
+//     INSERT, delete_id for a DELETE), drawn from the prior session's commit clock.
+//     CHECKPOINT folds those stamps into the .otbx.
 //   * On reopen the transaction_manager restarts at {current_timestamp_=1,
-//     published_horizon_=0}, and nothing on the recovery path calls publish()
-//     (publish only runs in the live commit pipeline). So WITHOUT the restore a
-//     fresh post-reopen reader snapshots published_horizon_=0 and the MVCC filter
-//     (row_version_manager: id > snapshot_horizon ⇒ not visible) judges every
-//     committed DELETE as "deleted after my snapshot" — the deleted rows REAPPEAR.
-//   * The restore raises published_horizon_ to the durable frontier (max of
-//     persisted pg_attribute commit-ids and the max WAL COMMIT-marker commit-id)
-//     so persisted commits read as published.
+//     published_horizon_=0}, and nothing on the recovery path calls publish() (it runs
+//     only in the live commit pipeline). So WITHOUT the restore a fresh post-reopen
+//     reader snapshots published_horizon_=0 and the MVCC filter (row_version_manager:
+//     id > snapshot_horizon ⇒ not visible) judges every committed DELETE as "deleted
+//     after my snapshot" — the deleted rows REAPPEAR, and the phase-2 count comes back
+//     100 instead of 50.
+//   * The restore raises published_horizon_ to the durable frontier (max of persisted
+//     pg_attribute commit-ids and the max WAL COMMIT-marker commit-id).
 //
-// Without the restore the phase-2 count comes back 100 instead of 50 (deleted
-// rows resurrected). Sibling tests test_wal_pool::insert_delete_checkpoint_restart
-// and test_persistence::wal_recovery_dml_full_cycle give equivalent coverage;
-// this case states the intent explicitly so the regression is unmistakable.
+// Sibling tests test_wal_pool::insert_delete_checkpoint_restart and
+// test_persistence::wal_recovery_dml_full_cycle give equivalent coverage; this case
+// states the intent explicitly so the regression is unmistakable.
 //
-// (The restore's OTHER input is the pg_attribute/added_at branch —
-// manager_disk_t::max_persisted_commit_id_sync, which takes the max over
-// added_at_commit_id and dropped_at_commit_id. That branch USED to be dead through
-// real DDL, because ALTER ADD COLUMN left added_at at the placeholder 0: the commit
-// backfill, agent_disk_t::update_pg_attribute_commit_id_field_inner, scanned with a
-// transaction that could not see the row it was asked to patch. It is live now —
-// the backfill stamps a real commit id, so a reopened engine can raise its frontier
-// off pg_attribute alone. This case still exercises the WAL-frontier half; the
-// added_at half is pinned in integration/cpp/test/test_catalog_delete_refusal.cpp
-// — an_added_columns_commit_id_survives_a_restart and its siblings.)
+// (The restore's OTHER input is manager_disk_t::max_persisted_commit_id_sync, the max
+// over pg_attribute added_at_commit_id / dropped_at_commit_id. That branch USED to be
+// dead through real DDL, because ALTER ADD COLUMN left added_at at the placeholder 0:
+// the commit backfill, agent_disk_t::update_pg_attribute_commit_id_field_inner, scanned
+// with a transaction that could not see the row it was asked to patch. It is live now,
+// so a reopened engine can raise its frontier off pg_attribute alone. This case still
+// exercises the WAL-frontier half; the added_at half is pinned in
+// test_catalog_delete_refusal.cpp — an_added_columns_commit_id_survives_a_restart.)
 TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_invisible") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/reopen_keeps_committed_deletes");
     test_clear_directory(config);
@@ -2966,17 +2961,16 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
 
 // Regression guard for the SSB-reopen bug: with disk AND wal OFF (the SSB
 // benchmark configuration), pg_class is still persisted unconditionally.
-// B1a SEMANTICS CHANGE (explicit): user tables are now ALWAYS disk-backed, so the
-// phase-1 rows are durable across the reopen (the shutdown checkpoint seals the
-// .otbx) and phase 2 sees the union of old + re-inserted rows (200), where the
-// pre-B1a file-less table lost its rows and saw only the re-inserted 100. The
-// test's load-bearing core is unchanged: after a reopen the storage must exist
+// User tables are ALWAYS disk-backed, so the phase-1 rows are durable across the
+// reopen (the shutdown checkpoint seals the .otbx) and phase 2 sees the union of old
+// + re-inserted rows (200); a file-less table would lose its rows and see only the
+// re-inserted 100. The load-bearing core: after a reopen the storage must exist
 // again, the re-run CREATE TABLE IF NOT EXISTS must be a clean no-op, and the
 // re-INSERT must land and be visible (the SSB "4ms / 0 rows" regression, where
 // storage_append silently no-opped against a catalog-only table).
 TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/reopen_in_memory_reinsert");
-    // SSB benchmark config: WAL persistence OFF. B1a: tables are disk-backed
+    // SSB benchmark config: WAL persistence OFF. Tables are disk-backed
     // regardless; durability across a clean shutdown comes from the shutdown
     // checkpoint.
     config.wal.on = false;
@@ -3042,7 +3036,7 @@ TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
 
         // Decisive gate: a REGULAR snapshot scan must see the re-inserted rows.
         // With the bug this returns 100 (only the durable phase-1 rows; the SSB
-        // "4ms / 0 rows" symptom shape). B1a: phase-1 rows survived the reopen,
+        // "4ms / 0 rows" symptom shape). Phase-1 rows survive the reopen,
         // so the union is 200 and each count value now matches two rows (row_N
         // and reopen_N).
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 200);
@@ -3052,7 +3046,7 @@ TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
 }
 
 // ---------------------------------------------------------------------------
-// B1a gates: disk is the ONLY storage mode.
+// Disk is the ONLY storage mode.
 //   1. A plain CREATE TABLE (no WITH clause) produces a .otbx under
 //      ${db_oid}/${table_oid}/ — no opt-in required.
 //   2. Its pg_class row carries relstoragemode == 'd' (the column stays,
@@ -3137,7 +3131,7 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
     }
 }
 
-// B2 — WAL SEALING, end to end. A checkpoint truncates the WAL by DELETING whole segment
+// WAL SEALING, end to end. A checkpoint truncates the WAL by DELETING whole segment
 // files at or below the floor checkpoint_all reports, and the restart that follows replays
 // what is left on top of the checkpointed files. Two ways for that to be wrong, and this
 // test fails on either:
@@ -3152,11 +3146,10 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
 // deleted while the writer is still on them, hence the deliberately small max_segment_size —
 // without it the whole test fits in one live segment and nothing is retired.
 //
-// B6 does not change any of that. Between the two checkpoints only TruncCollection is
-// written to, so it is the only table the second round rewrites; every system table is
-// unchanged and merely advances its wal-id chain — to the same prev the rewrite would have
-// left it at. min(prev) is therefore the same number it always was, which is why the floor
-// still lands on checkpoint #1's wal id and the segments below it still go.
+// Between the two checkpoints only TruncCollection is written to, so it is the only table
+// the second round rewrites; every system table is unchanged and merely advances its
+// wal-id chain to the same prev. min(prev) therefore still lands the floor on checkpoint
+// #1's wal id, and the segments below it still go.
 TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_replay") {
     auto config = test_create_config(integration_fixture_path("test_persistence/wal_truncate_no_double_replay"));
     test_clear_directory(config);

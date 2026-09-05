@@ -13,38 +13,36 @@
 #include <string>
 #include <utility>
 
-// FIN-0 / item 1 — A DDL STATEMENT MUST NOT REPORT SUCCESS OVER A CATALOG ROW IT DID NOT WRITE.
+// A DDL STATEMENT MUST NOT REPORT SUCCESS OVER A CATALOG ROW IT DID NOT WRITE.
 //
-// agent_disk_t::append_pg_catalog_row_inner answered with a pg_catalog_append_range_t and
-// nothing else, and said so in a comment: "returns a pg_catalog_append_range_t with NO ERROR
-// CHANNEL; on a failure leave start_row/count at 0 and log — the caller treats a zero-count
-// range as a no-op append". A zero-count range is what a legitimate no-op looks like, so
-// every caller read the two cases the same way. CREATE TABLE writes pg_class, pg_attribute
-// and pg_depend rows through that door: one of them failing left the statement reporting
-// success over a catalog that does not describe the table it just claimed to create.
+// A pg_catalog_append_range_t carries no error channel of its own, so an
+// agent_disk_t::append_pg_catalog_row_inner that answered with it alone could only leave
+// start_row/count at 0 and log — and a zero-count range is exactly what a legitimate no-op
+// append looks like, which makes every caller read the two cases the same way. CREATE TABLE
+// writes pg_class, pg_attribute and pg_depend rows through that door: one of them failing
+// leaves the statement reporting success over a catalog that does not describe the table it
+// just claimed to create.
 //
-// THE INJECTION, and why it lands where it does. The T3 fault seam (fault_injection_file.hpp)
+// THE INJECTION, and why it lands where it does. The fault seam (fault_injection_file.hpp)
 // wraps the file handle a single_file_block_manager_t opens; the interposer below narrows it
-// to ONE table's directory by path, and the plan is armed BEFORE the engine starts. The
-// header write that create_new_database issues for pg_depend's .otbx therefore fails and the
-// storage is never emplaced.
+// to ONE table's directory by path, and the plan is armed BEFORE the engine starts. The header
+// write that create_new_database issues for pg_depend's .otbx therefore fails and the storage
+// is never emplaced.
 //
-// WHAT THIS CASE ASSERTS NOW, AND WHY IT CHANGED. It used to let the engine come up over that
-// missing pg_depend and then assert that the CREATE TABLE failed — the "oid not owned / empty"
-// leg reached through a real statement. That start is exactly what the bootstrap refusal (D2)
-// forbids: an engine holding an incomplete pg_catalog over live storage mints fresh oids on
-// top of it at the next DDL. So the same injection is now caught one floor EARLIER, and the
-// statement is never reached because the engine never opens. That is strictly stronger than
-// what this case pinned — the write it was guarding cannot be attempted at all — and the
-// original guarantee (append_pg_catalog_row refuses instead of answering with a zero-count
-// range) is unchanged and still carried by its own error channel.
+// WHY THIS CASE ASSERTS ON THE BOOTSTRAP AND NOT ON THE STATEMENT. Letting the engine come up
+// over that missing pg_depend and asserting the CREATE TABLE failure instead needs exactly the
+// start the bootstrap refusal forbids: an engine holding an incomplete pg_catalog over live
+// storage mints fresh oids on top of it at the next DDL. Catching the injection one floor
+// EARLIER is strictly stronger — the write it guards cannot be attempted at all — while the
+// guarantee that append_pg_catalog_row refuses instead of answering with a zero-count range is
+// carried by its own error channel.
 //
 // The recoverability half is asserted too, because a refusal that cannot be undone would be a
 // worse defect than the one it replaces: with the fault removed the same directory opens and
 // the same CREATE TABLE succeeds.
 //
-// pg_depend rather than pg_class on purpose: it is the table CREATE TABLE only ever WRITES,
-// so nothing else in the statement path could be blamed for the outcome.
+// pg_depend rather than pg_class on purpose: it is the table CREATE TABLE only ever WRITES, so
+// nothing else in the statement path could be blamed for the outcome.
 
 namespace {
 

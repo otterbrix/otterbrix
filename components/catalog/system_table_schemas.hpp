@@ -123,8 +123,7 @@ namespace components::catalog {
     // the empty spec (builtin scalars store no spec; atttypid alone reconstructs them)
     // and the explicit "UNKNOWN(name)" form (a named user-type reference the resolver
     // chases by name). The refusal reaches the reader's statement, where it costs one
-    // resolve — the callers no longer need to treat UNKNOWN as a refusal channel
-    // (none of them ever did).
+    // resolve; no caller has to read UNKNOWN as a refusal channel.
     std::string encode_type_spec(const types::complex_logical_type& t);
     [[nodiscard]] core::result_wrapper_t<types::complex_logical_type>
     decode_type_spec(std::pmr::memory_resource* resource, std::string_view spec);
@@ -141,9 +140,9 @@ namespace components::catalog {
     // Encode output_type list to a flat text format. Per output: "f:N" fixed type
     // (N = logical_type id), "s:N" same_type_at_index N, "c" a custom resolver
     // (output_type::computed). Multiple outputs are comma-separated. "c" is an EXPLICIT
-    // non-introspectable marker: the old code persisted a custom resolver as "s:0" — a
-    // same-type-as-argument-0 contract the function never declared, silently. A custom
-    // resolver cannot be refused outright: registering one is pinned legal behaviour
+    // non-introspectable marker: persisting a custom resolver as "s:0" silently claims a
+    // same-type-as-argument-0 contract the function never declared. A custom resolver
+    // cannot be refused outright either — registering one is pinned legal behaviour
     // (test_udfs registers computed(same_type_resolver(0))), and its runtime form is
     // reconstructed through pg_proc.prouid → compute::function_registry, never by
     // parsing this column — so the honest answer is a truthful tag, not a guessed
@@ -168,23 +167,25 @@ namespace components::catalog {
     // Encode/decode a column DEFAULT value for storage in pg_attribute.attdefspec.
     //
     // The value is encoded BINARY, by the one binary value codec in the tree
-    // (components/index/logical_value_binary_codec.hpp — the same codec that writes index
-    // keys), then hex-armoured so the column stays printable text like its neighbour
-    // atttypspec. The encoding is type-DIRECTED: the type is NOT in the payload, because
-    // the column's own type sits one column away in atttypspec. That is what makes it
-    // lossless for every type the codec carries, nested types included, rather than only
-    // for the ones somebody remembered to list in a switch.
+    // (components/index/logical_value_binary_codec.hpp — the same codec that writes index keys),
+    // then hex-armoured so the column stays printable text like its neighbour atttypspec. The
+    // encoding is type-DIRECTED: the payload SHAPE comes from the column's own type, which sits
+    // one column away in atttypspec, so no width or field layout is stored. That is what makes it
+    // lossless for every type the codec carries, nested types included, rather than only for the
+    // ones somebody remembered to list in a switch. The payload does carry one logical tag byte
+    // per present value, purely as a check: it catches a SAME-WIDTH type divergence, which the
+    // shape alone cannot see.
     //
-    // Three states, all distinguishable. The previous flat-text form ("type_name:value")
-    // collapsed the last two into "no default", and dropped every type outside its switch:
+    // Three states, all distinguishable — a flat "type_name:value" form collapses the last two
+    // into "no default" and drops every type outside its switch:
     //   ""        no default at all
     //   "N"       an explicit DEFAULT NULL
     //   "V"<hex>  the encoded value
     //
-    // Rule 6: a value whose type the codec cannot carry is an ERROR, surfaced at CREATE
-    // TABLE / ALTER SET DEFAULT, never a silent "no default". Symmetrically, a non-empty
-    // spec that does not decode against `column_type` is catalog corruption and is
-    // reported as such — `out` is set to nullopt ONLY for a genuinely absent default.
+    // Rule 6: a value whose type the codec cannot carry is an ERROR, surfaced at CREATE TABLE /
+    // ALTER SET DEFAULT, never a silent "no default". Symmetrically, a non-empty spec that does
+    // not decode against `column_type` is catalog corruption and is reported as such — `out` is
+    // set to nullopt ONLY for a genuinely absent default.
     [[nodiscard]] core::error_t
     encode_default_spec(std::pmr::memory_resource* resource, const types::logical_value_t& v, std::string& out);
     [[nodiscard]] core::error_t decode_default_spec(std::pmr::memory_resource* resource,

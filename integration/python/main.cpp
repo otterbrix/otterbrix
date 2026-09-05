@@ -27,9 +27,8 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
     type_creation::initialize(m);
     py_expression_t::initialize(m);
     py_relation_t::initialize(m);
-    // py_result_t is what `OtterBrixPyConnection.execute` hands back. It was
-    // compiled but never registered, so the type existed and Python could not
-    // see it -- registering it here is what makes a result returnable at all.
+    // py_result_t is what `OtterBrixPyConnection.execute` hands back: compiling it is not
+    // enough, an unregistered type is one Python cannot hold.
     py_result_t::initialize(m);
     py_connection_t::initialize(m);
 

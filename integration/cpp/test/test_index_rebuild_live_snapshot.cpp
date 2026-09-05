@@ -4,7 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 
-// F2: LIVE (no-crash, no-restart) repro of the index-rebuild row_id shift.
+// LIVE (no-crash, no-restart) repro of the index-rebuild row_id shift.
 //
 // CHECKPOINT's index rebuild drains storage_fetch_next_batch under the checkpoint
 // statement's snapshot — a REGULAR, visibility-filtered scan that DROPS invisible

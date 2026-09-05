@@ -2,10 +2,10 @@
 
 // Test-side whole-table drain (the old data_table_t::scan_table_segment).
 //
-// A1 reduced the production disk-read contract to exactly two legs — streaming-by-predicate
-// (storage_fetch_next_batch) and point-by-row-id (storage_fetch) — and removed
-// storage_scan_segment, the method's only production consumer. The shadow-paging tests keep
-// it as the canonical "read the whole table back" idiom, so the body moved here VERBATIM
+// The production disk-read contract is exactly two legs — streaming-by-predicate
+// (storage_fetch_next_batch) and point-by-row-id (storage_fetch); storage_scan_segment, this
+// method's only production consumer, is gone. The shadow-paging tests keep it as the canonical
+// "read the whole table back" idiom, so the body lives here VERBATIM
 // (rebuilt on the public API: columns(), row_group()->initialize_scan_with_offset(),
 // table_scan_state::initialize(), scan_committed()); it must stay observationally identical
 // because the tests assert on the exact rows it yields.
@@ -51,7 +51,7 @@ namespace otterbrix_test {
 
         components::table::create_index_scan_state state(resource);
 
-        // The two halves of the old (private) data_table_t::initialize_scan_with_offset.
+        // The two halves of the private data_table_t::initialize_scan_with_offset.
         state.initialize(column_ids);
         collection->initialize_scan_with_offset(state.table_state,
                                                 column_ids,

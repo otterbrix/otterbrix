@@ -24,7 +24,7 @@ namespace components::table {
 #endif
 
     namespace {
-        // A7.3. The DISK block ids one persisted column-pointer tree names: its segments'
+        // The DISK block ids one persisted column-pointer tree names: its segments'
         // blocks plus, for a STRING segment, the separate blocks its big-string payloads were
         // moved into. Recursive, because a nested column keeps its payload in child nodes
         // (validity is always children[0]) and a flat walk would silently miss every one of
@@ -64,8 +64,8 @@ namespace components::table {
                     }
                 }
             }
-            // One physical block backs many segments (B2 packs a whole row group into a
-            // handful of 256 KiB blocks), so the raw walk repeats ids heavily. Dedup: the
+            // One physical block backs many segments (the checkpoint packs a whole row group
+            // into a handful of 256 KiB blocks), so the raw walk repeats ids heavily. Dedup: the
             // consumers are set-shaped and a repeated id would only cost work.
             std::sort(out.begin(), out.end());
             out.erase(std::unique(out.begin(), out.end()), out.end());
@@ -166,7 +166,7 @@ namespace components::table {
 
     const std::vector<column_definition_t>& data_table_t::columns() const { return column_definitions_; }
 
-    // RN-oid: the columns adopted here carry NO pg_attribute.attoid, and that is not an
+    // The columns adopted here carry NO pg_attribute.attoid, and that is not an
     // oversight. The assert says why — this only ever runs on a SCHEMA-LESS table, and the only
     // tables created schema-less are relkind='g' (computed) ones, whose columns are described by
     // pg_computed_column rather than pg_attribute. There is no attoid to adopt: the identity of a
@@ -311,10 +311,10 @@ namespace components::table {
                 state.table_state.scan(chunk);
                 // A scan failure must NOT look like the end of the table. collection_scan_state
                 // ::scan gives up on error AFTER templated_scan has already folded earlier
-                // vectors into `chunk`, so the next round hands back an empty one — which this
-                // loop used to read as "drained". It then swapped the TRUNCATED collection in
-                // and mark_as_free'd every block of the old one: the rows were gone and their
-                // blocks recycled, with compact still reporting success. Reachable on an
+                // vectors into `chunk`, so the next round hands back an empty one — reading
+                // that as "drained" swaps the TRUNCATED collection in and mark_as_free's every
+                // block of the old one: the rows are gone and their blocks recycled, with
+                // compact still reporting success. Reachable on an
                 // UNCORRUPTED database, because a buffer-pool OOM in initialize_scan lands in
                 // this same channel. Refuse the round instead; the caller treats false as
                 // "not compacted this time" and leaves the collection untouched.
@@ -341,43 +341,42 @@ namespace components::table {
 
         // Swap old collection with compacted one
         row_groups_ = std::move(new_collection);
-        // B6: the rebuild allocated FRESH blocks for every surviving row and released the
+        // The rebuild allocated FRESH blocks for every surviving row and released the
         // outgoing tree's, so the durable root no longer describes this table even when not a
         // single row was dead. A compact must be followed by a checkpoint, which is exactly why
         // checkpoint_inner is the only caller.
         mark_modified();
 
-        // Return the OLD (now-replaced) collection's disk blocks to the block manager's free list so the
-        // NEXT compact reuses them instead of bumping total_blocks() unbounded. The new collection's
-        // write-through already allocated FRESH ids (free list was
-        // empty / disjoint), so the old ids it frees are not referenced by row_groups_. The persisted free
-        // list survives checkpoint, so reclaimed space is durable. mark_as_free under the block manager's
-        // allocation lock; no live segment references the freed blocks (the old collection is being torn down).
+        // Return the OLD (now-replaced) collection's disk blocks to the block manager's free list so
+        // the NEXT compact reuses them instead of bumping total_blocks() unbounded. The new
+        // collection's write-through already allocated FRESH ids (the free list was empty /
+        // disjoint), so the old ids freed here are not referenced by row_groups_, and the persisted
+        // free list makes the reclaimed space durable across the checkpoint.
         //
-        // Each mark_as_free MUST be paired with unregister_block(id): returning the id to the free list while a
-        // live block_handle for that id lingers in the block manager's blocks_ registry is an ABA hazard -- a
-        // later free_block_id()/register_block() that reuses the id would resurrect the STALE handle (pointing at
-        // OLD data) instead of creating a fresh one. unregister_block drops only the registry's weak_ptr entry;
-        // the old collection's segments still own the block_handle objects.
+        // Each mark_as_free MUST be paired with unregister_block(id): returning the id to the free
+        // list while a live block_handle for it lingers in the registry is an ABA hazard -- a later
+        // free_block_id()/register_block() reusing the id would resurrect the STALE handle (pointing
+        // at OLD data). unregister_block drops only the registry's weak_ptr entry; the old
+        // collection's segments still own the block_handle objects.
         //
-        // ITEM C corrects what this comment used to claim about those objects' destructors. It said their later
-        // unregister_block was "a harmless no-op erase on an already-removed id" -- true only while nothing
-        // re-registered the id in between, and A7.2/A7.3 made re-registration the NORMAL case: the ids released
-        // here land in pending_free_, a committed header promotes them to reusable_, and the next round hands one
-        // back out and register_block()s a FRESH handle for it. A holder that outlives this swap (row_group()
-        // returns COUNTED collection copies BY VALUE, so the outgoing collection is destroyed when the LAST
-        // holder lets go, not at the swap) then destroyed the stale handle AFTER that, and the id-only erase
-        // took the LIVE handle's slot with it -- turning registry_alive(id) false while a live segment was still
-        // reading the block, which is exactly the subtraction reclaim_superseded_root relies on. The handle
-        // destructor's erase is now identity-checked (block_manager_t::unregister_block(block_handle_t&)), so it
-        // really is a no-op for a slot that belongs to someone else. The by-ID erase below is the deliberate one
-        // and stays: it is what makes the reuse safe in the first place.
+        // Those objects' destructors run LATER, and their unregister_block is NOT "a harmless no-op
+        // erase on an already-removed id": that holds only while nothing re-registers the id in
+        // between, and shadow paging makes re-registration the NORMAL case -- the ids released here
+        // land in pending_free_, a committed header promotes them to reusable_, and the next round
+        // hands one back out with a FRESH handle. A holder that outlives this swap (row_group()
+        // returns COUNTED collection copies BY VALUE, so the outgoing collection dies with the LAST
+        // holder, not at the swap) would then destroy the stale handle afterwards, and an id-only
+        // erase would take the LIVE handle's slot with it -- turning registry_alive(id) false while
+        // a live segment is still reading the block, which is the subtraction
+        // reclaim_superseded_root relies on. So the handle destructor's erase is identity-checked
+        // (block_manager_t::unregister_block(block_handle_t&)); the by-ID erase below is the
+        // deliberate one and stays, being what makes the reuse safe in the first place.
         if (old_collection) {
             auto& block_manager = old_collection->block_manager();
             std::pmr::vector<uint64_t> reclaimable{resource_};
             old_collection->collect_disk_block_ids(reclaimable);
-            // collect_disk_block_ids reports one id PER reloadable segment; B2 packs many segments into a
-            // single shared block, so the SAME block id appears multiple times. mark_as_free /
+            // collect_disk_block_ids reports one id PER reloadable segment; the checkpoint packs many segments
+            // into a single shared block, so the SAME block id appears multiple times. mark_as_free /
             // unregister_block must run ONCE per id (free_list_ is a set so a double mark_as_free is
             // idempotent, but unregister_block twice could race a reused id's fresh handle), so dedupe.
             std::sort(reclaimable.begin(), reclaimable.end());
@@ -795,7 +794,7 @@ namespace components::table {
             writer.write<uint32_t>(static_cast<uint32_t>(type_spec.size()));
             writer.write_data(type_spec.data(), type_spec.size());
             writer.write<uint8_t>(col.is_not_null() ? 1 : 0);
-            // RN-oid: the column's IDENTITY — pg_attribute.attoid — travels with the column,
+            // The column's IDENTITY — pg_attribute.attoid — travels with the column,
             // because the bootstrap reconciliation
             // (manager_disk_t::rearm_dropped_column_blocks_sync) has to decide "is this
             // storage column still described by the catalog?" and the NAME cannot answer it:
@@ -804,8 +803,8 @@ namespace components::table {
             // name-keyed answer reads that gap as a DROP and releases a surviving column's
             // blocks. The oid is stable across a rename, so the gap stops being observable.
             //
-            // main_header_t::CURRENT_VERSION is deliberately NOT bumped: the format is ours,
-            // this branch has no files predating the field, and rule 6 forbids carrying a
+            // main_header_t::CURRENT_VERSION is deliberately NOT bumped: the format is ours and
+            // pre-release, so no file predates the field, and rule 6 forbids carrying a
             // compatibility path for a state that does not exist.
             writer.write<uint32_t>(col.attoid());
         }
@@ -823,7 +822,7 @@ namespace components::table {
             return flush_r;
         }
 
-        // A7.3. Every block of the root under construction is now allocated and written, so
+        // Every block of the root under construction is now allocated and written, so
         // this is the earliest point at which the SUPERSEDED root can be taken down -- and it
         // has to be the LATEST one too: table_storage_t::checkpoint serializes the free list
         // immediately after this call, and that list is the new root's own statement about what
@@ -832,7 +831,7 @@ namespace components::table {
         // subtract against.
         //
         // The ids go to pending_free_, never to reusable_ (that is reclaim_superseded_root's
-        // job, composing with A7.2): until write_header commits, the root a crash recovers is
+        // job): until write_header commits, the root a crash recovers is
         // still root N and still reads every one of them.
         //
         // A no-op for the first checkpoint of a fresh file (no durable root yet).
@@ -867,7 +866,7 @@ namespace components::table {
             type_spec.resize(spec_size);
             reader.read_data(type_spec.data(), spec_size);
             auto not_null = reader.read<uint8_t>() != 0;
-            // RN-oid, the reading half. 0 here means the column was written by a path that
+            // The reading half of the attoid contract. 0 here means the column was written by a path that
             // never learned its pg_attribute.attoid; that is NOT refused at this boundary —
             // see the note on the writer, and manager_disk_t::rearm_dropped_column_blocks_sync
             // for where the refusal does live. Aborting a table LOAD over it would turn a
@@ -892,7 +891,7 @@ namespace components::table {
 
         uint64_t total_loaded_rows = 0;
         auto rg_count = reader.read<uint32_t>();
-        // A7.3: the LOADER defines what the durable root references. Collected here, out of the
+        // The LOADER defines what the durable root references. Collected here, out of the
         // very pointer stream the table is being built from, so the block manager's idea of
         // "root N's data blocks" is the loader's own answer and cannot drift from it.
         std::pmr::vector<uint64_t> durable_blocks(resource);
@@ -922,16 +921,16 @@ namespace components::table {
         }
 
         // Only now, with the stream proven whole: a half-read pointer list would hand the block
-        // manager a bogus "this is what root N owns" and A7.3 would reclaim live blocks off it.
+        // manager a bogus "this is what root N owns" and the reclaim would free live blocks off it.
         collect_root_blocks(loaded_pointers, durable_blocks);
         block_manager.adopt_durable_root_data_blocks(durable_blocks);
 
-        // B6: everything above was built out of the file's own pointer stream, so by definition
+        // Everything above was built out of the file's own pointer stream, so by definition
         // this table matches the file and a checkpoint would write it back unchanged. The flag
         // starts true for every construction — a table that was BUILT has never been written —
         // and this is the one point where "clean" is provable, so it is the one place that
         // clears it outside a committed checkpoint. Without it the first round after any
-        // restart rewrote every table in the database.
+        // restart rewrites every table in the database.
         table->clear_modified_since_checkpoint();
         return table;
     }

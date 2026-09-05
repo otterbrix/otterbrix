@@ -1,8 +1,9 @@
-// A7.7 — give back what a FAILED round took, and NOTHING else.
+// Give back what a FAILED round took, and NOTHING else.
 //
-// A7.1 gave the file a real two-slot header, A7.2 split the free pool so a block the durable
-// root still names can never be reissued, and A7.3 took the SUPERSEDED root down so an
-// UNCHANGED table became a closed cycle. What none of them covers is the round that FAILS.
+// Shadow paging covers the round that SUCCEEDS: the two-slot header keeps the previous root, the
+// split free pool keeps a block the durable root still names from being reissued, and the
+// superseded-root reclaim makes an UNCHANGED table a closed cycle. None of that covers the round
+// that FAILS.
 //
 // A checkpoint round allocates three kinds of block before it commits:
 //   * the PACKED COPY the checkpointer writes through partial_block_manager_t (a fresh copy of
@@ -12,19 +13,18 @@
 // None of the three is registered in the block registry — metadata_manager_t and
 // partial_block_manager_t hold raw block_t buffers and never call register_block — so when the
 // header write fails, no root names them and nothing in memory reaches them either. They sit in
-// used_blocks_ / issued_since_root_ forever. Measured on this tree: ~655 KB per round on a
-// 7.8 MB table, for as long as the failure persists, while storage_degraded() stays false
+// used_blocks_ / issued_since_root_ forever. Measured on this tree: ~655 KB per round on a 7.8 MB
+// table, for as long as the failure persists, while storage_degraded() stays false
 // (reconcile_failed_header_write case 2 deliberately does not latch, so a transient ENOSPC can
 // still recover).
 //
-// The naive fix is CORRUPTION and the code says so at single_file_block_manager.cpp "WHY NOT
-// ROLL BACK": the same round ALSO allocates blocks the in-memory tree now depends on —
-// data_table_t::compact swaps row_groups_ to a rebuilt collection whose write-through allocated
-// ids, and column_data_t::checkpoint re-points the still-managed live tail segments onto blocks
-// from a fresh partial_block_manager. Both of those go through
-// column_data_t::transition_segment_to_disk, which DOES register_block() the id and hands the
-// handle to the live column_segment_t. So the discriminator is exactly the one A7.3's formula
-// already uses: registry_alive(id).
+// The naive fix is CORRUPTION, and single_file_block_manager.cpp says so at "WHY NOT ROLL BACK":
+// the same round ALSO allocates blocks the in-memory tree now depends on — data_table_t::compact
+// swaps row_groups_ to a rebuilt collection whose write-through allocated ids, and
+// column_data_t::checkpoint re-points the still-managed live tail segments onto blocks from a
+// fresh partial_block_manager. Both go through column_data_t::transition_segment_to_disk, which
+// DOES register_block() the id and hands the handle to the live column_segment_t. So the
+// discriminator is the one the reclaim formula already uses: registry_alive(id).
 //
 //   releasable = issued_since_root_ - {ids live in the block registry}
 //
@@ -205,7 +205,7 @@ namespace {
         return seen;
     }
 
-    // Build a table, drive it to the A7.3 steady state (an unchanged table is a closed cycle
+    // Build a table, drive it to the steady state (an unchanged table is a closed cycle
     // from the third round on) and leave the manager open at that point.
     struct steady_state_t {
         std::unique_ptr<data_table_t> table;
@@ -285,9 +285,9 @@ TEST_CASE("failed_round: PROBE the residual of a persistent header-write failure
 }
 
 // ---------------------------------------------------------------------------------------
-// A7.7 GATE 1 — N injected header-write failures in a row do not grow the file.
+// GATE 1 — N injected header-write failures in a row do not grow the file.
 //
-// RED before the rollback: each failed round spends a fresh packed copy + metadata chain +
+// Without the rollback: each failed round spends a fresh packed copy + metadata chain +
 // free-list chain and releases none of it, so once the free pool a committed round left behind
 // runs dry the file extends by a full round's worth EVERY round, forever, with degraded()
 // false the whole time.
@@ -322,7 +322,7 @@ TEST_CASE("failed_round: repeated header-write failures do not grow the file", "
 }
 
 // ---------------------------------------------------------------------------------------
-// A7.7 GATE 2 — THE DISCRIMINATION. Every id a failed round issued ends up on exactly one of
+// GATE 2 — THE DISCRIMINATION. Every id a failed round issued ends up on exactly one of
 // two sides, and which side is decided by the block registry:
 //   * registry-alive  -> KEPT (the rebuilt collection, a re-pointed live tail segment);
 //   * not registry-alive -> RELEASED, and into reusable_, never pending_free_.
@@ -408,15 +408,15 @@ TEST_CASE("failed_round: the rollback gives back only what the live tree does no
 }
 
 // ---------------------------------------------------------------------------------------
-// A7.7 GATE 2b — THE PREMISE, MEASURED. "Allocated for the root under construction" and
+// GATE 2b — THE PREMISE, MEASURED. "Allocated for the root under construction" and
 // "already released" DO intersect, and the rollback's pending_free_.erase is load-bearing
 // TODAY rather than future-proofing.
 //
-// The rollback's own note used to claim the opposite ("an id this round allocated cannot be in
-// pending_free_ today"), reasoning from free_block_id drawing only from reusable_. That
-// reasoning is about ONE round. issued_since_root_ spans every round since the last COMMITTED
-// header, and a compaction inside a later one releases the collection an EARLIER failed round
-// built — ids that are still in issued_since_root_ because no header ever promoted them out.
+// "An id this round allocated cannot be in pending_free_" reasons from free_block_id drawing
+// only from reusable_, and that reasoning is about ONE round. issued_since_root_ spans every
+// round since the last COMMITTED header, and a compaction inside a later one releases the
+// collection an EARLIER failed round built — ids that are still in issued_since_root_ because
+// no header ever promoted them out.
 //
 // Two failed compacting rounds are the smallest shape that produces it, and it is the ordinary
 // one: agent_disk retries, and a retry that is allowed to compact rebuilds again.
@@ -460,10 +460,9 @@ TEST_CASE("failed_round: a later round's compaction releases ids the round journ
                                                << " intersection=" << overlap.size());
     CHECK_FALSE(overlap.empty());
 
-    // ...and the rollback of round 2 puts every one of them on exactly one side, with the
-    // erase doing the work the old note said was unnecessary: released ids move OUT of
-    // pending_free_ into reusable_ (root N cannot name them, so quarantining them would strand
-    // the space until a commit that is not coming), and kept ids stay quarantined.
+    // ...and the rollback of round 2 puts every one of them on exactly one side: released ids
+    // move OUT of pending_free_ into reusable_ (root N cannot name them, so quarantining them
+    // would strand the space until a commit that is not coming), and kept ids stay quarantined.
     REQUIRE_FALSE(checkpoint_round(bm, *steady.table, &plan, true).committed);
     const auto reusable_after = bm.dev_reusable_snapshot();
     const auto pending_after = bm.dev_pending_free_snapshot();
@@ -484,7 +483,7 @@ TEST_CASE("failed_round: a later round's compaction releases ids the round journ
 }
 
 // ---------------------------------------------------------------------------------------
-// A7.7 GATE 3 — the reachability walker reports ZERO unexplained after a failed round.
+// GATE 3 — the reachability walker reports ZERO unexplained after a failed round.
 //
 // The walker classifies every id below the file's high-water mark as durable-chain /
 // durable-data / registry-live / durably-free, and calls anything else unexplained. Before the
@@ -537,7 +536,7 @@ TEST_CASE("failed_round: the walker reports zero unexplained after a failed roun
 }
 
 // ---------------------------------------------------------------------------------------
-// A7.7 GATE 4 — a TRANSIENT failure still recovers. The rollback must not have taken anything
+// GATE 4 — a TRANSIENT failure still recovers. The rollback must not have taken anything
 // the next round needs, and the round after the failure must commit and reload correctly from
 // a FRESH manager (i.e. from the file, not from this process's memory).
 // ---------------------------------------------------------------------------------------
@@ -590,7 +589,7 @@ TEST_CASE("failed_round: a transient header-write failure still recovers", "[a7.
 }
 
 // ---------------------------------------------------------------------------------------
-// A7.7 GATE 5 — THE SAFETY HALF. When the header write leaves the durable root INDETERMINATE,
+// GATE 5 — THE SAFETY HALF. When the header write leaves the durable root INDETERMINATE,
 // the rollback must refuse outright.
 //
 // A torn header write can leave a CRC-VALID header of the NEW generation on the device while
@@ -598,7 +597,7 @@ TEST_CASE("failed_round: a transient header-write failure still recovers", "[a7.
 // 48, i.e. inside the first hardware sector, and the padding is zeros in both). If the fsync
 // also failed, the read-back cannot say whether that slot reached the device — so the new root
 // MAY be the one a crash recovers, and it names every block this round allocated. Giving them
-// back to the allocator would be exactly the corruption A7.2/A7.3 exist to prevent.
+// back to the allocator would be exactly the corruption shadow paging exists to prevent.
 //
 // The gate proves both halves: nothing is released, and the file really does reopen on that
 // new root with its data intact — which is what makes "do not release" the only correct answer.

@@ -1,20 +1,16 @@
 #pragma once
 
-// THE ORDERED FAMILY'S AGENT, AND THE WHOLE ORDERED INDEX. It holds a
-// btree_index_disk_t BY VALUE AND BY ITS CONCRETE TYPE -- the store is a member, not a
-// pointee -- so every question the erased agent used to ask its backend at runtime --
-// does this backend own a txn log? does it have a bulk window to open? can it answer an
-// ordered probe? -- is answered here by the type instead. See
-// bitcask_index_agent.hpp for the hashed twin; the two are deliberately separate bodies,
-// and index_agent_contract.hpp says why.
+// THE ORDERED FAMILY'S AGENT, AND THE WHOLE ORDERED INDEX. It holds a btree_index_disk_t BY VALUE
+// AND BY ITS CONCRETE TYPE -- the store is a member, not a pointee -- so every question an erased
+// agent would have to ask its backend at runtime (does this backend own a txn log? does it have a
+// bulk window to open? can it answer an ordered probe?) is answered here by the type instead. See
+// bitcask_index_agent.hpp for the hashed twin; the two are deliberately separate bodies, and
+// index_agent_contract.hpp says why.
 //
-// IT ALSO HOLDS THE UNCOMMITTED HALF. What used to be disk_ordered_single_field_index_t --
-// a "facade" registered in a per-table index registry above the mailbox, whose seven
-// read/write doors all aborted because it had neither data nor a search -- was never an
-// index. It was a BUFFER of this transaction's not-yet-durable writes, sitting in a
-// different actor from the tree those writes belong to, so the two halves of one answer
-// had to be stitched together after the read came back. The buffer is here now, beside
-// the tree, and read_rows below returns both halves already merged.
+// IT ALSO HOLDS THE UNCOMMITTED HALF: the BUFFER of this transaction's not-yet-durable writes.
+// Keeping that buffer in a different actor from the tree those writes belong to means the two
+// halves of one answer have to be stitched together after the read comes back. It sits beside the
+// tree instead, and read_rows below returns both halves already merged.
 
 #include "btree_index_disk.hpp"
 #include "index_agent_contract.hpp"
@@ -65,18 +61,14 @@ namespace services::index {
         // sizeof(static type).
         using agent_ptr_t = std::unique_ptr<btree_index_agent_t, actor_zeta::pmr::deleter_t>;
 
-        // WHICH BACKEND THIS FAMILY IS, as a compile-time constant of the class.
+        // WHICH BACKEND THIS FAMILY IS, as a compile-time constant of the class. manager_index_t
+        // copies it into the record it keeps per index and publishes it to the planner through
+        // all_indexed_descriptions -> context_storage_t; that is the ONLY thing that tells an
+        // ordered index from a hashed one OVER THE SAME COLUMN, which is a legal pair.
         //
-        // It replaces index_t::type(), a virtual accessor on a per-index object, and it
-        // must not be lost with it: manager_index_t copies this into the record it keeps
-        // per index and publishes it to the planner through all_indexed_descriptions ->
-        // context_storage_t. That is the ONLY thing that tells an ordered index from a
-        // hashed one OVER THE SAME COLUMN, which is a legal pair.
-        //
-        // `single` rather than the catalog's own word, and that is deliberate parity with
-        // the facade this replaces: SQL has exactly one explicit spelling, `USING hash`,
-        // and everything else (composite / multikey / wildcard / no USING clause at all)
-        // is built by this family and published as `single`.
+        // `single` rather than the catalog's own word: SQL has exactly one explicit spelling,
+        // `USING hash`, and everything else (composite / multikey / wildcard / no USING clause at
+        // all) is built by this family and published as `single`.
         static constexpr components::logical_plan::index_type index_type_v =
             components::logical_plan::index_type::single;
 
@@ -87,15 +79,15 @@ namespace services::index {
         // manager reads it to decide whether a range may be dispatched.
         static constexpr bool supports_ordered_probe_v = true;
 
-        // THE DOOR, and the same shape as the hashed family's: an agent, or the reason its
-        // tree could not be opened, as a VALUE. The agent opens its own backing (rule 10):
-        // the open runs in this function, in this translation unit, and nothing is created
-        // at a spawn site and handed across.
+        // THE DOOR, and the same shape as the hashed family's: an agent, or the reason its tree
+        // could not be opened, as a VALUE. The agent opens its own backing (rule 10): the open runs
+        // in this function, in this translation unit, and nothing is created at a spawn site and
+        // handed across.
         //
         // What is MISSING from this parameter list is the specialization: there is no
-        // segment-record limit (the ordered store has no segments) and no WAL committed-txn
-        // set (it owns no txn log, so there is no recover gate to arm). Those belong to the
-        // hashed family alone and its factory is the only one that takes them.
+        // segment-record limit (the ordered store has no segments) and no WAL committed-txn set (it
+        // owns no txn log, so there is no recover gate to arm). Those belong to the hashed family
+        // alone.
         //
         // index_oid = pg_index.indexrelid; the agent's on-disk directory is
         // ${path_db}/${table_oid}/${index_oid}/ -- oid-keyed, never name-keyed.
@@ -106,18 +98,17 @@ namespace services::index {
                                                                         uint64_t flush_threshold,
                                                                         log_t& log);
 
-        // BUILDS THE TREE, it does not receive one. The store is a member BY VALUE and
-        // cannot be moved into place (btree_index_disk_t's deleted copy ctor suppresses the
-        // implicit move), so what crosses this signature is the store's PARAMETERS and the
-        // store is opened in the member initializer list.
+        // BUILDS THE TREE, it does not receive one. The store is a member BY VALUE and cannot be
+        // moved into place (btree_index_disk_t's deleted copy ctor suppresses the implicit move),
+        // so what crosses this signature is the store's PARAMETERS and the store is opened in the
+        // member initializer list.
         //
-        // NO DEFERRED OPEN HERE, and the asymmetry with the hashed family is the point.
-        // That family splits construction from open() because its open can FAIL and rule 2
-        // forbids a constructor from refusing. This one's cannot: btree_t::load() returns
-        // void and takes the process down inside the buffer pool on a failure it cannot
-        // report. Adding an open() that could only ever answer no_error() would be
-        // inventing a failure to make the shapes match -- the same thing create() above
-        // declines to do -- so the tree simply opens where it is built.
+        // NO DEFERRED OPEN HERE, and the asymmetry with the hashed family is the point. That family
+        // splits construction from open() because its open can FAIL and rule 2 forbids a
+        // constructor from refusing. This one has nothing to return: btree_t::load() is void, and a
+        // load failure is recorded on the tree's own channel and refused by the first operation
+        // that consults it (btree_index_disk.cpp). An open() that could only ever answer no_error()
+        // would be inventing a failure to make the shapes match.
         //
         // Public because actor_zeta::spawn placement-news the actor.
         btree_index_agent_t(std::pmr::memory_resource* resource,
@@ -178,19 +169,16 @@ namespace services::index {
         // THE UNCOMMITTED HALF, in per-transaction buckets.
         //
         // A pending entry keeps its key ENCODED, in the b+tree's own record format
-        // (codec::append_logical_value). Two reasons, both load-bearing:
-        //   * the comparison that decides whether a staged key satisfies the probe must be
-        //     the SAME comparison the tree used for the committed half, and
-        //     codec::read_logical_value_as_view decodes exactly these bytes into the
-        //     physical_value the tree orders by. Comparing logical_value_t instead would
-        //     need a cast into one type domain, and logical_value_t::operator< asserts both
-        //     sides carry the same type;
-        //   * the encoding is what the store's own key getter reads, so a staged key and a
-        //     committed key are the same kind of value by construction.
+        // (codec::append_logical_value). Two reasons, both load-bearing: the comparison that
+        // decides whether a staged key satisfies the probe must be the SAME comparison the tree
+        // used for the committed half, and codec::read_logical_value_as_view decodes exactly these
+        // bytes into the physical_value the tree orders by (comparing logical_value_t instead would
+        // need a cast into one type domain, and logical_value_t::operator< asserts both sides carry
+        // the same type); and the encoding is what the store's own key getter reads, so a staged
+        // key and a committed key are the same kind of value by construction.
         //
-        // Bucket 0 is "committed for everyone but not yet durable" -- the rebuild feeds
-        // stage into it and commit_inserts publishes it alongside whatever transaction is
-        // committing.
+        // Bucket 0 is "committed for everyone but not yet durable" -- the rebuild feeds stage into
+        // it and commit_inserts publishes it alongside whatever transaction is committing.
         using pending_row_t = std::pair<std::pmr::string, int64_t>;
         using pending_rows_t = std::pmr::vector<pending_row_t>;
         using pending_txn_map_t = std::pmr::unordered_map<uint64_t, pending_rows_t>;

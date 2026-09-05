@@ -333,7 +333,7 @@ namespace components::planner::optimizer {
             // [group keys..., join key (if added), partial aggregates...]. The node
             // still carried the base table's full column list, and BOTH lowerings
             // treat that stamp as the authoritative output layout —
-            // create_plan_aggregate forwards it into operator_group's output_types_
+            // create_plan_aggregate forwards it into operator_hash_group's output_types_
             // and into the pushed reduce spec, either of which then types the
             // partial extremum column with whatever base column happens to sit at
             // the same ordinal (wrong type whenever the ordinals do not coincide).

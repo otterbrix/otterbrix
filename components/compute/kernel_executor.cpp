@@ -207,10 +207,10 @@ namespace components::compute::detail {
         }
 
     private:
-        // The produced vectors are a scratch buffer of ONE call, so the caller owns them. They
-        // used to live in a member that nothing cleared, and every overload read its front():
-        // an executor is cached per function node and driven chunk after chunk, so the second
-        // chunk was answered with the moved-from remains of the first.
+        // The produced vectors are a scratch buffer of ONE call, so the caller owns them and
+        // they must not live in a member: an executor is cached per function node and driven
+        // chunk after chunk, so a member nothing clears answers the second chunk with the
+        // moved-from remains of the first.
         core::error_t execute_batch(const data_chunk_t& inputs, std::pmr::vector<vector_t>& results) {
             auto output = prepare_vector_output(inputs.size());
             if (auto st = kernel().execute(kernel_ctx(), inputs, output); st.contains_error()) {
@@ -337,9 +337,9 @@ namespace components::compute::detail {
     private:
         // The row_kernel contract is exactly one scalar per row, and it is FOREIGN code that has
         // to honour it: a UDF in this project is a row_function carrying a user-supplied
-        // row_exec_fn. A break used to be swallowed right here - a row the kernel left empty was
-        // skipped, surplus values past front() were dropped - so `results` came back shorter than
-        // the chunk while the call still reported success. execution_dag walks that vector by row
+        // row_exec_fn. A break must not be swallowed here - skipping a row the kernel left
+        // empty, or dropping surplus values past front(), makes `results` come back shorter than
+        // the chunk while the call still reports success. execution_dag walks that vector by row
         // index and only guards it with an assert(), so under -DNDEBUG the rows the kernel never
         // answered keep whatever the output vector held before. Refuse, loudly and by row.
         core::error_t execute_chunk(const data_chunk_t& chunk, std::pmr::vector<logical_value_t>& results) {

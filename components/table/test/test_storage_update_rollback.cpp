@@ -5,9 +5,9 @@
 // It is NOT the path a SQL UPDATE takes. A user UPDATE reaches
 // components/storage/table_storage_adapter.hpp's THREE-argument update(row_ids, data, txn),
 // which is delete-stamp + append (see the comment there and
-// integration/cpp/test/test_sql_features.cpp:3161, where BEGIN/UPDATE/ROLLBACK restores the
+// integration/cpp/test/test_sql_features.cpp, where BEGIN/UPDATE/ROLLBACK restores the
 // old value). The two-argument overload measured here is reached from
-// services/disk/agent_disk.cpp:344 (direct_update_sync: WAL replay and the pg_attribute
+// services/disk/agent_disk.cpp (direct_update_sync: WAL replay and the pg_attribute
 // patches) only.
 //
 // The two cases below assert what a version-chained update WOULD do and are tagged
@@ -81,7 +81,7 @@ namespace {
 
     // The in-place overlay write. Note what the signature CANNOT carry: a transaction id.
     // That is the whole of the write-write story -- there is nothing to compare a conflicting
-    // writer against (components/table/data_table.hpp:102-104).
+    // writer against (components/table/data_table.hpp).
     core::result_wrapper_t<std::pair<int64_t, uint64_t>>
     update_in_place(data_table_t& table, update_env& env, int64_t row_id, int64_t new_value) {
         auto types = table.copy_types();
@@ -110,7 +110,7 @@ namespace {
 } // anonymous namespace
 
 // A reader whose snapshot predates the write must not see it. update_info_t carries no
-// transaction or commit stamp (components/table/update_segment.hpp:152-159), so the overlay
+// transaction or commit stamp (components/table/update_segment.hpp), so the overlay
 // is published to every reader the instant update() returns.
 TEST_CASE("components::table::update_segment::snapshot_predating_an_in_place_update_still_reads_the_old_value",
           "[!shouldfail]") {
@@ -157,7 +157,7 @@ TEST_CASE("components::table::update_segment::an_abandoned_in_place_update_leave
 
 // The ONE conflict this path can actually see: not writer-vs-writer (nothing on it carries a
 // transaction id) but writer-vs-DDL. append_lock refuses on a table an ALTER has superseded
-// (data_table.cpp:558) and update_column refuses on the same predicate (data_table.cpp:739);
+// (data_table.cpp) and update_column refuses on the same predicate (data_table.cpp);
 // update() did neither, so an in-place update of a superseded table wrote into a collection
 // no reader would ever open again -- a lost write, reported as success.
 TEST_CASE("components::table::update_segment::updating_a_superseded_table_is_refused") {

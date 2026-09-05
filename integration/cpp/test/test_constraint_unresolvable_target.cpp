@@ -15,31 +15,28 @@
 //
 //   (2) `FOREIGN KEY (nosuchcol)` / `REFERENCES parent (nosuchcol)` — the
 //       column-name → attoid loops in enrich appended nothing for a name that
-//       matched nothing, leaving conkey / confkey SHORTER than what the user
-//       wrote. At length 0 the constraint enforces nothing; shorter than
-//       declared it enforces a DIFFERENT constraint, because both lists are
-//       read positionally from there on.
+//       matched nothing, leaving conkey / confkey SHORTER than declared. At
+//       length 0 the constraint enforces nothing; shorter than declared it
+//       enforces a DIFFERENT constraint, because both lists are read
+//       positionally from there on.
 //
-//   (3) `UNIQUE (nosuchcol)` / `PRIMARY KEY (nosuchcol)` — the same enrich
-//       loop, the same silence: an empty conkey is never even decoded by
-//       operator_resolve_constraint (it skips empty groups), so the declared
-//       key does not exist.
+//   (3) `UNIQUE (nosuchcol)` / `PRIMARY KEY (nosuchcol)` — the same enrich loop,
+//       the same silence: an empty conkey is never even decoded by
+//       operator_resolve_constraint (it skips empty groups).
 //
-//   (4) UNIQUE / PRIMARY KEY on a dynamic-schema (relkind='g') table. This one
-//       resolves at DDL time and dies at DML time: a schemaless table has NO
-//       pg_attribute rows — its columns live in pg_computed_column, with
-//       attoids from a different sequence — so conkey holds attoids that the
-//       resolve step's pg_attribute read can never match. The group was then
-//       dropped from the constraint set without a word, and duplicates went
-//       straight in under a declared UNIQUE. FOREIGN KEY and CHECK are already
-//       refused on such tables for exactly this reason (stable attoids); the
-//       key constraints were not.
+//   (4) UNIQUE / PRIMARY KEY on a dynamic-schema (relkind='g') table: resolves at
+//       DDL time and dies at DML time. A schemaless table has NO pg_attribute
+//       rows — its columns live in pg_computed_column, with attoids from a
+//       different sequence — so conkey holds attoids the resolve step's
+//       pg_attribute read can never match. The group was dropped from the
+//       constraint set without a word, and duplicates went straight in under a
+//       declared UNIQUE. FOREIGN KEY and CHECK are already refused on such tables
+//       for exactly this reason (stable attoids); the key constraints were not.
 //
-// The last case is also the one reachable route into the UNIQUE/PK group-drop
-// in operator_resolve_constraint. With it refused at DDL, that drop becomes a
-// last line of defence for a catalog already holding such a row — so the loud
-// guard there is watched by the success-path sentinel at the bottom of this
-// file.
+// The last case is also the one reachable route into the UNIQUE/PK group-drop in
+// operator_resolve_constraint. With it refused at DDL that drop becomes a last
+// line of defence for a catalog already holding such a row — so the loud guard
+// there is watched by the success-path sentinel at the bottom of this file.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -200,7 +197,7 @@ TEST_CASE("integration::cpp::constraint_unresolvable_target::unique_partially_re
 // (4) UNIQUE on a dynamic-schema (relkind='g') table. Its columns live in
 // pg_computed_column, so the attoids enrich writes into conkey are from a
 // different sequence than the pg_attribute rows the resolve step reads — the
-// group can never be matched and used to be dropped in silence.
+// group can never be matched, so it must not be dropped in silence.
 //
 // The assertion is deliberately on the PAIR, not on which half gives: what must
 // never happen is "the DDL is accepted AND the duplicate goes in". Refusing the

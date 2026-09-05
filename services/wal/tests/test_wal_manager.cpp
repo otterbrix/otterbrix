@@ -448,7 +448,7 @@ TEST_CASE("wal_manager::sync_addresses") {
 //     This covers only the no-disk early-return consistency. The full
 //     checkpoint_all -> truncate_before chain needs a disk manager holding a
 //     checkpointable DISK storage (checkpoint_all returns 0 unless an agent
-//     actually checkpoints a DISK entry, manager_disk_io.cpp:76-91), which
+//     actually checkpoints a DISK entry, manager_disk_t::checkpoint_all), which
 //     requires the executor create_storage pipeline and is exercised by the
 //     dispatcher/disk integration fixtures, not this WAL-manager unit fixture.
 // ===========================================================================

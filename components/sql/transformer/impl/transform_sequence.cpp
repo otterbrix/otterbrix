@@ -10,26 +10,21 @@ namespace components::sql::transform {
 
     namespace {
 
-        // THE defect. A sequence bound is an int64, and the parse tree keeps it in one
-        // of TWO places. `NumericOnly` (gram.y) builds a T_Integer for an int32-sized
-        // literal and a T_Float for everything else — including a plain integer that
-        // does not fit int32, because scan.l's process_integer_literal deliberately
-        // hands those out as FCONST carrying the ORIGINAL DIGITS rather than truncating
-        // them. T_Integer keeps its payload in `val.ival`, T_Float in `val.str`, and the
-        // two are the same union slot: calling intVal() without looking at the tag reads
-        // a char* AS A NUMBER. `MAXVALUE 9223372036854775807` and `START WITH
-        // 5000000000` — ordinary, correct SQL — therefore persisted the ADDRESS of the
-        // literal's text into the catalog as the sequence bound, a different number on
-        // every run. (Same shape as the CAST-over-a-non-constant read on this branch:
-        // pick the union member by node tag, never by assumption.)
+        // A sequence bound is an int64, and the parse tree keeps it in one of TWO places.
+        // `NumericOnly` (gram.y) builds a T_Integer for an int32-sized literal and a T_Float for
+        // everything else — including a plain integer that does not fit int32, because scan.l's
+        // process_integer_literal deliberately hands those out as FCONST carrying the ORIGINAL
+        // DIGITS rather than truncating them. T_Integer keeps its payload in `val.ival`, T_Float
+        // in `val.str`, and the two are the same union slot: calling intVal() without looking at
+        // the tag reads a char* AS A NUMBER. `MAXVALUE 9223372036854775807` and `START WITH
+        // 5000000000` — ordinary, correct SQL — therefore persisted the ADDRESS of the literal's
+        // text into the catalog as the sequence bound, a different number on every run.
         //
-        // Reading a digits-only T_Float back as an exact integer, and refusing anything
-        // else, is PostgreSQL's own rule for these options (defGetInt64 runs the FCONST
-        // text through int8in): `MAXVALUE 9223372036854775807` is accepted and `START
-        // WITH 1.5` is an error rather than a silent truncation to 1. Rounding was the
-        // alternative and it is the wrong one — a bound is the exact edge of the value
-        // space the sequence may hand out, so quietly moving it is the same class of
-        // silent wrong answer this function is being repaired for.
+        // Reading a digits-only T_Float back as an exact integer, and refusing anything else, is
+        // PostgreSQL's own rule for these options (defGetInt64 runs the FCONST text through
+        // int8in): `MAXVALUE 9223372036854775807` is accepted and `START WITH 1.5` is an error
+        // rather than a silent truncation to 1. A bound is the exact edge of the value space the
+        // sequence may hand out, so rounding it would be a silent wrong answer.
         core::result_wrapper_t<int64_t>
         sequence_bound(std::pmr::memory_resource* resource, std::string_view option, Node* arg) {
             if (nodeTag(arg) == T_Integer) {
@@ -89,12 +84,12 @@ namespace components::sql::transform {
 
         if (node.options) {
             // Every SeqOptElem the grammar can hand over, BY NAME, with a loud refusal
-            // for what create_sequence cannot carry (rule 6). The old loop read the four
-            // bounds and dropped everything else without a word — most damningly CYCLE:
-            // the node has no cycle field and the planner hard-codes cycle=false, so a
-            // sequence declared CYCLE was created NO CYCLE and reported success. The
-            // grammar's full name list lives in SeqOptElem (gram.y): cache, cycle,
-            // increment, maxvalue, minvalue, owned_by, start, restart.
+            // for what create_sequence cannot carry (rule 6). Reading only the four bounds
+            // and dropping the rest without a word is what makes a sequence declared CYCLE
+            // get created NO CYCLE and report success — the node has no cycle field and the
+            // planner hard-codes cycle=false. The grammar's full name list lives in
+            // SeqOptElem (gram.y): cache, cycle, increment, maxvalue, minvalue, owned_by,
+            // start, restart.
             for (auto data : node.options->lst) {
                 auto def = pg_ptr_cast<DefElem>(data.data);
                 if (!def->defname) {

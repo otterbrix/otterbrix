@@ -2,25 +2,25 @@
 //
 // Three defects meet in this file.
 //
-// [D1] The view body used to be reconstructed by searching the raw SQL for the
-//      substring " AS " and defaulting to "SELECT *" when the search missed. A
-//      newline after AS, or `AS(SELECT ...)`, was enough: CREATE VIEW reported
-//      SUCCESS and pg_rewrite.ev_action received a query the user never wrote.
-//      The body is re-parsed on every read, so the stored text IS the semantics.
+// [D1] The stored body IS the semantics — it is re-parsed on every read. A body
+//      reconstructed by searching the raw SQL for the substring " AS " (and
+//      defaulting to "SELECT *" when the search misses) breaks on a newline after
+//      AS or on `AS(SELECT ...)`: CREATE VIEW reports SUCCESS and
+//      pg_rewrite.ev_action holds a query the user never wrote.
 //
-// [D2] Expansion used to REPLACE THE WHOLE PLAN with the view body
-//      (`plan.sub_queries.back() = std::move(expanded_plan)`). Anything built
-//      above the view — an outer WHERE, a narrowed projection, an aggregate, a
-//      join — was silently dropped, and the user got the unfiltered body back as
-//      a successful answer. That is a wrong answer, not a missing feature, which
-//      is why every case below checks CONTENT (rows / columns / values) rather
-//      than cursor status.
+// [D2] Expansion must SPLICE the view body under whatever is built above it.
+//      Replacing the whole plan with the body
+//      (`plan.sub_queries.back() = std::move(expanded_plan)`) drops the outer
+//      WHERE, the narrowed projection, the aggregate, the join, and hands back the
+//      unfiltered body as a successful answer. That is a wrong answer, not a
+//      missing feature, which is why every case below checks CONTENT (rows /
+//      columns / values) rather than cursor status.
 //
-// [D3] CREATE MATERIALIZED VIEW reported success and never populated anything,
-//      because nothing in the pipeline populates a matview at CREATE time and
-//      REFRESH MATERIALIZED VIEW is not lowered either. The implicit (PostgreSQL
-//      default) WITH DATA form is now refused loudly; WITH NO DATA still creates
-//      the empty matview it names.
+// [D3] CREATE MATERIALIZED VIEW cannot populate anything: nothing in the pipeline
+//      populates a matview at CREATE time and REFRESH MATERIALIZED VIEW is not
+//      lowered either. The implicit (PostgreSQL default) WITH DATA form is
+//      therefore refused loudly; WITH NO DATA still creates the empty matview it
+//      names.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -103,7 +103,7 @@ namespace {
 
 } // namespace
 
-// [D2/T1] A narrowed projection over a view returns the columns the OUTER query
+// [D2] A narrowed projection over a view returns the columns the OUTER query
 // asked for. The whole-plan replacement returned the body's two columns instead
 // — the behaviour test_jsonb_support::view_over_navigation used to describe in a
 // comment ("a narrowed projection over the view is ignored") without pinning it.
@@ -120,7 +120,7 @@ TEST_CASE("integration::cpp::test_view_expansion::narrowed_projection_over_view"
     CHECK(aliases(cur) == std::set<std::string>{"col_a"});
 }
 
-// [D2/T2] An outer WHERE over a view filters the view's rows. The replacement
+// [D2] An outer WHERE over a view filters the view's rows. The replacement
 // dropped the outer predicate and answered with the body's own row set.
 TEST_CASE("integration::cpp::test_view_expansion::outer_where_over_view") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/where"));
@@ -134,7 +134,7 @@ TEST_CASE("integration::cpp::test_view_expansion::outer_where_over_view") {
     CHECK(str_set(cur, "col_a") == std::set<std::string>{"c"});
 }
 
-// [D2/T3] An aggregate over a view aggregates the view's rows. The replacement
+// [D2] An aggregate over a view aggregates the view's rows. The replacement
 // dropped the aggregate entirely and returned the body's rows.
 TEST_CASE("integration::cpp::test_view_expansion::aggregate_over_view") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/aggregate"));
@@ -148,7 +148,7 @@ TEST_CASE("integration::cpp::test_view_expansion::aggregate_over_view") {
     CHECK(cur->chunks().front().get_value<int64_t>(col_of(cur, "n"), 0) == 2);
 }
 
-// [D2/T4] The view's own constant survives the outer query's constant.
+// [D2] The view's own constant survives the outer query's constant.
 //
 // Both plans number their bound parameters from zero (parameter_node_t::counter_
 // is per node), so merging the body's parameter map into the outer plan's under
@@ -171,7 +171,7 @@ TEST_CASE("integration::cpp::test_view_expansion::view_constant_not_clobbered_by
     CHECK(str_set(through_view, "col_a") == std::set<std::string>{"c"});
 }
 
-// [D2/T5] A join whose left side is a view keeps the join. The replacement
+// [D2] A join whose left side is a view keeps the join. The replacement
 // answered with the bare view body and no join at all.
 TEST_CASE("integration::cpp::test_view_expansion::join_with_view_side") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/join"));
@@ -187,7 +187,7 @@ TEST_CASE("integration::cpp::test_view_expansion::join_with_view_side") {
     CHECK(str_set(cur, "tag") == std::set<std::string>{"B", "C"});
 }
 
-// [D2/T6] A view over a view resolves both levels. Each pass splices one level
+// [D2] A view over a view resolves both levels. Each pass splices one level
 // and the level it added only becomes visible after its own resolve round.
 TEST_CASE("integration::cpp::test_view_expansion::view_over_view") {
     auto config = make_test_config(integration_fixture_path("test_view_expansion/nested"));
@@ -202,7 +202,7 @@ TEST_CASE("integration::cpp::test_view_expansion::view_over_view") {
     CHECK(str_set(cur, "col_a") == std::set<std::string>{"b", "c"});
 }
 
-// [D2/T8] INSERT through a view is refused, and SAYS SO.
+// [D2] INSERT through a view is refused, and SAYS SO.
 //
 // This one was NOT red: an INSERT naming a view already failed before the fix,
 // because a view carries no pg_attribute columns and the column binding has
@@ -311,7 +311,7 @@ TEST_CASE("integration::cpp::test_view_expansion::matview_without_no_data_is_ref
     CHECK(cur->size() == 0);
 }
 
-// [D2/T7] TWO view references in ONE plan — the case a single reference cannot
+// [D2] TWO view references in ONE plan — the case a single reference cannot
 // reach.
 //
 // Each reference gets its OWN parse+transform of the body. Sharing one subtree
@@ -344,7 +344,7 @@ TEST_CASE("integration::cpp::test_view_expansion::same_view_referenced_twice") {
     CHECK(str_set(through_view, "col_a") == std::set<std::string>{"b", "c"});
 }
 
-// [D2/T7b] Two DIFFERENT views in one plan, each with its own constant. This is
+// [D2] Two DIFFERENT views in one plan, each with its own constant. This is
 // what pins renumbering ACROSS bodies: every body numbers its constants from 0
 // (parameter_node_t::counter_ is per node), so without a fresh id per body both
 // bodies read the same slot and one silently overwrites the other.

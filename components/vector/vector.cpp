@@ -73,10 +73,10 @@ namespace components::vector {
         , type_(std::move(type))
         , data_(nullptr)
         // A mask is only built when it will be kept: with create_data the body calls
-        // validity_.reset() a few lines down, so building one here allocated and filled a buffer
-        // that is thrown away — on every vector the query path makes. reset() still runs and still
-        // establishes the post-state (null buffer, count_ = DEFAULT_VECTOR_CAPACITY); only the
-        // allocation nobody ever read is skipped.
+        // validity_.reset() a few lines down, so building one here would allocate and fill a
+        // buffer that is thrown away — on every vector the query path makes. reset() still runs
+        // and still establishes the post-state (null buffer, count_ = DEFAULT_VECTOR_CAPACITY);
+        // only the allocation nobody ever reads is skipped.
         , validity_(type_.type() == types::logical_type::NA || create_data ? validity_mask_t{resource, nullptr}
                                                                            : validity_mask_t{resource, capacity}) {
         if (type_.type() == types::logical_type::NA) {
@@ -459,11 +459,11 @@ namespace components::vector {
                 }
                 default:
                     // A path step through a type that has no sub-elements is a planner bug: the
-                    // paths walked here are built from the type tree. The bare assert that stood
-                    // here vanished under NDEBUG and the walk STAYED on the parent vector -- the
-                    // function then answered a WRONG leaf/index as a valid element. An invariant
-                    // violation must not throw through the noexcept executor coroutine
-                    // (operations_helper.hpp precedent), so it refuses identically in both builds.
+                    // paths walked here are built from the type tree. A bare assert vanishes
+                    // under NDEBUG and the walk then STAYS on the parent vector, answering a
+                    // WRONG leaf/index as a valid element. An invariant violation must not throw
+                    // through the noexcept executor coroutine either, so it refuses identically
+                    // in both builds.
                     assert(false && "resolve_nested_element: path step through a non-container type");
                     std::abort();
             }
@@ -624,12 +624,11 @@ namespace components::vector {
         }
         if (!val.is_null() && val.type() != type_) {
             // A mistyped value here IS a caller bug (validation splices the cast in before any
-            // write reaches this point). The bare assert-then-return that stood here vanished
-            // under NDEBUG and the write became a silent no-op: the row kept its old payload AND
-            // its old validity, and the caller reported success -- the exact shape that once
-            // turned a wrong type into data corruption. An invariant must not throw through the
-            // noexcept executor coroutine (operations_helper.hpp precedent): refuse loudly and
-            // identically in both builds.
+            // write reaches this point). A bare assert-then-return vanishes under NDEBUG and
+            // makes the write a silent no-op: the row keeps its old payload AND its old validity
+            // while the caller reports success -- a wrong type turned into data corruption. An
+            // invariant must not throw through the noexcept executor coroutine either: refuse
+            // loudly and identically in both builds.
             assert(false && "value has to be casted to vector's type before set_value");
             std::abort();
         }
@@ -855,10 +854,9 @@ namespace components::vector {
         }
 
         // NULL rows never reach here: value() screens them with is_null(), which walks the very
-        // same DICTIONARY/CONSTANT chain this loop just walked. The branch that used to stand here
-        // answered a null row with logical_value_t(resource, type_) -- a DEFAULT-CONSTRUCTED value
-        // of the declared type, whose is_null() is false. That is a zero handed back in place of a
-        // NULL, not a null.
+        // same DICTIONARY/CONSTANT chain this loop just walked. Answering a null row here with
+        // logical_value_t(resource, type_) would hand back a DEFAULT-CONSTRUCTED value of the
+        // declared type, whose is_null() is false -- a zero in place of a NULL, not a null.
         assert(vector->validity_.row_is_valid(index) && "value_internal reached a NULL row");
 
         switch (vector->type_.type()) {

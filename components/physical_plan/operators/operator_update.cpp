@@ -315,15 +315,13 @@ namespace components::operators {
     core::error_t operator_update::consume_join_batch_(pipeline::context_t* pipeline_context,
                                                        const vector::data_chunk_t& chunk_left,
                                                        const chunks_vector_t& right_chunks) {
-        // UPDATE ... FROM shared core (R6: one implementation, two entry points).
-        // Probes ONE LEFT (target) scan batch against the fully-materialized RIGHT
-        // (FROM) build chunks: a semi-join (a target row is updated once regardless
-        // of how many FROM rows it matches). Per matched LEFT row it builds the
-        // updated out_chunk (matched columns, SET applied), accumulates it into
-        // output_, stages the matched OLD rows for the index mirror (aligned by
-        // row_id with the NEW rows), and — for RETURNING — keeps the matched FROM
-        // rows in lockstep so a joined RETURNING column reads them. push() calls it
-        // per LEFT batch. await_async_and_resume drains it all.
+        // UPDATE ... FROM shared core (R6: one implementation, two entry points). Probes ONE LEFT (target) scan
+        // batch against the fully-materialized RIGHT (FROM) build chunks: a semi-join (a target row is updated
+        // once regardless of how many FROM rows it matches). Per matched LEFT row it builds the updated
+        // out_chunk (matched columns, SET applied), accumulates it into output_, stages the matched OLD rows for
+        // the index mirror (aligned by row_id with the NEW rows), and — for RETURNING — keeps the matched FROM
+        // rows in lockstep so a joined RETURNING column reads them. push() calls it per LEFT batch;
+        // await_async_and_resume drains it all.
         using components::vector::data_chunk_t;
         ensure_simple_init_();
         if (chunk_left.size() == 0) {
@@ -484,14 +482,12 @@ namespace components::operators {
         using components::vector::data_chunk_t;
         using components::vector::vector_t;
 
-        // A PLAN THAT DECLARES UPSERT IS NOT A PLAN THIS OPERATOR IMPLEMENTS. The flag
-        // was accepted into upsert_ and then read by NOTHING, while node_update_t prints
-        // it ($upsert: 1) — so a plan promising insert-or-update was executed as a plain
-        // update, and a match that found nothing reported SUCCESS with 0 rows instead of
-        // the insert the plan declared. No SQL reaches the flag (the grammar has neither
-        // `upsert` nor ON CONFLICT); the logical-plan API does. Rule 6: refuse the
-        // declared-but-unimplemented semantics loudly, BEFORE the first flush, instead
-        // of executing a quieter statement in their place.
+        // A PLAN THAT DECLARES UPSERT IS NOT A PLAN THIS OPERATOR IMPLEMENTS. Accepting the flag into upsert_
+        // and then reading it NOWHERE — while node_update_t prints it ($upsert: 1) — executes a plan promising
+        // insert-or-update as a plain update, so a match that found nothing reports SUCCESS with 0 rows instead
+        // of the insert the plan declared. No SQL reaches the flag (the grammar has neither `upsert` nor ON
+        // CONFLICT); the logical-plan API does. Rule 6: refuse the declared-but-unimplemented semantics loudly,
+        // BEFORE the first flush, instead of executing a quieter statement in their place.
         if (upsert_) {
             set_error(core::error_t{
                 core::error_code_t::unimplemented_yet,
@@ -502,13 +498,11 @@ namespace components::operators {
             co_return;
         }
 
-        // BOUNDED DML SINK. The executor drives this INCREMENTALLY: once
-        // per mid-pump "buffer full" (dml_flush_is_final==false) and once at the
-        // post-pump finalize (==true). Each drive flushes whatever push() folded into
-        // output_ since the last flush; only the FINAL drive emits the RETURNING /
-        // affected-count result + mark_executed. With dml_flush_row_threshold==0 the
-        // executor drives await exactly once with is_final==true, collapsing to a
-        // single flush.
+        // BOUNDED DML SINK. The executor drives this INCREMENTALLY: once per mid-pump "buffer full"
+        // (dml_flush_is_final==false) and once at the post-pump finalize (==true). Each drive flushes whatever
+        // push() folded into output_ since the last flush; only the FINAL drive emits the RETURNING /
+        // affected-count result + mark_executed. With dml_flush_row_threshold==0 the executor drives await
+        // exactly once with is_final==true, collapsing to a single flush.
         const bool is_final = ctx->dml_flush_is_final;
 
         if (output_ && output_->size() > 0) {
@@ -702,13 +696,11 @@ namespace components::operators {
                                                 ctx->dml_has_parent_constraint,
                                                 constraint_input_,
                                                 output_->chunks());
-            // UPDATE = delete-old + append-new: record the MVCC delete tombstone ONCE
-            // across all flushes (append ranges are per-flush via record_flush; the
-            // delete marker is a single per-txn/table tombstone). Recorded BEFORE the
-            // flush-error check for the same reason record_flush records the append
-            // range first: the storage op stamps the delete marks before its append
-            // half can fail, and only a recorded marker lets the failed-statement
-            // abort tail (storage_revert_deletes) un-stamp them.
+            // UPDATE = delete-old + append-new: record the MVCC delete tombstone ONCE across all flushes
+            // (append ranges are per-flush via record_flush; the delete marker is a single per-txn/table
+            // tombstone). Recorded BEFORE the flush-error check for the same reason record_flush records the
+            // append range first: the storage op stamps the delete marks before its append half can fail, and
+            // only a recorded marker lets the abort tail (storage_revert_deletes) un-stamp them.
             if (!delete_marker_recorded_) {
                 ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
                 delete_marker_recorded_ = true;

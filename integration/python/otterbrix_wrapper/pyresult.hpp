@@ -18,10 +18,9 @@ namespace otterbrix {
     class py_connection_t;
     class otterbrix_t;
 
-    // The rows a statement produced, as Python sees them. This type existed and
-    // was compiled from the start but was never registered with the module, so
-    // nothing outside C++ could hold one; `OtterBrixPyConnection.execute` is what
-    // hands it out (see py_result_t::initialize).
+    // The rows a statement produced, as Python sees them. `OtterBrixPyConnection.execute`
+    // is what hands it out; it is only holdable outside C++ once py_result_t::initialize
+    // has registered it with the module.
     class py_result_t {
     public:
         py_result_t(py_connection_t* env,
@@ -54,9 +53,9 @@ namespace otterbrix {
         bool is_closed() const;
 
     private:
-        // No back-pointer to the connection: the result needs nothing from it once
-        // it holds the batch and the space below, and keeping one only created a
-        // raw pointer that outlived what it pointed at.
+        // No back-pointer to the connection: the result needs nothing from it once it holds
+        // the batch and the space below, and one would be a raw pointer that outlives what
+        // it points at.
 
         // The result batch is pmr-allocated from the space's memory resource, so
         // the result has to keep the space alive on its own: a caller may close

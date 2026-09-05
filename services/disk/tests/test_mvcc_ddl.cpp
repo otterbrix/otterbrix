@@ -579,17 +579,17 @@ TEST_CASE("services::disk::mvcc::delete_many_counts_each_spec_in_order") {
 // THE DELETE SEES WHAT ITS OWN TRANSACTION SEES — the floor under the "zero is a refusal"
 // verdicts, and the defect that made them fire on legal statements.
 //
-// agent_disk_t::delete_pg_catalog_rows_inner used to scan with no transaction at all, so
-// collection_scan_state::txn stayed {0, 0}: rows written INSIDE a transaction (insert_id ==
-// transaction_id) were invisible to the very transaction that wrote them. Every caller that
-// reads a zero here as "the row I just read is still in the catalog" — ALTER TABLE DROP COLUMN
-// on its live pg_attribute row, DROP INDEX on its identity rows, DROP FUNCTION on pg_proc, DROP
-// CAST on pg_cast — was therefore refusing whenever the row it named had been created in the
-// open transaction. Its own read routes (read_chunks_by_key and the resolve funnel) carry
-// ctx.txn and could see the row perfectly well.
+// agent_disk_t::delete_pg_catalog_rows_inner must scan under ctx.txn. Scanning with no
+// transaction leaves collection_scan_state::txn at {0, 0}, so rows written INSIDE a transaction
+// (insert_id == transaction_id) are invisible to the very transaction that wrote them. Every
+// caller that reads a zero here as "the row I just read is still in the catalog" — ALTER TABLE
+// DROP COLUMN on its live pg_attribute row, DROP INDEX on its identity rows, DROP FUNCTION on
+// pg_proc, DROP CAST on pg_cast — would then refuse whenever the row it named had been created
+// in the open transaction, while its own read routes (read_chunks_by_key and the resolve
+// funnel) carry ctx.txn and see the row perfectly well.
 //
-// The count of 1 here IS the guard those verdicts stand on: before the fix it was 0, and 0 is
-// the value they turn into "the catalog would not give the row up".
+// The count of 1 here IS the guard those verdicts stand on: 0 is the value they turn into
+// "the catalog would not give the row up".
 // ===========================================================================
 TEST_CASE("services::disk::mvcc::delete_many_sees_its_own_uncommitted_row") {
     fixture fx;
@@ -628,12 +628,12 @@ TEST_CASE("services::disk::mvcc::delete_many_sees_its_own_uncommitted_row") {
     CHECK(deleted.value()[0] == 1);
 }
 
-// resolve_namespace used to scan on the DEFAULT snapshot (transaction_data{}), not the
-// caller's ctx.txn — the same blindness the row-delete path had. A namespace created inside
-// an open transaction was invisible to ITS OWN resolve, so any verdict built on "found ==
-// false" (name collision checks, follow-up DDL in the same txn) read a lie. The scan now
-// carries ctx.txn: a txn sees its own uncommitted row (this case), other sessions still do
-// not (case 2 above), and a zero-txn ctx still sees exactly the committed state.
+// resolve_namespace scans on the caller's ctx.txn, not the DEFAULT snapshot
+// (transaction_data{}) — the same rule the row-delete path follows. On the default snapshot a
+// namespace created inside an open transaction is invisible to ITS OWN resolve, so any verdict
+// built on "found == false" (name collision checks, follow-up DDL in the same txn) reads a lie.
+// With ctx.txn a txn sees its own uncommitted row (this case), other sessions do not (case 2
+// above), and a zero-txn ctx sees exactly the committed state.
 TEST_CASE("services::disk::mvcc::resolve_namespace_sees_its_own_uncommitted_row") {
     fixture fx;
     auto uncommitted = TRANSACTION_ID_START + 1;

@@ -61,10 +61,10 @@ namespace components::vector::arrow {
         explicit arrow_type(types::complex_logical_type type, std::unique_ptr<arrow_type_info> type_info = nullptr)
             : type_(std::move(type))
             , type_info_(std::move(type_info)) {}
-        // (An error-reporting constructor lived here — error_message_ + not_implemented_ that
-        // nothing ever read, so a type built through it presented as a plain INVALID type with
-        // no diagnostic. Refusals travel core::result_wrapper_t through type_from_format /
-        // type_from_schema below instead.)
+        // NO error-reporting constructor here: error_message_ / not_implemented_ members that
+        // nothing reads make a type built through them present as a plain INVALID type with no
+        // diagnostic. Refusals travel core::result_wrapper_t through type_from_format /
+        // type_from_schema below.
 
         types::complex_logical_type type(bool use_dictionary = false) const;
 

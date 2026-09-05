@@ -1,78 +1,67 @@
-// A7.4 — exhaustive crash-point enumeration for the checkpoint.
+// Exhaustive crash-point enumeration for the checkpoint.
 //
-// The gate, verbatim from the plan: for each k, the opened state equals root N or root N+1 —
-// never an error, never a third state. This is the proof that shadow paging (A7.1 two-slot
-// header, A7.2 split free pool, A7.3 superseded-root reclaim, A7.7 failed-round rollback)
-// actually holds at EVERY point a crash can land, and it is what authorises deleting the
-// .prev/.broken machinery in A7.5.
+// The gate: for each k, the opened state equals root N or root N+1 — never an error, never a
+// third state. That is the proof that shadow paging (two-slot header, split free pool,
+// superseded-root reclaim, failed-round rollback) holds at EVERY point a crash can land, and it is
+// what makes an external whole-file backup unnecessary.
 //
 // WHAT ONE ROUND IS. The exact sequence of table_storage_t::checkpoint
-// (services/disk/manager_disk.cpp), preceded by data_table_t::compact when the round
-// compacts — the same order agent_disk_t::checkpoint_inner runs:
+// (services/disk/manager_disk.cpp), preceded by data_table_t::compact when the round compacts —
+// the same order agent_disk_t::checkpoint_inner runs:
 //
 //   [compact: rebuild + write-through]                 (compacting rounds only)
-//   table.checkpoint(writer)   — column flushes, metadata chain, A7.3 reclaim
+//   table.checkpoint(writer)   — column flushes, metadata chain, superseded-root reclaim
 //   writer.flush()
 //   set_meta_block
 //   serialize_free_list()      — free-list chain
 //   file_sync()                — 1st fsync: data/metadata durable BEFORE the root names them
 //   write_header()             — ONE slot write + 2nd fsync: the atomic commit point
 //
-// THE MATRIX. A healthy round is measured first (writes_seen / syncs_seen through the T3
-// fault seam), which gives W = writes in the round and pins the two-barrier shape. Then, for
-// a round that COMPACTED and for one that did not:
+// THE MATRIX. A healthy round is measured first (writes_seen / syncs_seen through the fault seam),
+// which gives W = writes in the round and pins the two-barrier shape. Then, for a round that
+// COMPACTED and for one that did not:
 //
 //   * clean crash after k successful writes, k = 0..W, in BOTH persistence shapes:
-//       - persisted: writes 1..k are on the device, write k+1 and everything later never
-//         happened (the device kept what it acknowledged);
-//       - reverted:  crash_revert() — everything since the last fsync is gone (kill -9 with
-//         a page cache that never reached the platter; the conservative extreme);
-//   * a TORN write at k, k = 1..W: the seam persists only the first half of write k, then
-//     fails it and everything after. A tear is a different shape from a clean failure — for
-//     every k < W it leaves a half-written block with a broken CRC; at k = W (the header) the
-//     tear reassembles into a byte-exact new-generation header (all differing bytes live in
-//     the first hardware sector) and the round COMMITS through reconcile case 1;
-//   * a failed fsync at s = 1 (the barrier) and s = 2 (the header commit), each followed by
-//     the crash, in both persistence shapes — the two barriers mean different things and get
-//     crashed separately;
-//   * a crash after the 1st fsync with NO header attempt at all (the round stops between the
-//     barriers).
+//       - persisted: writes 1..k are on the device, write k+1 and everything later never happened;
+//       - reverted:  crash_revert() — everything since the last fsync is gone (kill -9 with a page
+//         cache that never reached the platter; the conservative extreme);
+//   * a TORN write at k, k = 1..W: the seam persists only the first half of write k, then fails it
+//     and everything after. For every k < W that leaves a half-written block with a broken CRC; at
+//     k = W (the header) the tear reassembles into a byte-exact new-generation header (all
+//     differing bytes live in the first hardware sector) and the round COMMITS through reconcile
+//     case 1;
+//   * a failed fsync at s = 1 (the barrier) and s = 2 (the header commit), each followed by the
+//     crash, in both persistence shapes — the two barriers mean different things;
+//   * a crash after the 1st fsync with NO header attempt at all (the round stops between them).
 //
-// For every cell the file is reopened by a FRESH manager (fresh env, seam removed) and judged
-// on three axes, all required:
+// For every cell the file is reopened by a FRESH manager (fresh env, seam removed) and judged on
+// three axes, all required:
 //   1. the open itself succeeds — never data_corruption, never io_error;
-//   2. the DATA reads back and matches one root exactly: iteration N ⇒ ids {0..BASE-1},
-//      iteration N+1 ⇒ ids {0..BASE+EXTRA-1}, every row's payload matching its id, no
-//      duplicates, no strays. Not merely "open returned success" — this branch has shipped
-//      tests that asserted only the open and hid real corruption behind it;
-//   3. the block-reachability walker reports ZERO unexplained ids and ZERO
-//      reachable-free overlap — the accounting half of "the state is one of exactly two".
-// Additionally: a round that reported COMMITTED must recover as root N+1 (a committed
-// checkpoint may not be lost).
+//   2. the DATA reads back and matches one root exactly: iteration N ⇒ ids {0..BASE-1}, iteration
+//      N+1 ⇒ ids {0..BASE+EXTRA-1}, every row's payload matching its id, no duplicates, no strays.
+//      Asserting only the open has shipped here before and hidden real corruption behind it;
+//   3. the block-reachability walker reports ZERO unexplained ids and ZERO reachable-free overlap —
+//      the accounting half of "the state is one of exactly two".
+// Additionally: a round that reported COMMITTED must recover as root N+1.
 //
-// THE .otbx IS JUDGED ALONE — by construction, not by cleanup. This test lives below
-// services/disk: no agent_disk_t exists here, so no external file could ever mask what the
-// matrix measures. (When this matrix was first taken, checkpoint_inner still kept a `.prev`
-// whole-file backup and a restore path over the `.otbx`; the matrix was run with those
-// physically absent, which is what authorised A7.5 to delete them everywhere.) The reopen
-// is a bare load_existing_database + load_from_disk on the crashed file itself.
+// THE .otbx IS JUDGED ALONE, by construction: this test lives below services/disk, so no
+// agent_disk_t exists to mask what the matrix measures — the reopen is a bare
+// load_existing_database + load_from_disk on the crashed file itself.
 //
 // SEAM FACTS the arithmetic depends on (rediscovered at cost, do not lose):
-//   * fault_injection_scope_t wraps the handle at OPEN time — it is installed BEFORE the
-//     manager is constructed, or every counter reads zero;
-//   * arming is ABSOLUTE over the plan's life, so each scenario records base_writes (writes
-//     seen before the round starts — proven equal to the measurement run's) and aims at
-//     base_writes + k. A blanket fail_after_writes would also kill DATA writes, latch
-//     durability_error_, and hide the point under test behind the degraded() gate;
-//   * fail_writes_from (1-based) exists because fail_after_writes counts allowed successes
-//     and cannot express k = 0 (its zero is the off switch).
+//   * fault_injection_scope_t wraps the handle at OPEN time — install it BEFORE the manager is
+//     constructed, or every counter reads zero;
+//   * arming is ABSOLUTE over the plan's life, so each scenario records base_writes (writes seen
+//     before the round starts — proven equal to the measurement run's) and aims at base_writes + k.
+//     A blanket fail_after_writes would also kill DATA writes, latch durability_error_, and hide
+//     the point under test behind the degraded() gate;
+//   * fail_writes_from (1-based) exists because fail_after_writes counts allowed successes and
+//     cannot express k = 0 (its zero is the off switch).
 //
-// Scenario base state: one steady-state table (BASE_ROWS rows, three committed
-// compact+checkpoint rounds — the A7.3 closed cycle), copied per cell; the crashed round
-// appends EXTRA_ROWS first, so root N and root N+1 differ in observable data and "which root
-// did we get" is decidable from the rows alone. Copying an engine-produced file is the shape
-// fault_injection_file.hpp explicitly sanctions ("reopening the reverted file — or a
-// filesystem copy of it — under a fresh environment IS the state after kill"); no file
+// Scenario base state: one steady-state table (BASE_ROWS rows, three committed compact+checkpoint
+// rounds — the closed cycle), copied per cell; the crashed round appends EXTRA_ROWS first, so root
+// N and root N+1 differ in observable data and "which root did we get" is decidable from the rows
+// alone. Copying an engine-produced file is the shape fault_injection_file.hpp sanctions; no file
 // content is ever hand-placed.
 
 #include <catch2/catch_test_macros.hpp>
@@ -496,7 +485,7 @@ namespace {
         REQUIRE_FALSE(bm.create_new_database().has_error());
         auto table = make_table(env, bm);
         append_rows(*table, env, 0, BASE_ROWS);
-        // Three committed compact+checkpoint rounds: the A7.3 steady state, where an unchanged
+        // Three committed compact+checkpoint rounds: the steady state, where an unchanged
         // table is a closed cycle. No fault scope here — the seam counters are not needed and
         // the base must be a file the engine itself produced, healthy end to end.
         otterbrix_test::fault_plan_t unused_plan;
@@ -662,7 +651,7 @@ namespace {
 
 TEST_CASE("crash_matrix: a COMPACTING checkpoint round recovers to root N or N+1 at every crash point", "[a7.4]") {
     // Compaction is what puts the superseded root's blocks in play: the outgoing collection's
-    // blocks go to pending_free_ (A7.2) and root N's chains are reclaimed mid-round (A7.3), so
+    // blocks go to pending_free_ and root N's chains are reclaimed mid-round, so
     // only this family exercises the promise that a block the durable root still reads is
     // never overwritten by the round that crashes.
     run_matrix(true, "compacting");
@@ -678,20 +667,19 @@ TEST_CASE("crash_matrix: a non-compacting checkpoint round recovers to root N or
 
 
 // ---------------------------------------------------------------------------------------
-// R-LEAK — the pre-existing defect the matrix flushed out, pinned by name (rule 19).
+// The restart leak the matrix flushed out, pinned by name (rule 19).
 //
-// RED before the serialize_free_list fix (the run is recorded in the A7.4 matrix's first
-// execution): a committed round leaves the live tree holding blocks no root names — compact's
-// write-through and the re-pointed tail segments — while the durable root's pointer stream
-// names only the packed copy. In-process the registry protects them and the next compact
-// recycles them; but nothing on disk has ever heard of them, so the moment the process ends
-// (crash OR clean exit) they are orphans: a fresh open walked them as unexplained (8 blocks =
-// 2 MiB at 6k rows) and NOTHING could ever free them — the reclaim only walks roots — so the
-// file leaked one full table copy per process lifetime, forever.
+// Without the serialize_free_list third term: a committed round leaves the live tree holding
+// blocks no root names — compact's write-through and the re-pointed tail segments — while the
+// durable root's pointer stream names only the packed copy. In-process the registry protects them
+// and the next compact recycles them; but nothing on disk has ever heard of them, so the moment
+// the process ends (crash OR clean exit) they are orphans: a fresh open walks them as unexplained
+// (8 blocks = 2 MiB at 6k rows) and NOTHING can ever free them — the reclaim only walks roots — so
+// the file leaks one full table copy per process lifetime, forever.
 //
-// The fix publishes them in the serialized free list (the root's own statement of what it
-// does not reference). This gate proves both halves across REAL process boundaries
-// (fresh managers over the same file):
+// The fix publishes them in the serialized free list (the root's own statement of what it does not
+// reference). This gate proves both halves across REAL process boundaries (fresh managers over the
+// same file):
 //   1. a fresh open of a steady-state file explains every block — zero unexplained;
 //   2. restart cycles do not grow the file: reopen -> one compact+checkpoint round -> close,
 //      repeated, with a stable block_count from the second cycle on.
@@ -725,7 +713,7 @@ TEST_CASE("crash_matrix: a restart does not orphan the previous process's live t
         CHECK(report.live_superseded.empty());
     }
 
-    // Half 2: restart cycles are a closed cycle, like the in-process steady state (A7.3).
+    // Half 2: restart cycles are a closed cycle, like the in-process steady state.
     uint64_t prev_blocks = 0;
     for (int cycle = 1; cycle <= 3; ++cycle) {
         matrix_env_t env;

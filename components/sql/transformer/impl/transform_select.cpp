@@ -422,8 +422,8 @@ namespace components::sql::transform {
                                      std::pmr::string{"data-modifying WITH (CTE) is not supported", resource_});
             }
             // Registration is a flat per-statement map, and unordered_map::emplace is a
-            // SILENT NO-OP on a duplicate key: a name written twice kept the FIRST body
-            // and ran the query against it, success reported. Both duplicate shapes are
+            // SILENT NO-OP on a duplicate key: a name written twice keeps the FIRST body
+            // and runs the query against it, reporting success. Both duplicate shapes are
             // refused — a repeat inside one WITH list gets PostgreSQL's own message, and
             // a name arriving from another WITH of the same statement (a sub-query's, a
             // UNION arm's) is refused as unimplemented scoping: with one flat map the
@@ -478,9 +478,9 @@ namespace components::sql::transform {
                             // An integer literal past int32 does not fit the scanner's `ival`
                             // and leaves the lexer as a T_Float holding its digits (scan.l,
                             // process_integer_literal), so `LIMIT 3000000000` lands HERE and
-                            // not in the arm above. Read the digits exactly: it used to be
-                            // truncated on the way through the scanner and silently limited
-                            // the answer to a different number of rows.
+                            // not in the arm above. Read the digits exactly — truncating them
+                            // on the way through silently limits the answer to a different
+                            // number of rows.
                             if (!exact_int64_literal(value, limit_val)) {
                                 return core::error_t(
                                     core::error_code_t::sql_parse_error,
@@ -582,12 +582,12 @@ namespace components::sql::transform {
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_select(SelectStmt& node,
                                                                                  logical_plan::execution_plan_t* plan) {
         // Three SelectStmt fields no code below reads, refused before anything else
-        // runs (rule 6). Each of them used to be a statement that reported success
-        // while answering a different question:
-        //   - intoClause: SELECT ... INTO ran as a plain SELECT — rows came back,
-        //     no table was created, nothing said the INTO half was dropped;
-        //   - lockingClause: FOR UPDATE / FOR SHARE parsed and locked nothing;
-        //   - windowClause: WINDOW w AS (...) parsed and defined nothing (an OVER
+        // runs (rule 6). Unrefused, each is a statement that reports success while
+        // answering a different question:
+        //   - intoClause: SELECT ... INTO runs as a plain SELECT — rows come back,
+        //     no table is created, nothing says the INTO half was dropped;
+        //   - lockingClause: FOR UPDATE / FOR SHARE parses and locks nothing;
+        //   - windowClause: WINDOW w AS (...) parses and defines nothing (an OVER
         //     that references it is refused at the FuncCall, this is the clause
         //     itself). The checks run in every recursion, so a UNION arm or a
         //     sub-select carrying one of these is refused the same way.
@@ -992,8 +992,8 @@ namespace components::sql::transform {
                             // 'col ::? type' — type-VARIANT selection, not a cast: carry the
                             // requested type on the key so find_types picks the matching
                             // multi-type variant column (mirrors the jsonb-chain '::?'
-                            // branch below). Emitting a plain cast here left the key without
-                            // its variant annotation and the validator refused the name as
+                            // branch below). A plain cast here leaves the key without its
+                            // variant annotation, and the validator then refuses the name as
                             // ambiguous on any computed table with several variants.
                             if (cast->variant_select) {
                                 auto field_key = std::move(col_ref.field);
@@ -1044,9 +1044,9 @@ namespace components::sql::transform {
                         // A cast over any other non-literal operand: lower the operand and
                         // wrap it. Falling through to the T_A_Const arm below hands the whole
                         // cast to get_value, which can only fold an A_Const — over an A_Expr
-                        // it used to read the operator node's `lexpr` pointer and project it
-                        // as the answer, the same value on every row. (Same defect the jsonb
-                        // arm above was written for; this is the rest of it.)
+                        // it reads the operator node's `lexpr` POINTER and projects it as the
+                        // answer, the same value on every row. Same shape as the jsonb arm
+                        // above.
                         if (cast->arg && nodeTag(cast->arg) != T_A_Const && nodeTag(cast->arg) != T_ParamRef) {
                             has_non_star = true;
                             VALUE_OR_RETURN(auto target_type_res, get_type(resource_, cast->typeName));

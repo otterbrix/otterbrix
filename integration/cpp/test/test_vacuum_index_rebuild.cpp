@@ -16,35 +16,33 @@
 
 // WHO IS ALLOWED TO REBUILD AN INDEX, AND ON WHAT FACT.
 //
-// An index entry stores a PHYSICAL row id. Exactly one operation in the tree hands a
-// surviving row a NEW physical id: data_table_t::compact, which rebuilds the table at row id
-// 0. It has ONE call site -- agent_disk_t::checkpoint_inner -- so a full index rebuild is owed
-// by, and only by, a round that ran that call site. Everything else that rebuilds is paying
-// for a renumbering that did not happen: a full drained scan of the table plus a clear() that
-// unlinks the index directory plus a refill of every entry, per table, per call.
+// An index entry stores a PHYSICAL row id, and exactly one operation hands a surviving row a
+// NEW one: data_table_t::compact, which rebuilds the table at row id 0. It has ONE call site
+// (agent_disk_t::checkpoint_inner), so a full index rebuild is owed by, and only by, a round
+// that ran that call site. Everything else that rebuilds is paying for a renumbering that did
+// not happen: a full drained scan of the table plus a clear() that unlinks the index directory
+// plus a refill of every entry, per table, per call.
 //
-// THE TWO CASES BELOW ARE THE TWO SIDES OF THAT ONE RULE, and they are deliberately written
-// against the SAME counter so neither can be satisfied by weakening the other:
+// THE TWO CASES BELOW ARE THE TWO SIDES OF THAT ONE RULE, deliberately written against the
+// SAME counter so neither can be satisfied by weakening the other:
 //
 //   * VACUUM compacts NOTHING. agent_disk_t::vacuum_inner calls data_table_t::cleanup_versions
-//     and nothing else; cleanup_versions reaches row_version_manager_t::cleanup_append, which
-//     swaps chunk_info objects inside vector_info_ and moves no row. So VACUUM owes ZERO
-//     rebuilds, and the first case says so with a number rather than with a comment.
+//     and nothing else; that reaches row_version_manager_t::cleanup_append, which swaps
+//     chunk_info objects inside vector_info_ and moves no row. VACUUM therefore owes ZERO
+//     rebuilds, and the first case says so with a number.
+//   * A CHECKPOINT compacts, so it owes one rebuild per indexed table -- the second case is the
+//     guard that stops the first from being "fixed" by deleting the rebuild outright. It fails
+//     TWICE over if the rebuild is removed from operator_checkpoint_t: the counter drops to
+//     zero AND the indexed lookup starts answering with a row that merely moved into the id the
+//     stale entry names.
 //
-//   * A CHECKPOINT compacts, so it owes one rebuild per indexed table -- and the second case
-//     is the guard that stops the first from being "fixed" by deleting the rebuild outright.
-//     It is written to fail TWICE over if the rebuild is removed from operator_checkpoint_t:
-//     the counter drops to zero AND the indexed lookup starts answering with a row that
-//     merely moved into the id the stale entry names.
-//
-// WHY A COUNTER AND NOT A STOPWATCH. The defect is WORK THAT NEED NOT HAPPEN, and a stopwatch
-// measures the machine as much as the code -- the same reason the _id dedup on this branch was
-// gated on rows read rather than on milliseconds. index_repopulations() counts calls to
+// WHY A COUNTER AND NOT A STOPWATCH: the defect is WORK THAT NEED NOT HAPPEN, and a stopwatch
+// measures the machine as much as the code. index_repopulations() counts calls to
 // manager_index_t::repopulate_table, which is the clear+refill itself.
 //
-// AND A COUNTER ALONE IS NOT ENOUGH, so every case also pins the ANSWER: after the operation
-// the indexed lookup must return exactly what a full scan of the table returns, key by key.
-// Without that half, "0 rebuilds" would also be satisfied by an index that answers nothing.
+// A COUNTER ALONE IS NOT ENOUGH, so every case also pins the ANSWER: after the operation the
+// indexed lookup must return exactly what a full scan returns, key by key. Without that half,
+// "0 rebuilds" would also be satisfied by an index that answers nothing.
 
 namespace {
 
@@ -142,10 +140,10 @@ namespace {
 
 // VACUUM RENUMBERS NOTHING, SO IT OWES NO REBUILD.
 //
-// RED before the fix: operator_vacuum_t scanned pg_class and called repopulate_table for EVERY
-// relation it found -- a full drained scan of each table plus a clear-and-refill of each of its
-// indexes -- on the strength of a comment saying "the compact pass above invalidated row
-// positions". There is no compact pass above: agent_disk_t::vacuum_inner carries its own note
+// operator_vacuum_t once scanned pg_class and called repopulate_table for EVERY relation it
+// found -- a full drained scan of each table plus a clear-and-refill of each of its indexes --
+// on the strength of a comment saying "the compact pass above invalidated row positions".
+// There is no compact pass above: agent_disk_t::vacuum_inner carries its own note
 // saying nothing is compacted there, because under the split free pool a compact whose release
 // no header commits can only spend space. So the counter read one repopulate per relation where
 // the correct number is none.

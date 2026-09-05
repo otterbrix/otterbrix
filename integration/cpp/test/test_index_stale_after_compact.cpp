@@ -20,39 +20,34 @@
 // data_table_t::compact rebuilds a table at row id 0 and hands every surviving row a fresh,
 // gap-free physical id. An index entry stores that id -- in the agent's tree and in its
 // on-disk directory alike -- so the instant a compacting round commits, every index of every
-// table it touched is wrong. Both shapes of the resulting failure are SILENT:
+// table it touched is wrong. Both shapes of the failure are SILENT:
 //   * an id that names no row group is DROPPED by collection_t::fetch, shortening the answer;
-//   * an id that now belongs to a different survivor is gathered as if it were the match,
-//     so the query succeeds and returns somebody else's row.
+//   * an id that now belongs to a different survivor is gathered as if it were the match, so
+//     the query succeeds and returns somebody else's row.
 //
-// compact() has exactly ONE call site (agent_disk_t::checkpoint_inner, reached only through
-// manager_disk_t::checkpoint_all) and TWO orchestrations above it. The two cases below are
-// one per orchestration, because they failed differently:
+// compact() has ONE call site (agent_disk_t::checkpoint_inner, reached only through
+// manager_disk_t::checkpoint_all) and TWO orchestrations above it. One case per orchestration,
+// because they failed differently:
 //
 //   1. THE CHECKPOINT STATEMENT (operator_checkpoint_t, and the shutdown checkpoint in
-//      ~base_otterbrix_t). It always rebuilt, and the rebuild is DURABLE before the
-//      statement returns -- btree_index_agent_t::publish_buckets closes commit_inserts with
-//      store_.force_flush(), so the window between "the compacted .otbx is on the device" and
-//      "the rebuilt index is on the device" closes inside the statement. The first case pins
-//      that: crash straight after a compacting CHECKPOINT, reopen, and the index must still
-//      find the row. It is a guard, not a reproduction.
+//      ~base_otterbrix_t) always rebuilt, and the rebuild is DURABLE before the statement
+//      returns -- btree_index_agent_t::publish_buckets closes commit_inserts with
+//      store_.force_flush(). The first case is a guard, not a reproduction: crash straight
+//      after a compacting CHECKPOINT, reopen, and the index must still find the row.
 //
-//   2. THE WAL AUTO-CHECKPOINT (manager_wal_replicate_t::run_auto_checkpoint), which fires
-//      off commit_txn once the log outgrows wal.auto_checkpoint_threshold_bytes. It mirrored
-//      the statement's steps and NOT its rebuild -- see the second case, which needs no crash
-//      and no restart to show a wrong row coming back.
+//   2. THE WAL AUTO-CHECKPOINT (run_auto_checkpoint), which fires commit_txn once the log
+//      outgrows wal.auto_checkpoint_threshold_bytes, mirrored the statement's steps and NOT
+//      its rebuild -- the second case needs no crash and no restart to show a wrong row.
 //
 // THE EXPLAIN ASSERTION IS LOAD-BEARING in both, on the SAME query text the row assertions
-// use. Without it either case can go green through a full scan: if the index fails to
-// bootstrap, or the planner simply stops routing `WHERE k = ...` to it, every row assertion
-// still passes while the index is broken. Each is paired with an UNINDEXED control on the
-// same table and the same row (k is indexed, id is not), so "the row is there" and "the
-// index can find it" stay separate facts.
+// use: without it either case goes green through a full scan if the index fails to bootstrap
+// or the planner stops routing `WHERE k = ...` to it. Each is paired with an UNINDEXED control
+// on the same table and row (k is indexed, id is not), so "the row is there" and "the index
+// can find it" stay separate facts.
 //
-// kill -9 is the sanctioned T3 mechanism used by test_index_rebuild_crash.cpp: COPY the live
-// data directory while the engine is up -- the destructor's CHECKPOINT then mutates only the
-// ORIGINAL and hides nothing on the copy -- and reopen the COPY under a fresh engine. No test
-// lays out files by hand.
+// kill -9 is the mechanism of test_index_rebuild_crash.cpp: COPY the live data directory while
+// the engine is up -- the destructor's CHECKPOINT then mutates only the ORIGINAL -- and reopen
+// the COPY under a fresh engine. No test lays out files by hand.
 
 namespace {
 
@@ -335,8 +330,8 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
         auto cur = exec(auto_indexed_query());
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        // RED before the fix: the entry named a pre-compact id, and the row that had moved
-        // into it came back instead — id 100000 for a query on row 3000's key.
+        // A stale entry names a pre-compact id, and the row that moved into it comes back
+        // instead — id 100000 for a query on row 3000's key.
         CHECK(cur->value(0, 0).value<int64_t>() == kSurvivorId);
     }
 

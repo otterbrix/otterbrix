@@ -33,8 +33,8 @@ using namespace components::catalog;
 using namespace components::cursor;
 using namespace components::types;
 
-// V4 dispatcher integration test. Catalog assertions go through manager_disk_t's
-// resolve_namespace / resolve_table directly — catalog_snapshot_t is gone.
+// Dispatcher integration test. Catalog assertions go through manager_disk_t::resolve_namespace
+// and the test_probe catalog oracle — there is no in-memory catalog snapshot to read.
 
 namespace {
     // A run that dies before its destructor — an aborting REQUIRE, a crash, a kill, a timeout —
@@ -156,9 +156,9 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
             std::this_thread::yield();
         }
         REQUIRE(fut.is_ready());
-        // The reader carries an error channel now ("the catalog could not be READ" is not "the
+        // The reader carries an error channel ("the catalog could not be READ" is not "the
         // catalog does not have it"); no case here expects a failed read, and letting one
-        // through as {found=false} is exactly the confusion the wrapper ended.
+        // through as {found=false} would conflate the two.
         auto r = std::move(fut).take_ready();
         REQUIRE_FALSE(r.has_error());
         return std::move(r.value());
@@ -325,33 +325,27 @@ TEST_CASE("services::dispatcher::computed_operations") {
 // ===========================================================================
 // A conkey THAT IS NOT WHAT encode_oid_csv WROTE MUST STOP THE STATEMENT.
 //
-// pg_constraint.conkey is a CSV of column attoids, read POSITIONALLY and
-// enforced as an ordered tuple. parse_oid_csv answers the decoded list plus an
-// `ok` channel, because the list alone cannot carry the loss: every guard
-// downstream compares the resolved column NAMES against the very attoid list
-// they were resolved from, so a list that lost a token — or gained a wrong one —
-// agrees with itself and passes.
+// pg_constraint.conkey is a CSV of column attoids, read POSITIONALLY and enforced as an ordered
+// tuple. parse_oid_csv answers the decoded list plus an `ok` channel, because the list alone
+// cannot carry the loss: every guard downstream compares the resolved column NAMES against the
+// very attoid list they were resolved from, so a list that lost a token — or gained a wrong one
+// — agrees with itself and passes.
 //
-// Two shapes used to come back with `ok == true`:
+// Two shapes must never come back with `ok == true`:
 //
-//   * TRUNCATED AT A COMMA ("7,11," for "7,11,13"): the loop stopped at the last
-//     separator without ever looking at the token behind it, so a two-column key
-//     read back as a two-column key while the third column was gone. The engine
-//     then enforces a NARROWER key than the one declared and refuses writes the
-//     declared key permits.
-//
-//   * A TOKEN TOO LARGE FOR AN OID ("4294967297"): the read went through a
-//     64-bit integer and static_cast the result down to 32 bits, so 2^32 + N
-//     read as N — THE KEY BINDS TO THE NEIGHBOURING COLUMN. One token in, one
-//     token out; the length guard has nothing to notice.
+//   * TRUNCATED AT A COMMA ("7,11," for "7,11,13"): a loop that stops at the last separator
+//     without looking at the token behind it reads a three-column key back as a two-column one,
+//     and the engine then enforces a NARROWER key than the one declared;
+//   * A TOKEN TOO LARGE FOR AN OID ("4294967297"): read through a 64-bit integer and
+//     static_cast down to 32 bits, 2^32 + N reads as N — THE KEY BINDS TO THE NEIGHBOURING
+//     COLUMN, one token in and one token out, with nothing for the length guard to notice.
 //
 // HOW THE ROW IS PRODUCED. The pg_constraint row is built by the engine's own
-// build_create_constraint_writes for the constraint being declared and written
-// through the engine's own append_pg_catalog_row — the same call operator_insert
-// makes for every DDL row. Exactly ONE cell is then different: conkey carries the
-// text a truncated or mis-serialized write leaves behind, which is the only way
-// this population is reachable at all (encode_oid_csv, the writer, emits neither
-// shape).
+// build_create_constraint_writes for the constraint being declared and written through the
+// engine's own append_pg_catalog_row — the same call operator_insert makes for every DDL row.
+// Exactly ONE cell is then different: conkey carries the text a truncated or mis-serialized
+// write leaves behind, which is the only way this population is reachable at all (encode_oid_csv,
+// the writer, emits neither shape).
 // ===========================================================================
 
 namespace {
@@ -509,10 +503,10 @@ TEST_CASE("services::dispatcher::conkey_csv::an_out_of_range_conkey_does_not_bin
 }
 
 // A pg_constraint row whose contype cannot be read is a constraint of UNKNOWN
-// KIND — it may be the UNIQUE the user declared. The decode loop classified rows
-// by that char and skipped whatever it could not classify, so such a row left the
-// constraint set before any of the refusals below it could see it: the same
-// silence as a dropped conkey group, one step earlier in the same loop.
+// KIND — it may be the UNIQUE the user declared. A decode loop that classifies rows
+// by that char and skips what it cannot classify drops such a row out of the
+// constraint set before any of the refusals below can see it: the same silence as a
+// dropped conkey group, one step earlier in the same loop.
 TEST_CASE("services::dispatcher::conkey_csv::a_constraint_row_of_unknown_kind_is_not_skipped") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     test_dispatcher test(mr.get(), catalog_dir("conkey_unknown_kind"));

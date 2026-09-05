@@ -57,11 +57,10 @@ namespace Duckstax.Otterbrix
             walOn = true;
             syncWalToDisk = true;
         }
-        // `disk` parameter removed: every table is disk-backed, so there was nothing for
-        // it to select. It has to go rather than stay as an ignored argument, and
-        // TransferConfig below must lose `diskOn` in lockstep with the C `config_t` --
-        // LayoutKind.Sequential marshals field-for-field, so a stale field there would
-        // shift walOn/syncWalToDisk onto the wrong bytes.
+        // No `disk` parameter: every table is disk-backed, so there is nothing for it to
+        // select. TransferConfig below must stay field-for-field with the C `config_t` --
+        // LayoutKind.Sequential marshals by position, so a stale field there would shift
+        // walOn/syncWalToDisk onto the wrong bytes.
         public Config(LogLevel level,
                       string path,
                       bool wal,

@@ -97,7 +97,7 @@ namespace services::wal {
         // growth trips the threshold; it flushes indexes, checkpoints storage,
         // and truncates the WAL below the checkpoint id. Fire-and-forget so the
         // committer never waits on the checkpoint. See the .cpp for the full
-        // M1.1 truncation/replay-gate invariant.
+        // truncation/replay-gate invariant.
         unique_future<void> run_auto_checkpoint(session_id_t session);
 
         // Writes ONE physical-insert record covering [row_start, row_start + row_count).
@@ -214,9 +214,9 @@ namespace services::wal {
 
         // Size of the WAL directory as of the last completed checkpoint. The "since" counter above
         // is the difference against this, which is what its name and the threshold contract say it
-        // is. That counter used to hold the TOTAL directory size instead: once the WAL had passed
-        // the threshold once, every later commit re-tripped it, and every trip copied each table's
-        // whole .otbx file — measured at one checkpoint per commit, 1009 of them for 10k rows.
+        // is. Holding the TOTAL directory size in that counter instead makes every commit after
+        // the first threshold trip re-trip it, and every trip copies each table's whole .otbx
+        // file — measured at one checkpoint per commit, 1009 of them for 10k rows.
         std::atomic<std::uintmax_t> wal_bytes_at_last_checkpoint_{0};
 
         actor_zeta::address_t manager_disk_;

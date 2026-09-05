@@ -5,7 +5,7 @@
 #include <components/table/data_table.hpp>
 #include <string>
 
-// B0: insert cost must not depend on table size.
+// Insert cost must not depend on table size.
 //
 // agent_disk_t::storage_append_inner used to carry a "dedup" stage inherited from the
 // pre-#460 document store: when the incoming chunk had a column aliased `_id` and the

@@ -1,38 +1,29 @@
 // A DROPPED TABLE MUST TAKE ITS INDEX AGENTS WITH IT.
 //
-// An index agent OWNS an open store: the ordered family a core::b_plus_tree::btree_t over
-// its directory, the hashed one a segment handle, a txn-log handle and a keydir file. The
-// only thing that closes any of that is the agent's destructor, and the only owner is
-// manager_index_t.
-//
-// Both teardown paths used to erase the ROUTING state -- engines_[oid] and the per-oid
-// address vector -- and leave the owning pointer standing:
+// An index agent OWNS an open store: the ordered family a core::b_plus_tree::btree_t over its
+// directory, the hashed one a segment handle, a txn-log handle and a keydir file. The only thing
+// that closes any of that is the agent's destructor, and the only owner is manager_index_t. Both
+// teardown paths must take the OWNING POINTER, not just the routing state:
 //
 //   * unregister_collection is the commit-time (and abort-time) physical teardown:
 //     operator_commit_transaction awaits it for every dropped oid and only then tells
-//     manager_disk_t to free the table's files. It erased two maps and returned.
-//   * on_horizon_advanced sent a terminal drop to each agent of the reclaimed oid and
-//     said in a comment that the owning pointers were "reaped later (next force_flush
-//     pass or base_spaces shutdown)". There was no such reaper. force_flush only flushes,
-//     and shutdown is the end of the process.
+//     manager_disk_t to free the table's files.
+//   * on_horizon_advanced reclaims the oid once the snapshot floor passes its commit id.
 //
-// So every dropped indexed table leaked one agent per index, each holding files open --
-// files the disk manager then unlinked underneath it -- for the life of the process.
+// Erasing the routing maps and leaving the owner standing leaks one agent per index of every
+// dropped indexed table, each holding files open -- files the disk manager then unlinks underneath
+// it -- for the life of the process. There is no later reaper.
 //
-// What the fix may NOT do is free the agent while a message it was sent is still
-// unanswered; that is the hole test_index_agent_lifetime.cpp pins, and it is why the
-// reap here has the same shape drop_index uses: take the ownership into the handler's
-// frame BEFORE the terminal drop is sent (so nothing can address the agent behind it),
-// await the reply, then let the frame destroy it.
+// What the teardown may NOT do is free the agent while a message it was sent is still unanswered;
+// that is the hole test_index_agent_lifetime.cpp pins, and it is why the reap here has the same
+// shape drop_index uses: take the ownership into the handler's frame BEFORE the terminal drop is
+// sent, await the reply, then let the frame destroy it.
 //
-// The witness is services::index::live_index_agents() -- a DEV_MODE count bumped in each
-// agent's constructor and destructor. It is what separates "the table was dropped" from
-// "the table was dropped AND its agent was freed"; no assertion about maps, addresses or
-// files can tell those two apart.
-//
-// Both cases drive the manager and the agent by hand (the manager's handlers are called
-// directly, the agent is pumped with cooperative_actor::resume(1)) so the interleaving is
-// chosen rather than raced for.
+// The witness is services::index::live_index_agents() -- a DEV_MODE count bumped in each agent's
+// constructor and destructor. It separates "the table was dropped" from "the table was dropped AND
+// its agent was freed"; no assertion about maps, addresses or files can tell those two apart. Both
+// cases drive the manager and the agent by hand (handlers called directly, the agent pumped with
+// cooperative_actor::resume(1)) so the interleaving is chosen rather than raced for.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself

@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 
-// Three-valued logic in the CASE expression evaluator (arithmetic_eval.cpp), used for a CASE in a
-// projection or aggregate. Two independent defects:
+// Three-valued logic in the CASE expression evaluator, used for a CASE in a projection or
+// aggregate. Two independent defects:
 //   1. a NOT inside a WHEN was ignored (union_not was folded like union_or), so `WHEN NOT (p)`
 //      behaved as `WHEN (p)`; and a NULL operand was two-valued (UNKNOWN collapsed to FALSE, then
 //      NOT could resurrect it).

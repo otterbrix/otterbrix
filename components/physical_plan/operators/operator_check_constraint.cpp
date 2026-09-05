@@ -25,10 +25,9 @@ namespace components::operators {
             return std::nullopt;
         }
 
-        // (constant_leaf(true) used to live here, for the three arms that compiled a
-        // MISSED column name into the constant TRUE. Those arms refuse now — a CHECK
-        // over a name the table does not have is a constraint enforced by nothing —
-        // so nothing builds a constant predicate any more.)
+        // NOTHING HERE BUILDS A CONSTANT PREDICATE. A CHECK over a name the table does not
+        // have is a constraint enforced by nothing, so those arms refuse instead of
+        // compiling to the constant TRUE.
 
         expressions::param_storage column_operand(std::pmr::memory_resource* r, size_t ordinal) {
             expressions::key_t key(r);
@@ -56,17 +55,16 @@ namespace components::operators {
             return expressions::param_storage{id};
         }
 
-        // (There used to be a find_default() here, and a `defaults` member on the build
-        // context: the compiled predicate decided an ABSENT column's fate from the plan's
-        // copy of its DEFAULT. Absent columns no longer reach this operator — the insert
-        // expands them — and deciding from a second copy of the default is precisely how
-        // a CHECK came to admit a row whose stored value it had never seen.)
+        // NO DEFAULTS ARE CONSULTED HERE. Absent columns do not reach this operator — the
+        // insert expands them — and deciding an absent column's fate from the plan's own
+        // copy of its DEFAULT is precisely how a CHECK comes to admit a row whose stored
+        // value it never saw.
 
         // Parse a literal constant string into a logical_value_t without a type hint.
-        // The WHOLE text must be one literal: a partial parse used to answer with what
-        // it managed to read and nothing said so, which turned `a > 1 + 1` into `a > 1`
-        // and `lo <= hi` into `lo <= 0` — a different constraint than the declared one,
-        // enforced silently. Nothing consumable => nullopt, and the caller refuses.
+        // The WHOLE text must be one literal: a partial parse answering with what it
+        // managed to read turns `a > 1 + 1` into `a > 1` and `lo <= hi` into `lo <= 0` —
+        // a different constraint than the declared one, enforced silently. Nothing
+        // consumable => nullopt, and the caller refuses.
         std::optional<types::logical_value_t> parse_const(std::pmr::memory_resource* r, std::string_view s) {
             if (s.size() >= 2 && s.front() == '\'' && s.back() == '\'')
                 return types::logical_value_t(r, std::string(s.substr(1, s.size() - 2)));
@@ -157,9 +155,9 @@ namespace components::operators {
         };
 
         // A CHECK whose text this recogniser cannot read is a constraint that would be
-        // enforced by NOTHING. It used to compile to the constant TRUE and say nothing;
-        // the declaration path (deparse_check_expr) now refuses these shapes, and this is
-        // the last line of defence for a text that reached the catalog by another route.
+        // enforced by NOTHING, so it is refused rather than compiled to the constant TRUE.
+        // The declaration path (deparse_check_expr) refuses these shapes too; this is the
+        // last line of defence for a text that reached the catalog by another route.
         core::error_t unevaluable(std::pmr::memory_resource* r,
                                   const check_build_context& ctx,
                                   std::string_view expr,
@@ -242,15 +240,12 @@ namespace components::operators {
             if (expr.size() > kIsNotNull.size() &&
                 find_top_level(expr, kIsNotNull) == expr.size() - kIsNotNull.size()) {
                 auto col = std::string(trim(expr.substr(0, expr.size() - kIsNotNull.size())));
-                // Every table column is IN the row by the time this runs: an INSERT that
-                // omitted one had it expanded (to its DEFAULT, or NULL) before the append,
-                // and CHECK is refused on dynamic-schema tables at DDL — so a name that is
-                // still not here names NO column of this table. It used to compile to the
-                // constant TRUE, which is this operator's SUCCESS path: the declared
-                // constraint judged nothing, silently. The declaration path now writes the
-                // mentioned names onto the node and the DDL guard refuses the typo; this
-                // is the last line of defence for a constraint that reached the catalog by
-                // another route, and it answers the same way.
+                // Every table column is IN the row by the time this runs: an INSERT that omitted one had it
+                // expanded (to its DEFAULT, or NULL) before the append, and CHECK is refused on dynamic-schema
+                // tables at DDL — so a name that is still not here names NO column of this table. Compiling it to
+                // the constant TRUE is this operator's SUCCESS path: the declared constraint would judge nothing,
+                // silently. The declaration path writes the mentioned names onto the node and the DDL guard refuses
+                // the typo; this is the last line of defence for a constraint that reached the catalog otherwise.
                 auto ordinal = find_col_index(*ctx.chunk, col);
                 if (!ordinal.has_value()) {
                     return unevaluable(r, ctx, expr, "the column \"" + col + "\" does not exist in the written row");
@@ -304,20 +299,17 @@ namespace components::operators {
                 auto const_val = parse_const(r, const_text);
                 if (!const_val.has_value()) {
                     // Not a literal at all: another column (`lo <= hi`), or arithmetic
-                    // (`a > 1 + 1`). Both used to be read as the number this parser could
-                    // scavenge from the text — 0 and 1 respectively — so the row was judged
-                    // against a bound nobody wrote.
+                    // (`a > 1 + 1`). Read as the number this parser can scavenge from the
+                    // text — 0 and 1 respectively — the row would be judged against a bound
+                    // nobody wrote.
                     return unevaluable(r, ctx, expr, std::string{"\""} + std::string{const_text} +
                                                          "\" is not a constant");
                 }
 
-                // (An `apply` lambda used to fold a compare_t into this operator's answer,
-                // for the one caller that decided an ABSENT column's comparison against the
-                // plan's copy of its DEFAULT. That caller is gone with the absent case.)
                 auto ordinal = find_col_index(*ctx.chunk, col_name);
                 if (!ordinal.has_value()) {
                     // Not a column of this table at all (see the IS NOT NULL arm): a CHECK
-                    // over it compares nothing, and compiling it to TRUE enforced the
+                    // over it compares nothing, and compiling it to TRUE would enforce the
                     // declared constraint with nothing.
                     return unevaluable(r, ctx, expr,
                                        "the column \"" + col_name + "\" does not exist in the written row");
@@ -346,8 +338,8 @@ namespace components::operators {
                                                 &convertible);
                 if (!convertible) {
                     // The literal does not fit the column's type, so there is no comparison
-                    // to make. Passing the row was the same silence as the unrecognised case:
-                    // the constraint the user declared judged nothing.
+                    // to make. Passing the row is the same silence as the unrecognised case:
+                    // the constraint the user declared would judge nothing.
                     return unevaluable(r,
                                        ctx,
                                        expr,
@@ -360,8 +352,8 @@ namespace components::operators {
                                : expressions::make_compare_expression(r, compare_type_of(), column, literal)};
             }
 
-            // Unrecognised expression. It used to compile to the constant TRUE, which is
-            // how a declared constraint came to be enforced by nothing at all.
+            // Unrecognised expression. Compiling it to the constant TRUE is how a declared
+            // constraint comes to be enforced by nothing at all.
             return unevaluable(r, ctx, expr, "the expression is not a comparison this engine can evaluate");
         }
 
@@ -457,12 +449,10 @@ namespace components::operators {
                 continue;
             }
 
-            // NOT NULL checks over the MATERIALISED row. An INSERT that omitted the
-            // column had it expanded before the append — to its DEFAULT, or to NULL when
-            // there is none — so the validity bit answers the question directly, for the
-            // value that was actually stored. (An INSERT omitting a PRIMARY KEY column,
-            // which pg_attribute never marks attnotnull, therefore fails here on the NULL
-            // that was written, not on a plan-side guess about what would be.)
+            // NOT NULL checks over the MATERIALISED row. An INSERT that omitted the column had it expanded
+            // before the append — to its DEFAULT, or to NULL when there is none — so the validity bit answers
+            // the question directly, for the value that was actually stored. (An INSERT omitting a PRIMARY KEY
+            // column, which pg_attribute never marks attnotnull, therefore fails here on the NULL written.)
             for (const auto& col_name : not_null_columns_) {
                 bool found = false;
                 for (uint64_t col = 0; col < chunk.column_count(); ++col) {
@@ -486,13 +476,11 @@ namespace components::operators {
                 }
             }
 
-            // Fixed-ARRAY element checks. A value shorter than the column's declared size is
-            // reconciled to it by padding NULL (casts::array_cast), and this validates the rows
-            // the DML has ALREADY written — so the pad has happened and the short value is no
-            // longer short. What survives it is a NULL element, which is what a NOT NULL column
-            // cannot hold, so that is what is tested. The length is still compared for a write-set
-            // that reaches here unreconciled. Validated per column: one bad element fails the
-            // operation.
+            // Fixed-ARRAY element checks. A value shorter than the column's declared size is reconciled to it by
+            // padding NULL (casts::array_cast), and this validates the rows the DML has ALREADY written — so the
+            // pad has happened and the short value is no longer short. What survives it is a NULL element, which
+            // a NOT NULL column cannot hold, so that is what is tested. The length is still compared for a
+            // write-set that reaches here unreconciled. Validated per column: one bad element fails the operation.
             for (const auto& [col_name, required_size] : array_size_reqs_) {
                 for (uint64_t col = 0; col < chunk.column_count(); ++col) {
                     if (chunk.data[col].type().alias() != col_name)

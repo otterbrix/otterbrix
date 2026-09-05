@@ -80,8 +80,8 @@ namespace services::dispatcher {
     // The persistent form of a column type (components::types::encode_type_spec, which
     // writes the table checkpoint and every WAL chunk header) refuses a DECIMAL outside
     // the width/scale window and nesting past the format depth limit. Both are reachable
-    // from ordinary SQL, and both used to be refused only by the READER: the checkpoint
-    // succeeded and the next startup failed with data_corruption, permanently, with no
+    // from ordinary SQL, and refused only by the READER they cost a checkpoint that
+    // succeeds and a next startup that fails with data_corruption, permanently, with no
     // statement left to blame. Asking the real encoder here — not a copy of its rules —
     // is what keeps the DDL window and the durable window the same window.
     //

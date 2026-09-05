@@ -33,9 +33,17 @@ namespace otterbrix {
             return !ec && empty;
         }
 
-        // There is no engine resource to borrow here: the space is what this
-        // function is about to build. new_delete_resource() is the standing
-        // stand-in — never std::pmr::get_default_resource() (rule 14).
+        // There is no engine resource to borrow here, and this one is checkable: the
+        // engine's arena is a MEMBER of the space (base_otterbrix_t::resource,
+        // integration/cpp/base_spaces.hpp:85), and every refusal below returns before
+        // make_otterbrix builds one — borrowing it would mean constructing the engine
+        // inside the very directory the refusal exists to leave alone. So
+        // new_delete_resource() is the standing stand-in — never
+        // std::pmr::get_default_resource() (rule 14).
+        //
+        // The only real exit is a resource ARGUMENT, and it cannot start here: make_space's
+        // caller (open_space_or_raise in pyconnection.cpp) holds no arena of its own either,
+        // so the arena would have to be owned one level further up again.
         core::error_t path_error(core::error_code_t code, const std::string& what) {
             return core::error_t{code, std::pmr::string{what, std::pmr::new_delete_resource()}};
         }
@@ -46,11 +54,11 @@ namespace otterbrix {
 
     core::result_wrapper_t<boost::intrusive_ptr<otterbrix_t>>
     connection_environment_t::make_space(const std::filesystem::path& path) {
-        // Opening a database OPENS it. This used to be
+        // Opening a database OPENS it. Never
         //     std::filesystem::remove_all(path);
         //     std::filesystem::create_directory(path);
-        // so `otterbrix.connect("/my/db")` destroyed /my/db before running a single
-        // statement — the user lost the database by connecting to it. Nothing asks
+        // here: that makes `otterbrix.connect("/my/db")` destroy /my/db before a single
+        // statement runs — the user loses the database by connecting to it. Nothing asks
         // for that: every Python test in integration/python/tests that wants a clean
         // slate calls shutil.rmtree itself before opening. Wiping stays the caller's
         // explicit act; it is not a side effect of a constructor.

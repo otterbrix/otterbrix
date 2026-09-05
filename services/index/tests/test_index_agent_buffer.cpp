@@ -1,26 +1,20 @@
 // THE PER-TRANSACTION BUFFER, ASKED OF THE AGENT THAT NOW OWNS IT.
 //
-// These contracts came from components/index/test/test_index_mvcc.cpp and
-// test_hash_single_field_index.cpp, where their subject was a "facade" object -- a
-// registered index_t whose seven read/write doors all aborted because it held neither
-// rows nor a search, and whose only real content was this buffer. The facade is gone and
-// the buffer sits beside the store it belongs to, so the same contracts are asked HERE,
-// through the mailbox, of both families:
+// The buffer sits beside the store it belongs to, so its contracts are asked through the mailbox,
+// of both families:
 //
 //   * a transaction sees its OWN staged insert and no other transaction's;
 //   * a staged delete hides a row from the transaction that staged it;
 //   * an abort erases the bucket; a commit publishes it and clears it;
 //   * a HASHED key is NORMALIZED before it is keyed, so a SMALLINT probe matches a
 //     BIGINT-stored key;
-//   * an ORDERED agent answers all six predicates over its buckets, a hashed one refuses
-//     the five it has no ordering for -- with a value, not a signal.
+//   * an ORDERED agent answers all six predicates over its buckets, a hashed one refuses the
+//     five it has no ordering for -- with a value, not a signal.
 //
-// WHAT THE MOVE ADDS, and what could not be asked of the facade at all: the answer that
-// comes back is BOTH halves. The facade had no store to read, so its cases could only
-// ever see the buffer; here a committed row and a staged one arrive in one reply, which
-// is what a statement actually gets.
-//
-// Each agent is driven by hand (cooperative_actor::resume(1)) so no scheduler decides an
+// WHAT THE MOVE ADDS, and what could not be asked of the facade at all: the answer that comes back
+// is BOTH halves. The facade had no store to read, so its cases could only ever see the buffer;
+// here a committed row and a staged one arrive in one reply, which is what a statement actually
+// gets. Each agent is driven by hand (cooperative_actor::resume(1)) so no scheduler decides an
 // interleaving behind the test's back.
 
 // clang-format off
@@ -449,19 +443,19 @@ TEST_CASE("services::index::a NULL key is neither staged nor matched") {
 }
 
 // ---------------------------------------------------------------------------------------
+//
 // THE STORE'S REFUSAL IS THE HANDLER'S ANSWER, and the buckets go with it either way.
 //
-// index_agent_contract::clear returns a core::error_t and manager_index_t::repopulate_table
-// awaits it and folds it into its first_error -- but the hashed agent used to discard what
-// the store said and co_return no_error unconditionally, so the fold was over a constant. A
-// CHECKPOINT whose index rebuild refused therefore reported a clean rebuild, and the table and
-// its index disagreed with nothing anywhere saying so.
+// index_agent_contract::clear returns a core::error_t and manager_index_t::repopulate_table awaits
+// it and folds it into its first_error. An agent that discarded what the store said and co_returned
+// no_error unconditionally would make that fold a fold over a constant: a CHECKPOINT whose index
+// rebuild refused would report a clean rebuild, and the table and its index would disagree with
+// nothing anywhere saying so.
 //
-// The second half is the ordering risk the same FIFO carries: stage_inserts and
-// commit_inserts are queued right behind this clear, on the same agent, in the same
-// repopulate. If the buckets survived a refused clear, that commit would publish rows into
-// the index this call failed to empty -- so they are dropped even on the refusal, and the
-// commit that follows meets the store's own refusal rather than turning it into a success.
+// The second half is the ordering risk the same FIFO carries: stage_inserts and commit_inserts are
+// queued right behind this clear, on the same agent, in the same repopulate. If the buckets
+// survived a refused clear, that commit would publish rows into the index this call failed to empty
+// -- so they are dropped even on the refusal.
 TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal to clear") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -528,12 +522,11 @@ TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal
     std::filesystem::remove_all(path);
 }
 
-// Wave entry #305. A directory-listing refusal met by the merge a write handler pays for
-// (pay_merge_debt -> merge_immutable_segments -> collect_segments) used to be PARKED in
-// pending_write_error_ and surfaced on the NEXT force_flush -- i.e. at step (a) of a
-// LATER round, which is exactly where a debugger then went looking for a failure that
-// happened at step (c2) of this one. The refusal comes back from the handler that ran
-// the merge now, and nothing is left behind for the next round to trip over.
+// A directory-listing refusal met by the merge a write handler pays for (pay_merge_debt ->
+// merge_immutable_segments -> collect_segments) must not be PARKED in pending_write_error_ and
+// surfaced on the NEXT force_flush: that reports a failure of this round at a step of a later
+// one, which is where a debugger then goes looking. The refusal comes back from the handler
+// that ran the merge, and nothing is left behind for the next round to trip over.
 TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the round that met it") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -584,7 +577,7 @@ TEST_CASE("services::index::bitcask_index_agent_t reports a merge refusal in the
                       .contains_error());
     auto commit2 = ask<&index_agent_contract::commit_inserts>(agent, session, txn2);
     INFO("the merge met the unlistable directory inside THIS commit; the reply must say so");
-    // RED before the fix: no_error here, and the refusal surfaced on the NEXT force_flush.
+    // What this catches: no_error here, with the refusal surfacing on the NEXT force_flush.
     REQUIRE(commit2.contains_error());
 
     // The device heals; the next flush must be CLEAN -- nothing may still be parked from

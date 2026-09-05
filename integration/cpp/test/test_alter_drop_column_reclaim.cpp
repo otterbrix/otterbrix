@@ -18,27 +18,27 @@
 #include <string>
 #include <vector>
 
-// B3c1 — ALTER TABLE DROP COLUMN must reach the storage primitive.
+// ALTER TABLE DROP COLUMN must reach the storage primitive.
 //
-// B3c made table_storage_t::drop_column whole (rebuild now, blocks NAMED into
-// pending_released_blocks_, released by the checkpoint round that can commit the release), and
-// gated that behaviour with services::disk::table_storage::drop_column_disk_frees_blocks — a
-// test that calls the primitive DIRECTLY. Nothing called it from the ALTER path: the operator
-// wrote the pg_attribute tombstone and stopped, so on a regular disk table the physical column
-// survived every DROP forever. This test judges the SQL statement instead of the primitive.
+// table_storage_t::drop_column is whole (rebuild, blocks NAMED into pending_released_blocks_,
+// released by the checkpoint round that can commit the release), gated by
+// services::disk::table_storage::drop_column_disk_frees_blocks — a test that calls the primitive
+// DIRECTLY. Nothing called it from the ALTER path: the operator wrote the pg_attribute tombstone
+// and stopped, so on a regular disk table the physical column survived every DROP forever. This
+// test judges the SQL statement instead of the primitive.
 //
 // SHAPE, and every part of it is load-bearing:
 //   * column "b" is bigint[40] — 40 * 8 B * 2048 rows = 640 KiB of child payload per row group,
 //     past partial_block_manager_t's FULL_THRESHOLD, so b's segments take DEDICATED blocks that
-//     "a" cannot share. Without that (F6's technique, reused here) B2 packs several columns'
-//     segments into ONE 256 KiB block and a dropped column that shares blocks with a survivor
-//     looks reclaimed when nothing happened at all;
+//     "a" cannot share. Without that, block packing puts several columns' segments into ONE
+//     256 KiB block and a dropped column sharing blocks with a survivor looks reclaimed when
+//     nothing happened;
 //   * rows are added in TWO rounds around a checkpoint, so some of b's blocks are named by no
-//     durable root — A7.3's reclaim_superseded_root walks only the root's own data blocks and
-//     is structurally blind to those;
-//   * every measurement is taken with the ENGINE DOWN, against a freshly loaded .otbx. That is
-//     both the walker's "right after load" contract and the A7.4 lesson: a leak or a bad free
-//     usually shows only on a reopened file;
+//     durable root — reclaim_superseded_root walks only the root's own data blocks and is
+//     structurally blind to those;
+//   * every measurement is taken with the ENGINE DOWN, against a freshly loaded .otbx: both the
+//     walker's "right after load" contract and the rule that a leak or a bad free usually shows
+//     only on a reopened file;
 //   * the file is walked once more after two further empty checkpoint rounds, because an
 //     un-released block keeps costing round over round.
 //
@@ -101,8 +101,8 @@ namespace {
         }
         components::table::storage::single_file_block_manager_t* bm = nullptr;
         {
-            // Counted collection copy scoped to reading the manager reference out of it
-            // (ITEM C): a holder kept alive across a reclaim keeps block handles alive too.
+            // Counted collection copy scoped to reading the manager reference out of it: a
+            // holder kept alive across a reclaim keeps block handles alive too.
             auto collection = ts.table().row_group();
             bm = static_cast<components::table::storage::single_file_block_manager_t*>(&collection->block_manager());
         }
@@ -212,15 +212,15 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_re
     auto after = walk_offline(otbx, &resource);
     REQUIRE(after.report.ok);
 
-    // The wiring itself: the reopened file's own schema no longer carries the column. Before
-    // B3c1 the ALTER wrote only the tombstone, so this is where the test goes red.
+    // The wiring itself: the reopened file's own schema no longer carries the column. An ALTER
+    // that writes only the tombstone goes red here.
     INFO("columns after the drop: " << after.columns.size());
     CHECK(after.columns.size() == 1);
     CHECK(after.columns.front() == "a");
 
     // Blocks the durable root named before the drop and does not name after it must all be
     // accounted for: back in the free list, or still held by a surviving column that shares
-    // the block (B2 packing).
+    // the block (packing).
     std::set<uint64_t> gone;
     for (auto id : before.report.root_data) {
         if (after.report.root_data.count(id) == 0) {
@@ -233,9 +233,9 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_re
     REQUIRE_FALSE(gone.empty());
     for (auto id : gone) {
         // "Came back" has exactly three honest shapes: published in the free list, still held
-        // by a surviving column that shared the block (B2 packing), or already re-issued as
-        // this round's metadata chain. Anything else is a block named by no owner — which is
-        // what the pre-B3c1 run produced (block 52, below).
+        // by a surviving column that shared the block (packing), or already re-issued as
+        // this round's metadata chain. Anything else is a block named by no owner — the shape
+        // a tombstone-only DROP produces (block 52, below).
         INFO("block " << id << " left the durable root when column b was dropped");
         CHECK((after.report.free_list_content.count(id) != 0 || after.report.registry_live.count(id) != 0 ||
                after.report.chain_blocks.count(id) != 0));
@@ -273,28 +273,27 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::disk_drop_column_re
     CHECK(settled.file_size <= after.file_size);
 }
 
-// B3c2 — a crash between the ALTER's commit and the table's next checkpoint must not leak the
+// A crash between the ALTER's commit and the table's next checkpoint must not leak the
 // dropped column's space FOREVER.
 //
-// B3c1 closed the live path: the commit names the outgoing column's blocks into
+// The live path: the commit names the outgoing column's blocks into
 // table_storage_t::pending_released_blocks_ and the next checkpoint releases them. That set is
-// IN MEMORY. Kill the process in between and it is gone, while the disk keeps two durable
-// facts that disagree: the pg_attribute tombstone (attisdropped = true, durable through the WAL
-// commit marker) and the column itself, still physically present because the durable root was
-// never rewritten. The table reloads with the column BACK in its collection, the catalog hides
-// it, every query looks right — and nothing can ever re-derive the drop. compact() will not:
+// IN MEMORY. Kill the process in between and it is gone, while the disk keeps two durable facts
+// that disagree: the pg_attribute tombstone (attisdropped = true, durable through the WAL commit
+// marker) and the column itself, still physically present because the durable root was never
+// rewritten. The table reloads with the column BACK in its collection, the catalog hides it,
+// every query looks right — and nothing can ever re-derive the drop, compact() least of all:
 // after the reload the column is genuinely part of the collection, so its blocks are live.
 //
 // THE CRASH. `test_spaces`' destructor issues a CHECKPOINT, so a clean scope exit would perform
-// exactly the release this test needs to be missing. The fault-injection seam is what makes the
-// kill real: arming fail_writes_from AFTER the ALTER makes every later .otbx write fail, so no
-// header commits for any table and the durable files stay byte-identical — the conservative
-// crash semantics. The WAL is a different file and does NOT go through the block manager's
-// interposer, so the ALTER's commit marker survives, which is the whole point: the tombstone
-// must be durable while the physical drop is not.
+// exactly the release this test needs to be missing. Arming fail_writes_from AFTER the ALTER
+// makes every later .otbx write fail, so no header commits for any table and the durable files
+// stay byte-identical (conservative crash semantics). The WAL is a different file and does NOT
+// go through the block manager's interposer, so the ALTER's commit marker survives — the whole
+// point: the tombstone must be durable while the physical drop is not.
 //
 // The shape is the sibling test's, for the same reasons: bigint[40] so b's segments take
-// DEDICATED blocks past FULL_THRESHOLD (B2 packing would otherwise hand b's ids to a's walk and
+// DEDICATED blocks past FULL_THRESHOLD (packing would otherwise hand b's ids to a's walk and
 // hide the question), rows added in two rounds around the checkpoint, and every measurement
 // taken with the engine DOWN against a freshly loaded .otbx.
 TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::crash_before_checkpoint_rearms_the_release") {
@@ -392,7 +391,7 @@ TEST_CASE("integration::cpp::test_alter_drop_column_reclaim::crash_before_checkp
 
     // GATE 3 — nothing was orphaned on the way. Every block the crashed root named that the new
     // root does not must be back in the free list, still held by a surviving column sharing the
-    // block (B2 packing), or already re-issued as this round's metadata chain.
+    // block (packing), or already re-issued as this round's metadata chain.
     std::set<uint64_t> gone;
     for (auto id : crashed.report.root_data) {
         if (after.report.root_data.count(id) == 0) {

@@ -158,12 +158,11 @@ namespace components::vector {
         return v.type().type() != types::logical_type::NA && v.data() == nullptr && v.auxiliary() == nullptr;
     }
 
-    // An NA-typed column carries NO payload: every value is null by definition, and
-    // vector_t's ctor deliberately builds it CONSTANT rather than FLAT (vector.cpp:71).
-    // Copying such a column is a no-op, so the FLAT-destination assert below must not
-    // fire on it. Without this, `INSERT ... VALUES (…, NULL)` aborted at plan creation
-    // (operator_raw_data_t -> data_chunk_t::copy) under DEV_MODE asserts, taking the
-    // whole test binary with it.
+    // An NA-typed column carries NO payload: every value is null by definition, and vector_t's
+    // ctor deliberately builds it CONSTANT rather than FLAT. Copying such a column is a no-op,
+    // so the FLAT-destination assert below must not fire on it. Without this,
+    // `INSERT ... VALUES (…, NULL)` aborts at plan creation (operator_raw_data_t ->
+    // data_chunk_t::copy) under DEV_MODE asserts, taking the whole test binary with it.
     static bool is_null_typed(const vector_t& v) noexcept {
         return v.type().type() == types::logical_type::NA;
     }
@@ -396,8 +395,8 @@ namespace components::vector {
             }
         }
         // An embedder asking for a name this chunk does not carry is USER input, not an
-        // invariant: it must come back as an error, not as the SIZE_MAX sentinel that stood
-        // here behind a bare assert (and indexed the chunk out of bounds under NDEBUG).
+        // invariant: it must come back as an error, not as a SIZE_MAX sentinel behind a bare
+        // assert, which indexes the chunk out of bounds under NDEBUG.
         std::pmr::string message{resource_};
         message.append("data_chunk_t::column_index: no column named \"");
         message.append(key);
@@ -408,8 +407,8 @@ namespace components::vector {
     core::result_wrapper_t<std::pmr::vector<size_t>>
     data_chunk_t::sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const {
         // A path this chunk cannot resolve is USER input, exactly as in column_index
-        // above: it comes back as an error, not as the {size_t(-1)} sentinel that stood
-        // here behind a bare assert (and indexed the chunk out of bounds under NDEBUG).
+        // above: it comes back as an error, not as a {size_t(-1)} sentinel behind a bare
+        // assert, which indexes the chunk out of bounds under NDEBUG.
         auto missing = [&](std::string_view segment) {
             std::pmr::string message{resource_};
             message.append("data_chunk_t::sub_column_indices: no column or field named \"");

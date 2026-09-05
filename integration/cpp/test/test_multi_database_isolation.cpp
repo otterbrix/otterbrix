@@ -433,11 +433,11 @@ TEST_CASE("integration::cpp::multi_database_isolation::alter_column_isolated") {
     // table and db1 stays untouched. It deliberately does NOT assert that the
     // rename itself took effect; that is now gated by
     // integration/cpp/test/test_alter_rename_column.cpp, which covers both the
-    // statement and the storage half it is bound to. (This note used to record
-    // the rename as a silent no-op: node_alter_column_t::set_attoid has no
-    // callers anywhere in the pipeline, so operator_alter_column_rename_t took
-    // its early return with attoid_==INVALID_OID and reported success. It now
-    // resolves by (attrelid, attname), the same move B3c1 made for DROP.)
+    // statement and the storage half it is bound to. (The rename is a silent no-op
+    // whenever operator_alter_column_rename_t has to fall back on attoid_:
+    // node_alter_column_t::set_attoid has no callers anywhere in the pipeline, so it
+    // would take its early return on INVALID_OID and report success. It resolves by
+    // (attrelid, attname), as DROP COLUMN does.)
     {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "ALTER TABLE db2.t1 RENAME COLUMN id TO id2;")->is_success());

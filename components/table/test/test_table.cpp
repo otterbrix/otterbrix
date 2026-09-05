@@ -64,12 +64,9 @@ TEST_CASE("components::table::data_table") {
     union_fields.emplace_back(logical_type::STRING_LITERAL, "string");
     complex_logical_type union_type = complex_logical_type::create_union(union_fields, "test_union");
 
-    // B4: the substrate is a real .otbx. `test_size` above is deliberately more than one row
-    // group, so closing a group writes its segments through to the file — this case genuinely
-    // reaches the disk transition. It used to run on the file-less block manager, kept harmless
-    // by a block_manager_t predicate that went with the in-memory table mode it named, and
-    // every I/O virtual of the file-less manager now aborts instead of pretending. Only the
-    // substrate changes here: every assertion below is unchanged.
+    // The substrate is a real .otbx. `test_size` above is deliberately more than one row group,
+    // so closing a group writes its segments through to the file — this case genuinely reaches
+    // the disk transition. Substrate only: no assertion below is about it.
     const std::string db_path = "/tmp/test_otterbrix_data_table_" + std::to_string(::getpid()) + ".otbx";
     std::remove(db_path.c_str());
     core::filesystem::local_file_system_t fs;
@@ -375,7 +372,7 @@ TEST_CASE("components::table::data_table") {
             }
             data_chunk_t result(&resource, data_table->copy_types(), count);
             // Rows appended at txn 0 and never deleted: visible to any snapshot. The mode is
-            // spelled out because fetch_visibility_t carries no default (C4b).
+            // spelled out because fetch_visibility_t carries no default.
             data_table->fetch(result,
                               column_indices,
                               rows,

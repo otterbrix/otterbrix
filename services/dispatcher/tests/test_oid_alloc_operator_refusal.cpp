@@ -28,45 +28,38 @@
 #include <services/disk/tests/catalog_probe.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
-// THREE OPERATORS MINT THEIR OWN CATALOG IDENTITY, AND USED TO WRITE THE ROW EVEN WHEN THE
-// ROUND HAD NOT DELIVERED ONE.
+// THREE OPERATORS MINT THEIR OWN CATALOG IDENTITY AND MUST CHECK THAT THE ROUND DELIVERED ONE.
 //
-// CREATE TABLE and its DDL siblings take their OIDs from the planner's allocation round, which
-// is checked twice (oid_batch_t::make against compute_oid_demand, then overrun() after the
-// rewrite). operator_register_udf_t (pg_proc), operator_register_cast_t (pg_cast) and
-// operator_alter_column_add_t (pg_attribute) do NOT: each runs its own one-OID round against
-// the disk actor at execute time, and each used to spend it unchecked —
+// CREATE TABLE and its DDL siblings take their OIDs from the planner's allocation round, which is
+// checked twice (oid_batch_t::make against compute_oid_demand, then overrun() after the rewrite).
+// operator_register_udf_t (pg_proc), operator_register_cast_t (pg_cast) and
+// operator_alter_column_add_t (pg_attribute) do NOT: each runs its own one-OID round against the
+// disk actor at execute time —
 //     batch.oids = co_await allocate_oids_batch(1); const oid_t id = batch.allocate();
-// manager_disk_t::allocate_oids_batch has no error channel, so a round that did not deliver
-// comes back as an EMPTY vector; allocate() on an exhausted batch answers INVALID_OID and
-// latches a sticky overrun() flag, and NONE of the three looked at it.
-//
-// BEFORE, therefore, all three REPORTED SUCCESS and left a durable row stamped with
-// INVALID_OID (= 0):
+// manager_disk_t::allocate_oids_batch has no error channel, so a round that did not deliver comes
+// back as an EMPTY vector; allocate() on an exhausted batch answers INVALID_OID and latches a
+// sticky overrun() flag. Spending that unchecked REPORTS SUCCESS and leaves a durable row stamped
+// with INVALID_OID (= 0) — rule 16 ("a catalog object always carries an OID") broken durably and
+// announced as success:
 //   * pg_proc      — a function whose identity is what pg_depend and every later lookup key on;
 //   * pg_cast      — worse than useless: find_cast_oid reads that 0 back as "there is no such
 //                    cast", so the row is unreachable AND undeletable by DROP CAST;
-//   * pg_attribute — a column whose attoid is what the RN-oid backfill hands to the storage
+//   * pg_attribute — a column whose attoid is what the ADD COLUMN backfill hands to the storage
 //                    that will materialise it, and what a later DROP COLUMN tombstones on.
-// Rule 16 says a catalog object always carries an OID. A row with 0 in the identity column is
-// that rule broken durably, announced as success.
 //
-// THE INJECTION. The round is a message round-trip to the disk actor over an in-memory
-// counter: no file, no page, so neither the .otbx interposer nor the WAL one can reach it and
-// there is no device to fail. It has its own narrow DEV_MODE seam
+// THE INJECTION. The round is a message round-trip to the disk actor over an in-memory counter: no
+// file, no page, so neither the .otbx interposer nor the WAL one can reach it and there is no
+// device to fail. It has its own narrow DEV_MODE seam
 // (services::collection::executor::dev_set_oid_alloc_interposer), and an EMPTY batch is not an
-// invented state — it is the exact value the round's real failure branches answer with. The
-// seam used to be consulted only inside executor_t::allocate_oids_inline, which these three
-// rounds never pass through; components/physical_plan/operators/single_oid_round.hpp now
-// consults the SAME seam object for them, once per round.
+// invented state — it is the exact value the round's real failure branches answer with.
+// executor_t::allocate_oids_inline consults that seam and these three rounds never pass through
+// it, so components/physical_plan/operators/single_oid_round.hpp consults the SAME seam object for
+// them, once per round.
 //
 // SENSITIVITY IS PROVEN INSIDE EACH TEST: the same seam object is installed for the CONTROL
 // statement (pass-through — it must succeed and write a real identity) and for the faulted one,
 // and each test asserts on the seam's own counters that the round was seen both times and
-// substituted exactly once. A seam that had gone dead cannot satisfy both halves.
-//
-// EVERY TEST ASSERTS THE CATALOG'S CONTENT, not only the status: is the row there, and what
-// identity does it carry.
+// substituted exactly once. Every test asserts the CATALOG'S CONTENT, not only the status.
 
 using namespace services;
 using namespace services::dispatcher;
@@ -421,15 +414,15 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_udf_refuse
                                       components::compute::function_ptr{make_probe_func(mr.get(), broken_name)});
     fault.arm = false;
 
-    // THE CATALOG IS ASSERTED FIRST — it is the damage. BEFORE: a pg_proc row for
-    // `broken_name` existed and its oid column held 0, a function with no identity that
+    // THE CATALOG IS ASSERTED FIRST — it is the damage: an unchecked round leaves a pg_proc
+    // row for `broken_name` whose oid column holds 0, a function with no identity that
     // survives restart.
     const auto broken_oids = test.pg_proc_oids(broken_name);
     INFO("pg_proc rows for the refused function: " << broken_oids.size()
                                                    << (broken_oids.empty() ? "" : " (first oid: 0 means INVALID)"));
     REQUIRE(broken_oids.empty());
 
-    // ...and the caller was told. BEFORE: no error at all — the registration reported success.
+    // ...and the caller is told; unchecked, the registration reports success with no error.
     REQUIRE(err.contains_error());
     REQUIRE(err.type == core::error_code_t::io_error);
     REQUIRE(mentions(err, "register_udf"));
@@ -489,14 +482,14 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refus
                                       make_cast_entry());
     fault.arm = false;
 
-    // THE CATALOG FIRST. BEFORE: this read answered one row whose identity column held 0 — a
-    // pg_cast row that find_cast_oid reads back as "there is no such cast", so it could
+    // THE CATALOG FIRST: unchecked, this read answers one row whose identity column holds 0 —
+    // a pg_cast row that find_cast_oid reads back as "there is no such cast", so it can
     // neither be used nor dropped.
     const auto broken_oids = test.pg_cast_oids(source_oid, target_broken_oid);
     INFO("pg_cast rows for the refused (BOOLEAN, TIME) pair: " << broken_oids.size());
     REQUIRE(broken_oids.empty());
     // Read through the production accessor as well: both readings have to agree that there is
-    // nothing there, and BEFORE they disagreed (a row existed; find_cast_oid said it did not).
+    // nothing there; unchecked they disagree (a row exists, find_cast_oid says it does not).
     {
         auto found = test.disk_invoke(&manager_disk_t::find_cast_oid, test.read_ctx(), source_oid, target_broken_oid);
         REQUIRE_FALSE(found.has_error());
@@ -525,7 +518,7 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refus
 // pg_attribute — ALTER TABLE ... ADD COLUMN
 //
 // The one of the three that is reachable from plain SQL, so the user consequence is literal:
-// the statement reported success and the column it added had no identity.
+// the statement reports success and the column it added has no identity.
 // ===========================================================================
 TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::alter_add_column_refuses_when_the_round_delivers_nothing") {
     components::compute::function_registry_t::reset_default();
@@ -559,9 +552,9 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::alter_add_column_re
     auto refused = test.run_sql("ALTER TABLE oidround.items ADD COLUMN extra_broken bigint;");
     fault.arm = false;
 
-    // THE CATALOG FIRST. BEFORE: `extra_broken` was there, with attoid = 0 — a column whose
-    // identity is what the RN-oid backfill hands to the storage that materialises it and what
-    // a later DROP COLUMN keys its tombstone on.
+    // THE CATALOG FIRST: unchecked, `extra_broken` is there with attoid = 0 — a column whose
+    // identity is what the ADD COLUMN backfill hands to the storage that materialises it and
+    // what a later DROP COLUMN keys its tombstone on.
     {
         auto t = test.table("oidround", "items");
         REQUIRE(t.found);
@@ -577,7 +570,7 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::alter_add_column_re
         REQUIRE(column_attoid(t, "extra_ok") != catalog::INVALID_OID);
     }
 
-    // ...and the statement said so. BEFORE: is_success().
+    // ...and the statement says so; unchecked it answers is_success().
     INFO("an ALTER TABLE ADD COLUMN whose OID round delivered nothing must FAIL, not add a "
          "column stamped with an identity nothing allocated");
     REQUIRE(refused->is_error());

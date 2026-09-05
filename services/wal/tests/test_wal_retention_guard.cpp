@@ -26,20 +26,20 @@
 
 // THREE GUARDS OF THE MANAGER'S OWN BOOKKEEPING.
 //
-//   1. The CREATE INDEX retention set was a std::pmr::set — a DEDUPLICATING container fed by
-//      register/unregister PAIRS. Two builds registering the same start position collapsed
-//      into one entry; the first unregister emptied the set while the second build was still
-//      running, so truncate_before stopped clamping and could unlink the very segments the
-//      live catchup still needs. The second unregister then found nothing to erase and
-//      ABORTED THE PROCESS — on a path fed by messages from another actor.
+//   1. The CREATE INDEX retention set must not be a std::pmr::set — a DEDUPLICATING container
+//      fed by register/unregister PAIRS. Two builds registering the same start position
+//      collapse into one entry; the first unregister empties the set while the second build is
+//      still running, so truncate_before stops clamping and can unlink the very segments the
+//      live catchup still needs. The second unregister then finds nothing to erase and ABORTS
+//      THE PROCESS — on a path fed by messages from another actor.
 //
-//   2. Startup classification of <wal>/<db> directories used std::stoul under catch (...):
-//      a directory named "9zz" parsed as database oid 9, spawning a worker over a directory
-//      ("9") that is NOT the one the files are in, while genuinely foreign names were
+//   2. Startup classification of <wal>/<db> directories must not use std::stoul under
+//      catch (...): a directory named "9zz" parses as database oid 9, spawning a worker over a
+//      directory ("9") that is NOT the one the files are in, while genuinely foreign names are
 //      silently skipped as "legacy" — a backward-compatibility branch on a startup path.
 //
-//   3. total_wal_bytes() summed EVERY regular file directly under <wal>/<db>/, not only
-//      wal_* segments, so any foreign neighbour silently inflates the auto-checkpoint window.
+//   3. total_wal_bytes() must sum only wal_* segments, not EVERY regular file directly under
+//      <wal>/<db>/: any foreign neighbour otherwise inflates the auto-checkpoint window.
 
 using namespace services;
 using namespace services::wal;
@@ -115,20 +115,16 @@ namespace {
         }
 
         // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton. This is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only
-        // thing that would report a chunk still alive after the manager is gone. Production
-        // hands the manager chunks off the executor's arena; this is that shape.
-        //
-        // resource_ outlives the asynchronous processing for three independent reasons:
-        // ~wal_env_t stops the scheduler and resets manager_ -- destroying the mailbox
-        // and any message still holding this batch -- inside its own body; resource_ is
-        // declared FIRST, so it is destroyed LAST; and otterbrix_resource is thread-safe in
-        // both builds (synchronized_pool_resource normally, the mutex-guarded
-        // resource_tracer_t under ASAN). manager_ itself is already allocated on it.
-        //
-        // Extracted so a test can assert the ARENA of a REAL payload: the batch is moved
-        // into the message and is unobservable after send.
+        // singleton: this is real load, and off resource_ it never reaches
+        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
+        // that would report a chunk still alive after the manager is gone. Production hands the manager
+        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
+        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
+        // over: ~wal_env_t stops the scheduler and resets manager_
+        // (destroying the mailbox and any message still holding this batch) inside its own body,
+        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
+        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
+        // the batch is moved into the message and is unobservable after send.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -199,7 +195,7 @@ namespace {
 } // namespace
 
 // ===========================================================================
-// item 1a — TWO BUILDS AT THE SAME START POSITION ARE TWO REGISTRATIONS.
+// TWO BUILDS AT THE SAME START POSITION ARE TWO REGISTRATIONS.
 //
 // register(1) twice, unregister(1) once: one build is still running, so truncate_before must
 // still clamp to 1 and keep every segment.
@@ -235,7 +231,7 @@ TEST_CASE("wal::retention::two_builds_at_the_same_start_position_hold_the_clamp"
 }
 
 // ===========================================================================
-// item 1b — AN UNMATCHED UNREGISTER IS A BUG REPORT, NOT A PROCESS EXIT.
+// AN UNMATCHED UNREGISTER IS A BUG REPORT, NOT A PROCESS EXIT.
 //
 // The path is fed by messages from another actor (operator_create_index_backfill), and the
 // set it erases from deduplicates — so this input is REACHABLE, not hypothetical.
@@ -255,10 +251,10 @@ TEST_CASE("wal::retention::an_unmatched_unregister_does_not_abort_the_process") 
 }
 
 // ===========================================================================
-// item 2 — A DIRECTORY THAT IS NOT A DATABASE OID IS SKIPPED LOUDLY, NOT HALF-PARSED.
+// A DIRECTORY THAT IS NOT A DATABASE OID IS SKIPPED LOUDLY, NOT HALF-PARSED.
 //
-// std::stoul("9zz") answers 9, so a foreign directory used to spawn a worker for database
-// oid 9 whose own directory ("9") is a DIFFERENT path — the journal split across two
+// std::stoul("9zz") answers 9, so half-parsing a foreign directory spawns a worker for
+// database oid 9 whose own directory ("9") is a DIFFERENT path — the journal split across two
 // directories, one of which nothing recovers from.
 //
 // BEFORE: <wal>/9 appeared next to <wal>/9zz.
@@ -277,7 +273,7 @@ TEST_CASE("wal::classification::a_non_oid_directory_does_not_spawn_a_worker") {
 }
 
 // ===========================================================================
-// item 3 — THE AUTO-CHECKPOINT WINDOW COUNTS THE JOURNAL, NOT THE NEIGHBOURS.
+// THE AUTO-CHECKPOINT WINDOW COUNTS THE JOURNAL, NOT THE NEIGHBOURS.
 //
 // The journal and the table tree share their root on purpose, so a future neighbour file
 // under <wal>/<db>/ must not count toward the auto-checkpoint threshold.
@@ -314,16 +310,10 @@ TEST_CASE("wal::classification::total_wal_bytes_counts_only_wal_segments") {
 }
 
 // ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA.
-//
-// gen_data_chunk output is REAL load, and on the process-global new_delete_resource
-// singleton it escapes core::pmr::otterbrix_resource entirely -- which under ASAN IS
-// resource_tracer_t, so nothing accounts for it. Production hands the manager chunks
-// off the executor's arena; the fixture has to model that.
-//
-// The batch is moved into the message, so it is unobservable after send. The assertion
-// is therefore made on the object make_insert_batch produces -- the same call, on the
-// same path, that send_insert makes -- and not on a value handed in by the test.
+// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
+// make_insert_batch above. The batch is moved into the message and is unobservable after
+// send, so the assertion is made on the object make_insert_batch produces: the same call, on
+// the same path, that send_insert makes -- not a value handed in by the test.
 // ===========================================================================
 TEST_CASE("wal::retention::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";

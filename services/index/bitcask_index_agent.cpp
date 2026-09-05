@@ -14,13 +14,11 @@ namespace services::index {
         namespace codec = components::index::codec;
 
         // Narrow signed / unsigned integers widened to their 64-bit form, exactly as
-        // bitcask_index_disk_t::key_bytes_for_hash does before hashing. Without it a
-        // SMALLINT probe and the BIGINT-encoded key it should match hash to different
-        // buckets, and the txn-local half of an answer would key differently from the
-        // committed half.
-        //
-        // This is the HASHED family's own step and has no counterpart on the ordered
-        // side, where the b+tree stores and compares the column's own type.
+        // bitcask_index_disk_t::key_bytes_for_hash does before hashing. Without it a SMALLINT probe
+        // and the BIGINT-encoded key it should match hash to different buckets, and the txn-local
+        // half of an answer would key differently from the committed half. This is the HASHED
+        // family's own step and has no counterpart on the ordered side, where the b+tree stores and
+        // compares the column's own type.
         components::types::logical_value_t normalize_hash_key(const components::types::logical_value_t& key) {
             using namespace components::types;
             switch (key.type().type()) {
@@ -56,21 +54,18 @@ namespace services::index {
 
         // Does the staged bucket key satisfy `compare` against the encoded probe?
         //
-        // BYTE equality rather than value equality, and that is what makes the two halves
-        // of one answer agree: the committed half comes out of a store that HASHES and
-        // memcmps these exact bytes, so a probe that compares equal by value but differs
-        // by byte (-0.0 against +0.0) would be found in the pending half and missed in the
-        // committed one.
+        // BYTE equality rather than value equality, and that is what makes the two halves of one
+        // answer agree: the committed half comes out of a store that HASHES and memcmps these exact
+        // bytes, so a probe that compares equal by value but differs by byte (-0.0 against +0.0)
+        // would be found in the pending half and missed in the committed one. It is also the only
+        // comparison this family can express at all: a hashed key may be DECIMAL --
+        // is_representable_index_key_type admits it for hashed and refuses it for ordered -- and
+        // physical_value carries no DECIMAL tag, so the ordered agent's decoder aborts on one.
+        // Comparing bytes never has to decode.
         //
-        // It is also the only comparison this family can express at all. A hashed key may
-        // be DECIMAL -- is_representable_index_key_type admits it for hashed and refuses it
-        // for ordered -- and physical_value carries no DECIMAL tag, so the ordered agent's
-        // decoder aborts on one. Comparing bytes never has to decode.
-        //
-        // eq is the DOMAIN, not a re-check of the predicate: read_rows below refuses every
-        // other predicate with a core::error_t before this is ever reached, and
-        // manager_index_t refuses it a round trip earlier still, off
-        // supports_ordered_probe_v.
+        // eq is the DOMAIN, not a re-check of the predicate: read_rows below refuses every other
+        // predicate with a core::error_t before this is ever reached, and manager_index_t refuses
+        // it a round trip earlier still, off supports_ordered_probe_v.
         bool key_satisfies(std::string_view stored, std::string_view probe) { return stored == probe; }
 
         // ${path_db}/${table_oid}/${index_oid} -- this agent's own on-disk directory,
@@ -94,18 +89,15 @@ namespace services::index {
                                   uint64_t segment_record_limit,
                                   log_t& log,
                                   std::pmr::set<std::uint64_t> committed_txn_ids) {
-        // The open runs BEFORE anyone can address the actor, and its failure is the return
-        // value. There is therefore no such thing as a REACHABLE agent whose store did not
-        // open: a caller cannot forget to ask, because there is nothing to ask -- it holds
-        // either an agent or a reason.
+        // The open runs BEFORE anyone can address the actor, and its failure is the return value.
+        // There is therefore no such thing as a REACHABLE agent whose store did not open: a caller
+        // cannot forget to ask, because there is nothing to ask -- it holds either an agent or a
+        // reason.
         //
-        // The store is BUILT INSIDE THE AGENT, in its member initializer list, from the
-        // parameters below (see the ctor). Nothing is created here and handed across,
-        // which is why the open can only happen after the spawn: the store is not
-        // movable, so it cannot be opened elsewhere and moved in.
-        //
-        // The path is derived in the agent's own translation unit: no caller builds it and
-        // no caller opens anything.
+        // The store is BUILT INSIDE THE AGENT, in its member initializer list, from the parameters
+        // below. Nothing is created here and handed across, which is why the open can only happen
+        // after the spawn: the store is not movable, so it cannot be opened elsewhere and moved in.
+        // The path is derived in the agent's own translation unit.
         auto agent = actor_zeta::spawn<bitcask_index_agent_t>(resource,
                                                               path_db,
                                                               table_oid,
@@ -115,9 +107,8 @@ namespace services::index {
                                                               log,
                                                               std::move(committed_txn_ids));
         // The deferred half. On a failure the agent is destroyed by this scope, having
-        // never published its address, and the caller gets the reason instead -- exactly
-        // what the old store-factory-then-spawn order produced, with the store's own
-        // failures (an unopenable keydir file, a segment CRC mismatch) still values.
+        // never published its address, and the caller gets the reason instead -- the store's
+        // own failures (an unopenable keydir file, a segment CRC mismatch) stay values.
         if (auto open_error = agent->open_store(); open_error.contains_error()) {
             return open_error;
         }
@@ -240,9 +231,9 @@ namespace services::index {
         // publish a bucket belonging to the index this call failed to empty.
         pending_inserts_.clear();
         pending_deletes_.clear();
-        // THE STORE'S ANSWER IS THE HANDLER'S ANSWER. It used to be discarded and replaced
-        // with no_error, so manager_index_t::repopulate_table -- which does await this future
-        // and does fold it into its first_error -- was folding a constant.
+        // THE STORE'S ANSWER IS THE HANDLER'S ANSWER. Replacing it with no_error would have
+        // manager_index_t::repopulate_table -- which awaits this future and folds it into its
+        // first_error -- folding a constant.
         co_return clear_error;
     }
 
@@ -307,54 +298,45 @@ namespace services::index {
 
     // THE SEGMENT MERGE, RUN AS THIS AGENT'S OWN WORK.
     //
-    // Rotating the active segment leaves a compaction owed; this pays it, ONCE, at the
-    // end of the write handler the rotation happened inside. The store used to pay it on
-    // a std::thread it started for itself, which is the reason it also carried a
-    // shared_mutex: with two threads on one keydir, the mailbox was no longer the only
-    // thing deciding what happened in what order. It is again.
+    // Rotating the active segment leaves a compaction owed; this pays it, ONCE, at the end of the
+    // write handler the rotation happened inside. A worker thread of the store's own would put two
+    // threads on one keydir and cost a mutex -- the mailbox would stop being the only thing
+    // deciding what happens in what order.
     //
-    // WHY HERE AND NOT AT THE ROTATION. Rotation happens inside a single record append,
-    // and a statement big enough to fill N segments rotates N times; merging there would
-    // charge that statement N whole-keydir compactions, each in the middle of a half-
-    // written record. Here it is charged one, over a store that is between records.
+    // WHY HERE AND NOT AT THE ROTATION: rotation happens inside a single record append, and a
+    // statement big enough to fill N segments rotates N times, so merging there would charge that
+    // statement N whole-keydir compactions, each in the middle of a half-written record. Here it is
+    // charged one, over a store that is between records.
     //
-    // WHY NOT A MESSAGE TO ITSELF. The message id space is index_agent_contract's, and
-    // it is POSITIONAL and SHARED with btree_index_agent_t (see index_agent_contract.hpp)
-    // -- a merge message would have to be an eleventh entry on a contract whose other
-    // implementation has no merge, and `implements<>` refuses a binding that does not
-    // match the contract's shape. It would also buy little: the manager awaits this
-    // handler's reply, so the cost would move to the next statement rather than off the
-    // agent. The mailbox stays FIFO and this agent still awaits nothing.
+    // WHY NOT A MESSAGE TO ITSELF: the message id space is index_agent_contract's, POSITIONAL and
+    // SHARED with btree_index_agent_t, so a merge message would have to be an eleventh entry on a
+    // contract whose other implementation has no merge, and `implements<>` refuses a binding that
+    // does not match the contract's shape. It would also buy little -- the manager awaits this
+    // handler's reply, so the cost would move to the next statement rather than off the agent.
     //
-    // NOT AFTER A FAILED WRITE. The failure that just came back is returnable; the merge
-    // is not (its I/O failures are aborts, the recorded debt in bitcask_index_disk.cpp),
-    // so piling a compaction onto a store that has just failed to write would turn an
-    // error the statement could report into a dead process. The debt keeps: the store
-    // holds the flag and the next write that succeeds pays it.
+    // NOT AFTER A FAILED WRITE: piling a whole-keydir compaction onto a store that has just failed
+    // to write can only add a second failure to the one the statement is already reporting. The
+    // debt keeps -- the store holds the flag and the next write that succeeds pays it.
     core::error_t bitcask_index_agent_t::pay_merge_debt(core::error_t write_error) {
         if (write_error.contains_error()) {
             return write_error;
         }
-        // THE MERGE'S OWN REFUSAL RIDES THIS ROUND'S REPLY (wave #305). It used to be
-        // parked in the store's pending_write_error_ and surfaced on the NEXT
-        // force_flush -- the wrong round, and on debugging the wrong step. The write
-        // itself landed (write_error above is clean), so what this reports is "stored,
-        // but the storage is refusing maintenance", the same shape disk_hash_table's put
-        // reports for a failed auto-rehash.
+        // THE MERGE'S OWN REFUSAL RIDES THIS ROUND'S REPLY. Parking it in the store's
+        // pending_write_error_ would surface it on the NEXT force_flush -- the wrong round, and
+        // the wrong step to debug. The write itself landed (write_error above is clean), so
+        // what this reports is "stored, but the storage is refusing maintenance", the same
+        // shape disk_hash_table's put reports for a failed auto-rehash.
         return store_.merge_pending_segments();
     }
 
-    // Take bucket `txn_id` and bucket 0, hand every entry to `apply`, and erase both.
+    // Take bucket `txn_id` and bucket 0, hand every entry to `apply`, and erase both. The pair is
+    // what the commit path has always folded together: bucket 0 is committed for everyone but not
+    // yet durable, and it must reach disk with whatever transaction gets there first.
     //
-    // The pair is what the commit path has always folded together: bucket 0 is committed
-    // for everyone but not yet durable, and it must reach disk with whatever transaction
-    // gets there first.
-    //
-    // Keys are decoded back into a logical_value_t on the way out because the store's
-    // write doors take one. The round trip is not wasted: the encoding is what made the
-    // staged key comparable with the committed half while it sat in the bucket, and for
-    // this family it is also where the normalization happened -- the store normalizes the
-    // decoded key again on the way in, which is idempotent.
+    // Keys are decoded back into a logical_value_t on the way out because the store's write doors
+    // take one. The round trip is not wasted: the encoding is what made the staged key comparable
+    // with the committed half while it sat in the bucket, and the store normalizes the decoded key
+    // again on the way in, which is idempotent.
     template<typename ApplyFn>
     core::error_t
     bitcask_index_agent_t::publish_buckets(pending_txn_map_t& buckets, uint64_t txn_id, ApplyFn&& apply) {
@@ -387,21 +369,17 @@ namespace services::index {
                 std::pmr::string{"bitcask_index_agent_t: a staged key could not be decoded for publication",
                                  resource()}};
         }
-        // The rows are only in the index once this succeeds. Reporting no_error on a
-        // failed flush would leave the statement believing the index matches the table
-        // when it does not.
+        // The rows are only in the index once this succeeds. Reporting no_error on a failed flush
+        // would leave the statement believing the index matches the table when it does not.
         //
-        // AND THE BUCKETS ARE ERASED ONLY AFTER THE FLUSH SAYS YES (branch lesson: state
-        // is cleared only after the operation succeeds — the same ordering the journalled
-        // txn!=0 legs got in an earlier wave). The erase used to sit inside publish_one,
-        // ahead of this verdict, so a commit whose flush refused — an fsync the device
-        // rejected, or a put failure the void write doors could only PARK for force_flush
-        // to hand over — had already cleared its bucket: the RETRY of that commit
-        // published nothing, found nothing parked, and reported success over rows that
-        // never became durable (or never landed at all). Re-publishing a kept bucket is
-        // safe in this family: bitcask's insert/remove doors are idempotent on the
-        // (key, row) pair — insert dedups against current_rows, remove of an absent pair
-        // is a no-op — so a retry re-applies what is missing and re-asks for durability.
+        // AND THE BUCKETS ARE ERASED ONLY AFTER THE FLUSH SAYS YES, the same ordering the
+        // journalled txn!=0 legs keep. An erase inside publish_one, ahead of this verdict, would
+        // clear the bucket even when the flush refused -- an fsync the device rejected, or a put
+        // failure the void write doors could only PARK for force_flush to hand over -- so the RETRY
+        // of that commit would publish nothing, find nothing parked, and report success over rows
+        // that never became durable. Re-publishing a kept bucket is safe in this family: bitcask's
+        // insert/remove doors are idempotent on the (key, row) pair, so a retry re-applies what is
+        // missing and re-asks for durability.
         auto flush_error = store_.force_flush();
         if (flush_error.contains_error()) {
             return flush_error;
@@ -428,15 +406,14 @@ namespace services::index {
             // The journal takes the whole statement at once, so the bucket is materialized
             // into the store's own pair vector rather than fed entry by entry.
             std::vector<std::pair<value_t, size_t>> journal;
-            // A key that would not decode must not reach the DURABLE txn log: the frame it
-            // lands in is replayed by every later open, so one NA key would be re-inserted
-            // into the index on every restart from then on.
+            // A key that would not decode must not reach the DURABLE txn log: the frame it lands in
+            // is replayed by every later open, so one NA key would be re-inserted into the index on
+            // every restart from then on.
             //
-            // THE BUCKETS ARE READ HERE AND ERASED ONLY AFTER THE JOURNAL SAYS YES (branch
-            // lesson: state is cleared only AFTER the operation succeeds). The erase used to
-            // live INSIDE this collector, ahead of apply_txn_inserts -- so a journal IO
-            // refusal lost the staged batch, and a RETRY of the same commit found an empty
-            // bucket and reported success over nothing.
+            // THE BUCKETS ARE READ HERE AND ERASED ONLY AFTER THE JOURNAL SAYS YES. An erase inside
+            // this collector, ahead of apply_txn_inserts, would lose the staged batch on a journal
+            // IO refusal, and a RETRY of the same commit would find an empty bucket and report
+            // success over nothing.
             bool decode_ok = true;
             const auto collect = [&](uint64_t bucket_id) {
                 auto it = pending_inserts_.find(bucket_id);
@@ -565,8 +542,8 @@ namespace services::index {
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"bitcask_index_agent_t::revert_inserts: the index has been dropped", resource()}};
         }
-        // Nothing durable was written for this transaction (owner decision 16), so the
-        // abort is a bucket erase and touches no store.
+        // Nothing durable was written for this transaction -- no write-through before commit
+        // -- so the abort is a bucket erase and touches no store.
         pending_inserts_.erase(txn_id);
         co_return core::error_t::no_error();
     }
@@ -606,14 +583,12 @@ namespace services::index {
         if (index_key_is_null(key)) {
             co_return std::pmr::vector<int64_t>(resource());
         }
-        // A HASHED STORE HAS NO ORDERING, and that is a fact about this class rather than
-        // a question to ask its backend. The other five predicates are the ORDERED
-        // contract and this family does not hold it. The guard that keeps a range off a
-        // hashed index is upstream, in manager_index_t, which reads
-        // supports_ordered_probe_v off the record it keeps per index before dispatching
-        // anything; if that guard is ever bypassed the answer is an ERROR, not an empty
-        // range -- an empty range is indistinguishable from "no row carries this key",
-        // which is a wrong answer dressed as a fast one.
+        // A HASHED STORE HAS NO ORDERING, and that is a fact about this class rather than a
+        // question to ask its backend. The guard that keeps a range off a hashed index is upstream,
+        // in manager_index_t, which reads supports_ordered_probe_v off its per-index record before
+        // dispatching anything; if that guard is ever bypassed the answer is an ERROR, not an empty
+        // range -- an empty range is indistinguishable from "no row carries this key", a wrong
+        // answer dressed as a fast one.
         if (compare != components::expressions::compare_type::eq) {
             co_return core::error_t{
                 core::error_code_t::index_not_exists,
@@ -621,14 +596,11 @@ namespace services::index {
                                  "answer a range predicate",
                                  resource()}};
         }
-        // THE COMMITTED HALF. Equality goes to find(), which reads the SNAPSHOT RECORD and
-        // unrolls the whole row list -- the keydir cannot answer it, keeping one entry per
-        // key whose payload field is `rows.back()`, so a reader that consulted it would
-        // silently drop every duplicate.
-        //
-        // bitcask_index_disk_t::result is size_t-wide; row ids are int64_t everywhere
-        // above this actor. Convert once, here, so the reply carries the type the reader
-        // uses.
+        // THE COMMITTED HALF. Equality goes to find(), which reads the SNAPSHOT RECORD and unrolls
+        // the whole row list -- the keydir cannot answer it, keeping one entry per key whose
+        // payload field is `rows.back()`, so a reader that consulted it would silently drop every
+        // duplicate. bitcask_index_disk_t::result is size_t-wide and row ids are int64_t everywhere
+        // above this actor, so the conversion happens once, here.
         bitcask_index_disk_t::result found(resource());
         // A COMMITTED HALF THAT COULD NOT BE READ IS NOT AN EMPTY COMMITTED HALF. The
         // keydir walk under find() refuses when it meets a page it cannot read, and this
@@ -644,23 +616,23 @@ namespace services::index {
             rows.emplace_back(static_cast<int64_t>(row));
         }
 
-        // THE UNCOMMITTED HALF, folded in here rather than by the caller -- which is the
-        // whole point of the buffer living beside the store. Add what has not reached disk
-        // yet, and only what the ASKING transaction is entitled to see.
+        // THE UNCOMMITTED HALF, folded in here rather than by the caller -- which is the whole
+        // point of the buffer living beside the store. Add what has not reached disk yet, and only
+        // what the ASKING transaction is entitled to see. Two buckets, two map lookups -- not a
+        // walk of every pending transaction:
         //
-        // Two buckets, two map lookups -- not a walk of every pending transaction:
-        //   bucket 0    committed for everyone but not yet durable. The repopulate path
-        //               refills it between its clear() and its closing commit, and a read
-        //               that lands in that window would otherwise see a wiped index.
+        //   bucket 0    committed for everyone but not yet durable. The repopulate path refills it
+        //               between its clear() and its closing commit, and a read that lands in that
+        //               window would otherwise see a wiped index.
         //   bucket txn  this transaction's own staged inserts and deletes.
-        // Every other bucket belongs to a transaction that has not committed. It is
-        // skipped because it is not looked up at all -- there is no stamp to compare and
-        // no visibility predicate to get wrong.
         //
-        // Keys are compared ENCODED. The bucket holds the key exactly as encode_key
-        // produced it on the way in, so encoding the probe the same way makes the
-        // comparison byte-for-byte and, more importantly, applies the SAME normalization
-        // (narrow ints widened to BIGINT/UBIGINT) to both sides.
+        // Every other bucket belongs to a transaction that has not committed, and is skipped
+        // because it is not looked up at all -- no stamp to compare, no visibility predicate to get
+        // wrong.
+        //
+        // Keys are compared ENCODED: the bucket holds the key exactly as encode_key produced it, so
+        // encoding the probe the same way makes the comparison byte-for-byte and applies the SAME
+        // normalization (narrow ints widened to BIGINT/UBIGINT) to both sides.
         const auto encoded_probe = encode_key(key);
         const std::string_view probe(encoded_probe);
 

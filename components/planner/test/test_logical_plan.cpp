@@ -338,9 +338,9 @@ TEST_CASE("components::planner::update") {
     }
 }
 
-// ЗАПИСЬ #361 — node_drop_t::hash_impl folds only the enrich-stamped OIDs, so at plan
+// Folding only the enrich-stamped OIDs into node_drop_t::hash_impl means that at plan
 // time — when every OID is still INVALID_OID — `DROP TABLE a`, `DROP TABLE b`,
-// `DROP TABLE IF EXISTS a` and `DROP TABLE a RESTRICT` all hashed IDENTICALLY. The
+// `DROP TABLE IF EXISTS a` and `DROP TABLE a RESTRICT` all hash IDENTICALLY. The
 // fields the statement is actually built from (the written names, missing_ok,
 // behavior) must reach the hash, or any node-keyed container folds distinct drops
 // into one bucket entry.

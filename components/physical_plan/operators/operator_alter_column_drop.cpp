@@ -51,18 +51,11 @@ namespace components::operators {
 
         // Keyed read of the table's live pg_attribute rows, then match the column BY NAME.
         //
-        // This used to key on attoid_ alone and no-op when it was INVALID_OID, on the stated
-        // premise that enrich_logical_plan had pre-stamped it. Nothing ever did:
-        // node_alter_column_t::set_attoid has no callers anywhere in the pipeline, so attoid_
-        // was INVALID on every execution and ALTER TABLE DROP COLUMN returned success having
-        // written nothing at all — no tombstone, no dependent scrub, no storage release. The
-        // sibling defect — RENAME COLUMN, same cause — was fixed by the same move; its gate is
-        // integration/cpp/test/test_alter_rename_column.cpp.
-        // Resolving by (attrelid, attname) is also what planner.cpp::rewrite_alter_table's own
-        // comment always said this operator does — "looks up the attoid by (table_oid,
-        // column_name) at execution time" — so this makes the code agree with its contract
-        // rather than inventing a new one. attoid_ stays a CROSS-CHECK: when a caller does
-        // stamp it, the row must be that row.
+        // NAME, not attoid_: nothing in the pipeline stamps the node's attoid (node_alter_column_t::set_attoid
+        // has no callers), so keying on it and no-oping when it is INVALID_OID makes ALTER TABLE DROP COLUMN
+        // report success having written nothing at all — no tombstone, no dependent scrub, no storage release.
+        // Resolving by (attrelid, attname) is also what planner.cpp::rewrite_alter_table states this operator
+        // does. attoid_ stays a CROSS-CHECK: when a caller does stamp it, the row must be that row.
         if (column_name_.empty()) {
             mark_executed();
             co_return;
@@ -130,27 +123,19 @@ namespace components::operators {
         if (attoid == catalog::INVALID_OID) {
             // The column is not there — either never was, or a tombstone already hides it.
             //
-            // This used to be "no-op, no error": mark_executed() and out, so
-            // `ALTER TABLE t DROP COLUMN nosuchcol` reported SUCCESS having written no
-            // tombstone, scrubbed no dependent and released no storage. PostgreSQL refuses
-            // it (`column "x" of relation "y" does not exist`), and the silence cost more
-            // than a wasted statement: a migration that drops a column and then reads the
-            // table under its new shape got a green ALTER and a schema that never changed,
-            // with nothing between the two to say which half lied.
+            // REFUSED, not a silent no-op. PostgreSQL refuses it too (`column "x" of relation "y" does not
+            // exist`), and the silence costs more than a wasted statement: a migration that drops a column and
+            // then reads the table under its new shape gets a green ALTER and a schema that never changed, with
+            // nothing between the two to say which half lied.
             //
-            // WHY IT WAS DELIBERATE, AND WHAT MAKES IT SAFE TO REVERSE NOW. B3c1 left it
-            // silent because a relkind='g' (document) table keeps its columns in
-            // pg_computed_column and has NO pg_attribute row, so EVERY column of one misses
-            // the read above — a loud refusal here would have refused legal drops on every
-            // document table. That is no longer this operator's problem to dodge: the
-            // planner routes a relkind='g' DROP COLUMN to
-            // operator_computed_field_unregister_t (rewrite_alter_table), which refuses a
-            // missing field the same way against the catalog that actually holds it. The
-            // answer is the same for both table shapes; only the catalog consulted differs.
+            // WHAT MAKES THE REFUSAL SAFE: a relkind='g' (document) table keeps its columns in pg_computed_column
+            // and has NO pg_attribute row, so EVERY column of one misses the read above. Such a drop never
+            // reaches this operator — the planner routes a relkind='g' DROP COLUMN to
+            // operator_computed_field_unregister_t (rewrite_alter_table), which refuses a missing field the same
+            // way against the catalog that actually holds it.
             //
-            // IF EXISTS is the one form PostgreSQL lets pass, and it is now carried on the
-            // node instead of being assumed — so accepting the miss is the caller's explicit
-            // request, not this operator's guess.
+            // IF EXISTS is the one form PostgreSQL lets pass, and it is carried on the node rather than assumed —
+            // so accepting the miss is the caller's explicit request, not this operator's guess.
             if (missing_ok_) {
                 mark_executed();
                 co_return;
@@ -210,30 +195,25 @@ namespace components::operators {
         std::size_t dep_row_count = 0;
         for (const auto& chunk : dep_batches) dep_row_count += chunk.size();
 
-        // ABORT-on-error gate: validate dependents BEFORE the first mutating
-        // delete/append below, so a rejected DROP leaves the catalog untouched.
+        // ABORT-on-error gate: validate dependents BEFORE the first mutating delete/append below, so a
+        // rejected DROP leaves the catalog untouched.
         //
-        // `blocking` is the subset this operator may NOT cascade over: a constraint
-        // that depends on this column through a 'n' (normal) edge. Only one writer
-        // emits that shape — build_create_constraint_writes, for the confkey columns
-        // of a FOREIGN KEY, i.e. the PARENT columns a constraint on ANOTHER table
-        // references. Everything else reaching here is 'i' (internal): an index or a
-        // constraint whose own key column this is, which cannot outlive the column and
-        // is therefore dropped with it, below.
+        // `blocking` is the subset this operator may NOT cascade over: a constraint that depends on this
+        // column through a 'n' (normal) edge. Only one writer emits that shape — build_create_constraint_writes,
+        // for the confkey columns of a FOREIGN KEY, i.e. the PARENT columns a constraint on ANOTHER table
+        // references. Everything else reaching here is 'i' (internal): an index or a constraint whose own key
+        // column this is, which cannot outlive the column and is therefore dropped with it, below.
         std::pmr::vector<std::pair<int, catalog::oid_t>> dependents{resource_};
         dependents.reserve(dep_row_count);
         std::pmr::vector<catalog::oid_t> blocking{resource_};
         for (auto& chunk : dep_batches) {
-            // A CHUNK NARROWER THAN pg_depend'S SCHEMA IS A DIFFERENT ANSWER, NOT A
-            // MISS. The read was issued with an empty projection ("all columns"),
-            // so the reply's width is the width of the pg_depend storage itself,
-            // and every row this engine writes carries all 5 columns
-            // (build_pg_depend_row / build_create_constraint_writes). Tolerating a
-            // chunk without the deptype column read every constraint dependency in
-            // it as NON-blocking, so DROP COLUMN proceeded over a foreign key that
-            // references the column — the exact silence the `blocking` gate below
-            // exists to prevent. The threshold is the largest ordinal read below:
-            // deptype (4).
+            // A CHUNK NARROWER THAN pg_depend'S SCHEMA IS A DIFFERENT ANSWER, NOT A MISS. The read was issued
+            // with an empty projection ("all columns"), so the reply's width is the width of the pg_depend
+            // storage itself, and every row this engine writes carries all 5 columns (build_pg_depend_row /
+            // build_create_constraint_writes). Tolerating a chunk without the deptype column reads every
+            // constraint dependency in it as NON-blocking, so DROP COLUMN proceeds over a foreign key that
+            // references the column — the exact silence the `blocking` gate below exists to prevent. The
+            // threshold is the largest ordinal read below: deptype (4).
             if (chunk.column_count() <= catalog::pg_depend_col::deptype) {
                 std::string msg = "alter_column_drop: pg_depend answered with ";
                 msg += std::to_string(chunk.column_count());
@@ -271,12 +251,10 @@ namespace components::operators {
             }
         }
         if (!blocking.empty()) {
-            // Rule 6: name the cause, not the symptom. Without this the statement was
-            // ACCEPTED and the damage surfaced later, in a different table, as
-            // "keyed read: table has no column <name>" on every subsequent insert.
-            // Resolve the blocking constraint's name and owning table so the message
-            // names objects the user can act on. Both reads are on the refusal path
-            // only, so the accepted path pays nothing for them.
+            // Rule 6: name the cause, not the symptom. Without this the statement is ACCEPTED and the damage
+            // surfaces later, in a different table, as "keyed read: table has no column <name>" on every
+            // subsequent insert. Resolve the blocking constraint's name and owning table so the message names
+            // objects the user can act on. Both reads are on the refusal path only.
             std::string con_name;
             catalog::oid_t con_relid = catalog::INVALID_OID;
             std::pmr::vector<std::uint64_t> pc_keys(resource_);
@@ -404,12 +382,11 @@ namespace components::operators {
                                                  exec_ctx,
                                                  std::move(dep_specs));
             auto dep_deleted = co_await std::move(depf);
-            // WHICH ZERO IS AN ERROR HERE — not this one. These specs are a scrub TEMPLATE
-            // applied per dependent object (pg_index/pg_constraint/pg_class/pg_depend for each
-            // dep row), so a spec that matches nothing is the template over-reaching, not a row
-            // that refused to go. The refusal itself is fatal, and has to be known BEFORE the
-            // live pg_attribute row below is touched: everything after this point half-applies
-            // the drop.
+            // WHICH ZERO IS AN ERROR HERE — not this one. These specs are a scrub TEMPLATE applied per dependent
+            // object (pg_index/pg_constraint/pg_class/pg_depend for each dep row), so a spec that matches nothing
+            // is the template over-reaching, not a row that refused to go. The refusal itself is fatal, and has to
+            // be known BEFORE the live pg_attribute row below is touched: everything after this point
+            // half-applies the drop.
             if (dep_deleted.has_error()) {
                 set_error(dep_deleted.error());
                 mark_failed();
@@ -417,26 +394,21 @@ namespace components::operators {
             }
         }
 
-        // soft-delete the column: drop original pg_attribute row,
-        // then append a tombstone with attisdropped=true. The tombstone keeps
-        // attnum so existing rows on disk that reference this slot remain
-        // self-describing for MVCC visibility.
+        // soft-delete the column: drop the original pg_attribute row, then append a tombstone with
+        // attisdropped=true. The tombstone keeps attnum so existing rows on disk that reference this slot
+        // remain self-describing for MVCC visibility.
         //
-        // THROUGH THE BATCHED TWIN, with one spec, for its ANSWER: the singular
-        // delete_pg_catalog_rows still returns void, and this is the delete of the whole
-        // statement — the row that says the column exists, read a few lines up (attoid, attnum,
-        // atttypid all come from it). A scrub that removed nothing here would leave the live row
-        // AND the tombstone appended below describing the same attoid, i.e. a column that is
-        // both there and dropped. Zero deleted is therefore an error, unlike every zero above.
+        // THROUGH THE BATCHED TWIN, with one spec, for its ANSWER: the singular delete_pg_catalog_rows still
+        // returns void, and this is the delete of the whole statement — the row that says the column exists,
+        // read a few lines up (attoid, attnum, atttypid all come from it). A scrub that removed nothing here
+        // would leave the live row AND the tombstone appended below describing the same attoid, i.e. a column
+        // that is both there and dropped. Zero deleted is therefore an error, unlike every zero above.
         //
-        // AND "READ A FEW LINES UP" IS ONLY AN ARGUMENT BECAUSE BOTH SIDES SHARE A SNAPSHOT.
-        // The read above went through read_chunks_by_key with THIS exec_ctx; the delete's scan
-        // runs under the same ctx.txn (agent_disk_t::delete_pg_catalog_rows_inner). While it did
-        // not — the scan carried no transaction at all — this verdict fired on
-        // `BEGIN; ALTER TABLE t ADD COLUMN c; ALTER TABLE t DROP COLUMN c;`: the read saw the
-        // uncommitted row and the delete could not, so a legal sequence was refused with "the
-        // column is still live in the catalog". Gate:
-        // integration/cpp/test/test_catalog_delete_refusal.cpp,
+        // AND "READ A FEW LINES UP" IS ONLY AN ARGUMENT BECAUSE BOTH SIDES SHARE A SNAPSHOT. The read above
+        // went through read_chunks_by_key with THIS exec_ctx; the delete's scan runs under the same ctx.txn
+        // (agent_disk_t::delete_pg_catalog_rows_inner). A delete scan carrying no transaction would see less
+        // than the read did, and this verdict would fire on the legal `BEGIN; ALTER TABLE t ADD COLUMN c;
+        // ALTER TABLE t DROP COLUMN c;`. Gate: integration/cpp/test/test_catalog_delete_refusal.cpp,
         // a_column_added_and_dropped_in_one_transaction_is_dropped.
         std::pmr::vector<services::disk::pg_catalog_delete_spec_t> attr_specs(resource_);
         attr_specs.push_back({pg_attr_oid, std::int64_t{0}, attoid});
@@ -503,31 +475,23 @@ namespace components::operators {
             co_return;
         }
         ctx->pg_catalog_appends.push_back(std::move(rng));
-        // Backfill dropped_at_commit_id on the tombstone, keyed by attoid (same
-        // attoid as the live row — identity-preserving tombstone) — AND, B3c1, name the
-        // physical column the commit has to release once that tombstone is committed.
+        // Backfill dropped_at_commit_id on the tombstone, keyed by attoid (same attoid as the live row —
+        // identity-preserving tombstone) — and name the physical column the commit has to release once that
+        // tombstone is committed.
         //
-        // ORDER, and why the release is NOT sent from here. The storage-side drop is a
-        // rebuild: it forgets the column and destroys the object that knows which blocks it
-        // sat on, so it cannot be undone. The tombstone above is not durable yet — it is a
-        // pg_attribute row carrying insert_id == this txn_id, which an explicit ROLLBACK
-        // reverts (storage_revert_appends) and a crash before the commit marker discards.
-        // Dropping the column here would therefore let the physical drop become durable (the
-        // next checkpoint of THIS table writes a root without the column) while the tombstone
-        // never does — catalog says the column exists, storage no longer has it. So this
-        // operator only MARKS the drop, exactly as operator_dynamic_cascade_delete_t only
-        // MARKS a dropped table, and operator_commit_transaction_t performs it after the WAL
-        // commit marker and the publish barrier, in the same block that physically tears down
-        // a committed DROP TABLE.
+        // ORDER, and why the release is NOT sent from here. The storage-side drop is a rebuild: it forgets the
+        // column and destroys the object that knows which blocks it sat on, so it cannot be undone. The
+        // tombstone above is not durable yet — it is a pg_attribute row carrying insert_id == this txn_id,
+        // which an explicit ROLLBACK reverts (storage_revert_appends) and a crash before the commit marker
+        // discards. Dropping the column here would let the physical drop become durable (the next checkpoint
+        // of THIS table writes a root without the column) while the tombstone never does — catalog says the
+        // column exists, storage no longer has it. So this operator only MARKS the drop, exactly as
+        // operator_dynamic_cascade_delete_t only MARKS a dropped table, and operator_commit_transaction_t
+        // performs it after the WAL commit marker and the publish barrier.
         //
-        // (Adding one more cross-actor await here would have been safe in itself: this is an
-        // operator, driven by executor_t::execute_pipeline inside the executor actor's own
-        // coroutine, not an actor mailbox handler. The standing proof is the chain already
-        // above: pg_attribute read, pg_depend read, dependent scrub, live-row delete,
-        // tombstone append — five sequential cross-actor awaits in one body, in production
-        // today. The one-await-per-handler rule bites on methods dispatched from a behavior()
-        // switch, and this method appears in none. Ordering, not the await rule, is what moves
-        // the release to commit time.)
+        // (What moves the release to commit time is ORDERING, not the one-await-per-handler rule: that rule
+        // bites on methods dispatched from a behavior() switch, and this is an operator driven by
+        // executor_t::execute_pipeline inside the executor actor's own coroutine.)
         ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
             attoid,
             components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at,
@@ -539,10 +503,9 @@ namespace components::operators {
             components::types::complex_logical_type{}});
 
         // Note: drop_column on a relkind='g' (computing) table is routed to
-        // operator_computed_field_unregister_t in planner.cpp::rewrite_alter_table,
-        // which clears matching pg_computed_column rows. This branch handles
-        // regular (relkind='r') tables only — which is also why the physical release marked
-        // above is safe to arm unconditionally here: the relkind='g' storage, whose
+        // operator_computed_field_unregister_t in planner.cpp::rewrite_alter_table, which clears matching
+        // pg_computed_column rows. This branch handles regular (relkind='r') tables only — which is also why the
+        // physical release marked above is safe to arm unconditionally: the relkind='g' storage, whose
         // mid-pipeline drop_column once broke the re-INSERT path (see the note at the end of
         // operator_computed_field_unregister.cpp), never reaches this operator.
 

@@ -14,10 +14,9 @@
 namespace otterbrix {
 
     // Minimal process-wide holder for the Python import cache plus a couple of
-    // engine-space helpers. The execution / expression / relation surface that
-    // used to live here has been folded directly into py_connection_t (which now
-    // inherits expression_factory_t + relation_factory_t and talks to
-    // space->dispatcher() itself). This type remains only because the static
+    // engine-space helpers. The execution / expression / relation surface lives in
+    // py_connection_t (which inherits expression_factory_t + relation_factory_t and
+    // talks to space->dispatcher() itself); this type remains only because the static
     // import_cache() entry point is referenced from many translation units
     // (native/, arrow/, numpy/, pybind11/, import_cache/, framework detection).
     class connection_environment_t {
@@ -25,8 +24,8 @@ namespace otterbrix {
         static constexpr std::string_view DEFAULT_FOLDER = "default";
 
         // OPENS the database at `path`, creating it only when nothing is there.
-        // It does not erase what it finds — it used to, and that made connecting
-        // to an existing database destroy it.
+        // It does not erase what it finds: erasing would make connecting to an
+        // existing database destroy it.
         //
         // Refuses, via the error channel rather than an exception (rule 2), when
         // `path` is a non-directory or a non-empty directory that is not an

@@ -804,22 +804,20 @@ namespace services::dispatcher {
                                     }
                                     column = std::move(new_column);
                                 } else {
-                                    // WHAT THIS BRANCH DID UNDER NDEBUG. The assert that
-                                    // stood here is compiled out of every release build,
-                                    // and what followed it was not undefined behaviour but
-                                    // a DEFINED wrong answer: `column` was left exactly as
-                                    // it arrived — the incoming type, not the target type
-                                    // this loop exists to convert to — and the INSERT then
-                                    // carried it to storage under the target column's name.
-                                    // Every sibling branch above refuses through `result`
-                                    // instead; this one differed only in being invisible.
+                                    // NOT AN ASSERT. An assert is compiled out of every
+                                    // release build, and what follows it here is not
+                                    // undefined behaviour but a DEFINED wrong answer:
+                                    // `column` stays exactly as it arrived — the incoming
+                                    // type, not the target type this loop exists to convert
+                                    // to — and the INSERT carries it to storage under the
+                                    // target column's name. Every sibling branch above
+                                    // refuses through `result`; so does this one.
                                     //
                                     // No SQL path reaches it today: the suite runs Debug
-                                    // with DEV_MODE=ON, so a reachable case would already
-                                    // be aborting on the assert. That is exactly why it
-                                    // must not stay an assert — the day a new type pair
-                                    // reaches it, Debug aborts and release silently
-                                    // mis-stores.
+                                    // with DEV_MODE=ON, so a reachable case would already be
+                                    // aborting. That is exactly why it must not be an assert
+                                    // — the day a new type pair reaches it, Debug aborts and
+                                    // release silently mis-stores.
                                     result = core::error_t(
                                         core::error_code_t::schema_error,
                                         std::pmr::string{"no conversion to column '" + it->alias() +
@@ -2140,16 +2138,14 @@ namespace services::dispatcher {
                                              resource});
                     }
                     // The WRITTEN COLUMN LIST routes the values into a computing table.
-                    // Skipping set_column_bindings for relkind='g' dropped it on the
-                    // floor: `INSERT INTO g (x, y) SELECT a, b` appended AND registered
-                    // columns a and b, and the (x, y) the statement wrote vanished
-                    // without a word (PR #568 carried this rename through
-                    // rename_targets for every table kind; the #585 bindings rework kept
-                    // it only for relational targets). The bindings are rename-only —
-                    // target type is the incoming type, no cast: the computing table
-                    // adopts the incoming shape under the written names, exactly as the
-                    // VALUES form names its chunk columns. A list whose arity disagrees
-                    // with the projection is a refusal, not a silent partial mapping.
+                    // Skipping set_column_bindings for relkind='g' drops it on the floor:
+                    // `INSERT INTO g (x, y) SELECT a, b` appends AND registers columns a
+                    // and b, and the (x, y) the statement wrote vanishes without a word.
+                    // The bindings are rename-only — target type is the incoming type, no
+                    // cast: the computing table adopts the incoming shape under the written
+                    // names, exactly as the VALUES form names its chunk columns. A list
+                    // whose arity disagrees with the projection is a refusal, not a silent
+                    // partial mapping.
                     auto bind_computed_rename = [&]() -> core::error_t {
                         if (insert_node->key_translation().empty()) {
                             return core::error_t::no_error();
@@ -2198,17 +2194,15 @@ namespace services::dispatcher {
                         // IS the schema, and operator_computed_field_register_t registers the
                         // attoids at execute time.
                         //
-                        // A REGULAR table with no columns does not, and the distinction used to
-                        // be untestable: the only way a relkind='r' table reaches an empty
-                        // schema is by dropping its last column, and ALTER TABLE DROP COLUMN
-                        // was a silent no-op (node_alter_column_t::set_attoid had no callers),
-                        // so the state never occurred. With the DROP wired up it does, and
-                        // test_persistence::zero_column_regular_table_stays_regular — the B1b
-                        // guard that a zero-column regular table must NOT come back computed —
-                        // starts failing on its in-session leg: relkind still says 'r', but an
-                        // empty column list here silently granted it dynamic-schema semantics.
-                        // The restart leg already refused (rehydrate skips a 0-column oid, so
-                        // there is no storage to append to); this makes the live session agree.
+                        // A REGULAR table with no columns does NOT. The only way a relkind='r'
+                        // table reaches an empty schema is by dropping its last column, so the
+                        // state exists only once ALTER TABLE DROP COLUMN really drops — and
+                        // granting it dynamic-schema semantics here would let a zero-column
+                        // regular table come back computed while relkind still says 'r'
+                        // (test_persistence::zero_column_regular_table_stays_regular guards
+                        // exactly that). The restart leg already refuses (rehydrate skips a
+                        // 0-column oid, so there is no storage to append to); this makes the
+                        // live session agree.
                         if (!is_computed) {
                             return core::error_t(
                                 core::error_code_t::schema_error,
@@ -2769,7 +2763,7 @@ namespace services::dispatcher {
     // must check has_output_types() and refuse loudly when it is absent (the executor's
     // boolean-required / ARRAY-equality sub-query guards do exactly that); consumers
     // that can answer from data (the 'g'-scan pipeline) may. Reading
-    // output_types().front() without the check is how an empty vector reached .front()
+    // output_types().front() without the check is how an empty vector reaches .front()
     // under NDEBUG.
     core::result_wrapper_t<named_schema> validate_schema(const validation::validation_context_t& context,
                                                          node_t* node,

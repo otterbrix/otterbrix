@@ -504,8 +504,8 @@ namespace services::wal {
                 }
                 uint32_t row_ids_bytes = read_le32(payload);
                 const char* row_ids_data = payload + 4;
-                // Wrap-safe form: `4 + row_ids_bytes` overflowed 32-bit arithmetic near
-                // UINT32_MAX and let a multi-gigabyte "length" through the old check
+                // Wrap-safe form: `4 + row_ids_bytes` overflows 32-bit arithmetic near
+                // UINT32_MAX and lets a multi-gigabyte "length" through the check
                 // (payload_size >= 4 is guaranteed just above). And the same whole-row-ids
                 // rule as PHYSICAL_DELETE: a ragged length is corruption, not rounding.
                 if (row_ids_bytes > payload_size - 4 || row_ids_bytes % sizeof(int64_t) != 0) {

@@ -15,15 +15,14 @@ using components::cursor::make_cursor;
 
 namespace {
 
-    // How the DDL integration cases read a refusal
-    // (integration/cpp/test/test_alter_missing_column.cpp:89, test_fk_parent_column_drop.cpp:74):
-    // TWO calls to get_error() inside ONE full expression, begin() taken from the first call
-    // and end() from the second. That is only well defined when both calls denote the SAME
-    // error object. While get_error() returned by value, each call minted a fresh error_t
-    // whose pmr string landed on a fresh buffer, so the iterator pair spanned two unrelated
-    // heap blocks and the length became second.data() - first.data() + second.size(): the
-    // message read back doubled or tripled, or the difference went negative, wrapped in
-    // size_t and threw std::length_error("basic_string").
+    // How the DDL integration cases read a refusal (integration/cpp/test/
+    // test_alter_missing_column.cpp, test_fk_parent_column_drop.cpp): TWO calls to get_error()
+    // inside ONE full expression, begin() taken from the first call and end() from the second.
+    // That is only well defined when both calls denote the SAME error object. A get_error()
+    // returning BY VALUE mints a fresh error_t per call, whose pmr string lands on a fresh
+    // buffer, so the iterator pair spans two unrelated heap blocks and the length becomes
+    // second.data() - first.data() + second.size(): the message reads back doubled or tripled,
+    // or the difference goes negative, wraps in size_t and throws std::length_error.
     std::string error_text(const cursor_t& cur) {
         return std::string{cur.get_error().what.begin(), cur.get_error().what.end()};
     }
@@ -38,7 +37,7 @@ namespace {
     constexpr std::string_view short_refusal = "ALTER TABLE: column \"nosuchcol\" does not exist on relation \"edb.t\".";
 
     // 137 bytes: the DROP COLUMN refusal shape. Past the 120-byte mark the allocator's
-    // stride between blocks is larger, so the by-value read came apart by more.
+    // stride between blocks is larger, so a by-value read comes apart by more.
     constexpr std::string_view long_refusal =
         "ALTER TABLE: column \"parent_id\" of relation \"edb.child\" may not be dropped: "
         "FOREIGN KEY constraint \"fk_child_parent\" still depends on it.";
@@ -46,10 +45,10 @@ namespace {
     // The producer's arena and the cursor's arena are DIFFERENT resources on purpose.
     //
     // A refusal is built by whoever detected it — an operator, a catalog read, a disk agent —
-    // on THAT actor's resource, and then handed to a cursor built on the caller's. While both
-    // ends shared one resource here, "the message lives on the cursor's arena" and "the
-    // message still lives on the producer's arena" were the same observation, and every case
-    // below was blind to the difference between rebuilding the string and adopting it.
+    // on THAT actor's resource, and then handed to a cursor built on the caller's. Give both
+    // ends one resource and "the message lives on the cursor's arena" and "the message still
+    // lives on the producer's arena" become the same observation, leaving every case below
+    // blind to the difference between rebuilding the string and adopting it.
     //
     // Two entry points, because cursor_t has two error constructors and a caller reaches
     // exactly one of them depending on what it holds:
@@ -67,12 +66,12 @@ namespace {
     //     -> cursor_t(resource, const core::error_t&), reached as an entry point of its own
     //     rather than by delegation from the &&-constructor.
     //
-    //     This is the live shape on the main refusal path: services/collection/executor.cpp
-    //     :1023, :1105, :1149, :1157, :1170 and :1224 all read
+    //     This is the live shape on the main refusal path: the six refusal sites of
+    //     services/collection/executor.cpp all read
     //         if (auto err = ...; err.contains_error()) { error = make_cursor(resource(), err); }
-    //     and pass `err` — an lvalue — so they enter the const&-constructor directly. Nothing
-    //     in this file reached that overload independently before, so its body could be
-    //     replaced by the plain copy it used to be with every case still green.
+    //     and pass `err` — an lvalue — so they enter the const&-constructor directly. Without a
+    //     case that reaches that overload independently, its body can be replaced by a plain
+    //     copy with every other case still green.
     cursor_t_ptr
     refuse_by_name(std::pmr::memory_resource* producer, std::pmr::memory_resource* owner, std::string_view message) {
         core::error_t err{core::error_code_t::schema_error,
@@ -92,8 +91,8 @@ namespace {
         const auto expected_span = static_cast<std::ptrdiff_t>(expected.size());
 
         // Keep every cursor alive, the way a caller collecting failures would. The allocator
-        // hands out addresses further and further apart as the process runs on, which is what
-        // made the bogus length grow from one refusal to the next.
+        // hands out addresses further and further apart as the process runs on, which makes a
+        // bogus length grow from one refusal to the next.
         std::vector<cursor_t_ptr> cursors;
         cursors.reserve(8);
 
@@ -189,7 +188,7 @@ TEST_CASE("components::cursor::error_string_lives_on_the_cursor_resource") {
             REQUIRE(cur->is_error());
 
             // A cursor's data lives on the cursor's resource. Moving a pmr string keeps the
-            // SOURCE allocator, so a plain move left the cursor pointing into — and later
+            // SOURCE allocator, so a plain move leaves the cursor pointing into — and later
             // freeing into — an arena it never owned.
             CHECK(cur->get_error().what.get_allocator().resource() == &owner);
             CHECK(std::string_view{cur->get_error().what} == long_refusal);
@@ -219,7 +218,7 @@ TEST_CASE("components::cursor::error_string_lives_on_the_cursor_resource_when_pa
         {
             // By name — this is cursor_t(resource, const core::error_t&), the overload the six
             // executor refusal sites take. Copying an error_t does NOT propagate the
-            // allocator, so a plain copy here put the message on the DEFAULT resource: not the
+            // allocator, so a plain copy here puts the message on the DEFAULT resource: not the
             // producer's, not the cursor's, and invisible to both tracers.
             auto cur = make_cursor(&owner, error);
             REQUIRE(cur->is_error());

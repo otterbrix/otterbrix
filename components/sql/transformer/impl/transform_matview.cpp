@@ -28,11 +28,11 @@ namespace components::sql::transform {
         // operator_create_matview_t creates the heap and writes the catalog rows and
         // stops there, and REFRESH MATERIALIZED VIEW is not lowered either (see
         // planner.cpp, `case node_type::refresh_matview_t` — it returns the node
-        // unchanged with a TODO). Accepting `CREATE MATERIALIZED VIEW mv AS SELECT ...`
-        // therefore reported SUCCESS and left `SELECT * FROM mv` answering 0 rows
+        // unchanged). Accepting `CREATE MATERIALIZED VIEW mv AS SELECT ...`
+        // would therefore report SUCCESS and leave `SELECT * FROM mv` answering 0 rows
         // forever, with nothing said. Rule 6: a form we cannot honour is refused, not
         // silently downgraded. `WITH NO DATA` — the one form whose meaning IS an empty
-        // matview — keeps working exactly as before.
+        // matview — keeps working.
         //
         // The flag itself comes from the grammar: opt_with_data lands in
         // IntoClause::skipData (gram.y, CreateMatViewStmt: `$5->skipData = !($8)`), so

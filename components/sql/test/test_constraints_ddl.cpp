@@ -156,7 +156,7 @@ TEST_CASE("components::sql::sequence") {
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
         REQUIRE(node->type() == node_type::create_sequence_t);
-        // CREATE SEQUENCE no longer carries db name in its to_string (namespace resolution is sibling-OID).
+        // to_string carries no db name: namespace resolution is by sibling OID.
         REQUIRE(node->to_string() == "$create_sequence: my_seq");
     }
 
@@ -194,9 +194,8 @@ TEST_CASE("components::sql::view") {
 
     SECTION("CREATE VIEW") {
         // The statement text is passed in, as every production entry point does.
-        // It used to be omitted here, and the transformer answered by INVENTING a
-        // body ("SELECT *") — which is the whole of defect D1, since the stored body
-        // is re-parsed on every read of the view.
+        // Omitted, the transformer answers by INVENTING a body ("SELECT *") — and the
+        // stored body is re-parsed on every read of the view.
         const char* sql = "CREATE VIEW db.my_view AS SELECT * FROM db.tbl";
         transform::transformer transformer(&resource, sql);
         auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
@@ -217,8 +216,8 @@ TEST_CASE("components::sql::view") {
     }
 
     SECTION("CREATE VIEW body is the text that was written, whatever the spacing") {
-        // A newline after AS, and `AS(SELECT ...)` with no space: both defeated the
-        // old " AS " substring search, which then fell back to "SELECT *".
+        // A newline after AS, and `AS(SELECT ...)` with no space: both defeat an
+        // " AS " substring search, which then falls back to "SELECT *".
         for (const char* sql : {"CREATE VIEW db.my_view AS\nSELECT id FROM db.tbl WHERE id > 10",
                                 "CREATE VIEW db.my_view AS(SELECT id FROM db.tbl WHERE id > 10)"}) {
             transform::transformer transformer(&resource, sql);
@@ -352,9 +351,9 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
         REQUIRE(result.has_error());
     }
 
-    // Shapes that DEPARSE cleanly and then cannot be evaluated. Each one used to be
-    // accepted here and compiled to the constant TRUE at DML time, so the constraint
-    // sat in the catalog judging nothing. The whitelist is what the DML-time
+    // Shapes that DEPARSE cleanly and then cannot be evaluated. Accepted here, each
+    // compiles to the constant TRUE at DML time and sits in the catalog judging
+    // nothing. The whitelist is what the DML-time
     // recogniser can read, not what the deparser can spell.
     SECTION("arithmetic in an operand is rejected") {
         auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (a INTEGER, b INTEGER, CHECK(a + b > 0))"));
@@ -511,9 +510,9 @@ TEST_CASE("components::sql::if_not_exists") {
 // integer slot. `NumericOnly` builds a T_Float for FCONST, and scan.l's
 // process_integer_literal sends EVERY literal outside int32 out as FCONST carrying
 // the original digits — so `MAXVALUE 9223372036854775807` arrives as a T_Float too.
-// transform_create_sequence called intVal() without looking at the tag, which reads
-// the `char*` half of the Value union AS A NUMBER: the bound persisted into the
-// catalog was the bit pattern of a pointer, different on every run.
+// intVal() without a tag check reads the `char*` half of the Value union AS A NUMBER,
+// so the bound persisted into the catalog is the bit pattern of a pointer, different
+// on every run.
 TEST_CASE("components::sql::sequence_bounds_are_read_by_node_tag") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -532,7 +531,7 @@ TEST_CASE("components::sql::sequence_bounds_are_read_by_node_tag") {
     };
 
     SECTION("a bound outside int32 is the value that was written, not a pointer") {
-        // BEFORE: start() was the bit pattern of the char* holding "5000000000".
+        // Read through a bare intVal(): the bit pattern of the char* holding "5000000000".
         auto seq = sequence_of("CREATE SEQUENCE db.big_seq START WITH 5000000000");
         CHECK(seq->start() == 5000000000LL);
     }

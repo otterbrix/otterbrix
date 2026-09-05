@@ -459,17 +459,16 @@ TEST_CASE("components::vector::vector: an NA vector allocates nothing and reads 
     }
 }
 
-// ЗАПИСИ #349 и #350 — the assert-with-no-else surfaces of the vector layer.
+// THE ASSERT-WITH-NO-ELSE SURFACES OF THE VECTOR LAYER.
 //
-// #350: data_chunk_t::sub_column_indices answered {size_t(-1)} behind a bare
-// assert for a path it could not resolve — the same sentinel-behind-assert its
-// neighbour column_index was already cured of. It answers the same
-// field_not_exists error now.
+// data_chunk_t::sub_column_indices must not answer {size_t(-1)} behind a bare
+// assert for a path it cannot resolve — the same sentinel-behind-assert its
+// neighbour column_index refuses. It answers a field_not_exists error.
 //
-// #349: the string legs of apply_unary_vector_op / apply_binary_vector_op were
-// `assert(false)` with NO else — under NDEBUG the result vector's payload came
-// back UNINITIALIZED. Both entry points refuse the type up front now,
-// identically in both builds.
+// The string legs of apply_unary_vector_op / apply_binary_vector_op must not be
+// `assert(false)` with NO else — under NDEBUG the result vector's payload comes
+// back UNINITIALIZED. Both entry points refuse the type up front, identically in
+// both builds.
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
 

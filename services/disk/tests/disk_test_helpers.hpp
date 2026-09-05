@@ -96,7 +96,7 @@ namespace disk_test_helpers {
         const catalog::oid_t table_oid = oids[0];
         catalog::oid_batch_t batch;
         batch.oids = std::move(oids);
-        // RN-oid: the builder stamps each allocated attoid back onto its column, so it needs a
+        // The builder stamps each allocated attoid back onto its column, so it needs a
         // mutable list. The helper's callers pass a const view; give it one of its own.
         std::vector<components::table::column_definition_t> stamped_cols(cols);
         auto writes = catalog::build_create_table_writes(&fx.resource,
@@ -319,8 +319,8 @@ namespace disk_test_helpers {
                                                                 fk_del_action,
                                                                 fk_upd_action,
                                                                 check_expr);
-        // The builder refuses INVALID_OID attoids now; every fixture here passes
-        // stamped lists, so a refusal is a broken test setup.
+        // The builder refuses INVALID_OID attoids; every fixture here passes stamped lists,
+        // so a refusal is a broken test setup.
         assert(!writes_r.has_error());
         auto writes = std::move(writes_r.value());
         std::vector<components::pg_catalog_append_range_t> appends_local;

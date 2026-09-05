@@ -51,11 +51,10 @@ namespace components::table {
         return pos;
     }
 
-    // NOTE ON WRITE-WRITE CONFLICTS: a check_for_conflicts() used to stand here and walk
-    // base_info.next. That chain was NEVER BUILT (see the note inside update()), so the walk
-    // visited zero nodes and the check could not fire — it is deleted as the dead half of the
-    // same fiction, not as a behaviour change. Real update-vs-update conflict detection needs
-    // a real per-transaction chain first.
+    // NOTE ON WRITE-WRITE CONFLICTS: there is deliberately no check_for_conflicts() here. One
+    // that walked base_info.next would visit zero nodes and could never fire, because that
+    // chain is NEVER BUILT (see the note inside update()). Real update-vs-update conflict
+    // detection needs a real per-transaction chain first.
 
     update_info_t* create_empty_update_info(uint64_t type_size, uint64_t, std::unique_ptr<std::byte[]>& data) {
         data = std::make_unique<std::byte[]>(update_info_t::allocation_size(type_size));
@@ -102,10 +101,9 @@ namespace components::table {
     }
 
     // A default-constructed reference names no node, and undo_buffer_pointer_t() is exactly
-    // that. This used to read `return {*entry, position};`, which forms a reference to *nullptr
-    // for such a reference. (The historical caller — update()'s never-assigned `node_ref` —
-    // is gone; the guard stays because the contract "an unset reference has no pointer" is
-    // this type's own, not that caller's.)
+    // that. An unguarded `return {*entry, position};` would form a reference to *nullptr for
+    // such a reference. The guard is this type's own contract ("an unset reference has no
+    // pointer"), not a particular caller's, so it stays whether or not one exists today.
     undo_buffer_pointer_t undo_buffer_reference::buffer_pointer() {
         if (!entry) {
             return undo_buffer_pointer_t();
@@ -115,12 +113,13 @@ namespace components::table {
 
     // NO SILENT FAILURE ON THIS PATH (rule 6).
     //
-    // This used to swallow the refusal in an assert and, under NDEBUG, return
-    // undo_buffer_reference(*entry, buffer_handle_t{}, position). Every consumer then calls
-    // update_info(), which is reinterpret_cast<update_info_t*>(handle.ptr() + position) -- with
-    // an empty handle that is `nullptr + position`, i.e. literally a base_info that is not an
-    // address, produced by the one function whose job is to hand out addresses. The premise the
-    // assert rested on ("a resident TRANSACTION block cannot fail to pin") is also not something
+    // Swallowing the refusal in an assert and returning
+    // undo_buffer_reference(*entry, buffer_handle_t{}, position) under NDEBUG is not an option:
+    // every consumer then calls update_info(), which is
+    // reinterpret_cast<update_info_t*>(handle.ptr() + position) -- with an empty handle that is
+    // `nullptr + position`, i.e. literally a base_info that is not an address, produced by the
+    // one function whose job is to hand out addresses. The premise such an assert rests on ("a
+    // resident TRANSACTION block cannot fail to pin") is also not something
     // this function can check: standard_buffer_manager_t::pin only takes the no-op fast path
     // while the block is still block_state::LOADED, and the reload branch below it reports
     // out_of_memory, data_corruption and io_error.
@@ -342,17 +341,10 @@ namespace components::table {
             auto& base_info = root_pin.value().update_info();
 
             // WHAT THIS LEG REALLY IS, said plainly: an IN-PLACE merge into the vector's one
-            // root node. The per-transaction undo machinery that used to be sketched here was
-            // FICTION — it built the "transaction node" into a function-local heap buffer and
-            // linked it through an `undo_buffer_reference node_ref` that was default-constructed
-            // and NEVER assigned, so every link it wrote was the null pointer: base_info.next
-            // stayed unset forever, next_info.prev was CLEARED through a branch that could not
-            // even be entered (node->next copies the always-unset base_info.next), and the node
-            // itself died with the frame. Nothing ever walked a chain, so check_for_conflicts
-            // iterated zero nodes and no write-write conflict could fire. The pretence is
-            // excised rather than kept: updates in this tree publish into the root node
-            // immediately and rollback of updates is UNIMPLEMENTED — a caller that needs it
-            // must build a real per-transaction chain, not un-comment this one.
+            // root node. There is NO per-transaction undo chain here — updates in this tree
+            // publish into the root node immediately, rollback of an update is UNIMPLEMENTED,
+            // and check_for_conflicts therefore walks zero nodes, so no write-write conflict
+            // can fire. A caller that needs either must build a real per-transaction chain.
             //
             // merge_update still needs a scratch update_info_t: phase 1 of
             // merge_update_loop_internal composes the superseded values into its arrays before
@@ -380,10 +372,9 @@ namespace components::table {
 
             initialize_update_info(update_info, ids, indexing, count, vector_index, vector_offset);
 
-            // Same excision as the merge leg above: the "transaction node" here was a
-            // function-local scratch whose links were all null (node_ref never assigned).
-            // initialize_update still wants it — its second half writes the superseded base
-            // values into the scratch's arrays — so it stays as a named scratch and dies here.
+            // As in the merge leg above, no per-transaction node is published here.
+            // initialize_update still wants one — its second half writes the superseded base
+            // values into the node's arrays — so it stays as a named scratch and dies here.
             std::unique_ptr<std::byte[]> undo_scratch_data;
             update_info_t* undo_scratch = create_empty_update_info(type_size_, count, undo_scratch_data);
 

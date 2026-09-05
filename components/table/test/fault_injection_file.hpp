@@ -1,6 +1,6 @@
 #pragma once
 
-// T3: fault-injection file handle + crash simulation (test-side).
+// Fault-injection file handle + crash simulation (test-side).
 //
 // A faulty_file_handle_t wraps the real database file handle (installed through the
 // DEV_MODE interposer seam in single_file_block_manager_t) and can:
@@ -14,8 +14,8 @@
 //     to exactly its state at the last fsync — the conservative crash semantics (nothing
 //     unsynced survived). After crash_revert() every further I/O on the handle fails.
 //
-// No test may lay out files by hand (plan rule for T3); reopening the reverted file — or a
-// filesystem copy of it — under a fresh environment IS the "state after kill".
+// No test may lay out crash states by hand; reopening the reverted file — or a filesystem
+// copy of it — under a fresh environment IS the "state after kill".
 //
 // The wrapper must always delegate to the wrapped inner handle: the filesystem free
 // functions reinterpret_cast their handle argument to the platform handle type, so passing
@@ -38,7 +38,7 @@ namespace otterbrix_test {
         // Fail the Nth and every later positional write (1-BASED, the fail_syncs_from
         // convention). 0 = off. Exists because fail_after_writes counts ALLOWED successes and
         // its zero is the off switch, so it cannot express "no write succeeds at all" — which
-        // is exactly the k=0 point of the A7.4 crash matrix. The two knobs compose by OR:
+        // is exactly the k=0 point of the crash matrix. The two knobs compose by OR:
         // whichever names the current write first fails it.
         uint64_t fail_writes_from{0};
         // Tear the Nth positional write (1-based): persist only its first half, then fail

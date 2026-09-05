@@ -1,11 +1,9 @@
 // pg_proc.prorettype: what encode_prorettype writes is the function's declared
 // return-type contract as it will be read back after restart. A `custom` resolver
 // has no introspectable form — persisting it as "s:0" (same type as argument 0)
-// wrote a DIFFERENT contract than the one declared, silently.
+// writes a DIFFERENT contract than the one declared, silently.
 //
-// RED (proven pre-fix, 2026-09-02): encode_prorettype({computed(...)}) == "s:0".
-//
-// The fix is a TRUTHFUL TAG, not a refusal: registering a computed(...) output is
+// The answer is a TRUTHFUL TAG, not a refusal: registering a computed(...) output is
 // pinned legal behaviour (integration test_udfs registers
 // computed(same_type_resolver(0))), and the runtime resolver is reconstructed
 // through pg_proc.prouid → compute::function_registry, never by parsing this

@@ -12,30 +12,26 @@
 // ===========================================================================
 // THE SECOND UPDATE INTO A VECTOR SOMEONE ELSE ALREADY UPDATED.
 //
-// update_segment_t::update has two legs. The FIRST update of a vector takes the
-// else-leg (initialize_update_info + initialize_update) and never merges. Only a
-// SECOND one reaches merge_update -> merge_update_loop -> merge_update_loop_internal,
-// and no test in this tree had ever taken that leg: test_column.cpp updates ids
-// [0, 32) exactly once, per column, and stops.
+// update_segment_t::update has two legs. The FIRST update of a vector takes the else-leg
+// (initialize_update_info + initialize_update) and never merges. Only a SECOND one reaches
+// merge_update -> merge_update_loop -> merge_update_loop_internal, and no test in this tree had
+// ever taken that leg: test_column.cpp updates ids [0, 32) exactly once, per column, and stops.
 //
 // merge_update_loop_internal's tail loop reads
 //
 //     for (; aidx < count; aidx++) { ...; count++; }
 //
-// where `count` is BOTH the loop bound (how many row ids came in) and, wrongly, the
-// running output counter -- the while-loop above it keeps that counter in `counter`.
-// Bound and index advance together, so the condition never turns false:
-// indexing.get_index(aidx) walks off the indexing vector, and
-// result_values[result_offset++] runs off its 2048-entry stack array and through the
-// frame. The reported symptom, EXC_BAD_ACCESS at update_segment.hpp:830, is that
-// overrun eating the frame's own `ids` pointer and the next ids[a_index] dereferencing
-// the wreckage.
+// where `count` is BOTH the loop bound (how many row ids came in) and, wrongly, the running
+// output counter -- the while-loop above it keeps that counter in `counter`. Bound and index
+// advance together, so the condition never turns false: indexing.get_index(aidx) walks off the
+// indexing vector, and result_values[result_offset++] runs off its 2048-entry stack array and
+// through the frame. The reported symptom, EXC_BAD_ACCESS at update_segment.hpp, is that overrun
+// eating the frame's own `ids` pointer and the next ids[a_index] dereferencing the wreckage.
 //
-// The tail loop is entered exactly when an incoming id sorts AFTER every id already
-// recorded in base_info -- i.e. when the second update names a HIGHER row than the
-// first. Both cases below do that. The second is the shape
-// agent_disk_t::update_pg_attribute_commit_id_field_inner drives once it is handed a
-// row it can actually see.
+// The tail loop is entered exactly when an incoming id sorts AFTER every id already recorded in
+// base_info -- i.e. when the second update names a HIGHER row than the first. Both cases below
+// do that; the second is the shape agent_disk_t::update_pg_attribute_commit_id_field_inner
+// drives once it is handed a row it can actually see.
 // ===========================================================================
 
 using namespace components::types;
@@ -101,9 +97,9 @@ namespace {
 
 } // namespace
 
-// RED before the fix: never returns to the CHECKs -- it spins in the tail loop writing
-// past result_values[] and dies with EXC_BAD_ACCESS on ids[a_index],
-// components/table/update_segment.hpp:830.
+// With a moving `count` bound the merge never returns to the CHECKs: it spins in the tail loop
+// writing past result_values[] and dies with EXC_BAD_ACCESS on ids[a_index]
+// (components/table/update_segment.hpp).
 TEST_CASE("components::table::update_merge::a_second_update_of_a_higher_row_in_the_same_vector") {
     update_merge_env env("higher_row");
     auto column = make_filled_column(env, 64);
@@ -133,20 +129,19 @@ TEST_CASE("components::table::update_merge::repeated_ascending_updates_do_not_ru
 }
 
 // ===========================================================================
-// THE SECOND DEFECT ON THE SAME PATH: A MERGED STRING UPDATE DOES NOT OWN ITS BYTES.
+// A MERGED STRING UPDATE MUST OWN ITS BYTES.
 //
-// Every other route into an update_info_t pushes an incoming value through
+// Every route into an update_info_t has to push an incoming value through
 // update_select_element_t::operation, whose std::string_view specialisation COPIES the
 // bytes into the segment's own heap (update_segment.hpp) -- initialize_update_data does
 // it for the first-update leg, and merge_update_loop_internal's own phase-1 base branch
-// does it too. The one place that did not was phase 2's pick_new, which stored the raw
-// view straight off the caller's update vector. That vector is a temporary at every
-// caller -- agent_disk_t::direct_update_sync builds a local data_chunk_t and returns --
-// so the merged row was left pointing at freed memory.
+// does it too. Let phase 2's pick_new store the raw view straight off the caller's update
+// vector and the merged row points at freed memory: that vector is a temporary at every
+// caller -- agent_disk_t::direct_update_sync builds a local data_chunk_t and returns.
 //
 // It reads as catalog corruption rather than a crash: pg_attribute's attname is a
-// string, so the second and every later commit-id backfill left a pg_attribute row
-// whose NAME was whatever reused that memory. Observed end to end as "path 'd' was not
+// string, so the second and every later commit-id backfill leaves a pg_attribute row
+// whose NAME is whatever reused that memory. Observed end to end as "path 'd' was not
 // found" for a freshly added column and "path 'a' is ambiguous" for one that was
 // already there.
 // ===========================================================================
@@ -213,9 +208,8 @@ TEST_CASE("components::table::update_merge::a_merged_string_update_owns_its_byte
 }
 
 // The mirror leg: a second update naming a LOWER row leaves the while-loop with base_info
-// unconsumed and runs the OTHER tail loop. That one terminates (its bound is base_info.N),
-// so this case passed before the fix too -- it is here to hold the half that worked while
-// the sibling above is repaired, and to prove the repair did not cost it.
+// unconsumed and runs the OTHER tail loop. That one terminates -- its bound is base_info.N --
+// so this case guards the working half against a regression from the sibling above.
 TEST_CASE("components::table::update_merge::a_second_update_of_a_lower_row_keeps_both") {
     update_merge_env env("lower_row");
     auto column = make_filled_column(env, 64);
@@ -228,17 +222,17 @@ TEST_CASE("components::table::update_merge::a_second_update_of_a_lower_row_keeps
 }
 
 // ===========================================================================
-// THE OTHER "base_info THAT IS NOT AN ADDRESS", AND IT WAS ON THE SAME PATH.
+// THE OTHER "base_info THAT IS NOT AN ADDRESS", ON THE SAME PATH.
 //
-// undo_buffer_pointer_t::pin() used to swallow buffer_manager_t::pin()'s refusal in an assert
-// and, under -DNDEBUG, return undo_buffer_reference(*entry, buffer_handle_t{}, position).
-// Every consumer immediately calls update_info(), which is
+// undo_buffer_pointer_t::pin() must not swallow buffer_manager_t::pin()'s refusal in an assert:
+// that assert vanishes under -DNDEBUG and returns undo_buffer_reference(*entry,
+// buffer_handle_t{}, position). Every consumer immediately calls update_info(), which is
 // reinterpret_cast<update_info_t*>(handle.ptr() + position) -- with an empty handle that is
-// `nullptr + position`. So the function whose whole job is to hand out an address had a path
-// that handed out an offset from null, silently, in exactly the builds that ship.
+// `nullptr + position`, so the function whose whole job is to hand out an address hands out an
+// offset from null, silently, in exactly the builds that ship.
 //
-// It now returns core::result_wrapper_t<undo_buffer_reference>: the refusal is a value, and no
-// reference with an empty handle is ever constructed. Two invariants are asserted here.
+// It returns core::result_wrapper_t<undo_buffer_reference> instead: the refusal is a value, and
+// no reference with an empty handle is ever constructed. Two invariants are asserted here.
 //
 // WHAT IS NOT COVERED, said plainly: the refusal LEG itself. Making
 // standard_buffer_manager_t::pin fail on a TRANSACTION block needs that block evicted and its
@@ -262,31 +256,28 @@ TEST_CASE("components::table::update_merge::a_pinned_undo_node_is_a_real_address
     CHECK(pinned.value().is_set());
 }
 
-// A default undo_buffer_reference names no node. buffer_pointer() used to answer that with
-// `return {*entry, position};` -- binding a reference to *nullptr, which is undefined and only
-// looked harmless because the compiler folds &*nullptr back to nullptr. update_segment_t::update
-// reaches it: its `node_ref` is never assigned, and the next_info.prev line is not guarded by
-// is_set() the way the base_info.next line below it is.
+// A default undo_buffer_reference names no node, and buffer_pointer() must answer that with an
+// unset pointer: an unguarded `return {*entry, position};` binds a reference to *nullptr, which
+// is undefined and only looks harmless because the compiler folds &*nullptr back to nullptr.
+// The guard is the type's own contract, held whether or not a caller reaches this shape today.
 TEST_CASE("components::table::update_merge::an_unset_undo_reference_has_no_buffer_pointer") {
     undo_buffer_reference none;
     CHECK_FALSE(none.is_set());
     CHECK_FALSE(none.buffer_pointer().is_set());
 
-    // pin() keeps an assert for this shape on purpose, and it is a different kind of assert
-    // from the one that was removed: naming no entry is a CALLER precondition (every call site
-    // guards with is_set()), not a runtime refusal the caller could be handed. An error_t here
-    // would need a resource for its message and a bare pointer has none.
+    // pin() keeps an assert for this shape on purpose: naming no entry is a CALLER precondition
+    // (every call site guards with is_set()), not a runtime refusal the caller could be handed.
+    // An error_t here would need a resource for its message and a bare pointer has none.
     undo_buffer_pointer_t nowhere;
     CHECK_FALSE(nowhere.is_set());
 }
 
 // =====================================================================================
-// ЗАПИСЬ #124 (волна table), смежная строка: первый update строки во ВТОРОМ векторе
-// колонки. initialize_update_data индексирует вектор обновления как
-// indexing.get_index(i) + vector_index * DEFAULT_VECTOR_CAPACITY — для vector_index > 0
-// это чтение ЗА границей count-элементного вектора: в корневой узел ложится мусор.
-// (Валидная нога рядом, initialize_update_validity, смещения не добавляет.)
-// RED до фикса: read_row(1500) возвращает не 906, а кучевой мусор.
+// Первый update строки во ВТОРОМ векторе колонки. initialize_update_data обязана индексировать
+// вектор обновления одним indexing.get_index(i): прибавка vector_index *
+// DEFAULT_VECTOR_CAPACITY для vector_index > 0 — это чтение ЗА границей count-элементного
+// вектора, и в корневой узел ложится мусор (соседняя нога, initialize_update_validity,
+// смещения не добавляет). С такой прибавкой read_row(1500) вернёт кучевой мусор вместо 906.
 // =====================================================================================
 TEST_CASE("components::table::update_merge::the_first_update_of_a_second_vector_stores_the_updates_values") {
     update_merge_env env("second_vector");

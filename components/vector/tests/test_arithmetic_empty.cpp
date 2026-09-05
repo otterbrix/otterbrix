@@ -15,7 +15,7 @@ using namespace components;
 // then dereferenced those operand vectors (left.type()) before checking the row
 // count, causing EXC_BAD_ACCESS.
 //
-// This test pins the two guarantees that shape now meets, layer by layer:
+// This test pins the two guarantees that shape meets, layer by layer:
 // data_chunk_t::at(path) answers nullptr for an ordinal past the chunk's width
 // ("column not found", handled as a clean error by the arithmetic operator), and
 // compute_binary_arithmetic with count==0 touches no operand rows and returns an
@@ -64,18 +64,18 @@ TEST_CASE("compute_binary_arithmetic: empty chunk operands, count==0 does not de
     REQUIRE(out.value().type().type() == components::types::logical_type::DOUBLE);
 }
 
-// ЗАПИСЬ #348, THE arithmetic.cpp COORDINATE — the vector-level twin of the
-// logical_value_t mixed-operand defect closed alongside it.
+// THE arithmetic.cpp COORDINATE — the vector-level twin of the logical_value_t
+// mixed-operand refusal.
 //
-// RED, measured before the fix: compute_binary_arithmetic on STRING_LITERAL +
-// BIGINT answered a vector of logical_type 0 (== NA) with row0 and row1both NULL,
-// and BOOLEAN + BOOLEAN answered logical_type 0 as well. A success-shaped NULL
-// for an operation that has no meaning, indistinguishable in the result from real
-// SQL NULLs. compute_unary_neg was worse: it had no type guard at all and
-// dispatched into unary_neg_wrapper, whose non-numeric branch THREW
-// std::logic_error out of a compute path.
+// Measured without the type guard: compute_binary_arithmetic on STRING_LITERAL +
+// BIGINT answers a vector of logical_type 0 (== NA) with row0 and row1 both NULL,
+// and BOOLEAN + BOOLEAN answers logical_type 0 as well — a success-shaped NULL for
+// an operation that has no meaning, indistinguishable in the result from real SQL
+// NULLs. compute_unary_neg is worse without one: it dispatches into
+// unary_neg_wrapper, whose non-numeric branch THROWS std::logic_error out of a
+// compute path.
 //
-// The four entry points answer core::result_wrapper_t<vector_t> now and refuse an
+// The four entry points answer core::result_wrapper_t<vector_t> and refuse an
 // operand pair arithmetic cannot type. An NA-TYPED operand is NOT such a pair:
 // an NA-typed vector is this engine's untyped-NULL column and SQL says NULL + 1
 // is NULL, so that case still answers NA — the one shape deliberately preserved.

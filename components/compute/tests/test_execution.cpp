@@ -496,8 +496,8 @@ namespace {
     struct string_registry_fixture {
         core::pmr::otterbrix_resource resource;
         function_registry_t registry{&resource};
-        // Explicit, because function::execute has no defaulted context any more: the calls
-        // below used to run on the process-global default resource.
+        // Explicit, because function::execute has no defaulted context: without one the calls
+        // below would run on the process-global default resource.
         exec_context_t ctx{&resource, &registry};
 
         // The full builtin set, not register_string_functions alone: the
@@ -700,8 +700,8 @@ static data_chunk_t one_int(std::pmr::memory_resource* resource, int value) {
     return chunk;
 }
 
-// The batch overload fuses the per-chunk outputs into one chunk but never stamped a row count,
-// so the fused chunk carried the values and reported zero rows to everyone who asked size().
+// The batch overload fuses the per-chunk outputs into one chunk and must stamp a row count on
+// it: without one the fused chunk carries the values and reports zero rows to size().
 TEST_CASE("components::compute::vector::batch_reports_the_rows_it_carries") {
     core::pmr::otterbrix_resource resource;
     exec_context_t ctx(&resource);

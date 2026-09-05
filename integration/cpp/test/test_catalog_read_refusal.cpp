@@ -18,47 +18,41 @@
 #include <utility>
 #include <vector>
 
-// FIN — A DDL STATEMENT MUST NOT READ A CATALOG IT COULD NOT READ AS "THE NAME IS FREE".
+// A DDL STATEMENT MUST NOT READ A CATALOG IT COULD NOT READ AS "THE NAME IS FREE".
 //
-// manager_disk_t::scan_table (manager_disk_resolve.cpp:19) is the SINGLE funnel every catalog
+// manager_disk_t::scan_table (manager_disk_resolve.cpp) is the SINGLE funnel every catalog
 // read goes through: namespace resolve, function resolve, cast lookup, namespace enumeration.
-// It answered a scan that came back with an error by returning an EMPTY batch list, and said
-// so in a comment: "A buffer-pool OOM on a catalog scan degrades to an empty batch set here,
-// matching the no-agent / not-owned fallbacks above (resolve callers already tolerate empty)."
-//
-// An empty batch list is also exactly what "no matching rows" looks like. operator_register_udf
-// reads `matches.empty()` (operator_register_udf.cpp:51) as "no function of this name exists"
-// and goes on to mint a pg_proc row — so a transient read failure on pg_proc turns the
-// cross-namespace conflict check into a rubber stamp and the statement reports SUCCESS over a
-// DUPLICATE catalog row.
+// A scan that comes back with an error must not degrade to an EMPTY batch list there, because
+// an empty batch list is also what "no matching rows" looks like: operator_register_udf reads
+// an empty match set as "no function of this name exists" and mints a pg_proc row, so a read
+// failure on pg_proc turns the cross-namespace conflict check into a rubber stamp and the
+// statement reports SUCCESS over a DUPLICATE catalog row.
 //
 // THE SECOND FUNCTION IS A DIFFERENT OVERLOAD OF THE SAME NAME, on purpose. Re-registering an
-// IDENTICAL signature never reaches the catalog at all: manager_dispatcher_t::register_udf
-// fans out to the per-executor registries FIRST and a duplicate signature is refused there,
-// with function_registry_error. A new overload of an existing NAME passes that fan-out — and
-// the pg_proc row is then the only thing that knows the name is taken, which makes this scan
-// the deciding read.
+// IDENTICAL signature never reaches the catalog: manager_dispatcher_t::register_udf fans out
+// to the per-executor registries FIRST and refuses a duplicate signature there with
+// function_registry_error. A new overload of an existing NAME passes that fan-out, and the
+// pg_proc row is then the only thing that knows the name is taken.
 //
 // THE INJECTION, and why it lands where it does. MEASURED FIRST, because the obvious recipe
-// does not work: poisoning pg_proc's handle AFTER the engine is up reaches nothing at all. A
+// does not work: poisoning pg_proc's handle AFTER the engine is up reaches nothing at all — a
 // recording interposer over pg_proc's file says a statement-time catalog scan issues ZERO
-// reads — startup has already faulted the whole table in, because
-// restore_oid_generator_sync scans column 0 of every non-empty system table
-// (manager_disk_bootstrap.cpp:300-380) and this catalog is one shared block wide.
+// reads, since startup already faulted the whole table in (restore_oid_generator_sync scans
+// column 0 of every non-empty system table, manager_disk_bootstrap.cpp, and this catalog is
+// one shared block wide).
 //
-// So the poison has to be armed BEFORE the start, on the one offset that startup reads and the
-// load does NOT need. The discovery open below separates them by COUNT: the three header
-// sectors and the metadata chain are each read TWICE (the manager's probe construction and the
-// agent's reopen, manager_disk_io.cpp:430-447), while the DATA block is read exactly ONCE — by
-// restore_oid_generator_sync. Failing that one offset leaves the load intact (bootstrap does
-// not refuse), leaves the block UNCACHED (the read that would have cached it failed), and so
-// the statement's own scan has to go to the platter and cannot get there. That is exactly a
-// buffer-pool refill that fails.
+// So the poison is armed BEFORE the start, on the one offset that startup reads and the load
+// does NOT need. The discovery open below separates them by COUNT: the three header sectors
+// and the metadata chain are each read TWICE (the manager's probe construction and the agent's
+// reopen, manager_disk_io.cpp), while the DATA block is read exactly ONCE, by
+// restore_oid_generator_sync. Failing that offset leaves the load intact (bootstrap does not
+// refuse), leaves the block UNCACHED (the read that would have cached it failed), so the
+// statement's own scan has to go to the platter and cannot get there — exactly a buffer-pool
+// refill that fails.
 //
 // Arming the WRITES before startup instead — the recipe of test_catalog_write_refusal.cpp —
 // would break the CREATE leg of the bootstrap and stop the start, so the statement under test
-// would never run. That is a bootstrap case, and it lives in
-// services/disk/tests/test_system_table_bootstrap.cpp.
+// would never run. That case lives in services/disk/tests/test_system_table_bootstrap.cpp.
 
 using namespace components;
 
@@ -295,12 +289,12 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     // platter and its block cannot be read, so the only honest answer is a refusal.
     const auto poisoned_rows = pg_proc_rows_named(space, kFuncName);
     INFO("pg_proc rows named '" << kFuncName << "' reported while the block cannot be read: " << poisoned_rows);
-    CHECK(poisoned_rows == kReadRefused); // RED today: 0, i.e. "there is no such function"
+    CHECK(poisoned_rows == kReadRefused); // a swallowed scan error answers 0: "there is no such function"
 
     auto second = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_binary(dispatcher->resource()));
     INFO("a registration whose pg_proc conflict check could not be READ must FAIL, not succeed");
-    // RED today: scan_table swallows the scan error, resolve_function_by_name answers with an
-    // empty vector, and operator_register_udf reads that as "the name is free".
+    // A swallowed scan error would leave resolve_function_by_name answering with an empty
+    // vector, and operator_register_udf reads that as "the name is free".
     CHECK(second.contains_error());
 
     // THE CONTENT, not the status: with the poison cleared pg_proc must still hold exactly ONE

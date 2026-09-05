@@ -8,40 +8,29 @@
 //         const auto conexpr_sv = con_chunk.get_value<std::string_view>(conexpr, ci);
 //         if (conexpr_sv.empty()) { continue; }
 //
-// — two `continue`s that drop the row on the floor. The constraint the user
-// declared and the engine ACCEPTED then leaves the constraint set without a
-// word: check_exprs stays empty, the planner splices no operator_check_constraint,
-// and the table goes back to taking every row while every statement reports
-// success.
+// — two `continue`s that drop the row on the floor: check_exprs stays empty, the planner
+// splices no operator_check_constraint, and the table takes every row while every
+// statement reports success. Two branches up, IN THE SAME LOOP, an unreadable `contype`
+// is refused out loud with exactly this argument — "what it declares cannot be determined,
+// so it cannot be enforced or dismissed". A CHECK row with no expression is the same fact
+// one field over.
 //
-// TWO BRANCHES UP, IN THE SAME LOOP, an unreadable `contype` is refused out
-// loud, with exactly this argument — "what it declares cannot be determined, so
-// it cannot be enforced or dismissed". A row that says CHECK and carries no
-// expression is the same fact one field over: the engine knows a CHECK was
-// declared and cannot know what it says. Two identical cases must not be
-// answered in opposite ways in one function.
+// HOW THE ROW IS PRODUCED HERE. It is written by the ENGINE: the plan is a CREATE TABLE
+// carrying an INLINE constraint node — the shape transform_table builds for
+// `CREATE TABLE t (..., CONSTRAINT c CHECK (...))` — run through the same enrich ->
+// rewrite_create_table -> build_create_constraint_writes path. The test only hands that
+// node over with its check expression unset, the state any writer that lost the expression
+// leaves behind: build_create_constraint_writes writes col 10 only `if (is_check &&
+// !check_expr.empty())`, so contype lands as 'c' and conexpr lands NULL.
 //
-// HOW THE ROW IS PRODUCED HERE. The pg_constraint row is written by the ENGINE:
-// the plan is a CREATE TABLE carrying an INLINE constraint node, the shape
-// transform_table builds for `CREATE TABLE t (..., CONSTRAINT c CHECK (...))`,
-// and it goes through the same enrich -> rewrite_create_table ->
-// build_create_constraint_writes path. The only thing the test does is hand the
-// inline node over with its check expression unset — the state any writer that
-// lost the expression leaves behind. build_create_constraint_writes writes col 10
-// only `if (is_check && !check_expr.empty())`, so contype lands as 'c' and
-// conexpr lands NULL: a row that declares a CHECK and says nothing about what to
-// check.
+// PATH NOT NAMED FROM SQL, deliberately: both live SQL routes are closed one floor up —
+// transform_table refuses an inline CHECK whose expression deparsed to nothing, and
+// executor_t::execute_plan_full refuses a standalone ADD CONSTRAINT CHECK with an empty
+// expression. What is left is a catalog written before those gates, which is what a floor
+// is for.
 //
-// PATH NOT NAMED FROM SQL, deliberately. Both live SQL routes are closed one
-// floor up: transform_table refuses an inline CHECK whose expression deparsed to
-// nothing, and executor_t::execute_plan_full refuses a standalone ADD CONSTRAINT
-// CHECK with an empty expression ("CHECK constraint expression is empty or
-// contains unsupported constructs"). What is left is a catalog written before
-// those gates — which is exactly what a floor is for.
-//
-// THE CONTROL PROVES THE STAND HAS TEETH: the same helper, the same node, the
-// same CREATE TABLE — with the expression present the CHECK is gathered and
-// enforced, and the row that violates it does not go in.
+// THE CONTROL PROVES THE STAND HAS TEETH: same helper, same node, same CREATE TABLE — with
+// the expression present the CHECK is gathered, enforced, and the violating row stays out.
 // ============================================================================
 
 #include "test_config.hpp"

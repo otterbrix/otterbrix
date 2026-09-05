@@ -1,12 +1,11 @@
-// T1: table_storage_adapter_t::fetch used to swallow column_fetch_state::fetch_error.
+// table_storage_adapter_t::fetch must not swallow column_fetch_state::fetch_error.
 //
 // The adapter's fetch sets result_outlives_pins = true, which routes big strings to
 // fetch_string_owned; when the overflow marker cannot be resolved that leg writes
-// data_corruption into state.fetch_error — and the adapter's override was declared
-// void, so nobody could read it. Before F1 this input called std::abort(); after F1
-// it returned an EMPTY string quietly, which is worse: the live path
-// (agent_disk_t::storage_fetch_inner -> storage->fetch) shipped the wrong answer
-// across the mailbox as if the read had succeeded.
+// data_corruption into state.fetch_error. A `void` override has nobody able to read it, and
+// the read then returns an EMPTY string quietly: the live path
+// (agent_disk_t::storage_fetch_inner -> storage->fetch) ships the wrong answer across the
+// mailbox as if it had succeeded.
 //
 // These cases pin the fix: storage_t::fetch returns core::result_wrapper_t<bool>
 // (the same shape fetch_next_batch already uses for scan_error), the adapter
@@ -116,7 +115,7 @@ TEST_CASE("storage_adapter: fetch returns owned big-string bytes on the intact p
     row_ids.data<int64_t>()[0] = 0;
 
     // The row was appended at txn 0 and never deleted, so any snapshot sees it; the mode
-    // is named explicitly because fetch_visibility_t has no default (C4b).
+    // is named explicitly because fetch_visibility_t has no default.
     auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
     REQUIRE_FALSE(fetch_r.has_error());
     REQUIRE(out.size() == 1);
@@ -142,9 +141,9 @@ TEST_CASE("storage_adapter: a fetch failure reaches the storage caller as an err
     vector_t row_ids(&env.resource, logical_type::BIGINT, 1);
     row_ids.data<int64_t>()[0] = 0;
 
-    // Before the fix this was `void storage.fetch(...)` — the data_corruption the
-    // string leg recorded had NO reader, and the caller shipped a silently EMPTY
-    // payload as if the read had succeeded (RED run: `0 == 5000 (0x1388)`).
+    // A `void storage.fetch(...)` would leave the data_corruption the string leg records with
+    // NO reader, and the caller would ship a silently EMPTY payload as if the read had succeeded
+    // (observed: `0 == 5000 (0x1388)`).
     auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
     REQUIRE(fetch_r.has_error());
     REQUIRE(fetch_r.error().type == core::error_code_t::data_corruption);

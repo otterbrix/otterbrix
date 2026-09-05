@@ -18,8 +18,8 @@ namespace components::sql::transform {
         // means descending the whole expression rather than inspecting its top node. A call matches
         // on name AND arguments AND the DISTINCT flag: two aggregates of the same name are
         // different aggregates, and count(DISTINCT x) is a different aggregate from count(x) —
-        // matching that ignored `distinct` bound `HAVING count(DISTINCT x)` to a projected
-        // count(x) and silently counted duplicates.
+        // a match that ignores `distinct` binds `HAVING count(DISTINCT x)` to a projected
+        // count(x) and silently counts duplicates.
         const expressions::expression_i* find_call(const expressions::expression_i* expr,
                                                    const std::string& name,
                                                    const std::pmr::vector<expressions::param_storage>& args,
@@ -430,7 +430,7 @@ namespace components::sql::transform {
                 auto call = make_function_expression(resource_, std::move(funcname), std::move(filtered));
                 call->set_star_argument(func->agg_star);
                 // Same agg_distinct wiring as the select-list arm: this leg builds the
-                // call for a nested operand and used to drop the flag.
+                // call for a nested operand and must not drop the flag.
                 call->set_distinct(func->agg_distinct);
                 return param_storage{expressions::expression_ptr{call}};
             }
@@ -477,10 +477,10 @@ namespace components::sql::transform {
             case T_TypeCast:
                 // A cast key is just its underlying constant rendered as text:
                 // 'x'::text -> "x", 5::bigint -> "5", TRUE -> "t". Recurse so the
-                // operand's real node type drives the conversion. (This arm used to
-                // collapse EVERY cast to the boolean strings "true"/"false", which
-                // both mis-keyed 'x'::text and dereferenced a non-string cast
-                // argument's integer union member as a char* — a segfault.)
+                // operand's real node type drives the conversion. Collapsing EVERY cast
+                // to the boolean strings "true"/"false" both mis-keys 'x'::text and
+                // dereferences a non-string cast argument's integer union member as a
+                // char* — a segfault.
                 return get_str_value(pg_ptr_cast<TypeCast>(node)->arg);
             case T_A_Const: {
                 auto value = &(pg_ptr_cast<A_Const>(node)->val);
@@ -1282,8 +1282,8 @@ namespace components::sql::transform {
             }
         }
         auto expr = make_function_expression(resource_, std::move(funcname), std::move(args));
-        // DISTINCT inside the call (count(DISTINCT x) nested as an argument). Only the
-        // select-list arm used to copy agg_distinct; every call built here lost it.
+        // DISTINCT inside the call (count(DISTINCT x) nested as an argument). agg_distinct
+        // has to be copied here too, not only in the select-list arm.
         expr->set_distinct(node->agg_distinct);
         return expr;
     }
@@ -1728,7 +1728,7 @@ namespace components::sql::transform {
                 // Not in SELECT — add to the group node so the aggregation operator computes
                 // it for HAVING (mirrors PostgreSQL: aggregates in HAVING need not appear in
                 // SELECT). The DISTINCT flag travels onto the minted aggregate: dropping it
-                // here made `HAVING count(DISTINCT x)` silently compute count(x).
+                // here makes `HAVING count(DISTINCT x)` silently compute count(x).
                 std::string alias = "__having_" + funcname + "_" + std::to_string(aggregate_counter_++);
                 auto agg_expr = make_aggregate_expression(resource_, funcname, expressions::key_t{resource_, alias});
                 for (auto& arg : args) {

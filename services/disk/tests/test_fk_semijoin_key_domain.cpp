@@ -1,23 +1,22 @@
-// ЗАПИСЬ #358 (and the false match found beside it) — WHAT THE FK SEMI-JOIN DOES WITH A KEY
+// WHAT THE FK SEMI-JOIN DOES WITH A KEY
 // THAT THE STORED KEY COLUMN CANNOT HOLD.
 //
 // fk_hash_semijoin normalizes each input key column to the STORED column's physical type
 // before hashing, because a raw typed hash does not coerce widths. That normalization is the
-// place where a key value leaves its own domain and enters the parent's, and two different
-// things used to happen there, neither of them the right answer:
+// place where a key value leaves its own domain and enters the parent's, and two things can go
+// wrong there:
 //
-//   * OUT OF RANGE (#358). Batch 2 gave cast_vector a per-element range check, so an INT64
-//     key 70000 against a SMALLINT stored column stopped truncating to 4464 (which had
-//     hashed equal to an unrelated stored key — a FALSE FK MATCH) and became a
-//     conversion_failure that FAILS THE WHOLE STATEMENT. Strictly honester than the
-//     truncation, but still not the answer: a value outside the stored column's domain
-//     cannot equal ANY stored row, so the evaluable answer is an EMPTY BUCKET. On the
-//     parent side (operator_fk_cascade) the difference is not cosmetic — DELETE of a parent
-//     row whose key does not fit the child's narrower FK column has no children by
-//     construction and must succeed, not abort with a conversion error.
+//   * OUT OF RANGE. cast_vector range-checks per element, so an INT64 key 70000 against a
+//     SMALLINT stored column does not truncate to 4464 (which would hash equal to an unrelated
+//     stored key — a FALSE FK MATCH) but answers conversion_failure, which FAILS THE WHOLE
+//     STATEMENT. Strictly honester than the truncation, but still not the answer: a value
+//     outside the stored column's domain cannot equal ANY stored row, so the evaluable answer
+//     is an EMPTY BUCKET. On the parent side (operator_fk_cascade) the difference is not
+//     cosmetic — DELETE of a parent row whose key does not fit the child's narrower FK column
+//     has no children by construction and must succeed, not abort with a conversion error.
 //
-//   * NOT EXACTLY REPRESENTABLE (found here, not previously recorded). The range check does
-//     NOT cover fractional loss: cast_value_fits deliberately answers true for
+//   * NOT EXACTLY REPRESENTABLE. The range check does NOT cover fractional loss:
+//     cast_value_fits deliberately answers true for
 //     floating -> integral whenever the MAGNITUDE fits, and the cast then truncates the
 //     fraction. So a DOUBLE key 1.5 against a BIGINT stored column normalized to 1 and
 //     hashed equal to a stored 1 — the same FALSE FK MATCH the range check was introduced to
@@ -144,13 +143,11 @@ TEST_CASE("services::disk::fk_hash_semijoin::a_fractional_key_matches_no_integer
 }
 
 // ===========================================================================
-// #358 — THE OUT-OF-DOMAIN KEY. A key that the stored column cannot hold is
-// answered "no match", not a failed statement.
-//
-// BEFORE: the call answered core::error_t{conversion_failure,
-//         "cast_vector: value at row 0 does not fit the target type (...)"},
-//         which aborts the DELETE / the FK check outright and takes the
-//         in-domain keys of the same batch down with it.
+// THE OUT-OF-DOMAIN KEY. A key that the stored column cannot hold is answered
+// "no match", not a failed statement: a core::error_t{conversion_failure,
+// "cast_vector: value at row 0 does not fit the target type (...)"} here aborts
+// the DELETE / the FK check outright and takes the in-domain keys of the same
+// batch down with it.
 // ===========================================================================
 TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead_of_failing") {
     core::pmr::otterbrix_resource resource;
@@ -192,8 +189,8 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead
     REQUIRE(res.size() == 3);
 
     CHECK(res[0].empty()); // 70000 is not 4464
-    // CONTROL — the in-domain key of the SAME batch still matches. This is what the
-    // whole-statement refusal used to take down with it.
+    // CONTROL — the in-domain key of the SAME batch still matches. A whole-statement refusal
+    // would take this down with it.
     CHECK(as_set(res[1]) == std::set<int64_t>{1}); // 20 -> row 1
     CHECK(res[2].empty());
 }
@@ -212,7 +209,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead
 // them apart on the error alone — the pair has to be settled once, per column,
 // before any row is judged.
 //
-// RED WITHOUT THE PER-COLUMN PROBE: the call answers 2 empty buckets and no error,
+// WITHOUT THE PER-COLUMN PROBE the call answers 2 empty buckets and no error,
 // i.e. a STRING key against a BIGINT parent silently "matches nothing".
 // ===========================================================================
 TEST_CASE("services::disk::fk_hash_semijoin::an_uncomparable_type_pair_refuses_instead_of_missing") {

@@ -170,9 +170,9 @@ namespace components::compute {
     private:
         core::error_t check_init() {
             if (!kernel_ctx_) {
-                // NO IMPLICIT INIT (rule 6). This used to init() itself against
-                // default_exec_context() -- the process-global arena -- so an executor whose
-                // caller forgot init() silently ran on memory nobody had asked for. Both
+                // NO IMPLICIT INIT (rule 6). Self-initialising against a process-global arena
+                // would let an executor whose caller forgot init() silently run on memory
+                // nobody had asked for. Both
                 // in-tree producers of this object (function::make_executor and the three
                 // function::execute overloads) init it with the caller's context before
                 // handing it out, so reaching this is a caller bug, and it is answered, not

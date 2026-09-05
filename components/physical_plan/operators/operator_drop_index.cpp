@@ -24,16 +24,13 @@ namespace components::operators {
         , catalog_deletes_(std::move(catalog_deletes)) {}
 
     actor_zeta::unique_future<void> operator_drop_index_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // NOTHING TO SCRUB IS A REFUSAL, NOT A SUCCESS. The catalog scrub below is
-        // this operator's verdict — "at least one identity row went" — and the verdict
-        // can only fire over a non-empty spec list sent to a real disk actor. The
-        // planner never produces this shape (rewrite_drop_index refuses an unresolved
-        // index before emitting anything and otherwise always emits the full list), so
-        // arriving here with no specs, or with no disk service to send them to, is a
-        // caller-invariant violation: proceeding meant tearing down the engine entry
-        // over a catalog that still describes the index and reporting a DROP INDEX
-        // that dropped nothing as success — the exact "success over leftover rows"
-        // shape the verdict below exists to refuse.
+        // NOTHING TO SCRUB IS A REFUSAL, NOT A SUCCESS. The catalog scrub below is this operator's verdict
+        // — "at least one identity row went" — and the verdict can only fire over a non-empty spec list
+        // sent to a real disk actor. The planner never produces this shape (rewrite_drop_index refuses an
+        // unresolved index before emitting anything and otherwise always emits the full list), so arriving
+        // here with no specs, or with no disk service to send them to, is a caller-invariant violation:
+        // proceeding meant tearing down the engine entry over a catalog that still describes the index and
+        // reporting a DROP INDEX that dropped nothing as success.
         if (catalog_deletes_.empty() || ctx->disk_address == actor_zeta::address_t::empty_address()) {
             std::string msg = "operator_drop_index: index oid ";
             msg += std::to_string(static_cast<unsigned>(index_oid_));
@@ -54,19 +51,16 @@ namespace components::operators {
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
             std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource_);
             specs.reserve(catalog_deletes_.size());
-            // WHICH ZERO IS AN ERROR HERE, and pg_index and pg_class are the SAME question.
-            // pg_depend rows are optional bookkeeping — an index with no dependency row deletes
-            // none of them and that is healthy. The other two are not optional and there is no
-            // ground to separate them: rewrite_drop_index emits these specs only once index_oid
-            // resolved, and what it resolved AGAINST is the index's pg_class entry
-            // (enrich_logical_plan stamps set_index_oid from rt_index->table_oid(), the index
-            // relation's own oid, read out of pg_class by operator_resolve_table_t under this
-            // same transaction), while build_create_index_writes writes the pg_index row for
-            // every index there is. Calling zero on pg_index an error and zero on pg_class
-            // healthy — as this table did — contradicted itself with the argument it gave: a
-            // scrub that removed no pg_class row leaves the relation in the catalog under its
-            // name for the next statement to resolve. So the two are collected together, and
-            // judged together below.
+            // WHICH ZERO IS AN ERROR HERE, and pg_index and pg_class are the SAME question. pg_depend rows
+            // are optional bookkeeping — an index with no dependency row deletes none of them and that is
+            // healthy. The other two are not optional and there is no ground to separate them:
+            // rewrite_drop_index emits these specs only once index_oid resolved, and what it resolved AGAINST
+            // is the index's pg_class entry (enrich_logical_plan stamps set_index_oid from
+            // rt_index->table_oid(), read out of pg_class by operator_resolve_table_t under this same
+            // transaction), while build_create_index_writes writes the pg_index row for every index there is.
+            // Calling zero on pg_index an error and zero on pg_class healthy would contradict itself: a scrub
+            // that removed no pg_class row leaves the relation in the catalog under its name for the next
+            // statement to resolve. So the two are collected together, and judged together below.
             std::pmr::vector<std::size_t> identity_specs(resource_);
             for (auto& d : catalog_deletes_) {
                 const bool is_pg_index_identity =
@@ -89,23 +83,20 @@ namespace components::operators {
                                                  exec_ctx,
                                                  std::move(specs));
                 auto deleted_r = co_await std::move(fut);
-                // AHEAD OF THE ENGINE TEARDOWN BELOW, and the order is the point: the teardown
-                // is this operator's other mutation, and it must not happen over a catalog that
-                // still describes the index.
+                // AHEAD OF THE ENGINE TEARDOWN BELOW, and the order is the point: the teardown is this
+                // operator's other mutation, and it must not happen over a catalog that still describes the
+                // index.
                 //
-                // WHAT A RETRY CAN AND CANNOT DO, stated rather than promised — and it is what
-                // decides the SHAPE of the verdict below. The manager stops its loop at the
-                // FIRST refusal, so what a refused scrub leaves is a prefix-deleted spec list,
-                // and rewrite_drop_index puts pg_class last: the usual leftover is a pg_class
-                // row whose pg_index row is already gone. A retry re-resolves the index by name
-                // against exactly that surviving pg_class row, so it CAN finish the job.
+                // WHAT A RETRY CAN AND CANNOT DO decides the SHAPE of the verdict below. The manager stops its
+                // loop at the FIRST refusal, so a refused scrub leaves a prefix-deleted spec list, and
+                // rewrite_drop_index puts pg_class last: the usual leftover is a pg_class row whose pg_index row
+                // is already gone. A retry re-resolves the index by name against exactly that surviving pg_class
+                // row, so it CAN finish the job.
                 //
-                // Which is why the rule is "at least one identity row went", not "every one
-                // did". Demanding both would make that retry refuse forever — pg_index is
-                // already gone, so its spec can only answer zero — and the leftover would be
-                // permanent. Answering zero on BOTH is the state the verdict actually exists
-                // for: nothing that makes this index exist was removed, so the statement did
-                // not drop the index it named and must not tear the engine down over it.
+                // Which is why the rule is "at least one identity row went", not "every one did". Demanding both
+                // would make that retry refuse forever — pg_index is already gone, so its spec can only answer
+                // zero — and the leftover would be permanent. Answering zero on BOTH is the state the verdict
+                // exists for: nothing that makes this index exist was removed.
                 if (deleted_r.has_error()) {
                     set_error(deleted_r.error());
                     mark_failed();

@@ -1,18 +1,13 @@
-// A0b (plan): RED tests for the big-string (>= DEFAULT_STRING_BLOCK_LIMIT = 4096 bytes)
-// overflow path. Known defects this pins:
-//   D2 — write_string_marker writes 16 bytes (uint64 + int64) into a dictionary slot that
-//        reserved BIG_STRING_MARKER_BASE_SIZE = 8 (column_segment.cpp:19, :414-418, :475):
-//        the first big string writes past the reservation, every next one overwrites the
-//        previous dictionary entry; read_string_marker memcpys 8 bytes into a 4-byte
-//        uint32_t.
-//   D1 — the overflow block id comes from the buffer manager's TRANSIENT range
-//        (temp_id_ seeded with MAXIMUM_BLOCK = 2^62); the D2 truncation turns 2^62+k into k,
-//        fetch_string_owned then resolves block k on the wrong manager and the load path
-//        throws std::logic_error — reachable in DISK mode too, because
-//        transition_segment_to_disk explicitly skips STRING segments.
-//
-// There is NO test coverage of this zone on HEAD (the longest string in the repo is 199
-// chars). These cases are expected RED: a throw, a corrupted value, or an ASAN report.
+// The big-string (>= DEFAULT_STRING_BLOCK_LIMIT = 4096 bytes) overflow path. The zone had no
+// coverage at all (the longest string anywhere else in the repo is 199 chars), and it is the
+// one place where a dictionary slot does not hold the value itself but a MARKER naming another
+// block. Two things have to hold together and both are pinned here:
+//   * the marker's dictionary reservation must match what write_string_marker writes
+//     (BIG_STRING_MARKER_BASE_SIZE, uint64 + int64) — a smaller reservation has the first big
+//     string overrun it and every next one overwrite the previous entry;
+//   * the block id in a marker must be read back in the domain it was written in. A TRANSIENT
+//     id (>= MAXIMUM_BLOCK) truncated to 32 bits resolves as a REAL file block on the wrong
+//     manager.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_data.hpp>
@@ -131,26 +126,19 @@ TEST_CASE("big_strings: two big strings in one segment do not overwrite each oth
 
         auto values = scan_strings(*table, 10);
         REQUIRE(values.size() == 2);
-        CHECK(values[0] == first);  // D2: the second marker overwrites the first entry
+        CHECK(values[0] == first);  // a second marker must not overwrite the first entry
         CHECK(values[1] == second);
     }
     cleanup_bigstr_file();
 }
 
-// F1 (adversarial review): the two cases above read the table while it is STILL IN MEMORY,
-// so they pin only half the path. This one takes a big string through a real checkpoint and
-// a real reload — the half nothing covers.
+// The two cases above read the table while it is STILL IN MEMORY, so they pin only half the
+// path. This one takes a big string through a real checkpoint and a real reload.
 //
-// The claim under test: the overflow block's PAYLOAD is never written to the file.
-// write_string_memory puts the bytes in a TRANSIENT block and records it only in
-// state.overflow_blocks (column_segment.cpp) — the sole writer of that map. The checkpoint
-// copies the segment block verbatim, marker included, but nothing serializes the block the
-// marker points at; uncompressed_string_segment_state::register_block / on_disk_blocks have
-// zero callers. On reload initialize_column builds a FRESH state with an empty
-// overflow_blocks, so the first read misses and resolve_overflow_block aborts.
-//
-// WARNING: if the claim holds, this case does not fail — it takes the whole test_table
-// binary down with it (std::abort is unconditional, NDEBUG included).
+// What it guards: write_string_memory puts the payload in a TRANSIENT block that dies with
+// the process. Copying the segment block verbatim at checkpoint time persists the marker but
+// not the block it names, so a reload builds a FRESH segment state with no overflow block to
+// resolve against and the value is unreadable.
 TEST_CASE("big_strings: a >=4096-byte string survives checkpoint and reload") {
     using namespace components::table::storage;
     cleanup_bigstr_file();
@@ -205,7 +193,7 @@ TEST_CASE("big_strings: a >=4096-byte string survives checkpoint and reload") {
 }
 
 // ---------------------------------------------------------------------------------------
-// F1 (fix): the checkpoint now moves the overflow PAYLOAD into real file blocks, records
+// The checkpoint moves the overflow PAYLOAD into real file blocks, records
 // their ids in data_pointer_t::overflow_blocks, and rewrites every dictionary marker out of
 // the transient id domain (>= storage::MAXIMUM_BLOCK) into the on-disk one. The reload path
 // registers those blocks on the segment, so a marker resolves on the first read. The cases
@@ -514,11 +502,10 @@ namespace {
 
 } // namespace
 
-// The failure path, proved rather than asserted in a comment. resolve_overflow_block used to
-// fprintf + assert(false) + std::abort() on a marker it could not resolve -- unconditional,
-// NDEBUG included, and reachable from a plain SELECT, so a single bad byte in one dictionary
-// made the whole database impossible to open. It must report through the fetch/scan error
-// channel and leave the process standing.
+// The failure path, proved rather than asserted in a comment. A marker resolve_overflow_block
+// cannot resolve must report through the fetch/scan error channel and leave the process
+// standing: an abort there is reachable from a plain SELECT, NDEBUG included, so a single bad
+// byte in one dictionary would make the whole database impossible to open.
 TEST_CASE("big_strings: an unresolvable overflow block reports an error and does not abort") {
     bigstr_env_t env;
     tstorage::transient_block_manager_t block_manager(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -560,7 +547,7 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
         overwrite_only_overflow_marker(env, *append_state.current, bogus_transient);
         vector_t result(&env.resource, logical_type::STRING_LITERAL, DEFAULT_VECTOR_CAPACITY);
         column_fetch_state fetch_state;
-        column->fetch_row(fetch_state, 0, result, 0); // used to std::abort() here
+        column->fetch_row(fetch_state, 0, result, 0); // must not abort
         CHECK(fetch_state.fetch_error.contains_error());
         CHECK(fetch_state.fetch_error.type == core::error_code_t::data_corruption);
     }
@@ -576,7 +563,7 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
 
     SECTION("fetch_row that OWNS its result: unregistered overflow block") {
         // The other leg of the fetch: result_outlives_pins routes through fetch_string_owned
-        // (the late-materialisation gather), which resolved the very same way.
+        // (the late-materialisation gather), which resolves the very same way.
         overwrite_only_overflow_marker(env, *append_state.current, bogus_transient);
         vector_t result(&env.resource, logical_type::STRING_LITERAL, DEFAULT_VECTOR_CAPACITY);
         column_fetch_state fetch_state;
@@ -593,7 +580,7 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
         column->initialize_scan(scan_state);
         REQUIRE_FALSE(scan_state.has_error());
         vector_t result(&env.resource, logical_type::STRING_LITERAL, DEFAULT_VECTOR_CAPACITY);
-        column->scan(0, scan_state, result); // used to std::abort() here
+        column->scan(0, scan_state, result); // must not abort
         CHECK(scan_state.has_error());
         CHECK(scan_state.scan_error.type == core::error_code_t::data_corruption);
     }
@@ -648,8 +635,8 @@ TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compa
     REQUIRE_FALSE(recorded.empty());
     for (uint64_t id : recorded) {
         INFO("overflow block " << id);
-        // The marker's id domain after the fix is unambiguous: a persisted overflow id is a
-        // REAL file block, never a transient one.
+        // The marker's id domain is unambiguous: a persisted overflow id is a REAL file block,
+        // never a transient one.
         CHECK(id < tstorage::MAXIMUM_BLOCK);
     }
 
@@ -697,7 +684,7 @@ TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compa
     cleanup_bigstr_file();
 }
 
-// T3: compact() must fail LOUDLY on a scan error — never truncate.
+// compact() must fail LOUDLY on a scan error — never truncate.
 //
 // The rebuild loop tested only chunk.size() == 0, never
 // state.table_state.has_error(). collection_scan_state::scan sets
@@ -788,7 +775,7 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
     cleanup_bigstr_file();
 }
 
-// T4: column_data_t::update must not discard the pre-image read error.
+// column_data_t::update must not discard the pre-image read error.
 //
 // update() fetches the row's PRIOR version into base_vector and hands it to
 // update_internal as the version-chain pre-image. state.scan_error was never
@@ -841,7 +828,7 @@ TEST_CASE("big_strings: update surfaces a failed pre-image read instead of recor
 // on_disk_blocks disagrees with what the file says the segment owns, and collect_disk_block_ids
 // -- which drives compact's reclaim -- reports the wrong set.
 //
-// This branch became REACHABLE with A7.2/A7.3: block ids are now genuinely reused, so a stale
+// This branch is REACHABLE because shadow paging genuinely reuses block ids, so a stale
 // or crossed pointer stream can name one twice. It runs on the agent thread inside the
 // checkpoint/open coroutine, where a throw is fatal (rules 2/9), so the answer is latched on
 // the segment and reported by column_data_t::initialize_column, which already returns a

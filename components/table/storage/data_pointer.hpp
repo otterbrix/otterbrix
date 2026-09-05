@@ -22,38 +22,31 @@ namespace components::table::storage {
         block_pointer_t block_pointer;
         compression::compression_type compression{compression::compression_type::UNCOMPRESSED};
         uint64_t segment_size{0};
-        // F1: disk blocks holding this segment's BIG-STRING overflow payload (a STRING value
-        // >= DEFAULT_STRING_BLOCK_LIMIT does not fit the segment dictionary; the dictionary
-        // holds a 16-byte marker pointing at a separate block instead). The segment block
-        // above carries only the markers, so without this list the payload is unreachable
-        // after a reload AND unreclaimable by data_table_t::compact -- the reload path
-        // rebuilds uncompressed_string_segment_state from it and collect_disk_block_ids
-        // reports it. Empty for every segment with no big strings (the common case), so the
-        // on-disk cost is one uint32 zero. The on-disk format is pre-release and changes in
-        // place at version 0; see main_header_t::CURRENT_VERSION.
+        // Disk blocks holding this segment's BIG-STRING overflow payload (a STRING value
+        // >= DEFAULT_STRING_BLOCK_LIMIT does not fit the segment dictionary, which holds a 16-byte
+        // marker pointing at a separate block instead). The segment block above carries only the
+        // markers, so without this list the payload is unreachable after a reload AND unreclaimable
+        // by data_table_t::compact. Empty for every segment with no big strings, so the on-disk cost
+        // is one uint32 zero. The format is pre-release; see main_header_t::CURRENT_VERSION.
         std::vector<uint64_t> overflow_blocks;
 
         void serialize(metadata_writer_t& writer) const;
         static data_pointer_t deserialize(metadata_reader_t& reader);
     };
 
-    // Persistent form of one column NODE, recursive: a nested column (LIST/STRUCT/ARRAY)
-    // stores its payload in CHILD column nodes (list elements, struct fields, array
-    // elements), so the checkpoint must carry the whole tree — the flat one-level list it
-    // used to carry silently dropped every child, and a reloaded nested column scanned an
-    // empty child. The on-disk format is pre-release and changes in place at version 0;
-    // see main_header_t::CURRENT_VERSION for what that costs and why it is acceptable here.
-    // `count` is the node's own entry count: a LIST child holds SUM(list lengths) entries
-    // (not the table's row count), and STRUCT/ARRAY nodes own no segments at all, so the
-    // count cannot be re-derived from `segments` on load.
+    // Persistent form of one column NODE, recursive: a nested column (LIST/STRUCT/ARRAY) stores its
+    // payload in CHILD column nodes, so the checkpoint must carry the whole tree — a flat one-level
+    // list silently drops every child, and a reloaded nested column then scans an empty one. The
+    // format is pre-release; see main_header_t::CURRENT_VERSION. `count` is the node's OWN entry
+    // count: a LIST child holds SUM(list lengths), not the table's row count, and STRUCT/ARRAY nodes
+    // own no segments at all, so it cannot be re-derived from `segments` on load.
     //
-    // Child order (v1, fixed): children[0] is ALWAYS the node's VALIDITY bitmap column
-    // (standard = [validity]; struct = [validity, field...]; list/array = [validity,
-    // element]) — mirroring the in-memory scan-state layout where child_states[0] is
-    // validity. The validity node's segments are ordinary column segments whose payload
-    // is the bitmap (one bit per row, segment-relative, 128 bytes per 1024-row vector);
-    // without it the reload manufactured an all-valid bitmap and every checkpointed NULL
-    // was silently lost. A record missing its validity child is data_corruption on load.
+    // Child order (v1, fixed): children[0] is ALWAYS the node's VALIDITY bitmap column (standard =
+    // [validity]; struct = [validity, field...]; list/array = [validity, element]), mirroring the
+    // in-memory child_states[0]. Its segments are ordinary column segments carrying the bitmap (one
+    // bit per row, segment-relative, 128 bytes per 1024-row vector); without it the reload
+    // manufactured an all-valid bitmap and every checkpointed NULL was silently lost. A record
+    // missing its validity child is data_corruption on load.
     struct column_data_pointers_t {
         uint64_t count{0};
         std::vector<data_pointer_t> segments;

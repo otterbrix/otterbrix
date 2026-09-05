@@ -16,16 +16,16 @@
 // pg_attribute has twelve columns; added_at_commit_id is 10 and dropped_at_commit_id is 11, both
 // declared NOT NULL and both used by the reader to decide whether a column is visible to a snapshot
 // (operator_resolve_table skips a row whose added_at is past the snapshot, or whose dropped_at is
-// non-zero and at or before it). build_create_table_writes used to fill columns 0 through 9 and stop:
-// the rows still read correctly, but only because vector_t memsets every buffer it allocates, so the
-// visibility of every column of every table rested on an initialisation that exists for unrelated
-// reasons, and narrowing that memset would have made columns silently vanish from a table.
+// non-zero and at or before it). Leaving those two to the buffer's initial state would rest the
+// visibility of every column of every table on vector_t memsetting every buffer it allocates — an
+// initialisation that exists for unrelated reasons, and narrowing it would make columns silently
+// vanish from a table.
 //
-// This is a characterisation test, not a reproducing one, and it cannot be made to fail against the
-// old writer: the poison resource below fills allocations with 0xA5, but vector_t's constructor
-// memsets the buffer straight afterwards and the validity mask starts all-valid, so unwritten cells
-// read as non-NULL zeros whatever the allocator hands over. What it does buy is that it fails the
-// instant anyone stops zeroing pg_attribute's buffer.
+// This is a characterisation test, not a reproducing one: the poison resource below fills
+// allocations with 0xA5, but vector_t's constructor memsets the buffer straight afterwards and the
+// validity mask starts all-valid, so unwritten cells read as non-NULL zeros whatever the allocator
+// hands over. What it does buy is that it fails the instant anyone stops zeroing pg_attribute's
+// buffer.
 
 namespace {
     // Hands out memory that is deliberately NOT zero, so a cell nobody wrote cannot be mistaken for
@@ -90,11 +90,11 @@ TEST_CASE("catalog::ddl::create_table_writes_the_mvcc_columns_of_pg_attribute") 
     REQUIRE(saw_pg_attribute);
 }
 
-// B1a: every table is disk-backed. The pg_class row's relstoragemode column stays
+// Every table is disk-backed. The pg_class row's relstoragemode column stays
 // (write-only, no readers) and is ALWAYS written 'd' — for regular tables and for
 // the schemaless computed (relkind='g') creation path alike. This is the write-site
-// half of the B1a gate; the integration half (a plain CREATE TABLE producing a
-// .otbx) lives in test_persistence::b1a_disk_is_default.
+// half; the integration half (a plain CREATE TABLE producing a .otbx) lives in
+// test_persistence::b1a_disk_is_default.
 TEST_CASE("catalog::ddl::create_table_writes_relstoragemode_disk_always") {
     using namespace components::catalog;
 
@@ -132,7 +132,7 @@ TEST_CASE("catalog::ddl::create_table_writes_relstoragemode_disk_always") {
     {
         oid_batch_t oids;
         oids.oids.push_back(static_cast<oid_t>(3000));
-        // RN-oid: the builder stamps allocated attoids back onto the column list, so it takes
+        // The builder stamps allocated attoids back onto the column list, so it takes
         // a non-const lvalue. A schemaless table has none, but the list still has to be one.
         std::vector<components::table::column_definition_t> no_columns;
         check_pg_class_mode(

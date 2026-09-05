@@ -172,25 +172,21 @@ namespace components::table {
         std::lock_guard guard(lock_);
         // BOTH public names answer the SAME question — see visible_to_all_locked().
         //
-        // This used to compute its own, weaker answer: published_horizon_ when
-        // active_ was empty, otherwise the min over snapshot_horizon alone. Both
-        // branches ignored in_flight_commits_, and the old safety argument here
-        // proved only a special case — that a COMMITTING txn cannot reclaim its OWN
-        // tombstones early (its remap runs pre-publish, so the horizon reaches its
-        // id only after it). It was blind to ANOTHER, SMALLER commit-id still in
-        // flight: publish() keeps the MAXIMUM ever published, while commit()
-        // pipelines finish in any order, so published_horizon_ routinely sits ABOVE
-        // an unpublished id. A snapshot taken in that window carries the smaller id
-        // in in_flight_snapshot and still reads its rows, while this broadcast had
-        // already licensed the index sweep to erase their entries — the index then
-        // answers a subset of the table, silently.
+        // The weaker answer — published_horizon_ when active_ is empty, otherwise the min over
+        // snapshot_horizon alone — is NOT enough, because both branches ignore
+        // in_flight_commits_. It covers only the special case that a COMMITTING txn cannot
+        // reclaim its OWN tombstones early (its remap runs pre-publish, so the horizon reaches
+        // its id only after it), and is blind to ANOTHER, SMALLER commit-id still in flight:
+        // publish() keeps the MAXIMUM ever published while commit() pipelines finish in any
+        // order, so published_horizon_ routinely sits ABOVE an unpublished id. A snapshot taken
+        // in that window carries the smaller id in in_flight_snapshot and still reads its rows,
+        // while the broadcast would already have licensed the index sweep to erase their entries
+        // — the index then answers a subset of the table, silently.
         //
-        // Ordering is imposed on READING the horizon, not on publish(): no commit
-        // waits for another, so no mutual exclusion is introduced (rule 12).
-        //
-        // Two names are kept because they carry different CONSUMER contracts —
-        // DROP tombstone reclaim vs. version-history collapse — not two sources of
-        // truth (rule 16 is about the single computation below, not a single name).
+        // Ordering is imposed on READING the horizon, not on publish(): no commit waits for
+        // another, so no mutual exclusion is introduced (rule 12). Two names are kept because
+        // they carry different CONSUMER contracts — DROP tombstone reclaim vs. version-history
+        // collapse — not two sources of truth (rule 16 is about the single computation below).
         return visible_to_all_locked();
     }
 

@@ -2,17 +2,15 @@
 //
 // Two of the failure modes here are invisible from the outside:
 //
-//  * appending the body instead of inserting it at position 0 answers correctly
-//    and silently switches filter pushdown into the body off, because
-//    pushdown_cte_filter reads the source as children()[0] and scans clauses from
-//    index 1 (optimizer/rules/pushdown_filter.cpp);
-//  * leaving the reference node's name / oid in place makes bind_catalog_data
-//    re-stamp the view's oid on the next bind, after which create_plan_match
-//    hands back a bare full_scan over a view that has no storage — zero rows, no
-//    error.
+//  * appending the body instead of inserting it at position 0 answers correctly and silently switches
+//    filter pushdown into the body off, because pushdown_cte_filter reads the source as children()[0] and
+//    scans clauses from index 1 (optimizer/rules/pushdown_filter.cpp);
+//  * leaving the reference node's name / oid in place makes bind_catalog_data re-stamp the view's oid on
+//    the next bind, after which create_plan_match hands back a bare full_scan over a view that has no
+//    storage — zero rows, no error.
 //
-// Neither shows up in "how many rows came back" on the fixture that exercises it,
-// so they are pinned here, where the pass is a plain function over a tree.
+// Neither shows up in "how many rows came back", so they are pinned here, where the pass is a plain
+// function over a tree.
 
 #include <catch2/catch_test_macros.hpp>
 

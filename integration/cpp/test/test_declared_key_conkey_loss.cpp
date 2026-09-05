@@ -7,36 +7,33 @@
 //     auto attoids = catalog::parse_oid_csv(...conkey...);
 //     if (!attoids.empty()) { ... pending_uniques.push_back(...); }
 //
-// so a conkey that decoded to NOTHING never became a pending group at all — and
-// the length guard that refuses an unresolvable key list sits BELOW, inside the
-// loop over pending_uniques, where it could never see it. The declared key left
-// the constraint set without a word and the table went back to accepting every
-// row. parse_oid_csv made that easier: it SWALLOWED any token it could not read
-// and answered with a bare vector, so "the CSV was empty" and "the CSV was
+// so a conkey that decoded to NOTHING never became a pending group, and the
+// length guard that refuses an unresolvable key list sits BELOW, inside the loop
+// over pending_uniques, where it could never see it. The declared key left the
+// constraint set without a word and the table went back to accepting every row.
+// parse_oid_csv made that easier: it SWALLOWED any token it could not read and
+// answered with a bare vector, so "the CSV was empty" and "the CSV was
 // unreadable" arrived as the same value.
 //
-// HOW THE ROW IS PRODUCED HERE, and why this is not a code-level probe.
-// The pg_constraint row is written by the ENGINE, through the same
-// node_create_constraint_t → rewrite_create_constraint → build_create_constraint_writes
-// path every ALTER TABLE ... ADD CONSTRAINT takes. The only thing the test does
-// is hand that node over with its ATTOID list unstamped — the state an inline
-// (CREATE TABLE) constraint node is in before rewrite_create_table mints the
-// attoids, and the state any writer that lost the column list leaves behind.
-// conkey is then encoded from an empty oid list, i.e. the empty string, and
-// everything after that is ordinary engine behaviour: a real catalog row, a real
-// INSERT, a real read of the table.
-//
-// The assertion is on the CONTENT OF THE TABLE, not on a return code: the user
-// declared UNIQUE (code), the engine said yes, and the question is whether two
-// rows carrying code = 100 are in the table afterwards.
+// HOW THE ROW IS PRODUCED HERE, and why this is not a code-level probe. The
+// pg_constraint row is written by the ENGINE, through the same
+// node_create_constraint_t → rewrite_create_constraint →
+// build_create_constraint_writes path every ALTER TABLE ... ADD CONSTRAINT
+// takes. The test only hands that node over with its ATTOID list unstamped — the
+// state an inline (CREATE TABLE) constraint node is in before
+// rewrite_create_table mints the attoids, and the state any writer that lost the
+// column list leaves behind. conkey is then encoded from an empty oid list, and
+// everything after is ordinary engine behaviour. The assertion is on the CONTENT
+// OF THE TABLE, not on a return code: the user declared UNIQUE (code), the
+// engine said yes, and the question is whether two rows carrying code = 100 are
+// in the table afterwards.
 //
 // PATH NOT NAMED FROM SQL. Every live route that used to write such a row is
-// closed one floor up: `UNIQUE (nosuchcol)` is refused by enrich, and
-// UNIQUE / PRIMARY KEY on a dynamic-schema (relkind='g') table is refused at DDL
-// (see test_constraint_unresolvable_target.cpp). What is left is a catalog
-// written before those gates, which is exactly what a floor is for — so these
-// cases stand as the floor's sentinels, and the third one below proves the floor
-// is not fatal: the same database still reads and still drops.
+// closed one floor up: `UNIQUE (nosuchcol)` is refused by enrich, and UNIQUE /
+// PRIMARY KEY on a dynamic-schema (relkind='g') table is refused at DDL (see
+// test_constraint_unresolvable_target.cpp). What is left is a catalog written
+// before those gates — which is what a floor is for. The third case below proves
+// the floor is not fatal: the same database still reads and still drops.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -228,27 +225,26 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unreadable_key_row_doe
 // THE DOCUMENT-TABLE POPULATION — "LOUD" MUST NOT MEAN "UNOPENABLE".
 //
 // A dynamic-schema (relkind='g') table keeps its columns in pg_computed_column,
-// whose attoids come from a different sequence than pg_attribute's, so a
-// UNIQUE / PRIMARY KEY declared on one carries a conkey the resolve step's
-// pg_attribute read can NEVER match. Declaring one is refused at DDL now
-// (executor_t::execute_plan_full), which leaves exactly one population that can
-// still hold such a row: a catalog written BEFORE that gate existed. That is the
-// population a loud refusal could strand, and this case is what stands for it.
+// whose attoids come from a different sequence than pg_attribute's, so a UNIQUE /
+// PRIMARY KEY declared on one carries a conkey the resolve step's pg_attribute read
+// can NEVER match. Declaring one is refused at DDL now
+// (executor_t::execute_plan_full), leaving exactly one population that can still
+// hold such a row: a catalog written BEFORE that gate existed. That is the
+// population a loud refusal could strand, and this case stands for it.
 //
-// WHY THE ROW IS PLANTED ON A NORMAL TABLE. The DDL gate refuses the planting
-// itself on a relkind='g' table — there is no way left to write one through the
-// engine, which is the point of the gate. What CAN be reproduced faithfully is
-// the catalog SHAPE such a row has: a conkey of perfectly readable integers that
-// match no live pg_attribute row (`stale` below). That shape is what a pre-gate
-// document table leaves behind, and it takes the same path through the resolve.
-// The relkind='g' end of it is held by
+// WHY THE ROW IS PLANTED ON A NORMAL TABLE. The DDL gate refuses the planting itself
+// on a relkind='g' table — there is no way left to write one through the engine,
+// which is the point of the gate. What CAN be reproduced faithfully is the catalog
+// SHAPE such a row has: a conkey of perfectly readable integers matching no live
+// pg_attribute row (`stale` below), which takes the same path through the resolve.
+// The relkind='g' end is held by
 // test_constraint_unresolvable_target::unique_on_dynamic_schema_is_never_a_no_op.
 //
-// AND NOTE WHICH GUARD EACH SHAPE LANDS ON. `stale` is non-empty and readable,
-// so it does not reach the empty/unreadable-conkey refusals added for the
-// conkey-loss defect at all — it lands on the pre-existing length guard,
-// unchanged by them. `lost` is the new one. Both are checked here because the
-// property being pinned is about the DATABASE, not about which guard spoke.
+// NOTE WHICH GUARD EACH SHAPE LANDS ON. `stale` is non-empty and readable, so it
+// never reaches the empty/unreadable-conkey refusals added for the conkey-loss
+// defect — it lands on the pre-existing length guard. `lost` is the new one. Both
+// are checked here because the property being pinned is about the DATABASE, not
+// about which guard spoke.
 // ============================================================================
 TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unenforceable_key_row_survives_a_restart_without_bricking") {
     const std::filesystem::path dir = integration_fixture_path("test_declared_key_conkey_loss/restart");
@@ -343,26 +339,24 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unenforceable_key_row_
 // ============================================================================
 // THE SAME SILENCE ON THE FOREIGN-KEY SIDE.
 //
-// The UNIQUE / PRIMARY KEY leg above was gated on `if (!attoids.empty())`. The FK
-// leg has no such gate at the DECODE — it was believed that empty lists ride all
-// the way down to a refusal. They do not. Pass 2 ends with
+// The UNIQUE / PRIMARY KEY leg above was gated on `if (!attoids.empty())`. The FK leg
+// has no such gate at the DECODE — it was believed that empty lists ride all the way
+// down to a refusal. They do not. Pass 2 ends with
 //
 //     if (!fk.child_col_names.empty() && !fk.parent_col_names.empty()) {
 //         fks.push_back(std::move(fk));
 //     }
 //
-// and both length guards above it compare the resolved names against the attoid
-// list they were resolved FROM — so at length zero they compare 0 with 0, agree,
-// and pass. The FK then falls out of `fks` without a word: enrich stamps no
-// outgoing_fks, the planner splices no fk_check node, and the referencing table
-// takes orphans while ON DELETE RESTRICT lets the parent go. Exactly the shape
-// that was closed for UNIQUE, one branch over.
+// and both length guards above it compare the resolved names against the attoid list
+// they were resolved FROM — so at length zero they compare 0 with 0, agree, and pass.
+// The FK then falls out of `fks` without a word: enrich stamps no outgoing_fks, the
+// planner splices no fk_check node, and the referencing table takes orphans while ON
+// DELETE RESTRICT lets the parent go.
 //
-// The row is produced the same way as the UNIQUE ones above — the engine's own
-// ADD CONSTRAINT path with the attoid lists unstamped — and the assertion is on
-// the CONTENT of the table: the user declared REFERENCES, the engine said yes,
-// and the question is whether a row pointing at a parent that does not exist is
-// sitting in the child afterwards.
+// The row is produced the same way as the UNIQUE ones above — the engine's own ADD
+// CONSTRAINT path with the attoid lists unstamped — and the assertion is on the CONTENT
+// of the table: whether a row pointing at a parent that does not exist is sitting in the
+// child afterwards.
 // ============================================================================
 
 namespace {

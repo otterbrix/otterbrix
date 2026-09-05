@@ -30,19 +30,19 @@
 
 // THE CHAIN AND THE BUFFER MUST DESCRIBE THE JOURNAL, NOT THE INTENTION.
 //
-// Three defects of one family lived on the write path:
+// Three failures of one family on the write path:
 //
-//   1. last_crc_ advanced when the record was ENCODED, before anything was written. A write
-//      that was then refused (an unopenable rotation target, a refused device write) left the
+//   1. last_crc_ advancing when the record is ENCODED, before anything is written. A write
+//      that is then refused (an unopenable rotation target, a refused device write) leaves the
 //      chain pointing at a record that is not in the journal, and the next successful record
-//      was stamped with that phantom link.
-//   2. A refused page flush in the middle of append() left the partially copied record IN the
-//      buffered page (flags included). The next record was appended BEHIND those bytes, and
-//      every reader parses the page from the front — the next record was swallowed into a
+//      is stamped with that phantom link.
+//   2. A refused page flush in the middle of append() leaving the partially copied record IN
+//      the buffered page (flags included). The next record is appended BEHIND those bytes, and
+//      every reader parses the page from the front — so the next record is swallowed into a
 //      span that never completes.
-//   3. The same refusal after at least one page of the spanning record had already been
-//      flushed left a continuation-only page in the buffer; the next record landed on a page
-//      still flagged PARTIAL_CONT and was read as continuation bytes, not as a record.
+//   3. The same refusal after at least one page of the spanning record has already been
+//      flushed leaving a continuation-only page in the buffer; the next record lands on a page
+//      still flagged PARTIAL_CONT and is read as continuation bytes, not as a record.
 //
 // The assertions below read the segment files back with wal_page_reader_t and assert on the
 // DECODED records: which ids are present, and whose crc each record's last_crc32 names.
@@ -154,20 +154,16 @@ namespace {
         }
 
         // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton. This is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only
-        // thing that would report a chunk still alive after the manager is gone. Production
-        // hands the manager chunks off the executor's arena; this is that shape.
-        //
-        // resource_ outlives the asynchronous processing for three independent reasons:
-        // ~wal_env_t stops the scheduler and resets manager_ -- destroying the mailbox
-        // and any message still holding this batch -- inside its own body; resource_ is
-        // declared FIRST, so it is destroyed LAST; and otterbrix_resource is thread-safe in
-        // both builds (synchronized_pool_resource normally, the mutex-guarded
-        // resource_tracer_t under ASAN). manager_ itself is already allocated on it.
-        //
-        // Extracted so a test can assert the ARENA of a REAL payload: the batch is moved
-        // into the message and is unobservable after send.
+        // singleton: this is real load, and off resource_ it never reaches
+        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
+        // that would report a chunk still alive after the manager is gone. Production hands the manager
+        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
+        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
+        // over: ~wal_env_t stops the scheduler and resets manager_
+        // (destroying the mailbox and any message still holding this batch) inside its own body,
+        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
+        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
+        // the batch is moved into the message and is unobservable after send.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -263,11 +259,11 @@ namespace {
 } // namespace
 
 // ===========================================================================
-// item 1 — A REFUSED WRITE MUST NOT ADVANCE THE CHAIN.
+// A REFUSED WRITE MUST NOT ADVANCE THE CHAIN.
 //
 // The write that meets the refusal here never touches the device at all: the rotation target
 // will not OPEN (the one refusal a buffered small write can actually meet). The record was
-// only ENCODED — and encoding used to be the moment the chain moved.
+// only ENCODED, and encoding must not be the moment the chain moves.
 //
 // BEFORE: the first record of the new segment carried last_crc32 = crc of the refused record,
 // a link into a record that is not in the journal.
@@ -328,7 +324,7 @@ TEST_CASE("wal::chain::a_refused_write_does_not_advance_the_crc_chain") {
 }
 
 // ===========================================================================
-// item 2 — A RECORD WHOSE FIRST PAGE FLUSH WAS REFUSED MUST LEAVE THE BUFFERED PAGE AS IT WAS.
+// A RECORD WHOSE FIRST PAGE FLUSH WAS REFUSED MUST LEAVE THE BUFFERED PAGE AS IT WAS.
 //
 // The spanning record's first chunk is copied into the page that already holds record A, and
 // the flush of that page is refused. The record was reported refused — so record A and every
@@ -388,12 +384,12 @@ TEST_CASE("wal::chain::a_refused_first_page_flush_rolls_the_record_out_of_the_bu
 }
 
 // ===========================================================================
-// item 3 — THE SAME REFUSAL AFTER A PAGE OF THE RECORD ALREADY LANDED.
+// THE SAME REFUSAL AFTER A PAGE OF THE RECORD ALREADY LANDED.
 //
 // The first page of the spanning record reaches the disk, the second is refused. The pages
 // already flushed are ORPHAN continuation pages — the reader abandons the span when the next
-// page does not continue it — but the BUFFERED page still held continuation bytes and the
-// CONT flag, and the next record used to be appended into it.
+// page does not continue it — but the BUFFERED page still holds continuation bytes and the
+// CONT flag, and the next record must not be appended into it.
 //
 // BEFORE: the record written after the refusal was read as continuation bytes of the refused
 // record and never came back.
@@ -447,16 +443,10 @@ TEST_CASE("wal::chain::a_refused_mid_record_flush_discards_the_continuation_buff
 }
 
 // ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA.
-//
-// gen_data_chunk output is REAL load, and on the process-global new_delete_resource
-// singleton it escapes core::pmr::otterbrix_resource entirely -- which under ASAN IS
-// resource_tracer_t, so nothing accounts for it. Production hands the manager chunks
-// off the executor's arena; the fixture has to model that.
-//
-// The batch is moved into the message, so it is unobservable after send. The assertion
-// is therefore made on the object make_insert_batch produces -- the same call, on the
-// same path, that send_insert makes -- and not on a value handed in by the test.
+// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
+// make_insert_batch above. The batch is moved into the message and is unobservable after
+// send, so the assertion is made on the object make_insert_batch produces: the same call, on
+// the same path, that send_insert makes -- not a value handed in by the test.
 // ===========================================================================
 TEST_CASE("wal::chain::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";

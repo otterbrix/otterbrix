@@ -5,27 +5,27 @@
 
 // Constraints written inside CREATE TABLE.
 //
-// They used to be lost twice over, independently:
+// They can be lost in two independent places, and both are covered here:
 //
-//  * COLUMN-level: the transformer's column-constraint switch handled only DEFAULT and NOT NULL.
-//    CONSTR_PRIMARY degraded to not_null = true and the key itself was dropped; CONSTR_UNIQUE,
-//    CONSTR_CHECK and CONSTR_FOREIGN fell through `default: break;` and never reached the node.
-//  * TABLE-level: those did reach node_create_collection_t and could be read back through
-//    constraints(), but rewrite_create_table passed only column_definitions() to
-//    build_create_table_writes, so nothing was ever written to the catalog.
+//  * COLUMN-level: the transformer's column-constraint switch. Handling only DEFAULT and NOT
+//    NULL degrades CONSTR_PRIMARY to not_null = true and drops the key itself, while
+//    CONSTR_UNIQUE, CONSTR_CHECK and CONSTR_FOREIGN fall through `default: break;` and never
+//    reach the node.
+//  * TABLE-level: those do reach node_create_collection_t and read back through constraints(),
+//    but rewrite_create_table has to hand them to build_create_table_writes — passing only
+//    column_definitions() writes nothing to the catalog.
 //
-// Each case below declares a constraint inline and then violates it; a passing case means the
-// constraint was enforced. Every violation is checked against the table CONTENTS, not only
-// against the statement's status: a constraint that reports an error and writes the row anyway
-// is not enforcement.
+// Each case declares a constraint inline and then violates it. Every violation is checked
+// against the table CONTENTS, not only against the statement's status: a constraint that
+// reports an error and writes the row anyway is not enforcement.
 //
 // COST, stated plainly because it is the reason this stayed broken: a table declared with an
 // inline PRIMARY KEY or UNIQUE now loads at the speed of a table that HAS one. UNIQUE and
 // PRIMARY KEY are enforced by a full table pass per 1024-row batch, measured at N^1.96
 // (bulk-loading 400k rows into a table with a primary key cost 5643 ms against 1761 ms
-// without). Dropping the constraint was masking that quadratic, not avoiding it — the
-// declared key simply was not there. Index-backed enforcement is the fix for the cost; a
-// declaration the engine accepts and does not enforce is not.
+// without). Dropping the constraint was masking that quadratic, not avoiding it — the declared
+// key simply was not there. Index-backed enforcement is the fix for the cost; a declaration the
+// engine accepts and does not enforce is not.
 
 namespace {
     struct env_t {

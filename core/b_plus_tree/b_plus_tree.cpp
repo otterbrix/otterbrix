@@ -328,11 +328,11 @@ namespace core::b_plus_tree {
                                                               min_node_capacity_,
                                                               max_node_capacity_));
             static_cast<leaf_node_t*>(root_)->set_failure_channel(&failures_);
-            // THE LEAF'S ANSWER, WHICH THIS USED TO THROW AWAY. It was harmless while a leaf that
-            // could not get memory left through an exception; the moment append() started coming
-            // back as false, the first item of a fresh index became one the tree counts, answers
-            // true about, and does not hold. The leaf itself is real either way -- its file exists
-            // and the metadata list has to name it -- so only the item is in question here.
+            // THE LEAF'S ANSWER MUST NOT BE THROWN AWAY. append() reports a leaf that could not
+            // get memory as false rather than leaving through an exception, so discarding it
+            // makes the first item of a fresh index one the tree counts, answers true about, and
+            // does not hold. The leaf itself is real either way -- its file exists and the
+            // metadata list has to name it -- so only the item is in question here.
             const bool stored = static_cast<leaf_node_t*>(root_)->append(index, item);
             leaf_nodes_count_++;
             if (stored) {
@@ -559,12 +559,9 @@ namespace core::b_plus_tree {
                     const bool merged = current_node->left_node_->merge(current_node);
                     current_node->left_node_->unlock_exclusive();
                     if (!merged) {
-                        // THE NEIGHBOUR REFUSED TO TAKE IT, and the lines below this branch
-                        // delete `current_node`. A leaf that met a block it could not read cannot
-                        // hand its blocks over, and a destination that cannot grow cannot take
-                        // them -- in both cases the merge moved NOTHING, so going on would remove
-                        // a node whose rows nothing else has. Leave it where it is: an under-full
-                        // node is a shape the tree tolerates, and the reason is on the channel.
+                        // THE NEIGHBOUR REFUSED TO TAKE IT and nothing moved, so the deletion
+                        // below would drop rows nothing else has -- see the first such branch
+                        // in remove().
                         release_locks_(modified_nodes);
                         parent_node->unlock_exclusive();
                         break;
@@ -706,12 +703,9 @@ namespace core::b_plus_tree {
                     const bool merged = current_node->right_node_->merge(current_node);
                     current_node->right_node_->unlock_exclusive();
                     if (!merged) {
-                        // THE NEIGHBOUR REFUSED TO TAKE IT, and the lines below this branch
-                        // delete `current_node`. A leaf that met a block it could not read cannot
-                        // hand its blocks over, and a destination that cannot grow cannot take
-                        // them -- in both cases the merge moved NOTHING, so going on would remove
-                        // a node whose rows nothing else has. Leave it where it is: an under-full
-                        // node is a shape the tree tolerates, and the reason is on the channel.
+                        // THE NEIGHBOUR REFUSED TO TAKE IT and nothing moved, so the deletion
+                        // below would drop rows nothing else has -- see the first such branch
+                        // in remove().
                         release_locks_(modified_nodes);
                         parent_node->unlock_exclusive();
                         break;
@@ -722,12 +716,9 @@ namespace core::b_plus_tree {
                     const bool merged = current_node->left_node_->merge(current_node);
                     current_node->left_node_->unlock_exclusive();
                     if (!merged) {
-                        // THE NEIGHBOUR REFUSED TO TAKE IT, and the lines below this branch
-                        // delete `current_node`. A leaf that met a block it could not read cannot
-                        // hand its blocks over, and a destination that cannot grow cannot take
-                        // them -- in both cases the merge moved NOTHING, so going on would remove
-                        // a node whose rows nothing else has. Leave it where it is: an under-full
-                        // node is a shape the tree tolerates, and the reason is on the channel.
+                        // THE NEIGHBOUR REFUSED TO TAKE IT and nothing moved, so the deletion
+                        // below would drop rows nothing else has -- see the first such branch
+                        // in remove().
                         release_locks_(modified_nodes);
                         parent_node->unlock_exclusive();
                         break;
@@ -867,9 +858,9 @@ namespace core::b_plus_tree {
         std::memset(static_cast<void*>(buffer), 0, METADATA_SIZE);
         *buffer = item_count_;
         uint64_t* buffer_writer = reinterpret_cast<uint64_t*>(buffer + 2);
-        // THE END OF THAT BUFFER, which the loop below used to have no idea about. It walked the
-        // leaf list and wrote one id per leaf into a region that holds MAX_LEAF_NODES of them, so
-        // a tree that outgrew the ceiling wrote past the allocation on EVERY flush.
+        // THE END OF THAT BUFFER, which the loop below has to know about: it walks the leaf list
+        // and writes one id per leaf into a region that holds MAX_LEAF_NODES of them, so without
+        // this bound a tree that outgrew the ceiling writes past the allocation on EVERY flush.
         const uint64_t* const buffer_end =
             reinterpret_cast<const uint64_t*>(buffer) + (METADATA_SIZE / sizeof(uint64_t));
         const size_t leaf_ceiling = max_leaf_nodes();
@@ -969,11 +960,11 @@ namespace core::b_plus_tree {
         item_count_ = *buffer;
         leaf_nodes_count_ = *(buffer + 1);
         if (leaf_nodes_count_ > MAX_LEAF_NODES) {
-            // THE COUNT CAME OFF THE DISK and used to be believed: it sized the read that follows
-            // (one uint64 per leaf out of a buffer that holds MAX_LEAF_NODES of them) and the node
-            // array that gets allocated for it. A poked or torn counter therefore read past the
-            // buffer, and a large enough one asked the allocator for terabytes -- which threw
-            // std::bad_alloc out of load(), i.e. the database did not open.
+            // THE COUNT CAME OFF THE DISK and must not be believed on its own: it sizes the read
+            // that follows (one uint64 per leaf out of a buffer that holds MAX_LEAF_NODES of
+            // them) and the node array allocated for it. A poked or torn counter therefore reads
+            // past the buffer, and a large enough one asks the allocator for terabytes -- which
+            // throws std::bad_alloc out of load(), i.e. the database does not open.
             //
             // Refuse the metadata file instead. The tree opens EMPTY rather than not at all, the
             // leaf files are untouched, and the refusal is on the channel.
@@ -1008,10 +999,10 @@ namespace core::b_plus_tree {
             std::filesystem::path leaf_file_name = storage_directory_;
             leaf_file_name /= std::filesystem::path(std::string(segment_tree_name_) + std::to_string(segment_tree_id));
             if (!file_exists(fs_, leaf_file_name)) {
-                // A leaf the metadata NAMES but the directory does not hold. Returning the
-                // empty tree this leg used to return is a silent SUBSET -- every row of
-                // every other leaf vanishes with no way to ask why -- so the refusal goes
-                // on the channel like every other load failure. The tree still opens
+                // A leaf the metadata NAMES but the directory does not hold. Returning an
+                // empty tree from this leg would be a silent SUBSET -- every row of every
+                // other leaf vanishes with no way to ask why -- so the refusal goes on the
+                // channel like every other load failure. The tree still opens
                 // (empty), still answers about nothing rather than something else, and
                 // its files can still be deleted, which is all DROP INDEX needs.
                 failures_.report(load_failure_t::io_error);

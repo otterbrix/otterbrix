@@ -15,7 +15,7 @@ namespace components::table {
         // OVERLOADED: for a self-naming complex type (STRUCT / UNION) it holds the
         // TYPE's own name (e.g. "test_struct"), NOT the column name. So set the
         // column name only when the type does not already name itself; clobbering a
-        // struct's type-name with the column name loses it (test_table.cpp:255).
+        // struct's type-name with the column name loses it (test_table.cpp).
         // This is type-name preservation, not a fallback — the real fix is to stop
         // overloading one field for two names (otterbrix#583).
         types::complex_logical_type with_name_alias(types::complex_logical_type type, const std::string& name) {
@@ -90,15 +90,15 @@ namespace components::table {
 
     void column_definition_t::set_attoid(std::uint32_t v) {
         // attoid is immutable after first assignment. A re-stamp with a DIFFERENT value means
-        // two identity sources disagree about this column; the old release build swallowed
-        // that silently (neither applied nor reported). It is refused — the first stamp stays
-        // authoritative — and the disagreement is SAID (rule 6: loud, not fatal).
+        // two identity sources disagree about this column. It is refused — the first stamp stays
+        // authoritative — and the disagreement is SAID rather than swallowed (rule 6: loud, not
+        // fatal).
         //
-        // AND IT IS THE SAME ANSWER IN EVERY BUILD. The assert that used to stand here made
-        // the Debug build abort on an input the release build merely refused, and this is
+        // AND IT IS THE SAME ANSWER IN EVERY BUILD. An assert here would make the Debug build
+        // abort on an input the release build merely refuses, and this is
         // INPUT, not a programmer-error precondition: the stamps come off DISK on the catalog
-        // load and bootstrap paths (services/disk/manager_disk_bootstrap.cpp:1339,
-        // services/disk/manager_disk_io.cpp:269, services/disk/agent_disk.cpp:386 and :636),
+        // load and bootstrap paths (services/disk/manager_disk_bootstrap.cpp,
+        // services/disk/manager_disk_io.cpp, services/disk/agent_disk.cpp),
         // so aborting would make a database whose two catalog identity sources disagree
         // unopenable in the very build a developer would debug it in. That is the difference
         // from the sibling catalog::table_id::set_oid, which does abort: nothing stamps a

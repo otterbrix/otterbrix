@@ -29,13 +29,11 @@ namespace components::operators {
     // lives in ONE place.
     actor_zeta::unique_future<core::error_t> index_scan::open_index_window(pipeline::context_t* ctx) {
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
-            // An index_scan is built ONLY when the planner proved an index exists
-            // (can_use_index), so an unwired index service is the same planner-invariant
-            // violation manager_index answers index_not_exists for — "no engine for the
-            // oid", "no index on the predicate key". The empty window this used to hand
-            // back was indistinguishable from "no row matches the predicate": a silently
-            // short result set, the one failure the comment below says must never happen.
-            // Same channel, same code as the manager's own refusals.
+            // An index_scan is built ONLY when the planner proved an index exists (can_use_index), so an
+            // unwired index service is the same planner-invariant violation manager_index answers
+            // index_not_exists for — "no engine for the oid", "no index on the predicate key". Handing back an
+            // empty window instead is indistinguishable from "no row matches the predicate": a silently short
+            // result set, the one failure the comment below says must never happen.
             pos_ = 0;
             end_ = 0;
             co_return core::error_t{core::error_code_t::index_not_exists,
@@ -80,29 +78,25 @@ namespace components::operators {
         }
         row_ids_vec_ = std::move(matched.value());
 
-        // The whole matched set is the fetch window. The read-cap (offset+limit head cap) is
-        // deliberately NOT applied here (C4b): the index answer is a SUPERSET — manager_index
-        // says so — and the fetch DROPS the rows this transaction may not see, so cutting the
-        // id list to `limit` before the fetch can cut away the very ids whose rows survive it
-        // and return fewer rows than the LIMIT asked for. The cap rides BELOW that filter, and
-        // it now rides ALL THE WAY DOWN: it is the `limit` argument of the storage_fetch below,
-        // spent by the agent on rows it has actually produced. That is the same shape full_scan
-        // uses — its cap travels on storage_fetch_next_batch as a post-filter matched-row count
-        // — and it is why this window is not truncated here: the operator would still have
-        // fetched every matched row before dropping the surplus.
+        // The whole matched set is the fetch window. The read-cap (offset+limit head cap) is deliberately NOT
+        // applied here: the index answer is a SUPERSET — manager_index says so — and the fetch DROPS the rows this
+        // transaction may not see, so cutting the id list to `limit` before the fetch can cut away the very ids
+        // whose rows survive it and return fewer rows than the LIMIT asked for. The cap rides BELOW that filter, as
+        // the `limit` argument of the storage_fetch below, spent by the agent on rows it has actually produced —
+        // the same shape full_scan uses (its cap travels on storage_fetch_next_batch as a post-filter matched-row
+        // count).
         // SELECT OFFSET is applied by operator_limit above, so the seek starts at 0.
         pos_ = 0;
         end_ = row_ids_vec_.size();
         co_return core::error_t::no_error();
     }
 
-    // Fetch the matched window [pos_, end_) in ONE storage_fetch, capped at limit_.head_cap()
-    // ROWS. The disk agent windows the request into ≤ DEFAULT_VECTOR_CAPACITY chunks and stamps
-    // each chunk's absolute row_ids (so a downstream DELETE/UPDATE/index sees the right rows),
-    // returning them as a vector that source_next buffers; with a cap it STOPS as soon as it has
-    // produced that many visible rows, so a LIMIT 1 over a million matched ids reads one window
-    // instead of a thousand. An empty window yields an empty vector; an oid with no storage is
-    // a refusal on the wrapper, not an empty vector.
+    // Fetch the matched window [pos_, end_) in ONE storage_fetch, capped at limit_.head_cap() ROWS. The disk
+    // agent windows the request into <= DEFAULT_VECTOR_CAPACITY chunks and stamps each chunk's absolute row_ids
+    // (so a downstream DELETE/UPDATE/index sees the right rows), returning them as a vector that source_next
+    // buffers; with a cap it STOPS as soon as it has produced that many visible rows, so a LIMIT 1 over a
+    // million matched ids reads one window instead of a thousand. An empty window yields an empty vector; an
+    // oid with no storage is a refusal on the wrapper, not an empty vector.
     actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<vector::data_chunk_t>>>
     index_scan::fetch_matched_window(pipeline::context_t* ctx) {
         const size_t count = (end_ > pos_) ? (end_ - pos_) : 0;
@@ -191,11 +185,11 @@ namespace components::operators {
             batch_pos_ = 0;
         }
 
-        // Emit the next buffered chunk. NO cap is applied here any more: the agent already
-        // spent it on the rows it produced, below the visibility filter, and batch_ therefore
-        // holds at most limit_.head_cap() rows in total. Re-applying it here would be a second
-        // truncation of an already-truncated answer — harmless but a duplicated rule, and the
-        // duplicate is what would rot if only one of the two were ever changed.
+        // Emit the next buffered chunk. NO cap is applied here: the agent already spent it on
+        // the rows it produced, below the visibility filter, so batch_ holds at most
+        // limit_.head_cap() rows in total. Re-applying it here would be a second truncation of
+        // an already-truncated answer — harmless but a duplicated rule, and the duplicate is
+        // what rots when only one of the two is changed.
         if (batch_pos_ < batch_.size()) {
             auto chunk = std::move(batch_[batch_pos_++]);
             emitted_any_ = true;

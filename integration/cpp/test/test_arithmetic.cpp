@@ -2024,8 +2024,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     }
 
     // ================================================================
-    // N27. CASE WHEN with temporal arithmetic (exercises arithmetic_eval.cpp
-    //      resolve_row_value, which evaluates arithmetic branch-by-branch)
+    // N27. CASE WHEN with temporal arithmetic (the CASE evaluator resolves the
+    //      arithmetic branch by branch)
     // ================================================================
     INFO("N27. CASE WHEN with DATE + INTERVAL exercises arithmetic_eval.cpp");
     {
@@ -2046,8 +2046,8 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     }
 
     // ================================================================
-    // N28. GROUP BY with temporal expression in SELECT (exercises
-    //      operator_group.cpp post-aggregate resolve lambda)
+    // N28. GROUP BY with temporal expression in SELECT (the group operator's
+    //      post-aggregate resolve)
     // ================================================================
     INFO("N28. SELECT d + INTERVAL '1 month' ... GROUP BY d exercises operator_group.cpp");
     {
@@ -2066,8 +2066,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     }
 
     // ================================================================
-    // N29. UPDATE SET with temporal arithmetic (exercises
-    //      update_expression.cpp apply_binary_update_op)
+    // N29. UPDATE SET with temporal arithmetic (the binary update-op path)
     // ================================================================
     INFO("N29. UPDATE SET d = d + INTERVAL '7 days' exercises update_expression.cpp");
     {

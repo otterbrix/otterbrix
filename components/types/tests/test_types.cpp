@@ -9,9 +9,9 @@
 using namespace components::types;
 
 namespace {
-    // create_decimal reports an out-of-window (width, scale) through core::error_t now,
-    // instead of an assert that vanished under NDEBUG. Every literal these tests use is
-    // inside the window, so the helper checks the result and hands back the type.
+    // create_decimal reports an out-of-window (width, scale) through core::error_t. Every
+    // literal these tests use is inside the window, so the helper checks the result and
+    // hands back the type.
     components::types::complex_logical_type
     make_decimal(uint8_t width, uint8_t scale, std::string alias = "") {
         auto created = components::types::complex_logical_type::create_decimal(width, scale, std::move(alias));
@@ -257,9 +257,9 @@ TEST_CASE("components::types::decimal") {
     }
 }
 TEST_CASE("components::types::logical_value::null_children_safe") {
-    // Regression: children() on a NULL (NA-typed) value dereferenced the null
-    // payload pointer. NULL nested values are ordinary result-set data, so
-    // reading them through the children() idiom must be safe.
+    // children() on a NULL (NA-typed) value must not dereference the null payload
+    // pointer: NULL nested values are ordinary result-set data, so reading them
+    // through the children() idiom has to be safe.
     auto* resource = std::pmr::get_default_resource();
     logical_value_t null_value(resource, complex_logical_type{logical_type::NA});
     REQUIRE(null_value.is_null());
@@ -274,10 +274,10 @@ TEST_CASE("components::types::logical_value::null_children_safe") {
 }
 
 TEST_CASE("components::types::logical_value::cast_as_null_returns_error") {
-    // Regression: cast_as() on a NULL/NA-typed value used to dispatch into the scalar physical-type
-    // switch whose `default:` arm threw std::logic_error. Under the executor's -fno-exceptions
-    // coroutine that becomes unhandled_exception() -> assert(false) -> SIGABRT. It must instead
-    // surface a conversion_failure through result_wrapper_t.
+    // cast_as() on a NULL/NA-typed value must surface a conversion_failure through
+    // result_wrapper_t. Dispatching it into the scalar physical-type switch lands on a `default:`
+    // arm that throws std::logic_error, and under the executor's -fno-exceptions coroutine that
+    // becomes unhandled_exception() -> assert(false) -> SIGABRT.
     std::pmr::monotonic_buffer_resource resource;
 
     logical_value_t null_value(&resource, complex_logical_type{logical_type::NA});
@@ -297,21 +297,20 @@ TEST_CASE("components::types::logical_value::cast_as_null_returns_error") {
 // -----------------------------------------------------------------------------
 // cast_as: A SWITCH ARM THAT ONLY ASSERTS ANSWERS DIFFERENTLY IN THE TWO BUILDS.
 //
-// The two DECIMAL branches of cast_as ended their `default:` arm in a bare
-// assert(false && "incorrect type for conversion to decimal") -- no return, no error. In a
-// Debug build that is SIGABRT. Under NDEBUG the assert is compiled out and control walks
-// off the end of the switch, out of the else-if chain and into the function's trailing
-// `return NA`, so the SAME call answers a silent NULL. Neither answer is the one a caller
-// can act on, and the two builds disagreeing is worse than either. These cases pin the
-// VALUE, which is what the NDEBUG build actually produces, rather than the crash.
+// A bare assert(false) with no return on the `default:` arm of cast_as's two DECIMAL
+// branches is SIGABRT in a Debug build; under NDEBUG the assert is compiled out and control
+// walks off the end of the switch, out of the else-if chain and into the function's trailing
+// `return NA`, so the SAME call answers a silent NULL. Neither answer is one a caller can
+// act on, and the two builds disagreeing is worse than either. These cases pin the VALUE,
+// not the crash.
 TEST_CASE("components::types::logical_value::cast_to_decimal_answers_every_numeric_width") {
     std::pmr::monotonic_buffer_resource resource;
     const auto decimal_type = make_decimal(10, 2);
 
     SECTION("the 8-bit widths are the ones the switch forgot") {
-        // TINYINT and UTINYINT are is_numeric(), so they enter the DECIMAL branch, and the
-        // arm list runs USMALLINT..DOUBLE without them. CAST(<tinyint> AS NUMERIC(10,2)) is
-        // ordinary SQL; it must produce 7.00, scaled, like every other integer width.
+        // TINYINT and UTINYINT are is_numeric(), so they enter the DECIMAL branch and need
+        // arms of their own. CAST(<tinyint> AS NUMERIC(10,2)) is ordinary SQL; it must produce
+        // 7.00, scaled, like every other integer width.
         logical_value_t tiny(&resource, int8_t{7});
         auto casted = tiny.cast_as(decimal_type, {});
         REQUIRE_FALSE(casted.has_error());
@@ -352,9 +351,9 @@ TEST_CASE("components::types::logical_value::cast_struct_keeps_null_fields_and_r
     std::pmr::monotonic_buffer_resource resource;
 
     SECTION("a NULL field stays a NULL slot, as it already does inside ARRAY and LIST") {
-        // The ARRAY and LIST arms skip a NA child ("a NULL element stays a NULL slot").
-        // STRUCT had no such guard, so one NULL field made the scalar guard refuse the
-        // WHOLE row value -- a NULL is not a failed cast.
+        // The ARRAY and LIST arms skip a NA child ("a NULL element stays a NULL slot"), and
+        // STRUCT needs the same guard: without it one NULL field makes the scalar guard refuse
+        // the WHOLE row value -- and a NULL is not a failed cast.
         std::vector<logical_value_t> fields;
         fields.emplace_back(&resource, int32_t{1});
         fields.emplace_back(&resource, complex_logical_type{logical_type::NA});
@@ -390,21 +389,18 @@ TEST_CASE("components::types::logical_value::cast_struct_keeps_null_fields_and_r
     }
 }
 
-// P4 -- A UNION/VARIANT VALUE FROM THE PLAIN CONSTRUCTOR WAS HALF-BUILT.
+// A UNION/VARIANT VALUE FROM THE PLAIN CONSTRUCTOR MUST BE FULLY BUILT.
 //
 // logical_value_t(resource, complex_logical_type) allocates the backing vector for every
-// vector-backed type -- TIME_TZ, INTERVAL, LIST, ARRAY, MAP, STRUCT -- and for UNION and
-// VARIANT it ran `assert(false && "UNION/VARIANT must be created via factory methods");
-// break;`. That is the shape this wave is about: Debug dies, Release walks on. Under NDEBUG
-// the assert is not compiled and the constructor RETURNED, leaving a value whose type is
-// UNION and whose data_ is 0 -- and children() guards only is_null() (type == NA), so it
-// dereferenced a null pointer on the next read.
+// vector-backed type -- TIME_TZ, INTERVAL, LIST, ARRAY, MAP, STRUCT -- and UNION/VARIANT
+// must not be left out of that list with an assert. Debug dies, Release walks on: under
+// NDEBUG the assert is not compiled and the constructor RETURNS a value whose type is UNION
+// and whose data_ is 0 -- and children() guards only is_null() (type == NA), so it
+// dereferences a null pointer on the next read.
 //
-// The assert was also false about its own file: create_union builds each member slot with
+// Such an assert is also false about its own file: create_union builds each member slot with
 // exactly this constructor (`union_values->emplace_back(r, types[i])`), so a union with a
-// UNION or VARIANT member reached the assert THROUGH the factory it named.
-//
-// BEFORE: the first case here aborted the test binary; under NDEBUG it null-dereferenced.
+// UNION or VARIANT member reaches it THROUGH the factory it names.
 TEST_CASE("logical_value: a UNION built through the plain constructor is well formed") {
     std::pmr::monotonic_buffer_resource resource;
 
@@ -412,7 +408,7 @@ TEST_CASE("logical_value: a UNION built through the plain constructor is well fo
         logical_value_t value(&resource, complex_logical_type{logical_type::UNION});
         CHECK(value.type().type() == logical_type::UNION);
         CHECK_FALSE(value.is_null());
-        // The read that used to follow a null pointer.
+        // The read that would follow a null pointer on a half-built value.
         CHECK(value.children().empty());
     }
 
@@ -424,8 +420,7 @@ TEST_CASE("logical_value: a UNION built through the plain constructor is well fo
 
     SECTION("a union whose member type is itself a union -- the factory's own path") {
         // create_union fills every slot except `tag` with logical_value_t(r, types[i]), so a
-        // nested union type walks into the constructor above. This is the reachability the
-        // assert denied.
+        // nested union type walks into the constructor above.
         std::pmr::vector<complex_logical_type> inner_types(&resource);
         inner_types.emplace_back(logical_type::BIGINT);
         auto inner = complex_logical_type::create_union(inner_types);
@@ -444,13 +439,13 @@ TEST_CASE("logical_value: a UNION built through the plain constructor is well fo
     }
 }
 
-// P3 -- THE SIXTEEN ARITHMETIC AND BIT ENTRY POINTS ANSWER WITH A VALUE, NOT AN EXCEPTION.
+// THE SIXTEEN ARITHMETIC AND BIT ENTRY POINTS ANSWER WITH A VALUE, NOT AN EXCEPTION.
 //
-// Each of these ended in `throw std::runtime_error(...)` in a build that turns exceptions
-// off, and each is reachable from ordinary typing: `2.0 ^ 3.0`, `5.5 % 2` and bit_and over a
-// DOUBLE are not exotic inputs, they are the arms that were never written. The refusal is a
-// core::error_t now, on the same channel the caller already had
-// (components/sql/transformer/utils.cpp:826 evaluate_const_a_expr returns result_wrapper_t).
+// They run in a build that turns exceptions off, and every one of them is reachable from
+// ordinary typing: `2.0 ^ 3.0`, `5.5 % 2` and bit_and over a DOUBLE are not exotic inputs,
+// they are the arms nobody wrote. The refusal is a core::error_t on the channel the caller
+// already has (components/sql/transformer/utils.cpp, evaluate_const_a_expr returns
+// result_wrapper_t).
 TEST_CASE("logical_value: an unsupported operand type is a refusal, not a throw") {
     std::pmr::monotonic_buffer_resource resource;
 
@@ -486,13 +481,12 @@ TEST_CASE("logical_value: an unsupported operand type is a refusal, not a throw"
     }
 }
 
-// #37 -- CASTING A STRING THAT NAMES NO ENUM ENTRY IS A REFUSAL, NOT A NULL.
+// CASTING A STRING THAT NAMES NO ENUM ENTRY IS A REFUSAL, NOT A NULL.
 //
-// The string leg of the ENUM cast walked the entry table and, on a miss, answered
-// logical_type::NA -- the tree's spelling of NULL. NA then flowed on as a normal value:
-// bound into a parameter it compares as UNKNOWN, and on the INSERT coercion path it
-// stored a silent NULL in place of the misspelled label. PostgreSQL refuses:
-// `invalid input value for enum`. The refusal now travels the cast_as error channel.
+// A miss in the entry table must not answer logical_type::NA -- the tree's spelling of NULL.
+// NA flows on as a normal value: bound into a parameter it compares as UNKNOWN, and on the
+// INSERT coercion path it stores a silent NULL in place of the misspelled label. PostgreSQL
+// refuses: `invalid input value for enum`. The refusal travels the cast_as error channel.
 TEST_CASE("logical_value: cast of a string that is not an enum entry is a refusal") {
     std::pmr::monotonic_buffer_resource resource;
 
@@ -530,13 +524,13 @@ TEST_CASE("logical_value: cast of a string that is not an enum entry is a refusa
     CHECK(good.value().value<int32_t>() == 7);
 }
 
-// #263 -- A NUMERIC THAT DOES NOT FIT THE DECIMAL WIDTH IS A REFUSAL, NOT A SENTINEL.
+// A NUMERIC THAT DOES NOT FIT THE DECIMAL WIDTH IS A REFUSAL, NOT A SENTINEL.
 //
 // int_to_decimal answers width overflow with decimal_limits::pos_inf/neg_inf -- Int128Max /
-// Int128Min for the int128 storage cast_as uses. cast_as then wrapped that sentinel into a
-// DECIMAL logical_value and answered it as a normal value, so CAST(10000 AS NUMERIC(3,1))
-// produced a "decimal" whose payload was 170141183460469231731687303715884105727.
-// PostgreSQL refuses: `numeric field overflow`.
+// Int128Min for the int128 storage cast_as uses. Wrapping that sentinel into a DECIMAL
+// logical_value and answering it as a normal value turns CAST(10000 AS NUMERIC(3,1)) into a
+// "decimal" whose payload is 170141183460469231731687303715884105727. PostgreSQL refuses:
+// `numeric field overflow`.
 TEST_CASE("logical_value: numeric overflow into DECIMAL is a refusal") {
     std::pmr::monotonic_buffer_resource resource;
 
@@ -573,12 +567,11 @@ TEST_CASE("logical_value: numeric overflow into DECIMAL is a refusal") {
     }
 }
 
-// ЗАПИСЬ #347 — THE REVERSE OF THE CLOSED int->DECIMAL DEFECT. The forward
-// direction (numeric into DECIMAL, batch 2) refuses an out-of-range value with
-// conversion_failure. The descale direction — DECIMAL back into an integer —
-// still answered a SILENT NA when decimal_to_numeric said "does not fit": the
-// caller got a success-shaped result carrying NULL for a value that exists.
-// Both directions must refuse identically.
+// THE REVERSE OF THE int->DECIMAL OVERFLOW REFUSAL. The forward direction (numeric into
+// DECIMAL) refuses an out-of-range value with conversion_failure. The descale direction —
+// DECIMAL back into an integer — must refuse identically when decimal_to_numeric says "does
+// not fit"; a SILENT NA there is a success-shaped result carrying NULL for a value that
+// exists.
 TEST_CASE("components::types::logical_value::decimal_to_integer_overflow_is_a_refusal") {
     std::pmr::monotonic_buffer_resource resource;
 
@@ -610,14 +603,13 @@ TEST_CASE("components::types::logical_value::decimal_to_integer_overflow_is_a_re
     }
 }
 
-// ЗАПИСЬ #348 — MIXED OPERANDS OUTSIDE NUMERIC PROMOTION DISPATCH BY THE LEFT
-// TYPE AND READ THE RIGHT OPERAND WITH THE LEFT'S GETTER. needs_numeric_promotion
-// requires BOTH operands numeric, so STRING+BIGINT entered the STRING arm and
-// `sum('a', 1)` THREW std::logic_error ("value<T>() is not implemented") out of
-// an error-channel function — a rule-2 violation reachable from every predicate
-// evaluator. Worse, BIGINT+STRING read the string's HEAP POINTER as an int64
-// payload and answered garbage. Every mixed pair outside promotion (and outside
-// the explicit temporal combinations) must come back as an error.
+// MIXED OPERANDS OUTSIDE NUMERIC PROMOTION DISPATCH BY THE LEFT TYPE AND READ THE RIGHT
+// OPERAND WITH THE LEFT'S GETTER. needs_numeric_promotion requires BOTH operands numeric,
+// so unguarded STRING+BIGINT enters the STRING arm and `sum('a', 1)` throws std::logic_error
+// ("value<T>() is not implemented") out of an error-channel function — a rule-2 violation
+// reachable from every predicate evaluator. Worse, BIGINT+STRING reads the string's HEAP
+// POINTER as an int64 payload and answers garbage. Every mixed pair outside promotion (and
+// outside the explicit temporal combinations) must come back as an error.
 TEST_CASE("components::types::logical_value::mixed_operand_arithmetic_refuses") {
     std::pmr::monotonic_buffer_resource resource;
     const logical_value_t str(&resource, std::string{"a"});

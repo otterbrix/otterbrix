@@ -24,12 +24,11 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_register_cast_t::await_async_and_resume(pipeline::context_t* ctx) {
         success_ = false;
 
-        // A cast's ONLY substance is its pg_cast row — unlike its UDF sibling this
-        // operator mutates no registry, so with no disk actor to write to there is
-        // no cast at all, and the old "skip the work, report success" branch was a
-        // statement-sized lie. No production topology wires an executor without
-        // the disk actor (base_spaces spawns it unconditionally), so this refusal
-        // costs nothing where it cannot fire and the truth where it can.
+        // A cast's ONLY substance is its pg_cast row — unlike its UDF sibling this operator mutates no
+        // registry, so with no disk actor to write to there is no cast at all, and skipping the work while
+        // reporting success would be a statement-sized lie. No production topology wires an executor without
+        // the disk actor (base_spaces spawns it unconditionally), so this refusal costs nothing where it
+        // cannot fire and the truth where it can.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             set_error(core::error_t{
                 core::error_code_t::physical_plan_error,
@@ -45,11 +44,11 @@ namespace components::operators {
         auto [_oa, oaf] =
             actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::allocate_oids_batch, std::size_t{1});
         auto allocated = co_await std::move(oaf);
-        // The identity is minted BEFORE the pg_cast row is built. A round that delivered
-        // nothing used to be consumed anyway: allocate() answers INVALID_OID, and the
-        // pg_cast row went out stamped with it — a durable cast with no identity, reported
-        // as a successful CREATE CAST. find_cast_oid then reads that 0 back as "there is
-        // no such cast", so the row is unreachable AND undeletable.
+        // The identity is minted BEFORE the pg_cast row is built, and the round is checked:
+        // consuming a round that delivered nothing (allocate() answers INVALID_OID) stamps
+        // the pg_cast row with it — a durable cast with no identity, reported as a
+        // successful CREATE CAST. find_cast_oid then reads that 0 back as "there is no such
+        // cast", so the row is unreachable AND undeletable.
         catalog::oid_t cast_oid = catalog::INVALID_OID;
         if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "register_cast", cast_oid);
             ec_oid.contains_error()) {
@@ -152,14 +151,12 @@ namespace components::operators {
         constexpr catalog::oid_t pg_cast_coll = catalog::well_known_oid::pg_cast_table;
         constexpr catalog::oid_t pg_depend_coll = catalog::well_known_oid::pg_depend_table;
         std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource_);
-        // WHICH ZERO IS AN ERROR HERE. Spec 0 is the pg_cast row whose oid find_cast_oid
-        // just READ out of pg_cast — the "there is no such cast" reading is already spent
-        // above, on INVALID_OID — so a delete that matched nothing means the row the read
-        // had in hand is still there and DROP CAST removed nothing at all. Spec 1 is the
-        // pg_depend row, which a cast may legitimately not have. The "just READ" argument
-        // holds because find_cast_oid scans pg_cast under ctx.txn and the delete's scan uses
-        // the same one: a read on a different snapshot than the delete would make this
-        // verdict fire on a cast created — or already dropped — in the open transaction.
+        // WHICH ZERO IS AN ERROR HERE. Spec 0 is the pg_cast row whose oid find_cast_oid just READ out of
+        // pg_cast — the "there is no such cast" reading is already spent above, on INVALID_OID — so a delete
+        // that matched nothing means the row the read had in hand is still there and DROP CAST removed nothing
+        // at all. Spec 1 is the pg_depend row, which a cast may legitimately not have. The "just READ" argument
+        // holds because find_cast_oid scans pg_cast under ctx.txn and the delete's scan uses the same one:
+        // different snapshots would make this verdict fire on a cast created — or dropped — in the open txn.
         constexpr std::size_t pg_cast_spec = 0;
         specs.push_back({pg_cast_coll, std::int64_t{0}, cast_oid});   // pg_cast.oid
         specs.push_back({pg_depend_coll, std::int64_t{1}, cast_oid}); // pg_depend.objid

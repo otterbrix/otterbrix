@@ -39,28 +39,26 @@ namespace components::table::storage {
         [[nodiscard]] virtual core::result_wrapper_t<bool> read(block_t& block) = 0;
         [[nodiscard]] virtual core::result_wrapper_t<bool>
         read_blocks(file_buffer_t& buffer, uint64_t start_block, uint64_t block_count) = 0;
-        // L1. This used to be `void`, all the way down through file_buffer_t::write into the
-        // discarded bool of file_handle_t::write. A block that never reached the file was
-        // indistinguishable from one that did, and the header swap that followed made the
-        // hole durable. Every write now answers, and the disk implementation ALSO latches the
-        // first failure so write_header() refuses to commit a root over it.
+        // NOT `void`: a `void` here, all the way down through file_buffer_t::write into a
+        // discarded bool of file_handle_t::write, makes a block that never reached the file
+        // indistinguishable from one that did, and the header swap that follows makes the hole
+        // durable. Every write answers, and the disk implementation ALSO latches the first
+        // failure so write_header() refuses to commit a root over it.
         [[nodiscard]] virtual core::result_wrapper_t<bool> write(file_buffer_t& block, uint64_t block_id) = 0;
         [[nodiscard]] core::result_wrapper_t<bool> write(block_t& block) { return write(block, block.id); }
 
-        // --- A7.3: reclaiming the SUPERSEDED root ---
+        // --- Reclaiming the SUPERSEDED root ---
         //
-        // Shadow paging leaves root N standing while root N+1 is built, and until A7.3 nothing
-        // ever took root N down again: its metadata chain, its free-list chain and its packed
-        // data blocks stayed allocated forever, so a checkpoint of an UNCHANGED table extended
-        // the file every round. These two hooks are the whole interface to the fix.
-        //
-        // Only the single-file (disk) manager has a root at all; the transient manager keeps
-        // the no-op defaults, which is why data_table_t can call them unconditionally.
+        // Shadow paging leaves root N standing while root N+1 is built, so without taking root N
+        // down its chains and packed data blocks stay allocated forever and a checkpoint of an
+        // UNCHANGED table extends the file every round. Only the single-file (disk) manager has a
+        // root at all; the transient one keeps the no-op defaults, so data_table_t can call these
+        // unconditionally.
         //
         // `adopt_durable_root_data_blocks` is how the LOADER states what the durable root
         // references: data_table_t::load_from_disk collects the ids out of the very
-        // row_group_pointer_t stream it builds the table from, so the manager's idea of "root
-        // N's data" cannot drift from what the loader would actually read back.
+        // row_group_pointer_t stream it builds the table from, so the manager's idea of "root N's
+        // data" cannot drift from what the loader would actually read back.
         virtual void adopt_durable_root_data_blocks(const std::pmr::vector<uint64_t>& /*block_ids*/) {}
         // Frees root N now that every block of root N+1 is written. Returns how many ids were
         // reclaimed, or an error if root N's chains cannot be read (that is corrupt input, and
@@ -70,22 +68,21 @@ namespace components::table::storage {
             return uint64_t{0};
         }
 
-        // Has this manager latched a failure it cannot recover from (a write/fsync that did
-        // not reach the device, or a free list proven corrupt)? Both latches are sticky by
-        // design, and both make write_header refuse to commit — which means a degraded manager
-        // never promotes pending_free_ again. Rebuilding a table on top of one therefore costs
-        // a full extra copy of it EVERY round, for the life of the process. Callers use this to
-        // stop rebuilding rather than to paper over the failure. False by default.
+        // Has this manager latched a failure it cannot recover from (a write/fsync that did not reach
+        // the device, or a free list proven corrupt)? Both latches are sticky and both make
+        // write_header refuse to commit, so a degraded manager never promotes pending_free_ again —
+        // rebuilding a table on top of one costs a full extra copy of it EVERY round, for the life of
+        // the process. Callers use this to stop rebuilding, not to paper over the failure.
         virtual bool degraded() const { return false; }
 
         virtual uint64_t total_blocks() = 0;
         virtual uint64_t free_blocks() = 0;
         virtual bool is_remote() { return false; }
-        // L2. The pre-header barrier: data and metadata blocks must be on the DEVICE before
-        // the root that names them becomes durable. It used to be `virtual void` over a
-        // dropped `handle_->sync()` bool, which made the barrier decorative — the header
-        // could commit over blocks that never left the page cache. An unobserved barrier is
-        // the same as no barrier, so it now reports.
+        // The pre-header barrier: data and metadata blocks must be on the DEVICE before the
+        // root that names them becomes durable. A `virtual void` over a dropped
+        // `handle_->sync()` bool would make the barrier decorative — the header could commit
+        // over blocks that never left the page cache. An unobserved barrier is the same as no
+        // barrier, so this one reports.
         [[nodiscard]] virtual core::result_wrapper_t<bool> file_sync() = 0;
         [[nodiscard]] virtual core::result_wrapper_t<bool> truncate();
 
@@ -101,22 +98,20 @@ namespace components::table::storage {
         // free pool, so no handle may be resurrected for it by a later register_block.
         void unregister_block(uint64_t id);
 
-        // Does this id have a LIVE block_handle_t in the registry right now? A block that does
-        // is live table state, and handing it out again would overwrite it with a valid CRC.
-        // NOT a DEV_MODE hook (M7): free_block_id draws from a free list deserialized out of
-        // the .otbx, so this check guards a path fed by untrusted bytes and has to exist in
-        // the build where corruption actually costs something.
+        // Does this id have a LIVE block_handle_t in the registry right now? A block that does is live
+        // table state, and handing it out again would overwrite it with a valid CRC. NOT a DEV_MODE
+        // hook: free_block_id draws from a free list deserialized out of the .otbx, so this guards a
+        // path fed by untrusted bytes and must exist in the build where corruption costs something.
         bool registry_alive(uint64_t id);
 
-        // Every registry id whose block_handle_t is still alive — registry_alive(), enumerated.
-        // A production API since the A7.4 restart-leak fix: serialize_free_list must name the
-        // blocks whose ONLY owner is the live in-memory tree (the compact write-through and the
-        // re-pointed tail segments, which no root's pointer stream references), because a
-        // restart has no other way to ever find them again. See the R-LEAK note there.
+        // Every registry id whose block_handle_t is still alive — registry_alive(), enumerated. A
+        // production API, not a diagnostic: serialize_free_list must name the blocks whose ONLY owner
+        // is the live in-memory tree (no root's pointer stream references them), because a restart
+        // has no other way to ever find them again. See the note there.
         std::pmr::vector<uint64_t> live_registry_ids();
 
 #ifdef DEV_MODE
-        // P1/T2 block-reachability walker: the registry ids whose block_handle_t is still
+        // Block-reachability walker: the registry ids whose block_handle_t is still
         // alive (the weak_ptr locks). Same answer as live_registry_ids(); kept as a separate
         // name so test call sites read as diagnostics, not as production dependencies.
         std::pmr::vector<uint64_t> dev_live_registry_ids() { return live_registry_ids(); }
@@ -125,36 +120,24 @@ namespace components::table::storage {
         uint64_t block_allocation_size() const { return block_alloc_size_; }
         uint64_t block_size() const { return block_alloc_size_ - DEFAULT_BLOCK_HEADER_SIZE; }
 
-        // Adopt a block allocation size — in practice, the one the header sector of an existing
-        // file carries (single_file_block_manager_t::load_existing_database is the only caller).
-        //
-        // That makes this a DISK-FED path, and it used to validate nothing at all: the guard
-        // was `if (block_alloc_size_ == INVALID_INDEX) throw`, a condition the constructor makes
-        // impossible, so every value was accepted. block_size() is an UNSIGNED subtraction, so a
-        // header claiming 4 wraps it to ~1.8e19 and every buffer bound computed from it becomes
-        // meaningless. And the throw was the wrong channel besides: this runs on the open path,
-        // where an exception makes the database permanently unopenable (rules 2/6 — loud, but
-        // never fatal on open).
-        //
-        // Returns data_corruption for a size that cannot address this file layout, leaving the
-        // current size untouched.
+        // Adopt a block allocation size — in practice the one the header sector of an existing file
+        // carries (single_file_block_manager_t::load_existing_database is the only caller), which
+        // makes this a DISK-FED path that must validate: block_size() is an UNSIGNED subtraction, so
+        // a header claiming 4 wraps it to ~1.8e19 and every buffer bound derived from it becomes
+        // meaningless. Reported, never thrown — this runs on the open path, where an exception makes
+        // the database permanently unopenable (rules 2/6). Returns data_corruption for a size that
+        // cannot address this file layout, leaving the current size untouched.
         [[nodiscard]] core::result_wrapper_t<bool> set_block_allocation_size(uint64_t block_alloc_size);
 
     private:
-        // NO LOCK HERE (rule 12) — deliberate, and the same ownership argument data_table_t
-        // records for its own row_groups_.
-        //
-        // One table_storage_t owns exactly ONE block manager, and that table_storage_t lives in
-        // exactly one disk agent's storages_ map: manager_disk_t routes every oid to a single
-        // agent by pool_idx_for_oid, and actor-zeta resumes an actor on at most one thread at a
-        // time. Nothing beneath data_table_t is handed to another actor, and there is no
-        // background eviction or checkpoint thread — buffer-pool eviction runs INLINE on the
-        // allocating thread, which is that same agent. The manager-side *_sync paths (WAL
-        // replay, index rebuild, bootstrap) all run before the schedulers start.
-        //
-        // So this registry is agent-local state. A caller that reaches it from another thread
-        // has smuggled a table or a block_handle_t across a mailbox boundary — that is a DEFECT
-        // IN THAT CALLER, and a mutex here would hide it instead of fixing it.
+        // NO LOCK HERE (rule 12) — the same ownership argument data_table_t records for its own
+        // row_groups_: one table_storage_t owns exactly ONE block manager and lives in exactly one
+        // disk agent's storages_ map (oids route by pool_idx_for_oid), actor-zeta resumes an actor on
+        // at most one thread, nothing beneath data_table_t is handed to another actor, buffer-pool
+        // eviction runs INLINE on the allocating thread, and the manager-side *_sync paths run before
+        // the schedulers start. This registry is agent-local state, so a caller reaching it from
+        // another thread has smuggled a table or a block_handle_t across a mailbox boundary — a
+        // DEFECT IN THAT CALLER that a mutex would hide instead of fix.
         std::pmr::unordered_map<uint64_t, std::weak_ptr<block_handle_t>> blocks_;
         uint64_t block_alloc_size_;
     };

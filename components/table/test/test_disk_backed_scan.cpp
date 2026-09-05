@@ -447,14 +447,14 @@ TEST_CASE("disk_backed_scan: repeated compaction does not bloat the file", "[ste
     append_int64_data(*table, &env.resource, COMPACT_ROWS);
     REQUIRE(table->calculate_size() == COMPACT_ROWS);
 
-    // A7.2 changed WHEN a reclaimed block becomes reusable, and this case had to follow it.
+    // The unit of reclaim is compact + checkpoint, not compact alone.
     // compact() releases the blocks of the collection it replaces -- which is exactly the
     // collection the DURABLE root still points at -- so those ids are quarantined until a root
-    // that does NOT name them is on disk. The unit of reclaim is therefore compact + checkpoint,
-    // which is also the only sequence production ever runs (agent_disk_t::checkpoint_inner
-    // compacts and then immediately checkpoints the same entry). Repeated compaction WITHOUT a
-    // checkpoint now grows the file by one collection per round, deliberately: until a header
-    // commits, every one of those blocks is still part of the state a crash recovers.
+    // that does NOT name them is on disk. That is also the only sequence production ever runs
+    // (agent_disk_t::checkpoint_inner compacts and then immediately checkpoints the same
+    // entry). Repeated compaction WITHOUT a checkpoint grows the file by one collection per
+    // round, deliberately: until a header commits, every one of those blocks is still part of
+    // the state a crash recovers.
     //
     // The property under test is unchanged: reclaim must actually happen, so N rounds must not
     // cost N copies of the table.
@@ -478,8 +478,8 @@ TEST_CASE("disk_backed_scan: repeated compaction does not bloat the file", "[ste
     compact_and_checkpoint();
     const uint64_t blocks_after_first = bm.total_blocks();
 
-    // A7.3 TIGHTENING (see the slack note below for what this replaces). The first round is
-    // not steady state: it is the round that pays for the second copy of the table (the
+    // The first round is not steady state: it is the round that pays for the second copy of
+    // the table (the
     // superseded root's blocks only become reusable once the new header is durable, so both
     // copies live in the file at once), and it has no previous root's chains to reclaim yet.
     // The SECOND round is the first that can spend what the first one released, so that is
@@ -499,17 +499,15 @@ TEST_CASE("disk_backed_scan: repeated compaction does not bloat the file", "[ste
 
     // Free-list reclaim: repeated compaction of unchanged data must not grow the file.
     //
-    // This case used to allow PER_ROUND_METADATA_SLACK = 4 blocks per round, explicitly
-    // "because nothing frees the superseded METADATA chain until A7.3 reclaims old roots".
-    // A7.3 is done: data_table_t::checkpoint hands the block manager the data blocks of the
-    // root it is building, and the manager walks the DURABLE root's metadata and free-list
-    // chains and files everything root N owns and root N+1 does not into pending_free_. The
-    // slack has nothing left to cover, so it is gone: from the steady state on, an unchanged
-    // table is a closed cycle and the block count must not move AT ALL.
+    // NO per-round slack is allowed here. data_table_t::checkpoint hands the block manager the
+    // data blocks of the root it is building, and the manager walks the DURABLE root's metadata
+    // and free-list chains and files everything root N owns and root N+1 does not into
+    // pending_free_. From the steady state on, an unchanged table is a closed cycle and the
+    // block count must not move AT ALL.
     //
-    // No residual slack is required. The one thing A7.3 does not reclaim -- the previous LIVE
-    // tree, which no root ever named -- is released by compact() itself in the very same
-    // round, which is why this loop closes exactly.
+    // The one thing the root reclaim does not cover -- the previous LIVE tree, which no root
+    // ever named -- is released by compact() itself in the very same round, which is why this
+    // loop closes exactly.
     WARN("[A7.3] blocks after 1 compact+checkpoint round: "
          << blocks_after_first << ", at steady state (round 2): " << blocks_at_steady_state << ", after "
          << (EXTRA_ROUNDS + 2) << " rounds: " << blocks_after_repeated);
@@ -520,10 +518,10 @@ TEST_CASE("disk_backed_scan: repeated compaction does not bloat the file", "[ste
 }
 
 // ----------------------------------------------------------------------------
-// B2: compact block allocation (segment packing) for the write-through path.
+// Compact block allocation (segment packing) for the write-through path.
 // ----------------------------------------------------------------------------
 
-// (B2-1) Flush-before-evict correctness guard.
+// Flush-before-evict correctness guard.
 //
 // The write-through path packs many small column segments into shared 256 KiB
 // blocks via partial_block_manager_t::write_to_block, which only fills an
@@ -537,7 +535,7 @@ TEST_CASE("disk_backed_scan: repeated compaction does not bloat the file", "[ste
 // re-pointed segments, then full-scans and verifies EXACT data. It is GREEN
 // only when every write-through caller flushes its partial blocks BEFORE any
 // eviction/reload of a re-pointed segment can occur. A wrong flush ordering
-// makes it RED (data_corruption on reload).
+// makes it fail with data_corruption on reload.
 TEST_CASE("disk_backed_scan: B2 packed segments reload exactly under forced eviction", "[step2]") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -556,7 +554,7 @@ TEST_CASE("disk_backed_scan: B2 packed segments reload exactly under forced evic
 
     // > 1 row group of small (1024-row int64) packed segments. Each row group's
     // closed column segment is 8 KiB -- far below 0.8*256 KiB, so it is PACKED
-    // into a shared partial block at a non-zero offset by B2.
+    // into a shared partial block at a non-zero offset.
     append_int64_data(*table, &env.resource, LARGE_ROW_COUNT);
     REQUIRE(table->calculate_size() == LARGE_ROW_COUNT);
 
@@ -571,22 +569,19 @@ TEST_CASE("disk_backed_scan: B2 packed segments reload exactly under forced evic
     cleanup_test_file();
 }
 
-// (B2-2) Over-allocation bound.
+// Over-allocation bound.
 //
-// Before B2 the write-through path gave EACH small column segment its own
-// dedicated 256 KiB block. A row group close of a WIDE table (the real shape --
-// e.g. SSB lineorder's ~17 columns) thus burned one block PER COLUMN PER ROW
-// GROUP plus one per validity child, even though all those narrow segments
-// together fit in a fraction of a block (~127x over-allocation in the field:
-// 14016 blocks / 3504 MB for 27.5 MB of data). After B2 the row-group-close
-// packs every column's (and validity's) segment into shared blocks via
-// partial_block_manager_t, so the block count tracks the packed DATA size, not
-// the segment COUNT.
+// A dedicated 256 KiB block per small column segment burns one block PER COLUMN
+// PER ROW GROUP plus one per validity child on a WIDE table (the real shape --
+// e.g. SSB lineorder's ~17 columns), even though all those narrow segments
+// together fit in a fraction of a block: measured at ~127x over-allocation,
+// 14016 blocks / 3504 MB for 27.5 MB of data. Packing every column's (and
+// validity's) segment into shared blocks via partial_block_manager_t makes the
+// block count track the packed DATA size, not the segment COUNT.
 //
 // This builds a wide INT32 table so the per-row-group cross-column packing is
-// exercised. We assert total_blocks() is within a generous packing bound that
-// is far below the pre-B2 one-block-per-segment count -- RED on the old
-// allocator, GREEN after B2.
+// exercised, and asserts total_blocks() is within a generous packing bound far
+// below the one-block-per-segment count.
 TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment over-allocation", "[step2]") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -617,9 +612,9 @@ TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment ove
     auto table = std::make_unique<data_table_t>(&resource, bm, std::move(columns), "disk_backed");
 
     // ROW_GROUPS row groups of 1024 rows each. Each row-group close finalizes one
-    // segment per column (1024*4 = 4 KiB) plus a validity child segment. Pre-B2:
-    // ~(NCOLS value + NCOLS validity) dedicated blocks PER ROW GROUP. Post-B2: the
-    // ~NCOLS*4 KiB = 64 KiB of value data + tiny validity per row group packs into
+    // segment per column (1024*4 = 4 KiB) plus a validity child segment. Unpacked
+    // that is ~(NCOLS value + NCOLS validity) dedicated blocks PER ROW GROUP; packed,
+    // the ~NCOLS*4 KiB = 64 KiB of value data + tiny validity per row group fits in
     // ONE shared block.
     constexpr uint64_t ROW_GROUPS = 16;
     constexpr uint64_t ROWS = DEFAULT_VECTOR_CAPACITY * ROW_GROUPS; // 16384 rows
@@ -647,12 +642,12 @@ TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment ove
     const uint64_t blocks = bm.total_blocks();
     const uint64_t block_size = bm.block_size();
 
-    // Pre-B2 lower bound (what the old allocator would consume): at least one
-    // dedicated block per CLOSED segment. Closed row groups = ROW_GROUPS-1 (the
+    // Unpacked lower bound (`pre_b2_floor`, what a per-segment allocator consumes):
+    // at least one dedicated block per CLOSED segment. Closed row groups = ROW_GROUPS-1 (the
     // last stays open), each closing NCOLS value + NCOLS validity segments.
     const uint64_t pre_b2_floor = (ROW_GROUPS - 1) * (NCOLS * 2);
 
-    // Post-B2 packing bound: per closed row group the packed value data is
+    // Packing bound: per closed row group the packed value data is
     // ~NCOLS*1024*4 bytes; well-packed that is a handful of blocks total. Bound it
     // by the data volume with generous slack, NOT by the segment count.
     const uint64_t value_bytes = ROWS * NCOLS * sizeof(int32_t);
@@ -693,8 +688,8 @@ TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment ove
 //   3. Drain the REST of the table through throwaway fetches under a 1 MiB pool
 //      so the held batch's block is evicted, then reloaded at a new address.
 //   4. Read the held chunk's STRING cells -- they must still equal the original
-//      values. Today they dangle -> RED. After the fix (payload interned into
-//      the result vector's string_vector_buffer_t) -> GREEN.
+//      values, which holds only because the payload is interned into the result
+//      vector's string_vector_buffer_t.
 TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no UAF)", "[step2]") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -776,7 +771,7 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
 
     // (4) The held chunk's STRING cells must still read back the ORIGINAL values.
     // value() materialises a std::string FROM the stored string_view: if that
-    // view dangles into an evicted/reloaded block, this reads garbage -> RED.
+    // view dangles into an evicted/reloaded block, this reads garbage.
     for (uint64_t i = 0; i < held_count; i++) {
         auto val = held.data[0].value(i);
         REQUIRE(val.type().type() == logical_type::STRING_LITERAL);

@@ -105,9 +105,9 @@ TEST_CASE("core::moving_an_error_carries_the_producers_arena_along") {
 }
 
 // A moved-from result must hand its message over, not reallocate it. The NDEBUG branch of
-// result_wrapper_t's move assignment is `= default` and has always moved; the DEV_MODE branch
-// read `other.error_` by name, so in a debug build the message was copied — onto the default
-// resource — and the two builds disagreed about where a moved result's error lived.
+// result_wrapper_t's move assignment is `= default` and therefore moves; a DEV_MODE branch that
+// reads `other.error_` by name copies instead — onto the default resource — and the two builds
+// then disagree about where a moved result's error lives.
 TEST_CASE("core::moving_a_result_wrapper_hands_the_message_over") {
     resource_tracer_t producer;
 

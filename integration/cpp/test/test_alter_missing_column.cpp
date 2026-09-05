@@ -7,46 +7,38 @@
 //
 //   ERROR:  column "nosuchcol" of relation "t" does not exist
 //
-// and only `DROP COLUMN IF EXISTS` is allowed to pass (as a notice). RENAME
-// COLUMN has no IF EXISTS form for the column at all, so it is always loud.
-//
-// The user-visible consequence of the silent success is not "a wasted
-// statement": a script that renames a column and then reads it under the new
-// name got a green ALTER and a failing SELECT, with nothing between them to
-// say which of the two lied.
+// and only `DROP COLUMN IF EXISTS` passes (as a notice); RENAME COLUMN has no
+// IF EXISTS form for the column at all. The cost of the silent success is a
+// script that renames a column and then reads it under the new name: green
+// ALTER, failing SELECT, nothing between them to say which of the two lied.
 //
 // THE MINE UNDER THE FIX. A relkind='g' (document / dynamic-schema) table keeps
 // its columns in pg_computed_column, NOT in pg_attribute — so for those tables
 // EVERY column name misses the pg_attribute lookup these operators do. Turning
 // the miss into an error without routing relkind='g' elsewhere would refuse
-// legal statements on every document table. The document cases below are the
-// gate on that, and they hold the rule to ONE rule for both table shapes: a
-// column that is not there is an error whichever catalog holds the columns, and
-// a fix that is "loud for regular tables, silent for document ones" would be a
-// fallback keyed on the table kind. Concretely:
-//   * DROP of a field that IS there must stay green — it was green before this
-//     change and must be green after (the planner routes it to the operator that
-//     owns pg_computed_column);
-//   * DROP of a field that is NOT there must be refused, same as on a regular
-//     table;
+// legal statements on every document table. The document cases below gate that
+// and hold ONE rule for both table shapes ("loud for regular tables, silent for
+// document ones" would be a fallback keyed on the table kind):
+//   * DROP of a field that IS there stays green — the planner routes it to the
+//     operator that owns pg_computed_column;
+//   * DROP of a field that is NOT there is refused, as on a regular table;
 //   * RENAME on a document table is refused with the sentence that is TRUE for
 //     it — "not implemented", not "does not exist" — never reported as done. It
 //     never worked: it reported success and renamed nothing, and the storage
 //     half cannot be completed on this branch (the case says why).
 //
-// A NOTE ON HOW TO RUN THESE, AND ON A DEFECT THEY UNCOVERED BUT DO NOT FIX.
-// ctest gives every case its own process, which is how they are gated and how
-// they are green. Running the whole tag in ONE process is flaky, and not because
-// of anything these cases assert: a refusal message built from an ALTER
-// operator's resource can arrive at the caller with a size that spans the
-// NEXT copies of itself — read back it comes out doubled or tripled, or big
-// enough that constructing a std::string from what.begin()/what.end() throws
-// std::length_error("basic_string"). It takes a handful of refusals in one
-// process, and a longer message reaches it sooner; a single refusal in a fresh
-// process is reliable, which is why it stayed hidden. Reproduced but NOT fixed
-// here. Two consequences for this file: every message below is kept short, and
-// each cursor's error is read exactly ONCE and kept. The message-content checks
-// stay — they are what caught it, and a refusal nobody can read is not a refusal.
+// HOW TO RUN THESE, AND A DEFECT THEY UNCOVERED BUT DO NOT FIX. ctest gives
+// every case its own process, which is how they are green. Running the whole tag
+// in ONE process is flaky, for a reason none of them assert: a refusal message
+// built from an ALTER operator's resource can arrive at the caller with a size
+// that spans the NEXT copies of itself — read back it comes out doubled or
+// tripled, or big enough that constructing a std::string from
+// what.begin()/what.end() throws std::length_error("basic_string"). It takes a
+// handful of refusals in one process, and a longer message reaches it sooner; a
+// single refusal in a fresh process is reliable, which is why it stayed hidden.
+// Reproduced but NOT fixed here, so: every message below is kept short, and each
+// cursor's error is read exactly ONCE and kept. The message-content checks stay
+// — they are what caught it.
 // ============================================================================
 
 #include "test_config.hpp"

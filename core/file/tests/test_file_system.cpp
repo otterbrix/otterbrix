@@ -13,10 +13,10 @@
 using namespace std;
 using namespace core::filesystem;
 
-// Rooted under the system temp directory, not the process CWD: a bare relative name here
-// dropped `filesystem_test/` into whatever directory ctest launched the binary from. The pid
-// keeps two concurrent runs apart. create_directory() below is a bare mkdir(2), so the base
-// has to exist before the test asks for the leaf.
+// Rooted under the system temp directory, not the process CWD: a bare relative name drops
+// `filesystem_test/` into whatever directory ctest launched the binary from. The pid keeps
+// two concurrent runs apart. create_directory() below is a bare mkdir(2), so the base has to
+// exist before the test asks for the leaf.
 static path_t make_testing_directory() {
     const auto base =
         std::filesystem::temp_directory_path() / ("otterbrix_file_system_" + std::to_string(::getpid()));
@@ -183,27 +183,23 @@ TEST_CASE("core::file::filesystem") {
         }
     }
 }
-// A PARTIAL WRITE IS NOT A FAILED WRITE, and the difference is the only thing that lets a
-// caller repair itself. The sequential write loop below it (local_file_system.cpp) issues
-// ::write repeatedly; when one of those calls short-counts and the next one refuses, the
-// bytes of the short count ARE on the device and the descriptor HAS moved over them.
+// A PARTIAL WRITE IS NOT A FAILED WRITE, and the difference is the only thing that lets a caller
+// repair itself. The sequential write loop below it (local_file_system.cpp) issues ::write
+// repeatedly; when one of those calls short-counts and the next one refuses, the bytes of the
+// short count ARE on the device and the descriptor HAS moved over them.
 //
-// RLIMIT_FSIZE stages exactly that, with no mock anywhere in the path: the kernel writes up
-// to the limit, returns the short count, and refuses everything after with EFBIG. That is
-// the same shape a full volume produces, and it is reproducible, which ENOSPC is not.
+// RLIMIT_FSIZE stages exactly that, with no mock anywhere in the path: the kernel writes up to
+// the limit, returns the short count, and refuses everything after with EFBIG. That is the same
+// shape a full volume produces, and it is reproducible, which ENOSPC is not. SIGXFSZ has to be
+// ignored for the duration or the refusal kills the test binary instead of being reported.
 //
-// SIGXFSZ has to be ignored for the duration or the refusal kills the test binary instead of
-// being reported, and both the limit and the disposition go back before the case returns --
-// the limit is process-wide, so leaking it would fail every later case that writes.
-//
-// AND PROCESS-WIDE IS THE WHOLE CAVEAT, not just a reason to restore. RLIMIT_FSIZE and the
-// SIGXFSZ disposition belong to the PROCESS, not to this handle or this thread: while a guard
-// is armed, EVERY file this binary writes is held to the same ceiling. That is safe here only
-// because this binary is single-threaded and writes nothing but the file under test. Adding a
-// file-backed log sink to it, or a thread that writes while a case runs, would make unrelated
-// code fail inside somebody else's assertion -- so the armed window is kept to the single
-// write it is staging, and no case arms a ceiling it does not need. In particular there is no
-// ceiling of ZERO anywhere below: an outright refusal is staged with a read-only descriptor
+// THE CAVEAT IS THAT BOTH ARE PROCESS-WIDE: while a guard is armed, EVERY file this binary
+// writes is held to the same ceiling, so the limit and the disposition are restored before the
+// case returns. That is safe here only because this binary is single-threaded and writes nothing
+// but the file under test — adding a file-backed log sink, or a thread that writes while a case
+// runs, would make unrelated code fail inside somebody else's assertion. So the armed window is
+// kept to the single write it is staging, no case arms a ceiling it does not need, and there is
+// no ceiling of ZERO anywhere below: an outright refusal is staged with a read-only descriptor
 // instead (see the second case), which reaches only that descriptor.
 namespace {
     struct fsize_limit_guard_t {
@@ -242,16 +238,14 @@ namespace {
     };
 } // namespace
 
-// THE WRAPPER'S FORWARDERS ACTUALLY FORWARD, and until this case existed nothing asked.
+// THE WRAPPER'S FORWARDERS ACTUALLY FORWARD, AND SOMETHING HAS TO INSTANTIATE THEM.
 //
 // file_system<FSC> holds a backend by PRIVATE inheritance and offers the same free-function
-// surface over it. Every one of those forwarders called ITSELF -- `return read(fs, ...)`
-// inside `read(file_system<FSC>&, ...)`, whose first parameter is the wrapper, so the
-// wrapper is what overload resolution picked -- an unconditional infinite recursion in each
-// of the twenty-three. A template is only diagnosed when it is instantiated and not one of
-// them ever was, so the whole header compiled clean and would have blown the stack on its
-// first real use. This case is what makes "nothing instantiates them" false; the private base
-// is why the fix needs an accessor rather than a cast.
+// surface over it. A forwarder written as `return read(fs, ...)` inside
+// `read(file_system<FSC>&, ...)` calls ITSELF -- the first parameter is the wrapper, so the
+// wrapper is what overload resolution picks -- and a template is only diagnosed when it is
+// instantiated, so such a header compiles clean and blows the stack on its first real use.
+// The private base is why forwarding needs an accessor rather than a cast.
 //
 // It goes end to end through the wrapper alone: open, sequential write, size, seek, read
 // back, unlink. A regression does not fail an assertion here -- it exhausts the stack -- and
@@ -319,9 +313,9 @@ TEST_CASE("core::file::filesystem::sequential_write_reports_what_it_wrote") {
     // spelled against file_size() rather than against `limit` because `limit` is a property of
     // the STAGING, not of the contract -- a kernel that refuses an over-limit write whole
     // instead of short-counting it to the ceiling keeps 0 bytes and satisfies this line
-    // exactly as one that keeps 12 does. The old int64_t answered -1 here -- the refusing
-    // ::write's code, with the accumulated count discarded -- so "nothing landed" and "12 of
-    // 25 landed" were the same answer and neither could be repaired.
+    // exactly as one that keeps 12 does. A bare int64_t return cannot carry this: it answers
+    // the refusing ::write's -1 and discards the accumulated count, so "nothing landed" and
+    // "12 of 25 landed" become the same answer and neither can be repaired.
     REQUIRE_FALSE(written.complete);
     REQUIRE(written.bytes_written == handle->file_size());
     REQUIRE(written.bytes_written < requested);

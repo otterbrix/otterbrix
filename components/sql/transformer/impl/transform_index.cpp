@@ -29,13 +29,12 @@ namespace components::sql::transform {
                                  std::pmr::string{"incorrect create index arguments", resource_});
         }
         // FOUR more clauses the grammar fills (gram.y, IndexStmt: `CREATE opt_unique
-        // INDEX ... opt_reloptions OptTableSpace where_clause`) and this transform
-        // never read. node_create_index carries a name, a method and a column list —
-        // nothing else — so each of these was silently DROPPED on the floor while the
-        // statement reported success. The worst is `unique`: CREATE UNIQUE INDEX
-        // built an ordinary index that admits duplicates, i.e. a declared constraint
-        // that never acted — the exact class of defect the rest of this file was
-        // repaired for. Rule 6: refuse and name the clause; no index is created.
+        // INDEX ... opt_reloptions OptTableSpace where_clause`). node_create_index
+        // carries a name, a method and a column list — nothing else — so read by none
+        // of them each clause is silently DROPPED on the floor while the statement
+        // reports success. The worst is `unique`: CREATE UNIQUE INDEX then builds an
+        // ordinary index that admits duplicates, a declared constraint that never acts.
+        // Rule 6: refuse and name the clause; no index is created.
         if (node.unique) {
             return core::error_t(core::error_code_t::unimplemented_yet,
                                  std::pmr::string{"CREATE UNIQUE INDEX is not implemented: the index built here "

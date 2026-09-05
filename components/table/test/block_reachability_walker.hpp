@@ -1,6 +1,6 @@
 #pragma once
 
-// P1/T2 block-reachability walker (test-side).
+// Block-reachability walker (test-side).
 //
 // Classifies every block id of a single-file database into exactly one of four bins:
 //   1. chain      — reachable from the DURABLE root: a block of the table-metadata chain or of
@@ -9,14 +9,14 @@
 //   2. registry   — a live block_handle_t in the block registry. For a LOADED table this is
 //                   exactly the set of data blocks (initialize_column registers every segment
 //                   by its disk id), so the walker MUST run with the table loaded/open;
-//   3. free list  — an id listed in the durable free list's CONTENT. Since the A7.4 R-LEAK
-//                   fix this legitimately includes blocks the LIVE tree still holds but the
+//   3. free list  — an id listed in the durable free list's CONTENT. This legitimately
+//                   includes blocks the LIVE tree still holds but the
 //                   root does not name (reported separately as live_superseded); an id both
 //                   free-listed and needed BY THE ROOT is still fatal (reachable_free_overlap);
-//   4. unexplained — none of the above. On HEAD these are leaked old-root blocks; the walker
-//                   exists to prove they are attributable garbage (previous rounds' chains)
-//                   and never live data — that is the safety condition of the A7.3 freeing
-//                   formula, which this walker tries to REFUTE, not confirm.
+//   4. unexplained — none of the above: leaked old-root blocks. The walker exists to prove
+//                   they are attributable garbage (previous rounds' chains) and never live
+//                   data — that is the safety condition of the old-root freeing formula, which
+//                   this walker tries to REFUTE, not confirm.
 //
 // The durable root is read straight from the file's double header (iteration-max slot),
 // NOT from the in-memory manager state: the walker judges what a crash would recover.
@@ -62,9 +62,9 @@ namespace otterbrix_test {
         // and that distinction is what separates the fatal free-list overlap from the
         // deliberate one (see live_superseded).
         std::set<uint64_t> root_data;
-        // Blocks the walker's OWN scratch load allocated. RE-MEASURED for A7.3: opening a
-        // 12k-row table now allocates ZERO blocks (validity became persistent, so loading is no
-        // longer writing), and a full scan of the freshly loaded table allocates zero as well.
+        // Blocks the walker's OWN scratch load allocated. Measured: opening a 12k-row table
+        // allocates ZERO blocks (validity is persistent, so loading is not writing), and a full
+        // scan of the freshly loaded table allocates zero as well.
         // The accounting stays: it is what proves that, and a future load that starts
         // allocating again would show up here as an observer effect instead of as mystery
         // garbage. Excluded from durable_data, and callers must treat these as explained when
@@ -75,7 +75,7 @@ namespace otterbrix_test {
         // data with a valid CRC on the very next open.
         std::set<uint64_t> reachable_free_overlap;
         // free ∩ (registry-only): blocks the live in-memory tree holds that the judged root
-        // does NOT name. Since the A7.4 R-LEAK fix this is the published list's deliberate
+        // does NOT name. This is the published list's deliberate
         // third term — the write-through/re-pointed copies whose only owner is the live tree,
         // named in the list so a RESTART can ever reclaim them. In-process they stay protected
         // by the registry (the in-memory pools never contain them); on a freshly reopened file
@@ -89,7 +89,7 @@ namespace otterbrix_test {
     };
 
     // Read the durable double header straight from the file and pick the active slot by the
-    // same rule production uses (A7.1): a slot counts only if it reads back whole AND its
+    // same rule production uses: a slot counts only if it reads back whole AND its
     // checksum validates, and among the surviving candidates the greater iteration wins.
     // Returns false if the file cannot be read or if NEITHER slot is valid — the state
     // load_existing_database reports as data_corruption. Since a checkpoint now writes only
@@ -118,7 +118,7 @@ namespace otterbrix_test {
 
     // Follow a metadata sub-block chain from `start`, collecting the underlying BLOCK ids.
     //
-    // Delegates to metadata_manager_t::chain_blocks -- the SAME implementation A7.3's
+    // Delegates to metadata_manager_t::chain_blocks -- the SAME implementation the
     // reclaim uses to find the superseded root's chains. That is deliberate: this walker
     // exists to judge that reclaim, and a private copy of "what a chain is" here would be a
     // second notion of it, free to agree with the reclaim while both were wrong. Cycle
@@ -199,7 +199,7 @@ namespace otterbrix_test {
         // Scratch load: the durable root's data blocks, via the real loader.
         if (header.meta_block != storage::INVALID_INDEX) {
             // Anything the scratch load allocates is scratch noise, not root-referenced data,
-            // so it is excluded from the delta. Measured at A7.3: that set is now EMPTY for a
+            // so it is excluded from the delta. Measured: that set is EMPTY for a
             // plain reload (validity is persistent), but the exclusion stays so the walker
             // stays correct if any load path starts allocating again.
             const size_t issued_before_scratch = bm.dev_issued_ids().size();
@@ -232,19 +232,18 @@ namespace otterbrix_test {
             // registry with it (shared ids keep the live table's handles).
         }
 
-        // A7.7 EXTENSION of the classification RANGE (the bins themselves are unchanged).
+        // The classification RANGE, not the bins: the wider of the durable block_count and the
+        // manager's high-water mark.
         //
-        // This loop used to stop at the DURABLE root's block_count, which is the file's extent
-        // as that root describes it. That is exactly right after a COMMITTED round — write_header
-        // records block_count = max_block_, so the two agree — and it is blind in precisely the
-        // case A7.7 is about: a round whose header never committed can have pushed the manager's
-        // high-water mark PAST the durable block_count, and the ids in between are the leak. A
-        // walker that cannot see them cannot gate them, so the range is the wider of the two.
-        // For every already-existing caller (all of which walk right after a successful
-        // checkpoint) the two bounds are equal and nothing about the report changes.
+        // Stopping at the DURABLE root's block_count is exactly right after a COMMITTED round —
+        // write_header records block_count = max_block_, so the two agree — and blind after a
+        // FAILED one: a round whose header never committed can have pushed the high-water mark
+        // PAST the durable block_count, and the ids in between are the leak. A walker that
+        // cannot see them cannot gate them. After a successful checkpoint the two bounds are
+        // equal and nothing about the report changes.
         const uint64_t high_water = std::max(report.block_count, bm.total_blocks());
         for (uint64_t id = 0; id < high_water; ++id) {
-            // Two different free-list overlaps, split on WHO needs the block (A7.4 R-LEAK):
+            // Two different free-list overlaps, split on WHO needs the block:
             //   * the ROOT needs it (chains or named data) and its own list frees it — fatal,
             //     the next open would reissue it over data that root reads;
             //   * only the LIVE TREE holds it — the published list names it ON PURPOSE, so a

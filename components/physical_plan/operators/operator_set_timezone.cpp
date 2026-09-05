@@ -33,8 +33,8 @@ namespace components::operators {
 
         // The pg_settings row is what makes the setting outlive the process; with
         // no disk actor to write it, SET TIME ZONE has validated a name and
-        // persisted nothing, and the old silent mark_executed() reported that as
-        // done. No production topology wires an executor without the disk actor
+        // persisted nothing, which a silent mark_executed() would report as done.
+        // No production topology wires an executor without the disk actor
         // (base_spaces spawns it unconditionally), so the refusal costs nothing
         // where it cannot fire — same convention as the cast operators.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
@@ -51,7 +51,7 @@ namespace components::operators {
             components::catalog::find_system_table(components::catalog::well_known_oid::pg_settings_table);
         // pg_settings is a well-known compiled-in table; a registry that cannot
         // name it is not a topology, and "succeed without writing" is the same
-        // silent lie the empty-address branch above stopped telling.
+        // silent lie the empty-address branch above refuses to tell.
         if (settings_def == nullptr) {
             set_error(core::error_t{
                 core::error_code_t::physical_plan_error,

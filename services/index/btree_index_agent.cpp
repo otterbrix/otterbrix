@@ -15,34 +15,30 @@ namespace services::index {
 
         // A staged key, decoded into the value the on-disk b+tree orders by.
         //
-        // This is not "a" decoder, it is THE one: the tree hands itself its own stored
-        // keys through this exact call (item_key_getter), so a bucket key and a committed
-        // key become the same kind of value, compared by the same operators. The tree's
-        // probe encoder convert() produces the identical physical_value for a given
-        // logical key, which is why encoding the probe here and decoding it straight back
-        // is faithful rather than a round trip for its own sake.
+        // This is not "a" decoder, it is THE one: the tree hands itself its own stored keys through
+        // this exact call (item_key_getter), so a bucket key and a committed key become the same
+        // kind of value, compared by the same operators. The tree's probe encoder convert()
+        // produces the identical physical_value for a given logical key, which is why encoding the
+        // probe here and decoding it straight back is faithful rather than a round trip for its own
+        // sake. A STRING physical_value is a VIEW into `encoded`; every use below keeps the owning
+        // buffer alive for the whole comparison.
         //
-        // A STRING physical_value is a VIEW into `encoded`; every use below keeps the
-        // owning buffer alive for the whole comparison.
-        //
-        // `ok` IS READ HERE TOO, even though `encoded` never left this process: these bytes
-        // came out of encode_key() moments ago, so a refusal is an encoder/decoder DRIFT, not
-        // a flipped bit. It still must not answer with the NA physical_value, because NA is
-        // what numeric_limits<physical_value>::max() returns -- a staged key that failed to
-        // decode would sort after every real key and join every gte and upper-bound answer.
+        // `ok` IS READ HERE TOO, even though `encoded` never left this process: these bytes came
+        // out of encode_key() moments ago, so a refusal is an encoder/decoder DRIFT, not a flipped
+        // bit. It still must not answer with the NA physical_value, because NA is what
+        // numeric_limits<physical_value>::max() returns -- a staged key that failed to decode would
+        // sort after every real key and join every gte and upper-bound answer.
         components::types::physical_value decode_as_tree_key(std::string_view encoded, bool& ok) {
             size_t pos = 0;
             return codec::read_logical_value_as_view(encoded.data(), encoded.size(), pos, &ok);
         }
 
-        // Does `stored <compare> probe` hold? The six value comparisons an index can be
-        // asked, answered on the same operators btree_index_disk_t::scan_range walks the
-        // tree with, so the staged half of an answer and its committed half agree by
-        // construction instead of by coincidence.
-        //
-        // ALL SIX, which is what separates this family from the hashed one: an ordered
-        // index may be asked lt/lte/gt/gte/ne, and a staged row with key 3 belongs in the
-        // answer to `x < 5`.
+        // Does `stored <compare> probe` hold? The six value comparisons an index can be asked,
+        // answered on the same operators btree_index_disk_t::scan_range walks the tree with, so the
+        // staged half of an answer and its committed half agree by construction instead of by
+        // coincidence. ALL SIX, which is what separates this family from the hashed one: an ordered
+        // index may be asked lt/lte/gt/gte/ne, and a staged row with key 3 belongs in the answer to
+        // `x < 5`.
         bool predicate_holds(components::expressions::compare_type compare,
                              const components::types::physical_value& stored,
                              const components::types::physical_value& probe) {
@@ -106,21 +102,20 @@ namespace services::index {
                                 components::catalog::oid_t index_oid,
                                 uint64_t flush_threshold,
                                 log_t& log) {
-        // The tree opens INSIDE THE AGENT, in its member initializer list, from the
-        // parameters forwarded below: the store is a member by value, so nothing is built
-        // here and handed across. The ordered store has no recoverable open failure TODAY
-        // -- core::b_plus_tree::btree_t::load() on a fresh or existing directory either
-        // works or takes the process down inside the buffer pool -- so this returns the
-        // wrapper without ever filling its error half, and there is no second step to run
-        // after the spawn (contrast bitcask_index_agent_t::create, whose store's open CAN
-        // fail and is therefore deferred out of the constructor). The DOOR is still shaped
-        // like the hashed family's on purpose: a caller cannot reach an agent without going
-        // through result_wrapper_t, so the day the tree grows an error channel every call
-        // site already handles it. What is NOT done here is inventing a failure to make the
-        // shapes match.
+        // The tree opens INSIDE THE AGENT, in its member initializer list, from the parameters
+        // forwarded below: the store is a member by value, so nothing is built here and handed
+        // across. The ordered store has no recoverable open failure TODAY --
+        // core::b_plus_tree::btree_t::load() either works or takes the process down inside the
+        // buffer pool -- so this returns the wrapper without ever filling its error half, and there
+        // is no second step to run after the spawn (contrast bitcask_index_agent_t::create, whose
+        // store's open CAN fail and is therefore deferred out of the constructor). The DOOR is
+        // still shaped like the hashed family's on purpose: a caller cannot reach an agent without
+        // going through result_wrapper_t, so the day the tree grows an error channel every call
+        // site already handles it. What is NOT done here is inventing a failure to make the shapes
+        // match.
         //
-        // The path is derived HERE from the two oids, in the agent's own translation unit:
-        // no caller builds it and no caller opens anything.
+        // The path is derived HERE from the two oids, in the agent's own translation unit: no
+        // caller builds it and no caller opens anything.
         return actor_zeta::spawn<btree_index_agent_t>(resource,
                                                       path_db,
                                                       table_oid,
@@ -298,16 +293,14 @@ namespace services::index {
         co_return core::error_t::no_error();
     }
 
-    // Take bucket `txn_id` and bucket 0, hand every entry to `apply`, and erase both.
+    // Take bucket `txn_id` and bucket 0, hand every entry to `apply`, and erase both. The pair is
+    // what the commit path has always folded together: bucket 0 is committed for everyone but not
+    // yet durable, and it must reach disk with whatever transaction gets there first.
     //
-    // The pair is what the commit path has always folded together: bucket 0 is committed
-    // for everyone but not yet durable, and it must reach disk with whatever transaction
-    // gets there first.
-    //
-    // THE TXN ID IS NOT A ROUTE HERE, and the missing branch is the specialization: the
-    // ordered store owns no durable txn log, so a committed statement and a rebuild feed
-    // take the same direct route. The erased agent asked its backend has_txn_log() to
-    // learn this; holding the type says it.
+    // THE TXN ID IS NOT A ROUTE HERE, and the missing branch is the specialization: the ordered
+    // store owns no durable txn log, so a committed statement and a rebuild feed take the same
+    // direct route. The erased agent asked its backend has_txn_log() to learn this; holding the
+    // type says it.
     template<typename ApplyFn>
     core::error_t btree_index_agent_t::publish_buckets(pending_txn_map_t& buckets, uint64_t txn_id, ApplyFn&& apply) {
         // The bucket bytes were written by encode_key() in this same actor, so a refusal here
@@ -387,8 +380,8 @@ namespace services::index {
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"btree_index_agent_t::revert_inserts: the index has been dropped", resource()}};
         }
-        // Nothing durable was written for this transaction (owner decision 16), so the
-        // abort is a bucket erase and touches no tree.
+        // Nothing durable was written for this transaction -- no write-through before commit
+        // -- so the abort is a bucket erase and touches no tree.
         pending_inserts_.erase(txn_id);
         co_return core::error_t::no_error();
     }
@@ -437,18 +430,16 @@ namespace services::index {
                 std::pmr::string{"btree_index_agent_t::read_rows: the predicate is not a value comparison",
                                  resource()}};
         }
-        // THE COMMITTED HALF. Equality still goes to find(): scan_range answers it as
-        // well, but find() is the direct probe and routing eq through the range walk would
-        // pay for an ordering it does not need.
+        // THE COMMITTED HALF. Equality still goes to find(): scan_range answers it as well, but
+        // find() is the direct probe and routing eq through the range walk would pay for an
+        // ordering it does not need. btree_index_disk_t::result is size_t-wide and row ids are
+        // int64_t everywhere above this actor, so the conversion happens once, here.
         //
-        // btree_index_disk_t::result is size_t-wide; row ids are int64_t everywhere above
-        // this actor. Convert once, here, so the reply carries the type the reader uses.
-        //
-        // AND THE STORE MAY REFUSE. A leaf record whose key the codec cannot decode used to
-        // arrive here as the row id 0 -- read_le_raw's T{} behind an unmoved `pos` -- which is
-        // a legitimate row id and therefore indistinguishable from a real answer. THIS is the
-        // reader that can say it out loud: read_rows already answers in a result_wrapper_t, so
-        // the refusal fails the QUERY instead of quietly naming row 0.
+        // AND THE STORE MAY REFUSE. A leaf record whose key the codec cannot decode would otherwise
+        // arrive here as the row id 0 -- read_le_raw's T{} behind an unmoved `pos` -- which is a
+        // legitimate row id and therefore indistinguishable from a real answer. THIS is the reader
+        // that can say it out loud: read_rows answers in a result_wrapper_t, so the refusal fails
+        // the QUERY instead of quietly naming row 0.
         btree_index_disk_t::result found(resource());
         if (compare == components::expressions::compare_type::eq) {
             if (auto read_error = store_.find(key, found); read_error.contains_error()) {
@@ -465,25 +456,25 @@ namespace services::index {
             rows.emplace_back(static_cast<int64_t>(row));
         }
 
-        // THE UNCOMMITTED HALF, folded in here rather than by the caller -- which is the
-        // whole point of the buffer living beside the tree. Add what has not reached disk
-        // yet, and only what the ASKING transaction is entitled to see.
+        // THE UNCOMMITTED HALF, folded in here rather than by the caller -- which is the whole
+        // point of the buffer living beside the tree. Add what has not reached disk yet, and only
+        // what the ASKING transaction is entitled to see. Two buckets, two map lookups -- not a
+        // walk of every pending transaction:
         //
-        // Two buckets, two map lookups -- not a walk of every pending transaction:
-        //   bucket 0    committed for everyone but not yet durable. The repopulate path
-        //               refills it between its clear() and its closing commit, and a read
-        //               that lands in that window would otherwise see a wiped index.
+        //   bucket 0    committed for everyone but not yet durable. The repopulate path refills it
+        //               between its clear() and its closing commit, and a read that lands in that
+        //               window would otherwise see a wiped index.
         //   bucket txn  this transaction's own staged inserts and deletes.
-        // Every other bucket belongs to a transaction that has not committed. It is
-        // skipped because it is not looked up at all.
+        //
+        // Every other bucket belongs to a transaction that has not committed, and is skipped
+        // because it is not looked up at all.
         //
         // WHAT MAKES THIS DIFFERENT FROM THE HASHED FAMILY'S MERGE: the predicate, and the
-        // comparison domain. A hash bucket can only ever be asked `= k`, and answers it on
-        // the encoded BYTES. Here the same call may carry lt/lte/gt/gte/ne, so the probe is
-        // encoded and decoded back into the tree's own key value and each bucket key is
-        // decoded the same way -- the comparison then runs on the operators the tree itself
-        // uses. No normalization on either side: the tree stores and compares the column's
-        // own type.
+        // comparison domain. A hash bucket can only ever be asked `= k`, and answers it on the
+        // encoded BYTES. Here the same call may carry lt/lte/gt/gte/ne, so the probe is encoded and
+        // decoded back into the tree's own key value and each bucket key is decoded the same way --
+        // the comparison then runs on the operators the tree itself uses. No normalization on
+        // either side: the tree stores and compares the column's own type.
         const auto encoded_probe = encode_key(key);
         bool staged_ok = true;
         const auto probe = decode_as_tree_key(encoded_probe, staged_ok);
@@ -542,10 +533,9 @@ namespace services::index {
         if (is_dropped_) {
             co_return core::error_t::no_error();
         }
-        // THE ANSWER TRAVELS. This used to end at an error() line: the checkpoint that asked
-        // for the flush was told nothing and went on to truncate the WAL behind an index whose
-        // entries had not reached the device. The DML paths always propagated it; so does this
-        // one now.
+        // THE ANSWER TRAVELS. Ending at an error() line would tell the checkpoint that asked
+        // for the flush nothing, and it would go on to truncate the WAL behind an index whose
+        // entries had not reached the device. Same propagation as the DML paths.
         co_return store_.force_flush();
     }
 

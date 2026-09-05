@@ -365,7 +365,7 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
 }
 
 // 8. Hard-fail on legacy catalog.otbx file: base_otterbrix_t throws on construction when
-// the legacy catalog.otbx file is present in the disk path. M8 clean-break behaviour:
+// the legacy catalog.otbx file is present in the disk path. Clean-break behaviour: the
 // operator must migrate / remove the file before booting on the new code.
 TEST_CASE("integration::clean_break_startup::hard_fail_on_legacy_catalog_otbx") {
     auto dir = std::filesystem::path(clean_break_dir() + "/hard_fail");

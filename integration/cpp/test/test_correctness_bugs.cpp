@@ -656,10 +656,9 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger
 // the DEV_MODE executor counter dml_appends_reverted(): a CHECK/FK violation in
 // autocommit appends a row BEFORE the constraint fails, and the executor's failed-
 // statement abort path MUST lift that recorded append range and physically revert it
-// (storage_revert_appends → row_group_t::revert_append truncates the slot back). Before
-// the fix the error path breaks BEFORE the dml_appends lift, so the counter does not
-// move and the physical slot lingers — this assertion is RED. After the fix it bumps by
-// exactly one per leaked range.
+// (storage_revert_appends → row_group_t::revert_append truncates the slot back). An error
+// path that breaks BEFORE the dml_appends lift leaves the counter unmoved and the physical
+// slot lingering; a lifted range bumps it by exactly one.
 TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_reverts_physical_append") {
     auto config = test_create_config("/tmp/test_correctness_bugs/check_violation_reverts_physical_append");
     test_clear_directory(config);
@@ -691,8 +690,7 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_revert
     const auto reverts_after = services::collection::executor::dml_appends_reverted();
 
     // The physically-appended (then constraint-rejected) row's base append range
-    // must have been reverted on the abort path. RED before the fix (counter unchanged
-    // because the error path skipped the dml_appends lift).
+    // must have been reverted on the abort path.
     INFO("dml_appends_reverted before=" << reverts_before << " after=" << reverts_after);
     REQUIRE(reverts_after == reverts_before + 1);
 }

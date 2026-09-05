@@ -1,9 +1,9 @@
 // compute must allocate from the resource its CALLER named, and from nothing else. The
 // process-global std::pmr default resource is banned outright (rule 14 lists
-// std::pmr::get_default_resource among the forbidden constructs), and it used to be where
-// every defaulted `exec_context_t& ctx = default_exec_context()` argument pointed: a
-// function-local static exec_context_t built on get_default_resource(), i.e. one process-wide
-// arena shared by every caller that did not spell a context out.
+// std::pmr::get_default_resource among the forbidden constructs), and it is where a defaulted
+// `exec_context_t& ctx = default_exec_context()` argument would point: a function-local static
+// exec_context_t built on get_default_resource(), i.e. one process-wide arena shared by every
+// caller that did not spell a context out.
 //
 // The measurement below does not read the code: it installs a counting resource AS the process
 // default and counts what compute takes from it while running a function. The only way that

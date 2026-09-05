@@ -1016,10 +1016,11 @@ TEST_CASE("checkpoint_load: shared partial block survives reopen after table gro
 }
 
 // Nested-column persistence: a LIST/ARRAY/STRUCT column keeps its payload in CHILD
-// column_data_t nodes (elements, fields) plus a validity bitmap; only the top-level
-// segments used to reach the checkpoint, so the reloaded table had typed columns with
-// EMPTY children — the child scan asserted on a null segment (state.current). These
-// three cases pin the full data round-trip through checkpoint + load_from_disk.
+// column_data_t nodes (elements, fields) plus a validity bitmap, and the checkpoint has to
+// carry those too. Persist only the top-level segments and the reloaded table has typed
+// columns with EMPTY children — the child scan then asserts on a null segment
+// (state.current). These three cases pin the full data round-trip through checkpoint +
+// load_from_disk.
 
 TEST_CASE("checkpoint_load: LIST column round-trips its child data") {
     using namespace components::table;
@@ -1568,26 +1569,26 @@ TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
     cleanup_test_file();
 }
 
-// A LIST segment's RAW payload is one uint64 child-offset per row -- that is what the LIST
-// legs of append / fixed_size_scan / finalize_append write and read. complex_logical_type::
-// size() for LIST is sizeof(list_entry_t) == 16, twice that, and column_segment_t::type_size
-// used to be initialised from it. Every raw-byte consumer therefore took the wrong width:
+// A LIST segment's RAW payload is one uint64 child-offset per row -- that is what the LIST legs of
+// append / fixed_size_scan / finalize_append write and read. complex_logical_type::size() for LIST
+// is sizeof(list_entry_t) == 16, twice that, so column_segment_t::type_size must NOT be taken from
+// it -- every raw-byte consumer would then take the wrong width:
 //
-//   * the checkpoint's CONSTANT/RLE/DICTIONARY analysis walked 16 bytes per row, i.e. TWICE
-//     the segment's real extent, folding whatever followed the offsets into the "values";
-//   * the compressed scan wrote 16 bytes per row into the uint64 offset vector that
+//   * the checkpoint's CONSTANT/RLE/DICTIONARY analysis walks 16 bytes per row, i.e. TWICE the
+//     segment's real extent, folding whatever follows the offsets into the "values";
+//   * the compressed scan writes 16 bytes per row into the uint64 offset vector that
 //     list_column_data_t::scan_count sizes at 8 bytes per row -- an 8 KiB heap overrun per
 //     1024-row vector, reachable from a plain SELECT on any reloaded LIST column.
 //
-// It stayed invisible because the emitted BYTE STREAM round-tripped: the first half landed
-// on the offsets correctly and only the run past the end of the buffer was wrong. It
-// surfaced as a pmr-pool "pointer being freed was not allocated" abort in the LIST
-// round-trip case above, but only for heap layouts where the trailing 8 KiB happened to
-// cover pool metadata -- which is why it looked like a flake.
+// Neither shows in the emitted BYTE STREAM, which round-trips: the first half lands on the offsets
+// correctly and only the run past the end of the buffer is wrong. It surfaces as a pmr-pool
+// "pointer being freed was not allocated" abort in the LIST round-trip case above, but only for
+// heap layouts where the trailing 8 KiB happens to cover pool metadata -- which is why it looks
+// like a flake.
 //
 // All-empty lists make every stored offset zero, so the checkpoint picks CONSTANT and the
-// persisted segment is exactly ONE stored element. That single number is the whole bug: 8
-// with the correct physical width, 16 with the logical one.
+// persisted segment is exactly ONE stored element. That single number is the whole bug: 8 with the
+// correct physical width, 16 with the logical one.
 TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element width") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -1630,7 +1631,7 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
     const auto& dp = persistent.value().data_pointers[0];
     REQUIRE(dp.tuple_count == NUM_ROWS);
     REQUIRE(dp.compression == compression::compression_type::CONSTANT);
-    // RED before the fix: 16 == sizeof(list_entry_t).
+    // The LOGICAL width would read 16 == sizeof(list_entry_t).
     CHECK(dp.segment_size == sizeof(uint64_t));
 
     // ...and the data still round-trips through a reload.
@@ -1656,7 +1657,7 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
 }
 
 TEST_CASE("checkpoint_load: 4-byte CONSTANT segment must not misalign the segments packed after it") {
-    // Layout regression (F8): the partial-block packer places segments back-to-back, and the
+    // Layout regression: the partial-block packer places segments back-to-back, and the
     // resulting offset is PERSISTED in the data pointer, so it survives restart. An INT32
     // column whose values are all identical flushes as a 4-byte CONSTANT segment; before the
     // packer aligned placements, everything packed after it — this column's validity bitmap

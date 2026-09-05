@@ -17,33 +17,29 @@
 
 // A DROP CASCADE MUST NOT REPORT SUCCESS OVER A PLANNED OBJECT THE CATALOG DOES NOT HOLD.
 //
-// operator_dynamic_cascade_delete_t plans its steps from pg_depend edges and then executes
-// a per-classid template of catalog-row deletes per step. The template is deliberately
-// over-generated (it re-issues e.g. the pg_sequence and pg_rewrite deletes for a plain
-// table), so most zero counts carry no information — but ONE spec of every template is the
-// step's OWN row ({classid, col 0, objid}), and per-spec deleted counts have existed since
-// delete_pg_catalog_rows_many started reporting them. A zero on the own row means the
-// catalog never held (or no longer holds) the object the plan named: proceeding takes the
-// storage/index drop marks over a catalog inconsistency — the half-applied DROP the
-// operator's own comments promise to avoid.
+// operator_dynamic_cascade_delete_t plans its steps from pg_depend edges and then executes a
+// per-classid template of catalog-row deletes per step. The template is deliberately
+// over-generated (it re-issues e.g. the pg_sequence and pg_rewrite deletes for a plain table),
+// so most zero counts carry no information — but ONE spec of every template is the step's OWN
+// row ({classid, col 0, objid}). A zero there means the catalog never held (or no longer
+// holds) the object the plan named: proceeding takes the storage/index drop marks over a
+// catalog inconsistency — the half-applied DROP the operator's own comments promise to avoid.
 //
-// The first case builds exactly that inconsistency: a pg_depend edge is forged through
-// the disk manager's own funnel, claiming a constraint that has NO pg_constraint row —
-// the state any half-applied earlier scrub leaves behind. (Forging the edge, rather than
-// deleting a real constraint's row, keeps the fixture honest: a td{0,0} funnel delete
-// leaves a ghost the DROP's statement-time scan still marks, and the failure then comes
-// from the commit drain's replay — a different, later channel.) The cascade walks the
-// edge, plans the constraint step, and its own-row delete counts 0. The statement must
-// refuse — and the refused DROP must leave the parent table intact (the autocommit abort
-// puts the already-deleted rows back).
+// The first case builds exactly that inconsistency: a pg_depend edge is forged through the
+// disk manager's own funnel, claiming a constraint that has NO pg_constraint row — the state
+// any half-applied earlier scrub leaves behind. (Forging the edge, rather than deleting a real
+// constraint's row, keeps the fixture honest: a td{0,0} funnel delete leaves a ghost the DROP's
+// statement-time scan still marks, and the failure then comes from the commit drain's replay —
+// a different, later channel.) The cascade walks the edge, plans the constraint step, and its
+// own-row delete counts 0. The statement must refuse — and the refused DROP must leave the
+// parent table intact (the autocommit abort puts the already-deleted rows back).
 //
-// The second case pins the reason a blanket zero-refusal was NOT the fix: the dependency
-// walker pushes a dependent once per edge that reaches it (topological_drop_order's
-// order.push_back sits outside the black-set check), so an FK constraint reachable from
-// BOTH its table and its referenced table appears TWICE in the plan. The second
-// occurrence's own-row delete legitimately counts 0 — the steps have to be deduplicated
-// by (classid, objid) before any count is judged, and this DROP DATABASE must keep
-// succeeding.
+// The second case pins the reason a blanket zero-refusal was NOT the fix: the dependency walker
+// pushes a dependent once per edge that reaches it (topological_drop_order's order.push_back
+// sits outside the black-set check), so an FK constraint reachable from BOTH its table and its
+// referenced table appears TWICE in the plan. The second occurrence's own-row delete
+// legitimately counts 0 — steps have to be deduplicated by (classid, objid) before any count is
+// judged, and this DROP DATABASE must keep succeeding.
 
 using namespace test_helpers;
 

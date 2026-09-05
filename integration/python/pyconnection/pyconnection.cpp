@@ -201,17 +201,16 @@ namespace otterbrix {
 
     result_t py_connection_t::execute_internal(const std::string& query) {
         // A closed connection has no space, and `space->dispatcher()` on a null
-        // intrusive_ptr aborted the process. Refuse out loud instead.
+        // intrusive_ptr aborts the process. Refuse out loud instead.
         if (!space) {
             throw std::runtime_error("the connection is closed");
         }
-        // One SQL pipeline, not two. This used to re-implement
-        // wrapper_dispatcher_t::execute_sql and got it wrong three ways: raw_parser's
-        // throw was not caught, `linitial` was applied to the parse list without
-        // checking it (an empty statement dereferenced nothing and took the process
-        // down), and neither the registered parser extensions nor the query text
-        // reached the transformer, so extension syntax was rejected and error
-        // messages lost their position.
+        // One SQL pipeline, not two. Re-implementing wrapper_dispatcher_t::execute_sql here
+        // means re-deriving three things it already gets right: raw_parser's throw is caught,
+        // `linitial` is never applied to an unchecked parse list (an empty statement
+        // dereferences nothing and takes the process down), and both the registered parser
+        // extensions and the query text reach the transformer — without them extension syntax
+        // is rejected and error messages lose their position.
         auto session = session_id_t();
         return space->dispatcher()->execute_sql(session, query);
     }
@@ -249,9 +248,9 @@ namespace otterbrix {
 
         // Rule 6: a catalog read that failed is NOT a database with no tables in it.
         // Python's only error channel is an exception, so the failure is raised as a
-        // RuntimeError carrying the engine's own message. Returning [] here — what
-        // this function used to do — told every caller "no tables" whenever the read
-        // broke, and no caller could tell the difference.
+        // RuntimeError carrying the engine's own message. Returning [] here would tell
+        // every caller "no tables" whenever the read broke, and no caller could tell the
+        // difference.
         if (names.has_error()) {
             const auto& err = names.error();
             throw std::runtime_error("listTables: reading pg_class failed: " +
@@ -291,9 +290,8 @@ namespace otterbrix {
 
     std::unique_ptr<py_result_t> py_connection_t::execute(const py::object& query) {
         py::gil_scoped_acquire gil;
-        // Rule 6. A query that was not a str fell through to `return
-        // shared_from_this()`: the statement never ran and the caller was told
-        // nothing. A wrong argument type is a TypeError in Python.
+        // Rule 6: a wrong argument type is a TypeError in Python, not a silent
+        // no-statement-ran that hands the caller the connection back.
         if (!py::isinstance<py::str>(query)) {
             throw py::type_error("execute: query must be a str, got " +
                                  std::string(py::str(query.get_type().attr("__name__"))));

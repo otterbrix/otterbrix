@@ -24,19 +24,15 @@ namespace services::index {
     // any other type is a gate/encoder drift bug and aborts.
     [[nodiscard]] components::types::physical_value convert(const components::types::logical_value_t& value);
 
-    // THE ORDERED STORE. It has no base class and there deliberately is not going to be
-    // one: the erased index_disk_t it used to derive from existed so a single index agent
-    // could hold either family behind one pointer and ASK it at runtime which it was --
-    // does it own a txn log, has it a bulk window, can it answer an ordered probe. There
-    // is one agent class per family now, each holding its store BY VALUE and by this
-    // concrete type, so every one of those questions is answered by the type and the
-    // virtuals bought nothing but a vtable and three abort-only stubs (a btree
-    // apply_txn_inserts, a btree apply_txn_deletes, an empty set_bulk_mode) that existed
-    // only to satisfy the base.
-    //
-    // What the base really owned -- the resource, the flush accounting, the by-value read
-    // shorthands -- is duplicated here and in bitcask_index_disk_t. That duplication is
-    // the price of not having the coupling, and it is the cheaper half.
+    // THE ORDERED STORE. No base class, and deliberately none coming: an erased base exists so that
+    // one agent can hold either family behind one pointer and ASK it at runtime which it is -- does
+    // it own a txn log, has it a bulk window, can it answer an ordered probe. There is one agent
+    // class per family, each holding its store BY VALUE and by this concrete type, so the type
+    // answers all three; a base would buy a vtable plus three abort-only stubs (btree
+    // apply_txn_inserts, btree apply_txn_deletes, an empty set_bulk_mode) and nothing else. What
+    // such a base would own -- the resource, the flush accounting, the by-value read shorthands --
+    // is duplicated in bitcask_index_disk_t instead, and that duplication is the cheaper half of
+    // the trade.
     //
     // TODO: add checkpoints to avoid flushing b+tree after each call
     class btree_index_disk_t final {
@@ -66,16 +62,12 @@ namespace services::index {
         [[nodiscard]] core::error_t remove(value_t key);
         [[nodiscard]] core::error_t remove(const value_t& key, size_t row_id);
 
-        // READS. Every answer is COMPLETE -- an index that reports a subset is a wrong
-        // answer, not a fast one -- and every answer comes back in ASCENDING key order.
-        //
-        // AND EVERY ANSWER CAN NOW BE "I COULD NOT READ THIS RECORD", which is the half that
-        // was missing. A leaf record is [key][uint64 row id] and this build verifies the
-        // b+tree's checksum only inside an assert (core/b_plus_tree/segment_tree.cpp:927,
-        // :1049), so under NDEBUG the key codec is the only guard there is. A record whose
-        // key the codec refuses used to come back as ROW ID 0 -- a legitimate row id -- and
-        // the reader had no way to tell it from a real one. data_corruption travels instead,
-        // and btree_index_agent_t::read_rows fails the QUERY with it.
+        // READS. Every answer is COMPLETE -- an index that reports a subset is a wrong answer, not
+        // a fast one -- and every answer comes back in ASCENDING key order. AND EVERY ANSWER CAN BE
+        // "I COULD NOT READ THIS RECORD": a leaf record is [key][uint64 row id], and a record whose
+        // key the codec refuses would otherwise come back as ROW ID 0, a legitimate row id the
+        // reader cannot tell from a real one. data_corruption travels instead, and
+        // btree_index_agent_t::read_rows fails the QUERY with it.
         [[nodiscard]] core::error_t find(const value_t& value, result& res) const;
         // The ordered contract in full: eq / ne / lt / lte / gt / gte, every one of them
         // an inclusive-bounded ascending walk of the tree. It is THE reason this family
@@ -96,16 +88,15 @@ namespace services::index {
             return scan_range(components::expressions::compare_type::gt, value, res);
         }
 
-        // By-value shorthands, built on resource_. Never on a default-constructed
-        // std::pmr::vector, which is std::pmr::get_default_resource() by consequence.
+        // By-value shorthands, built on resource_. Never on a default-constructed std::pmr::vector,
+        // which is std::pmr::get_default_resource() by consequence.
         //
-        // THESE THREE ARE THE TEST-FACING FORM and are the only doors on this class that do
-        // not hand the refusal on -- there is nowhere for it to go in a `result`. That is not
-        // a swallowed error: no production caller uses them (btree_index_agent_t::read_rows
-        // and this class's own dedup probes all take the out-parameter form above), and a
-        // refusal still cannot pass unnoticed, because find/scan_range STOP at the record
-        // they could not read. The answer comes back SHORT, and every test that calls these
-        // asserts on its size.
+        // THESE THREE ARE THE TEST-FACING FORM and are the only doors on this class that do not
+        // hand the refusal on -- there is nowhere for it to go in a `result`. That is not a
+        // swallowed error: no production caller uses them (btree_index_agent_t::read_rows and this
+        // class's own dedup probes all take the out-parameter form above), and a refusal still
+        // cannot pass unnoticed, because find/scan_range STOP at the record they could not read.
+        // The answer comes back SHORT, and every test that calls these asserts on its size.
         [[nodiscard]] result find(const value_t& value) const {
             result res(resource_);
             [[maybe_unused]] const auto unreported = find(value, res);
@@ -123,30 +114,28 @@ namespace services::index {
         }
 
         void drop();
-        // Wipe all stored index data IN PLACE, keeping the backing live and writable:
-        // subsequent insert/remove repopulate cleanly. NOT the terminal drop -- the file
-        // survives (re-initialized empty) and the instance stays usable.
+        // Wipe all stored index data IN PLACE, keeping the backing live and writable: subsequent
+        // insert/remove repopulate cleanly. NOT the terminal drop -- the file survives
+        // (re-initialized empty) and the instance stays usable.
         //
-        // AND IT REPORTS THE ONE REFUSAL IT CAN SEE: a tree directory that would not be
-        // removed. The tree is reloaded over the survivor either way, so the instance stays
-        // usable and its contents stay honest -- they are simply the contents this call
-        // promised to erase, which is exactly what the error says. Without this,
-        // index_agent_contract::clear told the truth about one of its two implementations.
+        // AND IT REPORTS THE ONE REFUSAL IT CAN SEE: a tree directory that would not be removed.
+        // The tree is reloaded over the survivor either way, so the instance stays usable and its
+        // contents stay honest -- they are simply the contents this call promised to erase. Without
+        // this, index_agent_contract::clear told the truth about one of its two implementations.
         [[nodiscard]] core::error_t clear();
         // Returns io_error when the data did not reach the disk. The caller must fail the
         // statement: a discarded failure here means the table and its index disagree, and
         // nothing downstream would ever notice.
         [[nodiscard]] core::error_t force_flush();
 
-        // Bulk-load fast path: append/erase without the per-op find() dedup, persisting
-        // once via force_flush(). Removes the O(rows^2) cost of insert()/remove() calling
-        // find() per row. They never call flush_if_needed, so there is no bulk-mode
-        // WINDOW to open -- the caller force_flush()es once at the end.
+        // Bulk-load fast path: append/erase without the per-op find() dedup, persisting once via
+        // force_flush(). Removes the O(rows^2) cost of insert()/remove() calling find() per row.
+        // They never call flush_if_needed, so there is no bulk-mode WINDOW to open -- the caller
+        // force_flush()es once at the end.
         //
-        // WHAT THE CALLER GUARANTEES, precisely: each (key, row_id) PAIR is fed at most
-        // once and, for the remove side, is present. It does NOT guarantee unique KEYS --
-        // a non-unique index is the ordinary case, and every rebuild feed replays a whole
-        // table, repeated keys included.
+        // WHAT THE CALLER GUARANTEES: each (key, row_id) PAIR is fed at most once and, for the
+        // remove side, is present. NOT unique KEYS -- a non-unique index is the ordinary case, and
+        // every rebuild feed replays a whole table, repeated keys included.
         void insert_bulk_unchecked(const value_t& key, size_t value);
         void remove_bulk_unchecked(const value_t& key, size_t row_id);
 

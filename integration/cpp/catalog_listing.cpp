@@ -50,10 +50,10 @@ namespace otterbrix {
             }
             // relname AND relkind ARE NOT NULL IN THE SCHEMA (system_table_schemas.cpp), so a
             // NULL — or empty relkind — here is a corrupt catalog row, not a row to filter.
-            // Both used to pass in silence, each the wrong way around: a NULL-relkind row was
-            // ACCEPTED as a regular table (an index with a corrupted kind byte showed up in
-            // the listing) and a NULL-relname row was OMITTED (a table that exists silently
-            // missing from the answer). Rule 6: a catalog that cannot be trusted refuses.
+            // Unchecked, both pass in silence and each the wrong way around: a NULL-relkind
+            // row is ACCEPTED as a regular table (an index with a corrupted kind byte shows up
+            // in the listing) and a NULL-relname row is OMITTED (a table that exists goes
+            // silently missing). Rule 6: a catalog that cannot be trusted refuses.
             const auto oid_value = oid_cell.value<std::uint32_t>();
             auto relkind_cell = cursor->value(static_cast<uint64_t>(relkind_col));
             if (relkind_cell.is_null()) {

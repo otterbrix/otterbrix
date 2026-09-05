@@ -16,9 +16,9 @@ namespace components::catalog {
     // not a readable integer, a token with trailing garbage, a token whose value does not
     // FIT an oid_t (2^32 + N is not "column N"), or an empty token — between two commas or
     // as the empty tail of a string CUT OFF at one (encode_oid_csv, the inverse, emits none
-    // of those, and it never ends in a separator). Such a token used to be
-    // SWALLOWED — dropped from the result and invisible from then on, because a caller sees
-    // only a SHORTER vector and cannot tell it from a list that was written short. The lists
+    // of those, and it never ends in a separator). Swallowed instead — dropped from the
+    // result — such a token is invisible from then on, because a caller sees only a SHORTER
+    // vector and cannot tell it from a list that was written short. The lists
     // this parses are read POSITIONALLY and enforced as ordered tuples, so a silently
     // shortened conkey enforces a DIFFERENT constraint than the one declared, and at length
     // zero it enforces nothing at all while the statement reports success. `ok` is the only

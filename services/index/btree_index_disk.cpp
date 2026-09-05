@@ -56,16 +56,15 @@ namespace services::index {
             case logical_type::NA:
                 return components::types::physical_value();
             default:
-                // Unreachable from user data: CREATE INDEX refuses every key type this switch
-                // does not carry (is_representable_index_key_type in
-                // components/index/logical_value_binary_codec.hpp — the ONE authoritative
-                // list) with index_create_fail before any row reaches an encoder. A key
-                // arriving here is a gate/encoder drift bug, and the old `return NA` answer
-                // was worse than a crash: under NDEBUG it collapsed every key of the column
-                // to one NA value and served wrong rows. Die loudly instead.
-                // NDEBUG coverage gap, stated plainly: the main suite builds Debug+DEV_MODE,
-                // where the assert aborts first — the std::abort() below (and the silent-NA
-                // behaviour it replaces) is NOT exercised by any test.
+                // Unreachable from user data: CREATE INDEX refuses every key type this switch does
+                // not carry (is_representable_index_key_type in
+                // components/index/logical_value_binary_codec.hpp -- the ONE authoritative list)
+                // with index_create_fail before any row reaches an encoder. A key arriving here is
+                // a gate/encoder drift bug, and a `return NA` answer would be worse than a crash:
+                // under NDEBUG it collapses every key of the column to one NA value and serves
+                // wrong rows. NDEBUG coverage gap, stated plainly: the main suite builds
+                // Debug+DEV_MODE, where the assert aborts first, so the std::abort() below is NOT
+                // exercised by any test.
                 assert(false && "services::index::convert: key type not representable in physical_value");
                 std::abort();
         }
@@ -82,37 +81,32 @@ namespace services::index {
         db_->load();
     }
 
-    // A NULL key is never stored and is never looked up. The invariant, and the reasons
-    // for it, are written down once in services/index/index_agent_contract.hpp
-    // (index_key_is_null, "An index stores exactly the NON-NULL keys of the live rows");
-    // this is the same rule enforced where the STORE can enforce it, because the agent is
-    // not the only door into this class -- the backend tests reach it directly.
+    // A NULL key is never stored and is never looked up. The invariant, and the reasons for it, are
+    // written down once in services/index/index_agent_contract.hpp (index_key_is_null); this is the
+    // same rule enforced where the STORE can enforce it, because the agent is not the only door
+    // into this class -- the backend tests reach it directly.
     //
-    // The cost of admitting one is specific here, not abstract: convert() maps a NULL to
-    // the NA physical_value, and NA is exactly what numeric_limits<physical_value>::max()
-    // returns. A stored NULL therefore sorts after every real key, so it joins EVERY
-    // upper-bound and gte answer the tree gives -- and it does so as a row id the reader
-    // takes at face value.
+    // The cost of admitting one is specific here, not abstract: convert() maps a NULL to the NA
+    // physical_value, and NA is exactly what numeric_limits<physical_value>::max() returns. A
+    // stored NULL therefore sorts after every real key, so it joins EVERY upper-bound and gte
+    // answer the tree gives -- and it does so as a row id the reader takes at face value.
     //
-    // Reads answer empty rather than failing: `col <op> NULL` is UNKNOWN for every row, so
-    // "no rows" is the true SQL answer, not a degraded one.
+    // Reads answer empty rather than failing: `col <op> NULL` is UNKNOWN for every row, so "no
+    // rows" is the true SQL answer, not a degraded one.
     bool btree_index_disk_t::key_is_absent(const value_t& key) noexcept { return key.is_null(); }
 
     btree_index_disk_t::~btree_index_disk_t() = default;
 
     namespace {
-        // THE TREE'S REFUSAL CHANNEL, ANSWERED AT LAST (wave #324, closing #331 with it).
-        // btree_t::load_failure() is reported into by every leaf, and NOTHING above
-        // core/b_plus_tree ever read it: a walk over a block the tree could not read came
-        // back SHORT with no_error(). For a UNIQUE constraint that is an accepted
-        // duplicate; for a FK a lost parent. The check is STICKY on purpose -- the cell is
-        // peeked, never taken -- so a store that has once served out of a damaged tree
-        // refuses every later question until the tree is rebuilt (clear() constructs a
-        // fresh btree_t, and so does reopening the index): a wedged-loud index is
-        // recoverable, a silently short one is not. The pre-op check is also what removes
-        // the degraded state's price (#331): the walk that would re-read the damaged
-        // 256 KB block on every access is refused before it starts, so the re-read
-        // happens once -- on the operation that met the damage.
+        // THE TREE'S REFUSAL CHANNEL. btree_t::load_failure() is reported into by every leaf, and
+        // leaving it unread means a walk over a block the tree could not read comes back SHORT with
+        // no_error(): for a UNIQUE constraint an accepted duplicate, for a FK a lost parent. The
+        // check is STICKY on purpose -- the cell is peeked, never taken -- so a store that has once
+        // served out of a damaged tree refuses every later question until the tree is rebuilt
+        // (clear() constructs a fresh btree_t, and so does reopening the index): a wedged-loud
+        // index is recoverable, a silently short one is not. Checking BEFORE the operation also
+        // removes the degraded state's price: the walk that would re-read the damaged 256 KB block
+        // on every access is refused before it starts.
         core::error_t tree_load_refusal(core::b_plus_tree::load_failure_t failure,
                                         std::pmr::memory_resource* resource) {
             using core::b_plus_tree::load_failure_t;
@@ -138,9 +132,9 @@ namespace services::index {
         if (key_is_absent(key)) {
             return core::error_t::no_error();
         }
-        // The dedup probe is written into a result on THIS index's resource. It used to go
-        // through the by-value find() virtual, whose default-constructed vector put the
-        // process default resource on the write path (C7).
+        // The dedup probe is written into a result on THIS index's resource. A by-value find()
+        // whose default-constructed vector carries no resource would put the process default
+        // resource on the write path (rule 8).
         result values(resource());
         // THE DEDUP PROBE IS A READ, and a read that could not decode a record cannot answer
         // "this pair is not there yet". Writing over that would append a duplicate entry into
@@ -195,10 +189,9 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    // THE THRESHOLD FLUSH IS THE WRITE, and its failure used to end here: force_flush's
-    // io_error was bound to a local and `return`ed away, so an index whose entries never
-    // reached the device reported the same silence as one that did. Nothing downstream
-    // re-checks. The answer travels to whoever asked for the write now.
+    // THE THRESHOLD FLUSH IS THE WRITE, so its failure may not end here: swallowing
+    // force_flush's io_error would have an index whose entries never reached the device report
+    // the same silence as one that did, and nothing downstream re-checks.
     core::error_t btree_index_disk_t::flush_if_needed() {
         if (should_flush()) {
             return force_flush();
@@ -210,8 +203,8 @@ namespace services::index {
         // Bulk fast path: append (key,value) WITHOUT the per-insert find() dedup
         // (insert()'s O(items-per-key) scan + binary decode) and WITHOUT a per-insert
         // flush. What the caller guarantees is that each (key, row_id) PAIR is fed at most
-        // once — NOT that keys are unique, which a non-unique index breaks by definition
-        // (see index_disk.hpp) — so the dedup has nothing to do; force_flush() persists
+        // once — NOT that keys are unique, which a non-unique index breaks by definition —
+        // so the dedup has nothing to do; force_flush() persists
         // once at the end. This turns a bulk load from O(rows^2) into O(rows).
         if (key_is_absent(key)) {
             return;
@@ -258,16 +251,16 @@ namespace services::index {
 
     namespace {
         // WHY THIS IS A STATE OBJECT AND NOT A FUNCTION ANY MORE. btree_t hands a scan its
-        // Deserializer BY VALUE and its Predicate right behind it, and calls the two
-        // back-to-back on the SAME record (core/b_plus_tree/b_plus_tree.hpp, scan_ascending /
-        // full_scan). Neither signature has room for "I could not read this one" -- the
-        // deserializer must produce a size_t -- so the verdict is carried out of the callback
-        // in this object, which the scan below references rather than copies.
+        // Deserializer BY VALUE and its Predicate right behind it, and calls the two back-to-back
+        // on the SAME record (core/b_plus_tree/b_plus_tree.hpp). Neither signature has room for "I
+        // could not read this one" -- the deserializer must produce a size_t -- so the verdict is
+        // carried out of the callback in this object, which the scan below references rather than
+        // copies.
         //
-        // WHAT IT BUYS, precisely: a record whose key the codec refuses is DROPPED from the
-        // answer instead of contributing read_le_raw's T{}, i.e. ROW ID 0, WHICH IS A
-        // LEGITIMATE ROW ID. `all_ok` then fails the whole read, because a partial answer from
-        // an index is a wrong answer, not a fast one.
+        // WHAT IT BUYS, precisely: a record whose key the codec refuses is DROPPED from the answer
+        // instead of contributing read_le_raw's T{}, i.e. ROW ID 0, WHICH IS A LEGITIMATE ROW ID.
+        // `all_ok` then fails the whole read, because a partial answer from an index is a wrong
+        // answer, not a fast one.
         struct record_row_reader_t {
             bool last_ok{true};
             bool all_ok{true};
@@ -304,8 +297,8 @@ namespace services::index {
             bool ok = true;
             const auto id = id_of(db_->get_item(index, i), ok);
             if (!ok) {
-                // STOP HERE, and do not emplace. The alternative is the row id 0 this used to
-                // hand back, which the reader cannot tell from a real row 0.
+                // STOP HERE, and do not emplace. The alternative is handing back row id 0,
+                // which the reader cannot tell from a real row 0.
                 return unreadable_record(resource());
             }
             res.emplace_back(id.value<components::types::physical_type::UINT64>());
@@ -331,8 +324,8 @@ namespace services::index {
         // predicate excluding it. lt and gt are the same ray minus the probe's own key,
         // and that exclusion is the ONLY job their predicate has.
         //
-        // Every arm walks ASCENDING. gt used to be a scan_decending, so it was the one
-        // predicate whose rows arrived reversed relative to the other five.
+        // Every arm walks ASCENDING: a scan_decending for gt would make it the one predicate
+        // whose rows arrive reversed relative to the other five.
         const auto probe = convert(value);
         // ONE reader for the whole walk, referenced by the deserializer the tree copies.
         record_row_reader_t reader;
@@ -404,10 +397,10 @@ namespace services::index {
         // so subsequent inserts repopulate cleanly. Unlike drop(), the
         // instance stays alive and usable.
         db_.reset();
-        // THE ONE REFUSAL THIS FUNCTION CAN OBSERVE, and it used to be dropped: a directory
-        // that would not go leaves the whole tree on the device, and the load() below reads
-        // it straight back -- so the index goes on answering with every row this call
-        // promised to erase, and index_agent_contract::clear reported success over it.
+        // THE ONE REFUSAL THIS FUNCTION CAN OBSERVE, and it may not be dropped: a directory
+        // that would not go leaves the whole tree on the device, and the load() below reads it
+        // straight back -- so the index goes on answering with every row this call promised to
+        // erase, and index_agent_contract::clear would report success over it.
         const bool directory_removed = core::filesystem::remove_directory(fs_, path_);
         // THE TREE IS REBUILT WHETHER OR NOT THE DIRECTORY WENT, and returning above this
         // line would be the bug rather than the fix: every other door on this class
@@ -415,10 +408,10 @@ namespace services::index {
         // crash. Over a surviving directory load() brings the old contents back, which is
         // the honest state -- nothing was wiped, and the return value says so.
         db_ = std::make_unique<btree_t>(resource(), fs_, path_, item_key_getter);
-        // btree_t::load() IS VOID (core/b_plus_tree/b_plus_tree.hpp), so a tree that could
-        // not be read back after this wipe is still not observable from here. Naming it
-        // rather than papering over it: the fix is an error channel inside
-        // core/b_plus_tree, which is a wider surface than this change owns.
+        // btree_t::load() IS VOID, so a tree that could not be read back after this wipe is
+        // not observable at this line. It is not lost either: the failure lands on the tree's
+        // own channel and the first operation to consult it refuses (see
+        // consult_failure_channel above).
         db_->load();
         reset_flush_state();
         if (!directory_removed) {

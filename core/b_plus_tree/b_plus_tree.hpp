@@ -17,12 +17,11 @@ namespace core::b_plus_tree {
     static constexpr size_t MAX_NODE_CAPACITY = 8192u;
     static constexpr size_t DEFAULT_NODE_CAPACITY = 128u;
     static constexpr size_t METADATA_SIZE = DEFAULT_BLOCK_SIZE;
-    // AND THAT NUMBER, SPELLED OUT WHERE SOMETHING CAN COMPARE AGAINST IT. The metadata file is
-    // one METADATA_SIZE region holding two counters and then one uint64 id per leaf, so this is
-    // how many leaves fit -- 32 766, which at MAX_NODE_CAPACITY is the 268'435'455 items the
-    // comment above this constant used to claim on its own. flush() walked the leaf list writing
-    // one id per leaf into that fixed buffer with nothing stopping it at the end, and load() sized
-    // its read by a count it took off the disk without comparing it to anything.
+    // HOW MANY LEAVES FIT, SPELLED OUT WHERE SOMETHING CAN COMPARE AGAINST IT. The metadata file
+    // is one METADATA_SIZE region holding two counters and then one uint64 id per leaf -- 32 766
+    // of them, which at MAX_NODE_CAPACITY is 268'435'455 items. Unbounded, flush() writes one id
+    // per leaf into that fixed buffer with nothing stopping it at the end, and load() sizes its
+    // read by a count it takes off the disk without comparing it to anything.
     static constexpr size_t MAX_LEAF_NODES = (METADATA_SIZE - 2 * sizeof(size_t)) / sizeof(uint64_t);
 
 #ifdef DEV_MODE
@@ -77,7 +76,7 @@ namespace core::b_plus_tree {
 
         class leaf_node_t : public base_node_t {
         public:
-            // LAZY-MODE LEAF (wave #326): the segment tree underneath remembers where its
+            // LAZY-MODE LEAF: the segment tree underneath remembers where its
             // file is and holds no descriptor at rest. This is the only production door;
             // the pinned-handle segment_tree_t ctor remains as the unit tests' fault
             // seam and is not reachable through btree_t.

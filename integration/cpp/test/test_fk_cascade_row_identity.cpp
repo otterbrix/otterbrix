@@ -1,28 +1,24 @@
 // ============================================================================
-// C4c — WHICH CHILD ROWS AN FK REFERENTIAL ACTION IS ALLOWED TO TOUCH.
+// WHICH CHILD ROWS AN FK REFERENTIAL ACTION IS ALLOWED TO TOUCH.
 //
-// C4b made the point fetch a PRODUCER: collection_t::fetch gathers only rows the
-// asking transaction may see and stamps result.row_ids with exactly those, so a
-// reply can be SHORTER than the request. operator_fk_cascade's SET NULL / SET
-// DEFAULT branch had been slicing a flat child-id list positionally against the
-// fetched chunks; one dropped row would have shifted every later id and written
-// the transform into somebody else's child rows. C4b moved it to chunk.row_ids.
+// The point fetch is a PRODUCER: collection_t::fetch gathers only rows the asking
+// transaction may see and stamps result.row_ids with exactly those, so a reply can
+// be SHORTER than the request. operator_fk_cascade's SET NULL / SET DEFAULT branch
+// had been slicing a flat child-id list positionally against the fetched chunks; one
+// dropped row would have shifted every later id and written the transform into
+// somebody else's child rows. It slices by chunk.row_ids instead.
 //
-// These tests pin the OBSERVABLE half of that contract for every referential
-// action, at the level the defect would actually show: WHICH ROWS SURVIVED and
-// WHAT THEY HOLD, not how many there are. A count-only assertion cannot tell
-// "deleted the two rows the cascade owned" from "deleted two rows one position
-// over", which is the whole failure mode.
+// These tests pin the OBSERVABLE half of that contract for every referential action,
+// at the level the defect would show: WHICH ROWS SURVIVED and WHAT THEY HOLD, not
+// how many there are. A count-only assertion cannot tell "deleted the two rows the
+// cascade owned" from "deleted two rows one position over".
 //
-// THE ARRANGEMENT IS THE TEST. In every case below:
-//   * one child of the deleted parent is deleted BY THE SAME TRANSACTION before
-//     the cascade runs — the reachable way a child row is invisible to the very
-//     statement that is about to act on it, and
-//   * the children of an UNTOUCHED parent are INTERLEAVED in insert order with
-//     the children of the deleted one.
-// A positional slip of one therefore lands on a row that must not move, and the
-// per-row content assertions see it. Rows in the same order with the shift
-// absent is the only way these pass.
+// THE ARRANGEMENT IS THE TEST. In every case below one child of the deleted parent
+// is deleted BY THE SAME TRANSACTION before the cascade runs — the reachable way a
+// child row is invisible to the very statement about to act on it — and the children
+// of an UNTOUCHED parent are INTERLEAVED in insert order with the children of the
+// deleted one. A positional slip of one therefore lands on a row that must not move,
+// and the per-row content assertions see it.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -219,11 +215,11 @@ TEST_CASE("integration::cpp::fk_cascade_row_identity::cascade_over_an_already_em
     require_children(dispatcher, fresh, {10, 30, 31, 32}, {1, 3, 3, 3});
 }
 
-// ON DELETE SET NULL — the branch C4b actually repaired. It is the one that
+// ON DELETE SET NULL — the branch the row-identity contract actually bites on. It is the one that
 // FETCHES the child rows and writes them back, so it is the one where a reply
 // shorter than the request can be paired with the wrong ids. Children 21 and 22
 // must end up NULL; 30/31/32, interleaved between them in row order, must still
-// point at parent 3. Under the pre-C4b positional slicing a short reply writes
+// point at parent 3. Under positional slicing a short reply writes
 // the NULL one row over — onto parent 3's children.
 TEST_CASE("integration::cpp::fk_cascade_row_identity::set_null_writes_only_the_children_it_owns") {
     auto config = test_create_config(integration_fixture_path("test_fk_cascade_row_identity/set_null"));

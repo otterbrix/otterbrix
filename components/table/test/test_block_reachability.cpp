@@ -1,13 +1,14 @@
-// P1: block-reachability experiment (plan task P1; the walker becomes the permanent T2 asset).
+// Block-reachability experiment.
 //
-// Purpose: try to REFUTE the A7.3 old-root freeing formula
+// Purpose: try to REFUTE the old-root freeing formula
 //     free = {root-N chains} − {new root} − {live registry}
 // by classifying every issued/freed block id into the four bins
 // (durable-chain / registry-live / free-listed / unexplained) after realistic rounds.
 // An unexplained id that is NOT attributable to a previous round's durable state is an
 // accounting hole: the formula would free a block somebody still needs.
 //
-// The numbers printed by each scenario (garbage per round, bin sizes) feed A7.3.
+// Each scenario prints its numbers (garbage per round, bin sizes) so a regression is visible
+// as a change in them, not only as a failed CHECK.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -57,7 +58,7 @@ namespace {
     }
 
     // Strings stay well under DEFAULT_STRING_BLOCK_LIMIT (4096): the big-string path has
-    // known memory-safety defects (plan task A0b) and is NOT what this experiment probes.
+    // known memory-safety defects and is NOT what this experiment probes.
     void append_rows(data_table_t& table, walker_env_t& env, uint64_t start, uint64_t count) {
         auto types = table.copy_types();
         uint64_t offset = 0;
@@ -228,7 +229,7 @@ TEST_CASE("block_reachability: reopen, checkpoint twice without compact") {
                 s += "}";
                 WARN(s);
             }
-            // The A7.3 safety condition: every unexplained block is attributable garbage.
+            // The safety condition: every unexplained block is attributable garbage.
             CHECK(holes.empty());
             WARN("[walker] S2 round " + std::to_string(round) +
                  " garbage=" + std::to_string(r.unexplained.size()) +
@@ -350,7 +351,7 @@ TEST_CASE("block_reachability: pre-checkpoint write-through blocks live in the r
         // 5000 rows: write-through fires at every closed row group (1024 rows), issuing
         // blocks OUTSIDE any checkpoint. The durable header is still virgin, so the ONLY
         // legitimate explanation for these blocks is the live registry — this is the fact
-        // that forces the A7.3 formula to subtract the live registry.
+        // that forces the freeing formula to subtract the live registry.
         append_rows(*table, env, 0, 5000);
 
         tstorage::database_header_t header;

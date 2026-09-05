@@ -648,11 +648,11 @@ namespace services::dispatcher {
         // caller needs, and no synthesized text reproduces it. First error wins, every future is
         // still drained.
         core::error_t fanout_error = core::error_t::no_error();
-        // (executor index, uid) of every executor that DID register — the unwind set
-        // for every failure below this point. Without it, a registration the operator
-        // (or a sibling executor) later refused stayed in the per-executor registries,
-        // and a RETRY of the same CREATE FUNCTION met "already registered with this
-        // signature" instead of the real refusal.
+        // (executor index, uid) of every executor that DID register — the unwind set for
+        // every failure below this point. Without it a registration the operator (or a
+        // sibling executor) later refuses stays in the per-executor registries, and a RETRY
+        // of the same CREATE FUNCTION meets "already registered with this signature" instead
+        // of the real refusal.
         std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered(resource());
         registered.reserve(ack_futures.size());
         for (std::size_t i = 0; i < ack_futures.size(); ++i) {
@@ -794,7 +794,7 @@ namespace services::dispatcher {
         }
         // executor_t::set_explain_renderer answers a bare bool (its own contract, owned
         // elsewhere), so the dispatcher names WHICH executor closed the door and on what
-        // request; that is strictly more than the `false` this used to forward.
+        // request — strictly more than a bare `false` forwarded up.
         core::error_t fanout_error = core::error_t::no_error();
         for (std::size_t i = 0; i < ack_futures.size(); ++i) {
             const bool res = co_await std::move(ack_futures[i]);
@@ -1359,9 +1359,9 @@ namespace services::dispatcher {
             // There is no transaction_t to park anything on, and the payload is a whole
             // statement's worth of work — base insert/delete ranges, created and retired
             // storage oids, created indexes, pg_catalog row ranges, pg_attribute commit-id
-            // backfills. Dropping it silently is what made a lost statement look like a
-            // successful one; the caller gets the refusal and the log gets the size of what
-            // was NOT parked.
+            // backfills. Dropping it silently makes a lost statement look like a successful
+            // one; the caller gets the refusal and the log gets the size of what was NOT
+            // parked.
             error(log_,
                   "manager_dispatcher_t::txn_accumulate_msg: session {} has no active transaction; refusing to park "
                   "{} base appends, {} base deletes, {} pg_catalog appends, {} pg_catalog delete-tables, {} "
@@ -1439,11 +1439,10 @@ namespace services::dispatcher {
         // from in_flight_commits_ WITHOUT touching published_horizon_, so the floor
         // rises to the highest genuinely published commit and not one id further.
         txn_manager_.discard(commit_id);
-        // Without this the fix would be half-done. The horizon would be free to move
-        // and nobody would be told: the broadcast is gated on
-        // `new_lowest > last_broadcast_horizon_` and fires only from a txn-completing
-        // handler, so the deferred index-delete queue and the DROP tombstones would
-        // wait on an event that already passed.
+        // Without this re-evaluation the horizon moves and nobody is told: the broadcast is
+        // gated on `new_lowest > last_broadcast_horizon_` and fires only from a
+        // txn-completing handler, so the deferred index-delete queue and the DROP tombstones
+        // would wait on an event that already passed.
         try_trigger_cleanup_if_horizon_advanced();
         co_return;
     }

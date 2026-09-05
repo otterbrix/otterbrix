@@ -29,7 +29,7 @@
 
 #include "../../../components/table/test/fault_injection_file.hpp"
 
-// A7.5 — torn-checkpoint recovery WITHOUT the external backup machinery.
+// Torn-checkpoint recovery WITHOUT any external backup machinery.
 //
 // The six cases here are REAL crash tests: every crash is produced through the sanctioned
 // T3 fault seam (fault_injection_file.hpp) driving the production checkpoint of
@@ -41,16 +41,16 @@
 // (a blanket fail_after_writes would also kill the DATA writes, latch durability_error_,
 // and hide the point under test behind the degraded() gate).
 //
-// What replaced the old external-backup recovery, and what these cases pin:
+// What these cases pin:
 //   * a crash at ANY point of a round reopens to root N or root N+1 through the two-slot
-//     shadow-paged header alone (A7.1/A7.2/A7.3/A7.7; proven per crash point by the A7.4
-//     matrix in components/table/test/test_checkpoint_crash_matrix.cpp);
+//     shadow-paged header alone (proven per crash point by the crash matrix in
+//     components/table/test/test_checkpoint_crash_matrix.cpp);
 //   * a file that will not open is REFUSED as an error value — data_corruption, full slot
 //     diagnostics — and left byte-identical: no rename, no truncation, no quarantine copy,
 //     and a probing open of a MISSING file creates nothing;
 //   * a stray sidecar in the engine-owned `table.otbx.*` namespace (the whole-file backup /
-//     quarantine files of builds predating A7.5) is a loud refusal, not something silently
-//     ignored or deleted.
+//     quarantine files of builds predating shadow paging) is a loud refusal, not something
+//     silently ignored or deleted.
 
 using namespace services::disk;
 using namespace components::table;
@@ -308,7 +308,7 @@ TEST_CASE("services::disk::torn::crash_at_the_header_commit_recovers_root_n_and_
 // 4. A TORN write mid-round: the round's first block write persists only its first half
 // (a broken-CRC block train), everything after it fails, and the device keeps what it
 // acknowledged (no revert — the persisted crash shape). The half-written block is a FRESH
-// block (A7.2: nothing the durable root names may be reissued), so the reopen walks root N
+// block (nothing the durable root names may be reissued), so the reopen walks root N
 // clean, and recovery manufactures no artifact files while doing it: the .otbx stays the
 // only file in the directory.
 TEST_CASE("services::disk::torn::torn_write_mid_round_recovers_root_n_without_artifacts") {
@@ -360,18 +360,15 @@ TEST_CASE("services::disk::torn::torn_write_mid_round_recovers_root_n_without_ar
 }
 
 // 5. A stray sidecar in the engine-owned `table.otbx.*` namespace — exactly what a build
-// predating A7.5 leaves behind as its whole-file backup / quarantine files — is a LOUD
+// predating shadow paging leaves behind as its whole-file backup / quarantine files — is a LOUD
 // refusal on the real load path, and nothing is touched: the .otbx stays byte-identical and
 // the stray is neither deleted nor renamed. Removing the stray makes the same file load again.
 //
-// THE REFUSAL IS NOW THE WHOLE START, NOT ONE TABLE. This case used to assert the opposite:
-// that the bootstrap came up with the victim table simply absent. That is precisely the
-// behaviour D2 inverted — an engine that opens with a pg_* table missing has an EMPTY catalog
-// over live storage, and the next DDL mints fresh oids on top of it. A start that did not
-// happen is recoverable; a catalog that silently lost a table is not. Everything else this
-// case pins is unchanged and still true: the refusal writes nothing, deletes nothing, and
-// preserves the operator's evidence — and the final block proves recoverability by removing
-// the stray and starting again.
+// THE REFUSAL IS THE WHOLE START, NOT ONE TABLE. Coming up with the victim system table simply
+// absent would mean an EMPTY catalog over live storage, and the next DDL minting fresh oids on
+// top of it. A start that did not happen is recoverable; a catalog that silently lost a table
+// is not. The refusal still writes nothing, deletes nothing, and preserves the operator's
+// evidence — and the final block proves recoverability by removing the stray and starting again.
 TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_untouched") {
     namespace catalog = components::catalog;
     cleanup_torn_dir();
@@ -395,10 +392,10 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
     // A clean namespace passes the gate.
     REQUIRE_FALSE(verify_otbx_sidecars(victim_otbx, &resource).contains_error());
 
-    // The two exact artifacts a pre-A7.5 build leaves behind: its whole-file backup and its
-    // quarantine rename. Their suffixes are spelled in adjacent fragments ONLY so the A7.5
-    // verification grep — which proves no code still OPERATES the deleted machinery — stays
-    // clean; refusing these literal on-disk names is precisely what this case proves.
+    // The two exact artifacts a pre-shadow-paging build leaves behind: its whole-file backup
+    // and its quarantine rename. Their suffixes are spelled in adjacent fragments ONLY so a grep
+    // for code still OPERATING that deleted machinery stays clean; refusing these literal
+    // on-disk names is precisely what this case proves.
     const std::vector<std::string> legacy_suffixes{std::string(".pre") + "v", std::string(".bro") + "ken"};
     for (const auto& suffix : legacy_suffixes) {
         auto stray = victim_otbx;
@@ -456,10 +453,10 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
     cleanup_torn_dir();
 }
 
-// 6. Terminal refusal semantics — the cost A7.5 accepts, pinned exactly. (a) A MISSING
-// file is refused as its own distinct error and the probing open creates NOTHING (the old
-// FILE_CREATE probe left a 0-byte file behind). (b) An EMPTY file — external truncation,
-// or the droppings of that old probe — is refused with its own distinct words, never
+// 6. Terminal refusal semantics — the cost of having no external backup, pinned exactly.
+// (a) A MISSING file is refused as its own distinct error and the probing open creates NOTHING
+// (a FILE_CREATE probe would leave a 0-byte file behind). (b) An EMPTY file — external
+// truncation, or the droppings of such a probe — is refused with its own distinct words, never
 // accepted as an empty table. (c) Rot under the durable root that kills BOTH header slots
 // is data_corruption carrying full per-slot diagnostics (which slot, claimed iteration,
 // stored vs computed checksum), surfaced as a VALUE (no throw), with the file left
@@ -520,8 +517,8 @@ TEST_CASE("services::disk::torn::unopenable_file_is_refused_as_a_value_and_left_
     }
 
     // (c) Rot under the durable root: flip one byte INSIDE each header slot's CRC domain.
-    // This is the case the deleted whole-file backup used to cover and A7.5 knowingly makes
-    // terminal — so the refusal must carry everything the operator gets to keep.
+    // This is the case an external whole-file backup would cover and shadow paging knowingly
+    // makes terminal — so the refusal must carry everything the operator gets to keep.
     {
         using components::table::storage::SECTOR_SIZE;
         std::fstream f(otbx, std::ios::in | std::ios::out | std::ios::binary);
@@ -566,15 +563,13 @@ TEST_CASE("services::disk::torn::unopenable_file_is_refused_as_a_value_and_left_
     cleanup_torn_dir();
 }
 
-// --- H1: the only durable write in the system must REPORT its result -------------------
+// --- the only durable write in the system must REPORT its result -----------------------
 //
-// single_file_block_manager_t::write_header is the single point of durability of a
-// checkpoint (A7.1 collapsed the old two-offset double write into one slot write). It used
-// to be `void` and discarded BOTH the write() and the sync() bool, so
-// table_storage_t::checkpoint() returned true even when the header never reached the
-// platter. agent_disk_t::checkpoint_inner believes that answer: it then advances the
-// .wal_id sidecar, which puts the rows between the durable root and the sidecar's WAL
-// position exactly nowhere.
+// single_file_block_manager_t::write_header is the single point of durability of a checkpoint
+// (one slot write). A `void` return discarding BOTH the write() and the sync() bool would let
+// table_storage_t::checkpoint() report true even when the header never reached the platter.
+// agent_disk_t::checkpoint_inner believes that answer: it then advances the .wal_id sidecar,
+// which puts the rows between the durable root and the sidecar's WAL position exactly nowhere.
 TEST_CASE("services::disk::torn::checkpoint_reports_a_failed_header_write") {
     cleanup_torn_dir();
     std::filesystem::create_directories(torn_test_dir());

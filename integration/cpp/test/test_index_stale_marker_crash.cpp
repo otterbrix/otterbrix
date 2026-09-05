@@ -26,27 +26,24 @@
 // A CHECKPOINT round compacts each table (data_table_t::compact rebuilds it at row id 0 and
 // hands every surviving row a NEW physical id, committed by the .otbx header and its
 // `.wal_id` sidecar) and then rebuilds every index against the new ids. Between those two
-// durable acts the state on the device is a POST-COMPACT TABLE UNDER PRE-COMPACT INDEXES,
-// and that state SURVIVES: base_spaces rebuilds no index at startup and WAL replay maintains
-// none, so whatever the interrupted round left is the answer the engine gives forever.
-//
-// Ordering the rebuild ahead of the truncation (test_checkpoint_rebuild_before_truncate)
-// closes a different hole -- it keeps a REFUSAL from also destroying journal segments -- and
-// it does not shorten this window by one instruction. Closing THIS one needs a durable fact
-// that outlives the process: "these indexes name pre-compact rows and have not been rebuilt",
-// written before the compaction and cleared only after the rebuild's force_flush has landed,
-// and READ BY BOOTSTRAP.
+// durable acts the device holds a POST-COMPACT TABLE UNDER PRE-COMPACT INDEXES, and that
+// state SURVIVES: base_spaces rebuilds no index at startup and WAL replay maintains none, so
+// whatever the interrupted round left is the answer the engine gives forever. Ordering the
+// rebuild ahead of the truncation (test_checkpoint_rebuild_before_truncate) closes a
+// different hole and does not shorten this window by one instruction; closing THIS one needs
+// a durable fact -- "these indexes name pre-compact rows and have not been rebuilt", written
+// before the compaction, cleared only after the rebuild's force_flush lands, and READ BY
+// BOOTSTRAP.
 //
 // HOW THE WINDOW IS ENTERED WITHOUT A DEBUGGER. The rebuild's last leg is
 // manager_index_t::repopulate_table -> index_agent_contract::clear, and for the bitcask
-// (index_type::hashed) backend clear() begins with collect_segments(), a plain
-// std::filesystem listing of the index directory -- and that listing is clear()'s ONE early
-// return, so a directory it cannot list leaves the store exactly as it was. Stripping the
-// read bit off the index directory for the length of one CHECKPOINT therefore produces the
-// exact durable state a kill -9 in the window leaves: the compaction committed, the index
-// untouched and still naming pre-compact rows. The statement then fails, which is correct and
-// is not what this case is about; what it is about is the directory that failure leaves
-// behind. That directory is copied while the engine is up (the T3 crash mechanism used by
+// (index_type::hashed) backend clear() begins with collect_segments(), a std::filesystem
+// listing of the index directory that is also clear()'s ONE early return -- a directory it
+// cannot list leaves the store exactly as it was. Stripping the read bit off that directory
+// for the length of one CHECKPOINT therefore produces the exact durable state a kill -9 in
+// the window leaves: compaction committed, index untouched and still naming pre-compact rows.
+// The statement also fails, which is correct and beside the point; the point is the directory
+// that failure leaves behind. It is copied while the engine is up (the crash mechanism of
 // test_index_rebuild_crash and test_index_stale_after_compact -- the destructor's CHECKPOINT
 // then mutates only the ORIGINAL) and reopened under a fresh engine.
 //
@@ -55,12 +52,11 @@
 //     `.wal_id` sidecar only after data_table_t::compact returned true, so a sidecar that
 //     moved is proof of a renumbering rather than merely of a round;
 //   * THE REBUILD MUST REALLY HAVE REFUSED -- the LIVE engine's index must disagree with its
-//     own full scan after the armed round. A round that compacted nothing and a rebuild that
+//     own full scan after the armed round; a round that compacted nothing and a rebuild that
 //     quietly succeeded both leave the two agreeing;
 //   * THE INJECTION MUST BE REAL -- a suite running as root would list the directory anyway;
-//   * AND THE READ PATH MUST BE THE INDEX -- before the crash, EXPLAIN on the same query text
-//     the value assertions use says Index Scan, so "the index answers wrong" is a statement
-//     about the index and not about a full scan.
+//   * THE READ PATH MUST BE THE INDEX -- before the crash, EXPLAIN on the same query text the
+//     value assertions use says Index Scan.
 
 using namespace test_helpers;
 
@@ -250,8 +246,6 @@ namespace {
 
 } // namespace
 
-// RED before the fix.
-//
 // Nothing durable recorded that the round had renumbered the table under its indexes, so the
 // restart re-attached the bitcask store it found and wired the index as if it were current.
 // Every probe key then answered with whichever row had moved into the physical id the stale
@@ -310,24 +304,24 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
 
             // AND THE ERASES MUST HAVE LANDED, NOT MERELY BEEN SENT. The horizon sweep
             // subtracts from that meter where it ERASES the queue entry
-            // (manager_index_t::on_horizon_advanced), and only awaits the agents'
-            // commit_deletes futures further down -- so a zero meter proves the messages
-            // are in the agents' mailboxes and nothing more. A sleep_for(500ms) used to
-            // stand in for the rest, which is a clock guessing at an event.
+            // (manager_index_t::on_horizon_advanced) and only awaits the agents'
+            // commit_deletes futures further down, so a zero meter proves the messages are
+            // in the agents' mailboxes and nothing more. A sleep_for(500ms) here would be a
+            // clock guessing at an event.
             //
             // THE EVENT IS OBSERVABLE: an index scan is a message to the SAME agent
             // addresses commit_deletes went to, a mailbox is FIFO, and
             // bitcask_index_agent_t::commit_deletes carries NO suspension point -- it runs
             // apply_txn_deletes / publish_buckets straight through to co_return on the
-            // agent's own thread -- so an answer coming back proves the erase write ahead
-            // of it is finished, not merely started. That is what this read is: the same
-            // probe set the pre-round agreement check below uses, ordered here so the
-            // injection cannot be armed over an unfinished erase.
+            // agent's own thread -- so an answer coming back proves the erase write ahead of
+            // it is finished. That is what this read is: the same probe set the pre-round
+            // agreement check below uses, ordered here so the injection cannot be armed over
+            // an unfinished erase.
             //
-            // HONEST ABOUT THE EVIDENCE: shortening that sleep to zero did NOT make the
-            // case fail in eight runs (five idle, three under a 24-way CPU load), so this
-            // is a shape fix and not a reproduction. What it buys is that the barrier no
-            // longer depends on a duration being guessed generously enough.
+            // HONEST ABOUT THE EVIDENCE: shortening that sleep to zero did NOT make the case
+            // fail in eight runs (five idle, three under a 24-way CPU load), so this is a
+            // shape fix and not a reproduction. What it buys is a barrier that does not
+            // depend on a duration being guessed generously enough.
             INFO("a read through the index orders the injection after the erase write");
             REQUIRE(disagreements_with_the_full_scan(d) == 0);
         }

@@ -317,16 +317,15 @@ TEST_CASE("components::sql::select_with_subquery") {
         R"_($aggregate: {$match: {"col1": {$any: #0}}})_",
         vec({v(&resource, nullptr)}));
 }
-// ЗАПИСЬ #344 — the DISTINCT flag of an aggregate call survives ONLY the select-list
-// arm (transform_select reads func->agg_distinct); resolve_having_operand and
-// transform_a_expr_func both drop it. Consequences pinned here:
-//   * a HAVING aggregate not present in SELECT is minted WITHOUT distinct, so
+// The DISTINCT flag of an aggregate call must survive every arm that builds one, not only
+// the select list (transform_select reads func->agg_distinct). Dropped in
+// resolve_having_operand or transform_a_expr_func it costs:
+//   * a HAVING aggregate not present in SELECT minted WITHOUT distinct, so
 //     `HAVING count(DISTINCT x)` silently computes count(x);
-//   * HAVING-to-projection matching ignores distinct, so `HAVING count(DISTINCT x)`
+//   * HAVING-to-projection matching that ignores distinct, so `HAVING count(DISTINCT x)`
 //     binds to a projected count(x) (and vice versa) instead of minting its own
 //     aggregate;
-//   * an aggregate nested as a function argument loses the flag in
-//     transform_a_expr_func.
+//   * an aggregate nested as a function argument losing the flag.
 TEST_CASE("components::sql::aggregate_distinct_survives_having_and_nesting") {
     using components::expressions::aggregate_expression_t;
     using components::expressions::expression_group;

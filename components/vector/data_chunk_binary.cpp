@@ -106,13 +106,13 @@ namespace components::vector {
 
         // Column type header = [spec_size:u32][spec bytes], where the spec is the CANONICAL
         // type-spec encoding (types::encode_type_spec) — the same codec the table checkpoint
-        // uses. The previous hand-rolled header enumerated extensions one by one and every
-        // missing leg was a STARTUP CRASH: LIST was missing once (T5), then STRUCT — the
-        // writer emitted "no extension", replay rebuilt a bare STRUCT, and building the
-        // replay chunk walked the absent struct extension's field types through a garbage
-        // pointer (flaky SIGSEGV in read_all_records). The canonical spec round-trips every
-        // persistable type — struct fields, decimal width/scale, nested children, aliases —
-        // recursively, so a new type can never again decode into a crash-shaped half-type.
+        // uses. IT MUST NOT GO BACK TO A HAND-ROLLED HEADER that enumerates extensions one by
+        // one: every leg such a header is missing is a STARTUP CRASH — the writer emits "no
+        // extension", replay rebuilds a bare STRUCT, and building the replay chunk walks the
+        // absent struct extension's field types through a garbage pointer (flaky SIGSEGV in
+        // read_all_records). The canonical spec round-trips every persistable type — struct
+        // fields, decimal width/scale, nested children, aliases — recursively, so a new type
+        // cannot decode into a crash-shaped half-type.
         // A spec_size of 0 marks a type the canonical codec REFUSED to encode; the reader
         // treats it as corruption (ok=false), never as "assume some type" (rule 6).
         //
@@ -160,38 +160,29 @@ namespace components::vector {
         }
 
         // -----------------------------------------------------------------
-        // NESTED COLUMN PAYLOAD — the recursive half of the codec.
+        // NESTED COLUMN PAYLOAD — the recursive half of the codec. The per-kind layout table
+        // lives on the declaration in data_chunk_binary.hpp.
         //
-        // Until this existed the per-column data block was sized by fixed_type_size(), which
-        // answers 0 for LIST, STRUCT and ARRAY. Writer and reader AGREED on that zero: the
-        // writer emitted `data_size = 0` and no bytes, the reader memcpy'd 0 bytes into a
-        // correctly-SHAPED nested column, and every element was the zero the constructor had
-        // left behind. Nothing failed and nothing was logged. Rows that a checkpoint had made
-        // durable were unaffected — they come back through the .otbx column tree, which has
-        // always been recursive — so the loss showed up only on rows recovered FROM THE
-        // JOURNAL, which is the one path a clean shutdown never exercises.
+        // A nested column MUST NOT be sized by fixed_type_size(), which answers 0 for LIST,
+        // STRUCT and ARRAY. Writer and reader agree on that zero and lose the data in silence:
+        // the writer emits `data_size = 0` and no bytes, the reader memcpy's 0 bytes into a
+        // correctly-SHAPED nested column, and every element is the zero the constructor left
+        // behind. Nothing fails and nothing is logged. Checkpointed rows are unaffected — they
+        // come back through the .otbx column tree, which has always been recursive — so the
+        // loss shows up only on rows recovered FROM THE JOURNAL, the one path a clean shutdown
+        // never exercises.
         //
         // Both directions derive the shape from the column TYPE, which the header ahead of the
-        // payload already carries verbatim through the canonical spec codec. So there is no
-        // tag byte to keep in sync, and a container inside a container is nothing but this
-        // function re-entered — second-level nesting (list of structs, struct holding a list,
-        // array of arrays) needs no case of its own.
-        //
-        // Child order mirrors the .otbx checkpoint's, [validity, ...children], so the two
-        // durable paths describe a nested column the same way round:
-        //
-        //   STRUCT : per field   [validity][payload]        (also TIME_TZ, INTERVAL, UNION)
-        //   ARRAY  : [validity][payload] over count*stride child elements
-        //   LIST   : [count x (offset:u64)(length:u64)][child_count:u64][validity][payload]
-        //            (also MAP, which is physically a list of key/value structs)
-        //   STRING : [(count+1) x offset:u32][concatenated bytes]
-        //   fixed  : count * element_size raw bytes
-        //   NA     : nothing — a NULL-typed column has no payload by construction
+        // payload already carries verbatim through the canonical spec codec. So there is no tag
+        // byte to keep in sync, and a container inside a container is nothing but this function
+        // re-entered — second-level nesting (list of structs, struct holding a list, array of
+        // arrays) needs no case of its own. Child order mirrors the .otbx checkpoint's,
+        // [validity, ...children], so the two durable paths describe a nested column the same
+        // way round.
         //
         // The TOP-LEVEL column's own validity is NOT written here: it stays in the chunk's
-        // interleaved null mask, where it already was and where the existing cases pin it.
-        // Only the levels BELOW the column need a mask of their own, and they get one at every
-        // level, because a nested column carries validity at each of them.
+        // interleaved null mask, where it already was and where the existing cases pin it. Only
+        // the levels BELOW the column need a mask of their own, and they get one at every level.
         // -----------------------------------------------------------------
 
         void append_validity_block(const vector_t& vector, uint64_t count, services::wal::buffer_t& buffer) {
@@ -533,9 +524,9 @@ namespace components::vector {
                 return make_empty_error_chunk(resource);
             }
             // The mask is indexed below by row * num_columns + column BITS, so it must cover
-            // the whole chunk. A header that says otherwise (truncation, corruption) used to be
-            // TRUSTED: the per-cell reads ran past the mask into the first column's type header
-            // and the chunk decoded with wrong NULL flags, ok still true. Refuse it instead.
+            // the whole chunk, and a header that says otherwise (truncation, corruption) must
+            // be refused rather than trusted: the per-cell reads would run past the mask into
+            // the first column's type header and decode with wrong NULL flags, ok still true.
             const uint64_t required_bits = static_cast<uint64_t>(num_rows) * num_columns;
             const uint64_t required_bytes = (required_bits + 7) / 8;
             if (static_cast<uint64_t>(null_mask_size) < required_bytes) {

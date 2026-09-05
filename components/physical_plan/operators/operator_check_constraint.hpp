@@ -22,23 +22,21 @@ namespace components::operators {
         // because operator_insert expands the statement's omissions (their DEFAULT, or
         // NULL) before the append. So the predicates read the column, never a
         // plan-side copy of what the column was going to become — which is exactly
-        // where a CHECK used to admit a row it had judged against a value the write
-        // path did not store.
+        // how a CHECK comes to admit a row it judged against a value the write path
+        // did not store.
         operator_check_constraint_t(std::pmr::memory_resource* resource,
                                     log_t log,
                                     std::vector<std::string> not_null_columns,
                                     std::vector<std::pair<std::string, std::string>> check_exprs = {},
                                     std::vector<std::pair<std::string, uint64_t>> array_size_reqs = {});
 
-        // STREAMING CONSTRAINT SINK. check_constraint is the PARENT of a DML sink in
-        // the plan chain (check_constraint -> insert/update -> scan). Its validation
-        // is SYNCHRONOUS (no cross-actor I/O), but it must run AFTER the DML's await —
-        // the DML snapshots the just-written rows into constraint_input() there, and
-        // on the streaming path the scan SOURCE's output_ is empty. needs_async_finalize
-        // routes the validation into the executor's bottom-up async-finalize drive (the
-        // FLUSH phase runs BEFORE the DML await, which would be too early). push()/
-        // finalize() are no-ops; the validation runs in await_async_and_resume
-        // via the validate_() core, completing synchronously (co_return).
+        // STREAMING CONSTRAINT SINK. check_constraint is the PARENT of a DML sink in the plan chain
+        // (check_constraint -> insert/update -> scan). Its validation is SYNCHRONOUS (no cross-actor I/O),
+        // but it must run AFTER the DML's await — the DML snapshots the just-written rows into
+        // constraint_input() there, and on the streaming path the scan SOURCE's output_ is empty.
+        // needs_async_finalize routes the validation into the executor's bottom-up async-finalize drive (the
+        // FLUSH phase runs BEFORE the DML await, which would be too early). push()/finalize() are no-ops; the
+        // validation runs in await_async_and_resume via the validate_() core, completing synchronously.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         // No streaming input of its own: the child DML sink drains the pumped
@@ -70,8 +68,8 @@ namespace components::operators {
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;
         // (name, SQL text) as stored in pg_constraint.conexpr — compiled in validate_()
         // into `column OP constant` / `column IS [NOT] NULL` leaves under AND/OR/NOT.
-        // Text outside those shapes FAILS the statement: compiling it to TRUE (which is
-        // what used to happen) is a constraint the user declared and nothing enforces.
+        // Text outside those shapes FAILS the statement: compiling it to TRUE would be a
+        // constraint the user declared and nothing enforces.
         // The DDL path refuses those shapes at the declaration (deparse_check_expr), so
         // this is the last line of defence for text that arrived by another route.
         std::vector<std::pair<std::string, std::string>> check_exprs_;

@@ -1,17 +1,16 @@
-// TEN REFUSALS IN THE COLUMN LAYER THAT USED TO BE THROWS.
+// TEN REFUSALS IN THE COLUMN LAYER THAT MUST NOT BE THROWS.
 //
-// Every one of them sat below a mailbox: components/table runs inside the disk agent, whose
+// Every one of them sits below a mailbox: components/table runs inside the disk agent, whose
 // handlers are actor-zeta coroutines with an EMPTY unhandled_exception(). A throw there does not
-// become an error the caller can see — it unwinds out of the coroutine and the statement HANGS.
-// That is strictly worse than an abort, and it is why rule 2/9 forbids it here. This file pins
-// each one to the error channel its caller ALREADY reads:
+// become an error the caller can see — it unwinds out of the coroutine and the statement HANGS,
+// strictly worse than an abort, which is why rule 2/9 forbids it here. This file pins each
+// refusal to the error channel its caller ALREADY reads (both predate this file — see the notes
+// on column_state.hpp):
 //
 //   * column_scan_state::scan_error  — read by column_data_t::update after fetch(), aggregated by
 //                                      row_group_t into collection_scan_state::scan_error;
 //   * core::result_wrapper_t<bool>   — returned by update / update_column / initialize_append all
 //                                      the way up to data_table_t.
-//
-// Nothing new was invented: both channels predate this file (see the notes on column_state.hpp).
 //
 // REACHABILITY IS STATED PER CASE, not assumed. Two of the ten (LIST/ARRAY point fetch) have NO
 // caller at all — column_data_t::fetch is called only from column_data_t::update and from
@@ -138,9 +137,6 @@ namespace {
 // as `this`. The direct call below is the whole reachable surface, and it is the contract that
 // matters: the refusal lands in state.scan_error, exactly where column_data_t::update looks
 // (column_data.cpp: `if (state.has_error()) return state.scan_error;`).
-//
-// BEFORE: `throw std::logic_error("Function is not implemented: List fetch")` — the test aborted
-// with an unexpected exception instead of reaching any REQUIRE.
 TEST_CASE("nested column: a LIST point fetch refuses on the scan state instead of throwing") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -183,9 +179,6 @@ TEST_CASE("nested column: an ARRAY point fetch refuses on the scan state instead
 // LIST) — so they come off disk like any other bytes and a corrupt run is a read failure, not a
 // program error. The surgery below writes one such value directly, which is the same thing a bad
 // block would hand the scan.
-//
-// BEFORE: `throw std::runtime_error("list_column_data_t::scan_count - internal list scan offset is
-// out of range")` — an unexpected exception out of scan_count.
 TEST_CASE("nested column: a list offset past the element column reports data_corruption") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -246,9 +239,6 @@ TEST_CASE("nested column: a list offset past the element column reports data_cor
 // (table_storage_adapter_t::update(row_ids, data)); the txn leg is delete+append and never comes
 // here. So the offending length arrives from a journal on disk, on the disk agent's thread — the
 // exact place a throw becomes a hang.
-//
-// BEFORE: `throw std::logic_error("list_column_data_t::update: in-place update cannot change a
-// row's list length")` — an unexpected exception out of data_table_t::update.
 TEST_CASE("nested column: an in-place LIST update cannot change the list length, and says so") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -294,11 +284,8 @@ TEST_CASE("nested column: an in-place LIST update cannot change the list length,
 //
 // The direct call below is therefore the whole reachable surface. It is still the contract that
 // matters: both shapes are caller errors on a function that already returns
-// result_wrapper_t<bool>, and they used to leave it by throwing across the disk agent's mailbox.
-//
-// BEFORE: `throw std::runtime_error("Attempting to directly update a struct column ...")` and
-// `throw std::runtime_error("update column_path out of range")` — an unexpected exception instead
-// of a returned error.
+// result_wrapper_t<bool>, so they must leave by the return rather than by a throw across the
+// disk agent's mailbox.
 TEST_CASE("nested column: a struct sub-column update path is validated on the update channel") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -356,13 +343,10 @@ TEST_CASE("nested column: a struct sub-column update path is validated on the up
 // on either, and catalog decode_type_spec hands back a VARIANT for the literal atttypspec text
 // "VARIANT". The refusal therefore has to travel, not abort.
 //
-// It cannot travel from where it was: struct_column_data_t's CONSTRUCTOR has no return value. The
-// precondition now lives in column_data_t::validate_column_type and is asked at
+// It cannot travel out of struct_column_data_t's CONSTRUCTOR, which has no return value. The
+// precondition lives in column_data_t::validate_column_type instead, asked at
 // collection_t::initialize_append, which already returns result_wrapper_t<bool> and precedes every
 // create_column on the write path.
-//
-// BEFORE: `throw std::logic_error("A table cannot be created from an unnamed struct")` out of
-// data_table_t::initialize_append.
 TEST_CASE("nested column: an unnamed nested struct is refused by initialize_append") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -415,11 +399,7 @@ TEST_CASE("nested column: an unnamed nested struct is refused by initialize_appe
 //
 // The second half is the sentinel for the invariant that keeps the branch unreachable in
 // production: get_vector_scan_type must never answer SCAN_FLAT_VECTOR for a non-flat result. Its
-// sensitivity was proved by inverting that early return by hand — the REQUIRE below went red, and
-// so did the "throw" spelling of the guard when it was restored temporarily.
-//
-// BEFORE: `throw std::logic_error("scan_vector called with SCAN_FLAT_VECTOR but result is not a
-// flat vector")`.
+// sensitivity was proved by inverting that early return by hand: the REQUIRE below went red.
 TEST_CASE("column scan: a flat-vector scan over a non-flat result refuses on the scan state") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -461,9 +441,7 @@ TEST_CASE("column scan: a flat-vector scan over a non-flat result refuses on the
 // for COMMITTED_ROWS — so nothing in production reaches it either; that is stated, not assumed.)
 // The refusal lands in the column's scan_error, which row_group_t already aggregates into
 // collection_scan_state::scan_error, so it is readable exactly where a pin OOM would be.
-//
-// BEFORE: `throw std::logic_error("Cannot create index with outstanding updates")` — and
-// fetch_updates had no argument it could have reported on, which is why `state` is threaded in.
+// fetch_updates has no argument of its own to report on, which is why `state` is threaded in.
 TEST_CASE("column scan: an index-build scan over a column with updates refuses") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);

@@ -143,13 +143,12 @@ namespace components::table {
         core::error_t scan_error{core::error_t::no_error()};
         bool has_error() const { return scan_error.contains_error(); }
 
-        // Lift the first error recorded anywhere in the child subtree into this state.
-        // A nested column (STRUCT fields, LIST/ARRAY elements, every validity bitmap) scans on
-        // its OWN child state and NOBODY above ever reads one: row_group_t judges the top-level
-        // column_scans[i] alone. Without this a leaf failure under a struct left the scan
-        // "successful" with empty/garbage cells. First error wins -- a later one must not
-        // overwrite the cause. Recursive, so a grandchild's error crosses every level even
-        // where the level in between has nothing of its own to report.
+        // Lift the first error recorded anywhere in the child subtree into this state. A nested
+        // column (STRUCT fields, LIST/ARRAY elements, every validity bitmap) scans on its OWN child
+        // state and nobody above reads one -- row_group_t judges the top-level column_scans[i] alone
+        // -- so without this a leaf failure under a struct left the scan "successful" with
+        // empty/garbage cells. First error wins, and the walk is recursive so a grandchild's error
+        // crosses levels that have nothing of their own to report.
         void collect_child_errors();
 
         void initialize(const types::complex_logical_type& type, const std::vector<storage_index_t>& children);
@@ -172,29 +171,25 @@ namespace components::table {
         // through a column_scan_state copy it into scan_error.
         core::error_t fetch_error{core::error_t::no_error()};
 
-        // THE ONLY way to reach a child state, because both halves of this channel have to
-        // cross the parent/child boundary and a default-constructed child crossed neither:
-        //   * result_outlives_pins travels DOWN. A child's pins live in ITS `handles` map and
-        //     are released when THIS state dies, so a view the child borrows dangles exactly
-        //     like one borrowed here. A fresh child promised the opposite (false), and a big
-        //     string in a struct field went into the caller's chunk as a view into a block
-        //     nothing pinned any more.
+        // THE ONLY way to reach a child state, because both halves of this channel cross the
+        // parent/child boundary and a default-constructed child crossed neither:
+        //   * result_outlives_pins travels DOWN. A child's pins live in ITS `handles` map and are
+        //     released when THIS state dies, so a view the child borrows dangles exactly like one
+        //     borrowed here. A fresh child promised the opposite (false), and a big string in a
+        //     struct field went into the caller's chunk as a view into an unpinned block.
         //   * fetch_error travels UP, through absorb_error() below.
         // Grows child_states as needed; the flag is re-stamped on every hand-out, because
-        // row_group_t::fetch_row reuses one state across columns and a caller may raise the
-        // flag after the first child already exists.
+        // row_group_t::fetch_row reuses one state across columns and a caller may raise the flag
+        // after the first child already exists.
         column_fetch_state& child(uint64_t index);
 
-        // Lift ONE child's error into this state (first error wins) and report whether this
-        // state now carries one. Every nested fetch_row absorbs from its own children before
-        // returning, so a single call answers for EVERY level below the child -- which is what
-        // lets a nested fetch_row abort on the first failing field instead of filling the rest
-        // of the cell with values nobody may trust.
-        //
-        // Without it a STRUCT column had no error channel at all: a struct owns no segments, so
-        // every byte of the cell is read on a child's state, and the single fetch_error each
-        // caller reads (table_storage_adapter_t::fetch, row_group_t::evaluate_predicate,
-        // row_group_t's gather) stayed clean while the field came back empty.
+        // Lift ONE child's error into this state (first error wins) and report whether this state
+        // now carries one. Every nested fetch_row absorbs from its own children before returning, so
+        // a single call answers for EVERY level below the child, which is what lets a nested
+        // fetch_row abort on the first failing field instead of filling the cell with values nobody
+        // may trust. Without it a STRUCT column had no error channel at all: a struct owns no
+        // segments, so every byte of the cell is read on a child's state, and the single fetch_error
+        // each caller reads stayed clean while the field came back empty.
         bool absorb_error(const column_fetch_state& child_state);
 
         // Returns nullptr and sets fetch_error on buffer-pool exhaustion.
@@ -237,14 +232,13 @@ namespace components::table {
 
         std::unique_ptr<string_block_t> head;
         // TRANSIENT overflow blocks written by write_string_memory, keyed by the FULL 64-bit
-        // transient block id (>= storage::MAXIMUM_BLOCK). A uint32 key silently truncated the
-        // id at insert, so lookups with the real id could never hit (A0b).
+        // transient block id (>= storage::MAXIMUM_BLOCK). A uint32 key would truncate the id at
+        // insert, so lookups with the real id could never hit.
         //
-        // The two maps are the two halves of ONE id domain and they never overlap:
-        //   * id >= storage::MAXIMUM_BLOCK -> transient, still in memory -> overflow_blocks;
-        //   * id <  storage::MAXIMUM_BLOCK -> a real file block -> handles_ (below), filled by
-        //     register_block from the persisted list on reload.
-        // The checkpoint rewrites every marker from the first domain into the second, so a
+        // The two maps are the two halves of ONE id domain and never overlap: id >=
+        // storage::MAXIMUM_BLOCK is transient and still in memory (overflow_blocks), id below it is
+        // a real file block (handles_ below, filled by register_block from the persisted list on
+        // reload). The checkpoint rewrites every marker from the first domain into the second, so a
         // reloaded segment's markers are unambiguously disk ids.
         std::unordered_map<uint64_t, string_block_t*> overflow_blocks;
         // Persisted (via data_pointer_t::overflow_blocks) ids of the DISK blocks holding this
@@ -254,21 +248,18 @@ namespace components::table {
 
         std::vector<uint64_t> additional_blocks() const override { return on_disk_blocks; }
 
-        // NOTE: a `handle(manager, block_id)` used to sit here that REGISTERED an arbitrary
-        // block id on a lookup miss and handed back a handle for it — the exact behaviour
-        // registered_handle()'s contract below forbids. It had no callers left (the read path
-        // goes through resolve_overflow_block -> registered_handle) and is deleted rather
-        // than kept as a loaded gun.
+        // NOTE: there is deliberately no `handle(manager, block_id)` here. One that REGISTERED
+        // an arbitrary block id on a lookup miss and handed back a handle for it is the exact
+        // behaviour registered_handle()'s contract below forbids. The read path goes through
+        // resolve_overflow_block -> registered_handle; do not re-add it.
 
-        // Registers a persisted overflow block so a marker naming it resolves. Returns FALSE
-        // when the id was already registered -- and that is a corruption report, not a
-        // pleasantry: persist_string_overflow dedupes the list it writes, so a duplicate can
-        // only come from a corrupt pointer stream, and accepting it silently leaves
-        // on_disk_blocks disagreeing with the file about what this segment owns (which is what
-        // drives compact's reclaim). The caller (column_segment_t's reload constructor) latches
-        // the false and column_data_t::initialize_column turns it into data_corruption on its
-        // result_wrapper_t. Never a throw: this runs on the table-open path, where an exception
-        // is fatal (rules 2/6).
+        // Registers a persisted overflow block so a marker naming it resolves. FALSE means the id
+        // was already registered, and that is a corruption report: persist_string_overflow dedupes
+        // the list it writes, so a duplicate can only come from a corrupt pointer stream, and
+        // accepting it leaves on_disk_blocks disagreeing with the file about what this segment owns
+        // (which is what drives compact's reclaim). column_segment_t's reload constructor latches the
+        // false and column_data_t::initialize_column turns it into data_corruption. Never a throw:
+        // this runs on the table-open path, where an exception is fatal (rules 2/6).
         [[nodiscard]] bool register_block(storage::block_manager_t& manager, uint64_t block_id);
 
         // Lookup-only: the handle for an ALREADY registered on-disk overflow block, or nullptr.
@@ -277,21 +268,19 @@ namespace components::table {
         std::shared_ptr<storage::block_handle_t> registered_handle(uint64_t block_id);
 
     private:
-        // NO LOCK HERE (rule 12). This map belongs to ONE column segment, which belongs to one
-        // data_table_t, which belongs to one disk agent -- and actor-zeta resumes an agent on
-        // at most one thread at a time. Every caller (the reload constructor, the string read
-        // path, the checkpoint's marker rewrite) runs inside that agent's handler; buffer-pool
-        // eviction is inline on the allocating thread, not a background one. A caller from
-        // another thread has taken a segment across a mailbox boundary, which is a DEFECT IN
-        // THAT CALLER -- the mutex that used to sit here hid that rather than fixing it, and it
-        // never covered the read-modify-write across handle()/register_block anyway.
+        // NO LOCK HERE (rule 12). This map belongs to ONE column segment -> one data_table_t -> one
+        // disk agent, and actor-zeta resumes an agent on at most one thread at a time. Every caller
+        // (the reload constructor, the string read path, the checkpoint's marker rewrite) runs inside
+        // that agent's handler, and buffer-pool eviction is inline on the allocating thread. A caller
+        // from another thread has taken a segment across a mailbox boundary, a DEFECT IN THAT CALLER
+        // -- a mutex would hide it, and would not cover the read-modify-write across
+        // register_block/registered_handle anyway.
         std::unordered_map<uint64_t, std::shared_ptr<storage::block_handle_t>> handles_;
     };
 
-    // Every member carries an initializer: three of these fields (block_id, block_offset,
-    // segment_type) used to be left unassigned by column_data_t::get_column_segment_info,
-    // and an aggregate without initializers shipped indeterminate bytes to whoever read the
-    // report ("uninitialised value went to the reader" class).
+    // Every member carries an initializer. This is an aggregate filled field by field by
+    // column_data_t::get_column_segment_info, so any field a producer leaves unset would ship
+    // indeterminate bytes to whoever reads the report.
     struct column_segment_info {
         uint64_t row_group_index{0};
         uint64_t column_id{0};

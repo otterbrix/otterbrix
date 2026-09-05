@@ -93,11 +93,10 @@ namespace components::operators {
             actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::allocate_oids_batch, std::size_t{1});
         auto allocated = co_await std::move(oaf);
         // Like every validation above, this refusal lands BEFORE the first catalog mutation.
-        // A round that delivered nothing used to be consumed anyway: allocate() answers
-        // INVALID_OID and the pg_attribute row went out with attoid = 0, so ALTER TABLE ADD
-        // COLUMN reported success over a column with no identity — and the identity is what
-        // the RN-oid backfill below hands to the storage that will materialise it, and what
-        // a later DROP COLUMN keys its tombstone on.
+        // Consuming a round that delivered nothing (allocate() answers INVALID_OID) sends the
+        // pg_attribute row out with attoid = 0, so ALTER TABLE ADD COLUMN reports success over
+        // a column with no identity — and the identity is what the backfill below hands to the
+        // storage that will materialise it, and what a later DROP COLUMN keys its tombstone on.
         catalog::oid_t attoid = catalog::INVALID_OID;
         if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "alter_column_add", attoid);
             ec_oid.contains_error()) {
@@ -157,14 +156,12 @@ namespace components::operators {
             ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
                 attoid,
                 components::pg_attribute_commit_id_backfill_t::kind_t::added_at,
-                // RN-oid: an added_at marker DOES carry a second half now — not a release and
-                // not a rename, but the delivery of this column's IDENTITY to the storage that
-                // will materialise it. ALTER TABLE ADD COLUMN writes pg_attribute and stops;
-                // the storage column appears later, out of the first INSERT that carries it,
-                // on an agent that cannot read pg_attribute. Naming the table and the attname
-                // here is what lets manager_disk_t::update_pg_attribute_commit_id_fields park
-                // this attoid on the owning agent, so the materialised column is born with it
-                // instead of with a 0 the bootstrap reconciliation would have to refuse.
+                // An added_at marker carries a second half — not a release and not a rename, but the delivery
+                // of this column's IDENTITY to the storage that will materialise it. ALTER TABLE ADD COLUMN
+                // writes pg_attribute and stops; the storage column appears later, out of the first INSERT that
+                // carries it, on an agent that cannot read pg_attribute. Naming the table and the attname here
+                // lets manager_disk_t::update_pg_attribute_commit_id_fields park this attoid on the owning agent,
+                // so the materialised column is born with it instead of with a 0 the bootstrap would refuse.
                 table_oid_,
                 std::string(column_.name()),
                 std::string{},

@@ -11,9 +11,8 @@ namespace components::table {
 #ifdef DEV_MODE
     // Test-observable count of rows delivered by data_table_t::scan — the materializing
     // chunk scan behind storage_t::scan. A write-path handler must never pay a read that
-    // grows with the table (B0: the insert-batch `_id` dedup full-scanned the table per
-    // batch); the scaling test resets this, runs one INSERT batch, and asserts the rows
-    // streamed do not grow with the rows already stored.
+    // grows with the table; the scaling test resets this, runs one INSERT batch, and asserts
+    // the rows streamed do not grow with the rows already stored.
     uint64_t table_scan_rows_streamed() noexcept;
     void reset_table_scan_rows_streamed() noexcept;
 #endif
@@ -146,27 +145,23 @@ namespace components::table {
 
         // Rename ONE column IN PLACE — the storage half of ALTER TABLE RENAME COLUMN.
         //
-        // Unlike the ALTER add/drop rebuilds this constructs no successor table: a name is not
-        // part of any segment, row group or block, so nothing below column_definitions_ moves
-        // and every holder of this data_table_t (the storage adapter among them) stays valid.
-        // It IS a change to the file — checkpoint() writes each column's name into the metadata
-        // stream and load_from_disk reads it back — so it marks the table modified.
+        // No successor table, unlike the ALTER add/drop rebuilds: a name is not part of any segment,
+        // row group or block, so nothing below column_definitions_ moves and every holder of this
+        // data_table_t stays valid. It IS a change to the file — checkpoint() writes each column's
+        // name into the metadata stream and load_from_disk reads it back — so it marks modified.
         //
-        // WHY IT EXISTS AT ALL, and it is not cosmetic. manager_disk_t's bootstrap
-        // reconciliation (B3c2) compares the loaded storage's column names against the live
-        // pg_attribute rows BY NAME and treats a storage column the catalog does not name as a
-        // DROP. A rename written to the catalog alone would therefore make the NEXT start read
-        // the old name as a dropped column and physically remove a surviving one. The catalog
-        // and the storage must carry the same name.
+        // NOT COSMETIC: manager_disk_t's bootstrap reconciliation compares the loaded storage's
+        // column names against the live pg_attribute rows BY NAME and treats a storage column the
+        // catalog does not name as a DROP. A rename written to the catalog alone would make the NEXT
+        // start read the old name as a dropped column and physically remove a surviving one.
         //
         // Three outcomes, kept apart because rule 6 needs them apart:
         //   true  = renamed;
-        //   false = this table has no column called `old_name` (a column the catalog knows but
-        //           storage never materialized — the ALTER ADD COLUMN case — is legitimately
-        //           nothing to rename here);
+        //   false = no column called `old_name` here (a column the catalog knows but storage never
+        //           materialized — the ALTER ADD COLUMN case — is legitimately nothing to rename);
         //   error = `new_name` is ALREADY a column of this table. The durable schema is
-        //           name-addressed, so completing that would leave two columns answering to one
-        //           name and the reconciliation with no way to tell them apart.
+        //           name-addressed, so two columns would answer to one name and the reconciliation
+        //           could not tell them apart.
         [[nodiscard]] core::result_wrapper_t<bool> rename_column(const std::string& old_name,
                                                                  const std::string& new_name);
 
@@ -176,20 +171,19 @@ namespace components::table {
         // the caller's copy may outlive compact(), which replaces row_groups_ with a compacted
         // rebuild and frees the outgoing collection's disk blocks. The stale holder keeps the
         // REPLACED collection — and its block handles — alive until it lets go; see the ownership
-        // note on collection_t and the ITEM C reasoning in compact().
+        // note on collection_t and the block-registry reasoning in compact().
         boost::intrusive_ptr<collection_t> row_group() const;
 
-        // Append the disk block ids reported by ONE top-level column (and its sub-columns,
-        // validity included) across every row group. The one caller is
-        // table_storage_t::drop_column, and the timing is the whole point: the
-        // data_table_t(parent, removed_column) rebuild SHARES every surviving column with its
-        // successor and simply forgets the dropped one, so the moment the superseded parent
-        // dies the dropped column object — the only thing that knows which blocks it sat on —
-        // is gone with it. Enumerate before the rebuild or never.
+        // Append the disk block ids reported by ONE top-level column (sub-columns and validity
+        // included) across every row group. The one caller is table_storage_t::drop_column, and the
+        // TIMING is the point: the data_table_t(parent, removed_column) rebuild shares every
+        // surviving column with its successor and simply forgets the dropped one, so the moment the
+        // superseded parent dies the dropped column object — the only thing that knows which blocks
+        // it sat on — is gone with it. Enumerate before the rebuild or never.
         //
-        // These are CANDIDATES. A reported id can still belong to a surviving column, because
-        // B2 packs segments of several columns into one 256 KiB block; proving sole ownership
-        // is the release site's job, not this walk's.
+        // These are CANDIDATES: a reported id can still belong to a surviving column, since the
+        // checkpoint packs segments of several columns into one 256 KiB block. Proving sole ownership
+        // is the release site's job.
         void collect_column_disk_block_ids(uint64_t column_index, std::pmr::vector<uint64_t>& out) const;
 
         uint64_t calculate_size();
@@ -207,36 +201,27 @@ namespace components::table {
         // true on success.
         [[nodiscard]] core::result_wrapper_t<bool> checkpoint(storage::metadata_writer_t& writer);
 
-        // B6 — HAS ANYTHING HAPPENED TO THIS TABLE SINCE THE ROOT ON THE DEVICE WAS WRITTEN?
+        // HAS ANYTHING HAPPENED TO THIS TABLE SINCE THE ROOT ON THE DEVICE WAS WRITTEN? False means
+        // the table is byte-for-byte already on the device and the round has nothing to do for it
+        // (table_storage_t::needs_checkpoint combines this with the state living ABOVE the table).
         //
-        // The checkpoint round used to rebuild and rewrite every table it owned, whether or
-        // not anything in it had changed. This is the bit that lets it stop: an entry whose
-        // answer is false is byte-for-byte already on the device and the round has nothing to
-        // do for it (see table_storage_t::needs_checkpoint, which combines this with the
-        // little state that lives ABOVE the table).
-        //
-        // The bit lives HERE, and not on table_storage_t, because here it cannot be forgotten.
-        // Everything that changes a table's content — the storage adapter, WAL replay, the
-        // bootstrap catalog writers, the ALTER rebuilds — holds a data_table_t& and must come
-        // through one of the mutating methods below, so each of THEM marks and no caller has
-        // to remember. A caller-marked flag would have a dozen call sites in agent_disk.cpp
-        // alone, every one of them a place to forget, and forgetting means the change never
-        // reaches the disk and is lost at restart, silently. What still cannot be caught this
-        // way is a NEW mutating method added without a mark; the DEV_MODE net on
+        // The bit lives HERE, not on table_storage_t, because here it cannot be forgotten: everything
+        // that changes a table's content holds a data_table_t& and must come through one of the
+        // mutating methods below, so each of THEM marks. A caller-marked flag would have a dozen call
+        // sites in agent_disk.cpp alone, every one a place to forget — and forgetting means the change
+        // never reaches the disk and is lost at restart, silently. What this cannot catch is a NEW
+        // mutating method added without a mark; the DEV_MODE net on
         // table_storage_t::needs_checkpoint is aimed at exactly that.
         //
-        // Set: by every method that changes what a checkpoint would write — the append
-        // sequence, deletes, updates, the schema mutators, merge_storage, compact's collection
-        // swap, and the ALTER rebuild constructors (a rebuilt table has never been written in
-        // its new shape). NOT set by cleanup_versions: version-chain GC drops history no
-        // snapshot can see any more and cannot change the set of live committed rows, which is
+        // Set by every method that changes what a checkpoint would write, the ALTER rebuild
+        // constructors included (a rebuilt table has never been written in its new shape). NOT set by
+        // cleanup_versions: version-chain GC cannot change the set of live committed rows, which is
         // the only thing a checkpoint serializes.
         //
-        // Cleared: exactly twice. By load_from_disk, because a table built out of the file's
-        // own pointer stream matches the file by definition; and by table_storage_t::checkpoint
-        // once write_header has committed. It starts TRUE for every other construction path,
-        // so a fresh .otbx and an A7.6 young file (schema overlaid from the catalog, nothing
-        // serialized yet) always take their first checkpoint.
+        // Cleared exactly twice: by load_from_disk, since a table built out of the file's own pointer
+        // stream matches the file by definition, and by table_storage_t::checkpoint once write_header
+        // has committed. Every other construction path starts TRUE, so a fresh .otbx and a young file
+        // always take their first checkpoint.
         [[nodiscard]] bool modified_since_checkpoint() const noexcept { return modified_since_checkpoint_; }
         // For table_storage_t::checkpoint, at the point where the committing header is on the
         // device. Deliberately not called by data_table_t::checkpoint itself: that one has only
@@ -247,30 +232,26 @@ namespace components::table {
         // Returns data_corruption when the on-disk metadata chain is truncated/corrupt (the reader records
         // a sticky error during deserialize, checked here at the boundary) instead of throwing on the
         // load path. The caller (bootstrap/load) reports the refusal loudly and leaves the file untouched
-        // (A7.5: no external backup recovery exists).
+        // (there is no external backup to recover from).
         [[nodiscard]] static core::result_wrapper_t<std::unique_ptr<data_table_t>>
         load_from_disk(std::pmr::memory_resource* resource,
                        storage::block_manager_t& block_manager,
                        storage::metadata_reader_t& reader);
 
 #ifdef DEV_MODE
-        // Test-observable IDENTITY of the collection this table OWNS, read straight off the
-        // member rather than through row_group() — so the gate can tell "row_group() handed back
-        // the object the table owns" from "row_group() handed back something that merely reads
-        // the same". A deep copy, or a fresh empty collection on a table that has never been
-        // appended to, is invisible to every scan, count and checksum a test could take; the
-        // address and the owner count are the only things that tell them apart.
-        //
-        // The owner count is the half that catches a conversion which copies the POINTER without
-        // counting the reference: address equality would still hold, while the holder kept no
-        // claim on the object and compact() would free it underneath. Gate:
-        // test_collection_ownership.cpp.
+        // Test-observable IDENTITY of the collection this table OWNS, read straight off the member
+        // rather than through row_group(), so a gate can tell "row_group() handed back the object the
+        // table owns" from "something that merely reads the same": a deep copy, or a fresh empty
+        // collection on a never-appended table, is invisible to every scan, count and checksum a test
+        // could take. The owner count catches the other half — a conversion that copies the POINTER
+        // without counting the reference keeps address equality while compact() frees the object
+        // underneath. Gate: test_collection_ownership.cpp.
         const collection_t* collection_identity() const;
         uint64_t collection_owner_count() const;
 #endif
 
     private:
-        // B6 — see modified_since_checkpoint(). A plain bool, not an atomic: this member obeys
+        // See modified_since_checkpoint(). A plain bool, not an atomic: this member obeys
         // the same single-actor ownership rule as everything else in the class (the proof is on
         // row_groups_ below), so there is no second thread to publish it to.
         void mark_modified() noexcept { modified_since_checkpoint_ = true; }
@@ -284,36 +265,27 @@ namespace components::table {
         // See the ADD COLUMN constructor: the only writer; no_error() everywhere else.
         core::error_t construction_error_{core::error_t::no_error()};
         std::vector<column_definition_t> column_definitions_;
-        // NO LOCK HERE — deliberate, and provable:
+        // NO LOCK HERE — deliberate, and provable: every table is reachable from exactly ONE disk
+        // agent (each oid routes to one agent by pool_idx_for_oid and the table lives in that
+        // agent's storages_), nothing beneath data_table_t ever crosses a mailbox, and actor-zeta
+        // resumes one actor on at most one thread. There is no background eviction or checkpoint
+        // thread — buffer-pool eviction runs inline on the allocating thread — and the manager-side
+        // *_sync paths (WAL replay, index rebuild, bootstrap) all run BEFORE the schedulers start;
+        // the parallel variant of the replay loop was removed for racing on storages_, TSan-confirmed.
+        // A mutex would not fix a race, it would hide the ownership rule.
         //
-        // Every table is reachable from exactly ONE disk agent: manager_disk_t owns no storage
-        // map, each oid routes to a single agent by pool_idx_for_oid, and the table lives in
-        // that agent's storages_. Nothing beneath data_table_t is ever handed to another actor
-        // (no row_group_t / column_data_t / row_version_manager_t crosses the mailbox), and
-        // actor-zeta resumes one actor on at most one thread — try_acquire_running CASes an
-        // exclusive running state, and a suspended handler is never re-entered with a second
-        // message. There is no background eviction or checkpoint thread: buffer-pool eviction
-        // runs inline on the allocating thread. The manager-side *_sync paths (WAL replay,
-        // index rebuild, bootstrap) all run BEFORE the schedulers start — the parallel variant
-        // of the replay loop was removed for racing on storages_, TSan-confirmed.
-        //
-        // Adding a mutex back would not fix a race; it would hide the ownership rule.
-        //
-        // Counted, not exclusive: row_group() hands out copies and compact() swaps this pointer
-        // while such copies are still outstanding, so whichever of the table and its stale
-        // holders dies last frees the collection. The count lives inside collection_t (see the
-        // note on that class), not in a control block.
+        // Counted, not exclusive: row_group() hands out copies and compact() swaps this pointer while
+        // such copies are outstanding, so whichever of the table and its stale holders dies last frees
+        // the collection. The count lives inside collection_t, not in a control block.
         boost::intrusive_ptr<collection_t> row_groups_;
-        // false = this table was superseded by an ALTER successor (the ALTER constructors
-        // clear the parent's flag). Readers: append_lock / update_column report a
-        // write_conflict, append asserts, compact asserts. In the current lifecycle a
-        // superseded parent is destroyed in the very statement that installs its
-        // successor (table_storage_t::add_column / drop_column move-assign the sole
-        // owning unique_ptr), so these reads can only observe `false` if that
-        // destroy-on-swap ownership rule is ever broken — they are the loud-failure
-        // channel for such a regression, not a live code path.
+        // false = this table was superseded by an ALTER successor (the ALTER constructors clear the
+        // parent's flag). Readers: append_lock / update_column report a write_conflict, append and
+        // compact assert. In the current lifecycle a superseded parent is destroyed in the very
+        // statement that installs its successor (add_column / drop_column move-assign the sole owning
+        // unique_ptr), so a `false` here can only be observed if that destroy-on-swap rule is broken:
+        // this is the loud-failure channel for such a regression, not a live code path.
         std::atomic<bool> is_root_;
-        // B6 — true when this table holds something the durable root does not. See
+        // True when this table holds something the durable root does not. See
         // modified_since_checkpoint(). Starts true: a table that was BUILT has never been
         // written, and only load_from_disk (built out of the file itself) may say otherwise.
         bool modified_since_checkpoint_{true};

@@ -337,12 +337,12 @@ namespace core::b_plus_tree {
         // There is ONE metadata entry per ITEM, not per unique index: append() bumps
         // header_->count_ and does last_metadata_-- on every item, while
         // unique_indices_count_ only counts distinct keys. restore_block() agrees
-        // (last_metadata_ = end_ - count_). resize() used unique_indices_count_ here, so a
-        // block with duplicate keys copied and re-based only a fraction of its metadata:
-        // an index on a low-cardinality column (3000 items, 2 distinct keys) lost 2998
-        // entries the moment the block grew, and the tree then reported an empty root.
-        // Latent until physical_value grew from 16 to 24 bytes (C3) and pushed blocks over
-        // the resize threshold at sizes that used to fit.
+        // (last_metadata_ = end_ - count_). Using unique_indices_count_ here makes a block with
+        // duplicate keys copy and re-base only a fraction of its metadata: an index on a
+        // low-cardinality column (3000 items, 2 distinct keys) loses 2998 entries the moment the
+        // block grows, and the tree then reports an empty root. That stayed latent until
+        // physical_value grew from 16 to 24 bytes and pushed blocks over the resize threshold at
+        // sizes that had fitted before.
         const size_t metadata_count = header_->count_;
         auto* new_end = reinterpret_cast<metadata*>(new_buffer + new_size);
         auto* new_last_metadata = new_end - metadata_count;

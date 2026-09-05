@@ -1,33 +1,31 @@
 // A DROPPED AGENT MUST REFUSE A WRITE, NOT PERFORM ONE.
 //
-// drop() releases the agent's store: the ordered family resets its btree_t (db_ becomes
-// null) and the hashed one resets its segment handle, its txn-log handle and its keydir.
-// Every write path below that point dereferences one of those. The read side has said so
-// since the read went through the mailbox -- read_rows() checks is_dropped_ and answers
-// with an error -- and force_flush() checks it too. The WRITE handlers never did:
+// drop() releases the agent's store: the ordered family resets its btree_t (db_ becomes null) and
+// the hashed one resets its segment handle, its txn-log handle and its keydir. Every write path
+// below that point dereferences one of those. The read side has said so since the read went through
+// the mailbox -- read_rows() checks is_dropped_ and answers with an error -- and force_flush()
+// checks it too. The WRITE handlers never did:
 //
 //     btree      insert_bulk_unchecked -> db_->append(...)          // db_ == nullptr
 //     bitcask    apply_txn_inserts     -> append_snapshot -> file_->seek_position()
 //                insert_bulk_unchecked -> ... -> hash_index_->put   // both reset
 //
-// A write is TWO messages now -- stage_* records it in the transaction's bucket, commit_*
-// publishes that bucket into the store -- and BOTH must refuse. Staging into a dropped
-// agent would not crash, which is exactly why it has to be checked: the bucket would take
-// the rows and nothing would ever read it again, so the statement would be told its rows
-// are indexed by an index that no longer exists.
+// A write is TWO messages now -- stage_* records it in the transaction's bucket, commit_* publishes
+// that bucket into the store -- and BOTH must refuse. Staging into a dropped agent would not crash,
+// which is exactly why it has to be checked: the bucket would take the rows and nothing would ever
+// read it again, so the statement would be told its rows are indexed by an index that no longer
+// exists.
 //
-// The agent keeps a LIVE ADDRESS after its drop is handled -- it is destroyed by its
-// owner, which is a separate step -- so a message posted before that owner lets go still
-// arrives at these handlers. Nothing above them can filter it out: the manager can only
-// stop NEW sends, and the whole reason drop_index and the GC sweeps await the drop reply
-// is that a message already in the mailbox cannot be recalled.
+// The agent keeps a LIVE ADDRESS after its drop is handled -- it is destroyed by its owner, a
+// separate step -- so a message posted before that owner lets go still arrives at these handlers.
+// Nothing above them can filter it out: the manager can only stop NEW sends, and the whole reason
+// drop_index and the GC sweeps await the drop reply is that a message already in the mailbox cannot
+// be recalled.
 //
-// The answer is an ERROR, not a silent skip: reporting no_error would tell a statement
-// its rows are in the index when the index no longer exists, and commit_inserts folds
-// exactly this value into what it returns.
-//
-// The test drives each agent by hand (cooperative_actor::resume(1)) so "drop handled,
-// write posted behind it" is a state it chooses rather than races for.
+// The answer is an ERROR, not a silent skip: reporting no_error would tell a statement its rows are
+// in the index when the index no longer exists, and commit_inserts folds exactly this value into
+// what it returns. The test drives each agent by hand (cooperative_actor::resume(1)) so "drop
+// handled, write posted behind it" is a state it chooses rather than races for.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself

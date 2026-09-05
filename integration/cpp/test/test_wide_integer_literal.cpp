@@ -90,10 +90,10 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::a_wide_literal_in_a_pred
 
     // These two literals are DIFFERENT numbers that truncate to the SAME int32.
     // 9223372036854775807 is 0x7FFF'FFFF'FFFF'FFFF and 4294967295 is 0xFFFF'FFFF; both keep
-    // 0xFFFFFFFF in their low word, so both used to be stored as -1 and both used to be
-    // COMPARED as -1. A predicate for either one therefore matched both rows -- the wrong
-    // answer that a test asserting only "one row came back for the value I asked for" would
-    // still have missed if the two literals had collapsed to the same thing consistently.
+    // 0xFFFFFFFF in their low word, so a truncating lexer stores AND compares both as -1, and
+    // a predicate for either one matches both rows -- the wrong answer that a test asserting
+    // only "one row came back for the value I asked for" would still miss, because the two
+    // literals collapse to the same thing consistently.
     REQUIRE(exec(d,
                  "INSERT INTO w.t (id, a) VALUES (1, 9223372036854775807), (2, 4294967295), "
                  "(3, 123456789012345678);")

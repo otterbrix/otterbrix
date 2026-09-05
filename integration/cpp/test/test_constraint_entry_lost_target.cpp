@@ -11,28 +11,25 @@
 //     }
 //
 // The first two are TOPOLOGY — no disk to ask, no tables node to read out of —
-// and a gather that has nowhere to look has legitimately nothing to gather. The
-// third is not topology at all. `target` is a POSITION in the tables node, and
-// an out-of-range one (resolve_entry_t::no_target, size_t(-1), is the default)
-// is a plan that was assembled without naming the table its constraints belong
-// to. Skipping it leaves fks, check_exprs, unique_constraints AND pk_columns all
-// empty at once — exactly what "this table declares no constraints" looks like —
-// so enrich stamps nothing on the DML node, the planner splices no constraint
-// operator, and every declared key on the table stops existing while the
-// statement reports success.
+// and a gather that has nowhere to look has nothing to gather. The third is not
+// topology: `target` is a POSITION in the tables node, and an out-of-range one
+// (resolve_entry_t::no_target, size_t(-1), is the default) is a plan assembled
+// without naming the table its constraints belong to. Skipping it leaves fks,
+// check_exprs, unique_constraints AND pk_columns all empty at once — exactly what
+// "this table declares no constraints" looks like — so enrich stamps nothing on
+// the DML node, the planner splices no constraint operator, and every declared
+// key on the table stops existing while the statement reports success.
 //
 // HOW THE PLAN IS PRODUCED HERE. Everything is the engine's own: the database,
 // the table and its UNIQUE come from plain SQL; the INSERT is an ordinary
 // hand-built plan of the shape the C++/C API produces (make_node_insert +
-// name_catalog_target, the same two calls test_arithmetic and
-// test_batch_execution use), and its catalog lookups are registered through the
-// transformer's own register_catalog_resolve_table. Exactly ONE thing differs
-// between the two INSERTs below — the `target` field of the constraint entry —
-// and the assertion is on the CONTENT of the table: how many rows carrying the
-// same `code` are in it afterwards.
-//
-// The control INSERT is what proves the harness has teeth: with `target` naming
-// the table, the very same plan is refused by the UNIQUE.
+// name_catalog_target, as in test_arithmetic and test_batch_execution), and its
+// catalog lookups are registered through the transformer's own
+// register_catalog_resolve_table. Exactly ONE thing differs between the two
+// INSERTs below — the `target` field of the constraint entry — and the assertion
+// is on the CONTENT of the table: how many rows carrying the same `code` are in
+// it afterwards. The control INSERT proves the harness has teeth: with `target`
+// naming the table, the very same plan is refused by the UNIQUE.
 // ============================================================================
 
 #include "test_config.hpp"

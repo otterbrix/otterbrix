@@ -13,7 +13,7 @@
 // owning agent runs over its OWN slice: plain-column GROUP BY keys + builtin
 // SUM/COUNT/MIN/MAX/AVG. The coordinator lowers the stamped aggregate into a
 // pushed_reduce_scan that CARRIES this spec, and the agent rebuilds the EXISTING
-// operator_group from it.
+// operator_hash_group from it.
 //
 // R10/R14: NO node_ptr / expression_ptr / variant / any / tuple / shared_ptr anywhere —
 // only POD scalars + std::pmr containers of them + a resolved column-index path. So it may
@@ -50,7 +50,7 @@ namespace components::operators {
     };
 
     // One pushed GROUP BY key: a plain column with its resolved column-index path (group_key_t
-    // ::full_path) + output name (group_key_t::name). Both are needed — operator_group's
+    // ::full_path) + output name (group_key_t::name). Both are needed — operator_hash_group's
     // build_plan REQUIRES a resolved full_path on every column key, and the name feeds the
     // per-cell alias so a coordinator-side sort/select can still reference the key by name.
     struct pushed_group_key_t {

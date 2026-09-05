@@ -30,27 +30,25 @@
 
 // ONE READER OF THIS JOURNAL STOPPED AT A BREAK, THE OTHER READ STRAIGHT THROUGH IT.
 //
-// wal_reader_t (startup replay) stops at the first CRC break and says why: a range with a
-// HOLE in it is worse than a short prefix, because the rows behind the hole get their later
-// updates applied over a version that was never restored. wal_worker_t::load had no such
-// check at all -- it concatenated the STOP-A prefix of segment k with the WHOLE of segment
-// k+1 and handed the caller a range missing everything between them.
+// wal_reader_t (startup replay) stops at the first CRC break and says why: a range with a HOLE in
+// it is worse than a short prefix, because the rows behind the hole get their later updates
+// applied over a version that was never restored. wal_worker_t::load needs the same check —
+// without it, it concatenates the STOP-A prefix of segment k with the WHOLE of segment k+1 and
+// hands the caller a range missing everything between them.
 //
-// Its only production caller is the CREATE INDEX catchup (operator_create_index_backfill),
-// and the question that caller asks is a THIRD question, different from both the ones the
-// CRC-break wave already answered:
+// Its only production caller is the CREATE INDEX catchup (operator_create_index_backfill), and it
+// asks a THIRD question, different from the two the other readers answer:
 //
-//   * replay          -- "what may I APPLY?"        -> prefix, stop at the break;
-//   * the id allocator -- "where do I RESUME?"      -> high-water over the FILES;
-//   * the catchup      -- "is the window (after, high_water] WHOLE?" -> yes or refuse.
+//   * replay           -- "what may I APPLY?"                            -> prefix, stop at break;
+//   * the id allocator -- "where do I RESUME?"                           -> high-water over FILES;
+//   * the catchup      -- "is the window (after, high_water] WHOLE?"     -> yes, or refuse.
 //
-// The third question is BINARY: a catchup that applies a subset publishes an index that
-// answers with a subset, and a silently incomplete index is the exact failure the whole
-// index layer was rebuilt to remove. Partial success is therefore not in load's contract.
+// The third is BINARY: a catchup that applies a subset publishes an index that answers with a
+// subset, and a silently incomplete index is the one failure this layer must never produce.
 //
-// The tests below assert on the SET OF IDS the catchup is handed, never on a status, and the
-// corruption is done by the filesystem (one flipped byte inside a data page) because that is
-// what a bad sector does.
+// The tests assert on the SET OF IDS the catchup is handed, never on a status, and the corruption
+// is done by the filesystem (one flipped byte inside a data page) because that is what a bad
+// sector does.
 
 using namespace services;
 using namespace services::wal;
@@ -130,20 +128,16 @@ namespace {
         }
 
         // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton. This is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only
-        // thing that would report a chunk still alive after the manager is gone. Production
-        // hands the manager chunks off the executor's arena; this is that shape.
-        //
-        // resource_ outlives the asynchronous processing for three independent reasons:
-        // ~wal_env_t stops the scheduler and resets manager_ -- destroying the mailbox
-        // and any message still holding this batch -- inside its own body; resource_ is
-        // declared FIRST, so it is destroyed LAST; and otterbrix_resource is thread-safe in
-        // both builds (synchronized_pool_resource normally, the mutex-guarded
-        // resource_tracer_t under ASAN). manager_ itself is already allocated on it.
-        //
-        // Extracted so a test can assert the ARENA of a REAL payload: the batch is moved
-        // into the message and is unobservable after send.
+        // singleton: this is real load, and off resource_ it never reaches
+        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
+        // that would report a chunk still alive after the manager is gone. Production hands the manager
+        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
+        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
+        // over: ~wal_env_t stops the scheduler and resets manager_
+        // (destroying the mailbox and any message still holding this batch) inside its own body,
+        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
+        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
+        // the batch is moved into the message and is unobservable after send.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -327,11 +321,11 @@ namespace {
 } // namespace
 
 // ===========================================================================
-// A -- THE CATCHUP MUST NEVER BE HANDED A RANGE WITH A HOLE IN IT.
+// THE CATCHUP MUST NEVER BE HANDED A RANGE WITH A HOLE IN IT.
 //
 // Segment 000000 has an INTERIOR page corrupted and live pages behind it; segments 000001+
 // are perfect. read_all_records stops at the break (STOP-A), so segment 000000 contributes
-// only its prefix -- and load then appended the WHOLE of the later segments on top of it.
+// only its prefix -- and load must not append the WHOLE of the later segments on top of it.
 //
 // BEFORE: load(0) answered successfully with ids running up to the end of the journal while
 // every id between the break and the next segment was missing. The catchup applied that,
@@ -384,7 +378,7 @@ TEST_CASE("wal::load_hole::an_interior_break_must_not_be_answered_with_the_segme
 }
 
 // ===========================================================================
-// B -- A BREAK THAT IS ENTIRELY BELOW THE WATERMARK HIDES NOTHING, AND MUST NOT REFUSE.
+// A BREAK THAT IS ENTIRELY BELOW THE WATERMARK HIDES NOTHING, AND MUST NOT REFUSE.
 //
 // This is the anti-(a) case: copying wal_reader_t's unconditional "chain broken -> stop
 // reading segments" into load would fail it. The catchup asks about (after, high_water], and
@@ -442,7 +436,7 @@ TEST_CASE("wal::load_hole::a_break_below_the_watermark_is_read_straight_through"
 }
 
 // ===========================================================================
-// C -- A TORN TAIL IS NOT A HOLE, AND MUST NOT BAN CREATE INDEX FOREVER.
+// A TORN TAIL IS NOT A HOLE, AND MUST NOT BAN CREATE INDEX FOREVER.
 //
 // The break is on the LAST page of the LAST segment: nothing verifies after it, so nothing
 // is hidden between two things the reply contains. An ordinary crash leaves exactly this
@@ -476,7 +470,7 @@ TEST_CASE("wal::load_hole::a_torn_tail_is_not_a_hole_and_is_not_refused") {
 }
 
 // ===========================================================================
-// D -- THE HOLE CAN OPEN AT A SEGMENT BOUNDARY, WHERE NOTHING INSIDE THE SEGMENT SHOWS IT.
+// THE HOLE CAN OPEN AT A SEGMENT BOUNDARY, WHERE NOTHING INSIDE THE SEGMENT SHOWS IT.
 //
 // The break is on the LAST page of segment 000000, so within that segment it looks exactly
 // like case C: nothing verifies after it. What makes it a hole is the segment that FOLLOWS
@@ -516,16 +510,10 @@ TEST_CASE("wal::load_hole::a_break_at_a_segment_boundary_is_still_a_hole") {
 }
 
 // ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA.
-//
-// gen_data_chunk output is REAL load, and on the process-global new_delete_resource
-// singleton it escapes core::pmr::otterbrix_resource entirely -- which under ASAN IS
-// resource_tracer_t, so nothing accounts for it. Production hands the manager chunks
-// off the executor's arena; the fixture has to model that.
-//
-// The batch is moved into the message, so it is unobservable after send. The assertion
-// is therefore made on the object make_insert_batch produces -- the same call, on the
-// same path, that send_insert makes -- and not on a value handed in by the test.
+// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
+// make_insert_batch above. The batch is moved into the message and is unobservable after
+// send, so the assertion is made on the object make_insert_batch produces: the same call, on
+// the same path, that send_insert makes -- not a value handed in by the test.
 // ===========================================================================
 TEST_CASE("wal::load_hole::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";

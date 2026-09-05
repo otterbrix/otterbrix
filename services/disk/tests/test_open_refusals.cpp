@@ -29,14 +29,14 @@
 #include <unistd.h>
 #include <vector>
 
-// THE OPEN PATH ANSWERED "NOTHING TO READ" WHERE IT MEANT "COULD NOT READ".
+// THE OPEN PATH MUST NOT ANSWER "NOTHING TO READ" WHERE IT MEANS "COULD NOT READ".
 //
 // Every case below is one place on the database-open path — sidecar probe, lazy load, replay
-// append, replay synthesis, rehydrate — that used to collapse a failure into the same value a
-// legitimately empty state produces: a zero wal id, a '\0' relkind, a `false` create, a `0`
-// append. Each test states the ENGINE STATE that collapse produces (a table that silently
-// reports it was never checkpointed, replayed rows that vanish, a computed table restored as
-// a regular one, a catalog row with no storage behind it), not the return code.
+// append, replay synthesis, rehydrate — where a failure would otherwise collapse into the same
+// value a legitimately empty state produces: a zero wal id, a '\0' relkind, a `false` create, a
+// `0` append. Each test states the ENGINE STATE that collapse produces (a table that silently
+// reports it was never checkpointed, replayed rows that vanish, a computed table restored as a
+// regular one, a catalog row with no storage behind it), not the return code.
 //
 // AND EACH ONE IS BOUNDED BY THE SAME GATE. A refusal on the open path that repeats on every
 // start is a brick, not loudness, so every case that ends in a refusal also proves the
@@ -224,27 +224,22 @@ namespace {
 
 // --- 1. A SIDECAR THAT CANNOT BE READ IS NOT "NEVER CHECKPOINTED" ------------------------
 //
-// The `.otbx.wal_id` sidecar is the durable half of a table's checkpoint floor. Both readers
-// answered a sidecar they could not read with wal::id_t{0}, which is the exact value that
-// means "this table has never been checkpointed":
+// The `.otbx.wal_id` sidecar is the durable half of a table's checkpoint floor, and neither reader
+// may answer a sidecar it could not read with wal::id_t{0} — the exact value that means "this table
+// has never been checkpointed":
 //
-//   * peek_checkpoint_wal_id_from_disk (manager_disk_io.cpp) reads the sidecar with an
-//     unchecked stream and returns 0 on any failure — and 0 is what the replay filter in
-//     base_spaces reads as "replay every record for this table", so records already absorbed
-//     into the checkpointed .otbx are applied a SECOND time;
-//   * read_sidecar_wal_id inside load_storage_disk_sync returns 0 the same way, which also
-//     disarms the young-file contradiction check right below it (a file with checkpointed
-//     content and a sidecar claiming none) and seeds the loaded storage with floor 0.
+//   * peek_checkpoint_wal_id_from_disk (manager_disk_io.cpp): 0 is what the replay filter in
+//     base_spaces reads as "replay every record for this table", so records already absorbed into
+//     the checkpointed .otbx would be applied a SECOND time;
+//   * read_sidecar_wal_id inside load_storage_disk_sync: a 0 there also disarms the young-file
+//     contradiction check right below it (a file with checkpointed content and a sidecar claiming
+//     none) and seeds the loaded storage with floor 0.
 //
-// A SHORT SIDECAR IS A CRASH IMAGE, NOT CORRUPTION, and this case used to say the opposite —
-// that the writer was atomic, so a short one could only be corruption. It was not: until
-// persist_checkpoint_sidecar (agent_disk.cpp) the writer checked neither its write nor its
-// close and fsynced nothing, so a full device during a checkpoint and a plain
-// rename-without-fsync each produced one with no corruption anywhere. So the answer is not to
-// refuse the table — its .otbx opened perfectly, and for a SYSTEM table a refusal is the whole
-// database (case 6 below) — but to come up with the floor marked UNREADABLE, which is neither
-// 0 nor a refusal. The phases below pin both halves: the readers still refuse to call it
-// "never checkpointed", and the database still opens and the table still drops.
+// A SHORT SIDECAR IS A CRASH IMAGE, NOT CORRUPTION: a full device during a checkpoint and a plain
+// rename-without-fsync both produce one with no corruption anywhere. So the answer is not to refuse
+// the table — its .otbx opened perfectly, and for a SYSTEM table a refusal is the whole database
+// (case 6 below) — but to come up with the floor marked UNREADABLE, which is neither 0 nor a
+// refusal. The phases below pin both halves.
 TEST_CASE("services::disk::open::an_unreadable_sidecar_is_not_never_checkpointed") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -280,8 +275,8 @@ TEST_CASE("services::disk::open::an_unreadable_sidecar_is_not_never_checkpointed
     REQUIRE(std::filesystem::file_size(sidecar) == sizeof(std::uint64_t));
 
     // Not a hand-laid file: the engine wrote this sidecar, and the only change is that it is
-    // now SHORT — the state a checkpoint on a full device used to leave behind, and the one
-    // both readers reported as wal::id_t{0}.
+    // now SHORT — the state a checkpoint on a full device leaves behind, and the one both
+    // readers would otherwise report as wal::id_t{0}.
     std::filesystem::resize_file(sidecar, 3);
     REQUIRE(std::filesystem::file_size(sidecar) == 3);
 
@@ -291,15 +286,14 @@ TEST_CASE("services::disk::open::an_unreadable_sidecar_is_not_never_checkpointed
         fx.manager->bootstrap_system_tables_sync();
         REQUIRE_FALSE(fx.manager->has_storage(table_oid));
 
-        // THE PROBE. RED today: a wal id of 0 for a table checkpointed at 40, which is
+        // THE PROBE. A wal id of 0 for a table checkpointed at 40 is
         // precisely "replay everything again" to the record filter.
         auto peeked = fx.manager->peek_checkpoint_wal_id_from_disk(table_oid, ns_oid);
         INFO("a sidecar that cannot be read must not answer 'never checkpointed'");
         CHECK(peeked.has_error());
 
-        // THE LOAD. RED before: void, one warn line, and a storage that came up with
-        // checkpoint floor 0 over content checkpointed at 40. The table comes up — the .otbx
-        // is not the file that rotted — and what must not survive is the floor of 0.
+        // THE LOAD. The table comes up — the .otbx is not the file that rotted — and what
+        // must not survive is a checkpoint floor of 0 over content checkpointed at 40.
         auto load_err = fx.manager->load_storage_for_wal_replay_sync(table_oid, ns_oid);
         INFO("the .otbx opened fine; a sidecar that did not is no reason to leave the table unloaded");
         CHECK_FALSE(load_err.contains_error());
@@ -347,12 +341,12 @@ TEST_CASE("services::disk::open::an_unreadable_sidecar_is_not_never_checkpointed
 
 // --- 2. REPLAYED ROWS THAT LAND NOWHERE MUST NOT REPORT LIKE ROWS THAT LANDED -------------
 //
-// direct_append_sync is the WAL-replay append. It answered with the appended row's START ROW,
-// so `0` meant all four of: the table has no storage on its owning agent, the chunk was
-// empty, the append failed, and the first row of a fresh table landed at row 0. Its one
-// production caller (base_spaces' replay loop) discards the value entirely, so a record of
-// COMMITTED rows replayed into a table with no storage disappeared with nothing above the
-// storage layer able to notice — the same hole the other three replay routers had closed.
+// direct_append_sync is the WAL-replay append, and it answers with the appended row's START
+// ROW — a value in which `0` covers all four of: the table has no storage on its owning agent,
+// the chunk was empty, the append failed, and the first row of a fresh table landed at row 0.
+// Its one production caller (base_spaces' replay loop) discards the value entirely, so without
+// the wrapper a record of COMMITTED rows replayed into a table with no storage disappears with
+// nothing above the storage layer able to notice.
 TEST_CASE("services::disk::open::replayed_rows_with_nowhere_to_land_are_refused") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -380,7 +374,7 @@ TEST_CASE("services::disk::open::replayed_rows_with_nowhere_to_land_are_refused"
         chunk.set_value(0, i, static_cast<std::int64_t>(i));
     }
 
-    // RED today: 0 — byte for byte the answer a successful append of the first row gives.
+    // 0 here would be byte for byte the answer a successful append of the first row gives.
     auto appended = fx.manager->direct_append_sync(table_oid, chunk);
     INFO("five committed rows replayed into a table with no storage must be reported, not returned as row 0");
     CHECK(appended.has_error());
@@ -410,10 +404,9 @@ TEST_CASE("services::disk::open::replayed_rows_with_nowhere_to_land_are_refused"
 // --- 3. A CREATE THAT FAILED IS NOT A DUPLICATE ------------------------------------------
 //
 // bootstrap_create_disk_inner_sync returns `false` for two unrelated outcomes: the agent
-// already owns the oid, and the .otbx could not be constructed at all. create_storage_disk_sync
-// read both as the first and logged "agent already owns oid" at TRACE — so a create whose very
-// first write was refused left no storage, no error, and a log line naming the wrong cause.
-// Its callers (WAL-replay synthesis and rehydrate) then walked on.
+// already owns the oid, and the .otbx could not be constructed at all. Reading both as the
+// first leaves a create whose very first write was refused with no storage, no error, and a log
+// line naming the wrong cause — and its callers (WAL-replay synthesis and rehydrate) walk on.
 //
 // The two legs are separable from the manager without touching the agent's contract: after a
 // `false`, the owning agent either holds the oid (duplicate) or does not (the create failed).
@@ -438,7 +431,7 @@ TEST_CASE("services::disk::open::a_create_that_failed_is_not_reported_as_a_dupli
         plan.fail_writes_from = 1;
         path_fault_scope_t scope(plan, "/" + std::to_string(static_cast<unsigned>(table_oid)) + "/");
 
-        // RED today: void. The engine walks on with no storage for a table the catalog has.
+        // Without an answer the engine walks on with no storage for a table the catalog has.
         auto err = fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false);
         INFO("a create whose first write was refused must not be reported as an already-owned oid");
         CHECK(err.contains_error());
@@ -470,11 +463,11 @@ TEST_CASE("services::disk::open::a_create_that_failed_is_not_reported_as_a_dupli
 
 // --- 4. A RELKIND NOBODY COULD READ IS NOT "REGULAR" --------------------------------------
 //
-// relkind_for_oid_sync answered '\0' both for "pg_class carries no row for this oid" (honest:
-// the catalog does not know it) and for "pg_class is not loaded, or is too short to carry a
+// relkind_for_oid_sync may answer '\0' only for "pg_class carries no row for this oid" (honest:
+// the catalog does not know it), never for "pg_class is not loaded, or is too short to carry a
 // relkind column" (a broken read). Its consumers turn '\0' into `is_computed = false`, so a
-// DOCUMENT (relkind 'g') table restored through a path that could not read pg_class comes back
-// as an ordinary row-storage table — the dynamic-schema semantics silently gone.
+// DOCUMENT (relkind 'g') table restored through a path that could not read pg_class would come
+// back as an ordinary row-storage table — the dynamic-schema semantics silently gone.
 TEST_CASE("services::disk::open::an_unreadable_relkind_is_not_a_regular_table") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -525,9 +518,9 @@ TEST_CASE("services::disk::open::an_unreadable_relkind_is_not_a_regular_table") 
 // --- 5. THE ONE DIVERGENCE REHYDRATE EXISTS TO CLOSE, LEFT OPEN WITHOUT A WORD ------------
 //
 // rehydrate_missing_user_storages_sync recreates the .otbx of every alive user table the
-// storage layer does not hold. When the table's pg_attribute columns do not resolve it
-// `continue`d with NO log line at all — leaving exactly the catalog/storage divergence the
-// walk was written to close, in the one shape where nothing downstream re-derives it.
+// storage layer does not hold. When the table's pg_attribute columns do not resolve, a silent
+// `continue` leaves exactly the catalog/storage divergence the walk exists to close, in the one
+// shape where nothing downstream re-derives it.
 //
 // The SKIP itself is right: creating a zero-column storage is worse, and refusing the start
 // would repeat forever over a catalog nobody can repair from inside the process. What is
@@ -578,7 +571,7 @@ TEST_CASE("services::disk::open::rehydrate_states_the_divergence_it_cannot_close
     CHECK_FALSE(fx.manager->has_storage(orphan));
     CHECK_FALSE(std::filesystem::exists(otbx_at(base, ns_oid, orphan)));
 
-    // AND THE DIVERGENCE IS OBSERVABLE. RED before: the walk answered void and said nothing
+    // AND THE DIVERGENCE IS OBSERVABLE. A void answer would say nothing
     // anywhere, so the only record of "the catalog names a table this engine cannot serve" was
     // a log line that did not exist. The count it reports is that record.
     auto unresolved = fx.manager->rehydrate_missing_user_storages_sync();
@@ -598,26 +591,20 @@ TEST_CASE("services::disk::open::rehydrate_states_the_divergence_it_cannot_close
 
 // --- 6. A SIDECAR THAT CANNOT BE READ MUST NOT COST THE DATABASE ITS SYSTEM TABLES --------
 //
-// THE PREMISE THE REFUSAL WAS BUILT ON IS FALSE IN THIS TREE. Case 1 above (and three code
-// comments with it) justified refusing an unreadable sidecar by "it is written atomically
-// (tmp + rename), so a short one is corruption, not a crash image". The writer in
-// agent_disk_t::checkpoint_inner did not check write(), did not check close(), fsynced
-// neither the file nor its directory, and renamed unconditionally on is_open(). Two ROUTINE
-// roads therefore led to a short or zero-length sidecar with no corruption anywhere: a full
+// "IT IS WRITTEN ATOMICALLY, SO A SHORT ONE IS CORRUPTION" IS NOT A PREMISE A REFUSAL MAY STAND ON.
+// Two ROUTINE roads lead to a short or zero-length sidecar with no corruption anywhere: a full
 // device or an I/O error during a checkpoint (no crash at all), and the classic
 // rename-without-fsync, whose crash image is a zero-length file under the new name.
-// manager_disk_io.cpp:560 says as much one function away — a crash between the tmp write and
-// the rename legitimately leaves the staging file behind.
 //
 // AND FOR A SYSTEM TABLE THE REFUSAL IS NOT PER-TABLE, IT IS THE WHOLE DATABASE. It travels
-// load_storage_disk_sync -> bootstrap_one -> throw -> base_spaces.cpp:207, which has no
-// try/catch: the database never opens again, and nothing inside the process can repair the
-// file. Case 1's "not bricked" phase only ever proved it for a USER table.
+// load_storage_disk_sync -> bootstrap_one -> throw -> base_spaces.cpp, which has no try/catch: the
+// database never opens again, and nothing inside the process can repair the file. Case 1's "not
+// bricked" phase only ever proved it for a USER table.
 //
 // The floor a sidecar could not give up is a fact about REPLAY, not about the .otbx: the file
-// itself opened perfectly. So the table comes up with its checkpoint floor marked UNREADABLE,
-// which is neither 0 (replay everything, duplicating absorbed rows) nor a refusal, and the
-// replay filter's existing third answer drops that table's records loudly instead.
+// itself opened perfectly. So the table comes up with its checkpoint floor marked UNREADABLE —
+// neither 0 (replay everything, duplicating absorbed rows) nor a refusal — and the replay filter's
+// existing third answer drops that table's records loudly instead.
 TEST_CASE("services::disk::open::an_unreadable_system_table_sidecar_is_not_a_brick") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -646,8 +633,8 @@ TEST_CASE("services::disk::open::an_unreadable_system_table_sidecar_is_not_a_bri
     std::filesystem::resize_file(short_sidecar, 3);
     std::filesystem::resize_file(zero_sidecar, 0);
 
-    // Phase 2 — RED today: bootstrap_one throws and base_spaces has no catch, so this
-    // database is unopenable for good.
+    // Phase 2 — bootstrap_one throws and base_spaces has no catch, so a refusal here would
+    // make the database unopenable for good.
     {
         open_fixture fx(base);
         INFO("a system table whose sidecar cannot be read must not cost the database its start");
@@ -688,9 +675,9 @@ TEST_CASE("services::disk::open::an_unreadable_system_table_sidecar_is_not_a_bri
 // the file. A table whose .otbx is PRESENT but was refused by the loader arrives at the same
 // place ("no storage for this oid") and is the opposite state: the file is every byte the
 // operator has, and creating over it answers a refusal by destroying the thing that was
-// refused. Case 1 used to pin this leg with a rotten SIDECAR; a rotten sidecar no longer
-// stops the open (it is a separate, derived file), so the state is reached here the only way
-// left — an .otbx whose own header does not read.
+// refused. A rotten SIDECAR does not reach this state — it is a separate, derived file and no
+// longer stops the open — so the state is forced the only way left: an .otbx whose own header
+// does not read.
 TEST_CASE("services::disk::open::rehydrate_does_not_create_over_a_file_that_did_not_load") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -747,13 +734,13 @@ TEST_CASE("services::disk::open::rehydrate_does_not_create_over_a_file_that_did_
 
 // --- 8. A WALK THAT NEVER RAN MUST NOT ANSWER LIKE A WALK THAT FOUND NOTHING --------------
 //
-// rehydrate_missing_user_storages_sync got a count so a start that came up with tables it
-// cannot serve could say so. Four of its returns come BEFORE a single table is examined — no
+// rehydrate_missing_user_storages_sync carries a count so a start that came up with tables it
+// cannot serve can say so. Four of its returns come BEFORE a single table is examined — no
 // catalog agent, an empty config path, pg_class not loaded, pg_class too short to scan — and
-// every one of them answered `0`, which is byte for byte what a healthy start answers. Its one
-// production caller reads `> 0`. So the walk not running at all was the quietest outcome
-// available: exactly the collapse this whole file exists to remove, re-committed in the new
-// channel the fix itself introduced.
+// answering `0` from any of them is byte for byte what a healthy start answers. Its one
+// production caller reads `> 0`, so the walk not running at all would be the quietest outcome
+// available: exactly the collapse this whole file exists to remove, in the count channel
+// itself.
 TEST_CASE("services::disk::open::a_rehydrate_walk_that_could_not_run_says_so") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -761,7 +748,7 @@ TEST_CASE("services::disk::open::a_rehydrate_walk_that_could_not_run_says_so") {
 
     {
         // pg_class is not loaded: this manager has not bootstrapped, so no alive table can be
-        // named and not one was looked at. RED before: 0.
+        // named and not one was looked at.
         open_fixture fx(base);
         auto r = fx.manager->rehydrate_missing_user_storages_sync();
         INFO("a walk that could not read pg_class must not report the count of a clean start");
@@ -813,7 +800,6 @@ TEST_CASE("services::disk::open::a_sidecar_that_cannot_be_located_is_not_a_sidec
     REQUIRE_FALSE(absent.has_error());
     CHECK(absent.value() == services::wal::id_t{0});
 
-    // RED before, all three: 0.
     auto no_table = fx.manager->peek_checkpoint_wal_id_from_disk(catalog::INVALID_OID, ns_oid);
     INFO("there is no table to answer about");
     CHECK(no_table.has_error());
@@ -832,12 +818,11 @@ TEST_CASE("services::disk::open::a_sidecar_that_cannot_be_located_is_not_a_sidec
 
 // --- 10. A RELKIND NOBODY COULD READ MUST NOT OPEN A DOCUMENT TABLE AS A REGULAR ONE -------
 //
-// Case 4 closed the value channel and base_spaces' replay-synthesis leg acts on it, but the
-// DISK LOAD did not: it logged the failed read and carried on with `is_computed` left false.
-// The comment there claimed the file would then be DEFERRED — which needs the .otbx to be
-// exactly BLOCK_START bytes. A table that HAS been checkpointed is past that size, so the
-// identical state opened it as an ordinary row-storage table with its dynamic-schema
-// semantics gone, and the only thing the fix had changed was that a log line now appeared.
+// Case 4 closes the value channel and base_spaces' replay-synthesis leg acts on it; the DISK
+// LOAD has to act on it too. Logging the failed read and carrying on with `is_computed` left
+// false is not saved by the DEFER leg, which needs the .otbx to be exactly BLOCK_START bytes:
+// a table that HAS been checkpointed is past that size, so the identical state opens it as an
+// ordinary row-storage table with its dynamic-schema semantics gone.
 TEST_CASE("services::disk::open::an_unreadable_relkind_does_not_open_a_document_table_as_regular") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -862,7 +847,7 @@ TEST_CASE("services::disk::open::an_unreadable_relkind_does_not_open_a_document_
     REQUIRE(std::filesystem::file_size(otbx) > components::table::storage::BLOCK_START);
 
     // A manager that has NOT bootstrapped: pg_class is on disk and not loaded, so neither the
-    // columns nor the relkind can be resolved. RED before: no_error, and a storage that came
+    // columns nor the relkind can be resolved. no_error here would leave a storage that came
     // up as a regular table.
     open_fixture fx(base);
     auto err = fx.manager->load_storage_for_wal_replay_sync(doc_oid, ns_oid);
@@ -878,13 +863,11 @@ TEST_CASE("services::disk::open::an_unreadable_relkind_does_not_open_a_document_
 
 // --- 11. A SIDECAR PUBLISH THAT WAS REFUSED MUST LEAVE NOTHING BEHIND ---------------------
 //
-// The writer this file's other cases were justified by ("written atomically, tmp + rename")
-// did not check its write, did not check its close, fsynced neither the file nor the
-// directory, and, when the rename was refused, warned and LEFT THE STAGING FILE SITTING IN
-// THE ENGINE-OWNED `table.otbx.*` namespace — where the next round writes over a file it did
-// not create, and where verify_otbx_sidecars has to keep a permanent exemption for it.
+// A refused rename must not leave the staging file sitting in the engine-owned `table.otbx.*`
+// namespace — the next round would write over a file it did not create, and
+// verify_otbx_sidecars would need a permanent exemption for it.
 //
-// persist_checkpoint_sidecar states the contract instead: either the new id is published, or
+// persist_checkpoint_sidecar states the contract: either the new id is published, or
 // the sidecar already on disk is left byte-identical and nothing else is added next to it.
 // The refusal is forced here the one way a test can force it without a device — the rename
 // target is made un-renameable-over — and what is asserted is the invariant, not the cause.
@@ -913,7 +896,7 @@ TEST_CASE("services::disk::open::a_refused_sidecar_publish_leaves_no_staging_fil
     append_rows(fx, table_oid, 3);
     fx.checkpoint(services::wal::id_t{200});
 
-    // RED before: the staging file the refused rename left behind, in the namespace the
+    // The staging file a refused rename leaves behind sits in the namespace the
     // engine polices for exactly this kind of leftover.
     INFO("a publish that could not complete must not leave its staging file in the table's namespace");
     CHECK_FALSE(std::filesystem::exists(staging));
@@ -925,30 +908,25 @@ TEST_CASE("services::disk::open::a_refused_sidecar_publish_leaves_no_staging_fil
 
 // --- 9. A REPLAYED UPDATE THAT LOST A VALUE RESTORES THE REST — AND SAYS SO ----------------
 //
-// direct_update_sync is the WAL-replay update router, the twin of the direct_append_sync case
-// at the top of this file. It ended in `return core::error_t::no_error()` UNCONDITIONALLY:
-// underneath it, storage_t's replay update leg was declared `void`, and the only thing that
-// leg did with the two refusals it can meet — a payload naming a column the storage has not
-// materialised, and the write_conflict / out_of_memory the table layer answers with — was
-// assert. Under NDEBUG those asserts are not compiled at all. So a value recovery silently
-// dropped travelled to base_spaces' replay loop inside a clean no_error, and the loop's
-// `if (upd_err.contains_error())` could never be true for any refusal BELOW the router —
-// the router's own missing-storage refusal (no_replay_storage_error) predates this case and
-// could already reach it.
+// direct_update_sync is the WAL-replay update router, the twin of the direct_append_sync case at
+// the top of this file. It must not answer `core::error_t::no_error()` unconditionally: the two
+// refusals the leg below it can meet — a payload naming a column the storage has not materialised,
+// and the write_conflict / out_of_memory the table layer answers with — are only asserts, and under
+// NDEBUG those are not compiled at all. A value recovery silently dropped would then travel to
+// base_spaces' replay loop inside a clean no_error, where `if (upd_err.contains_error())` can never
+// be true for any refusal BELOW the router (the router's own no_replay_storage_error does reach it).
 //
-// THE SHAPE FORCED HERE is an update chunk one column WIDER than the storage, carrying a
-// value in that column. That is a real replay shape: a PHYSICAL_UPDATE carries the
-// CATALOG-wide chunk, and at replay time the storage is narrower — legitimately when the
-// extra column is all-NULL, and by a FAILED upstream replay (the column's materialising
-// INSERT was refused and logged) when it carries a value.
+// THE SHAPE FORCED HERE is an update chunk one column WIDER than the storage, carrying a value in
+// that column. That is a real replay shape: a PHYSICAL_UPDATE carries the CATALOG-wide chunk, and
+// at replay time the storage is narrower — legitimately when the extra column is all-NULL, and by a
+// FAILED upstream replay (the column's materialising INSERT was refused and logged) when it carries
+// a value.
 //
-// AND THE ANSWER IS RECOVER-THEN-REPORT, NOT REFUSE. This is the recovery path. The row's
-// materialized columns are addressable and WERE restored by the pre-channel NDEBUG build —
-// data_table_t::update builds its column list from its own column_count() and never reads
-// the chunk's trailing columns — so an outright refusal here would restore LESS than the
-// silent code it replaced. The leg now applies the materialized part IN PLACE and answers
-// with the one thing it could not restore, naming the column. Loud, and nothing that used
-// to arrive is lost.
+// AND THE ANSWER IS RECOVER-THEN-REPORT, NOT REFUSE. The row's materialized columns are addressable
+// — data_table_t::update builds its column list from its own column_count() and never reads the
+// chunk's trailing columns — so an outright refusal here would restore LESS than a silent success
+// does. The leg applies the materialized part IN PLACE and answers with the one thing it could not
+// restore, naming the column.
 TEST_CASE("services::disk::open::a_replayed_update_that_lost_a_value_restores_the_rest_and_reports") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -1047,14 +1025,14 @@ TEST_CASE("services::disk::open::a_replayed_update_that_lost_a_value_restores_th
 // A PHYSICAL_UPDATE record pairs row ids with chunk rows BY POSITION, and nothing below the
 // router re-checks the pairing: data_table_t::update reads `data.size()` entries out of the
 // id vector (data_table.cpp builds count from the CHUNK), so a record carrying FEWER ids than
-// rows sent the update reading past the ids it was given — on the recovery path, exactly
-// where torn and damaged records live. A record carrying MORE ids than rows silently dropped
-// the surplus ids' updates; an empty id list under a non-empty chunk answered the legitimate
-// no-op's no_error while a committed update vanished. All three used to report success.
+// rows would send the update reading past the ids it was given — on the recovery path, exactly
+// where torn and damaged records live. A record carrying MORE ids than rows silently drops the
+// surplus ids' updates; an empty id list under a non-empty chunk takes the legitimate no-op's
+// door while a committed update vanishes. Unguarded, all three report success.
 //
-// AND A ROW ID THE STORAGE CANNOT HOLD IS A ROW NOT RESTORED. data_table_t::update filters
-// ids at or past MAX_ROW_ID and answers with the count it applied; the replay leg used to
-// throw that count away, so "applied to 0 rows" reported like "applied to all of them".
+// AND A ROW ID THE STORAGE CANNOT HOLD IS A ROW NOT RESTORED. data_table_t::update filters ids
+// at or past MAX_ROW_ID and answers with the count it applied; throwing that count away makes
+// "applied to 0 rows" report like "applied to all of them".
 TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_refused") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -1088,7 +1066,7 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
             return c;
         };
 
-        // (1) SURPLUS ids: two ids, one row. RED today: the second id's update is silently
+        // (1) SURPLUS ids: two ids, one row. Unguarded, the second id's update is silently
         // dropped and the answer is no_error.
         {
             std::pmr::vector<std::int64_t> two_ids(&fx.resource);
@@ -1101,8 +1079,8 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
             CHECK(rows_where_value_is(fx, table_oid, 555) == 0);
         }
 
-        // (2) EMPTY ids under a non-empty chunk. RED today: the legitimate no-op's answer,
-        // while the committed update goes nowhere — the base_spaces slicing loop produces
+        // (2) EMPTY ids under a non-empty chunk. Unguarded, this takes the legitimate no-op's
+        // door while the committed update goes nowhere — the base_spaces slicing loop produces
         // exactly this shape when a record carries fewer row ids than rows.
         {
             std::pmr::vector<std::int64_t> no_ids(&fx.resource);
@@ -1113,7 +1091,7 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
             CHECK(rows_where_value_is(fx, table_oid, 556) == 0);
         }
 
-        // (3) SHORTAGE: one id, two rows. RED today: data_table_t::update reads TWO entries
+        // (3) SHORTAGE: one id, two rows. Unguarded, data_table_t::update reads TWO entries
         // out of a ONE-entry id vector.
         {
             std::pmr::vector<std::int64_t> one_id(&fx.resource);
@@ -1127,9 +1105,8 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
             CHECK(err.contains_error());
         }
 
-        // (4) A ROW ID PAST MAX_ROW_ID: well-paired, applied to nothing. RED today: the
-        // {0, applied-count} pair data_table_t::update answers with was discarded, so this
-        // reported success.
+        // (4) A ROW ID PAST MAX_ROW_ID: well-paired, applied to nothing. Discarding the
+        // {0, applied-count} pair data_table_t::update answers with reports success.
         {
             std::pmr::vector<std::int64_t> ghost_id(&fx.resource);
             ghost_id.push_back(std::int64_t{1} << 55); // MAX_ROW_ID (column_data.hpp)
@@ -1168,15 +1145,15 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
 
 // --- 9c. A REPLAYED DELETE THAT DELETED LESS THAN IT NAMED IS REFUSED ----------------------
 //
-// direct_delete_sync is the third replay router, and it was the one left without a channel:
-// it dropped storage_t::delete_rows' returned count on the floor and answered no_error
-// unconditionally, so a PHYSICAL_DELETE record naming rows the storage does not hold (their
-// materialising INSERT was refused at replay and logged) deleted nothing and reported
-// success — rows the journal says are dead stay alive after recovery, silently.
+// direct_delete_sync is the third replay router. Dropping storage_t::delete_rows' returned
+// count and answering no_error unconditionally lets a PHYSICAL_DELETE record naming rows the
+// storage does not hold (their materialising INSERT was refused at replay and logged) delete
+// nothing and report success — rows the journal says are dead stay alive after recovery,
+// silently.
 //
-// AND ITS ID/COUNT PAIRING HAD THE SAME HOLE AS THE UPDATE ROUTER'S: the record's count and
-// its id list travel separately, and the router built a count-sized id vector out of however
-// many ids there were — the tail cells UNINITIALISED — then deleted `count` of them.
+// AND ITS ID/COUNT PAIRING HAS THE SAME HOLE AS THE UPDATE ROUTER'S: the record's count and
+// its id list travel separately, so a count-sized id vector built out of however many ids there
+// are leaves the tail cells UNINITIALISED, and `count` of them are deleted.
 TEST_CASE("services::disk::open::a_replayed_delete_that_deleted_less_than_named_is_refused") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -1206,8 +1183,8 @@ TEST_CASE("services::disk::open::a_replayed_delete_that_deleted_less_than_named_
             CHECK(rows_where_value_is(fx, table_oid, 1) == 0);
         }
 
-        // (1) THE SAME DELETE AGAIN: the storage deletes 0 of the 1 named row. RED today:
-        // the count was discarded and this answered no_error.
+        // (1) THE SAME DELETE AGAIN: the storage deletes 0 of the 1 named row. Discarding the
+        // count answers no_error over it.
         {
             std::pmr::vector<std::int64_t> id(&fx.resource);
             id.push_back(1);
@@ -1217,8 +1194,8 @@ TEST_CASE("services::disk::open::a_replayed_delete_that_deleted_less_than_named_
             CHECK(std::string(err.what.c_str()).find("0 of") != std::string::npos);
         }
 
-        // (2) COUNT LARGER THAN THE ID LIST. RED today: a 2-cell id vector was built with
-        // ONE initialised cell and both were deleted.
+        // (2) COUNT LARGER THAN THE ID LIST. Unguarded, a 2-cell id vector is built with ONE
+        // initialised cell and both are deleted.
         {
             std::pmr::vector<std::int64_t> id(&fx.resource);
             id.push_back(0);
@@ -1267,18 +1244,16 @@ TEST_CASE("services::disk::open::a_replayed_delete_that_deleted_less_than_named_
 //
 // update_pg_attribute_commit_id_fields is the backfill operator_commit_transaction_t's STEP 4
 // drains: it writes the freshly allocated commit_id into pg_attribute's added_at / dropped_at
-// column for every column an in-flight ALTER created or dropped. It was unique_future<void>,
-// and so was the agent handler under it, so ALL FIVE of its failures — no pg_attribute on the
-// agent, no row visible for that attoid, a patch column past the end of the row, a REFUSED
-// journal record, a refused storage write — ended in a bare co_return behind a log line. The
-// drain awaited it and then traced that all N markers were "patched in-place". A column whose
-// stamp never landed keeps commit_id 0, which reads as "added before every snapshot": it shows
-// up in snapshots older than the ALTER that created it.
+// column for every column an in-flight ALTER created or dropped. On a unique_future<void>
+// handler ALL FIVE of its failures — no pg_attribute on the agent, no row visible for that
+// attoid, a patch column past the end of the row, a REFUSED journal record, a refused storage
+// write — end in a bare co_return behind a log line, while the drain traces that all N markers
+// were "patched in-place". A column whose stamp never landed keeps commit_id 0, which reads as
+// "added before every snapshot": it shows up in snapshots older than the ALTER that created it.
 //
-// AND THE ONE THAT REACHES THE LOG IS NOT THE ONLY ONE THAT MATTERS. This case also pins the
-// batching rule the answer forced a decision about: one marker that cannot be stamped must not
-// cost the OTHERS their stamp, because this path runs below the durable commit marker and
-// cannot be retried by aborting the transaction.
+// This case also pins the batching rule: one marker that cannot be stamped must not cost the
+// OTHERS their stamp, because this path runs below the durable commit marker and cannot be
+// retried by aborting the transaction.
 TEST_CASE("services::disk::open::a_commit_id_stamp_that_was_not_applied_is_refused") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -1309,9 +1284,9 @@ TEST_CASE("services::disk::open::a_commit_id_stamp_that_was_not_applied_is_refus
         CHECK_FALSE(backfill(fx, {attoid}, 4242).contains_error());
         CHECK(added_at_commit_id_of(fx, attoid) == 4242);
 
-        // RED today: no answer at all — the handler was unique_future<void>, so a marker
-        // naming an attoid no pg_attribute row carries was a trace line reading
-        // "attoid=... not found (skipping)" and a COMMIT that reported success.
+        // With no answer at all — a unique_future<void> handler — a marker naming an attoid no
+        // pg_attribute row carries is a trace line reading "attoid=... not found (skipping)"
+        // under a COMMIT that reports success.
         constexpr catalog::oid_t kGhostAttoid = 4000000000u;
         auto refused = backfill(fx, {kGhostAttoid}, 4243);
         INFO("a commit_id stamp that could not be applied must be reported, not skipped");
@@ -1352,8 +1327,8 @@ TEST_CASE("services::disk::open::a_commit_id_stamp_that_was_not_applied_is_refus
 // The first of the backfill's refusal legs (agent_disk.cpp, update_pg_attribute_commit_id
 // _field_inner's storages_ lookup): pg_attribute always routes to the catalog agent, so an
 // agent that does not hold it is a misroute or a pre-bootstrap call — never "nothing to
-// stamp". It used to be a bare co_return. Forced here the one honest way: a manager whose
-// catalog agent has not bootstrapped holds no pg_attribute at all.
+// stamp", and never a bare co_return. Forced here the one honest way: a manager whose catalog
+// agent has not bootstrapped holds no pg_attribute at all.
 TEST_CASE("services::disk::open::a_backfill_on_an_agent_without_pg_attribute_is_refused") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -1410,12 +1385,10 @@ namespace {
 
 // --- 10c. A REFUSED JOURNAL RECORD CANCELS THE BACKFILL'S STORAGE PATCH --------------------
 //
-// The WAL-FIRST leg of the backfill, and the one behavioural change of its rework: the
-// PHYSICAL_UPDATE that mirrors the stamp used to log its refusal at error level and then
-// apply the storage patch ANYWAY, leaving storage one state ahead of a journal with no
-// record of the patch to replay. Now the refusal DECLINES the patch: memory, platter and
-// journal keep agreeing on the placeholder 0 — the state this branch shipped with for as
-// long as the backfill could not see its own row.
+// The WAL-FIRST leg of the backfill: the PHYSICAL_UPDATE that mirrors the stamp must not log
+// its refusal and apply the storage patch ANYWAY, which would leave storage one state ahead of
+// a journal with no record of the patch to replay. The refusal DECLINES the patch instead, so
+// memory, platter and journal keep agreeing on the placeholder 0.
 //
 // The refusal is forced the one way a record too small to leave the page buffer can meet
 // one: an UNOPENABLE SEGMENT, whose parked open_error_ answers every append
@@ -1524,14 +1497,14 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
     cleanup_refusal_dir();
 }
 
-// THE pg_index SCAN USED TO KILL THE PROCESS OVER BYTES IT READ FROM DISK. Three legs of
-// scan_alive_pg_index_sync called std::abort() on a row it could not classify: a pg_index
-// with the wrong column count, a NULL indtype, an unknown indtype code. Corrupt catalog
-// bytes must refuse the START — the same std::runtime_error the two bootstrap_one refusals
-// in this file family throw, catchable by the embedder, retryable once the row is repaired
-// — never SIGABRT, which takes the process regardless of who embeds it and leaves no seam
-// to repair through. The refusal to GUESS the owning backend stands unchanged: reading
-// bitcask files through a B+tree corrupts them, so the scan still does not proceed.
+// THE pg_index SCAN MUST NOT KILL THE PROCESS OVER BYTES IT READ FROM DISK. Three legs of
+// scan_alive_pg_index_sync can meet a row they cannot classify: a pg_index with the wrong
+// column count, a NULL indtype, an unknown indtype code. Corrupt catalog bytes must refuse the
+// START — the same std::runtime_error the two bootstrap_one refusals in this file family throw,
+// catchable by the embedder, retryable once the row is repaired — never SIGABRT, which takes
+// the process regardless of who embeds it and leaves no seam to repair through. The refusal to
+// GUESS the owning backend stands unchanged: reading bitcask files through a B+tree corrupts
+// them, so the scan does not proceed.
 TEST_CASE("services::disk::open::an_unknown_indtype_refuses_the_start_instead_of_killing_the_process") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());

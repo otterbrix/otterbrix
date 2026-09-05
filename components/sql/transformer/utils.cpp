@@ -169,11 +169,10 @@ namespace components::sql::transform {
                                  resource});
         }
         Value* val = &pg_ptr_cast<A_Const>(indices->uidx)->val;
-        // THE defect. `ival` and `str` share one union slot, and the scanner stores an
-        // integer literal in `ival` only when it fits int32 — arr[3000000000] arrives as
-        // a T_Float carrying its ORIGINAL DIGITS in `str`. Reading `ival` regardless of
-        // the tag rendered the char*'s bit pattern as the segment name, a different
-        // "index" on every run.
+        // `ival` and `str` share one union slot, and the scanner stores an integer literal
+        // in `ival` only when it fits int32 — arr[3000000000] arrives as a T_Float carrying
+        // its ORIGINAL DIGITS in `str`. Reading `ival` regardless of the tag renders the
+        // char*'s bit pattern as the segment name, a different "index" on every run.
         switch (nodeTag(val)) {
             case T_Integer:
                 return core::pmr::to_pmr_string(resource, intVal(val));
@@ -540,8 +539,8 @@ namespace components::sql::transform {
                                  resource});
         }
         if (call.agg_within_group || (call.agg_order && !call.agg_order->lst.empty())) {
-            // agg_order shares the same seam: `array_agg(x ORDER BY y)` parsed, the
-            // ordering was read by nobody, and the aggregate answered in storage order.
+            // agg_order shares the same seam: `array_agg(x ORDER BY y)` parses, the
+            // ordering is read by nobody, and the aggregate would answer in storage order.
             return core::error_t(
                 core::error_code_t::unimplemented_yet,
                 std::pmr::string{"aggregate ORDER BY / WITHIN GROUP is not supported yet: the ordering would "
@@ -554,9 +553,9 @@ namespace components::sql::transform {
     core::result_wrapper_t<types::complex_logical_type> get_type(std::pmr::memory_resource* resource, TypeName* type) {
         types::complex_logical_type column;
         if (!type || !type->names || list_length(type->names) == 0) {
-            // No TypeName, or one with an empty name list, used to answer a
-            // default-constructed NA type — a failure reported as a value, which the
-            // caller then stored as a column's type. Report the failure as one.
+            // No TypeName, or one with an empty name list, is a FAILURE, not a
+            // default-constructed NA type: answered as a value, the caller stores it as a
+            // column's type.
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"cannot determine a type: the TypeName is absent", resource});
         }
@@ -592,12 +591,12 @@ namespace components::sql::transform {
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"Incorrect width or scale for DECIMAL, must be integer", resource});
                 }
-                // Range-check BEFORE narrowing. The bare static_cast<uint8_t> that used to
-                // stand here silently wrapped: NUMERIC(256,0) became DECIMAL(0,0) and
-                // NUMERIC(-1,0) became DECIMAL(255,0) — both of them types the persistence
-                // codec writes and then refuses to read back. This is the EARLIEST point
-                // that owns an error channel, and refusing here costs one failed statement
-                // instead of a catalog row that makes the database unopenable.
+                // Range-check BEFORE narrowing: a bare static_cast<uint8_t> wraps silently —
+                // NUMERIC(256,0) becomes DECIMAL(0,0) and NUMERIC(-1,0) becomes
+                // DECIMAL(255,0), both of them types the persistence codec writes and then
+                // refuses to read back. This is the EARLIEST point that owns an error
+                // channel, and refusing here costs one failed statement instead of a catalog
+                // row that makes the database unopenable.
                 const auto raw_width = intVal(&width->val);
                 const auto raw_scale = intVal(&scale->val);
                 if (raw_width < 0 || raw_scale < 0 || raw_width > types::DECIMAL_MAX_WIDTH ||
@@ -788,15 +787,14 @@ namespace components::sql::transform {
                                                                          Value* value) {
         if (nodeTag(value) == T_Integer) {
             // Already inside int32 — the scanner only stores an integer literal in `ival`
-            // when it fits there. BIGINT (not INTEGER) is what the rest of the pipeline has
-            // always seen from this arm; keeping it means the repair changes wide literals
-            // and nothing else.
+            // when it fits there. BIGINT (not INTEGER) is what the rest of the pipeline
+            // expects from this arm.
             return types::logical_value_t(resource, static_cast<int64_t>(intVal(value)));
         }
         if (nodeTag(value) != T_Float) {
             // T_BitString / T_Null / anything else keeps a char* in the same union slot as
-            // `ival`. This arm used to read it as an integer and answer with a pointer
-            // value; a wrong node kind here is a parser bug, so it reports as one.
+            // `ival`, so reading it as an integer answers with a pointer value. A wrong node
+            // kind here is a parser bug, and it reports as one.
             return core::error_t(
                 core::error_code_t::sql_parse_error,
                 std::pmr::string{"not a numeric literal: " + node_tag_to_string(nodeTag(value)), resource});
@@ -1120,13 +1118,13 @@ namespace components::sql::transform {
                 if (constant->val.type == T_Null) {
                     return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                 }
-                // The DECLARED target decides the value's type. Two silent narrowings used
-                // to live here: a refusal from get_type (NUMERIC without (width, scale),
-                // an unsupported builtin) was SWALLOWED by an is-error guard and the value
-                // fell through to a plain string; and a numeric literal ignored the target
-                // wholesale — CAST(1.5 AS INT) answered a DOUBLE, CAST(1 AS DOUBLE
-                // PRECISION) an int64, and every downstream type-matched comparison and
-                // storage decision was made against the type the user did NOT write.
+                // The DECLARED target decides the value's type, and two narrowings must stay
+                // closed here: a refusal from get_type (NUMERIC without (width, scale), an
+                // unsupported builtin) must not be swallowed into a plain string, and a
+                // numeric literal must not ignore the target — otherwise CAST(1.5 AS INT)
+                // answers a DOUBLE, CAST(1 AS DOUBLE PRECISION) an int64, and every
+                // downstream type-matched comparison and storage decision is made against
+                // the type the user did NOT write.
                 VALUE_OR_RETURN(auto target_type, get_type(resource, cast->typeName));
                 if (constant->val.type != T_String) {
                     if (constant->val.type != T_Integer && constant->val.type != T_Float) {
@@ -1213,10 +1211,9 @@ namespace components::sql::transform {
                     // text and is reconciled against the type's definition downstream.
                     return types::logical_value_t(resource, std::string(str));
                 }
-                // Every remaining target is honoured exactly or refused —
-                // '123'::BIGINT used to come back as the STRING "123", and a boolean
-                // accepted only the grammar's own 't' spelling, answering FALSE for
-                // 'true', 'yes' and every other word PostgreSQL accepts.
+                // Every remaining target is honoured exactly or refused: no handing
+                // '123'::BIGINT back as the STRING "123", and a boolean accepts every word
+                // PostgreSQL accepts, not just the grammar's own 't' spelling.
                 return cast_literal_text(resource, target_type, std::string(str), /*is_string_literal=*/true);
             }
             case T_A_Const: {
@@ -1232,9 +1229,9 @@ namespace components::sql::transform {
                     case T_Null:
                         return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
                     default:
-                        // T_BitString (`SELECT B'1010'`) and any future Value kind used to
-                        // `break` out of BOTH switches and fall off the end of the function
-                        // — no return value at all, UB. Refuse by name instead.
+                        // T_BitString (`SELECT B'1010'`) and any future Value kind are refused
+                        // BY NAME: a `break` here leaves BOTH switches and falls off the end
+                        // of the function — no return value at all, UB.
                         return core::error_t(
                             core::error_code_t::sql_parse_error,
                             std::pmr::string{"unsupported constant kind: " + node_tag_to_string(nodeTag(value)),
@@ -1496,10 +1493,10 @@ namespace components::sql::transform {
             if (constraint->conname) {
                 tc.name = constraint->conname;
             }
-            // Every ConstrType by name, no default: — a kind this switch does not decide
-            // used to fall into `default: continue`, so `EXCLUDE (a WITH =)` CREATEd the
-            // table with the constraint absent and no diagnostic. A new enum member now
-            // breaks the build here instead of inheriting that behaviour.
+            // Every ConstrType by name, no default: — under a `default: continue` a kind
+            // this switch does not decide (`EXCLUDE (a WITH =)`) CREATEs the table with the
+            // constraint absent and no diagnostic. A new enum member breaks the build here
+            // instead.
             switch (constraint->contype) {
                 case CONSTR_PRIMARY:
                     tc.type = table::table_constraint_type::PRIMARY_KEY;
@@ -1577,12 +1574,11 @@ namespace components::sql::transform {
                 if (constraint->conname) {
                     tc.name = constraint->conname;
                 }
-                // Every ConstrType by name, no default: — the old `default: continue`
-                // claimed everything it swallowed was "a column property
-                // get_column_definitions owns", which was true for exactly THREE of the
-                // eight kinds it caught. The other five (EXCLUDE and the four constraint
-                // attributes) were silently dropped. A new enum member now breaks the
-                // build here instead of inheriting the claim.
+                // Every ConstrType by name, no default: — of the eight kinds a
+                // `default: continue` catches here only THREE really are column properties
+                // get_column_definitions owns; the other five (EXCLUDE and the four
+                // constraint attributes) would be dropped silently. A new enum member breaks
+                // the build here instead.
                 switch (constraint->contype) {
                     case CONSTR_PRIMARY:
                         tc.type = table::table_constraint_type::PRIMARY_KEY;
@@ -1707,8 +1703,8 @@ namespace components::sql::transform {
         }
         switch (nodeTag(node)) {
             case T_ColumnRef:
-                // A bare column in a CONDITION position (`CHECK (flag)`). The recogniser
-                // has no comparison to build from it and passed every row.
+                // A bare column in a CONDITION position (`CHECK (flag)`). The recogniser has
+                // no comparison to build from it and would pass every row.
                 return unevaluable_check(resource, "a bare column reference where a condition is required");
             case T_A_Const:
                 // Likewise a bare constant (`CHECK (1)`): it judges no column.
@@ -1769,9 +1765,8 @@ namespace components::sql::transform {
                     }
                     return "NOT (" + std::move(inner.value()) + ")";
                 }
-                // IN / BETWEEN / LIKE / DISTINCT FROM and the rest of the A_Expr kinds.
-                // They used to deparse to "" — which the callers read as "unsupported",
-                // but only because every caller happened to test for it. Name the kind.
+                // IN / BETWEEN / LIKE / DISTINCT FROM and the rest of the A_Expr kinds. Name
+                // the kind: deparsing them to "" leaves every caller to guess "unsupported".
                 return unevaluable_check(resource, "the expression kind " + expr_kind_to_string(e->kind));
             }
             case T_BoolExpr: {

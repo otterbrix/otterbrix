@@ -81,11 +81,10 @@ namespace core::b_plus_tree {
         std::vector<gap_t> empty_spaces_;
     };
 
-    // WHAT THIS LIBRARY CAN FAIL TO DO WHEN IT READS THE DISK. Everything below used to be read
-    // with the result dropped, and a block's checksum was verified only inside an assert -- so
-    // under -DNDEBUG a block that never arrived, or arrived changed, was restored as if it were
-    // sound: restore_block() takes header_->count_ at face value and places the metadata cursor
-    // by it.
+    // WHAT THIS LIBRARY CAN FAIL TO DO WHEN IT READS THE DISK. Nothing below may be checked in an
+    // assert alone: under -DNDEBUG that leaves a block that never arrived, or arrived changed,
+    // restored as if it were sound -- restore_block() takes header_->count_ at face value and
+    // places the metadata cursor by it.
     //
     // THE RULE EVERY USE OF THIS OBEYS IS LOUD, NOT FATAL. A leaf that met a block it could not
     // read serves NOTHING out of that block rather than serving something else, refuses to flush
@@ -145,15 +144,13 @@ namespace core::b_plus_tree {
     // TODO: move memory overflow checks to b_plus_tree
     class segment_tree_t {
         struct header_t {
-            // THE SEAL OF THE WHOLE HEADER REGION (wave #325). Everything a range lookup
-            // stands on -- the three counters AND the block_metadata array behind them,
-            // min_index/max_index boundaries included -- lives in this region, and until
-            // this field existed none of it was covered by any checksum: a flipped bit in
-            // a key boundary passed the single segments-count bound check and mis-routed
-            // every later lookup, silently. CRC32C over the region past this field,
-            // computed by flush() as the region is written and verified by read_header_()
-            // before one byte of it is believed. First field, so the coverage arithmetic
-            // is simply "everything after it".
+            // THE SEAL OF THE WHOLE HEADER REGION. Everything a range lookup stands on --
+            // the three counters AND the block_metadata array behind them, min_index/max_index
+            // boundaries included -- lives here; unsealed, a flipped bit in a key boundary passes
+            // the segments-count bound check and mis-routes every later lookup, silently. CRC32C
+            // over the region past this field, computed by flush() as the region is written and
+            // verified by read_header_() before one byte of it is believed. First field, so the
+            // coverage is simply "everything after it".
             size_t header_checksum_;
             size_t segments_count_;
             size_t item_count_;
@@ -206,13 +203,12 @@ namespace core::b_plus_tree {
         static constexpr double merge_check = 4.0 / 5.0;
         static constexpr size_t header_size = 2 * DEFAULT_BLOCK_SIZE;
         // HOW MANY BLOCK METADATA ENTRIES THE HEADER REGION ACTUALLY HOLDS, spelled out where
-        // something can compare against it. Two things used to take it on faith:
+        // something can compare against it. Two things take it on faith without this bound:
         //   - header_->segments_count_ comes off the DISK and places metadata_end_, so a count
-        //     larger than this walked past the allocation on every later lookup;
-        //   - insert_segment_ moved metadata_end_ forward with nothing stopping it at the end.
-        // The comment that stood here said "2^14 - 1 block capacity", which was never true of this
-        // arithmetic -- it is 8191, one BELOW MAX_NODE_CAPACITY, and blocks per leaf are bounded by
-        // unique indices per leaf, which btree_t bounds by max_node_capacity_.
+        //     larger than this walks past the allocation on every later lookup;
+        //   - insert_segment_ moves metadata_end_ forward with nothing stopping it at the end.
+        // It is 8191, one BELOW MAX_NODE_CAPACITY; blocks per leaf are bounded by unique indices
+        // per leaf, which btree_t bounds by max_node_capacity_.
         static constexpr size_t max_segments = (header_size - sizeof(header_t)) / block_metadata_size;
 
         // it is possible to just use segments_::iterator, but it won't work correctly if block is not loaded
@@ -245,9 +241,8 @@ namespace core::b_plus_tree {
                 return block_;
             }
 
-            // The prefix forms move the SAME way as their postfix twins below. They used to
-            // move against them (++ stepped metadata_ down), latent only because every
-            // traversal in the tree spells the postfix form.
+            // The prefix forms must move the SAME way as their postfix twins below. An inversion
+            // here stays latent: every traversal in the tree spells the postfix form.
             inline const iterator& operator++() {
                 metadata_++;
                 get_block();
@@ -343,7 +338,7 @@ namespace core::b_plus_tree {
             }
 
             // Same contract as iterator's prefix forms: they move the way the postfix twins
-            // move (a reverse step is metadata_ DOWN). They used to be inverted.
+            // move (a reverse step is metadata_ DOWN).
             inline const r_iterator& operator++() {
                 metadata_--;
                 get_block();
@@ -423,7 +418,7 @@ namespace core::b_plus_tree {
         segment_tree_t(std::pmr::memory_resource* resource,
                        index_t (*func)(const item_data&),
                        std::unique_ptr<filesystem::file_handle_t> file);
-        // LAZY MODE (wave #326): the leaf remembers WHERE its file is and holds NO
+        // LAZY MODE: the leaf remembers WHERE its file is and holds NO
         // descriptor at rest. One segment_tree_t is one B+tree leaf, and the pinned mode
         // above made that one permanently open descriptor per leaf -- a tree of N leaves
         // held N descriptors for the life of the process, and under a parallel test run
@@ -549,13 +544,13 @@ namespace core::b_plus_tree {
         // emptiness anywhere. Used when a block that could NOT be read is the only thing that
         // could have made this leaf's metadata usable -- see the STRING note at its definition.
         void abandon_leaf_(load_failure_t failure);
-        // Read the leaf header off the file, verify its seal (wave #325), and check that
+        // Read the leaf header off the file, verify its seal, and check that
         // the segment count it names fits the region that holds the metadata array.
         // False = nothing was loaded and the failure is on the channel; the leaf is left
         // empty and openable.
         [[nodiscard]] bool read_header_(filesystem::file_handle_t& file);
 
-        // ONE OPERATION'S CLAIM ON THE LEAF'S FILE (wave #326). In pinned mode it points
+        // ONE OPERATION'S CLAIM ON THE LEAF'S FILE. In pinned mode it points
         // at the handle the leaf owns; in lazy mode it OWNS a handle opened for this
         // operation and closes it when the operation's frame ends. A lease that could not
         // open answers false and the operation refuses the way it refuses a failed read.

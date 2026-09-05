@@ -2,33 +2,29 @@
 // RESTRICT IS UNREACHABLE FROM SQL, AND THE TWO THINGS THAT WOULD BREAK IF IT
 // WERE WIRED UP.
 //
-// ЗАПИСИ [209] / [210]. gram.y fills DropStmt::behavior and
-// AlterTableCmd::behavior, and `opt_drop_behavior` defaults to DROP_RESTRICT
+// gram.y fills DropStmt::behavior and AlterTableCmd::behavior, and
+// `opt_drop_behavior` defaults to DROP_RESTRICT
 // (components/sql/parser/gram.y:3108-3112). Everything from the logical node
 // down is already wired: node_drop_t::behavior() reaches
-// node_dynamic_cascade_delete_t (components/planner/planner.cpp:694),
-// alter_table_subcommand_t::behavior reaches node_alter_column_t
-// (planner.cpp:766), and both operators implement the restrict_ leg. The ONE
-// missing hop is the transformer copying the parser's value onto the node —
-// and because the grammar's default is RESTRICT, adding that hop is not a
-// wiring change, it is a semantics change for EVERY existing statement:
-// 89 `DROP TABLE` and 138 `DROP COLUMN` occurrences in this tree, of which
-// only 10 and 1 respectively say CASCADE.
+// node_dynamic_cascade_delete_t and alter_table_subcommand_t::behavior reaches
+// node_alter_column_t (both components/planner/planner.cpp), and both operators
+// implement the restrict_ leg. The ONE missing hop is the transformer copying
+// the parser's value onto the node — and because the grammar's default is
+// RESTRICT, adding that hop is not a wiring change, it is a semantics change for
+// EVERY existing statement: 89 `DROP TABLE` and 138 `DROP COLUMN` occurrences in
+// this tree, of which only 10 and 1 respectively say CASCADE.
 //
-// So the transformer hop is deliberately NOT taken here. What this file does
-// is take the behaviour that hop would expose and measure it, by building the
-// two plans by hand with behavior = restrict_ — the same nodes the transformer
-// would produce — and running them through the ordinary execute_plan channel.
+// So the hop is deliberately NOT taken here; this file builds the two plans by
+// hand with behavior = restrict_ — the same nodes the transformer would produce
+// — and runs them through the ordinary execute_plan channel.
 //
-// Both cases below are CHARACTERIZATION: they pin what the engine does today,
-// each with a `correct:` note stating what it must do once the defect above it
-// is fixed. Both defects live in files this wave does not own, so they are
-// measured here and reported, not patched:
+// Both cases below are CHARACTERIZATION, each with a `correct:` note stating
+// what it must do once the defect above it is fixed. Both defects live outside
+// this file, so they are measured here and reported, not patched:
 //
 //   (1) components/physical_plan/operators/operator_computed_field_register.cpp
 //       :288 writes the edge (pg_computed_column, attoid) -> (pg_class,
-//       table_oid) with deptype 'n'. That edge is a table's dependency on
-//       ITSELF: the column belongs to the table it points at.
+//       table_oid) with deptype 'n' — a table's dependency on ITSELF.
 //       catalog::deptype::blocks_restrict is exactly `dt == 'n'`
 //       (components/catalog/dependency_walker.hpp:24), so under RESTRICT a
 //       computing table is blocked from being dropped BY ITS OWN COLUMNS.
@@ -36,15 +32,14 @@
 //       (topological_drop_order does not filter on deptype,
 //       cascade_planner.cpp:40-42), it just stops blocking RESTRICT.
 //
-//   (2) components/physical_plan/operators/operator_alter_column_drop.cpp:354
+//   (2) components/physical_plan/operators/operator_alter_column_drop.cpp
 //       refuses DROP COLUMN RESTRICT when `dependents` is non-empty, and
-//       `dependents` is EVERY pg_depend row keyed on the column (built
-//       unconditionally at :251). Its own comment at :352 says "abort if any
-//       non-internal dep exists" — the deptype filter that sentence describes
-//       is 85 lines above it at :269, where `blocking` is built, and it was
-//       never applied here. So an index or a constraint on the column — an
-//       'a'/'i' edge that PostgreSQL drops ALONG WITH the column — blocks the
-//       drop instead.
+//       `dependents` is EVERY pg_depend row keyed on the column, collected
+//       unconditionally. The deptype filter its own comment describes ("abort if
+//       any non-internal dep exists") is the one that builds `blocking` further
+//       up, and it was never applied here — so an index or a constraint on the
+//       column, an 'a'/'i' edge PostgreSQL drops ALONG WITH the column, blocks
+//       the drop instead.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -178,7 +173,7 @@ TEST_CASE("integration::cpp::drop_restrict::computing_table_is_blocked_by_its_ow
 // An index on the column is an auto dependency: PostgreSQL drops the index
 // along with the column and lets RESTRICT through. operator_alter_column_drop
 // counts it as a blocker because it never applies the deptype filter it
-// already computed 85 lines earlier.
+// already computed further up.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::drop_restrict::column_is_blocked_by_its_own_index") {
     auto config = make_test_config(fixture_path("own_index"));
@@ -195,9 +190,8 @@ TEST_CASE("integration::cpp::drop_restrict::column_is_blocked_by_its_own_index")
 
     // characterization. correct: is_success() — the index depends on the column
     // through an auto edge and is dropped with it; nothing EXTERNAL references
-    // column a. Fix at operator_alter_column_drop.cpp:354 — filter `dependents`
-    // through catalog::deptype::blocks_restrict, the way `blocking` already is
-    // at :269.
+    // column a. Fix at operator_alter_column_drop.cpp — filter `dependents`
+    // through catalog::deptype::blocks_restrict, the way `blocking` already is.
     CHECK_FALSE(dropped->is_success());
     CHECK(error_text(dropped).find("DROP COLUMN RESTRICT: column has dependent objects") != std::string::npos);
 
@@ -221,20 +215,16 @@ TEST_CASE("integration::cpp::drop_restrict::column_is_blocked_by_its_own_index")
 //         return plan;                     // <-- plan.steps is EMPTY
 //     }
 //
-// The CASCADE path below it ends with `plan.steps.push_back({seed_classid,
-// seed_oid, 'n'})` (:43) — the seed is what makes the drop delete the object's
-// own catalog rows. The RESTRICT allow-path never pushes it, and never pushes
-// the auto/internal children its own comment says it is allowing. It hands back
-// a plan with zero steps.
+// The CASCADE path below it ends with `plan.steps.push_back({seed_classid, seed_oid,
+// 'n'})` (:43) — the seed is what makes the drop delete the object's own catalog rows.
+// The RESTRICT allow-path never pushes it, nor the auto/internal children its own
+// comment says it is allowing, and hands back a plan with zero steps.
 //
-// operator_dynamic_cascade_delete then dedups zero steps into zero steps,
-// probes nothing, emits no delete spec, and runs to mark_executed(). So
-// `DROP TABLE t RESTRICT` on a table nothing depends on is a COMPLETE no-op
-// that answers success — the "success over the rows it did not touch" shape,
-// in the planner rather than the operator.
-//
-// This is the blocker that matters most for ЗАПИСЬ [210]: fixing (1) and (2)
-// would only widen the set of statements that reach this silent no-op.
+// operator_dynamic_cascade_delete then dedups zero steps into zero steps, probes
+// nothing, emits no delete spec, and runs to mark_executed(). So `DROP TABLE t
+// RESTRICT` on a table nothing depends on is a COMPLETE no-op that answers success —
+// the "success over the rows it did not touch" shape, in the planner rather than the
+// operator. Fixing (1) and (2) would only widen the set of statements that reach it.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::drop_restrict::allowed_restrict_drop_removes_nothing") {
     auto config = make_test_config(fixture_path("declared_ok"));

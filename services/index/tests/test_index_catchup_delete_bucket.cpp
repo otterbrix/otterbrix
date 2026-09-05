@@ -1,32 +1,28 @@
 // THE CREATE INDEX CATCHUP MAY ADD TO THE INDEX. IT MAY NOT TAKE ANYTHING AWAY.
 //
-// operator_create_index_backfill scans the table under the build transaction's snapshot
-// and then re-reads the journal past the build's start watermark, so rows committed while
-// the scan ran are not missed. It hands each record to manager_index_t::apply_wal_record_for_index,
-// and that handler used to have TWO legs: PHYSICAL_INSERT/UPDATE staged inserts, and
-// PHYSICAL_DELETE staged DELETES into pending_deletes_[the CREATE INDEX txn].
+// operator_create_index_backfill scans the table under the build transaction's snapshot and then
+// re-reads the journal past the build's start watermark, so rows committed while the scan ran are
+// not missed. It hands each record to manager_index_t::apply_wal_record_for_index, and that handler
+// has ONE leg: PHYSICAL_INSERT/UPDATE stage inserts, PHYSICAL_DELETE is recognised and dropped.
 //
-// The delete leg is not a mirror of the insert leg, for the reason C5c wrote down about
-// commits and repeats about replays. A physical record reaches the journal BEFORE its
-// transaction has decided anything -- operator_delete writes physical_delete ahead of the
-// storage mark and says so ("uncommitted deletes are filtered by replay") -- and the
-// filter it names is the COMMIT marker, which crash recovery reads and this catchup does
-// not. So the same undecided record fails in opposite directions on the two legs:
-//   INSERT leg  names a row nobody can see  -> a SUPERSET, and storage_fetch drops it
-//                                              under the reader's own snapshot.
-//   DELETE leg  takes an id off a LIVE row  -> a SUBSET, and nothing downstream can put
-//                                              back an id the index never named.
+// The delete leg is not a mirror of the insert leg, for the same reason commit_deletes holds its
+// erases back. A physical record reaches the journal BEFORE its transaction has decided anything,
+// and the filter is the COMMIT marker, which crash recovery reads and this catchup does not. So the
+// same undecided record fails in opposite directions on the two legs:
 //
-// On top of that the bucket had no exit. A build publishes through commit_inserts (the
-// executor's CREATE INDEX back-channel); the batch commit_deletes keys off the base-table
-// DELETE ranges, which a build has none of. So the staged deletes were neither published
-// nor reverted -- they stayed in the agent for the life of the index, and read_rows merges
-// the ASKING transaction's own bucket, so the one reader they were visible to was the
-// build itself, which they answered SHORT.
+//   INSERT leg  names a row nobody can see  -> a SUPERSET, and storage_fetch drops it under
+//                                              the reader's own snapshot.
+//   DELETE leg  takes an id off a LIVE row  -> a SUBSET, and nothing downstream can put back
+//                                              an id the index never named.
 //
-// Both test cases below drive the manager's handlers directly with the agent pumped by
-// hand, the way test_index_delete_horizon.cpp does, so the interleaving is chosen rather
-// than raced for.
+// On top of that such a bucket would have no exit. A build publishes through commit_inserts; the
+// batch commit_deletes keys off the base-table DELETE ranges, which a build has none of. So the
+// staged deletes were neither published nor reverted -- they stayed in the agent for the life of
+// the index, and read_rows merges the ASKING transaction's own bucket, so the one reader they were
+// visible to was the build itself, which they answered SHORT.
+//
+// Both test cases below drive the manager's handlers directly with the agent pumped by hand, the
+// way test_index_delete_horizon.cpp does, so the interleaving is chosen rather than raced for.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -154,14 +150,13 @@ namespace {
 
 // THE RED ONE.
 //
-// Three rows are backfilled by the scan leg (keys 10/20/30 at physical ids 0/1/2). The
-// journal then shows one PHYSICAL_DELETE for the middle row -- a record with no commit
-// marker behind it, which is every physical record the catchup can ever see. A full scan
-// of the table at this point still answers all three rows: nothing committed that delete.
-// The index must answer with AT LEAST those three ids, to every reader, the build included.
-//
-// Before the fix the build's own read came back {0, 2}: the staged delete sat in
-// pending_deletes_[build txn] and read_rows merges the asking transaction's own bucket.
+// Three rows are backfilled by the scan leg (keys 10/20/30 at physical ids 0/1/2). The journal then
+// shows one PHYSICAL_DELETE for the middle row -- a record with no commit marker behind it, which
+// is every physical record the catchup can ever see. A full scan of the table at this point still
+// answers all three rows: nothing committed that delete. The index must answer with AT LEAST those
+// three ids, to every reader, the build included. A staged delete would sit in
+// pending_deletes_[build txn], and read_rows merges the asking transaction's own bucket -- so the
+// build's own read comes back {0, 2}.
 TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the built index") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -260,7 +255,7 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
 
     INFO("and so must the transaction that built the index -- an undecided journal delete "
          "may not be subtracted from anyone's answer");
-    // RED before the fix: {0, 2}. The build's own bucket ate physical row 1.
+    // What this catches: {0, 2} -- the build's own bucket eating physical row 1.
     CHECK(probe(build_txn) == live_rows);
 
     INFO("the catchup must not have queued an erase either: a held-back erase is a "

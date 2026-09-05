@@ -342,12 +342,10 @@ namespace core::b_plus_tree {
     // anywhere above -- each body is one call into an allocating operation, so a throw out of one
     // of them means exactly "the resource refused" and nothing else. Callers get a value.
     //
-    // segment_tree_t used to do this inline, with bare `try { ... } catch (...) { evict; retry; }`
-    // blocks wrapped around the LIVE block-load and append paths -- three of them. Two things were
-    // wrong with that and both are gone here: the retry sat INSIDE the catch, where a second
-    // refusal had nothing above it to catch it and that throw crossed the actor that owns the
-    // index; and `catch (...)` there also swallowed anything else those paths could raise. Nothing
-    // above this line catches anything.
+    // The callers must NOT do this inline: a `try { ... } catch (...) { evict; retry; }` around a
+    // live path puts the retry INSIDE the catch, where a second refusal has nothing above it to
+    // catch it and the throw crosses the actor that owns the index -- and `catch (...)` there also
+    // swallows whatever else the path can raise. Nothing above this line catches anything.
     [[nodiscard]] inline std::unique_ptr<block_t>
     create_initialize_nothrow(std::pmr::memory_resource* resource,
                               block_t::index_t (*func)(const block_t::item_data&),

@@ -323,29 +323,27 @@ TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the f
 // ---------------------------------------------------------------------------
 // LAYER 2 IS NOT SWITCHED OFF BY AN UNRESOLVED TABLE NAME.
 //
-// The existing-row layer used to be skipped on
+// Skipping the existing-row layer on
 //
 //     ctx->disk_address == empty_address() || table_oid_ == INVALID_OID
 //
-// and a skip here is this operator's SUCCESS path: the rows are ALREADY written
-// when a constraint sink runs, so skipping the scan leaves a duplicate of a
-// STORED row in the table and reports success. The two halves of that condition
-// are not the same kind of fact. An empty disk address is TOPOLOGY — there is no
-// disk actor to ask, which is how the unit tests above run. INVALID_OID is an
-// UNRESOLVED TABLE NAME: a disk actor is right there, and the operator declines
-// to use it. That is the same "success path a declared key must not have" the
-// empty-group and absent-column guards above already close, so it is closed the
-// same way.
+// takes this operator's SUCCESS path: the rows are ALREADY written when a
+// constraint sink runs, so skipping the scan leaves a duplicate of a STORED row in
+// the table and reports success. The two halves of that condition are not the same
+// kind of fact: an empty disk address is TOPOLOGY (no disk actor to ask, which is
+// how the unit tests above run), while INVALID_OID is an UNRESOLVED TABLE NAME — a
+// disk actor is right there and the operator declines to use it. Same "success path
+// a declared key must not have" the empty-group and absent-column guards above
+// close, closed the same way.
 //
-// PATH NOT NAMED. No live SQL statement reaches it: both splice sites
-// (planner.cpp rewrite_insert / rewrite_update) take the oid from the very node
-// whose unique_groups came from catalog_resolves_t::constraints_for(table_oid),
-// and that function returns nullptr for INVALID_OID — so a non-empty group list
-// implies a resolved oid. This case is therefore a SENTINEL, and its sensitivity
-// is proven by injection rather than by being green: with the old
-// `|| table_oid_ == catalog::INVALID_OID` restored in the LAYER-2 skip, it goes
-// red on the REQUIRE below (the operator reports success over an existing-row
-// check it never ran). Re-adding the oid to the skip is exactly that injection.
+// PATH NOT NAMED. No live SQL statement reaches it: both splice sites (planner.cpp
+// rewrite_insert / rewrite_update) take the oid from the very node whose
+// unique_groups came from catalog_resolves_t::constraints_for(table_oid), and that
+// function returns nullptr for INVALID_OID — a non-empty group list implies a
+// resolved oid. So this is a SENTINEL, and its sensitivity is proven by injection:
+// with `|| table_oid_ == catalog::INVALID_OID` added back to the LAYER-2 skip it
+// goes red on the REQUIRE below.
+// ---------------------------------------------------------------------------
 TEST_CASE("unique constraint operator: an unresolved table oid does not disable the existing-row layer",
           "[unique_constraint]") {
     auto resource = core::pmr::otterbrix_resource();

@@ -5,21 +5,17 @@
 //
 //     FOREIGN KEY (pid) REFERENCES D.parent
 //
-// PostgreSQL then resolves it to the primary key of the referenced table, and
-// refuses the DDL outright when that table has no primary key ("there is no
-// primary key for referenced table"). Otterbrix did neither: the transformer
-// copied an absent pk_attrs as an EMPTY ref list, enrich resolved that empty
-// list to an empty confkey, and pg_constraint got a row whose referenced side
-// names nothing. operator_resolve_constraint drops such a row on the floor
-// (it requires BOTH name lists to be non-empty), so the constraint the user
-// declared simply did not exist:
+// PostgreSQL resolves it to the primary key of the referenced table, and refuses the
+// DDL outright when that table has no primary key ("there is no primary key for
+// referenced table"). Otterbrix did neither: the transformer copied an absent pk_attrs
+// as an EMPTY ref list, enrich resolved that to an empty confkey, and pg_constraint got
+// a row whose referenced side names nothing. operator_resolve_constraint drops such a
+// row on the floor (it requires BOTH name lists to be non-empty), so the constraint the
+// user declared simply did not exist:
 //
 //   * an orphan INSERT — a value with no matching parent row — succeeded;
 //   * ON DELETE RESTRICT did not block deleting a referenced parent;
 //   * ON DELETE CASCADE left the children behind, pointing at nothing.
-//
-// A declared constraint that the engine accepts and then does not enforce is
-// worse than one it refuses: the user believes the data is guarded.
 // ============================================================================
 
 #include "test_config.hpp"

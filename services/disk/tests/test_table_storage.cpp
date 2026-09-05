@@ -56,12 +56,12 @@ namespace {
         }
     }
 
-    // ---- B3c drop_column-on-DISK helpers (see the test at the bottom of this file) ----
+    // ---- drop_column-on-DISK helpers (see the test at the bottom of this file) ----
 
     // 40 UBIGINTs per row: 40 * 8 B * 2048 rows = 640 KiB of child payload per row group,
     // past partial_block_manager_t's FULL_THRESHOLD, so the child segments take DEDICATED
-    // blocks. Without that, B2 packs every child segment alongside the flat column's and the
-    // drop can provably free nothing.
+    // blocks. Without that, partial_block_manager_t packs every child segment alongside the
+    // flat column's and the drop can provably free nothing.
     constexpr uint64_t DROP_LIST_LENGTH = 40;
 
     complex_logical_type drop_list_type() { return complex_logical_type::create_list(logical_type::UBIGINT); }
@@ -94,7 +94,7 @@ namespace {
 
     // The walker judges the DURABLE file, so it needs the storage's own block manager. The
     // counted collection copy row_group() hands back is scoped to reading the reference out of
-    // it (ITEM C): a holder kept across a later compact would keep a replaced collection's
+    // it: a holder kept across a later compact would keep a replaced collection's
     // block handles alive past their reclaim.
     otterbrix_test::walk_report_t
     walk_storage(table_storage_t& ts, const std::string& path, std::pmr::memory_resource* resource) {
@@ -149,10 +149,9 @@ namespace {
     }
 } // namespace
 
-// B4: substrate change, assertions unchanged. table_storage_t is backed by a `.otbx` and
-// nothing else now — the file-less constructor this case used, and the `mode()` it asserted,
-// went with the in-memory table mode. What the case is actually about — append 100 rows, scan
-// them back in order — reads identically on a file.
+// table_storage_t is backed by a `.otbx` and nothing else — there is no file-less constructor
+// and no `mode()` to assert. What the case is about — append 100 rows, scan them back in order
+// — reads identically on a file.
 TEST_CASE("services::disk::table_storage::append_and_scan") {
     cleanup_test_dir();
     std::filesystem::create_directories(test_dir());
@@ -231,11 +230,9 @@ TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
     cleanup_test_dir();
 }
 
-// B4: this case used to ask `mode()` for each of the three constructors and check it against
-// the storage-mode enum. There is one substrate and no enum to ask, so what is left to pin is
-// what each surviving constructor produces: a schema-less table, a table with columns, and a
-// table reloaded from the file the second one wrote. The shapes it covered are kept; the answer
-// it checks is the schema, which is what `mode()` was standing in for.
+// There is one substrate and no storage-mode enum to ask, so what each constructor produces is
+// pinned by its SCHEMA: a schema-less table, a table with columns, and a table reloaded from the
+// file the second one wrote.
 TEST_CASE("services::disk::table_storage::construction_shapes") {
     cleanup_test_dir();
     std::filesystem::create_directories(test_dir());
@@ -348,8 +345,8 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
 // coming back through a committed header — is gated by drop_column_disk_frees_blocks at the
 // bottom of this file; the two together are the whole primitive.
 //
-// B4: substrate change, assertions unchanged. This ran on the file-less constructor, which went
-// with the in-memory table mode; what it asserts is about the rebuild, not the substrate.
+// Runs on a file-backed table like everything else; what it asserts is about the rebuild, not
+// the substrate.
 TEST_CASE("services::disk::table_storage::drop_column_keeps_surviving_data") {
     cleanup_test_dir();
     std::filesystem::create_directories(test_dir());
@@ -415,31 +412,28 @@ TEST_CASE("services::disk::table_storage::drop_column_keeps_surviving_data") {
     cleanup_test_dir();
 }
 
-// B3c — dropping a column from a DISK-backed table must give its physical blocks back.
+// Dropping a column from a DISK-backed table must give its physical blocks back.
 //
-// The inverse of the test this replaces (`drop_column_disk_is_noop`, which pinned the DISK
-// branch as an unconditional `false`). Both of its assertions invert; the owner consented to
-// this ONE rewrite.
+// This case inverts the assertions of the pinned test it replaces, with the owner's per-test consent.
 //
-// The gate is deliberately NOT "the column count dropped". A rebuild that merely forgets the
-// column passes that and is the WORSE outcome: the dropped column's `column_data_t` is
-// destroyed with the superseded collection, so its block_handle_t's die and its registry
-// entries go with them — and a block that no root names, no registry holds and no free list
-// publishes is durably orphaned. A7.3's reclaim_superseded_root cannot find those: it walks
-// the DURABLE ROOT's own data blocks, and every block the column acquired SINCE that root
-// (the write-through at row-group close, the re-pointed tail segments) is invisible to it.
-// So the walker judges the file instead, and the shape below is built to produce exactly
-// those invisible blocks:
-//   * column "b" is a LIST of 40 UBIGINTs — 40 * 8 B * 2048 rows = 640 KiB of child payload
-//     per row group, past partial_block_manager_t's FULL_THRESHOLD, so its child segments
-//     take DEDICATED blocks that column "a" cannot share (B2 packing would otherwise hand
-//     every one of b's ids to a's walk by accident and hide the whole question);
-//   * the table is REOPENED before the drop, so the loader — not the appender — is what owns
-//     b's blocks (F6's finding: nested children own disk blocks only after a load);
+// The gate is deliberately NOT "the column count dropped". A rebuild that merely forgets the column
+// passes that and is the WORSE outcome: the dropped column's `column_data_t` is destroyed with the
+// superseded collection, so its block_handle_t's die and its registry entries go with them — and a
+// block that no root names, no registry holds and no free list publishes is durably orphaned.
+// reclaim_superseded_root cannot find those: it walks the DURABLE ROOT's own data blocks, and every
+// block the column acquired SINCE that root (the write-through at row-group close, the re-pointed
+// tail segments) is invisible to it. So the walker judges the file instead, and the shape below is
+// built to produce exactly those invisible blocks:
+//   * column "b" is a LIST of 40 UBIGINTs — 40 * 8 B * 2048 rows = 640 KiB of child payload per row
+//     group, past partial_block_manager_t's FULL_THRESHOLD, so its child segments take DEDICATED
+//     blocks that column "a" cannot share (block packing would otherwise hand every one of b's ids
+//     to a's walk by accident and hide the whole question);
+//   * the table is REOPENED before the drop, so the loader — not the appender — is what owns b's
+//     blocks (nested children own disk blocks only after a load);
 //   * more rows are appended AFTER that reopen's root, so some of b's blocks are named by no
 //     durable root at all.
-// A7.4's lesson is the last step: a leak or a bad free often only shows on a REOPENED file,
-// so the walk is repeated after closing and reopening the .otbx.
+// The last step matters: a leak or a bad free often only shows on a REOPENED file, so the walk is
+// repeated after closing and reopening the .otbx.
 TEST_CASE("services::disk::table_storage::drop_column_disk_frees_blocks") {
     cleanup_test_dir();
     std::filesystem::create_directories(test_dir());
@@ -469,8 +463,8 @@ TEST_CASE("services::disk::table_storage::drop_column_disk_frees_blocks") {
     uint64_t blocks_after_drop = 0;
     uint64_t size_after_drop = 0;
     {
-        // Reopen: the LOADER now owns b's blocks (F6). catalog_columns is ignored for a
-        // checkpointed file — the file's own schema is authoritative.
+        // Reopen: the LOADER owns b's blocks. catalog_columns is ignored for a checkpointed
+        // file — the file's own schema is authoritative.
         table_storage_t ts(&resource, otbx_path, std::vector<column_definition_t>{});
         REQUIRE_FALSE(ts.construction_failed());
         REQUIRE(ts.table().column_count() == 2);
@@ -525,7 +519,7 @@ TEST_CASE("services::disk::table_storage::drop_column_disk_frees_blocks") {
         size_after_drop = file_size_or_zero(path);
     }
 
-    // A7.4: only a judged REOPENED file tells the truth about a leak.
+    // Only a judged REOPENED file tells the truth about a leak.
     {
         table_storage_t ts(&resource, otbx_path, std::vector<column_definition_t>{});
         REQUIRE_FALSE(ts.construction_failed());

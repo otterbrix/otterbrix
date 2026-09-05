@@ -170,10 +170,10 @@ namespace components::table {
     // column appears on the first INSERT that carries it). Those columns are answered with
     // NULLs by table_storage_adapter_t, which needs from here nothing but the row count.
     //
-    // This used to be `assert(!column_ids_.empty())`, and that assert sat on a READ path a
-    // plain `SELECT <added column>` reached: it aborted the host process on Debug and vanished
-    // under NDEBUG, leaving a zero-column scan to answer silently. An abort on the read path is
-    // not loudness, it is unrecoverability — the database cannot be opened past the statement.
+    // So NOT `assert(!column_ids_.empty())`: that assert sits on a READ path a plain
+    // `SELECT <added column>` reaches, aborting the host process on Debug and vanishing under
+    // NDEBUG. An abort on the read path is not loudness, it is unrecoverability — the database
+    // cannot be opened past the statement.
     const std::vector<storage_index_t>& table_scan_state::column_ids() { return column_ids_; }
 
     bool collection_scan_state::scan_committed(vector::data_chunk_t& result, table_scan_type type) {

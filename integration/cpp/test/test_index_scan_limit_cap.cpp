@@ -1,29 +1,27 @@
 // ============================================================================
 // THE READ-CAP ON AN INDEX SCAN IS A LIMIT ON ROWS, NOT ON CANDIDATE IDS.
 //
-// The index answer is a SUPERSET of row ids — manager_index says so — and since
-// C4b the point fetch DROPS the rows the reader's snapshot may not see. So the
-// LIMIT cap has exactly one correct place: BELOW that filter, over rows that
-// survived it. Cutting the id list to `limit` before the fetch can cut away the
-// very ids whose rows survive, and answer a LIMIT 7 with three rows.
+// The index answer is a SUPERSET of row ids — manager_index says so — and the point
+// fetch DROPS the rows the reader's snapshot may not see. So the LIMIT cap has exactly
+// one correct place: BELOW that filter, over rows that survived it. Cutting the id list
+// to `limit` before the fetch can cut away the very ids whose rows survive, and answer a
+// LIMIT 7 with three rows.
 //
-// The cap has now moved from the operator's own emit loop onto the fetch message
-// itself (storage_fetch's `limit`), so the agent stops gathering once it has
-// handed out `limit` VISIBLE rows — the same post-filter, post-visibility count
-// cap full_scan already pushes onto storage_fetch_next_batch. That move is a
-// performance change and must not be an answer change, so THIS FILE ASSERTS THE
-// ANSWER, not the clock: the capped query must return exactly the uncapped
-// query's first `limit` rows, cell for cell.
+// The cap has now moved from the operator's own emit loop onto the fetch message itself
+// (storage_fetch's `limit`), so the agent stops gathering once it has handed out `limit`
+// VISIBLE rows — the same post-filter, post-visibility count cap full_scan already
+// pushes onto storage_fetch_next_batch. That move is a performance change and must not
+// be an answer change, so THIS FILE ASSERTS THE ANSWER, not the clock: the capped query
+// must return exactly the uncapped query's first `limit` rows, cell for cell.
 //
-// THE SNAPSHOT IS WHAT MAKES THE CASE BITE, AND THE SIZES ARE CHOSEN, NOT ROUND.
-// A reader opens a transaction; a writer then commits rows whose KEYS sort BELOW
-// every row the reader can see, so the head of the reader's index answer is
-// MORE THAN ONE FETCH WINDOW (1024 ids) of rows its snapshot hides. The first
-// window therefore produces ZERO visible rows, and the cap has to survive into
-// the second one. That is what separates "budget spent on rows produced" from
-// "budget spent on ids requested": the second reads window one, declares the
-// budget met, and answers a LIMIT 7 with nothing at all. A head shorter than a
-// window would let both spellings pass.
+// THE SNAPSHOT IS WHAT MAKES THE CASE BITE, AND THE SIZES ARE CHOSEN, NOT ROUND. A
+// reader opens a transaction; a writer then commits rows whose KEYS sort BELOW every row
+// the reader can see, so the head of the reader's index answer is MORE THAN ONE FETCH
+// WINDOW (1024 ids) of rows its snapshot hides. The first window therefore produces ZERO
+// visible rows, and the cap has to survive into the second one — which is what separates
+// "budget spent on rows produced" from "budget spent on ids requested": the second reads
+// window one, declares the budget met, and answers a LIMIT 7 with nothing at all. A head
+// shorter than a window would let both spellings pass.
 // ============================================================================
 
 #include "test_config.hpp"

@@ -243,10 +243,11 @@ TEST_CASE("services::disk::d4::load_storage_for_wal_replay_noop_when_loaded") {
     REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database)
                       .contains_error());
 }
-// 11. A7.6: a never-checkpointed .otbx (created, crashed before any checkpoint) loads as a
-// legitimately EMPTY disk table with its schema overlaid from the catalog. Before A7.6 the
-// metadata reader hit "attempted to read past end of chain", the storage stayed unloaded,
-// and queries were answered by the storage-less record branch — empty by accident.
+// 11. A never-checkpointed .otbx (created, crashed before any checkpoint) loads as a
+// legitimately EMPTY disk table with its schema overlaid from the catalog. Feeding the young
+// file to the metadata reader instead gives "attempted to read past end of chain", the storage
+// stays unloaded, and queries are answered by the storage-less record branch — empty by
+// accident.
 TEST_CASE("services::disk::d4::never_checkpointed_otbx_loads_as_empty_with_catalog_schema") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns_a76a");
@@ -282,7 +283,7 @@ TEST_CASE("services::disk::d4::never_checkpointed_otbx_loads_as_empty_with_catal
     REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
 }
 
-// 12. A7.6 contradiction: the .wal_id sidecar is written solely by a COMMITTED checkpoint,
+// 12. The contradiction: the .wal_id sidecar is written solely by a COMMITTED checkpoint,
 // so a sidecar claiming wal id N next to a never-checkpointed .otbx means the table file
 // was rebuilt or truncated out from under its sidecar. Opening it as empty would silently
 // discard whatever that checkpoint held: the load must REFUSE (sidecar consulted in the
@@ -318,9 +319,9 @@ TEST_CASE("services::disk::d4::young_otbx_with_checkpoint_sidecar_is_refused") {
         REQUIRE(sidecar.good());
     }
 
-    // The refusal is now VISIBLE to the caller, which is the point: replay used to see the
-    // same "no storage" a table with no file gives and go on to CREATE one at this path, over
-    // the very .otbx the contradiction was about.
+    // The refusal has to be VISIBLE to the caller: otherwise replay sees the same "no storage"
+    // a table with no file gives and goes on to CREATE one at this path, over the very .otbx
+    // the contradiction was about.
     REQUIRE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
     // Refused loudly inside load_storage_disk_sync: no storage may appear for a table whose
     // on-disk state is self-contradictory.

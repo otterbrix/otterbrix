@@ -170,10 +170,10 @@ namespace components::table {
                                              std::vector<column_segment_info>& result);
 
         // The precondition create_column cannot state itself: a constructor has no way to
-        // refuse, so struct_column_data_t used to THROW on an unnamed struct — across the disk
-        // agent's mailbox, into a coroutine with an empty unhandled_exception(), i.e. a hang
-        // rather than an error (rules 2/9). Ask this about the TYPE first, at a gate that owns
-        // an error channel; collection_t::initialize_append is that gate for every write.
+        // refuse, so a struct_column_data_t that THREW on an unnamed struct would throw across
+        // the disk agent's mailbox, into a coroutine with an empty unhandled_exception() — a
+        // hang rather than an error (rules 2/9). Ask this about the TYPE first, at a gate that
+        // owns an error channel; collection_t::initialize_append is that gate for every write.
         // Recursive over the same three nested shapes create_column dispatches on.
         [[nodiscard]] static core::error_t validate_column_type(const types::complex_logical_type& type,
                                                                 std::pmr::memory_resource* resource);
@@ -231,10 +231,9 @@ namespace components::table {
         // children[0]; struct fields and list/array elements follow) is a persisted column in its own
         // right, so a RELOADED child sits on real disk blocks even though write-through never descends
         // into nested children. Every subclass with sub-columns therefore overrides this to collect its
-        // validity child and its nested children on top of the base walk of its own data_ tree; before
-        // F6 struct/list/array had no override and compact orphaned their children's blocks — durably,
-        // once a checkpoint moved the root past the one they were loaded from
-        // (test_nested_compact_reclaim.cpp).
+        // validity child and its nested children on top of the base walk of its own data_ tree. Without
+        // it compact orphans a nested column's children's blocks — durably, once a checkpoint moves the
+        // root past the one they were loaded from (test_nested_compact_reclaim.cpp).
         virtual void collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const;
 
     protected:

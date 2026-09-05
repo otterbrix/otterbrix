@@ -18,15 +18,14 @@ namespace components::table::storage {
     class partial_block_manager_t {
     public:
         // A segment larger than FULL_THRESHOLD of the block payload gets a DEDICATED whole block
-        // (offset 0, never shared). At/below it, the segment is PACKED into a shared partial block
-        // at a (possibly non-zero) offset alongside other columns' segments. This is the single
-        // source of truth for the write-side "dedicated vs shared" decision (used by both the
-        // checkpoint flush path and the B2 write-through transition).
+        // (offset 0, never shared); at or below it the segment is PACKED into a shared partial block
+        // alongside other columns' segments. Single source of truth for the write-side "dedicated vs
+        // shared" decision, used by the checkpoint flush path and the write-through transition alike.
         //
-        // Invariant: every offset handed out is 8-byte aligned. Offsets are persisted in the data
-        // pointers and dereferenced after restart with typed pointers up to uint64_t wide (validity
-        // bitmaps, string dictionary offsets, fixed-size scans), so byte-granular placement would
-        // be permanent UB baked into the file. Enforced in get_block_allocation.
+        // Invariant: every offset handed out is 8-byte aligned (enforced in get_block_allocation).
+        // Offsets are persisted in the data pointers and dereferenced after restart with typed
+        // pointers up to uint64_t wide, so byte-granular placement would be permanent UB baked into
+        // the file.
         static constexpr double FULL_THRESHOLD = 0.8;
 
         explicit partial_block_manager_t(block_manager_t& block_manager, double full_threshold = FULL_THRESHOLD);
@@ -40,9 +39,9 @@ namespace components::table::storage {
 
         // Flush all managed block buffers to disk, then clear. Returns io_error when any of
         // those writes failed. This is the DATA half of the checkpoint's block writes — every
-        // column segment in the system reaches the file through here — and it used to be a
-        // `void` over a `void` over a discarded bool, which is why a failed data-block write
-        // was invisible all the way up to a committed header.
+        // column segment in the system reaches the file through here — so the refusal MUST ride
+        // the return: a `void` here leaves a failed data-block write invisible all the way up to
+        // a committed header.
         [[nodiscard]] core::result_wrapper_t<bool> flush_partial_blocks();
 
     private:

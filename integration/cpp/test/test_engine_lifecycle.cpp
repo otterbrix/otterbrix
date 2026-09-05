@@ -535,7 +535,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
 // leaked blocks — a destroyed queue frees every freelist node, so any residual
 // means an owner survived teardown. On macOS LSan does not run, so this also
 // serves as an ASan use-after-free smoke test that exercises the scheduler_disk_
-// teardown ordering (Edit 3).
+// teardown ordering.
 TEST_CASE("integration::cpp::test_engine_lifecycle::construct_destroy_clean_teardown",
           "[engine-lifecycle][leak-repro]") {
     auto config = test_create_config("/tmp/test_engine_lifecycle/teardown_leak");
@@ -564,9 +564,9 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::construct_destroy_clean_tear
 // engine so any intermittent teardown-ordering leak or use-after-free is
 // amplified under ASAN+LeakSanitizer. Each cycle instantiates the system-table
 // buffer pools plus a user table (more boost::lockfree eviction queues + the
-// four manager inbox queues), then tears the whole graph down. If Edit 3's
-// implicit teardown were unsound, N cycles make a stray freelist node or a
-// dangling scheduler far more likely to surface than a single construct/destroy.
+// four manager inbox queues), then tears the whole graph down. If the implicit
+// teardown were unsound, N cycles make a stray freelist node or a dangling
+// scheduler far more likely to surface than a single construct/destroy.
 TEST_CASE("integration::cpp::test_engine_lifecycle::repeated_construct_destroy_no_leak",
           "[engine-lifecycle][leak-repro]") {
     constexpr int kCycles = 12;
@@ -599,12 +599,12 @@ namespace {
         ~destruction_order_recorder_t() { log->push_back(name); }
     };
 
-    // Mirrors the data-member layout of base_otterbrix_t AFTER Edit 3: the three
-    // schedulers are declared BEFORE the managers, and manager_dispatcher_ is the
-    // first manager (so it is destroyed last among the managers). C++ destroys
-    // members in reverse declaration order, so this model makes the teardown
-    // ordering Edit 3 establishes observable and assertable. Kept in lockstep
-    // with integration/cpp/base_spaces.hpp:73-80.
+    // Mirrors the data-member layout of base_otterbrix_t: the three schedulers are
+    // declared BEFORE the managers, and manager_dispatcher_ is the first manager (so
+    // it is destroyed last among the managers). C++ destroys members in reverse
+    // declaration order, so this model makes that teardown ordering observable and
+    // assertable. Kept in lockstep with the member order in
+    // integration/cpp/base_spaces.hpp.
     struct base_spaces_layout_model_t {
         explicit base_spaces_layout_model_t(std::vector<std::string>* log)
             : scheduler_{log, "scheduler"}
@@ -628,9 +628,9 @@ namespace {
 
 } // namespace
 
-// Proves the destruction-order invariant Edit 3 establishes (and that the
-// dropped Edit 2 is unnecessary): under implicit reverse-declaration
-// destruction, all three schedulers are destroyed AFTER every manager
+// Proves the destruction-order invariant, and that an explicit ordered reset is
+// unnecessary: under implicit reverse-declaration destruction, all three
+// schedulers are destroyed AFTER every manager
 // (manager_disk_ holds a raw pointer to scheduler_disk_), and the dispatcher —
 // the cyclic-graph sink every manager holds an address to — is destroyed LAST
 // among the managers. This is the exact ordering guarantee that makes the

@@ -1,27 +1,24 @@
 // ============================================================================
 // DROPPING THE PARENT COLUMN OF A LIVE FOREIGN KEY MUST NOT BRICK THE CHILD.
 //
-// build_create_constraint_writes emitted per-column pg_depend edges for conkey
-// only — the REFERENCING (child) columns. The REFERENCED (parent) columns named
-// by confkey got no per-column edge at all, just the table-level
-// constraint -> ref_table 'n' row. operator_alter_column_drop_t discovers what
-// depends on a column by reading pg_depend keyed on
-// (refclassid = pg_attribute, refobjid = attoid), so for a parent column that
+// build_create_constraint_writes emitted per-column pg_depend edges for conkey only —
+// the REFERENCING (child) columns. The REFERENCED (parent) columns named by confkey got
+// no per-column edge at all, just the table-level constraint -> ref_table 'n' row.
+// operator_alter_column_drop_t discovers what depends on a column by reading pg_depend
+// keyed on (refclassid = pg_attribute, refobjid = attoid), so for a parent column that
 // read came back EMPTY and the drop was accepted.
 //
-// What that produced: with `fk_pid FOREIGN KEY (pid) REFERENCES parent (id)`
-// alive, `ALTER TABLE parent DROP COLUMN id` succeeded, and from then on EVERY
-// insert into the child — including perfectly valid ones — died in
-// operator_fk_check's parent probe with "keyed read: table has no column id".
-// The table was bricked, and the message named the symptom (a read of a column
-// that is not there) in a table the user had not touched, never the cause (a
-// column dropped yesterday in the OTHER table).
+// What that produced: with `fk_pid FOREIGN KEY (pid) REFERENCES parent (id)` alive,
+// `ALTER TABLE parent DROP COLUMN id` succeeded, and from then on EVERY insert into the
+// child — including perfectly valid ones — died in operator_fk_check's parent probe with
+// "keyed read: table has no column id". The table was bricked, and the message named the
+// symptom in a table the user had not touched, never the cause.
 //
-// The fix mirrors the child side exactly: confkey now gets the same per-column
-// pg_depend edges conkey always had, written with deptype 'n' (a NORMAL,
-// cross-table dependency) rather than the 'i' used for the constraint's own
-// columns. operator_alter_column_drop_t refuses a drop blocked by such an edge
-// and names the constraint and the table that owns it.
+// The fix mirrors the child side exactly: confkey now gets the same per-column pg_depend
+// edges conkey always had, written with deptype 'n' (a NORMAL, cross-table dependency)
+// rather than the 'i' used for the constraint's own columns.
+// operator_alter_column_drop_t refuses a drop blocked by such an edge and names the
+// constraint and the table that owns it.
 // ============================================================================
 
 #include "test_config.hpp"

@@ -38,8 +38,8 @@ namespace components::catalog {
     } // namespace contype
 
     // pg_class.relstoragemode (otterbrix-specific: physical storage backing).
-    // B1a: every table is disk-backed; the column stays (write-only, no readers)
-    // and is always written 'd'. The old 'm' (in-memory) value is gone.
+    // Every table is disk-backed; the column stays (write-only, no readers) and is
+    // always written 'd'. There is no 'm' (in-memory) value any more.
     namespace relstoragemode {
         inline constexpr char disk = 'd'; // table.otbx on disk
     }                                     // namespace relstoragemode

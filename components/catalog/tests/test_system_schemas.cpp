@@ -26,10 +26,9 @@ TEST_CASE("catalog::system_schemas::distinct_well_known_oids") {
 }
 
 // 3. find_system_table — lookup by oid, including an oid no system table owns.
-// Was keyed by name until B8; the name overload is gone, so there is exactly one way to
-// address a system table and no second mapping that can drift from this one. The old
-// "" case had no oid analogue and is dropped: an empty NAME was a distinguishable input,
-// an "empty oid" is not — INVALID_OID is simply one more oid nothing owns.
+// There is no name overload, so there is exactly one way to address a system table and no
+// second mapping that can drift from this one. There is no "empty oid" case to cover on its
+// own either — INVALID_OID is simply one more oid nothing owns.
 TEST_CASE("catalog::system_schemas::find_system_table") {
     REQUIRE(find_system_table(well_known_oid::pg_class_table) != nullptr);
     REQUIRE(find_system_table(well_known_oid::pg_class_table)->relation_oid == well_known_oid::pg_class_table);
@@ -105,8 +104,8 @@ TEST_CASE("catalog::system_schemas::pg_database_minimal_columns") {
 // without this one, inserting a column in the middle of a schema leaves the whole suite green
 // while every positional reader silently shifts onto its neighbour.
 namespace {
-    // Keyed by oid, not by name: B8 left exactly one way to address a system table.
-    // The name is still printed, but it comes FROM the definition rather than being the key.
+    // Keyed by oid, not by name: exactly one way to address a system table. The name is
+    // still printed, but it comes FROM the definition rather than being the key.
     void require_layout(oid_t table, std::initializer_list<const char*> expected) {
         const auto* def = find_system_table(table);
         INFO("system table oid: " << static_cast<unsigned>(table));

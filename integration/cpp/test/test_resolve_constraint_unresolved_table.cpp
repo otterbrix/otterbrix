@@ -25,9 +25,8 @@ using namespace components;
 //
 //   * NO table_md is "the table was not found". operator_resolve_table_t stamps
 //     the field only when pg_class answered, and documents the empty optional as
-//     exactly that signal. A constraint gather for a table that is not there has
-//     nothing to gather, and the missing table is reported by the layer that
-//     looked for it.
+//     exactly that signal; a gather for a table that is not there has nothing to
+//     gather, and the missing table is reported by the layer that looked for it.
 //
 //   * A table_md that IS there with table_oid == INVALID_OID is a table whose
 //     NAME resolved and whose identity did not. Skipping it leaves the entry's
@@ -35,17 +34,16 @@ using namespace components;
 //     indistinguishable from "this table declares no constraints": enrich stamps
 //     nothing on the DML node, the planner splices no constraint operator, and
 //     every declared key, foreign key and CHECK on that table stops existing
-//     while the statement reports success. That is WIDER than the layer-2 skip
-//     in operator_unique_constraint_t, which the same predicate used to switch
-//     off and which is now a refusal there — this one repeals ALL of the table's
+//     while the statement reports success. That is WIDER than the layer-2 skip in
+//     operator_unique_constraint_t, which the same predicate used to switch off
+//     and which is now a refusal there — this one repeals ALL of the table's
 //     constraints, not one check inside one of them.
 //
-// PATH NOT NAMED FROM SQL, deliberately. table_md is stamped only from a pg_class
+// PATH NOT NAMED FROM SQL, deliberately: table_md is stamped only from a pg_class
 // row whose oid column was read non-null, so a zero there is a catalog that says
-// a relation exists with no identity. This case is the floor under that, and its
-// sensitivity is proven by injection: restore `|| target_md->table_oid ==
-// INVALID_OID` to the skip and the REQUIRE below goes red — the operator reports
-// success over a constraint set it never read.
+// a relation exists with no identity. Sensitivity proven by injection — restore
+// `|| target_md->table_oid == INVALID_OID` to the skip and the REQUIRE below goes
+// red, the operator reporting success over a constraint set it never read.
 // ===========================================================================
 
 namespace {
@@ -137,29 +135,28 @@ TEST_CASE("resolve constraint: a table that was not found is not an error", "[re
 // ===========================================================================
 // AND A TARGET THAT IS NOT AN INDEX AT ALL IS THE SAME DEFECT ONE STEP EARLIER.
 //
-// `entry.target >= tables_node_->entries().size()` shared a `continue` with the
-// two TOPOLOGY facts on the same line — an empty disk address and a null tables
-// node — and it is not one of them. Those two are shapes of the world this
-// operator runs in; an index outside the tables node is a CORRUPT PLAN, and the
-// form of the world has nothing to do with it.
+// `entry.target >= tables_node_->entries().size()` shared a `continue` with the two
+// TOPOLOGY facts on the same line — an empty disk address and a null tables node — and it
+// is not one of them: those are shapes of the world this operator runs in, while an index
+// outside the tables node is a CORRUPT PLAN.
 //
-// resolve_entry_t::no_target (size_t(-1)) is the DEFAULT, so an entry nobody
-// filled in lands here. It is never a legitimate marker on a constraint entry:
+// resolve_entry_t::no_target (size_t(-1)) is the DEFAULT, so an entry nobody filled in
+// lands here. It is never a legitimate marker on a constraint entry:
 //
 //   * every constraint entry in this engine is created in one place,
-//     register_catalog_resolve_table (components/sql/transformer/utils.cpp),
-//     which sets target from the value node_catalog_resolve_t::add just returned
-//     for the TABLE entry — by construction < entries().size();
-//   * entries() only ever grows (add() push_backs; no erase / clear / resize
-//     exists anywhere), so a valid index cannot go stale;
-//   * merge_catalog_resolves copies constraint entries without rebasing target,
-//     but no view body can carry one: constraint entries come only from INSERT /
-//     UPDATE / DELETE / CREATE TABLE / ALTER TABLE, never from a SELECT;
+//     register_catalog_resolve_table (components/sql/transformer/utils.cpp), which sets
+//     target from the value node_catalog_resolve_t::add just returned for the TABLE entry
+//     — by construction < entries().size();
+//   * entries() only ever grows (add() push_backs; no erase / clear / resize exists
+//     anywhere), so a valid index cannot go stale;
+//   * merge_catalog_resolves copies constraint entries without rebasing target, but no
+//     view body can carry one: constraint entries come only from INSERT / UPDATE / DELETE
+//     / CREATE TABLE / ALTER TABLE, never from a SELECT;
 //   * resolve_entry_t is never serialized, so nothing reconstructs a target.
 //
 // The consequence of the skip is the WIDEST in this operator: fks, check_exprs,
-// unique_constraints and pk_columns are all left empty at once, which is exactly
-// what "this table declares no constraints" looks like.
+// unique_constraints and pk_columns all left empty at once, which is exactly what "this
+// table declares no constraints" looks like.
 // ===========================================================================
 
 TEST_CASE("resolve constraint: an entry whose target is not an index is refused", "[resolve_constraint]") {

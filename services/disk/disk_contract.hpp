@@ -72,8 +72,8 @@ namespace services::disk {
         // Returns the number of storages whose PHYSICAL ROW IDS this VACUUM moved. An index
         // entry stores a physical row id, so this is the fact a caller rebuilds indexes on;
         // agent_disk_t::vacuum_inner produces it at the line a compact would occupy. No
-        // compact_watermark: nothing on this route compacts, and both hops used to ignore the
-        // argument by name.
+        // compact_watermark: nothing on this route compacts, so neither hop has an argument to
+        // ignore.
         actor_zeta::unique_future<uint64_t> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
         // Batched GC-threshold check + compact: routes each table_oid to its owning
         // agent's maybe_cleanup_inner with the shared compact_watermark.
@@ -116,25 +116,24 @@ namespace services::disk {
         // deleted for EACH spec, in spec order (result.size() == specs.size()), or refuses.
         //
         // THE ERROR CHANNEL IS THE POINT, and it is the same one append_pg_catalog_row carries.
-        // This method used to answer with nothing at all, so its six callers ended their catalog
-        // work with a bare `co_await` and could not tell a completed scrub from one that never
-        // happened: DROP FUNCTION / DROP CAST / ALTER DROP COLUMN / the DROP cascade / VACUUM /
-        // DROP INDEX all reported success over rows still on the platter.
-        //
-        // A ZERO count is an honest answer — "no row of that table that ctx.txn CAN SEE carried
-        // that oid" — and NOT an error, because whether that is legitimate depends on the
-        // caller: the operator that just READ the row it is deleting must treat 0 as a refusal,
-        // the one over-generating a scrub template must not. The failures — no agents, an owning
+        // Answering with nothing at all would leave its six callers ending their catalog work with
+        // a bare `co_await`, unable to tell a completed scrub from one that never happened: DROP
+        // FUNCTION / DROP CAST / ALTER DROP COLUMN / the DROP cascade / VACUUM / DROP INDEX would
+        // all report success over rows still on the platter. The failures — no agents, an owning
         // agent with no storage for the catalog oid, a refused journal record, a refused delete —
         // travel the wrapper.
+        //
+        // A ZERO count is an honest answer — "no row of that table that ctx.txn CAN SEE carried
+        // that oid" — and NOT an error, because whether that is legitimate depends on the caller:
+        // the operator that just READ the row it is deleting must treat 0 as a refusal, the one
+        // over-generating a scrub template must not.
         //
         // "CAN SEE" IS PART OF THE CONTRACT, not an implementation detail, and the "just READ it"
         // verdict above is only sound because of it: the delete's scan runs under ctx.txn
         // (agent_disk_t::delete_pg_catalog_rows_inner), the same snapshot read_chunks_by_key /
-        // scan_by_keys / the resolve funnel serve their answers from. A caller that mixes the two
-        // — reading through a route that carries no transaction and deleting through this one, or
-        // the reverse — reintroduces the exact defect this pairing closes: rows one side can see
-        // and the other cannot, reported as a catalog that refused to give a row up.
+        // scan_by_keys / the resolve funnel serve their answers from. A caller that mixes the two —
+        // reading through a route that carries no transaction and deleting through this one, or the
+        // reverse — reintroduces the exact defect this pairing closes.
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::uint64_t>>>
         delete_pg_catalog_rows_many(execution_context_t ctx, std::pmr::vector<pg_catalog_delete_spec_t> specs);
 
@@ -188,26 +187,22 @@ namespace services::disk {
                             components::vector::data_chunk_t keys,
                             std::pmr::vector<std::uint64_t> projected_cols);
 
-        // Aggregate-pushdown REDUCE — a DEDICATED protocol leg, not a scan mode:
-        // the owning agent runs the whole GROUP BY over its slice (operator_group
-        // rebuilt from the POD spec; WHERE rides `filter`, projection rides
-        // `projected_cols`) and replies ALL final aggregated rows in ONE reply — bounded by
-        // #groups, so no cursor exists.
+        // Aggregate-pushdown REDUCE — a DEDICATED protocol leg, not a scan mode: the owning agent
+        // runs the whole GROUP BY over its slice (operator_group rebuilt from the POD spec; WHERE
+        // rides `filter`, projection rides `projected_cols`) and replies ALL final aggregated rows
+        // in ONE reply — bounded by #groups, so no cursor exists.
         //
-        // A NOT-OWNED / RECORD-ONLY OID IS A REFUSAL, NOT AN EMPTY FOLD. This clause used to
-        // say the opposite — that such an oid "reduces over the EMPTY input (a scalar
-        // aggregate still emits its single COUNT=0/NULL row)" — and that sentence was the
-        // root of a whole family of silent wrong answers on this contract. The row it
-        // sanctioned is a STATEMENT ABOUT A TABLE ("your COUNT is 0"), bit-identical to the
-        // row a real, really-empty table produces, synthesized from a read that reached no
-        // storage at all. Nothing above the reply can tell the two apart. An EMPTY OWNED
-        // table still folds to that single scalar row — that half is correct and is what the
-        // group's empty-input finalize is for; only "no storage here" leaves through the
-        // error channel.
+        // A NOT-OWNED / RECORD-ONLY OID IS A REFUSAL, NOT AN EMPTY FOLD. Reducing over the EMPTY
+        // input would let a scalar aggregate emit its single COUNT=0/NULL row — a STATEMENT ABOUT A
+        // TABLE ("your COUNT is 0"), bit-identical to the row a real, really-empty table produces,
+        // synthesized from a read that reached no storage at all, and nothing above the reply can
+        // tell the two apart. An EMPTY OWNED table still folds to that single scalar row — that
+        // half is correct and is what the group's empty-input finalize is for; only "no storage
+        // here" leaves through the error channel.
         //
-        // SINGLE-OWNER INVARIANT: the reply carries FINAL rows, valid only while one agent
-        // owns the whole table; sharded slices need partial states + a real coordinator
-        // merge (operator_group_merge is the socket).
+        // SINGLE-OWNER INVARIANT: the reply carries FINAL rows, valid only while one agent owns the
+        // whole table; sharded slices need partial states + a real coordinator merge
+        // (operator_group_merge is the socket).
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_reduce(session_id_t session,
                        components::catalog::oid_t table_oid,
@@ -222,7 +217,7 @@ namespace services::disk {
                                                                            components::catalog::oid_t table_oid,
                                                                            std::set<std::string> live_attnames);
 
-        // B3c1 — physical release of ONE named column, the ALTER TABLE DROP COLUMN leg.
+        // Physical release of ONE named column, the ALTER TABLE DROP COLUMN leg.
         //
         // A SIBLING of compact_relkind_g_storage, not a mode on it, and the asymmetry is the
         // reason. That leg's contract is SUBTRACTIVE: it is handed the live set and drops the
@@ -230,12 +225,8 @@ namespace services::disk {
         // here — the ALTER knows exactly one name, and deriving a whole live set to express it
         // would make every gap in that derivation a physical drop of a SURVIVING column. This
         // leg is additive: the only column it can ever touch is the one it is handed. The
-        // second reason is the gate: VACUUM's leg refuses DISK-backed tables because VACUUM
-        // exists to reclaim and rides no round that can commit a reclaim, whereas here the
-        // drop IS the DDL fact and deferring the release to the next checkpoint is the design
-        // (B3c), so the two callers want opposite answers from the same `if`. The third is
-        // this error channel: compact_relkind_g_storage answers with a count, in which "no
-        // such storage" and "nothing to drop" are the same 0.
+        // second reason is this error channel: compact_relkind_g_storage answers with a count,
+        // in which "no such storage" and "nothing to drop" are the same 0.
         //
         //   value true  — the column was in the live storage schema and was removed;
         //   value false — the storage exists but never carried that column. ALTER TABLE ADD
@@ -251,26 +242,25 @@ namespace services::disk {
         // Rename ONE named column, the ALTER TABLE RENAME COLUMN leg — and NOT a convenience.
         //
         // The storage's column name is a cache of the catalog's; the identity is the column's
-        // pg_attribute.attoid, which a rename does not move (RN-oid). This leg keeps the cache
-        // in step from the commit onward, because the parts of the write path that still
-        // address columns by name — the append's column expansion, drop_storage_column — would
-        // otherwise be reading a stale name until the next restart repaired it.
+        // pg_attribute.attoid, which a rename does not move. This leg keeps the cache in step from
+        // the commit onward, because the parts of the write path that still address columns by name
+        // — the append's column expansion, drop_storage_column — would otherwise be reading a stale
+        // name until the next restart repaired it.
         //
         // It is NOT what keeps the data alive: manager_disk_t::rearm_dropped_column_blocks_sync
-        // compares ATTOIDS, so a rename the storage never saw reads as "same column, stale
-        // name" and is repaired, never as a drop. Before that walk keyed on the oid, skipping
-        // this leg cost the column and all of its data at the next start.
+        // compares ATTOIDS, so a rename the storage never saw reads as "same column, stale name"
+        // and is repaired, never as a drop. On a NAME-keyed walk, skipping this leg would cost the
+        // column and all of its data at the next start.
         //
         //   value true  — the column was in the live storage schema and now carries new_attname;
-        //   value false — the storage exists but never carried old_attname. ALTER TABLE ADD
-        //                 COLUMN writes pg_attribute only, so a column added and renamed before
-        //                 any INSERT materialized it has nothing to rename here. Not a failure,
-        //                 and not a divergence either: the storage names stay a SUBSET of the
-        //                 catalog's, which is the direction the bootstrap walk tolerates;
-        //   error       — the oid names no materialized storage on its owning agent, or
-        //                 new_attname is already a column of that storage (two columns under
-        //                 one name would leave the name-keyed reconciliation unable to tell
-        //                 them apart).
+        //   value false — the storage exists but never carried old_attname. ALTER TABLE ADD COLUMN
+        //                 writes pg_attribute only, so a column added and renamed before any INSERT
+        //                 materialized it has nothing to rename here. Not a failure, and not a
+        //                 divergence either: the storage names stay a SUBSET of the catalog's,
+        //                 which is the direction the bootstrap walk tolerates;
+        //   error       — the oid names no materialized storage on its owning agent, or new_attname
+        //                 is already a column of that storage (two columns under one name would
+        //                 leave the name-keyed reconciliation unable to tell them apart).
         actor_zeta::unique_future<core::result_wrapper_t<bool>> rename_storage_column(
             session_id_t session,
             components::catalog::oid_t table_oid,
@@ -278,7 +268,7 @@ namespace services::disk {
             std::string new_attname);
 
         // Storage management
-        // B1b: `is_computed` = the pg_class.relkind='g' fact, derived by the caller
+        // `is_computed` = the pg_class.relkind='g' fact, derived by the caller
         // (see manager_disk_t::create_storage_disk).
         actor_zeta::unique_future<void>
         create_storage_disk(session_id_t session,
@@ -294,7 +284,7 @@ namespace services::disk {
         // does: their natural reply value is ALSO what a routing refusal produced.
         //
         //   storage_types — an EMPTY type list is a real answer (a storage whose schema has
-        //     not been adopted yet), and it was equally the answer for an oid no agent owns.
+        //     not been adopted yet), so it cannot also be the answer for an oid no agent owns.
         //     operator_resolve_table maps every live pg_attribute column onto this list BY
         //     NAME; an empty one leaves every column's chunk_position at -1, i.e. a table
         //     schema describing nothing, derived from a read that never happened.
@@ -304,27 +294,25 @@ namespace services::disk {
         storage_types(session_id_t session, components::catalog::oid_t table_oid);
         actor_zeta::unique_future<core::result_wrapper_t<uint64_t>>
         storage_total_rows(session_id_t session, components::catalog::oid_t table_oid);
-        // Storage data operations. The read contract has exactly TWO legs and cannot be
-        // reduced to one (A1): streaming-by-predicate below, and point-by-row-id
-        // (storage_fetch) further down. A row-id SET is not expressible as a scan filter —
-        // selection inside a vector is a mask, and a mask can neither repeat a row nor
-        // reorder one — and parking a row-id list on a cursor would both bloat the
-        // deliberately position-only active_scan_t and make every point read gate compact()
-        // on its oid, which point reads have no need of.
-        // Streaming fetch-next scan source (STEP 3 / phase B). Holds LIVE scan state
-        // per cursor on the owning agent instead of materializing the whole batch
-        // vector. cursor_id==0 OPENs a fresh cursor (mints an id from the filter /
-        // projection / txn) and returns its first batch; a non-zero cursor_id ADVANCES
-        // that cursor (filter is ignored, pass nullptr). The reply pairs one batch with
-        // the cursor_id; an EMPTY chunk (cardinality 0) is the drained sentinel and the
-        // cursor is erased agent-side. Buffer-pool OOM / data_corruption ride the wrapper
-        // as a value (no throw across the mailbox).
+        // Storage data operations. The read contract has exactly TWO legs and cannot be reduced to
+        // one: streaming-by-predicate below, and point-by-row-id (storage_fetch) further down. A
+        // row-id SET is not expressible as a scan filter — selection inside a vector is a mask, and
+        // a mask can neither repeat a row nor reorder one — and parking a row-id list on a cursor
+        // would both bloat the deliberately position-only active_scan_t and make every point read
+        // gate compact() on its oid, which point reads have no need of.
+        // Streaming fetch-next scan source. Holds LIVE scan state per cursor on the owning agent
+        // instead of materializing the whole batch vector. cursor_id==0 OPENs a fresh cursor (mints
+        // an id from the filter / projection / txn) and returns its first batch; a non-zero
+        // cursor_id ADVANCES that cursor (filter is ignored, pass nullptr). The reply pairs one
+        // batch with the cursor_id; an EMPTY chunk (cardinality 0) is the drained sentinel and the
+        // cursor is erased agent-side. Buffer-pool OOM / data_corruption ride the wrapper as a
+        // value (no throw across the mailbox).
         //
-        // AN OPEN OVER AN OID NO AGENT HAS A STORAGE FOR IS A REFUSAL, not a drained
-        // sentinel. The sentinel means "this scan is finished", which for a first batch
-        // reads as "this table is empty" — a fact about the table, asserted by a scan that
-        // never started. ADVANCING an unknown cursor DOES stay drained: the drain path
-        // erases the entry itself, so not knowing a cursor IS that cursor being finished.
+        // AN OPEN OVER AN OID NO AGENT HAS A STORAGE FOR IS A REFUSAL, not a drained sentinel. The
+        // sentinel means "this scan is finished", which for a first batch reads as "this table is
+        // empty" — a fact about the table, asserted by a scan that never started. ADVANCING an
+        // unknown cursor DOES stay drained: the drain path erases the entry itself, so not knowing
+        // a cursor IS that cursor being finished.
         actor_zeta::unique_future<core::result_wrapper_t<fetch_batch_t>>
         storage_fetch_next_batch(session_id_t session,
                                  components::catalog::oid_t table_oid,
@@ -336,47 +324,44 @@ namespace services::disk {
         // Close a fetch-next cursor WITHOUT draining it. A source that stops early (an error
         // mid-pump, a satisfied LIMIT, a dropped sub-plan) otherwise leaves its active_scans_
         // entry behind forever: nothing else erases it, and a live entry permanently gates
-        // compact() on that oid (A4). Idempotent — closing an unknown or already-drained
+        // compact() on that oid. Idempotent — closing an unknown or already-drained
         // cursor is a no-op, because the drain path erases the entry itself.
         actor_zeta::unique_future<void>
         storage_close_cursor(session_id_t session, components::catalog::oid_t table_oid, uint64_t cursor_id);
-        // storage_fetch returns the fetched rows as a vector of ≤ DEFAULT_VECTOR_CAPACITY chunks.
-        // The wrapper carries the owning agent's buffer-pool OOM / data_corruption as a
-        // value (no throw across the mailbox); callers read has_error() before .value().
-        // It also carries the ROUTING refusal: an oid no agent has a storage for used to
-        // come back as an empty chunk vector, which is exactly what a point fetch whose rows
-        // are all invisible to `txn` legitimately returns. Asking for ZERO rows (count == 0)
-        // stays a success with no chunks, whatever the oid — an empty request has an empty
-        // answer.
+        // storage_fetch returns the fetched rows as a vector of <= DEFAULT_VECTOR_CAPACITY chunks.
+        // The wrapper carries the owning agent's buffer-pool OOM / data_corruption as a value (no
+        // throw across the mailbox; callers read has_error() before .value()) AND the ROUTING
+        // refusal: an oid no agent has a storage for must not come back as an empty chunk vector,
+        // which is exactly what a point fetch whose rows are all invisible to `txn` legitimately
+        // returns. Asking for ZERO rows (count == 0) stays a success with no chunks, whatever the
+        // oid — an empty request has an empty answer.
         //
-        // VISIBILITY RIDES THIS MESSAGE (C4b), as a mode and not as a second protocol leg:
-        // only the visibility of the answer differs between the two, not its shape or its
-        // agent-side state, so a dedicated leg would duplicate the manager route, the
-        // dispatch_traits entry and the agent handler for one caller. `visibility` has NO
-        // DEFAULT — a sender that does not name the mode does not compile — and it is an
-        // enum rather than a bool because the disk contract carries no bare booleans.
-        //   SNAPSHOT: rows invisible to `txn` are DROPPED. The reply is then SHORTER than
-        //             the request and NOT positionally paired with it; each returned chunk's
-        //             row_ids names the rows it actually carries, in order, and that is the
-        //             only correct way to pair a reply row with its id.
-        //   RAW:      no visibility question. The CREATE INDEX backfill needs it, because it
-        //             reads DELETED rows on purpose to recover their old key columns.
-        // An empty `txn` is NOT raw: it means "see all COMMITTED rows", so a committed
-        // delete still hides the row from it.
+        // VISIBILITY RIDES THIS MESSAGE, as a mode and not as a second protocol leg: only the
+        // visibility of the answer differs between the two, not its shape or its agent-side state,
+        // so a dedicated leg would duplicate the manager route, the dispatch_traits entry and the
+        // agent handler for one caller. `visibility` has NO DEFAULT — a sender that does not name
+        // the mode does not compile — and it is an enum rather than a bool because the disk
+        // contract carries no bare booleans.
+        //   SNAPSHOT: rows invisible to `txn` are DROPPED. The reply is then SHORTER than the
+        //             request and NOT positionally paired with it; each returned chunk's row_ids
+        //             names the rows it actually carries, in order, and that is the only correct
+        //             way to pair a reply row with its id.
+        //   RAW:      no visibility question. The CREATE INDEX backfill needs it, because it reads
+        //             DELETED rows on purpose to recover their old key columns.
+        // An empty `txn` is NOT raw: it means "see all COMMITTED rows", so a committed delete still
+        // hides the row from it.
         //
         // `limit` IS A POST-VISIBILITY CAP ON ROWS, the exact counterpart of
-        // storage_fetch_next_batch's post-filter matched-row cap, and the only place a
-        // LIMIT over an index scan can correctly be applied. The index answers with a
-        // SUPERSET of row ids and this leg DROPS the ones `txn` may not see, so a cap
-        // spent on candidate IDS can spend its whole budget on rows the reader never
-        // receives. Measured against integration/cpp/test/test_index_scan_limit_cap.cpp with
-        // that spelling injected: a LIMIT 7 answered with 0 rows, and the same with the budget
-        // counted per requested id here instead of per produced row. The agent stops gathering as soon
-        // as it has produced `limit` rows the reader can see, so the cap bounds the work
-        // as well as the reply. -1 == uncapped (logical_plan::limit_t::unlimit), and like
-        // `visibility` it has NO DEFAULT: a fetch that does not say how many rows it wants
-        // does not compile. A cap wider than the matched set is not a boundary — it simply
-        // never binds.
+        // storage_fetch_next_batch's post-filter matched-row cap, and the only place a LIMIT over
+        // an index scan can correctly be applied: the index answers with a SUPERSET of row ids and
+        // this leg DROPS the ones `txn` may not see, so a cap spent on candidate IDS can spend its
+        // whole budget on rows the reader never receives. Measured against
+        // integration/cpp/test/test_index_scan_limit_cap.cpp with that spelling injected: a LIMIT 7
+        // answered with 0 rows. The agent stops gathering as soon as it has produced `limit` rows
+        // the reader can see, so the cap bounds the work as well as the reply. -1 == uncapped
+        // (logical_plan::limit_t::unlimit), and like `visibility` it has NO DEFAULT: a fetch that
+        // does not say how many rows it wants does not compile. A cap wider than the matched set
+        // simply never binds.
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         // projected_cols holds storage chunk indices; EMPTY means every column, matching
         // storage_fetch_next_batch above. Columns outside the set keep their ordinal slot and come

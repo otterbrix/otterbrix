@@ -25,13 +25,12 @@ namespace {
 
 } // namespace
 
-// The layer above the cursor, and the one the refusal actually starts at: a catalog read, an
-// index rebuild or a disk round-trip hands the operator an error_t built on ITS resource, and
-// the operator stores it. `error_ = error` reallocated the message onto the DEFAULT resource
-// (std::pmr::string's copy constructor does not propagate the allocator) and
-// `error_ = std::move(error)` kept the producer's allocator, so the operator held — and on
-// destruction freed into — an arena it never owned. Roughly a hundred call sites reach this,
-// ~98 of them with an lvalue (`set_error(some_result.error())`), i.e. through the copy.
+// The layer above the cursor, and the one the refusal actually starts at: a catalog read, an index
+// rebuild or a disk round-trip hands the operator an error_t built on ITS resource, and the operator
+// stores it. `error_ = error` reallocates the message onto the DEFAULT resource (std::pmr::string's copy
+// constructor does not propagate the allocator) and `error_ = std::move(error)` keeps the producer's
+// allocator, so the operator would hold — and on destruction free into — an arena it never owned.
+// Roughly a hundred call sites reach this, ~98 of them with an lvalue, i.e. through the copy.
 TEST_CASE("components::operators::set_error_leaves_the_message_on_the_operator_resource") {
     resource_tracer_t producer;
     resource_tracer_t owner;

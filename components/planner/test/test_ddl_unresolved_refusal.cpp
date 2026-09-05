@@ -13,21 +13,18 @@
 
 // AN UNRESOLVED DDL TARGET IS A REFUSAL, NOT A SILENT NO-OP.
 //
-// enrich_logical_plan stamps namespace/table/index OIDs onto CREATE INDEX and
-// DROP INDEX nodes from the statement's resolved catalog entries — and stamps
-// NOTHING when the named object does not exist, leaving INVALID_OID in place
-// without raising anything itself. The planner rewrite is the first point that
-// looks at those OIDs, so it is the point that must answer for a miss:
+// enrich_logical_plan stamps namespace/table/index OIDs onto CREATE INDEX and DROP INDEX nodes from the
+// statement's resolved catalog entries — and stamps NOTHING when the named object does not exist, leaving
+// INVALID_OID in place without raising anything itself. The planner rewrite is the first point that looks
+// at those OIDs, so it is the point that must answer for a miss:
 //
-//   * rewrite_create_index used to skip the rewrite and hand the bare
-//     create_index_t through "to preserve the original silent no-op" — the
-//     executor then reported success for an index that was never created;
-//   * rewrite_drop_index used to emit only the trailing drop_index_t marker,
-//     whose engine teardown tolerates an unknown oid by design — so DROP INDEX
-//     over garbage reported success, and the operator's no-identity-row-deleted
-//     verdict never fired because not one delete spec was emitted.
+//   * rewrite_create_index skipping the rewrite and handing the bare create_index_t through makes the
+//     executor report success for an index that was never created;
+//   * rewrite_drop_index emitting only the trailing drop_index_t marker, whose engine teardown tolerates
+//     an unknown oid by design, makes DROP INDEX over garbage report success — and the operator's
+//     no-identity-row-deleted verdict never fires, because not one delete spec was emitted.
 //
-// Both were sanctioned silent successes (rule 6). These cases pin the refusal.
+// Both are silent successes (rule 6). These cases pin the refusal.
 
 namespace {
 

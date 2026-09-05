@@ -3,26 +3,25 @@
 //
 // ALTER TABLE ... ADD COLUMN writes a pg_attribute row and STOPS. The physical
 // column is materialized later, by the first INSERT that carries it (agent_disk
-// stage 1b `storage_append_inner`, and `direct_add_column_sync` on the replay
-// leg). That deferral is deliberate — test_alter_rename_column's
+// stage 1b `storage_append_inner`, and `direct_add_column_sync` on the replay leg).
+// That deferral is deliberate — test_alter_rename_column's
 // `rename_and_unmaterialized_add_column_are_distinguishable` pins it by REQUIRE-ing
-// that the durable file still holds TWO columns after an ADD COLUMN with no INSERT
-// behind it.
+// that the durable file still holds TWO columns after an ADD COLUMN with no INSERT.
 //
 // So there is a LEGAL window in which the catalog names a column the storage has
-// never heard of, and every reader has to survive it. It did not: the scan
-// adapter dropped a projected ordinal it could not find in the storage, which
-// turned `SELECT extra FROM t` into a scan of ZERO columns and tripped
+// never heard of, and every reader has to survive it. It did not: the scan adapter
+// dropped a projected ordinal it could not find in the storage, which turned
+// `SELECT extra FROM t` into a scan of ZERO columns and tripped
 // `assert(!column_ids_.empty())` in components/table/table_state.cpp — an abort on
-// the READ path, i.e. a host process killed by a plain SELECT, and under NDEBUG a
+// the READ path (a host process killed by a plain SELECT), and under NDEBUG a
 // zero-column scan answering silently.
 //
-// THE ANSWER THESE CASES PIN: NULL for every existing row — which is exactly what
-// the materializing INSERT itself backfills those rows with (row_group_t::add_column
+// THE ANSWER THESE CASES PIN: NULL for every existing row — exactly what the
+// materializing INSERT itself backfills those rows with (row_group_t::add_column
 // fills pre-existing rows with the column's default, and the definition the
 // materialization stage builds carries none). The read therefore does not change
-// when the column is finally materialized, and the last case asserts that boundary
-// directly: old rows stay NULL, the new one carries its value.
+// when the column is finally materialized, and the last case asserts that boundary:
+// old rows stay NULL, the new one carries its value.
 // ============================================================================
 
 #include "test_config.hpp"

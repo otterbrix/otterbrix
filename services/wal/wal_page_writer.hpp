@@ -32,24 +32,23 @@ namespace services::wal {
         wal_page_writer_t& operator=(const wal_page_writer_t&) = delete;
 
         /// The reason the segment could not be opened / initialised; no_error() when usable.
-        /// The constructor used to leave file_ null on a failed open and then dereference it
-        /// in write_file_header(); it reports instead now, and every entry point below
-        /// refuses while this is set.
+        /// A failed open is reported here rather than left as a null file_ that
+        /// write_file_header() would dereference; every entry point below refuses while this
+        /// is set.
         [[nodiscard]] const core::error_t& open_error() const noexcept { return open_error_; }
         [[nodiscard]] bool is_open() const noexcept { return file_ != nullptr; }
 
         /// Append an encoded record. May span multiple pages.
         /// Refuses with io_error on a write error (e.g. disk full). THE RETURN IS THE ONLY
-        /// EVIDENCE the record reached the segment: it used to be a bool that every caller
-        /// in wal.cpp dropped before returning the wal_id of a record that was never written.
+        /// EVIDENCE the record reached the segment: dropping it — which a bare bool invites —
+        /// lets wal.cpp return the wal_id of a record that was never written.
         [[nodiscard]] core::error_t append(const char* data, size_t size, id_t wal_id);
 
         /// Flush current page to disk (even if not full).
         [[nodiscard]] core::error_t flush();
 
-        /// Flush + fsync. Refuses when EITHER half fails — the fsync result used to be
-        /// dropped here, which is what let a FULL-sync commit report durability over a page
-        /// that never reached the device.
+        /// Flush + fsync. Refuses when EITHER half fails — dropping the fsync result here lets
+        /// a FULL-sync commit report durability over a page that never reached the device.
         [[nodiscard]] core::error_t flush_and_sync();
 
         /// Path to the current segment file.

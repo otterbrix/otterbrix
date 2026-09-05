@@ -2,9 +2,9 @@
 // stores ITS OWN metadata in ordinary engine tables and must be able to drive
 // them with plain SQL DML — plus read them back after a restart (.otbx + WAL).
 //
-// B1 repro: the kafka connector's `kafka.__sources` table (8 STRING_LITERAL
-// columns, created node-based like KafkaManager::ensure_sources_table) crashed
-// the engine when written with a SQL INSERT string (see
+// The kafka connector's `kafka.__sources` table (8 STRING_LITERAL columns,
+// created node-based like KafkaManager::ensure_sources_table) crashed the engine
+// when written with a SQL INSERT string (see
 // otterstax integration/kafka/detail/kafka_manager_persistence.cpp: "Insert the
 // row via node_insert (a SQL INSERT string through kafka_query crashes the
 // engine on this table)"). This test pins the exact scenario as a regression.

@@ -69,7 +69,7 @@ namespace components::operators {
             guard_types_.clear();
         }
 
-        // A4: release an OPEN, un-drained cursor. Nothing agent-side reclaims it — the drain
+        // Release an OPEN, un-drained cursor. Nothing agent-side reclaims it — the drain
         // paths only fire when the source keeps pulling — and a live cursor permanently gates
         // compact() on its table. Called by the executor when it stops pumping a source early
         // (error mid-pump, satisfied LIMIT, abandoned sub-plan). Idempotent: after the cursor

@@ -28,39 +28,31 @@
 //   * every index of that table stores the OLD physical ids and is, from that instant,
 //     silently wrong (an id naming no row group is dropped by collection_t::fetch, an id that
 //     now belongs to a different survivor is gathered as if it were the match);
-//   * repopulate_indexes_after_compaction is what makes the indexes name the new ids again,
-//     and btree_index_agent_t::publish_buckets force_flush()es the result, so the rebuild is
-//     DURABLE when the driver returns;
+//   * repopulate_indexes_after_compaction makes the indexes name the new ids again, and
+//     btree_index_agent_t::publish_buckets force_flush()es the result;
 //   * truncate_before drops the WAL segments the round made redundant.
 //
-// The third and fourth are the ones this file is about. THE TRUNCATION IS THE ROUND'S POINT OF
-// NO RETURN: it is the only step that destroys something, and there is nothing that puts an
-// index back afterwards. base_spaces does not rebuild indexes at startup -- the pass that once
-// did was removed as a proven no-op and manager_index.hpp records that "nothing rewrites the
-// on-disk index after a compact" -- and WAL replay maintains no index either (the bypass note
-// on the replay callable says so in as many words). So a round that trims the journal while
-// its indexes still name pre-compact rows has already produced the final state: permanent,
-// silent, wrong answers.
+// THE TRUNCATION IS THE POINT OF NO RETURN: the only step that destroys anything, and nothing
+// puts an index back afterwards -- base_spaces rebuilds no index at startup (manager_index.hpp
+// records that nothing repairs an on-disk index left naming pre-compact rows) and WAL replay
+// maintains none. A round that trims the journal while its indexes still name pre-compact rows
+// has produced the final state: permanent, silent, wrong answers. The WAL auto-checkpoint
+// (run_auto_checkpoint) rebuilds at step (c2), BEFORE the truncate at (d); the CHECKPOINT
+// statement had it AFTER, and the case below is written against that difference alone.
 //
-// The WAL auto-checkpoint (manager_wal_replicate_t::run_auto_checkpoint) has the rebuild at
-// step (c2), BEFORE the truncate at (d). The CHECKPOINT statement had it AFTER. The case below
-// is written against the difference and nothing else.
-//
-// HOW THE WINDOW IS ENTERED WITHOUT A DEBUGGER. The truncate step reads each candidate segment
-// through wal_page_reader_t, so the T3 WAL seam (dev_set_wal_file_interposer, the same one
-// test_create_index_catchup_refusal uses) can make that read refuse. A refused truncate is a
-// refused statement, and in the old order the operator returned on it -- so the rebuild never
+// HOW THE WINDOW IS ENTERED WITHOUT A DEBUGGER. truncate_before reads each candidate segment
+// through wal_page_reader_t, so the WAL seam (dev_set_wal_file_interposer, as in
+// test_create_index_catchup_refusal) can make that read refuse. A refused truncate is a
+// refused statement, and in the old order the operator returned on it -- the rebuild never
 // ran, which is EXACTLY the state a kill -9 one instruction after the truncation leaves:
-// post-compact table, pre-compact index. The case then also crashes for real, by copying the
-// live directory and reopening the copy, because the whole claim is that the state SURVIVES a
-// restart.
+// post-compact table, pre-compact index. The case then crashes for real, copying the live
+// directory and reopening the copy, because the claim is that the state SURVIVES a restart.
 //
 // TWO GUARDS, both because this branch has gone green for the wrong reason before:
 //   * THE COMPACTION MUST REALLY HAVE HAPPENED. checkpoint_inner writes the `.wal_id` sidecar
-//     of an entry that needed a checkpoint ONLY after data_table_t::compact returned true --
-//     every other outcome (`storage_degraded`, an open scan cursor, the MVCC gate, a failed
-//     checkpoint) takes a `continue` that skips the sidecar. So a sidecar that moved is proof
-//     of a renumbering, not merely of a round.
+//     ONLY after data_table_t::compact returned true -- every other outcome
+//     (`storage_degraded`, an open scan cursor, the MVCC gate, a failed checkpoint) takes a
+//     `continue` that skips it. A sidecar that moved is proof of a renumbering, not of a round.
 //   * THE LOOKUP MUST REALLY GO THROUGH THE INDEX. EXPLAIN on the SAME query text the value
 //     assertions use must say Index Scan; a planner that stopped routing `WHERE k = ...` to
 //     the index would satisfy every row assertion here over a full scan.
@@ -228,8 +220,6 @@ namespace {
 
 } // namespace
 
-// RED before the fix, on both halves.
-//
 // operator_checkpoint_t ran truncate_before at step 4 and the index rebuild at step 5. The
 // refused truncate below therefore returned the statement one step BEFORE the rebuild, leaving
 // a table whose rows had all been renumbered and indexes that still named the old numbers:

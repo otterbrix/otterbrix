@@ -222,8 +222,8 @@ TEST_CASE("validity_mask_t allocates one entry per 64 rows, not one per row", "[
         CHECK(allocated <= expected);
 
         // And it must still behave as a mask over `rows` rows. Note all_valid() is defined as
-        // "no buffer at all" (validation.hpp:74), so a mask that OWNS a buffer is never all_valid
-        // even with every bit set — the bits are what this checks.
+        // "no buffer at all" (validity_mask_t::all_valid), so a mask that OWNS a buffer is never
+        // all_valid even with every bit set — the bits are what this checks.
         CHECK(mask.row_is_valid(rows - 1));
         mask.set_invalid(rows - 1);
         CHECK_FALSE(mask.row_is_valid(rows - 1));
@@ -234,10 +234,10 @@ TEST_CASE("validity_mask_t allocates one entry per 64 rows, not one per row", "[
 // A vector that creates its own data must not build a validity mask first
 // =======================================================================
 //
-// vector_t's constructor used to build validity_mask_t{resource, capacity} in its member-init list
-// and then, when create_data is set, call validity_.reset() in the body — discarding the buffer it
-// had just allocated and filled. Every vector on the query path takes that branch, so every one of
-// them paid an allocation and a full initialisation for nothing.
+// vector_t's constructor must not build validity_mask_t{resource, capacity} in its member-init
+// list when create_data is set: the body then calls validity_.reset(), discarding the buffer just
+// allocated and filled. Every vector on the query path takes that branch, so each one would pay
+// an allocation and a full initialisation for nothing.
 TEST_CASE("a data-creating vector_t allocates no validity mask", "[validity-size]") {
     using namespace components::vector;
 

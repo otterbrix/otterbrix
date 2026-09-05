@@ -29,17 +29,13 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_vacuum_t::await_async_and_resume(pipeline::context_t* ctx) {
         const std::uint64_t lowest = ctx->lowest_active_start_time;
 
-        // cleanup_versions across every user storage. The disk manager iterates its own
-        // storages_ map, so one global call suffices — and it ANSWERS how many storages it
-        // renumbered, which is the only fact that can oblige this statement to rebuild an
-        // index (see the rebuild step below, and agent_disk_t::vacuum_inner for where the
-        // count is produced).
+        // cleanup_versions across every user storage. The disk manager iterates its own storages_ map, so one
+        // global call suffices — and it ANSWERS how many storages it renumbered, the only fact that can oblige this
+        // statement to rebuild an index (see the rebuild step below, and agent_disk_t::vacuum_inner).
         //
-        // THE MVCC COMPACT WATERMARK IS NO LONGER FETCHED HERE. It existed for a compact on
-        // this route, and there is none: vacuum_inner ignored the argument by name and
-        // manager_disk_t::vacuum_all passed it through untouched, so the
-        // manager_dispatcher_t::txn_compact_watermark_msg round-trip that produced it was one
-        // extra cross-actor hop per VACUUM spent on a value nobody read.
+        // NO MVCC COMPACT WATERMARK IS FETCHED HERE: there is no compact on this route (vacuum_inner ignores the
+        // argument, manager_disk_t::vacuum_all passes it through untouched), so the txn_compact_watermark_msg
+        // round-trip would be one cross-actor hop per VACUUM for a value nobody reads.
         std::uint64_t renumbered_storages = 0;
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_v, vf] = actor_zeta::send(ctx->disk_address,
@@ -57,41 +53,26 @@ namespace components::operators {
             co_await std::move(cvf);
         }
 
-        // THE INDEX REBUILD, AND THE FACT IT NOW WAITS FOR.
+        // THE INDEX REBUILD, AND THE FACT IT WAITS FOR.
         //
-        // A full rebuild — a drained scan of the table plus a clear() that unlinks the index
-        // directory plus a refill of every entry — is owed for exactly one reason: a
-        // renumbering. data_table_t::compact is the only thing in the tree that renumbers, and
-        // it has ONE call site, agent_disk_t::checkpoint_inner. VACUUM does not reach it.
+        // A full rebuild — a drained scan of the table plus a clear() that unlinks the index directory plus a refill
+        // of every entry — is owed for exactly one reason: a renumbering. data_table_t::compact is the only thing in
+        // the tree that renumbers, and it has ONE call site, agent_disk_t::checkpoint_inner. VACUUM does not reach
+        // it, so rebuilding unconditionally costs a full scan and a clear-and-refill per relation for a renumbering
+        // that never happened. Nor is this "assume the other way": vacuum_all ANSWERS the question, at the line
+        // inside vacuum_inner where a compact would stand, so if compaction ever returns to that route the count
+        // returns with it and this rebuild wakes up.
         //
-        // This used to be a loop over every relation in pg_class calling repopulate_table on
-        // each, justified by a comment reading "the compact pass above invalidated row
-        // positions". There was no compact pass above: vacuum_inner carries its own note
-        // saying nothing is compacted there, because under the split free pool a compact whose
-        // release no header commits can only spend space. So every VACUUM paid a full scan and
-        // a clear-and-refill per relation for a renumbering that never happened — the very
-        // price that got the bootstrap rebuild deleted, moved to the run time.
+        // The rebuild it wakes into is the SHARED driver: repopulate_indexes_after_compaction is the one place that
+        // knows how to rebuild after a renumbering, and it walks all_indexed_oids (which already excludes oids
+        // mid-DROP) rather than every relation in pg_class.
         //
-        // What replaces it is not "assume the other way". vacuum_all ANSWERS the question, and
-        // the answer is produced at the line inside vacuum_inner where a compact would stand.
-        // If compaction ever returns to that route the count returns with it and this rebuild
-        // wakes up; nothing here has to be remembered.
-        //
-        // And the rebuild it wakes up into is the SHARED driver, not a second longhand copy.
-        // repopulate_indexes_after_compaction is the one place that knows how to rebuild after
-        // a renumbering, it walks all_indexed_oids (which already excludes oids mid-DROP)
-        // rather than every relation in pg_class, and having two hand-written versions of it is
-        // exactly how the WAL auto-checkpoint ended up without one.
-        //
-        // WHAT THIS ROUTE DOES NOT DO, STATED SO THE NEXT CHANGE HAS TO READ IT: it does not
-        // ARM the durable rebuild guard (manager_index_t::rebuild_marker_path_). That guard is
-        // armed inside flush_all_indexes, which the two COMPACTING orchestrations send as
-        // their first step and VACUUM does not send at all — correctly, because VACUUM reaches
-        // no compact() today and therefore opens no window between a renumbering and a
-        // rebuild. IF COMPACTION EVER RETURNS TO vacuum_inner, the arm has to come with it,
-        // ABOVE the vacuum_all call rather than here: a guard armed after the renumbering has
-        // already committed covers nothing. The rebuild below would then merely clear entries
-        // this statement never wrote, which clear_rebuild_marker_ treats as a no-op.
+        // WHAT THIS ROUTE DOES NOT DO, STATED SO THE NEXT CHANGE HAS TO READ IT: it does not ARM the durable rebuild
+        // guard (manager_index_t::rebuild_marker_path_). That guard is armed inside flush_all_indexes, which the two
+        // COMPACTING orchestrations send as their first step and VACUUM does not send at all — correctly, because
+        // VACUUM reaches no compact() today and opens no window between a renumbering and a rebuild. IF COMPACTION
+        // EVER RETURNS TO vacuum_inner, the arm has to come with it, ABOVE the vacuum_all call rather than here: a
+        // guard armed after the renumbering has already committed covers nothing.
         if (renumbered_storages > 0) {
             auto rebuild_error =
                 co_await services::index::repopulate_indexes_after_compaction(resource_,
@@ -111,9 +92,7 @@ namespace components::operators {
         }
 
         // The rest of this operator is the pg_computed_column GC, which needs the DISK actor
-        // and not the index one. It used to sit behind an "without an index actor the rest is
-        // moot" early return, which stopped being true the moment the index work above shrank
-        // to one no-op message.
+        // and not the index one — so it is gated on the disk address, not on the index one.
         if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
             mark_executed();
             co_return;
@@ -123,13 +102,11 @@ namespace components::operators {
         // pg_computed_column rows the two GC passes further down reclaim.
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
-        // A1: the read contract has exactly two legs — streaming-by-predicate
-        // (storage_fetch_next_batch) and point-by-row-id (storage_fetch). This used to be a
-        // third leg that replied with every batch at once; it is now the streaming leg
-        // drained to completion, which is the same result with an error channel. Draining is
-        // MANDATORY, not merely tidy: a live cursor gates compact() on its oid, so an
-        // abandoned one would wedge the very table VACUUM is here to reclaim. Hence the
-        // explicit release on the error exit (A4).
+        // The read contract has exactly two legs — streaming-by-predicate
+        // (storage_fetch_next_batch) and point-by-row-id (storage_fetch) — so a whole-table
+        // read is the streaming leg drained to completion. Draining is MANDATORY, not merely
+        // tidy: a live cursor gates compact() on its oid, so an abandoned one would wedge the
+        // very table VACUUM is here to reclaim. Hence the explicit release on the error exit.
         std::pmr::vector<components::vector::data_chunk_t> pg_class_batches(resource_);
         {
             uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
@@ -175,22 +152,18 @@ namespace components::operators {
             co_return;
         }
 
-        // Collect the COMPUTING-table OIDs. This is the only thing the pg_class scan is
-        // still for: the relation list used to feed a per-table index rebuild as well, and
-        // that rebuild is gone with the compaction it was written for.
+        // Collect the COMPUTING-table OIDs — the only thing the pg_class scan is for.
         std::vector<catalog::oid_t> computing_table_oids;
 
         for (const auto& pg_class_rows : pg_class_batches) {
             for (std::uint64_t i = 0; i < pg_class_rows.size(); ++i) {
                 // pg_class columns: 0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode
                 //
-                // EVERY writer of pg_class stamps both the oid and the relkind (each
-                // build_* in ddl_metadata_builder.cpp sets column 3 from a relkind
-                // constant and column 0 from a real oid), so a NULL / empty / invalid
-                // value in either is a corrupt catalog row, not a variant to default.
-                // What stood here defaulted a NULL relkind to 'r' and skipped NULL-oid
-                // rows silently — quietly re-deciding which tables get the column-GC /
-                // compaction below: a 'g' table with a damaged relkind simply lost its
+                // EVERY writer of pg_class stamps both the oid and the relkind (each build_* in
+                // ddl_metadata_builder.cpp sets column 3 from a relkind constant and column 0 from a real oid),
+                // so a NULL / empty / invalid value in either is a corrupt catalog row, not a variant to default.
+                // Defaulting a NULL relkind to 'r', or skipping NULL-oid rows silently, quietly re-decides which
+                // tables get the column-GC / compaction below: a 'g' table with a damaged relkind would lose its
                 // GC forever, with nothing said. Rule 6: refuse the statement.
                 if (pg_class_rows.is_null(0, i) || pg_class_rows.is_null(3, i)) {
                     set_error(core::error_t{
@@ -221,51 +194,32 @@ namespace components::operators {
 
         // GC pg_computed_column rows for relkind='g' tables.
         //
-        // Safety vs. concurrent VACUUM + INSERT: VACUUM uses
-        // ctx->lowest_active_start_time as the snapshot horizon. The
-        // pg_computed_column GC below reads via read_chunks_by_key and deletes
-        // via delete_pg_catalog_rows — both go through ctx->txn, so rows
-        // newer than the horizon are NOT GC-eligible. Concurrent INSERT's
-        // writes (under txn_id >= TRANSACTION_ID_START) are invisible to
-        // VACUUM until commit; MVCC tag flipping is atomic per row.
+        // Safety vs. concurrent VACUUM + INSERT: VACUUM uses ctx->lowest_active_start_time as the snapshot horizon,
+        // and the GC below reads via read_chunks_by_key and deletes via delete_pg_catalog_rows — both through
+        // ctx->txn, so rows newer than the horizon are NOT GC-eligible. A concurrent INSERT's writes (under txn_id
+        // >= TRANSACTION_ID_START) are invisible to VACUUM until commit; MVCC tag flipping is atomic per row.
         //
-        // Two-pass strategy:
-        //  (a) drop tombstones (attrefcount<=0) produced by
-        //      operator_computed_field_unregister;
-        //  (b) version-GC — for each (relid, attname) group keep only the
-        //      row with max(attversion); delete older versions even if their
-        //      refcount is still positive. The resolver picks max version
-        //      per attname, so older rows are invisible to readers but
-        //      accumulate over ALTER COLUMN cycles and bloat
-        //      pg_computed_column.
+        // Two passes:
+        //  (a) drop tombstones (attrefcount<=0) produced by operator_computed_field_unregister;
+        //  (b) version-GC — per (relid, attname) group keep only max(attversion), deleting older versions even when
+        //      their refcount is positive. The resolver picks max version per attname, so older rows are invisible
+        //      to readers but accumulate over ALTER COLUMN cycles and bloat pg_computed_column.
         //
-        // Physical column compaction for relkind='g' tables.
-        // After (a) tombstone GC and (b) version GC above, columns whose
-        // every pg_computed_column row was deleted are physically dead in
-        // table_storage_t.table().column_definitions_ but invisible to
-        // readers (resolve_table reads from pg_computed_column). We reclaim
-        // them by calling compact_relkind_g_storage with the post-GC live
-        // attname set.
+        // Then physical column compaction: after (a) and (b), columns whose every pg_computed_column row was deleted
+        // are physically dead in table_storage_t.table().column_definitions_ but invisible to readers (resolve_table
+        // reads from pg_computed_column), so compact_relkind_g_storage is called with the post-GC live attname set.
+        // It goes through data_table_t's rebuild constructor (parent, removed_column) backed by
+        // collection_t::remove_column, which drops the column from every row_group segment; the rebuild SHARES every
+        // surviving column and allocates nothing, and the dropped column's blocks are named into the storage's
+        // pending-release set, handed back by the next checkpoint — the one round that can commit the release.
         //
-        // Implementation: data_table_t has an existing rebuild constructor
-        // (parent, removed_column) backed by collection_t::remove_column —
-        // this drops the column from every row_group segment. The rebuild
-        // SHARES every surviving column and allocates nothing; the dropped
-        // column's blocks are named into the storage's pending-release set
-        // and handed back by the next checkpoint, the one round that can
-        // commit the release (B3c).
+        // THE LIVE SET BELOW IS LOAD-BEARING. This leg is SUBTRACTIVE — the disk side drops the COMPLEMENT of the
+        // attnames assembled here — so a gap in this pg_computed_column read becomes a physical drop of a surviving
+        // column. ALTER TABLE DROP COLUMN, which names its column, goes through drop_storage_column instead.
         //
-        // THE LIVE SET BELOW IS LOAD-BEARING. This leg is SUBTRACTIVE — the
-        // disk side drops the COMPLEMENT of the attnames assembled here — so
-        // a gap in this pg_computed_column read becomes a physical drop of a
-        // surviving column. ALTER TABLE DROP COLUMN, which names its column,
-        // goes through drop_storage_column instead.
-        //
-        // FIXME: storage_append auto-extends a computed table's schema when
-        // an INSERT brings a new attname. After we drop a physical column
-        // here, a subsequent INSERT with that attname will trigger schema
-        // re-extension. That's correct behavior but does waste work if the
-        // column is being immediately re-added (e.g. drop+readd cycles).
+        // storage_append auto-extends a computed table's schema when an INSERT brings a new attname, so a column
+        // dropped here is re-extended by the next INSERT naming it. Correct, but a drop+re-add cycle pays for the
+        // physical drop twice over.
         if (!computing_table_oids.empty()) {
             constexpr catalog::oid_t kPgComputedColumn = catalog::well_known_oid::pg_computed_column_table;
             components::execution_context_t cc_ctx{ctx->session, ctx->txn, {}};
@@ -359,16 +313,13 @@ namespace components::operators {
                                                      cc_ctx,
                                                      std::move(cc_specs));
                     auto deleted_r = co_await std::move(df);
-                    // WHICH ZERO IS AN ERROR HERE — none. This is a GC pass: a row that is
-                    // already gone is precisely the state it is working towards, so a spec that
-                    // matched nothing has done this operator's job for it.
+                    // WHICH ZERO IS AN ERROR HERE — none. This is a GC pass: a row that is already gone is precisely
+                    // the state it is working towards, so a spec that matched nothing has done this operator's job.
                     //
-                    // THE REFUSAL IS FATAL, AND IT HAS TO BE READ RIGHT HERE, ahead of the
-                    // compaction below. That step is SUBTRACTIVE — it drops every storage
-                    // column NOT in the live set re-read below — and it is a physical rebuild
-                    // that cannot be undone. Running it after a GC whose outcome is unknown
-                    // means dropping columns on the strength of a catalog state nobody
-                    // established.
+                    // THE REFUSAL IS FATAL, AND IT HAS TO BE READ RIGHT HERE, ahead of the compaction below. That step
+                    // is SUBTRACTIVE — it drops every storage column NOT in the live set re-read below — and it is a
+                    // physical rebuild that cannot be undone. Running it after a GC whose outcome is unknown means
+                    // dropping columns on the strength of a catalog state nobody established.
                     if (deleted_r.has_error()) {
                         set_error(deleted_r.error());
                         co_return;
@@ -378,17 +329,13 @@ namespace components::operators {
                     }
                 }
 
-                // Physical column compaction step. Re-read
-                // pg_computed_column post-GC for this table_oid (the
-                // tombstone + version-GC deletes above ran under ctx->txn so
-                // they're visible here), build the live attname set, and ask
-                // the disk actor to drop every storage column that's NOT in
-                // that set. The disk actor skips DISK-backed storages and
-                // missing/already-compact columns silently.
+                // Physical column compaction step. Re-read pg_computed_column post-GC for this table_oid (the
+                // tombstone + version-GC deletes above ran under ctx->txn so they are visible here), build the live
+                // attname set, and ask the disk actor to drop every storage column NOT in that set. The disk actor
+                // skips DISK-backed storages and missing/already-compact columns silently.
                 //
-                // We re-read instead of reusing cc_rows because cc_rows was
-                // taken BEFORE the deletes; row[5]>0 there can include rows
-                // whose live counterparts were just version-GC'd.
+                // We re-read instead of reusing cc_rows because cc_rows was taken BEFORE the deletes; row[5]>0 there
+                // can include rows whose live counterparts were just version-GC'd.
                 {
                     std::pmr::vector<std::uint64_t> cc2_keys(resource_);
                     cc2_keys.emplace_back(catalog::pg_computed_column_col::relid);
@@ -428,9 +375,8 @@ namespace components::operators {
                                                        std::move(live_attnames));
                     // The door answers with the number of physical columns it actually
                     // dropped (its only channel: DISK-backed storages and already-compact
-                    // columns are skipped silently by contract). It used to be
-                    // (void)-discarded, so the SUBTRACTIVE leg of VACUUM ran with no
-                    // record of what it subtracted. Read it and say it.
+                    // columns are skipped silently by contract). Discarding it would leave
+                    // the SUBTRACTIVE leg of VACUUM with no record of what it subtracted.
                     const std::uint64_t dropped_columns = co_await std::move(dcf);
                     if (dropped_columns > 0) {
                         trace(log_,

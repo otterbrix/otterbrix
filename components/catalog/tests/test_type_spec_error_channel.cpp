@@ -2,17 +2,16 @@
 // what it cannot read, through core::result_wrapper_t — never by shrugging the
 // input into a plausible type.
 //
-// RED (proven pre-fix, 2026-09-02):
-//   * 2^20 nested LIST(...)  → SIGSEGV: the parser had NO depth limit at all while
+// Without that channel:
+//   * 2^20 nested LIST(...)  → SIGSEGV, the parser having no depth limit at all while
 //     the binary codec next door (components/types/type_spec_codec.cpp) refuses
 //     beyond MAX_SPEC_DEPTH = 64 on both encode and decode;
-//   * "numeric(10,2)garbage" → decoded to a CLEAN DECIMAL(10,2), trailing bytes
-//     silently dropped;
-//   * "FROBNICATE(int4,7)"   → the argument list was consumed to the matching ')'
-//     and the answer was UNKNOWN named "FROBNICATE" — indistinguishable from a
-//     legitimate named user-type reference (UNKNOWN(name));
+//   * "numeric(10,2)garbage" → a CLEAN DECIMAL(10,2), trailing bytes silently dropped;
+//   * "FROBNICATE(int4,7)"   → the argument list consumed to the matching ')' and an
+//     answer of UNKNOWN named "FROBNICATE" — indistinguishable from a legitimate
+//     named user-type reference (UNKNOWN(name));
 //   * everything else unreadable — malformed or out-of-window DECIMAL, broken ENUM
-//     entries, missing separators — collapsed into UNKNOWN with a catch(...) arm
+//     entries, missing separators — collapsed into UNKNOWN, with a catch(...) arm
 //     swallowing even bad_alloc.
 
 #include <catch2/catch_test_macros.hpp>
@@ -46,7 +45,7 @@ namespace {
 } // namespace
 
 TEST_CASE("catalog::type_spec::a_spec_deeper_than_the_shared_window_is_refused_not_a_stack_overflow") {
-    // Pre-fix this input was an unbounded recursion (SIGSEGV at 2^20 levels).
+    // Unbounded, this input recurses to a SIGSEGV at 2^20 levels.
     REQUIRE(decode_refusal(nested_lists(1u << 20)) == core::error_code_t::data_corruption);
     // The refusal starts exactly past the window shared with the binary codec.
     REQUIRE(decode_refusal(nested_lists(65)) == core::error_code_t::data_corruption);
@@ -59,19 +58,19 @@ TEST_CASE("catalog::type_spec::the_window_boundary_itself_still_decodes") {
 }
 
 TEST_CASE("catalog::type_spec::trailing_garbage_is_not_a_clean_type") {
-    // Pre-fix: decoded to DECIMAL(10,2), the garbage silently dropped.
+    // Unrefused: a clean DECIMAL(10,2), with the garbage silently dropped.
     REQUIRE(decode_refusal("numeric(10,2)garbage") == core::error_code_t::data_corruption);
 }
 
 TEST_CASE("catalog::type_spec::an_unreadable_keyword_must_not_become_a_plausible_type") {
-    // Pre-fix: answered UNKNOWN named "FROBNICATE" — the exact shape of a valid
-    // named user-type reference, so corruption travelled on as a resolvable name.
+    // Unrefused: UNKNOWN named "FROBNICATE" — the exact shape of a valid named
+    // user-type reference, so corruption travels on as a resolvable name.
     REQUIRE(decode_refusal("FROBNICATE(int4,7)") == core::error_code_t::data_corruption);
 }
 
 TEST_CASE("catalog::type_spec::decimal_outside_the_window_is_a_refusal_not_unknown") {
-    // The comment used to claim "callers that care refuse an UNKNOWN column type
-    // loudly" — no production caller ever did. The refusal lives HERE now.
+    // No production caller refuses an UNKNOWN column type on its own, so the refusal
+    // has to live HERE.
     REQUIRE(decode_refusal("numeric(300,5)") == core::error_code_t::data_corruption);
     REQUIRE(decode_refusal("numeric(10,)") == core::error_code_t::data_corruption);
     REQUIRE(decode_refusal("numeric(1e2,0)") == core::error_code_t::data_corruption);

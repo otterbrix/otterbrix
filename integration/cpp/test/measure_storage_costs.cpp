@@ -1,14 +1,13 @@
 // Storage-cost measurement harness. NOT a test: it asserts nothing and is not
 // registered with ctest. It prints numbers; judgement is the reader's.
 //
-// It re-takes the four numbers wave B was steered by, in the shapes they were
-// first taken in (plan tasks T1 and B7):
+// It takes four numbers:
 //
 //   1. checkpoint  — a round over 100 tables x 100 rows, dirty, then the EMPTY
 //                    round straight after it;
 //   2. footprint   — resident set and open file descriptors at 100 tables,
 //                    against the same engine before any table exists (measured
-//                    inside the same run as (1), as T1 did);
+//                    inside the same run as (1));
 //   3. insert      — per-row cost of one 100-row INSERT into a table carrying a
 //                    column named `_id`, at 1k rows and at 100k rows, plus the
 //                    preload of 100k with and without that column name;
@@ -19,11 +18,11 @@
 // No thresholds: a harness that fails a build on a wall-clock number measures
 // the machine it happens to be on.
 //
-// Config: the untouched `test_create_config` default, i.e. log level `trace`,
-// which is what every integration test runs at; WAL on. Data goes under
+// Config: the untouched `test_create_config` default (log level `trace`, what
+// every integration test runs at; WAL on). Data goes under
 // /tmp/otterbrix/measure_storage_costs/, never the repository.
 //
-// Build: target `measure_storage_costs` (Debug for the numbers above to mean
+// Build: target `measure_storage_costs` (Debug, for the numbers above to mean
 // anything next to their recorded baseline).
 // Run:   ./measure_storage_costs [all|checkpoint|insert|index] [runs]
 

@@ -242,7 +242,7 @@ target_link_libraries(profile_arithmetic PRIVATE
         BZip2::BZip2
 )
 
-# Storage-cost measurement harness (plan tasks T1 / B7). Deliberately NOT a
+# Storage-cost measurement harness. Deliberately NOT a
 # Catch2 test and NOT registered with CTest: it prints numbers and asserts
 # nothing, so a slow machine can never turn it red.
 add_executable(measure_storage_costs measure_storage_costs.cpp)

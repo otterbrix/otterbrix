@@ -2,31 +2,29 @@
 // MAINTENANCE OPERATORS OVER AN UNWIRED TOPOLOGY MUST REFUSE, NOT REPORT SUCCESS.
 //
 // Every production topology wires the index and disk managers unconditionally
-// (base_spaces spawns both before the executor exists), so a maintenance
-// operator that finds an EMPTY address is not running in a lighter mode — it is
-// running in a topology where its statement cannot do any of its work. Two
-// operators answered that state with quiet success:
+// (base_spaces spawns both before the executor exists), so a maintenance operator
+// that finds an EMPTY address is not running in a lighter mode — it is running in a
+// topology where its statement cannot do any of its work. Two operators answered
+// that state with quiet success:
 //
-//   * index_scan yielded an EMPTY window and no error — the planner promised
-//     an index and the reader got a silently short result set,
-//     indistinguishable from "no row matches the predicate" (the exact case
-//     the same function's search-error branch refuses);
-//   * operator_drop_index_t, given nothing to scrub (no delete specs, or no
-//     disk actor to send them to), skipped its own "at least one identity row
-//     went" verdict and reported a DROP INDEX that dropped nothing as success.
+//   * index_scan yielded an EMPTY window and no error — the planner promised an
+//     index and the reader got a silently short result set, indistinguishable from
+//     "no row matches the predicate" (the exact case the same function's
+//     search-error branch refuses);
+//   * operator_drop_index_t, given nothing to scrub (no delete specs, or no disk
+//     actor to send them to), skipped its own "at least one identity row went"
+//     verdict and reported a DROP INDEX that dropped nothing as success.
 //
 // operator_create_index_backfill_t's quiet no-op over an empty index address is
-// deliberately NOT converted (and not asserted here): the dispatcher
-// differential harness (services/dispatcher/tests/test_variant_e3_differential.cpp)
-// syncs an EMPTY index address by design and pins CREATE INDEX success there —
-// that harness compares the CATALOG half of the statement, and the branch is
-// its seam. index_scan and drop_index have no such pin: an index_scan cannot
-// even be PLANNED without an index registry answering can_use_index, and no
-// test constructs a drop_index with nothing to scrub.
+// deliberately NOT converted (and not asserted here): the dispatcher differential
+// harness (services/dispatcher/tests/test_variant_e3_differential.cpp) syncs an
+// EMPTY index address by design and pins CREATE INDEX success there — it compares
+// the CATALOG half of the statement, and the branch is its seam. index_scan and
+// drop_index have no such pin.
 //
 // These tests drive the operators DIRECTLY with a bare pipeline context (all
-// addresses empty). Each refusal path completes without a single cross-actor
-// send, so the futures are ready synchronously — no scheduler, no space.
+// addresses empty). Each refusal path completes without a single cross-actor send,
+// so the futures are ready synchronously — no scheduler, no space.
 // ============================================================================
 
 #include <catch2/catch_test_macros.hpp>

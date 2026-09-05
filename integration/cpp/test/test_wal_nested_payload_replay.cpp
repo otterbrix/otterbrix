@@ -11,29 +11,28 @@
 
 // A NESTED COLUMN'S PAYLOAD MUST SURVIVE THE JOURNAL, not only the checkpoint.
 //
-// Recovery has two sources and they are not interchangeable. Rows that a CHECKPOINT made
-// durable come back out of the `.otbx`, through the column-tree loader, which has always
-// carried nested payload recursively (`[validity, ...children]` block pointers). Rows written
-// AFTER the last checkpoint come back out of the WAL, through the chunk codec in
+// Recovery has two sources and they are not interchangeable. Rows made durable by a CHECKPOINT
+// come back out of the `.otbx` through the column-tree loader, which has always carried nested
+// payload recursively (`[validity, ...children]` block pointers). Rows written AFTER the last
+// checkpoint come back out of the WAL, through the chunk codec in
 // components/vector/data_chunk_binary.cpp — and that codec sized every column by
 // `fixed_type_size()`, which answers 0 for LIST, ARRAY and STRUCT. Writer and reader agreed on
 // that zero: the writer emitted `data_size = 0` and no bytes, the reader memcpy'd 0 bytes into
-// a correctly-SHAPED but zero-filled nested column. Nothing failed. The type round-tripped, the
-// null mask round-tripped, the row count round-tripped, and the CONTENT of every list element,
-// array element and struct field was silently replaced by zero.
+// a correctly-SHAPED but zero-filled nested column. The type, the null mask and the row count
+// all round-tripped while the CONTENT of every list element, array element and struct field was
+// silently replaced by zero.
 //
 // So the defect is invisible to every test that ends its scope cleanly:
 // base_otterbrix_t::~base_otterbrix_t issues a CHECKPOINT, which moves the rows to the `.otbx`
-// path that works and hides the journal path that does not. THE CRASH IS THE TEST. It is taken
-// only through the T3 fault-injection seam — arming `fail_writes_from = 1` makes every later
-// `.otbx` write fail, so the destructor's checkpoint commits nothing and the post-checkpoint
-// rows stay WAL-only, which is the state under examination. The WAL is a different file and
-// does not go through the block manager's interposer, so the records themselves survive.
+// path that works and hides the journal path that does not. THE CRASH IS THE TEST, taken only
+// through the fault-injection seam — arming `fail_writes_from = 1` makes every later `.otbx`
+// write fail, so the destructor's checkpoint commits nothing and the post-checkpoint rows stay
+// WAL-only. The WAL is a different file and does not go through the block manager's interposer,
+// so the records themselves survive.
 //
-// THE GATE IS THE CONTENT, ELEMENT BY ELEMENT. A row count matches, a NOT-NULL check passes and
-// a cardinality check passes on a column whose every element has been zeroed — those were
-// exactly the assertions that let this sit. Each case below reads every element of every
-// replayed cell and compares it against the value it was written with.
+// THE GATE IS THE CONTENT, ELEMENT BY ELEMENT. A row count, a NOT-NULL check and a cardinality
+// check all pass on a column whose every element has been zeroed — those were exactly the
+// assertions that let this sit. Each case reads every element of every replayed cell.
 
 namespace {
 

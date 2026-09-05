@@ -24,11 +24,11 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_create_matview_t::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
 
-        // Create physical heap storage. B1a: always disk-backed (plan-gen
-        // guarantees non-empty inferred columns for a matview —
-        // create_plan_create_matview refuses an empty set). B1b: a matview is
-        // relkind='m', NEVER computed — passed explicitly so even a degenerate
-        // zero-column matview could not come up as a dynamic-schema table.
+        // Create physical heap storage: always disk-backed (plan-gen guarantees
+        // non-empty inferred columns for a matview — create_plan_create_matview
+        // refuses an empty set). A matview is relkind='m', NEVER computed — passed
+        // explicitly so even a degenerate zero-column matview cannot come up as a
+        // dynamic-schema table.
         {
             auto [_, f] = actor_zeta::send(ctx->disk_address,
                                            &services::disk::manager_disk_t::create_storage_disk,

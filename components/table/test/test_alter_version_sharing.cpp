@@ -43,11 +43,10 @@ namespace {
     constexpr uint64_t CHUNK_ROWS = 1000;
     constexpr uint64_t CHUNKS = 3;
 
-    // B4: the fixture runs on a real .otbx. It used to hold the file-less block manager, whose
-    // every I/O virtual now aborts; the block_manager_t predicate that made that safe is gone
-    // along with the in-memory table mode it named. The row counts here span more than one row
-    // group, so closing one writes its segments through to the file — this fixture reaches the
-    // disk path for real. The substrate is all that changes: not one assertion below is about it.
+    // The fixture runs on a real .otbx — there is no file-less block manager any more. The row
+    // counts here span more than one row group, so closing one writes its segments through to
+    // the file: this fixture reaches the disk path for real. Not one assertion below is about
+    // the substrate.
     std::string alter_version_sharing_db_path() {
         static std::string path = "/tmp/test_otterbrix_alter_version_sharing_" + std::to_string(::getpid()) + ".otbx";
         return path;

@@ -8,7 +8,7 @@
 //
 // The per-index hash storage (<disk>/<table_oid>/<indexrelid>/hash_index.bin) is opened by the
 // AGENT that owns it, inside bitcask_index_disk_t::open(), which reports by value; it used to
-// be opened by bootstrap_indexes_sync and handed in as a shared handle (removed in C2c, rule
+// be opened by bootstrap_indexes_sync and handed in as a shared handle (removed, rule
 // 10). The DECISION stays where it was: the agent's create() hands bootstrap_index_sync
 // either an agent or the reason there is none, and on a reason it SKIPS the index entirely —
 // registering nothing, publishing no address, never scheduling it. An index that will not open
@@ -19,10 +19,8 @@
 // to survive (unopenable file, unreadable or incompatible header), is reached only by the
 // backend's own tests.
 //
-// Historically this test could not be made red: pg_index carried no indtype, so after a restart
-// every index came back as `single` and the hashed branch never ran. With indtype persisted the
-// injection below reaches the real code path, and this is the red proof the original
-// characterisation test promised.
+// The hashed branch is only reachable because indtype is persisted: without it every index
+// comes back from a restart as `single` and the injection below never meets the code it aims at.
 
 TEST_CASE("integration::cpp::test_index_bootstrap_failure::engine_starts_when_an_index_cannot_open") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_bootstrap_failure/restart");

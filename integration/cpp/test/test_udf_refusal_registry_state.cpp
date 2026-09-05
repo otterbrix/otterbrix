@@ -25,21 +25,19 @@
 // pg_proc row belongs to. The mirror is the operator's only mutation, so a namespace read that
 // REFUSES — which it now can, since scan_table answers core::result_wrapper_t and a failed
 // catalog scan is an error rather than an empty answer — left the process-global registry
-// answering for a function that has no row in pg_proc: present for every plan-validation lookup
-// in this process while no durable record of it exists at all. The whole disk prologue now runs
-// ahead of the mirror, and the mirror is the operator's last step.
+// answering for a function with no row in pg_proc: present for every plan-validation lookup in
+// this process while no durable record exists at all. The whole disk prologue now runs ahead of
+// the mirror, and the mirror is the operator's last step.
 //
-// THE INJECTION, and why it lands where it does. Same seam and same derivation as
-// integration/cpp/test/test_catalog_read_refusal.cpp, aimed at pg_namespace instead of pg_proc.
-// Poisoning the table's handle AFTER the engine is up reaches nothing: startup faults the whole
-// one-block-wide catalog in (restore_oid_generator_sync scans column 0 of every non-empty system
-// table), so a statement-time scan issues no read at all. The poison therefore has to be armed
-// BEFORE the start, on the one offset that startup reads and the LOAD does not need. The
-// discovery open below separates them by COUNT: the header sectors and the metadata chain are
-// each read TWICE (the manager's probe construction and the agent's reopen), while the DATA
-// block is read exactly ONCE. Failing that offset leaves the load intact, leaves the block
-// UNCACHED (the read that would have cached it failed), and so the statement's own scan has to
-// go to the platter and cannot get there — exactly a buffer-pool refill that fails.
+// THE INJECTION. Same seam and derivation as test_catalog_read_refusal.cpp, aimed at
+// pg_namespace instead of pg_proc. Poisoning the table's handle AFTER the engine is up reaches
+// nothing: startup faults the whole one-block-wide catalog in (restore_oid_generator_sync scans
+// column 0 of every non-empty system table), so a statement-time scan issues no read at all. The
+// poison is therefore armed BEFORE the start, on the one offset that startup reads and the LOAD
+// does not need — the discovery open below separates them by COUNT: the header sectors and the
+// metadata chain are each read TWICE (the manager's probe construction and the agent's reopen),
+// the DATA block exactly ONCE. Failing that offset leaves the load intact, leaves the block
+// UNCACHED, and so the statement's own scan has to go to the platter and cannot get there.
 //
 // pg_namespace rather than pg_proc on purpose: pg_proc is the table step 1 of the operator reads
 // for its cross-namespace conflict check, and that read is ALREADY ahead of the mirror. Only the
@@ -281,7 +279,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
         // THE POINT OF THE CASE. The statement refused, so the state it would have changed on
         // the way to succeeding must be exactly what it was before.
         INFO("the default registry must not answer for a function the catalog never got a row for");
-        CHECK_FALSE(default_registry_has(kFuncName)); // RED before the reorder: the mirror ran first
+        CHECK_FALSE(default_registry_has(kFuncName)); // fails if the mirror runs before the read
 
         // The catalog half, asserted on CONTENT rather than on a status code. pg_proc's own
         // handle is never interposed here, so this read is honest while pg_namespace is poisoned.

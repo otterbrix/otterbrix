@@ -38,7 +38,7 @@ namespace components::table {
     // block_handle_t its segments own — alive until the holder lets go, which is deliberate and
     // load-bearing: block_manager_t::unregister_block(block_handle_t&) is identity-checked
     // precisely because those stale handles are destroyed after their block ids have been reused
-    // (see the note there, and the ITEM C cases in test_root_reclaim / test_block_manager). The
+    // (see the note there, and the identity-erase cases in test_root_reclaim / test_block_manager). The
     // reference count therefore lives inside the object (boost::intrusive_ref_counter;
     // std::shared_ptr is forbidden — rule 14).
     //

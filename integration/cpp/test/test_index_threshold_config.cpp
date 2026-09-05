@@ -12,32 +12,29 @@
 //
 // configuration::config_disk carries three index-storage knobs -- bitcask_flush_threshold,
 // bitcask_segment_record_limit, btree_flush_threshold. They reached manager_index_t's
-// constructor, which stored them in three fields... that nothing ever read. Bootstrap
-// spawned its agents from config.disk.* directly (in base_spaces), while
-// manager_index_t::create_index built its agent from bitcask_index_disk_t::default_* /
-// btree_index_disk_t::default_* -- the backends' own static defaults. The result is one
-// database holding two differently laid-out copies of the same kind of index, decided by
-// nothing more than WHEN the index was created:
+// constructor, which stored them in three fields... that nothing ever read. Bootstrap spawned
+// its agents from config.disk.* directly (in base_spaces), while manager_index_t::create_index
+// built its agent from bitcask_index_disk_t::default_* / btree_index_disk_t::default_* -- the
+// backends' own static defaults. The result is one database holding two differently laid-out
+// copies of the same kind of index, decided by nothing more than WHEN it was created:
 //
 //     CREATE INDEX ... USING hash    -> segment_record_limit 10000 (the static default)
 //     restart, same index            -> segment_record_limit whatever was configured
 //
 // This is observable because bitcask ROTATES its active data segment every
-// segment_record_limit records, and the segment it is writing to is named in the CURRENT
-// file in the index directory (a decimal id; regular segments start at 2 and the merger
-// only ever reuses the reserved ids 0-1 below them). With the limit configured down to a
-// handful of records, a dozen committed inserts must move CURRENT well past its starting
-// id. With the 10000-record static default in force instead, it cannot move at all.
+// segment_record_limit records, and the segment it is writing to is named in the CURRENT file
+// in the index directory (a decimal id; regular segments start at 2 and the merger only ever
+// reuses the reserved ids 0-1 below them). With the limit configured down to a handful of
+// records, a dozen committed inserts must move CURRENT well past its starting id; with the
+// 10000-record static default in force it cannot move at all.
 //
-// THE READS HAPPEN WHILE THE ENGINE IS STILL UP, and that is not incidental: shutdown runs
-// a CHECKPOINT, which repopulates every index -- clear() and then one txn_id==0 BULK load,
-// and a bulk load deliberately suppresses rotation (bitcask_index_disk_t::set_bulk_mode).
-// A post-shutdown directory therefore always holds exactly one segment whatever the limit
-// is, and says nothing about how the index was written.
+// THE READS HAPPEN WHILE THE ENGINE IS STILL UP, and that is not incidental: shutdown runs a
+// CHECKPOINT, which repopulates every index -- clear() and then one txn_id==0 BULK load, and a
+// bulk load deliberately suppresses rotation (bitcask_index_disk_t::set_bulk_mode). A
+// post-shutdown directory therefore always holds exactly one segment whatever the limit is.
 //
 // Both roads are exercised in one case, because the claim is that they AGREE: the index a
-// statement creates and the same index after a restart are the same index, and must be
-// laid out the same way.
+// statement creates and the same index after a restart must be laid out the same way.
 
 namespace {
 

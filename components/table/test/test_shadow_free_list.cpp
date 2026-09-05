@@ -1,11 +1,10 @@
-// A7.2 — shadow paging, step 2: a block the DURABLE root still points at must not be handed
-// out again.
+// Shadow paging: a block the DURABLE root still points at must not be handed out again.
 //
-// A7.1 made the previous root real: a checkpoint writes only the slot its iteration owns, the
-// header sector is self-validating, and the open path picks the greatest VALID iteration. So a
-// crash mid-checkpoint recovers the PREVIOUS root. That is worth nothing while the blocks that
-// root reads can be reallocated underneath it, and on HEAD they are, by the shortest path in
-// the engine:
+// The two-slot header makes the previous root real: a checkpoint writes only the slot its
+// iteration owns, the header sector is self-validating, and the open path picks the greatest
+// VALID iteration, so a crash mid-checkpoint recovers the PREVIOUS root. That is worth nothing
+// while the blocks that root reads can be reallocated underneath it — and with a single free
+// list they are, by the shortest path in the engine:
 //
 //   agent_disk_t::checkpoint_inner  ->  data_table_t::compact(watermark)
 //        compact swaps the collection and mark_as_free's every block of the OUTGOING one —
@@ -19,14 +18,14 @@
 // address a block holding the NEW checkpoint's metadata — rewritten with a freshly valid CRC,
 // so read() succeeds and the rows are silently wrong.
 //
-// A7.2 splits the free list: reusable_ (free under the current DURABLE root) and pending_free_
+// So the free list is SPLIT: reusable_ (free under the current DURABLE root) and pending_free_
 // (released by the in-flight checkpoint). free_block_id draws only from reusable_;
 // pending_free_ merges in only after write_header's slot write AND its fsync have both
 // succeeded. The gates below are the four halves of that: not reissued before the header, the
 // OLD root still readable after a crash, genuinely reusable after a success, and NOT promoted
 // after a failure.
 //
-// Crash states come only from the T3 fault-injection seam (fault_injection_file.hpp); no test
+// Crash states come only from the fault-injection seam (fault_injection_file.hpp); no test
 // here lays out file bytes by hand.
 
 #include <catch2/catch_test_macros.hpp>
@@ -121,7 +120,7 @@ namespace {
 
     // Everything table_storage_t::checkpoint (services/disk/manager_disk.cpp) does UP TO but not
     // including the header write: table metadata -> set_meta_block -> free list -> barrier
-    // fsync. Split out because every A7.2 gate is a statement about the window between the
+    // fsync. Split out because every gate here is a statement about the window between the
     // release and the header, so the tests have to stand inside it.
     tstorage::database_header_t prepare_checkpoint(tstorage::single_file_block_manager_t& bm, data_table_t& table) {
         tstorage::metadata_manager_t meta_mgr(bm);
@@ -196,8 +195,8 @@ namespace {
 
     // Attribution, as in test_block_reachability: a block the walker cannot place is only a
     // hole if no EARLIER round's durable state already owned it. Blocks a previous checkpoint
-    // superseded are known garbage (they leak until A7.3 reclaims old roots) and must not be
-    // read as an A7.2 failure.
+    // superseded are known garbage (they leak until the superseded-root reclaim takes them)
+    // and must not be read as a promotion failure.
     void absorb_known(std::set<uint64_t>& known, const otterbrix_test::walk_report_t& r) {
         known.insert(r.chain_blocks.begin(), r.chain_blocks.end());
         known.insert(r.durable_data.begin(), r.durable_data.end());
@@ -468,12 +467,11 @@ TEST_CASE("shadow_free_list: a durable header makes the released blocks reusable
 
     // Not just bookkeeping — the allocator really hands them back.
     //
-    // RETARGETED by A7.3 (semantics preserved, question asked more directly). This used to be
-    // `released.count(bm.free_block_id()) == 1`: the very next id had to be one of compact's.
-    // After A7.3 the same durable header ALSO promotes the blocks of the root it superseded —
-    // that root's metadata chain, its free-list chain and its packed data copy — and
-    // free_block_id hands out the SMALLEST id in the pool, which can now legitimately be one
-    // of those instead. That is the reclaim working, not the promotion failing. The property
+    // NOT `released.count(bm.free_block_id()) == 1`: the durable header ALSO promotes the
+    // blocks of the root it superseded — that root's metadata chain, its free-list chain and
+    // its packed data copy — and free_block_id hands out the SMALLEST id in the pool, which can
+    // legitimately be one of those instead. That is the reclaim working, not the promotion
+    // failing. The property
     // under test is untouched: the released blocks must be genuinely back in the allocator,
     // not merely recorded as free. Drain the pool and require every one of them to come out of
     // it — a strictly stronger statement than "the first one did" — and require the file not
@@ -556,7 +554,7 @@ TEST_CASE("shadow_free_list: a FAILED header write does not promote the released
     remove_file(path);
 }
 
-// --- Gate 5 (A7.3 / ITEM 3): a large free list must not publish a block of its OWN chain ---
+// --- Gate 5: a large free list must not publish a block of its OWN chain -----------------
 //
 // serialize_free_list snapshots the pool AFTER metadata_writer_t's constructor has taken the
 // chain's FIRST block, which is what keeps that one out of the published list. Every FURTHER
@@ -570,8 +568,8 @@ TEST_CASE("shadow_free_list: a FAILED header write does not promote the released
 // occupies -- and the round after that reads the chain back through a block someone else has
 // since overwritten with a valid CRC.
 //
-// No test went anywhere near that list size, which is why it survived A7.2. The ids below are
-// never written to; only the chain's own (small) block ids reach the file.
+// Reaching it needs a list big enough to span several chain blocks. The ids below are never
+// written to; only the chain's own (small) block ids reach the file.
 TEST_CASE("shadow_free_list: a chain-spanning free list never lists its own chain blocks") {
     const std::string path = free_list_db_path("selfchain");
     remove_file(path);

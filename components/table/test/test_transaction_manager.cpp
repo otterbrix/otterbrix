@@ -121,28 +121,25 @@ TEST_CASE("components::table::transaction_manager::id_monotonicity") {
     }
 }
 
-// Reproduces the MVCC reopen-visibility bug. On reopen the commit clock's two
-// halves were restored from inconsistent sources: published_horizon_ was raised to
-// the prior session's durable frontier F (the old WAL-replay restore did publish(F)
-// alone) while current_timestamp_ — the fetch_add source of every new
-// start_time/commit_id — restarted at 1. A post-reopen txn therefore drew a
-// commit_id that REUSED the already-published band <= F.
+// Reproduces the MVCC reopen-visibility bug. On reopen the commit clock's two halves were
+// restored from inconsistent sources: published_horizon_ was raised to the prior session's
+// durable frontier F (the old WAL-replay restore did publish(F) alone) while current_timestamp_
+// — the fetch_add source of every new start_time/commit_id — restarted at 1. A post-reopen txn
+// therefore drew a commit_id that REUSED the already-published band <= F.
 //
 // Two consequences, both correctness defects:
-//   1. ID REUSE: the new commit_id collides with an id a PRIOR session already
-//      published. Two distinct rows then share one commit_id — visibility filters
-//      (use_inserted_version) can no longer tell them apart.
-//   2. IN-FLIGHT FREEZE: a reader that snapshots the new commit while it is
-//      in-flight freezes the colliding id (<= published_horizon_) in
-//      in_flight_snapshot; after publish() that reader judges the row invisible
-//      forever, even though the id sits below its horizon (the SSB symptom:
-//      q1-1 / probe returned 0 rows after reopen).
+//   1. ID REUSE: the new commit_id collides with an id a PRIOR session already published, so two
+//      distinct rows share one commit_id and visibility filters (use_inserted_version) can no
+//      longer tell them apart;
+//   2. IN-FLIGHT FREEZE: a reader that snapshots the new commit while it is in-flight freezes the
+//      colliding id (<= published_horizon_) in in_flight_snapshot; after publish() that reader
+//      judges the row invisible forever (the SSB symptom: q1-1 / probe returned 0 rows after
+//      reopen).
 //
-// INVARIANT under test (what the fix restores): after ANY reopen restore, a
-// transaction that commits AFTER reopen must draw a commit_id STRICTLY ABOVE the
-// restored published_horizon_ (no reuse), keeping current_timestamp_ >=
-// published_horizon_ + 1; and its row must be visible to a snapshot taken after
-// it publishes.
+// INVARIANT under test: after ANY reopen restore, a transaction that commits AFTER reopen must
+// draw a commit_id STRICTLY ABOVE the restored published_horizon_ (no reuse), keeping
+// current_timestamp_ >= published_horizon_ + 1; and its row must be visible to a snapshot taken
+// after it publishes.
 TEST_CASE("components::table::transaction_manager::reopen_post_append_visible") {
     using namespace components::table;
     using namespace components::session;
@@ -212,27 +209,24 @@ TEST_CASE("components::table::transaction_manager::append_tracking") {
     mgr.publish(cid);
 }
 
-// OUT-OF-ORDER PUBLISH WINDOW. commit() hands out commit-ids in increasing order
-// but publish() runs at the END of each commit pipeline (after WAL fsync +
-// storage_publish_*), so the pipelines finish in ANY order. publish() itself only
-// keeps the MAXIMUM ever published. Therefore a SMALLER commit-id can still sit in
-// in_flight_commits_ while published_horizon_ has already moved past it.
+// OUT-OF-ORDER PUBLISH WINDOW. commit() hands out commit-ids in increasing order but publish()
+// runs at the END of each commit pipeline (after WAL fsync + storage_publish_*), so the
+// pipelines finish in ANY order and publish() keeps only the MAXIMUM ever published. A SMALLER
+// commit-id can therefore still sit in in_flight_commits_ while published_horizon_ has moved
+// past it.
 //
 // lowest_active_snapshot_horizon() is the DROP-GC / deferred-index-delete broadcast
-// (services/dispatcher/dispatcher.cpp:447 is its only production caller). Both of
-// its branches ignored in_flight_commits_ entirely:
-//   * active_ empty  -> published_horizon_, i.e. c2 here;
-//   * active_ non-empty -> min over snapshot_horizon only, never looking at the
-//     per-txn in_flight_snapshot, i.e. c2 here as well.
-// Either way it broadcast a horizon that had ALREADY PASSED the still-unpublished
-// c1. A snapshot taken in that same window carries c1 in in_flight_snapshot and so
-// still SEES c1's rows, while the index sweep (services/index/manager_index.cpp,
-// `entry->commit_id <= new_horizon`) was already cleared to erase their index
-// entries. The index then answers a strict SUBSET of the table: a silent wrong
-// answer, no error raised.
+// (services/dispatcher/dispatcher.cpp is its only production caller), and both of its branches
+// ignored in_flight_commits_ entirely: active_ empty -> published_horizon_ (c2 here), active_
+// non-empty -> min over snapshot_horizon only, never the per-txn in_flight_snapshot (c2 again).
+// Either way it broadcast a horizon that had ALREADY PASSED the still-unpublished c1. A snapshot
+// taken in that window carries c1 in in_flight_snapshot and still SEES c1's rows, while the
+// index sweep (services/index/manager_index.cpp, `entry->commit_id <= new_horizon`) was already
+// cleared to erase their index entries — the index then answers a strict SUBSET of the table: a
+// silent wrong answer, no error raised.
 //
-// The window is laid out by hand with three public calls — no threads, no sleeps,
-// no timing. commit(s1), commit(s2), publish(c2) IS the window.
+// The window is laid out by hand with three public calls — no threads, no sleeps, no timing.
+// commit(s1), commit(s2), publish(c2) IS the window.
 TEST_CASE("components::table::transaction_manager::out_of_order_publish_floor") {
     using namespace components::table;
     using namespace components::session;
@@ -280,34 +274,31 @@ TEST_CASE("components::table::transaction_manager::out_of_order_publish_floor") 
 
 // AN ORPHANED commit_id PINS THE HORIZON FOR THE LIFE OF THE PROCESS.
 //
-// commit() allocates the id into in_flight_commits_ and publish() is the only thing
-// that takes it out. Every early exit of operator_commit_transaction_t between those
-// two hops leaves the id there with nobody left to remove it: commit() has ALREADY
-// erased the txn from active_ (see :41-42 there), so find_transaction() answers
-// nullptr and neither a ROLLBACK nor the dispatcher's failure-release net can reach
-// it. It was documented on the spot as a "KNOWN leak ... accepted".
+// commit() allocates the id into in_flight_commits_ and publish() is the only thing that takes
+// it out. Every early exit of operator_commit_transaction_t between those two hops leaves the id
+// there with nobody left to remove it: commit() has ALREADY erased the txn from active_ (see
+// :41-42 there), so find_transaction() answers nullptr and neither a ROLLBACK nor the
+// dispatcher's failure-release net can reach it. It was documented on the spot as a "KNOWN leak
+// ... accepted".
 //
 // WHAT THAT COSTS IS ONE TERM: visible_to_all_locked() floors the watermark on
-// min(in_flight_commits_) - 1, and that ONE number is what data_table_t::compact(),
-// the DROP-GC tombstone sweep and the deferred index-delete sweep all read. The
-// orphan therefore freezes the horizon at c_lost - 1 forever, WITH NO TRANSACTION
-// ANYWHERE IN THE SYSTEM — has_active_transactions() is false and every later commit
-// publishes normally, and still nothing is ever reclaimed again.
+// min(in_flight_commits_) - 1, and that ONE number is what data_table_t::compact(), the DROP-GC
+// tombstone sweep and the deferred index-delete sweep all read. The orphan freezes the horizon
+// at c_lost - 1 forever, WITH NO TRANSACTION ANYWHERE IN THE SYSTEM — has_active_transactions()
+// is false and every later commit publishes normally, and still nothing is ever reclaimed again.
 //
-// The window is laid out by hand with four public calls — no threads, no sleeps, no
-// timing. begin, begin, commit, commit, publish(the second one) IS the leak.
+// The window is laid out by hand with four public calls — no threads, no sleeps, no timing:
+// begin, begin, commit, commit, publish(the second one) IS the leak.
 //
-// WHY THE CURE IS AN ERASE AND NOT A SECOND SET. A "discarded" set that snapshots
-// UNION into their in-flight vector is correct for READERS (an insert stamped with a
-// discarded id stays hidden, a delete stamped with one leaves its row alive), but the
-// parties pinned here are not readers: compact() and both sweeps take a single
-// horizon NUMBER and never see a snapshot. To keep them safe, the floor above would
-// have to include min(discarded) - 1 as well — which is this defect, verbatim. So the
-// id has to leave in_flight_commits_ outright, and what makes that safe is not a
-// reader rule but an ORDERING rule in the operator: no step that can fail may run
-// after the first step that stamps the commit_id, so a discarded id is stamped
-// nowhere. discard() is publish() minus the CAS for exactly that reason — it must
-// raise the floor without advancing published_horizon_ by even one.
+// WHY THE CURE IS AN ERASE AND NOT A SECOND SET. A "discarded" set that snapshots UNION into
+// their in-flight vector is correct for READERS (an insert stamped with a discarded id stays
+// hidden, a delete stamped with one leaves its row alive), but the parties pinned here are not
+// readers: compact() and both sweeps take a single horizon NUMBER and never see a snapshot, so
+// the floor would have to include min(discarded) - 1 as well — which is this defect, verbatim.
+// The id has to leave in_flight_commits_ outright, and what makes that safe is an ORDERING rule
+// in the operator: no step that can fail may run after the first step that stamps the commit_id,
+// so a discarded id is stamped nowhere. discard() is publish() minus the CAS for exactly that
+// reason — it must raise the floor without advancing published_horizon_ by even one.
 TEST_CASE("components::table::transaction_manager::orphaned_commit_pins_horizon_forever") {
     using namespace components::table;
     using namespace components::session;

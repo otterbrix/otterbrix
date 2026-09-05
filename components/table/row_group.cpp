@@ -199,10 +199,10 @@ namespace components::table {
                                           : types::logical_value_t{collection_->resource(), new_column.type()};
             column_append_state state;
             // DDL ADD COLUMN backfill path (synchronous, not an actor append boundary). The
-            // append chain reports out_of_memory; that answer now RIDES this function's own
-            // channel. The asserts that used to stand here vanished under NDEBUG and the loop
-            // then broke silently: the successor shipped with a new column SHORTER than count,
-            // and every scan of it read past the column's end (rule 6).
+            // append chain reports out_of_memory; that answer RIDES this function's own channel.
+            // An assert instead would vanish under NDEBUG and let the loop break in silence: the
+            // successor ships with a new column SHORTER than count, and every scan of it reads
+            // past the column's end (rule 6).
             auto init = added_column->initialize_append(state);
             if (init.has_error()) {
                 return init.convert_error<std::unique_ptr<row_group_t>>();
@@ -346,8 +346,8 @@ namespace components::table {
         return std::move(decided.value().data.front());
     }
 
-    // Pruning is off while a filter is only a graph: it used to read a constant filter's bound
-    // against the segment min/max, and the graph does not expose one yet.
+    // Pruning is off while a filter is only a graph: it needs a constant filter's bound to
+    // compare against the segment min/max, and the graph exposes none.
     bool row_group_t::check_zonemap_segments(collection_scan_state&) { return true; }
 
     void row_group_t::filter_indexing(std::pmr::memory_resource* resource,
@@ -641,14 +641,13 @@ namespace components::table {
                 data[result_idx] = row_id;
             } else {
                 auto& col_data = get_column(column);
-                // Per-column child state (not the ONE shared `state`): a struct column's
-                // validity used to live in state.child(0) for EVERY struct-typed top-level
-                // column, so two of them aliased each other's children — harmless only
-                // because handles are keyed by block id and the flag/error are homogeneous,
-                // but an aliasing invariant nobody stated. child() re-stamps
-                // result_outlives_pins on hand-out and absorb_error lifts the refusal into
-                // the state the callers of THIS function actually read; the first failing
-                // column aborts the row, as in the struct's own field walk.
+                // Per-column child state (not the ONE shared `state`): parking every
+                // struct-typed top-level column's validity in state.child(0) makes two of them
+                // alias each other's children — harmless only because handles are keyed by block
+                // id and the flag/error are homogeneous, but an aliasing invariant nobody states.
+                // child() re-stamps result_outlives_pins on hand-out and absorb_error lifts the
+                // refusal into the state the callers of THIS function actually read; the first
+                // failing column aborts the row, as in the struct's own field walk.
                 auto& column_state = state.child(col_idx);
                 col_data.fetch_row(column_state, row_id, result_vector, result_idx);
                 if (state.absorb_error(column_state)) {
@@ -1000,13 +999,10 @@ namespace components::table {
     }
 
     row_version_manager_t* row_group_t::version_info() {
-        // The unreachable "unloaded deletes" branch that used to sit here — a stub for a
-        // delete-info disk load that does not exist, whose body would have DISCARDED this row
-        // group's version state (set_version_info(nullptr)) instead of loading anything — is
-        // GONE, together with the never-populated deletes_pointers_ / never-initialised
-        // deletes_is_loaded_ pair that armed it. Reviving on-disk delete info means writing a
-        // real load here, not resurrecting a branch whose only observable behaviour was the
-        // silent degradation rule 6 forbids.
+        // Deliberately unconditional: there is NO "load delete info from disk" branch here.
+        // Reviving on-disk delete info means writing a real load, not a stub that DISCARDS this
+        // row group's version state (set_version_info(nullptr)) — its only observable behaviour
+        // would be the silent degradation rule 6 forbids.
         return version_info_;
     }
 
@@ -1027,8 +1023,7 @@ namespace components::table {
         // last reference and destroying the object — while version_info_ still named it, so a
         // reader on the lock-free path could pick up a dangling pointer. Should such a caller
         // ever be added, the atomic must be stored first. (No clearing caller exists in the
-        // tree: the one that used to — version_info()'s unreachable unloaded-deletes stub —
-        // was removed together with its arming fields.)
+        // tree today.)
         owned_version_info_ = std::move(version);
         version_info_ = owned_version_info_.get();
     }
@@ -1118,7 +1113,7 @@ namespace components::table {
     core::result_wrapper_t<bool> row_group_t::transition_to_disk() {
         // Own ONE partial_block_manager for this closed row group: ALL its columns' (and validity children's)
         // segments are PACKED together into shared blocks, so a row group of narrow columns shares a handful
-        // of blocks instead of one block per segment (the ~127x over-allocation B2 fixes).
+        // of blocks instead of one block per segment (a ~127x over-allocation).
         storage::partial_block_manager_t pbm(block_manager());
         // Only transition columns already materialized in memory (a freshly-appended row group). Disk-loaded /
         // unloaded columns are already disk-backed (block_id < MAXIMUM) -> nothing to do; don't force a load.

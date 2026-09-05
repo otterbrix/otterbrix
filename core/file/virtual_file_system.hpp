@@ -40,11 +40,9 @@ namespace core::filesystem {
     std::unique_ptr<file_handle_t> open_file(virtual_file_system_t&, const path_t& path, file_flags flags);
     bool read(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location);
     int64_t read(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
-    // BOTH WRITES WERE DEFINED WITHOUT BEING DECLARED. virtual_file_system.cpp has carried
-    // the pair since the file was written, forwarding to the default sub-system exactly as
-    // the reads above it do -- but no header said so, so no translation unit could see them
-    // and the definitions were unreachable code that still had to compile. Declared here,
-    // beside their read twins, because that is what they are.
+    // Declared beside their read twins: virtual_file_system.cpp defines both writes,
+    // forwarding to the default sub-system exactly as the reads above do, and without a
+    // declaration here no translation unit can see them.
     bool write(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location);
     write_result_t write(virtual_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
     int64_t file_size(virtual_file_system_t&, file_handle_t& handle);

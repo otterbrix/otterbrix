@@ -3,11 +3,10 @@
 #include <components/table/segment_tree.hpp>
 
 // reinitialize() rebuilds the row_start map after set_start() re-based the segments. Its gap
-// tripwire used to THROW std::runtime_error -- the same failure class the segment_index()
-// conversion removed from this header (rules 2/9: a throw here unwinds across the disk agent's
-// mailbox into a coroutine whose unhandled_exception() is empty, so the statement HUNG instead
-// of failing). The tripwire must stay (a gap means the tree invariant is broken somewhere
-// else), but it must answer, not throw.
+// tripwire must ANSWER, not throw (rules 2/9: a throw here unwinds across the disk agent's
+// mailbox into a coroutine whose unhandled_exception() is empty, so the statement HANGS instead
+// of failing). The tripwire itself must stay: a gap means the tree invariant is broken
+// somewhere else.
 
 namespace {
     struct dummy_segment_t : components::table::segment_base_t<dummy_segment_t> {
@@ -22,8 +21,7 @@ TEST_CASE("components::table::segment_tree::reinitialize_gap_answers_instead_of_
     // A gap: the second segment starts at 20 while the first ends at 10.
     tree.append_segment(std::make_unique<dummy_segment_t>(20, 5));
 
-    // RED before the fix: this threw std::runtime_error("... gap found between nodes!").
-    // Now the tripwire answers: false, and the row_start map is left untouched.
+    // The tripwire answers false and leaves the row_start map untouched.
     bool contiguous = true;
     REQUIRE_NOTHROW(contiguous = tree.reinitialize());
     REQUIRE_FALSE(contiguous);

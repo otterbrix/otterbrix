@@ -16,16 +16,14 @@
 //   for them. A copy taken before the swap must keep the replaced collection alive until the
 //   holder lets go — that late destruction is precisely why
 //   block_manager_t::unregister_block(block_handle_t&) is identity-checked rather than
-//   erase-by-id (ITEM C: test_root_reclaim.cpp, test_block_manager.cpp, which are the
-//   behavioural half of this and stay green on their own).
+//   erase-by-id (test_root_reclaim.cpp and test_block_manager.cpp are the behavioural half).
 //
 // A conversion that copied the POINTER without counting the reference would pass every identity
 // assertion here and every scan in the suite, right up to the use-after-free: the stale holder
-// would name a collection that compact() had already destroyed. The owner-count assertions are
-// what catch that, deterministically, BEFORE the swap.
-//
-// No weak reference to a collection exists anywhere in the tree (boost::intrusive_ref_counter
-// has no weak analogue), so "alive" here means exactly "some owner still holds it".
+// would name a collection compact() had already destroyed. The owner-count assertions catch that
+// deterministically, BEFORE the swap. No weak reference to a collection exists anywhere in the
+// tree (boost::intrusive_ref_counter has no weak analogue), so "alive" here means exactly "some
+// owner still holds it".
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/collection.hpp>
@@ -55,12 +53,10 @@ namespace {
     constexpr uint64_t CHUNKS = 3;
     constexpr uint64_t TOTAL_ROWS = CHUNK_ROWS * CHUNKS;
 
-    // B4: the fixture runs on a real .otbx. It used to hold the file-less block manager, whose
-    // every I/O virtual now aborts; the block_manager_t predicate that made that safe is gone
-    // along with the in-memory table mode it named. TOTAL_ROWS spans several row groups, so closing
-    // one writes its segments through to the file — this fixture reaches the disk path for real.
-    // Nothing this file asserts is about the substrate: the gates are collection IDENTITY and the
-    // owner COUNT, and both read the same on either one.
+    // The fixture runs on a real .otbx — there is no file-less block manager any more.
+    // TOTAL_ROWS spans several row groups, so closing one writes its segments through to the
+    // file: this fixture reaches the disk path for real. Nothing this file asserts is about the
+    // substrate — the gates are collection IDENTITY and the owner COUNT.
     std::string ownership_db_path() {
         static std::string path = "/tmp/test_otterbrix_collection_ownership_" + std::to_string(::getpid()) + ".otbx";
         return path;
@@ -156,7 +152,7 @@ TEST_CASE("collection_ownership: a collection held across compact stays the OLD 
     fill(*table, env);
 
     // The holder that agent_disk_t::maybe_cleanup_inner deliberately scopes AWAY from compact,
-    // and that ITEM C reproduces on the disk path.
+    // that the identity-erase cases reproduce on the disk path.
     auto stale = table->row_group();
     const collection_t* old_collection = stale.get();
     REQUIRE(old_collection != nullptr);

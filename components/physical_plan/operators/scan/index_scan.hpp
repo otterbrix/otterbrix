@@ -28,29 +28,26 @@ namespace components::operators {
         const logical_plan::limit_t& limit() const { return limit_; }
 
         // --- Push-based streaming pipeline source (buffered batch point-fetch) ---
-        // The index search is ONE-SHOT — it returns the whole matched row-id set in a single
-        // future — so this source materializes the ids ONCE (the FIRST source_next call) into the
-        // [pos_, end_) window. It then issues ONE storage_fetch for the whole window; the disk agent
-        // batches the reply into ≤ DEFAULT_VECTOR_CAPACITY chunks (each stamped with the absolute
-        // row_ids it actually carries, so a downstream DELETE/UPDATE/index sees the right rows),
-        // which this source buffers in batch_ and emits one-chunk-per-call.
-        //   The fetch runs under the reader's own snapshot, so a chunk can be SHORTER than its
-        // slice of the window: the index answers with a superset of ids and the table decides
-        // which of them this transaction may see. The LIMIT head cap therefore travels ON the
-        // fetch message, as storage_fetch's post-visibility `limit`, and never touches the
-        // matched-id list — the same place full_scan puts it (storage_fetch_next_batch's
-        // post-filter matched-row cap), and the reason the agent can stop reading windows
-        // instead of the operator dropping a surplus it already paid to fetch.
-        //   The FIRST call's sequential cross-actor co_awaits (index search + storage_types + the one
-        // window storage_fetch) live in this NESTED operator coroutine (driven by co_await from
-        // execute_pipeline), not in a behavior() handler, so the actor-zeta single-slot awaited
-        // continuation is republished+cleared between sequential awaits — no lost-wakeup.
+        // The index search is ONE-SHOT — it returns the whole matched row-id set in a single future — so this
+        // source materializes the ids ONCE (the FIRST source_next call) into the [pos_, end_) window. It then
+        // issues ONE storage_fetch for the whole window; the disk agent batches the reply into
+        // <= DEFAULT_VECTOR_CAPACITY chunks (each stamped with the absolute row_ids it actually carries, so a
+        // downstream DELETE/UPDATE/index sees the right rows), which this source buffers in batch_ and emits
+        // one-chunk-per-call.
+        //   The fetch runs under the reader's own snapshot, so a chunk can be SHORTER than its slice of the
+        // window: the index answers with a superset of ids and the table decides which of them this transaction
+        // may see. The LIMIT head cap therefore travels ON the fetch message, as storage_fetch's post-visibility
+        // `limit`, and never touches the matched-id list — the same place full_scan puts it
+        // (storage_fetch_next_batch's post-filter matched-row cap).
+        //   The FIRST call's sequential cross-actor co_awaits (index search + storage_types + the one window
+        // storage_fetch) live in this NESTED operator coroutine (driven by co_await from execute_pipeline), not
+        // in a behavior() handler, so the actor-zeta single-slot awaited continuation is republished+cleared
+        // between sequential awaits — no lost-wakeup.
         //   index_scan is built ONLY when create_plan_match_ proves an index exists on a real table
-        // (can_use_index), so table_oid_ is always valid — there is no no-table shape here, unlike
-        // full_scan and transfer_scan, which carry an explicit INVALID_OID sentinel because a
-        // no-FROM SELECT lowers onto them. An INVALID_OID reaching this operator is a physgen
-        // defect, and the schema read in source_next now refuses it rather than draining to an
-        // empty guard. role() is unconditionally source.
+        // (can_use_index), so table_oid_ is always valid — there is no no-table shape here, unlike full_scan and
+        // transfer_scan, which carry an explicit INVALID_OID sentinel because a no-FROM SELECT lowers onto them.
+        // An INVALID_OID reaching this operator is a physgen defect, and the schema read in source_next refuses
+        // it rather than draining to an empty guard. role() is unconditionally source.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
         [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx) override;
@@ -77,8 +74,9 @@ namespace components::operators {
         }
 
         // Windowing core: run the one-shot index search (txn-aware visibility), store the matched
-        // ids in row_ids_vec_, and compute the OFFSET/LIMIT window [pos_=start_, end_). If there is
-        // no index service or the search matched nothing, leaves an empty window.
+        // ids in row_ids_vec_, and open the fetch window [pos_=0, end_=row_ids_vec_.size()) over them —
+        // OFFSET is operator_limit's, the LIMIT cap rides on the fetch. A search that matched nothing
+        // leaves an empty window.
         //
         // Returns the manager's error when the search could not be ANSWERED (no engine
         // for the oid, no index on the predicate key, a failed read in the index's disk

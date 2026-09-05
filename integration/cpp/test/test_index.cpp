@@ -618,7 +618,7 @@ namespace {
 // index in memory. The handler must also mirror txn_id=0 pending rows back to
 // disk agents; otherwise bitcask.*.data segments stay empty while hash_index.bin
 // only holds bucket pages — index-path lookups work only until the next restart
-// rescans the table via bootstrap_repopulate_sync.
+// re-attaches the store from disk.
 TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_keylog") {
     constexpr int kRows = 500;
     static const std::string kHashIndexName = "idx_count_hash";
@@ -762,31 +762,31 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 48;", 0);
 }
 
-// VACUUM must not resurrect committed deletes, and the seq-scan path and the index
-// path must not disagree about which rows exist.
+// VACUUM must not resurrect committed deletes, and the seq-scan path and the index path
+// must not disagree about which rows exist.
 //
-// The version-info GC (row_version_manager_t::cleanup_append -> chunk_info::cleanup)
-// only ever looks at a FULL vector — vcount == DEFAULT_VECTOR_CAPACITY — and the default
+// The version-info GC (row_version_manager_t::cleanup_append -> chunk_info::cleanup) only
+// ever looks at a FULL vector — vcount == DEFAULT_VECTOR_CAPACITY — and the default
 // row_group_size is DEFAULT_VECTOR_CAPACITY too, so it is exactly the full row groups of a
 // table that reach it. vacuum_rebuild_visible above runs on 50 rows and never gets there;
 // this case fills a whole row group so it does.
 //
-// The shape is plain SQL with no crash and no restart in it: insert 1024 rows, commit a
-// DELETE of the first 500, then VACUUM with no other transaction active (so the GC floor
-// is already past the delete's commit). Both the unqualified scan and the indexed
-// predicates must still report the 524 survivors. Two VACUUMs, because the two legs of the
-// defect ripen at different depths: a partially deleted vector loses its stamps on the
-// first pass, a fully deleted one only after the second.
+// Plain SQL, no crash and no restart: insert 1024 rows, commit a DELETE of the first 500,
+// then VACUUM with no other transaction active (so the GC floor is already past the
+// delete's commit). Both the unqualified scan and the indexed predicates must still report
+// the 524 survivors. Two VACUUMs, because the two legs of the defect ripen at different
+// depths: a partially deleted vector loses its stamps on the first pass, a fully deleted
+// one only after the second.
 //
-// MEASURED, about the index leg specifically: the two paths did NOT disagree while the
-// GC was dropping the stamps — they lied together. `SELECT WHERE count < 500` returned
-// the same 500 resurrected rows the bare scan did. operator_vacuum_t runs vacuum_all
+// MEASURED, about the index leg specifically: the two paths did NOT disagree while the GC
+// was dropping the stamps — they lied together. `SELECT WHERE count < 500` returned the
+// same 500 resurrected rows the bare scan did, because operator_vacuum_t runs vacuum_all
 // (the heap-side GC) BEFORE it rebuilds each table's index through
-// manager_index_t::repopulate_table, and that rebuild feeds off a fresh scan of the heap
-// — so it faithfully re-indexed the resurrected rows. manager_index_t::cleanup_all_versions
-// deletes nothing on its own (it is a documented no-op since the in-memory index went
-// away). The index predicates stay in this test anyway: they pin the agreement, so a
-// future change that reclaims index entries without the heap agreeing shows up here.
+// manager_index_t::repopulate_table, and that rebuild feeds off a fresh scan of the heap.
+// manager_index_t::cleanup_all_versions deletes nothing on its own (a documented no-op
+// since the in-memory index went away). The index predicates stay anyway: they pin the
+// agreement, so a future change that reclaims index entries without the heap agreeing shows
+// up here.
 TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row_group") {
     constexpr int kRows = 1024;  // exactly one full row group / one full vector
     constexpr int kDeleted = 500;

@@ -257,10 +257,10 @@ TEST_CASE("catalog::type_spec::unknown_prefix_no_crash") {
     REQUIRE(decoded.error().type == core::error_code_t::data_corruption);
 }
 
-// ЗАПИСЬ #366: the flat codec wrote names AS IS, so a field, alias, label or type name
-// carrying one of the format's own delimiters ( ) , : = produced a spec the (now strict)
-// decoder refuses — DDL went through and every later resolve failed per-statement. The
-// encoder escapes those characters now, and the decoder reads the escapes back.
+// Names written AS IS produce a spec the strict decoder refuses whenever a field, alias,
+// label or type name carries one of the format's own delimiters ( ) , : = — the DDL goes
+// through and every later resolve fails per-statement. The encoder escapes those
+// characters and the decoder reads the escapes back.
 TEST_CASE("catalog::type_spec::struct_field_names_with_delimiters_roundtrip") {
     auto f1 = complex_logical_type{logical_type::INTEGER};
     f1.set_alias("we:ird,na(me)");
@@ -272,7 +272,7 @@ TEST_CASE("catalog::type_spec::struct_field_names_with_delimiters_roundtrip") {
     auto t = complex_logical_type::create_struct("na:me(d)", fields);
     auto spec = encode_type_spec(t);
 
-    // RED before the fix: the raw delimiters made this spec unreadable (or misread).
+    // Unescaped, the raw delimiters make this spec unreadable (or misread).
     auto t2 = decode_ok(spec);
     REQUIRE(t2.type() == logical_type::STRUCT);
     const auto& out = t2.child_types();

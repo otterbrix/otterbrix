@@ -31,17 +31,17 @@ namespace components::operators {
         //
         // role() is now streaming WHENEVER there is an input (left_ != nullptr),
         // independent of whether the input is a scan SOURCE or a SINK (group/join).
-        // The two operator_match-specific defects that previously made match-over-sink
-        // unsafe to stream are fixed in this operator:
+        // Two properties of this operator are what make match-over-sink safe to stream,
+        // and neither may be relaxed:
         //   (a) row_ids: filter_batch_ only propagates the input row_id when it is real
         //       (row_ids_meaningful_(): left_ is a scan source); over a sink it leaves
         //       the zero sentinel so no bogus absolute id reaches a downstream consumer.
         //   (b) stable resource: build_schema_metadata_ allocates the types working copy on the
         //       operator's STABLE resource_, not the (foreign / transient) sink chunk's arena, so
         //       what is cached across batches does not dangle on the second finalize chunk.
-        // The executor FLUSH/PUMP path itself already streams a filter above a sink
-        // correctly (select-over-sink works), so with both defects fixed the filter
-        // streams in every shape.
+        // The executor FLUSH/PUMP path itself streams a filter above a sink correctly
+        // (select-over-sink works), so with both properties held the filter streams in
+        // every shape.
         //
         // The sourceless no-table match (left_ == nullptr) is a degenerate shape: the
         // physical-plan generator only emits it when create_plan_match_ cannot resolve

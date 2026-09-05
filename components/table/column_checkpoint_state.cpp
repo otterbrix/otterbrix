@@ -300,14 +300,14 @@ namespace components::table {
         storage::data_pointer_t dp;
         if (data && segment_size > 0) {
             // Read from the segment's OWN payload within its (possibly shared) block. A segment that the
-            // write-through re-pointed via partial-block packing (B2) lives at a NON-ZERO block_offset in a
+            // write-through re-pointed via partial-block packing lives at a NON-ZERO block_offset in a
             // block shared with other segments; reading from data (offset 0) would copy a neighbour's bytes
             // into the checkpoint (reopen corruption). The compressed and fixed-size branches above already
             // add block_offset(); this UNCOMPRESSED branch (BIT/validity, STRING, single-tuple fixed-size)
-            // must too. Pre-B2 every re-pointed segment was at offset 0 so this was latent.
+            // must too. Without packing every re-pointed segment sits at offset 0 and the bug stays latent.
             auto* segment_data = data + segment.block_offset();
 
-            // F1: a STRING segment whose dictionary holds big-string markers is NOT self-contained.
+            // A STRING segment whose dictionary holds big-string markers is NOT self-contained.
             // Copying its block verbatim persists markers whose payload lives in a TRANSIENT block
             // that dies with the process, so the reloaded segment could not resolve them at all
             // (the read path aborted). Take a writable copy, move each payload into a real file

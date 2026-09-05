@@ -175,7 +175,7 @@ namespace core::b_plus_tree {
         }
         // FILE_CREATE, deliberately: a leaf that was built and never flushed has no file
         // yet, and its first flush is what brings one into being -- the same moment the
-        // pinned mode used to create it (at open_file in the caller).
+        // pinned mode creates it (at open_file in the caller).
         auto opened = filesystem::open_file(*fs_,
                                             file_path_,
                                             filesystem::file_flags::READ | filesystem::file_flags::WRITE |
@@ -347,12 +347,8 @@ namespace core::b_plus_tree {
                     }
                 } else {
                     // nothing left but to split this block
-                    // split_append() takes this block APART -- it moves items out of it,
-                    // and may put the new one into it -- before either half can be handed
-                    // anywhere. A refusal afterwards destroys what is already out, so the
-                    // room for both halves is asked for first. Two, because that is the
-                    // most this path can need; one slot short of the ceiling it declines
-                    // an append it might have fitted, which is the safe direction.
+                    // Room for both halves before the block is taken apart -- see the same
+                    // reservation above.
                     if (!reserve_segments_(2)) {
                         header_->unique_id_count_ -= !index_exists;
                         return false;
@@ -648,10 +644,10 @@ namespace core::b_plus_tree {
                     break;
                 }
                 // ASK FOR THE ROOM BEFORE TAKING THE ITEMS OUT. split_uniques() moves them out of
-                // this block and hands them back in a new one, and it used to be called inside the
-                // argument list of a call that can REFUSE -- at which point the temporary holding
-                // them was destroyed while this block had already lost them. The refusal was
-                // supposed to be the safe outcome.
+                // this block and hands them back in a new one, so calling it inside the argument
+                // list of a call that can REFUSE destroys the temporary holding them while this
+                // block has already lost them -- and the refusal is supposed to be the SAFE
+                // outcome.
                 if (!splited_tree->reserve_segments_(1)) {
                     break;
                 }
@@ -700,19 +696,9 @@ namespace core::b_plus_tree {
                 it node = other->segments_.begin() + (metadata - other->metadata_begin_);
                 other->ensure_loaded_(metadata);
 
-                // THE STAND-IN IS NOT A BLOCK THIS WALK MAY TOUCH. poison_segment_() leaves an EMPTY
-                // one in place of a block whose bytes did not arrive, and the arithmetic below is
-                // built on "a resident block holds something": unique_indices_count() answers 0, the
-                // subtraction under it turns that into SIZE_MAX (an empty block answers max_index()
-                // with numeric_limits<index_t>::max(), which is what a default-constructed
-                // prev_index is), and split_uniques() then reads one metadata entry PAST the end of
-                // the allocation. The other way round -- when prev_index already has a real value --
-                // count stays 0, 0 fits in any budget, and the stand-in is moved WHOLE into a leaf
-                // that never failed to read anything and would flush it over the rows.
-                //
-                // Neither is a case to compute through. Stop: this leaf keeps the segment and its
-                // metadata, so the bytes stay readable from its own file, and it is poisoned, so it
-                // writes nothing over them.
+                // THE STAND-IN IS NOT A BLOCK THIS WALK MAY TOUCH -- the same arithmetic, and the
+                // same two ways it goes wrong, as the walk in split() above. Stop: the donor keeps
+                // the segment and its metadata, and stays poisoned, so nothing writes over it.
                 if (!node->block || node->unreadable || node->block->unique_indices_count() == 0) {
                     break;
                 }
@@ -773,19 +759,9 @@ namespace core::b_plus_tree {
                 it node = other->segments_.begin() + (metadata - other->metadata_begin_);
                 other->ensure_loaded_(metadata);
 
-                // THE STAND-IN IS NOT A BLOCK THIS WALK MAY TOUCH. poison_segment_() leaves an EMPTY
-                // one in place of a block whose bytes did not arrive, and the arithmetic below is
-                // built on "a resident block holds something": unique_indices_count() answers 0, the
-                // subtraction under it turns that into SIZE_MAX (an empty block answers max_index()
-                // with numeric_limits<index_t>::max(), which is what a default-constructed
-                // prev_index is), and split_uniques() then reads one metadata entry PAST the end of
-                // the allocation. The other way round -- when prev_index already has a real value --
-                // count stays 0, 0 fits in any budget, and the stand-in is moved WHOLE into a leaf
-                // that never failed to read anything and would flush it over the rows.
-                //
-                // Neither is a case to compute through. Stop: this leaf keeps the segment and its
-                // metadata, so the bytes stay readable from its own file, and it is poisoned, so it
-                // writes nothing over them.
+                // THE STAND-IN IS NOT A BLOCK THIS WALK MAY TOUCH -- the same arithmetic, and the
+                // same two ways it goes wrong, as the walk in split() above. Stop: the donor keeps
+                // the segment and its metadata, and stays poisoned, so nothing writes over it.
                 if (!node->block || node->unreadable || node->block->unique_indices_count() == 0) {
                     break;
                 }
@@ -1045,7 +1021,7 @@ namespace core::b_plus_tree {
             // A block of this leaf could not be read back, and what stands in its place in memory
             // is EMPTY. close_gaps_() would relocate it, the writer below would write it, and
             // either one puts nothing over the rows that are still on the device -- which is how a
-            // single refused read used to cost a whole block at the next flush. Refuse instead,
+            // single refused read costs a whole block at the next flush. Refuse instead,
             // touch no bytes, and leave the leaf dirty so nothing counts it as written.
             //
             // Loud, not fatal: the tree still opens, the readable leaves still flush, and the
@@ -1097,7 +1073,7 @@ namespace core::b_plus_tree {
         bool ok = true;
 
         /*  header_  */
-        // The seal goes on as the region goes out (wave #325): whatever this write puts
+        // The seal goes on as the region goes out: whatever this write puts
         // on the device is exactly what read_header_ will be able to verify.
         header_->header_checksum_ = header_region_checksum_();
         if (!file->write(static_cast<void*>(header_), header_size, 0)) {
@@ -1154,9 +1130,9 @@ namespace core::b_plus_tree {
 
     bool segment_tree_t::read_header_(filesystem::file_handle_t& file) {
         // THE HEADER SIZES EVERYTHING ELSE. header_->segments_count_ places metadata_end_, and
-        // every lookup below walks the array between metadata_begin_ and it. It used to be read
-        // with the result dropped and its content unexamined: a read that did not happen left the
-        // PREVIOUS header in place, and a count larger than the region holds walked off the end of
+        // every lookup below walks the array between metadata_begin_ and it. Reading it with the
+        // result dropped and its content unexamined leaves the PREVIOUS header in place when the
+        // read does not happen, and a count larger than the region holds then walks off the end of
         // the header allocation on every later find.
         if (file.file_size() == 0) {
             // A leaf file that was created and never written to. Nothing to read, and nothing
@@ -1174,7 +1150,7 @@ namespace core::b_plus_tree {
             report_failure_(load_failure_t::io_error);
             return false;
         }
-        // THE SEAL BEFORE ANY FIELD (wave #325). Without it a flipped bit anywhere in the
+        // THE SEAL BEFORE ANY FIELD. Without it a flipped bit anywhere in the
         // region -- a counter, a block offset, a key boundary -- was BELIEVED whenever the
         // one structural check below still passed, and the leaf then answered wrong,
         // silently. A mismatch is a header this codec did not write: the leaf gives up
@@ -1382,8 +1358,8 @@ namespace core::b_plus_tree {
     segment_tree_t::node_t segment_tree_t::construct_new_node_(const index_t& index, item_data item) {
         const uint32_t size = align_to_block_size(item.size + block_t::header_size + block_t::metadata_size);
         // Same shape as load_segment_(): ask, evict, ask again, and answer with a value either
-        // way. The `catch (...)` that used to be here retried INSIDE the catch, where a second
-        // refusal had nothing to catch it and left the process.
+        // way. Retrying INSIDE a `catch (...)` here leaves a second refusal with nothing to catch
+        // it, and the process with it.
         std::unique_ptr<block_t> b_tree_ptr = create_initialize_nothrow(resource_, key_func_, size);
         if (!b_tree_ptr) {
             unload_old_segments_();
@@ -1504,12 +1480,12 @@ namespace core::b_plus_tree {
         }
         if (!file->read(node->block->internal_buffer(), metadata->size, metadata->file_offset)) {
             // The bytes never arrived. The buffer holds whatever create_initialize() put there,
-            // and restoring a block out of that is how a refused read used to become an empty
-            // block that the next flush wrote over the real one.
+            // and restoring a block out of that is how a refused read becomes an empty block
+            // that the next flush writes over the real one.
             poison_segment_(node, load_failure_t::io_error);
             return;
         }
-        // THE CHECK THAT USED TO BE AN ASSERT AND THEREFORE DID NOT EXIST UNDER -DNDEBUG. It costs
+        // NOT AN ASSERT, WHICH WOULD NOT EXIST AT ALL UNDER -DNDEBUG. It costs
         // one CRC32C pass over the block on every load, which is the same pass flush() already
         // pays on every block it writes -- and it is the only thing standing between a changed
         // byte on the device and a row served as if it were the row that was stored.
@@ -1569,10 +1545,10 @@ namespace core::b_plus_tree {
                 if (!file->write(segments_[num].block->internal_buffer(),
                                  (metadata_begin_ + num)->size,
                                  (metadata_begin_ + num)->file_offset)) {
-                    // THE WRITE DID NOT LAND, and the two lines below used to run anyway: the
-                    // block left memory and was marked clean, so flush() skipped it and every row
-                    // in it was gone -- silently, with flush() still answering true. ENOSPC here
-                    // used to cost half the resident blocks of the leaf.
+                    // THE WRITE DID NOT LAND, so the two lines below must not run: they let the
+                    // block leave memory marked clean, flush() then skips it, and every row in it
+                    // is gone -- silently, with flush() still answering true. ENOSPC here costs
+                    // half the resident blocks of the leaf.
                     //
                     // Keep it resident and keep it modified. The leaf is already dirty (marked at
                     // the top of this function), so the next flush writes it again.

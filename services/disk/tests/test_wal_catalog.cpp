@@ -210,7 +210,7 @@ TEST_CASE("services::disk::wal_catalog::bootstrap_seeds_a_recognized_timezone") 
         const auto seeded = fx.disk->read_setting_sync("TimeZone");
         REQUIRE_FALSE(seeded.empty());
         CAPTURE(seeded);
-        // RED before the fix: seeded == "UTC", refused by the engine's own recognizer.
+        // Seeding "UTC" here would be refused by the engine's own recognizer.
         REQUIRE(core::date::timezone_to_offset(seeded).has_value());
         // And the consumer that WARNed on every start accepts it now.
         components::catalog::session_catalog_t accepts;
@@ -627,12 +627,12 @@ namespace {
     }
 } // namespace
 
-// #34 — THE ADD-COLUMN JOURNAL RECORD IS AWAITED, NOT FIRE-AND-FORGET. Schema growth on the
-// append path sends its PHYSICAL_ADD_COLUMN record ahead of the PHYSICAL_INSERT to the same
-// FIFO WAL worker; the send used to DROP the future, so the record's outcome was never read.
-// It is kept and DRAINED now, after the insert await — a completed future by then (same FIFO
-// worker, send order), so the drain never suspends and the handler keeps its single
-// suspension point. This case pins the drained path end-to-end on the happy side: a growth
+// THE ADD-COLUMN JOURNAL RECORD IS AWAITED, NOT FIRE-AND-FORGET. Schema growth on the append
+// path sends its PHYSICAL_ADD_COLUMN record ahead of the PHYSICAL_INSERT to the same FIFO WAL
+// worker; dropping that future would leave the record's outcome unread. It is kept and DRAINED
+// after the insert await — a completed future by then (same FIFO worker, send order), so the
+// drain never suspends and the handler keeps its single suspension point. This case pins the
+// drained path end-to-end on the happy side: a growth
 // append with WAL wired must succeed, materialise the row, AND land exactly one
 // PHYSICAL_ADD_COLUMN record in the journal, wal-id-ordered AHEAD of the PHYSICAL_INSERT it
 // enabled. A hang in the drain (the lost-wakeup the ordering guards against) or a mis-read
@@ -640,8 +640,8 @@ namespace {
 // succeeds" isolation is NOT stageable at this layer — wal_page_writer coalesces both small
 // records into one buffered page and one file write, so any file-level fault that reaches
 // the add-column write reaches the insert write too, and the insert's already-awaited
-// refusal covers the append on either leg; the drain's value is that it no longer LEAKS the
-// add-column outcome, proven structurally + by this happy-path guard.
+// refusal covers the append on either leg. The drain's value is that the add-column outcome is
+// not LEAKED, proven structurally plus by this happy-path guard.
 TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_ahead_of_the_insert") {
     auto dir = wal_cat_dir() + "/addcol_journaled";
     cleanup_dir(dir);
@@ -744,13 +744,13 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
     cleanup_dir(dir);
 }
 
-// #319 — THE BACKFILL'S REPLAY LEG, PINNED WITHOUT THE DESTRUCTOR CHECKPOINT. The
-// added_at_commit_id stamp is patched in memory and journalled as a PHYSICAL_UPDATE; after
-// a kill with NO checkpoint the journal is the stamp's ONLY carrier. The restart test in
-// integration absorbs the stamp through the teardown checkpoint, so the record's content
-// and the disk-side replay leg (direct_update_sync) went unpinned — corrupting either
-// failed nothing. This fixture never checkpoints: phase B replays the journal through the
-// same direct_* methods base_spaces replay uses and the stamp must come back.
+// THE BACKFILL'S REPLAY LEG, PINNED WITHOUT THE DESTRUCTOR CHECKPOINT. The added_at_commit_id
+// stamp is patched in memory and journalled as a PHYSICAL_UPDATE; after a kill with NO
+// checkpoint the journal is the stamp's ONLY carrier. The restart test in integration absorbs
+// the stamp through the teardown checkpoint, which leaves the record's content and the
+// disk-side replay leg (direct_update_sync) unpinned there. This fixture never checkpoints:
+// phase B replays the journal through the same direct_* methods base_spaces replay uses and the
+// stamp must come back.
 TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_through_the_journal_alone") {
     auto dir = wal_cat_dir() + "/backfill_replay";
     cleanup_dir(dir);

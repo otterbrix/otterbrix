@@ -30,7 +30,7 @@ namespace components::operators {
     // Duplicate detection has two independent layers, per constraint group:
     //   (1) WITHIN-BATCH: two rows in the SAME write-set sharing a key. Detected by
     //       a typed hash + verify (R1: no logical_value_t round-trip; the verify
-    //       mirrors operator_group.cpp's vector::cells_equal — NULL-aware).
+    //       mirrors operator_hash_group.cpp's vector::cells_equal — NULL-aware).
     //   (2) EXISTING-ROW: an already-committed table row with the same key that is
     //       NOT the row being written. The DML ran first (bottom-up), so its rows
     //       are visible to scan_by_keys; a key whose scan returns MORE than the one
@@ -40,9 +40,9 @@ namespace components::operators {
     // as distinct; PRIMARY KEY columns are NOT NULL, enforced upstream by
     // operator_check_constraint). Every table column is IN the rows this reads — an
     // INSERT that omitted one had it expanded to its DEFAULT (or to NULL) before the
-    // append — so the key is extracted from what was STORED. It used to be assembled
-    // from the plan's own copy of the default, which is how the uniqueness verdict came
-    // to be about a value the write path had not written. On the first duplicate it
+    // append — so the key is extracted from what was STORED. Assembling it from the
+    // plan's own copy of the default is how the uniqueness verdict comes to be about a
+    // value the write path never wrote. On the first duplicate it
     // sets a core::error_t — no silent dedup, no throw across the mailbox (R2/R9).
     class operator_unique_constraint_t final : public read_write_operator_t {
     public:

@@ -48,53 +48,36 @@ namespace services::disk {
                                                                                components::catalog::oid_t table_oid,
                                                                                std::int64_t oid_col_idx,
                                                                                components::catalog::oid_t target_oid) {
-        // Single route to the agent inner body (the same body delete_pg_catalog_rows_many
-        // loops, so both paths emit identical WAL records).
+        // Single route to the agent inner body (the same body delete_pg_catalog_rows_many loops, so
+        // both paths emit identical WAL records).
         //
-        // BLOCKING DEBT — THIS ROUTE HAS NO ERROR CHANNEL, AND TWO CALLERS CAN NOW LEAVE A
-        // DUPLICATE ROW BEHIND. Name them, because the shape of the damage changed:
+        // BLOCKING DEBT — THIS ROUTE HAS NO ERROR CHANNEL, so a refused delete reaches no caller.
+        // The agent inner body refuses to delete what it could not journal, and the append that
+        // follows in two of the three callers then makes it a DUPLICATE ROW:
         //
-        //   * operator_alter_column_rename_t::await_async_and_resume
-        //     (components/physical_plan/operators/operator_alter_column_rename.cpp, the send at
-        //     ~:219) deletes the pg_attribute row of `attoid`, then appends a replacement
-        //     carrying the new attname (~:247; that append's own refusal IS read). A refused
-        //     delete leaves BOTH rows live for one attoid: the column answers to its old name
-        //     and its new one at the same time.
-        //   * operator_create_index_backfill_t::await_async_and_resume
-        //     (components/physical_plan/operators/operator_create_index_backfill.cpp, ~:546)
-        //     deletes the pg_index row of `index_oid_`, then appends the indisvalid=true
-        //     replacement (~:563). A refused delete leaves indisvalid=false AND indisvalid=true
-        //     for one indexrelid.
-        //   * operator_delete::await_async_and_resume's catalog branch
-        //     (components/physical_plan/operators/operator_delete.cpp, ~:390) appends nothing,
-        //     so it keeps the older, milder failure: ONE row that should be gone, and a success
-        //     reported over it.
+        //   * operator_alter_column_rename_t::await_async_and_resume deletes the pg_attribute row
+        //     of `attoid`, then appends a replacement carrying the new attname (that append's own
+        //     refusal IS read). A refused delete leaves BOTH rows live for one attoid: the column
+        //     answers to its old name and its new one at the same time.
+        //   * operator_create_index_backfill_t::await_async_and_resume deletes the pg_index row of
+        //     `index_oid_`, then appends the indisvalid=true replacement. A refused delete leaves
+        //     indisvalid=false AND indisvalid=true for one indexrelid.
+        //   * operator_delete::await_async_and_resume's catalog branch appends nothing, so it keeps
+        //     the milder failure: ONE row that should be gone, and a success reported over it.
         //
-        // WHY IT IS NEW. agent_disk_t::delete_pg_catalog_rows_inner used to log a refused
-        // PHYSICAL_DELETE and delete the rows anyway; storage then ran ahead of the journal but
-        // held ONE row. It now refuses to delete what it could not journal — correct in itself —
-        // and with no answer reaching the caller, the append that follows makes it two.
+        // The likelier cause of the same two-row state is already closed: the delete's scan now
+        // carries the transaction, so inside a BEGIN it no longer misses the row it was told to
+        // remove. Gated by integration/cpp/test/test_catalog_delete_refusal.cpp
+        // (an_in_transaction_rename_leaves_one_attribute_row,
+        // an_in_transaction_create_index_leaves_one_pg_index_row). What remains reachable is the
+        // refusal path itself: a journal that would not take the PHYSICAL_DELETE, or an owning
+        // agent holding no storage for the catalog oid.
         //
-        // WHAT IS LEFT OF IT. The two-row state had a SECOND, likelier cause that is now gone:
-        // the delete's scan carried no transaction, so inside a BEGIN it silently missed the row
-        // it was told to remove and the append landed on top. That happened on ordinary
-        // statements, no fault injection needed, and both operators are gated on it now —
-        // integration/cpp/test/test_catalog_delete_refusal.cpp,
-        // an_in_transaction_rename_leaves_one_attribute_row (it observed live 'c' AND live 'd')
-        // and an_in_transaction_create_index_leaves_one_pg_index_row (two pg_index rows for one
-        // indexrelid). What remains reachable is the refusal path itself: a journal that would
-        // not take the PHYSICAL_DELETE, or an owning agent holding no storage for the catalog
-        // oid.
-        //
-        // WHY IT IS NOT FIXED HERE. The fix is the one delete_pg_catalog_rows_many just had:
-        // widen the return to core::result_wrapper_t and make each caller read it. All three
-        // callers are outside this change's scope, and there is no half-measure available —
-        // widening the signature alone would compile, because a discarded co_await is legal, and
-        // would leave exactly the silent ignore rule 6 forbids. Routing through the batched twin
-        // with a one-element spec list (the move operator_alter_column_drop_t made for its live
-        // pg_attribute row) is the other way, and it edits the same three files.
-        //
-        // Until one of those happens the refusal is REPORTED here rather than dropped in silence.
+        // THE FIX is delete_pg_catalog_rows_many's: widen the return to core::result_wrapper_t and
+        // make each caller read it — or route through the batched twin with a one-element spec
+        // list. There is no half-measure: widening the signature alone compiles, because a
+        // discarded co_await is legal, and would leave exactly the silent ignore rule 6 forbids.
+        // Until then the refusal is REPORTED here rather than dropped in silence.
         if (!agents_.empty()) {
             const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
             auto& agent = agents_[idx];
@@ -186,9 +169,9 @@ namespace services::disk {
         // Serialized (co_await per item) so the per-backfill WAL records are emitted
         // in order.
         //
-        // THE TWO ROUTING LEGS ARE REFUSALS, NOT NO-OPS, and both used to be a bare co_return —
-        // the same reading direct_delete_sync's router already rejects one file over. A
-        // caller's markers do not evaporate because this manager has no agents.
+        // THE TWO ROUTING LEGS ARE REFUSALS, NOT NO-OPS — the same reading direct_delete_sync's
+        // router rejects one file over. A caller's markers do not evaporate because this manager
+        // has no agents.
         //
         // AND THE ONE LEGITIMATE EMPTY IS SPLIT OFF FIRST, the same split direct_append_sync and
         // storage_delete_rows_inner keep: a batch that names no marker asks for nothing, and
@@ -242,26 +225,26 @@ namespace services::disk {
             }
         }
 
-        // RN-oid — the added_at marker's SECOND half, and the only leg of "every storage column
-        // carries its attoid" that has to travel forward in time.
+        // The added_at marker's SECOND half, and the only leg of "every storage column carries its
+        // attoid" that has to travel forward in time.
         //
         // ALTER TABLE ADD COLUMN writes a pg_attribute row and stops; the STORAGE column is
-        // materialised later, by the schema-growth stage of storage_append_inner, out of an
-        // INSERT chunk that carries nothing but an alias-tagged type — and on an agent that
-        // owns no pg_attribute and may not take a second cross-actor await inside an append.
-        // So the identity is parked on the owning agent NOW, keyed by the attname the future
-        // chunk will carry, and stamped onto the column at the moment it is created.
+        // materialised later, by the schema-growth stage of storage_append_inner, out of an INSERT
+        // chunk that carries nothing but an alias-tagged type — and on an agent that owns no
+        // pg_attribute and may not take a second cross-actor await inside an append. So the
+        // identity is parked on the owning agent NOW, keyed by the attname the future chunk will
+        // carry, and stamped onto the column at the moment it is created.
         //
-        // FIRE-AND-FORGET, deliberately: this handler already co_awaits per backfill above, and
-        // the ordering that matters is not "before this returns" but "before the client's next
-        // statement". Both are satisfied by the mailbox — the note is ENQUEUED on the target
-        // agent before this coroutine returns, the COMMIT's reply is what unblocks the client,
-        // and the agent's mailbox is FIFO, so any later INSERT is processed after it.
+        // FIRE-AND-FORGET, deliberately: this handler already co_awaits per backfill above, and the
+        // ordering that matters is not "before this returns" but "before the client's next
+        // statement". The mailbox satisfies both — the note is ENQUEUED on the target agent before
+        // this coroutine returns, the COMMIT's reply is what unblocks the client, and the agent's
+        // mailbox is FIFO, so any later INSERT is processed after it.
         //
         // A note that finds no owner no-ops (note_column_identity_inner). That is not a silent
-        // degradation: it means the storage this attoid describes is not loaded, in which case
-        // there is no column to materialise, and bootstrap re-derives the same publication from
-        // pg_attribute the next time the table IS loaded.
+        // degradation: the storage this attoid describes is not loaded, so there is no column to
+        // materialise, and bootstrap re-derives the same publication from pg_attribute the next
+        // time the table IS loaded.
         for (const auto& b : backfills) {
             if (b.kind != components::pg_attribute_commit_id_backfill_t::kind_t::added_at ||
                 b.release_attname.empty() || b.release_table_oid == components::catalog::INVALID_OID ||
@@ -284,7 +267,7 @@ namespace services::disk {
                 scheduler_disk_->enqueue(owner.get());
             }
         }
-        // The RN-oid notes above are deliberately fire-and-forget (see the block comment), so
+        // The identity notes above are deliberately fire-and-forget (see the block comment), so
         // the answer carries only what the STAMPS did: how many of the batch were refused,
         // how many landed, and the first refusal's own words.
         if (refused_count > 0) {
@@ -325,7 +308,7 @@ namespace services::disk {
         co_return 0;
     }
 
-    // B3c1 — ALTER TABLE DROP COLUMN's physical half. Thin router, the same shape as every
+    // ALTER TABLE DROP COLUMN's physical half. Thin router, the same shape as every
     // other DDL leg: pool_idx_for_oid -> otterbrix::send -> enqueue if needed -> await. The
     // work itself runs intra-agent (drop_storage_column_inner) on that agent's own slice; the
     // manager never borrows a storage entry across the actor boundary.
@@ -366,8 +349,8 @@ namespace services::disk {
     // the actor boundary.
     //
     // The point of the leg is in disk_contract.hpp: the storage's column name is a cache of
-    // the catalog's, and the write path still addresses columns by it. Identity is the attoid
-    // (RN-oid), so a rename the storage never saw is repaired at the next bootstrap rather than
+    // the catalog's, and the write path still addresses columns by it. Identity is the attoid,
+    // so a rename the storage never saw is repaired at the next bootstrap rather than
     // read as a drop — but repairing it only at a restart would leave the live append path
     // expanding chunks against a stale name in the meantime.
     manager_disk_t::unique_future<core::result_wrapper_t<bool>>

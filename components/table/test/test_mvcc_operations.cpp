@@ -17,11 +17,10 @@ using namespace components::table;
 
 namespace {
 
-    // B4: the fixture runs on a real .otbx. It used to hold the file-less block manager, whose
-    // every I/O virtual now aborts; the block_manager_t predicate that made that safe is gone
-    // along with the in-memory table mode it named. The row counts here span more than one row
-    // group, so closing one writes its segments through to the file — this fixture reaches the
-    // disk path for real. The substrate is all that changes: not one assertion below is about it.
+    // The fixture runs on a real .otbx: there is no file-less block manager any more, and the
+    // row counts here span more than one row group, so closing one writes its segments through
+    // to the file — this fixture reaches the disk path for real. The substrate is all that the
+    // file gives it: not one assertion below is about it.
     std::string mvcc_operations_db_path() {
         static std::string path = "/tmp/test_otterbrix_mvcc_operations_" + std::to_string(::getpid()) + ".otbx";
         return path;
@@ -795,9 +794,9 @@ TEST_CASE("components::table::mvcc::revert_append_truncates_columns_direct") {
 // Issue #552 family: an aborted MVCC update (delete-stamp + append) followed by the
 // failed-statement revert (physical append revert + delete un-stamp) must restore the
 // original row intact, and a subsequent COMMITTED update of that row must yield exactly
-// the new version. The second phase also pins validity_mask_t::set_valid bit semantics:
-// the revert's BIT reset used to clobber a whole 64-bit entry per "bit", leaving the
-// failed append's NULL bit set — the re-appended row then read as NULL forever.
+// the new version. The second phase also pins validity_mask_t::set_valid bit semantics: a
+// reset that clears a whole 64-bit entry per "bit" leaves the failed append's NULL bit set,
+// and the re-appended row reads as NULL forever.
 TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
     test_env env;
     std::vector<column_definition_t> columns;
@@ -907,7 +906,7 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
 }
 
 // ---------------------------------------------------------------------------
-// A6: mixed addressing in row_version_manager_t::vector_info_.
+// Mixed addressing in row_version_manager_t::vector_info_.
 //
 // The append path (append_version_info / commit_append / revert_append /
 // cleanup_append and the counters committed_deleted_count / has_version_above)
@@ -1013,7 +1012,7 @@ TEST_CASE("components::table::mvcc::compact_refused_while_delete_past_1024_pendi
 
 namespace {
 
-    // Nested-column revert_append coordinate regression (F3 family). Every logical row `r`
+    // Nested-column revert_append coordinate regression. Every logical row `r`
     // seeded with `base` carries fully determined content, so a stale child tail after a
     // revert is OBSERVABLE as wrong CONTENT, not just a wrong count:
     //   LIST  column: length r % 3 (empties included), element j = base + r * 100 + j
@@ -1138,14 +1137,14 @@ namespace {
 
 } // anonymous namespace
 
-// F3: row_group_t::revert_append hands every column a COLLECTION-ABSOLUTE row number
+// row_group_t::revert_append hands every column a COLLECTION-ABSOLUTE row number
 // (this->start + group-local revert point). A LIST column must convert that into its
 // CHILD element space: the stored offsets are cumulative element counts within the row
-// group, and the child column shares the parent's start_. The old code compared the
-// RELATIVE surviving count (max_entry()) against the ABSOLUTE start_, so for any row
-// group with start_ > 0 the child was never truncated; the next append then seeded its
-// offsets past the stale child tail, and rows past the revert boundary read stale
-// elements that belonged to the reverted rows.
+// group, and the child column shares the parent's start_. Comparing the RELATIVE
+// surviving count (max_entry()) against the ABSOLUTE start_ leaves the child untruncated
+// for any row group with start_ > 0; the next append then seeds its offsets past the
+// stale child tail, and rows past the revert boundary read stale elements that belonged
+// to the reverted rows.
 TEST_CASE("components::table::mvcc::revert_append_list_child_row_group_1") {
     test_env env;
     auto table = make_list_table(env);
@@ -1169,9 +1168,9 @@ TEST_CASE("components::table::mvcc::revert_append_list_child_row_group_1") {
     verify_list_rows(*table, env, 1056, 1044, 1'000'000);
 }
 
-// F3: same coordinate confusion on the ARRAY leg. The child holds array_size() elements
+// The same coordinate confusion on the ARRAY leg. The child holds array_size() elements
 // per row and shares the parent's start_, so the child's absolute truncation row is
-// start_ + surviving_rows * array_size. The old code passed start_row * array_size —
+// start_ + surviving_rows * array_size. Passing start_row * array_size lands
 // far past the child's end for any row group with start_ > 0 (Debug builds abort on the
 // exact-boundary assert in column_data_t::revert_append; release builds silently keep
 // the stale child tail, and a re-append lands its elements after it).
@@ -1272,10 +1271,10 @@ namespace {
 
 } // anonymous namespace
 
-// Leg 1 — PARTIAL deletes in a full vector. ONE cleanup_versions pass is enough:
-// chunk_vector_info::cleanup used to fall through its partial-delete branch to
-// `return true` while leaving `result` empty, so the vector's 500 committed delete
-// stamps were thrown away and the rows became visible again.
+// Leg 1 — PARTIAL deletes in a full vector. ONE cleanup_versions pass is enough to expose
+// the hazard: chunk_vector_info::cleanup falling through its partial-delete branch to
+// `return true` with an empty `result` throws the vector's 500 committed delete stamps
+// away and makes the rows visible again.
 TEST_CASE("components::table::mvcc::vacuum_keeps_partial_committed_deletes") {
     test_env env;
     auto table = make_int_table(env);
@@ -1299,7 +1298,7 @@ TEST_CASE("components::table::mvcc::vacuum_keeps_partial_committed_deletes") {
     };
 
     // VACUUM. No other transaction is active, so the horizon is already past the
-    // delete's commit — exactly the state that made cleanup drop the stamps.
+    // delete's commit — exactly the state in which cleanup may drop the stamps.
     table->cleanup_versions(mgr.lowest_active_start_time());
     check_survivors();
 
@@ -1308,11 +1307,11 @@ TEST_CASE("components::table::mvcc::vacuum_keeps_partial_committed_deletes") {
     check_survivors();
 }
 
-// Leg 2 — a FULLY deleted vector. It takes TWO cleanup_versions passes: the first
-// legitimately collapses the 1024-stamp chunk_vector_info into a chunk_constant_info
-// that keeps the delete_id; the second then hit chunk_constant_info::cleanup, which
-// returned true on a committed delete_id with an empty `result` and brought all 1024
-// rows back at once.
+// Leg 2 — a FULLY deleted vector. It takes TWO cleanup_versions passes to reach the
+// hazard: the first legitimately collapses the 1024-stamp chunk_vector_info into a
+// chunk_constant_info that keeps the delete_id; only the second reaches
+// chunk_constant_info::cleanup, where returning true on a committed delete_id with an
+// empty `result` brings all 1024 rows back at once.
 TEST_CASE("components::table::mvcc::vacuum_keeps_fully_deleted_vector_deleted") {
     test_env env;
     auto table = make_int_table(env);
@@ -1448,15 +1447,15 @@ TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history")
 // broadcast by lowest_active_snapshot_horizon() had already reached c_oth >= c_del,
 // and the deferred index-delete sweep in services/index/manager_index.cpp reaps on
 // `entry->commit_id <= new_horizon` (copied verbatim from that predicate; it is the
-// only consumer of this broadcast, reached via services/dispatcher/dispatcher.cpp:447).
+// only consumer of this broadcast, reached via services/dispatcher/dispatcher.cpp).
 // So the index entry for row 0 was already cleared for erasure while the table still
 // hands the row back. Index answers a SUBSET of the table, with no error raised.
 //
 // The check is the honest half available from components/table: the full scan
 // establishes what the snapshot is ENTITLED to read, and the broadcast establishes
 // what the index has been PERMITTED to erase. The two must not overlap. The
-// end-to-end form with a real manager_index_t belongs in
-// services/index/tests/test_index_delete_horizon.cpp (another wave's directory).
+// end-to-end form with a real manager_index_t lives in
+// services/index/tests/test_index_delete_horizon.cpp.
 TEST_CASE("components::table::mvcc::index_sweep_floor_in_publish_window") {
     test_env env;
     auto table = make_int_table(env);
@@ -1514,31 +1513,28 @@ TEST_CASE("components::table::mvcc::index_sweep_floor_in_publish_window") {
 
 // AN ORPHANED commit_id BLOCKS COMPACTION OF A TABLE IT NEVER TOUCHED.
 //
-// This is the CONSEQUENCE of the pin proved as state in
-// components/table/test/test_transaction_manager.cpp
+// The CONSEQUENCE of the pin proved as state in test_transaction_manager.cpp
 // ("orphaned_commit_pins_horizon_forever"), measured where it is actually paid.
-// operator_commit_transaction_t has early exits between the hop that ALLOCATES the
-// commit_id (the dispatcher's drain -> transaction_manager_t::commit()) and the hop
-// that removes it (txn_publish_msg -> publish()). An exit in between leaves the id in
-// in_flight_commits_ with the transaction already gone from active_, so nothing can
-// ever take it out again.
+// operator_commit_transaction_t has early exits between the hop that ALLOCATES the commit_id
+// (the dispatcher's drain -> transaction_manager_t::commit()) and the hop that removes it
+// (txn_publish_msg -> publish()); an exit in between leaves the id in in_flight_commits_ with
+// the transaction already gone from active_, so nothing can ever take it out again.
 //
-// compact() is gated on compact_watermark(), whose only floor for a system with no
-// live transactions is min(in_flight_commits_) - 1. One dead COMMIT therefore stops
-// the reclaim of EVERY table in the process from its own id onward — including tables
-// the dead transaction never wrote a row to, which is the case built below.
+// compact() is gated on compact_watermark(), whose only floor for a system with no live
+// transactions is min(in_flight_commits_) - 1. One dead COMMIT therefore stops the reclaim of
+// EVERY table in the process from its own id onward — including tables the dead transaction
+// never wrote a row to, which is the case built below.
 //
-// THE ORPHAN WRITES NOTHING HERE, AND THAT IS FAITHFUL, NOT A SHORTCUT. Under the
-// operator's ordering rule — no step that can fail may run after the first step that
-// stamps the commit_id — a transaction that dies at an early exit has stamped the id
-// on nothing: not on a row version, not on a pg_attribute column, not on a deferred
-// index-delete entry. All it leaves behind is the id itself. (Rows it wrote to its
-// OWN table still carry insert_id == transaction_id and block THAT table's compaction
-// on a separate, pre-existing ground: there is no undo under MVCC. Keeping the two
-// tables apart is what makes this case about the horizon alone.)
+// THE ORPHAN WRITES NOTHING HERE, AND THAT IS FAITHFUL, NOT A SHORTCUT: under the operator's
+// ordering rule (no step that can fail may run after the first step that stamps the commit_id)
+// a transaction that dies at an early exit has stamped the id on nothing, and all it leaves
+// behind is the id itself. Rows it wrote to its OWN table would still carry insert_id ==
+// transaction_id and block THAT table's compaction on a separate, pre-existing ground (there is
+// no undo under MVCC), so keeping the two tables apart is what makes this case about the
+// horizon alone.
 //
-// ORDER MATTERS: the real DELETE must commit AFTER the orphan, or its id would sit
-// below the pinned floor and the compact would succeed for the wrong reason.
+// ORDER MATTERS: the real DELETE must commit AFTER the orphan, or its id would sit below the
+// pinned floor and the compact would succeed for the wrong reason.
 TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
     test_env env;
     auto table = make_int_table(env);
@@ -1605,13 +1601,13 @@ TEST_CASE("components::table::mvcc::orphaned_commit_blocks_compaction") {
 }
 
 // =====================================================================================
-// ЗАПИСЬ #6 (волна table) — канал VACUUM не задет починкой пришпиленности: сборка версий
-// едет на lowest_active_start_time, который ИГНОРИРУЕТ множество коммитов в полёте.
+// Канал VACUUM: сборка версий едет на lowest_active_start_time, который ИГНОРИРУЕТ
+// множество коммитов в полёте.
 // Коммит без publish() уже покинул active_ (и active_start_times_), так что при живом
 // читателе lowest оказывается ВЫШЕ его commit_id, и cleanup сворачивает слот версий в
 // «видимо всем» — читатель, чей снапшот несёт этот id в in-flight, внезапно видит
 // неопубликованные строки.
-// RED до фикса: второй scan_count_txn возвращает 1024 вместо 0.
+// Без гейта второй scan_count_txn возвращает 1024 вместо 0.
 // =====================================================================================
 TEST_CASE("components::table::mvcc::cleanup_must_not_publish_an_in_flight_commit") {
     test_env env;

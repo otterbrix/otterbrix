@@ -147,9 +147,9 @@ namespace {
                 std::this_thread::yield();
             }
             REQUIRE(fut.is_ready());
-            // The reader carries an error channel now ("the catalog could not be READ" is not
+            // The reader carries an error channel ("the catalog could not be READ" is not
             // "the catalog does not have it"); no case here expects a failed read, and letting
-            // one through as {found=false} is exactly the confusion the wrapper ended.
+            // one through as {found=false} would conflate the two.
             auto r = std::move(fut).take_ready();
             REQUIRE_FALSE(r.has_error());
             return std::move(r.value());

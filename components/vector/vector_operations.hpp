@@ -399,8 +399,8 @@ namespace components::vector::vector_ops {
     };
 
     // Element-wise unary op. abs/bit_not preserve source type; sqr_root/cube_root/factorial
-    // return DOUBLE. A string operand is a refusal — the string leg used to be an assert
-    // with no else, i.e. an UNINITIALIZED result under NDEBUG.
+    // return DOUBLE. A string operand is a refusal, not an assert with no else — that is an
+    // UNINITIALIZED result under NDEBUG.
     core::result_wrapper_t<vector_t>
     apply_unary_vector_op(std::pmr::memory_resource* resource, unary_vector_op op, const vector_t& src, uint64_t count);
 

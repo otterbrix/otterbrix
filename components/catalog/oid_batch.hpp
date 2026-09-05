@@ -12,51 +12,38 @@
 
 namespace components::catalog {
 
-    // Pre-allocated batch of OIDs handed to the planner before DDL logical rewrite.
-    // The DDL allocation round (executor_t::allocate_oids_inline -> node_allocate_oids_t
-    // -> manager_disk_t::allocate_oids_batch) fills it, then planner_t::create_plan
-    // consumes it while building pg_class / pg_attribute / pg_depend rows without any
-    // async disk access inside the rewrite.
+    // Pre-allocated batch of OIDs handed to the planner before DDL logical rewrite. The DDL
+    // allocation round (executor_t::allocate_oids_inline -> node_allocate_oids_t ->
+    // manager_disk_t::allocate_oids_batch) fills it; planner_t::create_plan then consumes it while
+    // building pg_class / pg_attribute / pg_depend rows without async disk access in the rewrite.
     //
-    // WHY EXHAUSTION IS NOT GUARDED BY assert ANY MORE.
-    // The batch used to be filled straight from the allocation round's return value, and
-    // that round collapsed BOTH of its failures into an EMPTY vector; nothing compared
-    // what came back against the demand compute_oid_demand had just computed. Empty batch
-    // plus an assert-only guard means that under NDEBUG allocate()/peek() read PAST THE END
-    // of the vector, and the rewrite then stamps pg_class / pg_attribute / pg_depend with
-    // whatever that read produced: a garbage identity in a DURABLE catalog, which survives
-    // restart. The state is REACHABLE, so its guard has to survive NDEBUG too.
+    // WHY EXHAUSTION IS NOT GUARDED BY assert. The round collapses BOTH of its failures into an
+    // EMPTY vector, and nothing compares what came back against the demand compute_oid_demand had
+    // just computed. Under an assert-only guard NDEBUG lets allocate()/peek() read PAST THE END of
+    // the vector, and the rewrite stamps pg_class / pg_attribute / pg_depend with whatever that
+    // read produced: a garbage identity in a DURABLE catalog, surviving restart. The state is
+    // REACHABLE, so its guard has to survive NDEBUG too. Two halves answer it, neither a fallback
+    // (rule 6): make() is the ONE place the batch is checked against the demand it was requested
+    // for (a short round is a refusal, not a smaller batch), and allocate()/peek() on an exhausted
+    // batch answer INVALID_OID -- the tree-wide "no identity" sentinel rather than a
+    // plausible-looking number -- and latch a STICKY overrun flag, which planner_t::create_plan
+    // turns into a refused statement that THROWS THE HALF-STAMPED TREE AWAY. The second half is not
+    // duplication: it covers a DDL rewrite that consumes MORE than compute_oid_demand predicted,
+    // and the two counts live in different files (planner.cpp's compute_oid_demand vs the
+    // rewrite_* functions plus ddl_metadata_builder.cpp), kept equal by hand.
     //
-    // The answer here is in two halves, and neither of them is a fallback (rule 6):
-    //   * make() is the ONE place the batch is checked against the demand it was requested
-    //     for. A short round is a refusal, not a smaller batch;
-    //   * allocate()/peek() on an exhausted batch answer INVALID_OID -- defined, and the
-    //     tree-wide "no identity" sentinel rather than a plausible-looking number -- and
-    //     raise a STICKY overrun flag. planner_t::create_plan turns that flag into a refused
-    //     statement and THROWS THE HALF-STAMPED TREE AWAY. Nothing built from an exhausted
-    //     batch is ever executed, so no row reaches the catalog.
-    // The second half is not duplication of the first: the first covers a short round, the
-    // second covers a DDL rewrite that consumes more than compute_oid_demand predicted --
-    // the two counts live in different files (planner.cpp's compute_oid_demand vs the
-    // rewrite_* functions plus ddl_metadata_builder.cpp) and are kept equal by hand.
-    //
-    // THE FLAG HAS OTHER READERS, AND EVERY CONSUMER MUST BE ONE. Three operators mint a
-    // single identity of their own, outside the planner's round entirely -- pg_proc
-    // (operator_register_udf_t), pg_cast (operator_register_cast_t) and pg_attribute
-    // (operator_alter_column_add_t). They spent allocate() unchecked and wrote the row with
-    // the INVALID_OID it answered, which is the exact damage this class exists to prevent,
-    // only announced as success. They now refuse through the one shared reader in
-    // components/physical_plan/operators/single_oid_round.hpp. A NEW caller of
+    // THE FLAG HAS OTHER READERS, AND EVERY CONSUMER MUST BE ONE: pg_proc (operator_register_udf_t),
+    // pg_cast (operator_register_cast_t) and pg_attribute (operator_alter_column_add_t) mint a
+    // single identity outside the planner's round entirely, and refuse through the one shared
+    // reader, components/physical_plan/operators/single_oid_round.hpp. A NEW caller of
     // allocate()/peek() that does not read overrun() reopens this hole.
     struct oid_batch_t {
-        // Checked construction. `need` is compute_oid_demand's answer for the node about to
-        // be rewritten; `oids` is what the allocation round delivered.
+        // Checked construction. `need` is compute_oid_demand's answer for the node about to be
+        // rewritten; `oids` is what the allocation round delivered.
         //
-        // need == 0 IS LEGAL AND IS A SUCCESS. DROP (except DROP INDEX's own rewrite, which
-        // also consumes nothing), ALTER TABLE, and CREATE MATERIALIZED VIEW whose schema
-        // derivation produced no inferred columns all rewrite without consuming a single OID,
-        // and their caller never runs an allocation round at all. An empty batch for an empty
-        // demand is the correct -- and the only -- shape for them.
+        // need == 0 IS LEGAL AND IS A SUCCESS: DROP (except DROP INDEX's own rewrite), ALTER TABLE
+        // and CREATE MATERIALIZED VIEW whose schema derivation inferred no columns all rewrite
+        // without consuming an OID, and never run an allocation round at all.
         [[nodiscard]] static core::result_wrapper_t<oid_batch_t>
         make(std::pmr::memory_resource* resource, std::vector<oid_t> oids, std::size_t need) {
             if (oids.size() < need) {
@@ -90,7 +77,7 @@ namespace components::catalog {
         // Inspect the next OID without consuming it. Used by the planner to mirror the
         // about-to-be-allocated table_oid onto the cc node for the physical plan generator.
         // Non-const because exhaustion latches overrun() here exactly as in allocate():
-        // a peek past the end used to be the same out-of-bounds read.
+        // a peek past the end is the same out-of-bounds read.
         oid_t peek() noexcept {
             if (empty()) {
                 overrun_ = true;

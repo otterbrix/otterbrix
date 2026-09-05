@@ -30,11 +30,11 @@ namespace components::table::storage {
         file_buffer_t(file_buffer_t& source, file_buffer_type type);
         virtual ~file_buffer_t();
 
-        // L1 (deepest link of the durability chain). Both used to be `void` and dropped the
-        // bool the file handle returns, so EVERY data-block write in the system was
-        // unobserved: a short write, an ENOSPC or an EIO reached nobody, and the checkpoint
-        // that followed committed a root over blocks that were never laid down. They now
-        // report the handle's answer, and every caller up to write_header() reads it.
+        // The deepest link of the durability chain. `void` here — dropping the bool the file
+        // handle returns — leaves EVERY data-block write in the system unobserved: a short
+        // write, an ENOSPC or an EIO reaches nobody, and the checkpoint that follows commits a
+        // root over blocks that were never laid down. Both report the handle's answer, and
+        // every caller up to write_header() reads it.
         [[nodiscard]] bool read(core::filesystem::file_handle_t& handle, uint64_t location);
         [[nodiscard]] bool write(core::filesystem::file_handle_t& handle, uint64_t location);
 

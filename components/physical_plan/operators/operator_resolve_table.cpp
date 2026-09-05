@@ -286,15 +286,12 @@ namespace components::operators {
                 std::unordered_map<std::string, cc_candidate_t> latest_any;
 
                 for (auto& chunk : cc_batches) {
-                    // A CHUNK NARROWER THAN pg_computed_column'S SCHEMA IS A DIFFERENT
-                    // ANSWER, NOT A MISS. The read above was issued with an empty
-                    // projection ("all columns"), so the reply's width is the width of
-                    // the pg_computed_column storage itself; every row this build writes
-                    // has all 7 columns (build_pg_computed_column_row). Skipping a
-                    // narrow chunk dropped EVERY variant it carried — the fields simply
-                    // vanished from the resolved schema, silently. The threshold is the
-                    // largest ordinal read below: attrefcount (6). Same refusal, same
-                    // reason, as the pg_attribute floor in the static-schema branch.
+                    // A CHUNK NARROWER THAN pg_computed_column'S SCHEMA IS A DIFFERENT ANSWER, NOT A MISS. The
+                    // read above was issued with an empty projection ("all columns"), so the reply's width is the
+                    // width of the pg_computed_column storage itself; every row this build writes has all 7
+                    // columns (build_pg_computed_column_row). Skipping a narrow chunk drops EVERY variant it
+                    // carries — the fields simply vanish from the resolved schema, silently. The threshold is the
+                    // largest ordinal read below: attrefcount (6).
                     if (chunk.column_count() <= catalog::pg_computed_column_col::attrefcount) {
                         std::string msg = "table resolution: pg_computed_column answered with ";
                         msg += std::to_string(chunk.column_count());
@@ -362,46 +359,36 @@ namespace components::operators {
                 auto storage_types_r = co_await std::move(stf);
                 if (storage_types_r.has_error()) {
                     // Every column below is bound to a physical slot BY NAME against this
-                    // list. A refused read used to arrive as an EMPTY list, which binds
-                    // nothing and leaves every chunk_position at -1 — a resolved schema
-                    // that describes no storage at all, published as this table's shape.
+                    // list. A refused read arriving as an EMPTY list would bind nothing and
+                    // leave every chunk_position at -1 — a resolved schema that describes no
+                    // storage at all, published as this table's shape.
                     set_error(storage_types_r.error());
                     co_return;
                 }
                 auto& storage_types = storage_types_r.value();
-                // Map each resolved variant to its physical storage column by
-                // (name, type): with multi-type fields several storage columns share
-                // a name, so the type disambiguates. `claimed` prevents two variants
-                // from binding to the same physical column.
+                // Map each resolved variant to its physical storage column by (name, type): with multi-type
+                // fields several storage columns share a name, so the type disambiguates. `claimed` prevents two
+                // variants from binding to the same physical column.
                 //
-                // NO first-unclaimed GUESS UNDER AMBIGUITY — and the type comparison
-                // is a ladder, because "the type" has two precisions. The variant key
-                // in pg_computed_column is (attname, atttypid, atttypspec): two
-                // variants of one name may share the OUTER type enum and differ only
-                // in the extension (a DECIMAL's width/scale, a STRUCT's shape), and
-                // attoid order does not have to match storage column order — so an
-                // enum-only comparison could bind variant A to variant B's bytes in
+                // NO first-unclaimed GUESS UNDER AMBIGUITY — and the type comparison is a ladder, because "the
+                // type" has two precisions. The variant key in pg_computed_column is (attname, atttypid,
+                // atttypspec): two variants of one name may share the OUTER type enum and differ only in the
+                // extension (a DECIMAL's width/scale, a STRUCT's shape), and attoid order does not have to match
+                // storage column order — so an enum-only comparison could bind variant A to variant B's bytes in
                 // silence. The ladder, per variant:
-                //   1. exactly ONE unclaimed column matches the FULL type (extension
-                //      included) — that is the column; bind it.
-                //   2. several match the full type — indistinguishable duplicates
-                //      (storage keeps tombstoned columns until VACUUM); refuse.
-                //   3. none match fully but exactly ONE shares the outer enum — the
-                //      two sides merely normalised the extension differently
-                //      (measured on this branch: a NUMERIC-typed field registers the
-                //      encoded spec while the storage column materialises under its
-                //      own reading of the same value); bind it.
-                //   4. several share the outer enum and none the full type — the
-                //      extension was the only thing that could say which one is
-                //      meant, and it said none; the old code took the FIRST by
-                //      storage order and every read through that binding reinterpreted
-                //      the stored bytes in silence. Refuse.
-                //   5. no type overlap at all: a SOLE name candidate is bound (it was
-                //      written by the same statement that wrote the catalog row —
-                //      refusing it made the column unreadable one statement after a
-                //      successful INSERT); several name candidates refuse; none keeps
-                //      chunk_position = -1, the legal not-yet-materialised window the
-                //      readers answer NULL for.
+                //   1. exactly ONE unclaimed column matches the FULL type (extension included) — bind it.
+                //   2. several match the full type — indistinguishable duplicates (storage keeps tombstoned
+                //      columns until VACUUM); refuse.
+                //   3. none match fully but exactly ONE shares the outer enum — the two sides merely normalised
+                //      the extension differently (measured: a NUMERIC-typed field registers the encoded spec
+                //      while the storage column materialises under its own reading of the same value); bind it.
+                //   4. several share the outer enum and none the full type — the extension was the only thing
+                //      that could say which one is meant, and it said none; taking the FIRST by storage order
+                //      would reinterpret the stored bytes in silence on every read through that binding. Refuse.
+                //   5. no type overlap at all: a SOLE name candidate is bound (it was written by the same
+                //      statement that wrote the catalog row — refusing it makes the column unreadable one
+                //      statement after a successful INSERT); several name candidates refuse; none keeps
+                //      chunk_position = -1, the legal not-yet-materialised window the readers answer NULL for.
                 std::vector<bool> claimed(storage_types.size(), false);
                 for (auto& row : rows) {
                     types::complex_logical_type row_type{types::logical_type::UNKNOWN};
@@ -479,14 +466,12 @@ namespace components::operators {
                     }
                 }
             } else if (relkind != catalog::relkind::view) {
-                // relkind='r', 'm' (matview), and other static-schema kinds: scan
-                // pg_attribute. Layout: [0=attoid, 1=attrelid, 2=attname, 3=atttypid,
-                // 4=attnum, 5=attnotnull, 6=atthasdefault, 7=attisdropped,
-                // 8=atttypspec, 9=attdefspec].
+                // relkind='r', 'm' (matview), and other static-schema kinds: scan pg_attribute. Layout:
+                // [0=attoid, 1=attrelid, 2=attname, 3=atttypid, 4=attnum, 5=attnotnull, 6=atthasdefault,
+                // 7=attisdropped, 8=atttypspec, 9=attdefspec].
                 //
-                // A view has no pg_attribute (its schema is derived from the body SQL
-                // on expansion), so `rows` stays empty there; view_sql carries the
-                // body for the view-rewrite step.
+                // A view has no pg_attribute (its schema is derived from the body SQL on expansion), so `rows`
+                // stays empty there; view_sql carries the body for the view-rewrite step.
                 std::pmr::vector<std::uint64_t> pa_keys(resource_);
                 pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
                 auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
@@ -504,17 +489,13 @@ namespace components::operators {
                 auto& pa_batches = pa_batches_r.value();
 
                 for (auto& chunk : pa_batches) {
-                    // A CHUNK NARROWER THAN pg_attribute'S SCHEMA IS A DIFFERENT ANSWER,
-                    // NOT A MISS. The read above was issued with an empty projection
-                    // ("all columns"), so the reply's width is the width of the
-                    // pg_attribute storage itself; every row this build writes has all
-                    // 12 columns (build_pg_attribute_row). Tolerating a narrow chunk
-                    // did worse than dropping rows: the reads below stayed inside the
-                    // chunk, but the two MVCC visibility gates were SKIPPED — a column
-                    // added after this snapshot, or dropped before it, was resolved as
-                    // visible, silently. The threshold is the largest ordinal read
-                    // below: dropped_at_commit_id (11). Same refusal, same reason, as
-                    // the narrow-chunk floors in operator_resolve_constraint.
+                    // A CHUNK NARROWER THAN pg_attribute'S SCHEMA IS A DIFFERENT ANSWER, NOT A MISS. The read
+                    // above was issued with an empty projection ("all columns"), so the reply's width is the width
+                    // of the pg_attribute storage itself; every row this build writes has all 12 columns
+                    // (build_pg_attribute_row). Tolerating a narrow chunk does worse than dropping rows: the reads
+                    // below stay inside the chunk, but the two MVCC visibility gates are SKIPPED — a column added
+                    // after this snapshot, or dropped before it, resolves as visible, silently. The threshold is
+                    // the largest ordinal read below: dropped_at_commit_id (11).
                     if (chunk.column_count() <= catalog::pg_attribute_col::dropped_at_commit_id) {
                         std::string msg = "table resolution: pg_attribute answered with ";
                         msg += std::to_string(chunk.column_count());
@@ -534,9 +515,9 @@ namespace components::operators {
                         if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i)) {
                             continue;
                         }
-                        // MVCC visibility gates — unconditional now that the width is
-                        // guaranteed above; only a NULL cell (a pre-backfill row, whose
-                        // insert_id already filtered it correctly) is passed through.
+                        // MVCC visibility gates — unconditional, the width being guaranteed
+                        // above; only a NULL cell (a pre-backfill row, whose insert_id
+                        // already filtered it correctly) is passed through.
                         if (!chunk.is_null(10, i)) {
                             auto added_at = static_cast<uint64_t>(chunk.get_value<std::int64_t>(10, i));
                             if (added_at > snapshot_start_time) {

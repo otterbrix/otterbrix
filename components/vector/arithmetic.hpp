@@ -88,12 +88,11 @@ namespace components::vector {
 
     // Compute binary arithmetic on two vectors (element-wise).
     //
-    // An OPERAND PAIR ARITHMETIC CANNOT TYPE IS A REFUSAL. What stood here answered a
-    // vector of logical_type::NA with every row NULL — a success-shaped NULL for an
-    // operation that has no meaning: STRING_LITERAL + BIGINT and BOOLEAN + BOOLEAN both
-    // came back as "NA, all null", indistinguishable from real SQL NULLs. This is the
-    // vector-level twin of the logical_value_t defect of the same entry, where the same
-    // pair threw out of an error-channel function instead.
+    // An OPERAND PAIR ARITHMETIC CANNOT TYPE IS A REFUSAL, never a vector of
+    // logical_type::NA with every row NULL — that is a success-shaped NULL for an operation
+    // that has no meaning, and it makes STRING_LITERAL + BIGINT and BOOLEAN + BOOLEAN come
+    // back as "NA, all null", indistinguishable from real SQL NULLs. This is the vector-level
+    // twin of the same refusal in logical_value_t.
     // An operand whose TYPE is NA is not a mismatch: an NA-typed vector is this engine's
     // untyped-NULL column, and SQL says NULL + 1 is NULL. That case still answers NA.
     core::result_wrapper_t<vector_t> compute_binary_arithmetic(std::pmr::memory_resource* resource,

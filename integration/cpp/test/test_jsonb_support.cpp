@@ -1,10 +1,9 @@
 // JSONB support suite.
 //
-// otterbrix has NO json/jsonb data type, no binary json storage, no SQL/JSON
-// path engine and no SQL/JSON functions (see the sql_json_standard_absent case
-// at the bottom, which pins that). What it *does* have — added by PR #499 with
-// zero grammar changes, purely in the transformer — is nine postgres-spelled
-// jsonb operators that are name-mangling over *flattened columns*:
+// otterbrix has NO json/jsonb type, no binary json storage and no SQL/JSON path engine
+// (pinned by sql_json_standard_absent at the bottom). What it has instead — PR #499, no
+// grammar changes, transformer only — is nine postgres-spelled jsonb operators that are
+// name-mangling over *flattened columns*:
 //
 //   CREATE TABLE t ();                                 -- "computing" table, relkind 'g'
 //   INSERT INTO t (id, a.b, a.c, x) VALUES (1,10,20,'p');
@@ -16,69 +15,36 @@
 //   existence (predicate): ?    ?|    ?&     .. per-row "key present and not null"
 //   delete  (projection) : -    #-           .. project every column except the named subtree
 //
-// Paths are spelled either dotted ('a.b') or as a postgres text array ('{a,b}').
-// Keys are case-sensitive; a path that no column matches is a hard ERROR, not NULL.
+// Paths are dotted ('a.b') or a postgres text array ('{a,b}'); keys are case-sensitive; a path
+// that no column matches is a hard ERROR, not NULL.
 //
-// The cases below are split in two:
-//   * SUPPORTED  — value-exact pins of behavior that is correct and worth keeping.
-//   * BUG        — characterization pins of behavior that is WRONG today. Each one
-//                  asserts what the engine currently does and states what it should
-//                  do in a "correct:" comment, so a fix flips a visible assertion
-//                  instead of silently changing an untested result.
+// Cases are either SUPPORTED (value-exact pins of correct behavior) or BUG (pins of behavior
+// that is wrong today, each keeping the intended result in a "correct:" comment so a fix flips
+// a visible assertion instead of silently changing an untested result).
 //
-// REGRESSION, found when this suite was re-enabled (it was commented out of
-// the build while the engine moved on). Commit c59d95e8 ("Resolve/Validate
-// refactor", #622) refuses every TABLE-VALUED operator (-> #> - #-) in the
-// select list with "<op> is not valid in a value position". The validator's
-// own comment claims "the node-level pass expands them against the schema
-// before any expression reaches here" — but no such pass runs on this path any
-// more, so the refusal fires on exactly the queries the feature was built for.
-// The affected cases below now pin the refusal as BUG characterization, each
-// keeping its old expected values in a "correct:" comment. Alongside it, four
-// smaller behavior changes are re-pinned where they surface:
-//   * a string literal no longer coerces against an integer leaf — the
-//     comparison is refused ("no type is common to every side of eq");
-//   * a BARE cast over a navigation is refused ("cast spelled on a column
-//     reference") while the same cast inside arithmetic executes;
-//   * a narrowed projection over a view's navigated alias regressed back to
-//     "path not found" (see view_over_navigation);
-//   * INSERT ... SELECT now demands an alias on every projected expression,
-//     and navigation became a legal UPDATE SET source.
-// Scalar navigation (->> #>>), existence (? ?| ?&) and WHERE-side predicates
-// survived and their pins below still hold.
+// REGRESSION c59d95e8 ("Resolve/Validate refactor", #622) refuses every TABLE-VALUED operator
+// (-> #> - #-) in the select list with "<op> is not valid in a value position". The validator
+// expects a node-level pass to expand them against the schema first, but no such pass runs on
+// this path any more, so the refusal fires on exactly the queries the feature was built for.
+// Those cases are pinned as BUG. Four smaller changes re-pinned alongside them: a string
+// literal no longer coerces against an integer leaf ("no type is common to every side of eq");
+// a BARE cast over a navigation is refused while the same cast inside arithmetic executes; a
+// narrowed projection over a view's navigated alias regressed to "path not found" (see
+// view_over_navigation); INSERT ... SELECT demands an alias on every projected expression, and
+// navigation became a legal UPDATE SET source. Scalar navigation (->> #>>) and existence
+// (? ?| ?&) survived and their pins still hold.
 //
-// NOT PINNABLE — these SEGFAULT the process, so they cannot live in a test binary.
-// Verified on this commit; kept here as the repro list:
+// NOT PINNABLE — this SEGFAULTs the process, so it cannot live in a test binary; kept as the
+// repro:
 //   SELECT CASE WHEN t #>> 'a.b' = 10 THEN 1 ELSE 0 END -- only when the leaf has a NULL row;
-//     FROM t;                                           --   reproduces on plain columns too (general 3VL bug)
+//     FROM t;                                           --   reproduces on plain columns too
+//                                                       --   (general 3VL bug)
 //
-// FIXED (were crashes/wrong results, now pinned as correct below):
-//   [A] get_str_value hardening — a cast key is transparent, a NULL key is a clean
-//       error, and neither `t -> (1::bool)` nor `t ->> NULL` crashes any more.
-//   [B] one path<->column codec (components/expressions/jsonb_path.hpp) — the split
-//       (operand -> segments) and join (segments -> "a/b" name) live in one place,
-//       shared by navigation, existence and the INSERT flattener.
-//   [G] INSERT target flattening keeps every segment (a.b.c -> "a/b/c") and renders
-//       a subscript target (arr[0] -> "arr/0") instead of crashing on it.
-//   [C] delete accepts the text-array form (t - '{a,b}') and removes every listed
-//       subtree, not just a single key.
-//   [E] existence over a missing key is absent (false), not a hard error: a truly
-//       absent key folds to constant false and never poisons a '?|' any-of.
-//   [D] table-valued expand/delete are well-behaved: expanding a path that matches
-//       no column is a "path not found" error (not a silently vanished select
-//       item); inside a join expand and delete resolve against the side the
-//       operator named (not blindly across both, which was ambiguous); and under
-//       GROUP BY / an aggregate they are a clean rejection, not a segfault (the
-//       group branch never expands them).
-//   [F] a cast over a scalar navigation used in arithmetic ((t #>> 'a.c')::bigint
-//       + 1) reads the navigated column per row, instead of folding the navigation
-//       into an uninitialized constant parameter (per-run garbage on every row).
-//   [H] a NULL written to a not-yet-existing column of a computing table is an
-//       absent key: it carries no type, so the column is dropped after schema
-//       reconciliation instead of reaching storage as an all-NA column (segfault).
-//   [I] INSERT ... SELECT lands each projected value in its target column: the
-//       target names are stamped onto the streamed columns before the name-based
-//       append, instead of appending a row where the plain columns came out NULL.
+// Two invariants the pins below depend on: the path<->column codec lives in exactly one place,
+// components/expressions/jsonb_path.hpp, shared by navigation, existence and the INSERT
+// flattener; and a NULL written to a not-yet-existing column of a computing table is an absent
+// key — it carries no type, so the column is dropped rather than reaching storage as an all-NA
+// column (which segfaulted).
 
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -536,11 +502,10 @@ TEST_CASE("integration::cpp::test_jsonb_support::view_over_navigation") {
     CHECK(i64_set(cur, "ab") == std::set<int64_t>{10, 30, 50});
     CHECK(is_null(cur, "ab", 3));
 
-    // REGRESSION: a narrowed projection over the view's NAVIGATED alias fails
-    // again — "path: 'ab' was not found". It had been fixed (a narrowed
-    // projection used to be silently ignored, then worked); the general case
-    // over plain columns is still pinned green in test_view_expansion.cpp, so
-    // the relapse is specific to an alias whose source is a navigation.
+    // characterization: a narrowed projection over the view's NAVIGATED alias is
+    // refused — "path: 'ab' was not found". The same shape over plain columns is
+    // pinned green in test_view_expansion.cpp, so the defect is specific to an
+    // alias whose source is a navigation.
     // correct: one column {ab}, 4 rows.
     auto narrowed = exec(d, "SELECT ab FROM jp.v;");
     REQUIRE_FALSE(narrowed->is_success());

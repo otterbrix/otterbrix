@@ -1,4 +1,4 @@
-// T3 smoke tests: the fault-injection seam can force (1) a write failure after N writes,
+// Smoke tests for the fault-injection seam: it can force (1) a write failure after N writes,
 // (2) a torn write, (3) loss of everything after the last fsync (kill -9 semantics), and
 // the killed state can be REOPENED through the normal load path — no hand-laid files.
 
@@ -73,14 +73,12 @@ namespace {
         }
     }
 
-    // Same, for the APPEND path. Rule 19 closed the last dropped write result on the
-    // write-through leg (column_data_t::transition_to_disk used to discard
-    // partial_block_manager_t::flush_partial_blocks), so an append made while the device is
-    // failing now REPORTS io_error instead of returning success over a block that never
-    // reached the file. That is the fix working, and the two cases below stand INSIDE that
-    // window on purpose: they assert what the DURABLE HEADER does, not that an append survives
-    // a dead disk. They use this variant so the append's honest failure is observed rather than
-    // aborting the case.
+    // Same, for the APPEND path. An append made while the device is failing REPORTS io_error —
+    // column_data_t::transition_to_disk forwards partial_block_manager_t::flush_partial_blocks
+    // rather than returning success over a block that never reached the file. The two cases
+    // below stand INSIDE that window on purpose: they assert what the DURABLE HEADER does, not
+    // that an append survives a dead disk. They use this variant so the append's honest failure
+    // is observed rather than aborting the case.
     bool try_append_rows(data_table_t& table, fault_env_t& env, uint64_t start, uint64_t count) {
         auto types = table.copy_types();
         uint64_t offset = 0;
@@ -123,8 +121,8 @@ namespace {
         tstorage::database_header_t header;
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
-        // H1: write_header now writes AND fsyncs the header slot and reports both. That
-        // result IS whether the checkpoint happened, so it is this helper's answer.
+        // write_header writes AND fsyncs the header slot and reports both. That result IS
+        // whether the checkpoint happened, so it is this helper's answer.
         if (bm.write_header(header).has_error()) {
             return false;
         }

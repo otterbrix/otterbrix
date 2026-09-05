@@ -38,8 +38,8 @@ namespace {
     using namespace services::wal;
 
     // ONE resource for the whole file. wal_page_reader_t / wal_page_writer_t take it
-    // explicitly now: the reader used to reach for std::pmr::get_default_resource() (rule 14)
-    // and neither could build the diagnostics their new error channel carries without one.
+    // explicitly: reaching for std::pmr::get_default_resource() is what rule 14 forbids, and
+    // neither could build the diagnostics their error channel carries without one.
     core::pmr::otterbrix_resource test_resource;
 
     // Helper to encode a COMMIT record into a binary buffer.

@@ -127,17 +127,16 @@ TEST_CASE("test_column_oid_assignment") {
 }
 
 // 9. OIDs are immutable after first non-INVALID assignment: re-stamping the same value is
-//    idempotent. For table_id::set_oid a DIFFERENT value now ABORTS in every build —
-//    there is no exception channel under rule 2, and the pre-fix "assert in debug,
-//    silent no-op under NDEBUG" let two identities of one table diverge unseen (the
-//    header even promised a std::logic_error nobody threw). The abort itself is not
+//    idempotent. For table_id::set_oid a DIFFERENT value ABORTS in every build — there is
+//    no exception channel under rule 2, and an "assert in debug, silent no-op under
+//    NDEBUG" lets two identities of one table diverge unseen. The abort itself is not
 //    exercised here — a death test would take the whole binary with it; only the legal
 //    idempotent path is. column_definition_t::set_attoid (components/table — outside
 //    this component) answers the same disagreement, but deliberately not the same way:
 //    it REFUSES the re-stamp, keeps the FIRST value authoritative, and prints the
-//    disagreement to stderr (components/table/column_definition.cpp:91-116). No assert
-//    stands there any more either. It must not abort, because those stamps arrive FROM
-//    DISK on the catalog-load and bootstrap paths, so aborting would make a database
+//    disagreement to stderr (components/table/column_definition.cpp). It must not abort,
+//    because those stamps arrive FROM DISK on the catalog-load and bootstrap paths, so
+//    aborting would make a database
 //    whose two identity sources disagree unopenable in exactly the build a developer
 //    would debug it in — rule 6 is loud, not fatal. Nothing stamps a table_id from a
 //    disk row while opening the database, which is why the sibling above can abort.

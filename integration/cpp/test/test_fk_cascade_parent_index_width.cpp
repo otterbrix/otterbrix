@@ -15,23 +15,20 @@
 // column array — a type, and then a whole vector_t, taken from whatever follows
 // it in memory.
 //
-// The CHILD side of the same operator was given a width guard by the previous
-// wave ("the child row batch has N column(s), too few to hold referencing column
-// at position P"), on the argument that a reply too narrow to hold the column is
-// a shape the operator did not ask for. The parent side reads the same kind of
-// index into the same kind of chunk and was left as it was — and a guard
-// standing on one side of a pair hides what happens on the other: the child
-// index is refused with a sentence, the parent index is read out of bounds.
+// The CHILD side of the same operator carries a width guard ("the child row batch
+// has N column(s), too few to hold referencing column at position P"). A guard
+// standing on one side of a pair hides what happens on the other: the child index
+// is refused with a sentence, the parent index is read out of bounds.
 //
 // The two facts about par_indices that ARE checked (`absent`, and an empty list)
-// are checked immediately above this loop, so this case is neither of them: it
-// is an index that is a number, and is not a position in the row it addresses.
+// are checked immediately above this loop, so this case is neither of them: it is
+// an index that is a number and is not a position in the row it addresses.
 //
 // PATH NOT NAMED FROM SQL. parent_col_indices is stamped by enrich against the
 // parent's resolved schema, so a live plan agrees with the rows the DELETE
-// matched. This is the floor under that agreement, and it is proven by driving
-// the operator directly: everything below the guard would have to run on a
-// column that is not there.
+// matched. This is the floor under that agreement, proven by driving the operator
+// directly: everything below the guard would have to run on a column that is not
+// there.
 // ===========================================================================
 
 #include <catch2/catch_test_macros.hpp>

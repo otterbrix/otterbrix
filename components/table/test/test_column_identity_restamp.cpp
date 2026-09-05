@@ -1,6 +1,6 @@
 // column_definition_t::set_attoid is reached from the CATALOG LOAD and BOOTSTRAP paths --
-// services/disk/manager_disk_bootstrap.cpp:1339, services/disk/manager_disk_io.cpp:269,
-// services/disk/agent_disk.cpp:386 and :636 -- i.e. it is stamped from bytes on disk, not only
+// services/disk/manager_disk_bootstrap.cpp, services/disk/manager_disk_io.cpp,
+// services/disk/agent_disk.cpp -- i.e. it is stamped from bytes on disk, not only
 // from freshly planned DDL. A disagreement between two identity sources is therefore INPUT,
 // and the answer has to be the same in every build: refuse the re-stamp, keep the first stamp,
 // and say so. An abort would make a database with a disagreeing catalog unopenable, and an

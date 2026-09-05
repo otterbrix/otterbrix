@@ -153,7 +153,7 @@ TEST_CASE("single_file_block_manager: free list reuse") {
     bm.mark_as_free(id1);
     REQUIRE(bm.free_blocks() == 1);
 
-    // A7.2 moved the moment of reuse, and this case had to follow it. A release names a block
+    // A release names a block
     // the DURABLE root may still point at (compact() releases exactly the outgoing collection,
     // which is what the durable root describes), so the block is quarantined rather than handed
     // straight back: the next allocation extends the file instead...
@@ -162,9 +162,9 @@ TEST_CASE("single_file_block_manager: free list reuse") {
     REQUIRE(during_flight == 3);
     REQUIRE(bm.free_blocks() == 1); // withheld, NOT lost
 
-    // ...and the durable header is what turns the release into free space. That is the whole of
-    // A7.2: the promotion point is the header write's success, so an id released in a round
-    // cannot be reissued inside that same round.
+    // ...and the durable header is what turns the release into free space: the promotion point
+    // is the header write's success, so an id released in a round cannot be reissued inside
+    // that same round.
     auto free_ptr = bm.serialize_free_list();
     REQUIRE_FALSE(free_ptr.has_error());
     database_header_t promoting_header;
@@ -338,7 +338,7 @@ TEST_CASE("single_file_block_manager: corrupt block payload -> data_corruption (
         }
         REQUIRE_FALSE(bm.write(*blk, block_id).has_error()); // checksum_and_write stores CRC in the 8-byte header slot
 
-        // A7.6: commit a header. Without one the reopened file is "blocks on disk, root
+        // Commit a header. Without one the reopened file is "blocks on disk, root
         // still the initial iteration-0 header" — indistinguishable from a first-checkpoint
         // crash or a corrupted-slot fallback, and load_existing_database now refuses it
         // loudly. This test measures read()'s error channel, not the open gate, so give the
@@ -390,10 +390,10 @@ TEST_CASE("single_file_block_manager: corrupt block payload -> data_corruption (
     std::remove(path.c_str());
 }
 
-// A7.5: a LOAD never creates the file. load_existing_database used to open with
-// FILE_CREATE, so probing a missing .otbx silently manufactured a 0-byte file — the probe
-// mutated the state it was probing. Now a missing file is its own loud refusal and the
-// filesystem is left exactly as it was: nothing is created.
+// A LOAD never creates the file. Opening with FILE_CREATE would have a probe of a missing
+// .otbx silently manufacture a 0-byte file — the probe mutating the state it was probing. A
+// missing file is its own loud refusal and the filesystem is left exactly as it was: nothing
+// is created.
 TEST_CASE("single_file_block_manager: load missing file -> io_error, nothing created") {
     using namespace components::table::storage;
     const std::string path = corrupt_db_path("missing");
@@ -413,8 +413,8 @@ TEST_CASE("single_file_block_manager: load missing file -> io_error, nothing cre
 }
 
 // File open/header IO failure -> io_error.
-// A zero-length file (external truncation, or the droppings of the pre-A7.5 FILE_CREATE
-// probe) opens but is refused before the main-header read: it is not a database and is
+// A zero-length file (external truncation, or a stray create) opens but is refused before
+// the main-header read: it is not a database and is
 // never silently accepted as an empty table -> io_error with its own distinct message.
 TEST_CASE("single_file_block_manager: load empty file -> io_error (error value)") {
     using namespace components::table::storage;
@@ -511,7 +511,7 @@ TEST_CASE("buffer_pool/standard_buffer_manager: set_memory_limit success returns
     }
 }
 
-// --- M7: the free list is DISK BYTES, so its invariants belong on the error channel ------
+// --- The free list is DISK BYTES, so its invariants belong on the error channel ----------
 //
 // free_block_id() guarded "the id I am about to hand out has no live registry handle" with a
 // bare assert(). The free list it draws from is deserialized straight out of the .otbx, so
@@ -649,18 +649,16 @@ TEST_CASE("single_file_block_manager: a free list naming a transient-domain id i
 
 // --- Rule 2 / rule 19: the block allocation size is DISK BYTES too --------------------
 //
-// block_manager_t::set_block_allocation_size used to be a `void` guarded by a `throw
-// std::runtime_error` on a condition that could never hold (`block_alloc_size_ ==
-// INVALID_INDEX`, while the constructor always sets a real size). So it validated NOTHING —
-// and its one caller is load_existing_database, feeding it `active.block_alloc_size` read
-// straight out of the header sector.
+// The one caller of block_manager_t::set_block_allocation_size is load_existing_database,
+// feeding it `active.block_alloc_size` read straight out of the header sector — untrusted
+// disk bytes, so the validation has to happen here.
 //
 // A degenerate value there is not theoretical: block_size() is `block_alloc_size_ -
 // DEFAULT_BLOCK_HEADER_SIZE`, an UNSIGNED subtraction, so any size <= 8 wraps to ~1.8e19.
 // metadata_manager_t then carves 64 sub-blocks out of that, column loads compare segment
 // sizes against it, and every one of those reads runs off the end of a 256 KiB buffer. The
-// throw was the wrong shape as well: this runs on the open path, where an exception makes
-// the database permanently unopenable (rules 2/6 — loud, but not fatal).
+// refusal rides the return rather than a throw: this runs on the open path, where an
+// exception makes the database permanently unopenable (rules 2/6 — loud, but not fatal).
 TEST_CASE("block_manager: a degenerate block allocation size is refused, not adopted") {
     using namespace components::table::storage;
     const std::string path = corrupt_db_path("alloc_size");
@@ -714,24 +712,23 @@ TEST_CASE("block_manager: create_new_database refuses an unusable block allocati
 }
 
 // ---------------------------------------------------------------------------------------
-// ITEM C — unregister_block(block_handle_t&) must check IDENTITY, not just the id.
+// unregister_block(block_handle_t&) must check IDENTITY, not just the id.
 //
-// The registry is keyed by block id, and the handle destructor used to erase blocks_[id]
-// unconditionally. That is only safe while an id is never re-registered between a stale
-// handle's release and its destruction — which is exactly what A7.2/A7.3 made the NORMAL
-// case: data_table_t::compact mark_as_free's + unregister_block's the outgoing collection's
-// ids while its segments still own handles for them, the ids go to pending_free_, a
-// committed header promotes them to reusable_, and a later round hands one back out and
-// register_block()s a FRESH handle for it.
+// The registry is keyed by block id, so a handle destructor that erases blocks_[id]
+// unconditionally is only safe while an id is never re-registered between a stale handle's
+// release and its destruction — which is exactly what shadow paging makes the NORMAL case:
+// data_table_t::compact mark_as_free's + unregister_block's the outgoing collection's ids while
+// its segments still own handles for them, the ids go to pending_free_, a committed header
+// promotes them to reusable_, and a later round hands one back out with a FRESH handle.
 //
 // If the stale handle outlives that (data_table_t::row_group() hands out COUNTED collection
-// copies by value, so a holder can outlive compact), its destructor erased the LIVE handle's slot.
-// From that instant registry_alive(id) is false while a live segment still reads the block —
-// and registry_alive is the subtraction that stops A7.3's reclaim from freeing live table
-// state. The same erase also defeats register_block's dedup, so two handles with independent
-// buffers back one block id and one of their writes is lost.
+// copies by value, so a holder can outlive compact), its destructor erases the LIVE handle's
+// slot. From that instant registry_alive(id) is false while a live segment still reads the block
+// — and registry_alive is the subtraction that stops the superseded-root reclaim from freeing
+// live table state. The same erase also defeats register_block's dedup, so two handles with
+// independent buffers back one block id and one of their writes is lost.
 //
-// RED on HEAD: after H1 is destroyed, registry_alive(id) is false and register_block hands
+// The defect: after H1 is destroyed, registry_alive(id) is false and register_block hands
 // back a THIRD handle instead of the live H2.
 // ---------------------------------------------------------------------------------------
 TEST_CASE("block_manager: a stale handle's destructor must not erase the live handle's slot") {

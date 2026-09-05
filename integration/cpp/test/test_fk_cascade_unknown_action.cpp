@@ -10,22 +10,19 @@
 //     mark_executed();
 //
 // so an action outside {'a','r','c','n','d'} performed NO cascade, reported
-// SUCCESS, and let the DELETE underneath the operator stand. The parent row goes
-// and every child row that referenced it stays behind pointing at nothing —
-// which is the exact outcome the operator exists to prevent, produced silently
-// by the operator itself.
-//
-// This is the same defect the rest of this operator was just cleaned of: an
-// unresolved parent index and an unresolved child position both used to
-// `mark_executed(); co_return;`, and both now refuse out loud. The `default`
-// arm is the last one left, in the same file, in the same statement.
+// SUCCESS, and let the DELETE underneath the operator stand: the parent row goes
+// and every child row that referenced it stays behind pointing at nothing — the
+// exact outcome the operator exists to prevent, produced by the operator itself.
+// It is the last of the three silent exits in this file; an unresolved parent
+// index and an unresolved child position both used to `mark_executed();
+// co_return;` and both now refuse out loud.
 //
 // HOW THE ROW IS PRODUCED HERE. The pg_constraint row is written by the ENGINE,
 // through the same node_create_constraint_t -> rewrite_create_constraint ->
 // build_create_constraint_writes path every ALTER TABLE ... ADD CONSTRAINT
-// FOREIGN KEY takes. The only thing the test does is set del_action on the node
-// to a char the engine has no meaning for, which build_create_constraint_writes
-// stores in confdeltype verbatim.
+// FOREIGN KEY takes. The test only sets del_action on the node to a char the
+// engine has no meaning for, which build_create_constraint_writes stores in
+// confdeltype verbatim.
 //
 // PATH NOT NAMED FROM SQL, deliberately: both SQL routes normalize the action
 // (transform_alter_table and extract_table_constraints each keep it only when it

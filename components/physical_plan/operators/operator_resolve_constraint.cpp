@@ -41,12 +41,10 @@ namespace components::operators {
             std::pmr::vector<std::uint64_t> cols(resource);
             cols.emplace_back(catalog::pg_attribute_col::attoid);
             cols.emplace_back(catalog::pg_attribute_col::attname);
-            // attisdropped: DROP COLUMN is a SOFT delete — the tombstone keeps both
-            // attname and attoid (operator_alter_column_drop_t), so without this column
-            // the match below happily binds an FK to a column that no longer exists and
-            // the failure surfaces one layer down as "keyed read: table has no column
-            // <name>". Unprojected columns come back as ordinal-stable placeholders
-            // that read as empty, so leaving it out makes the filter a silent no-op.
+            // attisdropped: DROP COLUMN is a soft delete that keeps attname and attoid, and an unprojected
+            // column comes back as an ordinal-stable placeholder that reads as empty — leaving it out makes
+            // the tombstone filter a silent no-op and binds the FK to a dropped column, to fail one layer
+            // down as "keyed read: table has no column <name>".
             cols.emplace_back(catalog::pg_attribute_col::attisdropped);
             return cols;
         }
@@ -89,32 +87,16 @@ namespace components::operators {
             if (ctx->disk_address == actor_zeta::address_t::empty_address() || tables_node_ == nullptr) {
                 continue;
             }
-            // A TARGET THAT IS NOT AN INDEX INTO THE TABLES NODE IS A CORRUPT PLAN, not a
-            // shape of the world — and it used to share the topology skip above, which is
-            // why it was silent. `target` is a position, and there is no legal way for it
-            // to be out of range:
-            //
-            //   * every constraint entry in this engine is born in ONE place
-            //     (register_catalog_resolve_table, components/sql/transformer/utils.cpp),
-            //     which sets target to the value node_catalog_resolve_t::add just returned
-            //     for the TABLE entry — always < entries().size();
-            //   * a resolve node's entries vector only ever GROWS (add() push_backs; there
-            //     is no erase / clear / resize anywhere), so an index valid when it was
-            //     minted stays valid;
-            //   * merge_catalog_resolves copies constraint entries verbatim without
-            //     rebasing target, but no view body can carry one — constraint entries are
-            //     registered by INSERT / UPDATE / DELETE / CREATE TABLE / ALTER TABLE only,
-            //     never by a SELECT, and DML on a view is refused before expansion;
-            //   * resolve_entry_t is never serialized, so nothing reconstructs a target.
-            //
-            // So the default, no_target, is NEVER a legitimate marker on a constraint
-            // entry: it means the entry was built by something that did not name its
-            // table. Skipping it leaves fks / check_exprs / unique_constraints /
-            // pk_columns EMPTY all at once, which is indistinguishable from "this table
-            // declares no constraints" — enrich stamps nothing, the planner splices no
-            // constraint operator, and EVERY key, foreign key and CHECK on the table stops
-            // existing while the statement reports success. Same consequence as the
-            // unresolved-oid entry below, same answer.
+            // A target that is not an index into the tables node is a corrupt plan, not a shape of the world,
+            // so it is refused rather than skipped: every constraint entry is minted in ONE place
+            // (register_catalog_resolve_table, components/sql/transformer/utils.cpp) with the target add() just
+            // returned for the TABLE entry, an entries vector only ever GROWS, merge_catalog_resolves copies
+            // constraint entries verbatim but no view body can carry one (DML on a view is refused before
+            // expansion), and resolve_entry_t is never serialized. So no_target on a constraint entry means the
+            // entry was built by something that did not name its table. Skipping it leaves fks / check_exprs /
+            // unique_constraints / pk_columns EMPTY all at once, which is indistinguishable from "this table
+            // declares no constraints": every key, foreign key and CHECK stops existing while the statement
+            // reports success. Same consequence as the unresolved-oid entry below, same answer.
             if (entry.target >= tables_node_->entries().size()) {
                 std::string msg = "constraint resolution: entry names table #";
                 msg += entry.target == components::logical_plan::resolve_entry_t::no_target
@@ -130,25 +112,18 @@ namespace components::operators {
             // The entry's table comes from the tables node; the fixed resolve order
             // (tables before constraints) guarantees its table_md is stamped.
             const auto& target_md = tables_node_->entries()[entry.target].table_md;
-            // NO table_md is "the table was not found". operator_resolve_table_t
-            // stamps the field only when pg_class answered, and documents the empty
-            // optional as exactly that signal, so a constraint gather for a table
-            // that is not there has nothing to gather — and the missing table is
-            // reported by the layer that looked for it.
+            // NO table_md is "the table was not found": operator_resolve_table_t stamps
+            // the field only when pg_class answered, so a constraint gather for a table
+            // that is not there has nothing to gather — and the missing table is reported
+            // by the layer that looked for it.
             if (!target_md.has_value()) {
                 continue;
             }
-            // A NAME THAT RESOLVED WITH NO IDENTITY IS NOT THAT FACT. The table is
-            // in pg_class and its oid came back zero, so nothing below can key on
-            // it. Skipping the entry leaves fks / check_exprs / unique_constraints /
-            // pk_columns EMPTY, and empty is indistinguishable from "this table
-            // declares no constraints": enrich stamps nothing on the DML node, the
-            // planner splices no constraint operator, and EVERY declared key,
-            // foreign key and CHECK on the table stops existing while the statement
-            // reports success. That is the same predicate operator_unique_constraint
-            // refuses on (an unresolved oid is not topology) with a WIDER
-            // consequence — all of the table's constraints instead of one layer
-            // inside one of them — so it is refused the same way.
+            // A name that resolved with no identity is not that fact: the table is in pg_class and its oid came
+            // back zero, so nothing below can key on it. Skipping leaves fks / check_exprs / unique_constraints
+            // / pk_columns EMPTY, which reads as "this table declares no constraints" — every declared key,
+            // foreign key and CHECK stops existing while the statement reports success. An unresolved oid is
+            // not topology: the same predicate operator_unique_constraint refuses on, refused the same way.
             if (target_md->table_oid == catalog::INVALID_OID) {
                 std::string msg = "constraint resolution: table \"";
                 msg += target_md->name;
@@ -187,28 +162,21 @@ namespace components::operators {
             }
             auto& con_batches = con_batches_r.value();
 
-            // PASS 1: decode every pg_constraint row. FK rows ('f') build a
-            // partially-filled fk_info_t plus the child/parent attoid CSVs needed to
-            // resolve column names; CHECK rows ('c', outgoing only) emit check_exprs
-            // directly. The per-FK child/parent pg_attribute reads below are
-            // independent (each keys on a table oid known here from the constraint
-            // row, their results feed disjoint fk fields, and nothing in this operator
-            // WRITES the catalog), so they are deferred and issued as two batched
-            // read_chunks_by_keys calls after this pass — one key per FK, in FK order.
-            // The order of `fks` is preserved: every FK candidate keeps its slot in
-            // pending_fks and is pushed (if valid) during pass 2 in the same order it
-            // was decoded here.
+            // PASS 1: decode every pg_constraint row. FK rows ('f') build a partially-filled fk_info_t plus the
+            // child/parent attoid CSVs needed to resolve column names; CHECK rows ('c', outgoing only) emit
+            // check_exprs directly. The per-FK pg_attribute reads below are independent (each keys on a table
+            // oid known here, their results feed disjoint fk fields, and nothing here WRITES the catalog), so
+            // they are deferred into two batched read_chunks_by_keys calls after this pass — one key per FK, in
+            // FK order. Every candidate keeps its slot in pending_fks and is pushed during pass 2 in decode order.
             struct pending_fk_t {
                 catalog::fk_info_t fk;
                 // parse_oid_csv returns std::vector (not pmr), so these mirror that type.
                 std::vector<catalog::oid_t> child_attoids;
                 std::vector<catalog::oid_t> parent_attoids;
-                // False when conkey / confkey was not a well-formed OID CSV. A token
-                // parse_oid_csv cannot read is DROPPED from the list, and nothing
-                // downstream can see that it happened: the length guards below compare
-                // the resolved NAMES against the list they were resolved FROM, so a
-                // list that lost a token agrees with itself and passes. This is the
-                // only carrier of that fact.
+                // False when conkey / confkey was not a well-formed OID CSV. A token parse_oid_csv cannot read is
+                // DROPPED from the list, and the length guards below compare the resolved NAMES against the list
+                // they were resolved FROM — so a list that lost a token agrees with itself and passes. This flag
+                // is the only carrier of that fact.
                 bool keys_readable{true};
                 // conname, carried for the unresolved-column error below only —
                 // fk_info_t does not keep it and nothing else here needs it.
@@ -218,15 +186,11 @@ namespace components::operators {
             std::pmr::vector<catalog::oid_t> child_oids(resource_);
             std::pmr::vector<catalog::oid_t> parent_oids(resource_);
 
-            // UNIQUE ('u') / PRIMARY KEY ('p') constraints on the target table
-            // (outgoing only). conkey carries the local column attoids; column names
-            // are resolved below via one batched pg_attribute read keyed on table_oid.
-            // Each entry is one constraint's ordered attoid list, preserving order.
-            // is_pk marks contype 'p': PK implies NOT NULL, so the resolved PK column
-            // names are additionally stamped flat via pk_columns for enrich to merge.
-            // conname is carried for the unresolved-column error below only, exactly as
-            // pending_fk_t carries it — a constraint the resolve refuses has to be
-            // nameable in the message.
+            // UNIQUE ('u') / PRIMARY KEY ('p') constraints on the target table (outgoing only). conkey carries
+            // the local column attoids; names are resolved below via one batched pg_attribute read keyed on
+            // table_oid. Each entry is one constraint's ordered attoid list. is_pk marks contype 'p': PK implies
+            // NOT NULL, so the resolved names are additionally stamped flat via pk_columns for enrich to merge.
+            // conname is carried for the unresolved-column error below only — a refused constraint must be nameable.
             struct pending_unique_t {
                 std::vector<catalog::oid_t> attoids;
                 // False when conkey was not a well-formed OID CSV — see
@@ -238,48 +202,31 @@ namespace components::operators {
             };
             std::pmr::vector<pending_unique_t> pending_uniques(resource_);
 
-            // ONE PRIMARY KEY PER TABLE. PostgreSQL refuses the second one at
-            // declaration; this engine's declaration legs (enrich for the inline
-            // form, the ALTER rewrite for ADD CONSTRAINT) still accept it, so
-            // pg_constraint can hold two 'p' rows. What used to follow was silent
-            // misenforcement: each row became its own unique group and pk_columns
-            // FLATTENED both key lists into one multi-column "primary key" nobody
-            // declared — the thing enrich merges NOT NULL from and an FK with an
-            // omitted column list binds to. A key that is two keys cannot be
-            // enforced or bound, so the gather refuses and names both. The refusal
-            // is per-statement and repairable: the repair statements register no
-            // constraint gather for the target — ALTER TABLE ... DROP COLUMN of
-            // one key's column (scrubs that key through its 'i' pg_depend edge;
-            // DROP CONSTRAINT itself is still refused as unimplemented upstream)
-            // and DROP TABLE both pass under a doubled key.
-            // Gate: integration/cpp/test/test_multiple_primary_keys.cpp.
+            // ONE PRIMARY KEY PER TABLE. PostgreSQL refuses the second one at declaration; this engine's
+            // declaration legs (enrich for the inline form, the ALTER rewrite for ADD CONSTRAINT) still accept
+            // it, so pg_constraint can hold two 'p' rows. Accepting them here is silent misenforcement: each row
+            // becomes its own unique group and pk_columns FLATTENS both key lists into one multi-column "primary
+            // key" nobody declared — the thing enrich merges NOT NULL from and an FK with an omitted column list
+            // binds to. A key that is two keys cannot be enforced or bound, so the gather refuses and names both.
+            // The refusal is per-statement and repairable: the repair statements register no constraint gather —
+            // ALTER TABLE ... DROP COLUMN of one key's column (scrubs that key through its 'i' pg_depend edge;
+            // DROP CONSTRAINT itself is refused as unimplemented upstream) and DROP TABLE both pass under a
+            // doubled key. Gate: integration/cpp/test/test_multiple_primary_keys.cpp.
             bool pk_seen = false;
             std::string first_pk_label;
 
             for (auto& con_chunk : con_batches) {
-                // A CHUNK NARROWER THAN pg_constraint'S SCHEMA IS A DIFFERENT ANSWER, NOT A
-                // MISS. The read above was issued with an EMPTY projection, which
-                // read_chunks_by_key_inner documents as "all columns", so the reply's width
-                // is the width of the pg_constraint STORAGE the disk agent holds. A narrow
-                // one therefore says the storage is not the schema this build compiles
-                // against — a catalog written by an older build, or a misrouted read — and
-                // every column from `conexpr` leftward is being read at an ordinal that
-                // means something else.
+                // A CHUNK NARROWER THAN pg_constraint'S SCHEMA IS A DIFFERENT ANSWER, NOT A MISS. The read was
+                // issued with an EMPTY projection, which read_chunks_by_key_inner documents as "all columns", so a
+                // narrow reply says the storage is not the schema this build compiles against — a catalog written by
+                // an older build, or a misrouted read — and every column from `conexpr` leftward is read at an
+                // ordinal that means something else. Dropping the chunk is no answer either: its rows are the
+                // table's ENTIRE constraint set for this direction, so the entry would read as "declares no
+                // constraints" and the declared keys stop existing while the statement reports success.
                 //
-                // THE THRESHOLD IS THE LARGEST ORDINAL READ BELOW, and that is `conexpr`
-                // (10), not `confupdtype` (9). Guarding on confupdtype admitted a chunk
-                // exactly 10 wide and then read conexpr out of it — data_chunk_t::is_null
-                // and get_value index `data` (a std::pmr::vector) with no bounds check, so
-                // the reply was not a refusal but a read PAST THE END of the column array,
-                // and the message announced a width the build does not in fact read to.
-                //
-                // Dropping the chunk had the same consequence as the corrupt target above,
-                // and for the same reason: the rows in it are the table's ENTIRE constraint
-                // set for this direction, so the entry ends up with empty fks /
-                // check_exprs / unique_constraints / pk_columns, which reads as "this table
-                // declares no constraints". The declared keys stop existing and the
-                // statement reports success. What the engine cannot read it must not
-                // pretend it read.
+                // THE THRESHOLD IS THE LARGEST ORDINAL READ BELOW, and that is `conexpr` (10), not `confupdtype`
+                // (9): data_chunk_t::is_null and get_value index `data` with no bounds check, so a chunk exactly 10
+                // wide would be read PAST THE END of the column array instead of refused.
                 if (con_chunk.column_count() <= catalog::pg_constraint_col::conexpr) {
                     std::string msg = "constraint resolution: pg_constraint answered with ";
                     msg += std::to_string(con_chunk.column_count());
@@ -293,16 +240,11 @@ namespace components::operators {
                     co_return;
                 }
                 for (uint64_t ci = 0; ci < con_chunk.size(); ++ci) {
-                    // A ROW WHOSE contype CANNOT BE READ IS A CONSTRAINT OF UNKNOWN
-                    // KIND — and one of those kinds is the UNIQUE / PRIMARY KEY the
-                    // user declared. This whole loop classifies by that one char, so
-                    // a row it cannot classify used to leave the constraint set right
-                    // here, one step BEFORE any of the refusals below could see it:
-                    // the same silence as a dropped conkey group, and it is what made
-                    // the "every 'u'/'p' row becomes a pending group" claim below
-                    // wider than the code. contype is NOT NULL in the schema and
-                    // build_create_constraint_writes always writes it, so an
-                    // unreadable one is a catalog nothing in this engine produced.
+                    // A row whose contype cannot be read is a constraint of unknown kind — and one of those kinds
+                    // is the UNIQUE / PRIMARY KEY the user declared. This loop classifies by that one char, so a
+                    // row it cannot classify would leave the constraint set here, one step BEFORE any refusal
+                    // below could see it. contype is NOT NULL in the schema and build_create_constraint_writes
+                    // always writes it, so an unreadable one is a catalog nothing in this engine produced.
                     const std::string_view contype_cell =
                         con_chunk.is_null(catalog::pg_constraint_col::contype, ci)
                             ? std::string_view{}
@@ -324,17 +266,13 @@ namespace components::operators {
                     if (contype == 'f') {
                         pending_fk_t pending;
                         catalog::fk_info_t& fk = pending.fk;
-                        // THE IDENTITY AND THE FAR ENDPOINT ARE READ, NOT ASSUMED.
-                        // get_value on a NULL cell answers whatever the buffer holds
-                        // (usually zero), so an unguarded read here minted an FK
-                        // whose constraint_oid — the key every scrub and every
-                        // describe below uses — or whose far table oid was 0: a
-                        // constraint pointing at oid 0 enforces against nothing and
-                        // can never be dropped by the oid-keyed deletes. Both
-                        // columns are NOT NULL in the schema and always written by
-                        // build_create_constraint_writes, so a NULL is a catalog
-                        // nothing in this engine produced — same refusal as the
-                        // unreadable contype above.
+                        // THE IDENTITY AND THE FAR ENDPOINT ARE READ, NOT ASSUMED. get_value on a NULL cell
+                        // answers whatever the buffer holds (usually zero), so an unguarded read mints an FK
+                        // whose constraint_oid — the key every scrub and describe below uses — or whose far
+                        // table oid is 0: it enforces against nothing and can never be dropped by the oid-keyed
+                        // deletes. Both columns are NOT NULL in the schema and always written by
+                        // build_create_constraint_writes, so a NULL is a catalog nothing in this engine
+                        // produced — same refusal as the unreadable contype above.
                         if (con_chunk.is_null(catalog::pg_constraint_col::oid, ci)) {
                             std::string msg = "foreign key constraint row in pg_constraint on table \"";
                             msg += target_md->name;
@@ -375,13 +313,10 @@ namespace components::operators {
                                 static_cast<catalog::oid_t>(con_chunk.get_value<std::uint32_t>(far_col, ci));
                             fk.parent_table_oid = table_oid;
                         }
-                        // The three one-char FK code columns. `[0]` was read straight off
-                        // the cell, which is a read PAST THE END of the string_view when
-                        // the cell is non-null and EMPTY — the same defect as a guard
-                        // narrower than the read it covers, one field over. Unlike
-                        // `contype`, these three carry a documented default when they say
-                        // nothing (system_table_schemas.cpp: 's' SIMPLE, 'a' NO ACTION,
-                        // written only for FK rows), so an absent value IS a value here and
+                        // The three one-char FK code columns. Reading `[0]` straight off the cell is a read PAST
+                        // THE END of the string_view when the cell is non-null and EMPTY. Unlike `contype`, these
+                        // three carry a documented default when they say nothing (system_table_schemas.cpp: 's'
+                        // SIMPLE, 'a' NO ACTION, written only for FK rows), so an absent value IS a value here —
                         // only the out-of-range read has to go.
                         auto code_or = [&](std::uint64_t col, char fallback) {
                             if (con_chunk.is_null(col, ci)) {
@@ -427,24 +362,16 @@ namespace components::operators {
                             name = std::string(
                                 con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
                         }
-                        // A CHECK WITH NOTHING TO CHECK IS NOT A TABLE WITHOUT A CHECK.
-                        // Both shapes — conexpr NULL and conexpr empty — used to `continue`,
-                        // and the row left the constraint set without a word: check_exprs
-                        // stayed empty, the planner spliced no operator_check_constraint,
-                        // and the table went back to taking every row while the statement
-                        // reported success. That is the same silence the unreadable
-                        // `contype` two branches up is refused for, with the same argument:
-                        // the engine knows a CHECK was declared and cannot know what it
-                        // says, so it can neither enforce it nor dismiss it. Two identical
-                        // cases must not be answered in opposite ways in one function.
+                        // A CHECK WITH NOTHING TO CHECK IS NOT A TABLE WITHOUT A CHECK. Both shapes — conexpr NULL
+                        // and conexpr empty — are refused rather than skipped: skipping leaves check_exprs empty,
+                        // the planner splices no operator_check_constraint, and the table goes back to taking every
+                        // row while the statement reports success. Same argument as the unreadable `contype` above.
                         //
-                        // build_create_constraint_writes writes conexpr only `if (is_check
-                        // && !check_expr.empty())`, so an expressionless CHECK row is
-                        // exactly what a writer that lost the expression leaves behind.
-                        // Both live SQL routes now refuse it at the declaration
-                        // (transform_table for the inline form, executor_t for ALTER TABLE
-                        // ADD CONSTRAINT), so what reaches here is a catalog written before
-                        // those gates — which is what this floor is for.
+                        // build_create_constraint_writes writes conexpr only `if (is_check && !check_expr.empty())`,
+                        // so an expressionless CHECK row is exactly what a writer that lost the expression leaves
+                        // behind. Both live SQL routes refuse it at the declaration (transform_table for the inline
+                        // form, executor_t for ALTER TABLE ADD CONSTRAINT), so what reaches here is a catalog
+                        // written before those gates — which is what this floor is for.
                         if (conexpr_sv.empty()) {
                             // Named the way the two FK legs name theirs: by conname, and by
                             // oid when the constraint was written without one. An oid cell
@@ -469,22 +396,12 @@ namespace components::operators {
                         }
                         check_exprs.emplace_back(std::move(name), std::string(conexpr_sv));
                     } else if ((contype == 'u' || contype == 'p') && direction == direction_t::outgoing) {
-                        // UNIQUE / PRIMARY KEY: the enforced columns live in conkey
-                        // (same encoding as an FK's conkey). Names resolved after the loop.
-                        // EVERY 'u' / 'p' ROW BECOMES A PENDING GROUP, whatever its
-                        // conkey decoded to — and every row of the batch reaches this
-                        // classification now that an unreadable contype stops the
-                        // statement above instead of dropping the row. This used to be gated on
-                        // `if (!attoids.empty())`, and that gate is why a declared key
-                        // could stop existing in silence: the guards that refuse an
-                        // unresolvable key list all live in the loop over
-                        // pending_uniques BELOW, so a group dropped here was never seen
-                        // by any of them, the constraint left the set without a word,
-                        // and the table went back to taking every row while the
-                        // statement reported success. An empty or unreadable conkey is
-                        // a constraint that cannot be enforced — which is a refusal,
-                        // not a group to skip — so it is carried down to where the
-                        // refusal can name it.
+                        // UNIQUE / PRIMARY KEY: the enforced columns live in conkey (same encoding as an FK's
+                        // conkey). Names resolved after the loop. EVERY 'u' / 'p' ROW BECOMES A PENDING GROUP,
+                        // whatever its conkey decoded to: the guards that refuse an unresolvable key list all live
+                        // in the loop over pending_uniques BELOW, so a group dropped here would be seen by none of
+                        // them and the constraint would leave the set without a word. An empty or unreadable conkey
+                        // is a refusal, not a group to skip, so it is carried down to where it can be named.
                         bool conkey_ok = true;
                         auto attoids = catalog::parse_oid_csv(
                             std::string(
@@ -536,11 +453,9 @@ namespace components::operators {
             }
 
             if (!pending_fks.empty()) {
-                // Batched child + parent pg_attribute reads, one key per FK in FK
-                // order. The two batches are mutually independent (disjoint key columns
-                // / disjoint fk fields), so issue both before awaiting either — the same
-                // independence the prior per-FK code relied on, now amortised across the
-                // whole constraint set in two mailbox hops total. child_results[k] /
+                // Batched child + parent pg_attribute reads, one key per FK in FK order. The two batches are
+                // mutually independent (disjoint key columns / disjoint fk fields), so both are issued before
+                // either is awaited — the whole constraint set costs two mailbox hops. child_results[k] /
                 // parent_results[k] correspond to pending_fks[k].
                 std::pmr::vector<std::uint64_t> attr_c_keys(resource_);
                 attr_c_keys.emplace_back(catalog::pg_attribute_col::attrelid);
@@ -595,12 +510,10 @@ namespace components::operators {
                         }
                         return out;
                     };
-                    // conkey / confkey WAS NOT A WELL-FORMED OID CSV. The tokens that
-                    // did read are a shorter list, and the two length guards below
-                    // compare the resolved names against THAT list, so they agree with
-                    // themselves and pass — the constraint quietly becomes one on a
-                    // different column set. This is the only point where the loss is
-                    // still visible.
+                    // conkey / confkey WAS NOT A WELL-FORMED OID CSV. The tokens that did read are a shorter
+                    // list, and the two length guards below compare the resolved names against THAT list, so
+                    // they agree with themselves and pass — the constraint quietly becomes one on a different
+                    // column set. This is the only point where the loss is still visible.
                     if (!pending_fks[k].keys_readable) {
                         std::string msg = "foreign key constraint \"";
                         msg += describe_constraint();
@@ -609,19 +522,14 @@ namespace components::operators {
                                                 std::pmr::string{std::move(msg), resource_}});
                         co_return;
                     }
-                    // AND AN EMPTY COLUMN LIST IS NOT A FOREIGN KEY. Both lists are
-                    // read POSITIONALLY and paired with each other, so an FK with no
-                    // columns on either side references nothing and is enforceable
-                    // against nothing. It was believed empty lists ride down to a
-                    // refusal on their own; they do not. The two length guards below
-                    // compare the resolved names against the attoid list they came
-                    // FROM, so at length zero they compare 0 with 0 and pass, and the
-                    // push at the end of this pass is gated on the resulting name
-                    // lists being non-empty — so the constraint left `fks` WITHOUT A
-                    // WORD: enrich stamped no outgoing_fks, the planner spliced no
-                    // fk_check, and the referencing table took orphans while
-                    // ON DELETE RESTRICT let the parent go. Same shape, same reason
-                    // and same answer as the empty conkey on the UNIQUE / PK leg.
+                    // AND AN EMPTY COLUMN LIST IS NOT A FOREIGN KEY. Both lists are read POSITIONALLY and
+                    // paired with each other, so an FK with no columns on either side references nothing and is
+                    // enforceable against nothing. Nothing below catches it: the two length guards compare the
+                    // resolved names against the attoid list they came FROM, so at length zero they compare 0
+                    // with 0 and pass. Such an FK enforces nothing while the statement reports success — enrich
+                    // stamps no outgoing_fks, the planner splices no fk_check, the referencing table takes
+                    // orphans and ON DELETE RESTRICT lets the parent go. Same as the empty conkey on the
+                    // UNIQUE / PK leg.
                     if (child_attoids.empty() || parent_attoids.empty()) {
                         std::string msg = "foreign key constraint \"";
                         msg += describe_constraint();
@@ -643,16 +551,12 @@ namespace components::operators {
                         names.reserve(child_attoids.size());
                         for (const auto& wanted_oid : child_attoids) {
                             for (auto& attr_chunk : child_attr) {
-                                // WIDE ENOUGH FOR THE TOMBSTONE FILTER, not just for the
-                                // name. attribute_row_is_dropped reads attisdropped (7),
-                                // the widest ordinal this loop reaches; guarding on
-                                // attname (2) let a chunk of width 3..7 through, and the
-                                // filter then answered "not dropped" for every row because
-                                // it could not see the column — silently binding the
-                                // constraint to a column DROP COLUMN had already removed
-                                // (a soft delete keeps attname AND attoid), to fail one
-                                // layer down as "keyed read: table has no column <name>".
-                                // Too narrow to filter is too narrow to read.
+                                // WIDE ENOUGH FOR THE TOMBSTONE FILTER, not just for the name:
+                                // attribute_row_is_dropped reads attisdropped (7), the widest ordinal this
+                                // loop reaches. A narrower chunk cannot see the column, so the filter answers
+                                // "not dropped" for every row and binds the constraint to a column DROP COLUMN
+                                // already removed (a soft delete keeps attname AND attoid), to fail one layer
+                                // down as "keyed read: table has no column <name>".
                                 if (attr_chunk.column_count() <= catalog::pg_attribute_col::attisdropped) {
                                     continue;
                                 }
@@ -676,16 +580,12 @@ namespace components::operators {
                                 }
                             }
                         }
-                        // LENGTH GUARD — mandatory, and it is the tombstone filter above
-                        // that makes it so. An attoid that resolves to nothing used to
-                        // append nothing and leave `names` SHORTER than `child_attoids`,
-                        // which every consumer then reads positionally: enrich pairs
-                        // child_col_names[i] with parent_col_names[i], so a silently
-                        // shortened list re-points the constraint at the wrong columns or
-                        // (at length 0) makes it enforce nothing at all. The neighbouring
-                        // UNIQUE/PK loop already compares the two lengths; it merely drops
-                        // the group, which is the same silence one level up. A constraint
-                        // that cannot be resolved must fail the statement, not shrink.
+                        // LENGTH GUARD — mandatory, and it is the tombstone filter above that makes it
+                        // so. An attoid that resolves to nothing appends nothing, leaving `names` SHORTER
+                        // than `child_attoids`, which every consumer reads positionally: enrich pairs
+                        // child_col_names[i] with parent_col_names[i], so a shortened list re-points the
+                        // constraint at the wrong columns or (at length 0) makes it enforce nothing at
+                        // all. A constraint that cannot be resolved must fail the statement, not shrink.
                         if (names.size() != child_attoids.size()) {
                             std::string msg = "foreign key constraint \"";
                             msg += describe_constraint();
@@ -710,13 +610,10 @@ namespace components::operators {
                         };
                         std::vector<row_meta_t> ordered;
                         for (auto& attr_chunk : child_attr) {
-                            // attdefspec (9) is the widest ordinal read below, so it is the
-                            // threshold. On attisdropped (7) a chunk of width 8 or 9 passed
-                            // and the attdefspec read below was skipped by its own inner
-                            // width test — leaving the default spec EMPTY, which
-                            // operator_fk_cascade_t reads as "this column has no default"
-                            // and applies SET NULL where the constraint says SET DEFAULT.
-                            // A silent substitution of one referential action for another.
+                            // attdefspec (9) is the widest ordinal read below, so it is the threshold — not
+                            // attisdropped (7). A chunk of width 8 or 9 carries a name but no default spec,
+                            // and an EMPTY default spec is what operator_fk_cascade_t reads as "this column
+                            // has no default": it would apply SET NULL where the constraint says SET DEFAULT.
                             if (attr_chunk.column_count() <= catalog::pg_attribute_col::attdefspec) {
                                 continue;
                             }
@@ -757,17 +654,13 @@ namespace components::operators {
                                     break;
                                 }
                             }
-                            // THIS IS WHERE `absent` WAS BORN. The name came out of the very
-                            // rows `ordered` was built from, so failing to find it again means
-                            // the two passes disagreed about the chunk — the name loop skips a
-                            // chunk narrower than `attname`, this one skips a chunk narrower
-                            // than `attisdropped`, so a reply of the wrong width contributes a
-                            // NAME and no POSITION. The max() this pushed then travelled all
-                            // the way to operator_fk_cascade_t, whose SET NULL / SET DEFAULT
-                            // branch skipped the column: the parent row went, the child row
-                            // stayed, and the column that was supposed to be cleared kept
-                            // pointing at a row that no longer exists. A position that could
-                            // not be resolved is refused where it is discovered, and named.
+                            // A POSITION THAT CANNOT BE RESOLVED IS REFUSED WHERE IT IS DISCOVERED. The name
+                            // came out of the very rows `ordered` was built from, so failing to find it again
+                            // means the two passes disagreed about the chunk (they apply different width
+                            // thresholds), and a reply of the wrong width contributes a NAME and no POSITION.
+                            // Pushing max() instead travels to operator_fk_cascade_t, whose SET NULL / SET
+                            // DEFAULT branch skips the column: the parent row goes, the child row stays, and
+                            // the column that was to be cleared keeps pointing at a row that no longer exists.
                             if (pos == std::numeric_limits<std::size_t>::max()) {
                                 std::string msg = "foreign key constraint \"";
                                 msg += describe_constraint();
@@ -789,16 +682,12 @@ namespace components::operators {
                         names.reserve(parent_attoids.size());
                         for (const auto& wanted_oid : parent_attoids) {
                             for (auto& attr_chunk : parent_attr) {
-                                // WIDE ENOUGH FOR THE TOMBSTONE FILTER, not just for the
-                                // name. attribute_row_is_dropped reads attisdropped (7),
-                                // the widest ordinal this loop reaches; guarding on
-                                // attname (2) let a chunk of width 3..7 through, and the
-                                // filter then answered "not dropped" for every row because
-                                // it could not see the column — silently binding the
-                                // constraint to a column DROP COLUMN had already removed
-                                // (a soft delete keeps attname AND attoid), to fail one
-                                // layer down as "keyed read: table has no column <name>".
-                                // Too narrow to filter is too narrow to read.
+                                // WIDE ENOUGH FOR THE TOMBSTONE FILTER, not just for the name:
+                                // attribute_row_is_dropped reads attisdropped (7), the widest ordinal this
+                                // loop reaches. A narrower chunk cannot see the column, so the filter answers
+                                // "not dropped" for every row and binds the constraint to a column DROP COLUMN
+                                // already removed (a soft delete keeps attname AND attoid), to fail one layer
+                                // down as "keyed read: table has no column <name>".
                                 if (attr_chunk.column_count() <= catalog::pg_attribute_col::attisdropped) {
                                     continue;
                                 }
@@ -822,12 +711,11 @@ namespace components::operators {
                                 }
                             }
                         }
-                        // Same guard, referenced side. This is also the last line of
-                        // defence for a catalog written BEFORE confkey had per-column
-                        // pg_depend edges: such a database can already hold a dropped
-                        // parent column, and this error names the constraint that lost it
-                        // instead of leaving the child to fail later, in the parent probe,
-                        // with "keyed read: table has no column <name>".
+                        // Same guard, referenced side. Also the last line of defence for a catalog written
+                        // BEFORE confkey had per-column pg_depend edges: such a database can already hold a
+                        // dropped parent column, and this error names the constraint that lost it instead of
+                        // leaving the child to fail later, in the parent probe, with "keyed read: table has
+                        // no column <name>".
                         if (names.size() != parent_attoids.size()) {
                             std::string msg = "foreign key constraint \"";
                             msg += describe_constraint();
@@ -862,25 +750,18 @@ namespace components::operators {
                             co_return;
                         }
                         auto& cls_batches = cls_batches_r.value();
-                        // A READ THAT ANSWERED NOTHING IS NOT A NAME. The `if` this used to
-                        // be had no `else` at all: when the pg_class row for the FK's CHILD
-                        // did not come back — no chunk, an empty chunk, or one narrower than
-                        // the ordinal being read — child_collection_name and child_schema
-                        // were LEFT EMPTY and the FK was pushed anyway, so the DELETE went on
-                        // to cascade against a child relation the catalog does not describe.
-                        // conrelid is the identity operator_fk_cascade_t scans by, and it is
-                        // exactly what this read is checking exists; DROP TABLE removes a
-                        // table's pg_constraint rows by BOTH conrelid and confrelid
-                        // (operator_dynamic_cascade_delete), so a live FK row whose child has
-                        // no pg_class row is a corrupt catalog and never a topology. Refusing
-                        // is the difference between "the parent could not be deleted, here is
-                        // why" and "the parent is gone and its children are orphans".
-                        // The width tested is the widest ordinal read below —
-                        // relnamespace (2), which the namespace hop keys on — and not
-                        // relname (1). On relname a chunk exactly 2 wide passed the guard
-                        // and relnamespace was then read past the end of the column array
-                        // (get_value indexes `data` unchecked), so the FK's schema came out
-                        // of whatever followed the chunk in memory.
+                        // A READ THAT ANSWERED NOTHING IS NOT A NAME. Without this refusal — no chunk, an
+                        // empty chunk, or one narrower than the ordinal read — child_collection_name and
+                        // child_schema stay EMPTY and the FK is pushed anyway, so the DELETE cascades against a
+                        // child relation the catalog does not describe. conrelid is the identity
+                        // operator_fk_cascade_t scans by, and DROP TABLE removes a table's pg_constraint rows
+                        // by BOTH conrelid and confrelid (operator_dynamic_cascade_delete), so a live FK row
+                        // whose child has no pg_class row is a corrupt catalog and never a topology.
+                        //
+                        // The width tested is the widest ordinal read below — relnamespace (2), which the
+                        // namespace hop keys on — and not relname (1): on relname a chunk exactly 2 wide passes
+                        // and relnamespace is then read past the end of the column array (get_value indexes
+                        // `data` unchecked), so the FK's schema comes out of whatever follows it in memory.
                         if (cls_batches.empty() || cls_batches[0].size() == 0 ||
                             cls_batches[0].column_count() <= catalog::pg_class_col::relnamespace) {
                             std::string msg = "foreign key constraint \"";
@@ -934,14 +815,11 @@ namespace components::operators {
                             ns_batches[0].get_value<std::string_view>(catalog::pg_namespace_col::nspname, 0));
                     }
 
-                    // UNCONDITIONAL. The gate that used to stand here — push only if
-                    // both name lists are non-empty — was the FK leg's silent drop:
-                    // it is reached only after the guards above have refused an
-                    // unreadable column list, an empty one on either side, and a
-                    // name list shorter than the attoids it was resolved from, so
-                    // both lists are now provably non-empty and of the declared
-                    // length. A condition that can no longer be false is not a guard;
-                    // leaving it would just hide the next way an FK could vanish.
+                    // UNCONDITIONAL, and deliberately so: this point is reached only after the guards above
+                    // have refused an unreadable column list, an empty one on either side, and a name list
+                    // shorter than the attoids it was resolved from, so both name lists are provably
+                    // non-empty and of the declared length. A "push only if non-empty" gate here could no
+                    // longer be false, and would only hide the next way an FK vanishes.
                     fks.push_back(std::move(fk));
                 }
             }
@@ -973,7 +851,7 @@ namespace components::operators {
                     const auto& attoids = pending.attoids;
                     // Names this constraint in the refusals below — a constraint the
                     // resolve refuses has to be nameable even when it was written
-                    // without a name. Same shape as pending_fk_t's describe_constraint.
+                    // without a name.
                     auto describe_key = [&]() {
                         std::string out = pending.is_pk ? "primary key constraint \"" : "unique constraint \"";
                         if (pending.constraint_name.empty()) {
@@ -985,16 +863,13 @@ namespace components::operators {
                         out += '"';
                         return out;
                     };
-                    // A KEY COLUMN LIST THAT CANNOT BE READ IS NOT A KEY. Both shapes
-                    // arrive here now that the decode above stopped dropping them: a
-                    // conkey that is EMPTY (no columns to enforce — every row carries
-                    // the same zero-column key) and one whose tokens parse_oid_csv could
-                    // not read (the surviving tokens are a DIFFERENT, shorter key, and
-                    // the length guard below cannot tell, because it compares the names
-                    // against the very list that lost them). Either way the constraint
-                    // the user declared is not the one the engine would enforce, and the
-                    // rows are already written by the time a DML constraint sink runs —
-                    // so this refuses instead of enforcing something else or nothing.
+                    // A KEY COLUMN LIST THAT CANNOT BE READ IS NOT A KEY. Two shapes reach here: a conkey
+                    // that is EMPTY (no columns to enforce — every row carries the same zero-column key) and
+                    // one whose tokens parse_oid_csv could not read (the survivors are a DIFFERENT, shorter
+                    // key, and the length guard below cannot tell, because it compares the names against the
+                    // very list that lost them). Either way the constraint the user declared is not the one
+                    // the engine would enforce, and the rows are already written by the time a DML constraint
+                    // sink runs — so this refuses instead of enforcing something else or nothing.
                     if (!pending.conkey_readable || attoids.empty()) {
                         std::string msg = describe_key();
                         msg += pending.conkey_readable
@@ -1040,17 +915,14 @@ namespace components::operators {
                             }
                         }
                     }
-                    // LENGTH GUARD — the same one, and for the same reason, as the two FK
-                    // loops above. This used to DROP the group instead: a UNIQUE or
-                    // PRIMARY KEY whose columns could not be resolved simply left the
-                    // constraint set, so the key the user declared stopped existing and
-                    // duplicates went in under it. A key is enforced as an ordered tuple,
-                    // so a group that cannot be resolved has no partial reading either.
-                    // The one route that reached here through plain SQL — a key declared
-                    // on a dynamic-schema (relkind='g') table, whose columns live in
-                    // pg_computed_column and have no pg_attribute row to match — is now
-                    // refused at DDL (executor_t::execute_plan_full), so what is left is
-                    // a catalog written before that gate existed.
+                    // LENGTH GUARD — the same one, and for the same reason, as the two FK loops above:
+                    // dropping the group instead would let a UNIQUE or PRIMARY KEY whose columns cannot be
+                    // resolved leave the constraint set, so the key the user declared stops existing and
+                    // duplicates go in under it. A key is enforced as an ordered tuple, so a group that cannot
+                    // be resolved has no partial reading either. The one route that reached here through plain
+                    // SQL — a key declared on a dynamic-schema (relkind='g') table, whose columns live in
+                    // pg_computed_column and have no pg_attribute row — is refused at DDL
+                    // (executor_t::execute_plan_full), so what is left is a catalog written before that gate.
                     if (names.size() != attoids.size()) {
                         std::string msg = describe_key();
                         msg += ": key column list cannot be resolved — a column it is declared on has no "

@@ -845,7 +845,7 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
 TEST_CASE("integration::cpp::production::wal_segment_rotation") {
     auto config = test_create_config("/tmp/otterbrix/production/wal_rotation");
     test_clear_directory(config);
-    // B1a: tables are always disk-backed. Restart recovery draws from the
+    // Tables are always disk-backed. Restart recovery draws from the
     // table's .otbx checkpoint plus WAL replay above the checkpoint floor; this
     // test's point — WAL segment rotation under row-by-row load — is unchanged.
     config.wal.max_segment_size = 4 * 1024; // 4 KB — force small segments
@@ -1039,7 +1039,7 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
 // this must (a) accept every INSERT batch without OOM and (b) complete the large
 // scan with the CORRECT aggregate — prove COMPLETION, not just no-crash.
 //
-// DISK-backed (B1a: every table is) so write-through is actually exercised —
+// DISK-backed (every table is) so write-through is actually exercised —
 // an in-memory table would pin the whole working set and clean-OOM by design,
 // which cannot validate the write-through bound.
 //
@@ -1092,7 +1092,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
         {
             // Mirror the SSB lineorder shape: many wide bigint columns plus a few
             // text columns, so a 1024-row row-group is a large working set.
-            // Disk-backed by default (B1a), so write-through applies.
+            // Disk-backed by default, so write-through applies.
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.Lineorder ("

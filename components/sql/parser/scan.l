@@ -1192,11 +1192,11 @@ process_integer_literal(std::pmr::memory_resource* resource, const char *token, 
 	 * bison %union built on top of it), so EVERY literal outside int32 has to leave here
 	 * as text or it is truncated on the way in with nothing downstream able to notice.
 	 *
-	 * The int32 range test used to sit behind `#ifdef HAVE_LONG_INT_64`, which nothing in
-	 * this project defines. `long` is 64 bits here, so strtol happily produced a 64-bit
-	 * value and the assignment below quietly cut it down: 9223372036854775807 became -1,
-	 * 123456789012345678 became -1506741426, on a column of ANY type. The test is
-	 * unconditional now; where `long` really is 32 bits it is simply always false.
+	 * The int32 range test is UNCONDITIONAL — not behind `#ifdef HAVE_LONG_INT_64`, which
+	 * nothing in this project defines. `long` is 64 bits here, so strtol produces a 64-bit
+	 * value and the assignment below would quietly cut it down: 9223372036854775807 to -1,
+	 * 123456789012345678 to -1506741426, on a column of ANY type. Where `long` really is
+	 * 32 bits the test is simply always false.
 	 *
 	 * An out-of-range literal leaves as FCONST carrying the ORIGINAL DIGITS. That is not a
 	 * float: the transformer (get_value in components/sql/transformer/utils.cpp) reads a

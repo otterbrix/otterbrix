@@ -24,13 +24,13 @@ using namespace components::cursor;
 //       const session_id_t&,
 //       const std::string& query,
 //       const std::vector<std::pair<size_t, logical_value_t>>& params);
-// (see integration/cpp/wrapper_dispatcher.hpp:62 / .cpp:120-160). Each pair is
+// (see integration/cpp/wrapper_dispatcher.hpp / .cpp). Each pair is
 // {one-based placeholder index, value}; the dispatcher calls binder.bind(id, value)
 // then binder.finalize(), surfacing bind/finalize failures as an error cursor.
 //
 // logical_value_t is built with the templated ctor `logical_value_t{resource, T}`
 // where the C++ type of T selects the logical type via to_logical_type<T>()
-// (components/types/logical_value.hpp:136). The same construction is used in
+// (components/types/logical_value.hpp). The same construction is used in
 // components/sql/test/test_parameter.cpp (e.g. v(&resource, 10l) for BIGINT,
 // v(&resource, 1ul) for UBIGINT, v(&resource, 3.14) for DOUBLE,
 // v(&resource, true) for BOOLEAN, v(&resource, std::string("...")) for string).

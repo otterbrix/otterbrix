@@ -7,38 +7,35 @@
 #include <string>
 #include <vector>
 
-// Persistence gaps: restart/crash scenarios the write path must survive. Each test
-// encodes the DESIRED behavior and was written RED at the branch point, before the fix
-// it describes; each is now green and stands as the regression guard for that fix. The
-// diagnoses below are kept in the PAST tense on purpose — they say what the defect was,
+// Persistence gaps: restart/crash scenarios the write path must survive. Each test encodes
+// the DESIRED behavior and was written RED at the branch point, before the fix it describes.
+// The diagnoses below are kept in the PAST tense on purpose — they say what the defect was,
 // which is what makes a future regression recognisable.
 //
-// 1a/1b. type_spec_lost_across_restart_{decimal,list} — the .otbx checkpoint serializes
-//    each column type as ONE byte (data_table.cpp checkpoint():
-//    writer.write<uint8_t>(col.type().type())), so DECIMAL precision/scale and LIST
-//    child types never reach disk. load_from_disk rebuilds a bare complex_logical_type
-//    from that byte; for DECIMAL, to_physical_type() then reinterpret_casts a
-//    non-decimal extension as decimal_logical_type_extension (types.cpp) — the reloaded
-//    values are garbage/UB-adjacent. The LIST variant additionally exposes the WAL chunk
-//    codec (data_chunk_binary.cpp read_type_header has ARRAY and DECIMAL legs but NO
-//    LIST leg), so a variadic-list INSERT record crashes WAL replay at startup. The two
-//    variants are separate TEST_CASEs on purpose: the list crash is a process-killing
-//    SIGSEGV and must not mask the decimal symptom.
-// 2. default_lost_across_restart — column DEFAULTs USED TO be applied from the
-//    storage-layer column list, and the restart rehydration rebuilt that list from
-//    pg_attribute WITHOUT defaults (manager_disk_bootstrap.cpp: defs.emplace_back(name,
-//    type)), so a default silently became NULL in every session after the first. A2b
-//    moved the expansion ABOVE the journal: the dispatcher's enrich pass stamps the
-//    omitted columns and their values onto node_insert (build_insert_fill_list, the one
-//    reader of pg_attribute.attdefspec on the write path) and operator_insert
-//    materialises them before the append. The value now comes from the catalog, which
-//    survives a restart, and the constraint operators read the stored row rather than a
-//    plan-side guess — see test_persistence::default_{check,unique}_constraint_agrees_
-//    after_restart for the convergence of those two.
-// 3. create_then_kill_before_checkpoint — a freshly created .otbx that was never
-//    checkpointed still has meta_block == INVALID_INDEX in its header; after a crash
-//    (simulated by copying the live directory), reopening the copy must still start the
-//    engine and expose the (empty) table.
+// 1a/1b. type_spec_lost_across_restart_{decimal,list} — the .otbx checkpoint serializes each
+//    column type as ONE byte (data_table.cpp checkpoint(): writer.write<uint8_t>(
+//    col.type().type())), so DECIMAL precision/scale and LIST child types never reach disk.
+//    load_from_disk rebuilds a bare complex_logical_type from that byte; for DECIMAL,
+//    to_physical_type() then reinterpret_casts a non-decimal extension as
+//    decimal_logical_type_extension (types.cpp) — the reloaded values are garbage/UB-adjacent.
+//    The LIST variant additionally exposes the WAL chunk codec (data_chunk_binary.cpp
+//    read_type_header has ARRAY and DECIMAL legs but NO LIST leg), so a variadic-list INSERT
+//    record crashes WAL replay at startup. Separate TEST_CASEs on purpose: the list crash is a
+//    process-killing SIGSEGV and must not mask the decimal symptom.
+// 2. default_lost_across_restart — column DEFAULTs used to be applied from the storage-layer
+//    column list, and the restart rehydration rebuilt that list from pg_attribute WITHOUT
+//    defaults (manager_disk_bootstrap.cpp: defs.emplace_back(name, type)), so a default
+//    silently became NULL in every session after the first. The expansion moved ABOVE the
+//    journal: the dispatcher's enrich pass stamps the omitted columns and their values onto
+//    node_insert (build_insert_fill_list, the one reader of pg_attribute.attdefspec on the
+//    write path) and operator_insert materialises them before the append. The value now comes
+//    from the catalog, which survives a restart, and the constraint operators read the stored
+//    row rather than a plan-side guess — see test_persistence::default_{check,unique}_
+//    constraint_agrees_after_restart.
+// 3. create_then_kill_before_checkpoint — a freshly created .otbx that was never checkpointed
+//    still has meta_block == INVALID_INDEX in its header; after a crash (simulated by copying
+//    the live directory), reopening the copy must still start the engine and expose the
+//    (empty) table.
 
 using components::types::logical_type;
 
@@ -220,7 +217,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::default_lost_across_restart"
         }
 
         // NOT NULL DEFAULT: after the restart the INSERT must still succeed AND land the
-        // row. Before A2b the lost default made the agent reject the row while the cursor
+        // row. A lost default makes the agent reject the row while the cursor
         // still reported success — "success, 0 rows" — so the row count is asserted
         // separately from the verdict and neither alone is enough.
         {
@@ -280,7 +277,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::create_then_kill_before_chec
         std::filesystem::copy(config.main_path, crash_dir, std::filesystem::copy_options::recursive);
     }
 
-    // A7.6: record which of the crash image's .otbx files are never-checkpointed — headers
+    // Record which of the crash image's .otbx files are never-checkpointed — headers
     // only, exactly BLOCK_START (12288) bytes, meta_block INVALID — BEFORE the reopen, so
     // the "right reason" assertions below can prove the engine really loaded them as empty
     // DISK tables (a real storage grows its own file on CHECKPOINT) rather than leaving
@@ -330,7 +327,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::create_then_kill_before_chec
             CHECK(cur->size() == 0);
         }
 
-        // A7.6 "right reason" leg 1: the young table is ALIVE, not merely answered-around.
+        // "Right reason" leg 1: the young table is ALIVE, not merely answered-around.
         // Write through it and checkpoint: only a genuinely loaded DISK storage takes the
         // rows and flushes them into the very .otbx that was young.
         {
@@ -350,7 +347,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::create_then_kill_before_chec
         }
     }
 
-    // A7.6 "right reason" leg 2: the checkpoint physically reached the files that were
+    // "Right reason" leg 2: the checkpoint physically reached the files that were
     // young. An unloaded storage (the old accident: a warning deep in the metadata reader,
     // rows answered by the record-only branch) leaves the .otbx at its header-only size
     // forever; a loaded-as-empty DISK storage writes its first root and the file grows.
@@ -386,7 +383,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::create_then_kill_before_chec
         }
     }
 
-    // Recovery must not litter (A7.5): the engine owns the `table.otbx.*` sidecar namespace
+    // Recovery must not litter: the engine owns the `table.otbx.*` sidecar namespace
     // and writes exactly the `.wal_id` sidecar (staged via `.wal_id.tmp`). No quarantine,
     // backup, or any other sidecar may appear in the crash image — a stray there would make
     // the next open refuse the table.

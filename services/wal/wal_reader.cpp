@@ -42,12 +42,12 @@ namespace services::wal {
 
             auto db_name = entry.path().filename().string();
             // THE SAME classification the manager's startup scan applies
-            // (parse_database_dir_name, base.hpp). Replay used to walk EVERY
-            // directory: a foreign-named one was replayed in full while the manager
-            // refused to manage it and the wal ids it carries never bounded the id
-            // allocator — next_wal_id() could then reissue ids UNDER records this
-            // replay had already applied. Foreign content is skipped LOUDLY here
-            // exactly as it is there; the two walks must never disagree again.
+            // (parse_database_dir_name, base.hpp). Replay must not walk EVERY
+            // directory: a foreign-named one would be replayed in full while the
+            // manager refuses to manage it, and the wal ids it carries never bound
+            // the id allocator — next_wal_id() could then reissue ids UNDER records
+            // this replay had already applied. Foreign content is skipped LOUDLY
+            // here exactly as it is there; the two walks must never disagree.
             components::catalog::oid_t db_oid;
             if (!parse_database_dir_name(db_name, db_oid)) {
                 warn(log_,
@@ -172,9 +172,9 @@ namespace services::wal {
         // Keep only records belonging to committed transactions, and export this
         // database's committed txn ids into the caller's union set. Both are done by the
         // SHARED filter (filter_committed_records, wal.hpp) that wal_worker_t::load also
-        // applies — this used to be a second, independently written copy of the rule, and
-        // both copies tested membership in an unordered set of committed txn ids. Txn ids
-        // are recycled across restarts, so that test promoted uncommitted records of the
+        // applies — a second, independently written copy of the rule here drifts into
+        // testing membership in an unordered set of committed txn ids. Txn ids are
+        // recycled across restarts, so that test promotes uncommitted records of the
         // CURRENT incarnation on the strength of a COMMIT marker from a PREVIOUS one.
         return filter_committed_records(std::move(all_records), committed_out);
     }

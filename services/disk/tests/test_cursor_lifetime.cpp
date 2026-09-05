@@ -22,15 +22,16 @@
 #include <thread>
 #include <unistd.h>
 
-// A4: an ABANDONED fetch-next cursor must be releasable.
+// An ABANDONED fetch-next cursor must be releasable.
 //
 // storage_fetch_next_batch mints a cursor on the owning agent and erases it only along the
 // DRAIN paths — the source has to keep pulling until the scan runs out. A source that stops
-// early (an error mid-pump, a satisfied LIMIT, a dropped sub-plan) never gets there, so its
-// active_scans_ entry used to live for the life of the process. That entry gates compact():
-// the three compact sites skip any oid with a live cursor, because the cursor holds an
-// absolute row position into the un-swapped collection. The comment there promises the table
-// "compacts once the cursor drains" — which, for an abandoned cursor, is never.
+// early (an error mid-pump, a satisfied LIMIT, a dropped sub-plan) never gets there, so
+// without a release leg its active_scans_ entry lives for the life of the process. That entry
+// gates the whole checkpoint round: checkpoint_inner defers any oid with a live cursor —
+// neither compacting nor checkpointing it — because the cursor holds an absolute row position
+// into the un-swapped collection. The comment there promises the table "compacts and
+// checkpoints once the cursor drains", which for an abandoned cursor is never.
 //
 // storage_close_cursor is the release leg. These cases pin both halves of its contract: an
 // open cursor keeps the gate up, and closing it takes the gate back down.

@@ -174,8 +174,8 @@ namespace components::table {
                                            int64_t row_id,
                                            vector::vector_t& result,
                                            uint64_t result_idx) {
-        // state.child(0), not a default-constructed state: the validity bitmap's own pin OOM
-        // used to be recorded in a child nobody read (see column_fetch_state::child).
+        // state.child(0), not a default-constructed state: a throwaway state records the validity
+        // bitmap's own pin OOM in a child nobody reads (see column_fetch_state::child).
         auto& validity_state = state.child(0);
         validity.fetch_row(validity_state, row_id, result, result_idx);
         if (state.absorb_error(validity_state)) {

@@ -212,9 +212,9 @@ namespace core {
             value_ = std::move(other.value_);
             // MOVE the error, do not copy it: `other` is being consumed, and a copy here
             // reallocates the message onto the default resource, which is neither wrapper's
-            // arena. The NDEBUG branch below is `= default` and has always moved; this line
-            // read `other.error_` and so made Debug and Release disagree on where the message
-            // of a moved-from result lives.
+            // arena. The NDEBUG branch below is `= default` and therefore moves, so reading
+            // `other.error_` by name here would make Debug and Release disagree on where the
+            // message of a moved-from result lives.
             error_ = std::move(other.error_);
             error_checked_ = false;
             other.error_checked_ = true;

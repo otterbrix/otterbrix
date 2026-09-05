@@ -15,19 +15,17 @@
 
 // A DDL REWRITE MUST NEVER STAMP A CATALOG ROW WITH AN OID NOTHING ALLOCATED.
 //
-// The DDL path pre-allocates OIDs in one disk round and then rewrites the statement into
-// pg_class / pg_attribute / pg_depend rows synchronously, taking each identity out of that
-// batch. Two things could hand the rewrite fewer OIDs than it consumes:
+// The DDL path pre-allocates OIDs in one disk round, then rewrites the statement into pg_class /
+// pg_attribute / pg_depend rows synchronously, taking each identity out of that batch. Two things could
+// hand the rewrite fewer OIDs than it consumes: the allocation round refusing (BOTH of its failures arrive
+// as an EMPTY vector, so what came back has to be compared with the demand computed for it), and
+// compute_oid_demand drifting apart from the rewrite_* functions (different files, counts kept equal by
+// hand).
 //
-//   * the allocation round refuses (it reported BOTH of its failures as an EMPTY vector, and
-//     nothing compared what came back with the demand that had just been computed for it);
-//   * compute_oid_demand and the rewrite_* functions drift apart — they live in different
-//     files and their counts are kept equal by hand.
-//
-// Either way the batch runs out mid-rewrite, and the old guard was an assert inside
-// oid_batch_t: gone under NDEBUG, leaving a read PAST THE END of the vector whose result was
-// written into a DURABLE catalog. These cases pin the refusal instead — and pin that a demand
-// of zero stays a success, because DROP / ALTER TABLE really do rewrite without an OID.
+// Either way the batch runs out mid-rewrite, and an assert inside oid_batch_t is no guard: it is gone under
+// NDEBUG, leaving a read PAST THE END of the vector whose result is written into a DURABLE catalog. These
+// cases pin the refusal instead — and pin that a demand of zero stays a success, because DROP / ALTER TABLE
+// really do rewrite without an OID.
 
 namespace {
 
@@ -78,7 +76,7 @@ TEST_CASE("components::planner::ddl_oid_batch::a_round_that_delivered_fewer_oids
     REQUIRE(need == 3);
 
     // What a refused allocation round looks like to this call: the batch is short (here,
-    // empty — the exact value both failure branches of the round used to answer with).
+    // empty — the value both failure branches of the round answer with).
     components::planner::planner_t planner;
     auto rewritten = planner.create_plan(&resource, node, std::vector<oid_t>{}, need);
 
@@ -95,7 +93,7 @@ TEST_CASE("components::planner::ddl_oid_batch::a_rewrite_that_consumes_more_than
 
     // The demand and the batch agree, so the size check passes — and the rewrite still needs
     // one more OID than either of them says. This is the drift case: the batch runs out INSIDE
-    // walk_ddl, which is what the assert used to "guard" and what NDEBUG turned into an
+    // walk_ddl, where an assert only "guards" in Debug and NDEBUG turns the overrun into an
     // out-of-bounds read feeding a durable pg_attribute row.
     const std::vector<oid_t> batch{16384, 16385};
     components::planner::planner_t planner;

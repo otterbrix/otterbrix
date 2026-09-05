@@ -1,20 +1,20 @@
 // ============================================================================
-// C5c — A COMMITTED DELETE MAY NOT ERASE THE INDEX ENTRY UNDER AN OLDER READER.
+// A COMMITTED DELETE MAY NOT ERASE THE INDEX ENTRY UNDER AN OLDER READER.
 //
 // The index answer is a SUPERSET and nothing else: manager_index_t says so in as
-// many words, and since C4b the point fetch drops the ids the reader's snapshot
-// must not see (test_index_fetch_visibility). That contract has ONE direction that
-// is safe to be wrong in. Too MANY ids costs a fetch the table then discards; too
-// FEW is a silently wrong answer, because a row whose id the index never names is
-// never fetched and never filtered — the visibility check downstream cannot put
-// back what the index dropped.
+// many words, and the point fetch drops the ids the reader's snapshot must not see
+// (test_index_fetch_visibility). That contract has ONE direction that is safe to be
+// wrong in. Too MANY ids costs a fetch the table then discards; too FEW is a
+// silently wrong answer, because a row whose id the index never names is never
+// fetched and never filtered — the visibility check downstream cannot put back what
+// the index dropped.
 //
-// commit_deletes used to send the PHYSICAL erase to the index agents at commit
-// time. A reader whose snapshot is OLDER than that commit must still see the row —
-// its delete_id is above the reader's snapshot horizon, so the table keeps it
-// alive — but the index had already forgotten the id, so storage_fetch was never
-// even asked for it. Two overlapping transactions are the whole reproduction; no
-// checkpoint, no restart, no crash.
+// commit_deletes used to send the PHYSICAL erase to the index agents at commit time.
+// A reader whose snapshot is OLDER than that commit must still see the row — its
+// delete_id is above the reader's snapshot horizon, so the table keeps it alive —
+// but the index had already forgotten the id, so storage_fetch was never even asked
+// for it. Two overlapping transactions are the whole reproduction; no checkpoint, no
+// restart, no crash.
 //
 // The two SELECTs below differ ONLY in which column the equality names:
 //   WHERE id = ...   -> INDEXED   -> Index Scan -> storage_fetch (the broken leg)
@@ -22,15 +22,15 @@
 // Same session, same snapshot, same row. A disagreement between the two IS the
 // defect; agreement is the fix.
 //
-// THE EXPLAIN ASSERTION IS LOAD-BEARING. Without it this file is a full-scan test
-// wearing an index's name: if the planner stops routing `WHERE id = ...` to the
-// index for any reason, every assertion below still passes while the defect is
-// live. The plan is checked with the SAME query text the assertions use.
+// THE EXPLAIN ASSERTION IS LOAD-BEARING: without it this file is a full-scan test
+// wearing an index's name — if the planner stops routing `WHERE id = ...` to the
+// index for any reason, every assertion below still passes while the defect is live.
+// It is checked with the SAME query text the assertions use.
 //
-// THE ROW IS PAST 1024 ON PURPOSE, for the reason test_index_fetch_visibility
-// gives: version slots are addressed per row group while the point fetch names
-// collection-ABSOLUTE ids, so a row inside the first row group cannot tell a
-// correct rebase from a missing one.
+// THE ROW IS PAST 1024 ON PURPOSE, for the reason test_index_fetch_visibility gives:
+// version slots are addressed per row group while the point fetch names
+// collection-ABSOLUTE ids, so a row inside the first row group cannot tell a correct
+// rebase from a missing one.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -164,10 +164,10 @@ TEST_CASE("integration::cpp::index_delete_horizon::committed_delete_keeps_the_ol
     {
         auto cur = exec(dispatcher, reader, indexed_query());
         REQUIRE(cur->is_success());
-        // RED before C5c: commit_deletes physically erased the entry at commit
-        // time, so the index named no id, storage_fetch was never asked, and the
-        // reader lost a row its own snapshot still owns — while the scan leg above
-        // kept it. A SUBSET answer, which no downstream filter can undo.
+        // A physical erase at commit time leaves the index naming no id, so
+        // storage_fetch is never asked and the reader loses a row its own snapshot
+        // still owns — while the scan leg above keeps it. A SUBSET answer, which no
+        // downstream filter can undo.
         REQUIRE(cur->size() == 1);
     }
 

@@ -6,9 +6,9 @@
 // the view (and on REFRESH for a matview), so whatever is stored here IS the
 // query the engine will run. It must therefore be the text the user wrote.
 //
-// It used to be reconstructed by searching the raw SQL for the substring " AS "
-// and defaulting to "SELECT *" when that search missed — so `CREATE VIEW v AS\n
-// SELECT ...` (newline after AS) or `CREATE VIEW v AS(SELECT ...)` reported
+// Reconstructing it by searching the raw SQL for the substring " AS " and
+// defaulting to "SELECT *" when that search misses makes `CREATE VIEW v AS\n
+// SELECT ...` (newline after AS) and `CREATE VIEW v AS(SELECT ...)` report
 // SUCCESS while storing a query nobody wrote. The parser already knows where the
 // body starts: the grammar records the scanner's byte offset of the body's first
 // token in ViewStmt::query_location / CreateTableAsStmt::query_location.
@@ -22,21 +22,18 @@ namespace components::sql::transform {
 
     // Slice the body out of `raw_sql`: [query_location, query_end_location).
     //
-    // `query_end_location` is the offset of the first token of the trailing clause
-    // that follows the body (WITH CHECK OPTION / WITH [NO] DATA / DISTRIBUTED BY),
-    // or -1 when there is none. -1 means "to the end of the raw text", which is
-    // exact here because a statement that reaches the transformer is the ONLY
-    // statement of its parse: wrapper_dispatcher_t::execute_sql refuses a
-    // multi-statement query outright (it used to take the first statement and drop
-    // the rest — under which "to the end" would have swallowed the NEXT statement's
-    // text into the view body). Trailing whitespace and statement terminators are
-    // trimmed.
+    // `query_end_location` is the offset of the first token of the trailing clause that follows
+    // the body (WITH CHECK OPTION / WITH [NO] DATA / DISTRIBUTED BY), or -1 when there is none.
+    // -1 means "to the end of the raw text", which is exact here because a statement that reaches
+    // the transformer is the ONLY statement of its parse: wrapper_dispatcher_t::execute_sql
+    // refuses a multi-statement query outright, and taking the first statement and dropping the
+    // rest would make "to the end" swallow the NEXT statement's text into the view body. Trailing
+    // whitespace and statement terminators are trimmed.
     //
-    // Refuses LOUDLY (rule 6) when the text is unavailable: no raw SQL at all, a
-    // location the grammar never recorded (0) or deliberately disowned (-1, e.g.
-    // CREATE RECURSIVE VIEW, whose stored query is synthesized rather than
-    // written), a location past the end, or an empty slice. There is no default
-    // body — inventing one is exactly the defect this replaces.
+    // Refuses LOUDLY (rule 6) when the text is unavailable: no raw SQL at all, a location the
+    // grammar never recorded (0) or deliberately disowned (-1, e.g. CREATE RECURSIVE VIEW, whose
+    // stored query is synthesized rather than written), a location past the end, or an empty
+    // slice. There is no default body — inventing one stores a query nobody wrote.
     inline core::result_wrapper_t<std::string> view_body_text(std::pmr::memory_resource* resource,
                                                               const char* raw_sql,
                                                               int query_location,

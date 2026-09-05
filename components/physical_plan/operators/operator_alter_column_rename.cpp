@@ -53,16 +53,12 @@ namespace components::operators {
 
         // Keyed read of the table's live pg_attribute rows, then match the column BY NAME.
         //
-        // This used to key on attoid_ alone and no-op when it was INVALID_OID, on the stated
-        // premise that enrich_logical_plan had pre-stamped it. Nothing ever did:
-        // node_alter_column_t::set_attoid has no callers anywhere in the pipeline, so attoid_ was
-        // INVALID on every execution and ALTER TABLE RENAME COLUMN returned success having
-        // written nothing — the column kept its old name and the statement lied. This is the
-        // sibling of the DROP COLUMN defect B3c1 fixed by the same move, and the note pinning it
-        // sat in integration/cpp/test/test_multi_database_isolation.cpp.
-        //
-        // Resolving by (attrelid, attname) is also what planner.cpp::rewrite_alter_table's own
-        // comment always claimed the ALTER operators do. attoid_ stays a CROSS-CHECK: when a
+        // NAME, not attoid_: nothing in the pipeline stamps the node's attoid (node_alter_column_t::set_attoid
+        // has no callers), so keying on it and no-oping when it is INVALID_OID makes ALTER TABLE RENAME COLUMN
+        // report success having written nothing — the column keeps its old name and the statement lies. DROP
+        // COLUMN had the same defect from the same cause; the gate is
+        // integration/cpp/test/test_alter_rename_column.cpp. Resolving by (attrelid, attname) is also what
+        // planner.cpp::rewrite_alter_table states the ALTER operators do. attoid_ stays a CROSS-CHECK: when a
         // caller does stamp it, the row must be that row.
         if (old_name_.empty()) {
             mark_executed();
@@ -96,14 +92,12 @@ namespace components::operators {
         // RENAME is identity-preserving, so added_at MUST NOT change.
         std::int64_t att_added_at_commit_id = 0;
         for (auto& chunk : attr_batches) {
-            // A CHUNK NARROWER THAN THE READS BELOW IS A DIFFERENT ANSWER, NOT A MISS.
-            // The read was issued with an empty projection ("all columns"), so the
-            // reply's width is the width of the pg_attribute storage itself, and every
-            // row this build writes has all 12 columns (build_pg_attribute_row). The
-            // old guard both skipped narrow chunks in silence AND read the
-            // added_at_commit_id slot only when present, "tolerating" its absence as 0
-            // — a pre-MVCC compatibility this engine does not keep. The threshold is
-            // the largest ordinal read below: added_at_commit_id (10).
+            // A CHUNK NARROWER THAN THE READS BELOW IS A DIFFERENT ANSWER, NOT A MISS. The read was issued with
+            // an empty projection ("all columns"), so the reply's width is the width of the pg_attribute storage
+            // itself, and every row this build writes has all 12 columns (build_pg_attribute_row). Skipping a
+            // narrow chunk in silence, or reading added_at_commit_id only when present and tolerating its absence
+            // as 0, is a pre-MVCC compatibility this engine does not keep. The threshold is the largest ordinal
+            // read below: added_at_commit_id (10).
             if (chunk.column_count() <= catalog::pg_attribute_col::added_at_commit_id) {
                 std::string msg = "alter_column_rename: pg_attribute answered with ";
                 msg += std::to_string(chunk.column_count());
@@ -153,39 +147,28 @@ namespace components::operators {
         }
 
         if (attoid == catalog::INVALID_OID) {
-            // The column to rename is not there. This whole body used to sit INSIDE an
-            // `if (attoid != INVALID_OID)` with mark_executed() unconditionally after it,
-            // so a miss reported SUCCESS having renamed nothing — the exact silent success
-            // its DROP sibling had, and the reason the pipeline's oldest ALTER bug survived
-            // two rewrites. PostgreSQL refuses it: `column "x" of relation "y" does not
-            // exist`. There is no IF EXISTS form of RENAME COLUMN to honour — the grammar
-            // has none — so this refusal is unconditional.
+            // The column to rename is not there, and that is REFUSED rather than reported as a rename of
+            // nothing. PostgreSQL refuses it too: `column "x" of relation "y" does not exist`. There is no IF
+            // EXISTS form of RENAME COLUMN in the grammar, so this refusal is unconditional.
             //
-            // WHICH true sentence, though, depends on the table. A relkind='g' (document)
-            // table keeps its columns in pg_computed_column and has NO pg_attribute row
-            // for ANY of them, so the read above misses on every column of one — and
-            // "column b does not exist" about a column the user can SELECT is true only
-            // about the wrong catalog. The pg_class read below is on the refusal path
-            // anyway, for the relation's name; its row carries relkind too, so the
-            // refusal picks its wording from the same row instead of guessing. Both
-            // kinds are refused — the loudness is not keyed on the table, only the
-            // sentence is.
+            // WHICH true sentence, though, depends on the table. A relkind='g' (document) table keeps its columns
+            // in pg_computed_column and has NO pg_attribute row for ANY of them, so the read above misses on
+            // every column of one — and "column b does not exist" about a column the user can SELECT is true only
+            // about the wrong catalog. The pg_class read below is on the refusal path anyway, for the relation's
+            // name; its row carries relkind too, so the refusal picks its wording from the same row instead of
+            // guessing. Both kinds are refused — only the sentence is keyed on the table.
             //
-            // The document sentence says "not implemented" and not "does not exist"
-            // because that is what it is. The catalog half of a document rename is
-            // straightforward (pg_computed_column is versioned: a refcount=0 tombstone
-            // under the old name plus a live row carrying the same attoid under the new
-            // one, which the resolver picks up — measured on this branch). The STORAGE
-            // half cannot be completed: a relkind='g' column is bound to its physical
-            // column by the storage column's TYPE ALIAS (operator_resolve_table matches
-            // the resolved rows against data_table_t::copy_types()), and
-            // data_table_t::rename_column updates column_definition_t::name_ while
-            // column_definition_t::set_name leaves type_ alone — so the alias keeps the
-            // OLD name and the storage still reports success. Renaming would therefore
-            // leave the catalog naming a column no storage column answers to: the bind
-            // fails, and the field disappears from SELECT under BOTH names with its data
-            // unreadable. That is worse than the silent success this change removes, so
-            // it is refused until components/table carries the name into the alias.
+            // The document sentence says "not implemented" and not "does not exist" because that is what it is.
+            // The catalog half of a document rename is straightforward (pg_computed_column is versioned: a
+            // refcount=0 tombstone under the old name plus a live row carrying the same attoid under the new one,
+            // which the resolver picks up — measured). The STORAGE half cannot be completed: a relkind='g' column
+            // is bound to its physical column by the storage column's TYPE ALIAS (operator_resolve_table matches
+            // the resolved rows against data_table_t::copy_types()), and data_table_t::rename_column updates
+            // column_definition_t::name_ while column_definition_t::set_name leaves type_ alone — so the alias
+            // keeps the OLD name and the storage still reports success. Renaming would leave the catalog naming a
+            // column no storage column answers to: the bind fails, and the field disappears from SELECT under
+            // BOTH names with its data unreadable. That is worse than refusing, so it is refused until
+            // components/table carries the name into the alias.
             std::pmr::vector<std::uint64_t> cl_keys(resource_);
             cl_keys.emplace_back(catalog::pg_class_col::oid);
             auto [_cl, clf] = actor_zeta::send(ctx->disk_address,
@@ -283,33 +266,27 @@ namespace components::operators {
 
         // ARM THE STORAGE HALF.
         //
-        // The storage keeps its own copy of every column's name, and parts of the write
-        // path address columns by it (the append's column expansion, drop_storage_column).
-        // Leaving that copy on the old name would not be inert: the very next INSERT would
-        // expand its chunk against a name the catalog no longer uses.
+        // The storage keeps its own copy of every column's name, and parts of the write path address columns by
+        // it (the append's column expansion, drop_storage_column). Leaving that copy on the old name would not
+        // be inert: the very next INSERT would expand its chunk against a name the catalog no longer uses.
         //
-        // What this marker is NOT is the thing that keeps the column alive across a
-        // restart. manager_disk_t::rearm_dropped_column_blocks_sync (B3c2) used to
-        // reconcile storage columns against pg_attribute BY NAME and read a storage-only
-        // name as a DROP, so a catalog-only rename cost the column and its data at the next
-        // start. That walk now compares pg_attribute.attoid (RN-oid), which a rename does
-        // not move, and repairs the stale storage name from the catalog instead.
+        // What this marker is NOT is the thing that keeps the column alive across a restart. The bootstrap walk
+        // (manager_disk_t::rearm_dropped_column_blocks_sync) compares pg_attribute.attoid, which a rename does
+        // not move, and repairs the stale storage name from the catalog; reconciling BY NAME instead would read
+        // a storage-only name as a DROP and cost a catalog-only rename the column and its data at the next
+        // start.
         //
-        // WHY THE MARKER AND NOT A SEND FROM HERE — the same ordering B3c1 established for
-        // the DROP's physical release, in the ROLLBACK direction. The row appended above
-        // carries insert_id == this txn_id: an explicit ROLLBACK reverts it
-        // (storage_revert_appends) and a crash before the commit marker discards it. The
-        // storage rename is not undone by either. Renaming from here would therefore let a
-        // reverted ALTER leave the storage under the new name while the catalog went back
-        // to the old one — and that divergence is exactly what the bootstrap walk reads as
-        // a drop. So this operator only MARKS, and operator_commit_transaction_t performs
-        // the rename after the WAL commit marker and the publish barrier, in the same block
-        // that performs a committed DROP COLUMN's release.
+        // WHY THE MARKER AND NOT A SEND FROM HERE — the same ordering as the DROP's physical release, in the
+        // ROLLBACK direction. The row appended above carries insert_id == this txn_id: an explicit ROLLBACK
+        // reverts it (storage_revert_appends) and a crash before the commit marker discards it, while the
+        // storage rename is undone by neither. Renaming from here would let a reverted ALTER leave the storage
+        // under the new name while the catalog went back to the old one — the divergence the bootstrap walk
+        // reads as a drop. So this operator only MARKS, and operator_commit_transaction_t performs the rename
+        // after the WAL commit marker and the publish barrier.
         //
-        // The marker rides pg_attribute_commit_id_backfill_t because it has exactly that
-        // lifetime (drained at commit, discarded whole by txn_abort_drain_t). Its
-        // storage_rename kind patches no commit_id column — RENAME preserves added_at — and
-        // the commit operator keeps it out of the batch that does.
+        // The marker rides pg_attribute_commit_id_backfill_t because it has exactly that lifetime (drained at
+        // commit, discarded whole by txn_abort_drain_t). Its storage_rename kind patches no commit_id column —
+        // RENAME preserves added_at — and the commit operator keeps it out of the batch that does.
         ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
             attoid,
             components::pg_attribute_commit_id_backfill_t::kind_t::storage_rename,

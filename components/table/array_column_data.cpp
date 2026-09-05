@@ -67,8 +67,8 @@ namespace components::table {
         // Scan the array-level validity into the result first (mirrors struct/scan_count);
         // without this a row stored as a whole-array NULL reads back as a non-null array.
         // The validity child writes into the parent result vector, so it targets the parent's
-        // result base — NOT the element offset (the old `+= element_count` bookkeeping drifted
-        // it by arr_size per row and folded NULL bits on any multi-vector scan into one chunk).
+        // result base — NOT the element offset: a `+= element_count` bookkeeping drifts it by
+        // arr_size per row and folds any multi-vector scan's NULL bits into one chunk.
         state.child_states[0].result_offset = state.result_offset;
         validity.scan(vector_index, state.child_states[0], result, count);
         size_t remaining_count = arr_size * count;
@@ -271,8 +271,8 @@ namespace components::table {
             }
         }
 
-        // Same window-run walk as update() above — and ONLY the walk: the whole-range call
-        // that used to follow the loop here applied the entire update a SECOND time.
+        // Same window-run walk as update() above — and ONLY the walk: a whole-range call after
+        // the loop would apply the entire update a SECOND time.
         auto& child_vector = update_vector.entry();
         const int64_t child_start = child_column->start();
         const int64_t cap = static_cast<int64_t>(vector::DEFAULT_VECTOR_CAPACITY);
@@ -301,8 +301,8 @@ namespace components::table {
                                         int64_t row_id,
                                         vector::vector_t& result,
                                         uint64_t result_idx) {
-        // state.child(0), not a default-constructed state: the validity bitmap's pin OOM used to
-        // land in a child nobody read (see column_fetch_state::child).
+        // state.child(0), not a default-constructed state: a throwaway state lands the validity
+        // bitmap's pin OOM in a child nobody reads (see column_fetch_state::child).
         auto& validity_state = state.child(0);
         validity.fetch_row(validity_state, row_id, result, result_idx);
         if (state.absorb_error(validity_state)) {
@@ -393,8 +393,8 @@ namespace components::table {
         // The base walk of the own data_ tree finds nothing (an array node keeps no segments,
         // see initialize_column above); it is kept so every node reports through one path.
         // What a reloaded array column actually owns is its children: the validity bitmap and
-        // the element column, each sitting on the blocks initialize_column registered. Before
-        // F6 this override did not exist and compact leaked all of them.
+        // the element column, each sitting on the blocks initialize_column registered. Without
+        // this override compact leaks all of them.
         column_data_t::collect_disk_block_ids(out);
         validity.collect_disk_block_ids(out);
         child_column->collect_disk_block_ids(out);

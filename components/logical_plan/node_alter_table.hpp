@@ -21,11 +21,9 @@ namespace components::logical_plan {
         alter_table_kind kind{alter_table_kind::drop_column};
         std::string column_name;
         std::string new_column_name; // rename_column only
-        // drop_column only: `DROP COLUMN IF EXISTS`. The grammar has carried this
-        // since the rule was written (gram.y sets AlterTableCmd::missing_ok); the
-        // transformer used to discard it, which was invisible while a missing
-        // column was a silent success either way. It stops being invisible the
-        // moment the miss becomes an error: IF EXISTS is the ONE form PostgreSQL
+        // drop_column only: `DROP COLUMN IF EXISTS`. The grammar carries it (gram.y
+        // sets AlterTableCmd::missing_ok) and the transformer must not discard it:
+        // a missing column is an error, and IF EXISTS is the ONE form PostgreSQL
         // lets pass, so without this flag the loud path would refuse it too.
         bool missing_ok{false};
         // drop_column only: RESTRICT/CASCADE. gram.y fills AlterTableCmd::behavior;

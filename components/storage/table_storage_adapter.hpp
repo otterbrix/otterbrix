@@ -259,13 +259,11 @@ namespace components::storage {
         // table-layer append chain. The agent_disk append handler reads the wrapper and turns
         // any error into a graceful txn abort.
         //
-        // THIS IS ALSO THE REPLAY APPEND. There used to be a second `append(data)` above with
-        // this exact body, every wrapper bound to a [[maybe_unused]] local and asserted rather
-        // than returned, on the reasoning that "replay records are already schema-aligned and
-        // single-threaded, so a failure here is a hard bug". out_of_memory is not a bug, and
-        // under NDEBUG the asserts are not there at all: the caller got the start_row of an
-        // append that never happened. The direct-write caller passes transaction_data{0, 0},
-        // which is what that overload's finalize_append used.
+        // THIS IS ALSO THE REPLAY APPEND, and it reports for replay too. "Replay records are
+        // already schema-aligned and single-threaded, so a failure here is a hard bug" does not
+        // justify asserting instead of returning: out_of_memory is not a bug, and under NDEBUG
+        // an assert is not there at all, so the caller would get the start_row of an append
+        // that never happened. The direct-write caller passes transaction_data{0, 0}.
         [[nodiscard]] core::result_wrapper_t<uint64_t> append(vector::data_chunk_t& data,
                                                               table::transaction_data txn) override {
             table::table_append_state append_state(resource_);
@@ -292,9 +290,8 @@ namespace components::storage {
         // columns — but it still has to happen: the WAL record carries the CATALOG-wide chunk,
         // and at replay time the storage is narrower still.
         //
-        // "SHOULD" IS NOT A CHANNEL, AND THAT IS WHAT CHANGED. Both refusals used to be
-        // asserts over [[maybe_unused]] locals — absent entirely under NDEBUG — so a replayed
-        // committed row that this leg declined to write was reported to
+        // "SHOULD" IS NOT A CHANNEL. As asserts — absent entirely under NDEBUG — both refusals
+        // would report a replayed committed row this leg declined to write to
         // agent_disk_t::direct_update_sync as written, and from there to base_spaces' replay
         // loop as restored. Recovery cannot tell "there was nothing to do" from "I could not do
         // it" unless this says so.
@@ -302,11 +299,11 @@ namespace components::storage {
         // AND ON THIS PATH THE ANSWER IS RECOVER-THEN-REPORT, NOT REFUSE-UP-FRONT. A value in
         // an unmaterialized column at REPLAY time means the column's materialising INSERT was
         // itself refused earlier in the replay (and logged) — the value has no column to land
-        // in either way. The row's materialized columns are still addressable, and the
-        // NDEBUG build this channel replaced DID restore them (data_table_t::update builds
-        // its column list from its own column_count() and never reads the chunk's trailing
-        // columns), so refusing before table_.update would restore LESS than the silent code
-        // it replaced. The trim is applied unconditionally, the materialized part is written
+        // in either way. The row's materialized columns are still addressable, and a silent
+        // trim DOES restore them (data_table_t::update builds its column list from its own
+        // column_count() and never reads the chunk's trailing columns), so refusing before
+        // table_.update would restore LESS than saying nothing at all would. The trim is
+        // applied unconditionally, the materialized part is written
         // IN PLACE, and the answer names the value that could not be restored — the txn
         // overload below keeps the up-front refusal, because there the statement can still
         // be refused BEFORE anything is journalled.
@@ -318,9 +315,9 @@ namespace components::storage {
             if (upd_r.has_error()) {
                 return core::error_on(resource_, upd_r.error());
             }
-            // {0, applied-count} is the half of the answer the old void signature dropped:
-            // data_table_t::update filters row ids at or past MAX_ROW_ID, so "applied to 0
-            // of them" used to report exactly like "applied to all of them".
+            // {0, applied-count} is the half of the answer a void signature cannot carry:
+            // data_table_t::update filters row ids at or past MAX_ROW_ID, so "applied to 0 of
+            // them" would otherwise read exactly like "applied to all of them".
             const uint64_t applied = upd_r.value().second;
             if (applied != requested) {
                 std::pmr::string what{"replay update applied ", resource_};
@@ -464,9 +461,8 @@ namespace components::storage {
         // trailing columns are dropped UNCONDITIONALLY (recovery goes on to restore the
         // materialized part of the row), and the answer names any journalled value that had
         // to be dropped with them, so the replay loop can say what was lost instead of
-        // either losing it silently (the pre-channel shape) or refusing the whole row (which
-        // restores less than the silent shape did). See the replay `update` for the full
-        // reasoning.
+        // either losing it silently or refusing the whole row (which restores less than
+        // saying nothing would). See the replay `update` for the full reasoning.
         [[nodiscard]] core::error_t trim_unmaterialized_payload_for_replay(vector::data_chunk_t& data) const {
             const size_t physical = table_.column_count();
             if (data.column_count() <= physical) {
@@ -518,8 +514,8 @@ namespace components::storage {
         // An ordinal at or past the physical schema is DROPPED here on purpose: it names a column
         // pg_attribute has and no INSERT has materialized, which null_fill_unmaterialized answers.
         // The result may legitimately be EMPTY — a projection naming only such columns — and that
-        // is a row-count-only scan, not an error (see table_scan_state::column_ids). It used to be
-        // an empty list handed to a scan that asserted against exactly that.
+        // is a row-count-only scan, not an error (see table_scan_state::column_ids) — the scan
+        // must not assert on an empty column list.
         std::vector<table::storage_index_t> storage_indices(const std::vector<size_t>* projected_cols) const {
             std::vector<table::storage_index_t> out;
             const size_t physical = table_.column_count();

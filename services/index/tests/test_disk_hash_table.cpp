@@ -26,28 +26,20 @@ namespace {
         return dir / name;
     }
 
-    // The truncated-key question is asked through a TEMPLATE parameter now, not a virtual
-    // hook, so a test lambda IS the loader and the adapter that used to wrap one is gone.
-    // The question and every answer below are unchanged except for the `lock_bitcask`
-    // flag, which every lambda here already ignored and which had no caller left once the
-    // reads moved to the agent: the loader is chosen per call by the owning store, which
-    // holds its own lock.
+    // The truncated-key question is asked through a TEMPLATE parameter, not a virtual hook, so a
+    // test lambda IS the loader and no adapter is needed to wrap one.
     //
-    // A case with no truncated entry to resolve passes this one, and it now REFUSES rather
-    // than answering false. The promise those cases rely on -- every key here is inside
-    // inline_key_limit, so the loader is never consulted at all -- used to live in a
-    // comment; as a refusal it is a CHECKED assertion, because a case that quietly grew a
-    // long key would stop returning "no such row" for reasons unrelated to what it tests
-    // and start failing at the walk, where it belongs. A value, not a Catch2 FAIL: rules 2
-    // and 9 keep exceptions out, and the value form is loud for free.
+    // A case with no truncated entry to resolve passes this loader, and it REFUSES rather than
+    // answering false. That turns the promise those cases rely on -- every key here is inside
+    // inline_key_limit, so the loader is never consulted at all -- into a CHECKED assertion: a case
+    // that quietly grew a long key would start failing at the walk, where it belongs. A value, not
+    // a Catch2 FAIL: rules 2 and 9 keep exceptions out.
     //
-    // IT TAKES THE RESOURCE rather than reaching for the process default one: every case
-    // that passes this loader opens with a live `resource` of its own, and the refusal's
-    // message is an allocation like any other. A factory and not a variable, because a
-    // namespace-scope object has no case's arena to see; the walks take the loader as
-    // `const loader_t&` and never store it (disk_hash_table.hpp: get_all/get/erase/keys_equal
-    // all take it by const reference and call it inline), so the temporary this returns
-    // outlives every use it is put to.
+    // IT TAKES THE RESOURCE rather than reaching for the process default one: every case that
+    // passes this loader opens with a live `resource` of its own, and the refusal's message is an
+    // allocation like any other. A factory and not a variable, because a namespace-scope object has
+    // no case's arena to see; the walks take the loader as `const loader_t&` and never store it, so
+    // the temporary this returns outlives every use it is put to.
     auto loader_must_not_be_consulted(std::pmr::memory_resource* resource) {
         return [resource](uint32_t, uint64_t) -> core::result_wrapper_t<std::pmr::string> {
             return core::error_t(core::error_code_t::io_error,
@@ -243,23 +235,21 @@ TEST_CASE("services::index::disk_hash_table::truncated_collision_requires_loader
 // A CHANGED OUTCOME, WRITTEN DOWN RATHER THAN DISCOVERED LATER. The case above is the same
 // collision pair with a loader that ANSWERS; this one is the pair with a loader that cannot.
 //
-// The entry that cannot be read belongs to a DIFFERENT key. It shares the probe's 32-bit
-// key_hash and its 32-byte stored prefix -- that is what makes the pair a collision -- and
-// the probe's own entry has ALREADY been matched and collected by the time the walk reaches
-// it. Before the loader could refuse, keys_equal answered `false` here and the probe got its
-// correct, complete answer. Now the walk refuses, and the probe gets nothing.
+// The entry that cannot be read belongs to a DIFFERENT key. It shares the probe's 32-bit key_hash
+// and its 32-byte stored prefix -- that is what makes the pair a collision -- and the probe's own
+// entry has ALREADY been matched and collected by the time the walk reaches it. Before the loader
+// could refuse, keys_equal answered `false` here and the probe got its correct, complete answer.
+// Now the walk refuses, and the probe gets nothing.
 //
-// IT IS ACCEPTED, and the reason is that "it belongs to someone else" is not something this
-// walk knows: the only thing that could establish it is the record the loader could not
-// read. Answering `false` for an entry it could not read is a GUESS, and it is the very
-// guess this class was fixed to stop making -- in the other direction it drops a row of the
-// probe's own key and reports success over it. There is no third answer available: the walk
-// either reads the record or does not know.
+// IT IS ACCEPTED, because "it belongs to someone else" is not something this walk knows: the only
+// thing that could establish it is the record the loader could not read. Answering `false` for an
+// entry it could not read is a GUESS, and it is the very guess this class was fixed to stop making
+// -- in the other direction it drops a row of the probe's own key and reports success over it.
+// There is no third answer available.
 //
-// The price is real and it is exactly this: a probe can lose an answer it would have got had
-// a STRANGER's record been readable. It is a refusal, not a wrong answer, and the next read
-// after the device recovers is correct -- so it is bounded by the fault, and the fault is
-// already loud.
+// The price is exactly this: a probe can lose an answer it would have got had a STRANGER's record
+// been readable. It is a refusal, not a wrong answer, and the next read after the device recovers
+// is correct.
 TEST_CASE("services::index::disk_hash_table::a_colliding_stranger_that_cannot_be_read_refuses_the_whole_walk") {
     env_var_guard_t seed_guard("OTTERBRIX_DISK_HASH_SEED", "0");
     auto resource = core::pmr::otterbrix_resource();
@@ -281,17 +271,16 @@ TEST_CASE("services::index::disk_hash_table::a_colliding_stranger_that_cannot_be
     REQUIRE_FALSE(table.put(enc_a, 777, 1, 100).contains_error());
 
     // WHERE THE KEY THE LOADER HANDS BACK LIVES, asked at the PRODUCER. The concept spells
-    // std::pmr::string precisely so the one allocation an answer costs belongs to the
-    // caller's arena, and this case HAS one -- so the crossing helper must be given it
-    // rather than reaching for the process default. enc_a is 205 bytes, past any small-string
-    // buffer, so this is a real allocation and not just a stored allocator.
+    // std::pmr::string precisely so the one allocation an answer costs belongs to the caller's
+    // arena, and this case HAS one -- so the crossing helper must be given it rather than reaching
+    // for the process default. enc_a is 205 bytes, past any small-string buffer, so this is a real
+    // allocation and not just a stored allocator.
     //
-    // ASKED HERE AND NOT AT A CONSUMER because the answer would not survive the trip: a
-    // walk hands its refusal on through VALUE_OR_RETURN, which returns error() by const
-    // reference into result_wrapper_t(const error_t&) -- a COPY, and std::pmr::string's copy
-    // constructor does not propagate the allocator (core/result_wrapper.hpp:190 says so in
-    // its own DEBT note). This is the success path, where nothing copies, so the allocator
-    // reaches the comparison intact.
+    // ASKED HERE AND NOT AT A CONSUMER because the answer would not survive the trip: a walk hands
+    // its refusal on through VALUE_OR_RETURN, which returns error() by const reference into
+    // result_wrapper_t(const error_t&) -- a COPY, and std::pmr::string's copy constructor does not
+    // propagate the allocator (core/result_wrapper.hpp says so in its own DEBT note). This is the
+    // success path, where nothing copies, so the allocator reaches the comparison intact.
     const auto produced_key = as_loader_key(&resource, enc_a);
     REQUIRE(produced_key.get_allocator().resource() == &resource);
 
@@ -390,21 +379,17 @@ TEST_CASE("services::index::disk_hash_table::erase_invokes_key_loader_for_trunca
     REQUIRE_FALSE(must_read(table.get(long_key, source_6)).has_value());
 }
 
-// THE THIRD ANSWER, pinned at the layer that produces it -- and this IS the behavioural
-// pin, not a compile-time one. The note that used to stand here said the red->green lived
-// one layer up, in
-// services/index/tests/test_bitcask_index_disk.cpp::find_refuses_when_a_long_keys_record_cannot_be_read,
-// and that was wrong in a way worth writing down: find() has a SECOND reason to refuse on
-// that fixture (its own read_rows_at over the same truncated segment), so it stays green
-// even when keys_equal GUESSES "yes" on an entry nothing could decide. Measured, not
-// argued: with `return true` substituted for the VALUE_OR_RETURN in keys_equal, that case
-// passed all 19 of its assertions and THIS one failed on the REQUIRE below.
+// THE THIRD ANSWER, pinned at the layer that produces it. The store-level case
+// (test_bitcask_index_disk.cpp::find_refuses_when_a_long_keys_record_cannot_be_read) cannot stand
+// alone for it: find() has a SECOND reason to refuse on that fixture -- its own read_rows_at over
+// the same truncated segment -- so it stays green even when keys_equal GUESSES "yes" on an entry
+// nothing could decide. Measured, not argued: with `return true` substituted for the
+// VALUE_OR_RETURN in keys_equal, that case passed all 19 of its assertions and THIS one failed on
+// the REQUIRE below.
 //
-// The layer matters because only here is the guess visible. get_all is asked with a loader
-// that REFUSES, so any decided answer -- a row, or an empty list -- is a decision nothing
-// could have made: the record that alone could decide is the one the loader could not read.
-// (The store-level case has since grown the same observation against its own keydir, so it
-// is no longer blind either; the two now fail together.)
+// Only here is the guess visible. get_all is asked with a loader that REFUSES, so any decided
+// answer -- a row, or an empty list -- is a decision nothing could have made: the record that alone
+// could decide is the one the loader could not read.
 TEST_CASE("services::index::disk_hash_table::truncated_entry_refuses_when_the_record_cannot_be_read") {
     auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("disk_hash_table_loader_refuses.data");
@@ -433,7 +418,7 @@ TEST_CASE("services::index::disk_hash_table::truncated_entry_refuses_when_the_re
                              std::pmr::string{"record unreadable", &resource});
     };
 
-    // R1a. Both readers of keys_equal hand the refusal on instead of reading it as
+    // Both readers of keys_equal hand the refusal on instead of reading it as
     // "continue, not your key". get_all throws away what it had collected: the refusal is
     // TOTAL, the same shape as the page it could not read.
     auto read = table.get_all(long_key, refuses);
@@ -455,9 +440,9 @@ TEST_CASE("services::index::disk_hash_table::truncated_entry_refuses_when_the_re
     REQUIRE(still_there->value == 777);
 }
 
-// R1b. THE LEGAL "no" IS STILL A "no". The loader ANSWERED, and the whole key it produced
-// is not the probe -- that is an answer, not a refusal, and the fix must not swallow it
-// into the channel it just opened. Probing with the key that was PUT is what makes the
+// THE LEGAL "no" IS STILL A "no". The loader ANSWERED, and the whole key it produced is not
+// the probe -- that is an answer, not a refusal, and it must not be swallowed into the error
+// channel. Probing with the key that was PUT is what makes the
 // loader reachable at all: get_all screens slots on the 32-bit key_hash first, so a probe
 // for a different key never gets as far as keys_equal (which is why
 // long_key_prefix_and_loader above can pass a loader that is never called).
@@ -485,7 +470,7 @@ TEST_CASE("services::index::disk_hash_table::truncated_entry_answers_no_when_the
     REQUIRE(loader_calls == 1);
 }
 
-// R1c. AN INLINE KEY NEVER ASKS. loader_must_not_be_consulted refuses on sight, so this
+// AN INLINE KEY NEVER ASKS. loader_must_not_be_consulted refuses on sight, so this
 // case is green only because the loader is not reached at all -- which is the property the
 // twenty-odd other cases that pass it silently depend on.
 TEST_CASE("services::index::disk_hash_table::inline_entry_never_reaches_a_refusing_loader") {
@@ -796,7 +781,7 @@ TEST_CASE("services::index::disk_hash_table::create_returns_a_usable_table") {
     auto result = disk_hash_table_t::create(path, 8, &resource);
     REQUIRE_FALSE(result.has_error());
     // A unique_ptr now: the table stopped being reference-counted when the index facade
-    // stopped holding a second reference to it across the actor boundary (C2c).
+    // stopped holding a second reference to it across the actor boundary.
     auto table = std::move(result.value());
     REQUIRE(table);
     REQUIRE_FALSE(table->put("k", 42, 0, 0).contains_error());
@@ -806,13 +791,12 @@ TEST_CASE("services::index::disk_hash_table::create_returns_a_usable_table") {
 }
 
 // --- for_each: behavioural gate on walk order and capture lifetime -----------
-// for_each's ORDER is observable, not an implementation detail: both production
-// callers (bitcask_index_disk_t::load_entries and ::merge_immutable_segments)
-// accumulate through a by-reference capture, so the sequence for_each hands out is
-// the sequence they build -- load_entries' duplicate entries and the merge's ref
-// list come out in exactly this order. The cases below pin that walk (buckets
-// ascending, primary page before its overflow chain, slots 0..n-1 inside a page)
-// so that a table which is merely "still complete" cannot pass.
+//
+// for_each's ORDER is observable, not an implementation detail: both production callers
+// (bitcask_index_disk_t::load_entries and ::merge_immutable_segments) accumulate through a
+// by-reference capture, so the sequence for_each hands out is the sequence they build. The cases
+// below pin that walk (buckets ascending, primary page before its overflow chain, slots 0..n-1
+// inside a page) so that a table which is merely "still complete" cannot pass.
 
 TEST_CASE("services::index::disk_hash_table::for_each_walks_duplicates_in_insertion_order") {
     auto resource = core::pmr::otterbrix_resource();
@@ -1020,20 +1004,17 @@ TEST_CASE("services::index::disk_hash_table::for_each_delivers_every_entry_befor
 
 // --- an unreadable page must REFUSE the walk, not shorten its answer ---------
 //
-// Every walk this class performs -- get_all, get, for_each -- follows a bucket's page
-// chain, and every one of them used to `break` out of that chain when read_page said no,
-// returning whatever it had collected so far with no way to say that it stopped early.
-// The caller cannot tell "this key has three rows" from "the disk would not let me finish
-// counting": a SUBSET dressed as the whole answer, which is a wrong answer rather than a
-// slow one.
+// Every walk this class performs -- get_all, get, for_each -- follows a bucket's page chain, and a
+// `break` out of that chain when read_page says no would return whatever had been collected so far
+// with no way to say it stopped early. The caller could not tell "this key has three rows" from
+// "the disk would not let me finish counting": a SUBSET dressed as the whole answer.
 //
-// THE INJECTION IS THE FILESYSTEM, not a seam: read_page calls an overflow page
-// unreadable when it sits past the end of the overflow file, and file_size() is an fstat
-// per call on a still-open descriptor, so truncating that file from underneath a live
-// table produces exactly the refusal a short/rotten file produces in production. The
-// bytes are read back and restored afterwards through the SAME inode (truncate does not
-// replace it), so the table is provably intact on the other side and the case can pin
-// that the refusal is temporary rather than destructive.
+// THE INJECTION IS THE FILESYSTEM, not a seam: read_page calls an overflow page unreadable when it
+// sits past the end of the overflow file, and file_size() is an fstat per call on a still-open
+// descriptor, so truncating that file from underneath a live table produces exactly the refusal a
+// short/rotten file produces in production. The bytes are read back and restored afterwards through
+// the SAME inode (truncate does not replace it), so the table is provably intact on the other side
+// and the case can pin that the refusal is temporary.
 namespace {
     // Read a file whole, so the injection below can put it back exactly as it was.
     std::string read_file_bytes(const std::filesystem::path& path) {
@@ -1121,8 +1102,8 @@ TEST_CASE("services::index::disk_hash_table::reads_refuse_when_an_overflow_page_
     REQUIRE(walk.contains_error());
     REQUIRE(seen < static_cast<size_t>(entry_count));
 
-    // ... and so does the erase, whose false used to mean BOTH "no such key" and "the
-    // chain ran out from under me" -- the second of which stopped
+    // ... and so does the erase, whose bare false would mean BOTH "no such key" and "the chain
+    // ran out from under me" -- the second of which stops
     // bitcask_index_disk_t::erase_all_refs_for_key's loop as if it were done. Probed with
     // a key that is NOT in the table, because that is the probe which has to walk the
     // chain all the way to the unreadable page before it can answer.
@@ -1252,14 +1233,14 @@ TEST_CASE("services::index::disk_hash_table::split_refuses_when_a_source_page_ca
 }
 
 // ---------------------------------------------------------------------------------------
-// THE OPEN PATH REFUSES WHAT IT CANNOT READ OR VERIFY (wave entries #30/#119/#234/#288).
 //
-// The helpers below tamper with the on-disk header the way a torn write or a rotten
-// sector would, and then re-seal it the way the FIX seals every header it writes: an
-// 8-byte magic at [0,8) and a CRC32C over the six header fields [12,40) stored at [8,12).
-// A case that wants the seal VALID recomputes it after tampering, so the refusal it
-// asserts can only come from the specific consistency check it targets, never from the
-// checksum arm.
+// THE OPEN PATH REFUSES WHAT IT CANNOT READ OR VERIFY.
+//
+// The helpers below tamper with the on-disk header the way a torn write or a rotten sector would,
+// and then re-seal it the way persist_header seals every header it writes: an 8-byte magic at [0,8)
+// and a CRC32C over the six header fields [12,40) stored at [8,12). A case that wants the seal
+// VALID recomputes it after tampering, so the refusal it asserts can only come from the specific
+// consistency check it targets, never from the checksum arm.
 
 #include "absl/crc/crc32c.h"
 
@@ -1278,8 +1259,8 @@ namespace {
         }
     }
 
-    // Re-seal the header page the way persist_header does after the fix: magic at [0,8),
-    // CRC32C of [12,40) at [8,12).
+    // Re-seal the header page the way persist_header does: magic at [0,8), CRC32C of [12,40)
+    // at [8,12).
     void reseal_hash_header(std::string& bytes) {
         std::memcpy(bytes.data(), hash_header_magic, sizeof(hash_header_magic));
         const auto crc = static_cast<uint32_t>(absl::ComputeCrc32c(absl::string_view(bytes.data() + 12, 28)));
@@ -1287,10 +1268,10 @@ namespace {
     }
 } // namespace
 
-// Wave entry #30. count_entries_unlocked used to `break` out of a bucket chain whose page
-// could not be read and hand open_or_create a COUNT OF THE READABLE PART -- so the table
-// opened with an entry_count_ (and therefore a load factor) that silently understated the
-// file. A walk that could not finish must refuse, and the open must hand that refusal on.
+// count_entries_unlocked must not `break` out of a bucket chain whose page could not be read
+// and hand open_or_create a COUNT OF THE READABLE PART: the table would open with an
+// entry_count_ (and therefore a load factor) that silently understates the file. A walk that
+// could not finish refuses, and the open hands that refusal on.
 TEST_CASE("services::index::disk_hash_table::open_refuses_when_the_entry_count_cannot_be_counted") {
     auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("hash_open_count_refusal.data");
@@ -1309,8 +1290,8 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_when_the_entry_count_c
     }
 
     // Cut the file mid-table: the header and the first four bucket pages survive, the last
-    // four bucket pages do not. Before the fix this opened fine and counted only what the
-    // readable half held.
+    // four bucket pages do not. An open that swallowed the unreadable page would count only
+    // what the readable half holds.
     std::filesystem::resize_file(path, static_cast<uintmax_t>(5) * disk_hash_table_t::page_size);
 
     auto reopened = disk_hash_table_t::create(path, 8, &resource);
@@ -1319,10 +1300,10 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_when_the_entry_count_c
     REQUIRE(reopened.error().type == core::error_code_t::io_error);
 }
 
-// Wave entry #119. load_existing_file used to meet an INCONSISTENT level/split_bucket pair
-// -- a header where 2^level + split_bucket != bucket_count -- and silently REWRITE it from
-// the bucket count. The header is re-sealed with a VALID checksum here, so the refusal
-// this asserts can only come from the linear-state check itself.
+// An INCONSISTENT level/split_bucket pair -- a header where 2^level + split_bucket !=
+// bucket_count -- must be refused, not silently REWRITTEN from the bucket count. The header is
+// re-sealed with a VALID checksum here, so the refusal this asserts can only come from the
+// linear-state check itself.
 TEST_CASE("services::index::disk_hash_table::open_refuses_a_corrupt_linear_hash_state_instead_of_repairing_it") {
     auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("hash_open_linear_state_refusal.data");
@@ -1338,8 +1319,7 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_a_corrupt_linear_hash_
 
     auto bytes = read_file_bytes(path);
     // level 3 says base = 8; split stays 0; 8 + 0 != 32, so the pair no longer describes
-    // the bucket count. Before the fix the open repaired this silently and reported
-    // nothing.
+    // the bucket count. An open that repaired this would do so silently and report nothing.
     write_le32_at(bytes, 28, 3);
     reseal_hash_header(bytes);
     restore_file_bytes(path, bytes);
@@ -1349,9 +1329,9 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_a_corrupt_linear_hash_
     REQUIRE(reopened.has_error());
 }
 
-// Wave entry #288. The second silent auto-repair in the same function: a stored
-// next_overflow_page BELOW the overflow id base was clamped up to the base and the open
-// went on. Same shape as #119, same channel, same verdict. The seal is VALID here too.
+// The second silent auto-repair in the same function: a stored next_overflow_page BELOW the
+// overflow id base must be refused, not clamped up to the base. Same shape as the linear-state
+// case above, same channel, same verdict. The seal is VALID here too.
 TEST_CASE("services::index::disk_hash_table::open_refuses_a_corrupt_overflow_cursor_instead_of_clamping_it") {
     auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("hash_open_overflow_cursor_refusal.data");
@@ -1377,11 +1357,10 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_a_corrupt_overflow_cur
     REQUIRE(reopened.has_error());
 }
 
-// Wave entry #234, the checksum arm. A flipped bit in the header used to pass whenever the
-// value it produced still looked plausible: bucket_count 16 -> 17 keeps every structural
-// check happy (base 16 + split 1 == 17) and silently re-addresses EVERY key in the file.
-// The stale seal is left in place here, so only the checksum can catch it -- which is the
-// point of having one.
+// The checksum arm. Without it a flipped bit in the header passes whenever the value it
+// produces still looks plausible: bucket_count 16 -> 17 keeps every structural check happy
+// (base 16 + split 1 == 17) and silently re-addresses EVERY key in the file. The stale seal is
+// left in place here, so only the checksum can catch it -- which is the point of having one.
 TEST_CASE("services::index::disk_hash_table::open_refuses_a_header_whose_checksum_does_not_match") {
     auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("hash_open_checksum_refusal.data");
@@ -1404,10 +1383,10 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_a_header_whose_checksu
     REQUIRE(reopened.has_error());
 }
 
-// Wave entry #234, the magic arm. A file that is not a hash index at all -- or a header
-// page that was never sealed by this codec -- must be refused by NAME, before any field of
-// it is interpreted. The seal's checksum is made VALID over the tampered fields, so the
-// refusal can only come from the magic check.
+// The magic arm. A file that is not a hash index at all -- or a header page that was never
+// sealed by this codec -- must be refused by NAME, before any field of it is interpreted. The
+// seal's checksum is made VALID over the tampered fields, so the refusal can only come from the
+// magic check.
 TEST_CASE("services::index::disk_hash_table::open_refuses_a_file_without_the_magic") {
     auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("hash_open_magic_refusal.data");
@@ -1431,10 +1410,10 @@ TEST_CASE("services::index::disk_hash_table::open_refuses_a_file_without_the_mag
     REQUIRE(reopened.has_error());
 }
 
-// Wave entry #234, the slot arm. An erased slot used to stay dead forever: every later
-// insert appended a NEW slot and NEW payload bytes, so a workload that puts and erases the
-// same key marched the page to exhaustion and then grew an overflow chain -- for a table
-// whose LIVE contents never exceeded one entry.
+// The slot arm. An erased slot must not stay dead: if every later insert appended a NEW slot
+// and NEW payload bytes, a workload that puts and erases the same key would march the page to
+// exhaustion and then grow an overflow chain -- for a table whose LIVE contents never exceeded
+// one entry.
 TEST_CASE("services::index::disk_hash_table::an_erased_slot_is_reused_by_the_next_insert") {
     auto resource = core::pmr::otterbrix_resource();
     const auto path = mk_path("hash_slot_reuse.data");
@@ -1468,12 +1447,11 @@ TEST_CASE("services::index::disk_hash_table::an_erased_slot_is_reused_by_the_nex
     REQUIRE(found->log_offset == 4242);
 }
 
-// Wave entry #117. The destructor's closing header flush used to be checked only by
-// assert(false), which -DNDEBUG compiles out -- so in release a failed closing persist was
-// dropped in complete silence. The failure is staged through the close failpoint (the one
-// seam this class has for a write the filesystem cannot be made to refuse from outside),
-// and the property is that the destructor SAYS SO on stderr, in every build mode, instead
-// of saying nothing.
+// The destructor's closing header flush must not be checked by assert(false) alone, which
+// -DNDEBUG compiles out -- a failed closing persist would then be dropped in complete silence
+// in release. The failure is staged through the close failpoint (the one seam this class has
+// for a write the filesystem cannot be made to refuse from outside), and the property is that
+// the destructor SAYS SO on stderr, in every build mode.
 
 #include <fcntl.h>
 #include <unistd.h>

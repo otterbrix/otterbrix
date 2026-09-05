@@ -1,37 +1,34 @@
 // The nested half of the fetch channel: column_fetch_state carries TWO fields that a nested
-// column has to hand to the child that actually reads the bytes, and it used to hand over
-// neither.
+// column MUST hand to the child that actually reads the bytes.
 //
 // A STRUCT node owns no segments: every byte of a struct cell is read by a child column, on a
-// CHILD column_fetch_state. struct_column_data_t::fetch_row built each of those children with
-// `std::make_unique<column_fetch_state>()` -- a default-constructed state, i.e.
-// result_outlives_pins == false and a fetch_error nobody above ever read. LIST and ARRAY built
-// their validity child the same way, and took their element leg through a local
-// column_scan_state whose scan_error was equally unread. Two silent failures follow:
+// CHILD column_fetch_state. Build those children with `std::make_unique<column_fetch_state>()`
+// -- a default-constructed state, i.e. result_outlives_pins == false and a fetch_error nobody
+// above reads -- and two silent failures follow. LIST and ARRAY have the same shape, for their
+// validity child and for an element leg taken through a local column_scan_state:
 //
 //   1. BORROWED VIEWS THAT OUTLIVE THEIR PINS. A caller whose result outlives the state says so
 //      (table_storage_adapter_t::fetch and row_group_t's late-materialisation gather both set
 //      result_outlives_pins = true) and the string leg then COPIES the bytes into the result's
-//      own heap. The flag stopped at the struct: the field's child state said false, so
-//      string_fetch_row wrote a view BORROWED from the pinned block -- and the pins live in the
+//      own heap. Let the flag stop at the struct and the field's child state reads false, so
+//      string_fetch_row writes a view BORROWED from the pinned block -- and the pins live in the
 //      child's `handles`, which die with the parent state the moment the fetch returns. The
-//      caller keeps a chunk pointing into a block the pool is free to evict, spill and reload
-//      at another address.
+//      caller keeps a chunk pointing into a block the pool is free to evict, spill and reload at
+//      another address.
 //
 //   2. LOST data_corruption. A big string (>= DEFAULT_STRING_BLOCK_LIMIT = 4096 bytes) lives in
-//      an overflow block, and A0b's rule is that only the segment's own registry may resolve
-//      one: an unregistered id is a LOUD data_corruption, written into the reading state's
-//      fetch_error. In a struct field that state was the child's, so the report died there and
-//      the statement answered with a silently EMPTY field. T1
-//      (test_storage_adapter_fetch.cpp) pinned exactly this for a FLAT column; the nested path
-//      was still cut.
+//      an overflow block, and only the segment's own registry may resolve one: an unregistered
+//      id is a LOUD data_corruption, written into the reading state's fetch_error. In a struct
+//      field that state is the child's, so without a channel out the report dies there and the
+//      statement answers with a silently EMPTY field. test_storage_adapter_fetch.cpp pins the
+//      same thing for a FLAT column; this file covers the nested path.
 //
-// ISOLATING THE COLUMN VIEW (the F6 lesson). B2 packing puts a nested child's segment in the
-// same block as a flat column's, so a gate that also holds a flat string column can be answered
-// by the flat column BY ACCIDENT and go green on unfixed code. Every table below therefore has
+// ISOLATING THE COLUMN VIEW. Partial-block packing puts a nested child's segment in the same
+// block as a flat column's, so a gate that also holds a flat string column can be answered by
+// the flat column BY ACCIDENT and go green on unfixed code. Every table below therefore has
 // exactly ONE column, a nested one, and the gates assert that the nested node owns NO top-level
-// segment of its own (`current == nullptr`) -- so the only STRING segment in the whole table is
-// the leaf the case corrupts, reachable only through the nested read path.
+// segment of its own (`current == nullptr`), so the only STRING segment in the table is the leaf
+// the case corrupts, reachable only through the nested read path.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -69,7 +66,7 @@ namespace {
     };
 
     // The three shapes under test. Each is a SINGLE column so no flat column can answer for the
-    // nested one (see the F6 note at the top).
+    // nested one (see the isolation note at the top).
     enum class shape_t
     {
         STRUCT_OF_STRING,        // s STRUCT(payload STRING)
@@ -233,7 +230,7 @@ namespace {
         vector_t row_ids(&env.resource, logical_type::BIGINT, 1);
         row_ids.data<int64_t>()[0] = 0;
         // The row was appended at txn 0 and never deleted, so any snapshot sees it; the mode is
-        // named explicitly because fetch_visibility_t has no default (C4b).
+        // named explicitly because fetch_visibility_t has no default.
         return storage.fetch(out, row_ids, 1, {}, transaction_data{}, fetch_visibility_t::SNAPSHOT);
     }
 
@@ -275,8 +272,8 @@ TEST_CASE("nested scan: a data_corruption raised under a struct stops the scan")
 }
 
 // (2) The error channel. Corrupt the ONE overflow marker of the leaf STRING segment and the
-// statement must fail. Before the fix the child's fetch_error had no reader and the adapter
-// returned success with an empty field (RED run: the fetch reported no error at all).
+// statement must fail. With no reader for the child's fetch_error the adapter returns success
+// over an empty field (observed: the fetch reported no error at all).
 TEST_CASE("nested fetch: a data_corruption raised under a struct reaches the statement") {
     nested_env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -338,8 +335,8 @@ TEST_CASE("nested fetch: a big string in a struct field outlives the pins that r
     // declared inside fetch). Whatever the chunk still points at is fair game for the pool.
     poison_overflow_blocks(env, *built.leaf_segment);
 
-    // RED before the fix: 5000 bytes of 0x5A read back out of the struct field. Judged as a
-    // bool so a failure reports "false" instead of dumping 5000 poison bytes into the log.
+    // A borrowed view reads back 5000 bytes of 0x5A out of the struct field. Judged as a bool
+    // so a failure reports "false" instead of dumping 5000 poison bytes into the log.
     const auto view = leaf_view(out, shape);
     const bool intact = view == std::string_view(big);
     INFO("field length " << view.size() << ", first byte '" << (view.empty() ? '?' : view.front()) << "'");

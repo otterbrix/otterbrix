@@ -46,7 +46,7 @@ namespace components::table {
         vector::vector_t result(resource_, type_, 1);
         segment->fetch_row(fetch_state, row_idx, result, 0U);
         if (fetch_state.fetch_error.contains_error()) {
-            // A failed pin used to fall through to the read below and answer garbage.
+            // Without this the read below runs on an unpinned segment and answers garbage.
             return fetch_state.fetch_error;
         }
 
@@ -308,8 +308,8 @@ namespace components::table {
     }
 
     uint64_t list_column_data_t::fetch(column_scan_state& state, int64_t, vector::vector_t&) {
-        // POINT FETCH OF A WHOLE LIST CELL IS NOT IMPLEMENTED, and this override exists to say
-        // so rather than to be filled in. Deleting it would be worse than leaving it: the base
+        // POINT FETCH OF A WHOLE LIST CELL IS NOT IMPLEMENTED, and this override exists to say so
+        // rather than to be filled in. Deleting it would be worse than leaving it: the base
         // column_data_t::fetch would scan this node's OWN segments, which hold the cumulative
         // ELEMENT OFFSETS, into a LIST-typed result — silently answering with offsets where the
         // caller asked for lists.
@@ -320,7 +320,7 @@ namespace components::table {
         // nested node as `this`; struct_column_data_t::fetch therefore has no caller either, and
         // neither has this. No SQL statement names the path: whole-list reads go through
         // scan_count, and the in-place LIST update builds its pre-image per element in
-        // gather_child_update instead of fetching the cell.
+        // gather_child_update.
         //
         // The refusal travels on the channel the ONE potential caller already reads:
         // column_data_t::update checks state.has_error() right after fetch() and returns
@@ -485,8 +485,8 @@ namespace components::table {
             return;
         }
         auto end_offset = eo.value();
-        // state.child(0), not a default-constructed state: the validity bitmap's pin OOM used to
-        // land in a child nobody read (see column_fetch_state::child).
+        // state.child(0), not a default-constructed state: a throwaway state lands the validity
+        // bitmap's pin OOM in a child nobody reads (see column_fetch_state::child).
         auto& validity_state = state.child(0);
         validity.fetch_row(validity_state, row_id, result, result_idx);
         if (state.absorb_error(validity_state)) {
@@ -589,9 +589,9 @@ namespace components::table {
     void list_column_data_t::collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const {
         // The base walk covers the own offsets segments; a reloaded list column additionally
         // owns its validity bitmap and its element column, each sitting on the blocks
-        // initialize_column registered. Before F6 this override did not exist and compact
-        // leaked both children (only offset blocks — and whatever the B2 packer happened to
-        // co-locate with them — were reclaimed).
+        // initialize_column registered. Without this override compact leaks both children
+        // (only offset blocks — and whatever the partial-block packer happened to co-locate
+        // with them — get reclaimed).
         column_data_t::collect_disk_block_ids(out);
         validity.collect_disk_block_ids(out);
         child_column->collect_disk_block_ids(out);

@@ -236,14 +236,14 @@ TEST_CASE("buffer manager: pool exhaustion of pinned managed blocks returns out_
 }
 
 // unpin() must release a reader on EVERY buffer type, TINY_BUFFER included. load() increments
-// readers_ on every pin whatever the type, while unpin() used to return early for TINY_BUFFER
-// before decrementing, so a small buffer's reader count climbed by one per pin and never came
+// readers_ on every pin whatever the type, so an unpin() that returns early for TINY_BUFFER
+// before decrementing climbs a small buffer's reader count by one per pin and never brings it
 // back down (see the note on standard_buffer_manager_t::unpin).
 //
-// It was invisible while can_unload() rejected such blocks anyway: transient, hence non-reloadable,
-// hence never eviction candidates whatever readers_ says. It stops being invisible the moment a
-// block CAN be spilled to a temporary file and made reloadable — a permanently non-zero readers_
-// would pin it in memory forever and silently defeat the spill.
+// That stays invisible while can_unload() rejects such blocks anyway: transient, hence
+// non-reloadable, hence never eviction candidates whatever readers_ says. It stops being
+// invisible the moment a block CAN be spilled to a temporary file and made reloadable — a
+// permanently non-zero readers_ would pin it in memory forever and silently defeat the spill.
 TEST_CASE("buffer manager: unpinning a tiny buffer releases its reader", "[step1]") {
     using namespace components::table::storage;
 

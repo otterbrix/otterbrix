@@ -24,19 +24,19 @@
 #include <services/wal/manager_wal_replicate.hpp>
 
 // The dispatcher's pool-admin API (register/unregister UDF, register/unregister CAST,
-// set_explain_renderer) used to answer a bare `bool`, so every distinguishable refusal —
-// a name collision, an unknown overload, an unregistered cast source type, a slot id out of
-// range, a catalog write that failed — arrived at the caller as the same nameless `false`,
-// and the executor's OWN typed error (executor_t::register_udf answers
-// core::result_wrapper_t<function_uid>) was discarded on the floor. These tests pin the
+// set_explain_renderer) answers a TYPED error. Flattened to a bare `bool`, every
+// distinguishable refusal — a name collision, an unknown overload, an unregistered cast
+// source type, a slot id out of range, a catalog write that failed — reaches the caller as
+// the same nameless `false`, and the executor's OWN typed error (executor_t::register_udf
+// answers core::result_wrapper_t<function_uid>) goes on the floor. These tests pin the
 // typed channel: each refusal must name itself.
 //
-// They also pin the two places the fan-out acks were awaited and then ignored
+// They also pin the two places the fan-out acks are awaited and must not be ignored
 // (unregister_udf / unregister_cast): an executor that refused to drop the overload must
 // stop the catalog purge, not ride along with it.
 //
-// And they pin txn_accumulate_msg, which used to drop a whole statement's worth of parked
-// ranges on the floor when the session had no active transaction and answer `void`.
+// And they pin txn_accumulate_msg: a whole statement's worth of parked ranges arriving at a
+// session with no active transaction is a refusal, not a silent drop.
 
 using namespace services;
 using namespace services::dispatcher;
@@ -230,7 +230,7 @@ private:
     std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_wal_;
 };
 
-// ===== D1: every refusal names itself =====
+// ===== every refusal names itself =====
 
 TEST_CASE("services::dispatcher::admin_errors::register_udf_duplicate_keeps_executor_error") {
     components::compute::function_registry_t::reset_default();
@@ -339,7 +339,7 @@ TEST_CASE("services::dispatcher::admin_errors::set_explain_renderer_refusals_nam
     components::compute::function_registry_t::reset_default();
 }
 
-// ===== D2: an executor that refused to drop the overload stops the catalog purge =====
+// ===== an executor that refused to drop the overload stops the catalog purge =====
 
 TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_keeps_pg_proc") {
     components::compute::function_registry_t::reset_default();
@@ -359,10 +359,10 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_k
 
     auto err =
         test.dispatcher_invoke(&manager_dispatcher_t::unregister_udf, session_id_t{}, fname, bigint_inputs(mr.get()));
-    // Every executor answered "I did not have that overload". That ack was awaited and never
-    // looked at, and the pg_proc/pg_depend purge ran anyway: the catalog then claimed the
-    // function was gone while nothing had actually dropped it. The catalog is asserted FIRST —
-    // it is the damage; the typed refusal is only how the caller learns about it.
+    // Every executor answered "I did not have that overload". An ack awaited and never looked
+    // at lets the pg_proc/pg_depend purge run anyway, and the catalog then claims the function
+    // is gone while nothing dropped it. The catalog is asserted FIRST — it is the damage; the
+    // typed refusal is only how the caller learns about it.
     REQUIRE(test.pg_proc_rows(fname) == 1);
     REQUIRE(err.contains_error());
     REQUIRE(err.type == core::error_code_t::unrecognized_function);
@@ -375,8 +375,8 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_udf_executor_refusal_k
 // refusing while another accepts) is not constructible through the public API today:
 // register_cast fans the entry out to every executor at once, and unregister_cast's step-1
 // validation runs against one of those same registries, so the four registries cannot be made
-// to disagree from outside. PATH NOT NAMED — this pins the other half instead: when every
-// executor DOES confirm, the pg_cast row must actually go.
+// to disagree from outside. So this pins the other half: when every executor DOES confirm,
+// the pg_cast row must actually go.
 TEST_CASE("services::dispatcher::admin_errors::unregister_cast_success_removes_pg_cast_row") {
     components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
@@ -403,7 +403,7 @@ TEST_CASE("services::dispatcher::admin_errors::unregister_cast_success_removes_p
     components::compute::function_registry_t::reset_default();
 }
 
-// ===== D3: accumulating onto a session with no transaction is a refusal, not silence =====
+// ===== accumulating onto a session with no transaction is a refusal, not silence =====
 
 TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transaction_is_refused") {
     components::compute::function_registry_t::reset_default();
@@ -412,7 +412,7 @@ TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transactio
 
     // A session that never began a transaction. The payload below is a whole statement's
     // worth of parked work: base-table insert and delete ranges, catalog row ranges, storage
-    // oids created and retired. All of it used to go on the floor with no way to say so.
+    // oids created and retired. Without the refusal all of it goes on the floor unsaid.
     const session_id_t orphan_session{};
     txn_accumulate_payload_t payload;
     payload.base_appends.push_back(components::table::dml_append_range_t{4242, 0, 7});

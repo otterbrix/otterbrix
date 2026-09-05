@@ -64,7 +64,7 @@ namespace components::operators {
                 auto& ns_batches = ns_batches_r.value();
 
                 // First row's col 0 = namespace_oid. Mirrors
-                // manager_disk_t::resolve_namespace (manager_disk_resolve.cpp:9-32),
+                // manager_disk_t::resolve_namespace (manager_disk_resolve.cpp),
                 // which returns the first match. A miss leaves the entry at
                 // INVALID_OID — that is how "namespace does not exist" is reported.
                 if (!ns_batches.empty() && ns_batches[0].size() != 0 && ns_batches[0].column_count() >= 1 &&

@@ -152,7 +152,7 @@ namespace services::dispatcher {
         // for reasons that are NOT interchangeable — a name that already exists, an overload
         // nobody holds, a cast source type the catalog never heard of, a renderer slot out of
         // range, a catalog write the disk turned down, an executor that would not drop what it
-        // was told to drop — and a `false` erased every one of them, including the TYPED error
+        // was told to drop — and a bare `false` erases every one of them, including the TYPED error
         // executor_t::register_udf already produces. no_error() means the operation happened.
         unique_future<core::error_t> register_udf(components::session::session_id_t session,
                                                   components::compute::function_ptr function);
@@ -204,7 +204,7 @@ namespace services::dispatcher {
         // the payload is a whole statement's parked work — base insert and delete ranges, the
         // storage oids a CREATE brought up and a DROP retired, pg_catalog row ranges,
         // pg_attribute commit-id backfills — and parking it on a transaction that does not
-        // exist is impossible. It used to be dropped on the floor behind a `void`.
+        // exist is impossible. Behind a `void` it would go on the floor unsaid.
         unique_future<core::error_t> txn_accumulate_msg(components::session::session_id_t session,
                                                         txn_accumulate_payload_t payload);
         // Abort: executor error-path (after its local revert cascade) and the

@@ -85,13 +85,11 @@ namespace components::operators {
             }
         }
 
-        // 2. Validate the per-executor registration uids the dispatcher
-        //    pre-collected from its fan-out. The dispatcher issues the
-        //    per-executor register_udf sends, co_awaits every ack, drops any
-        //    executor that returned an error, and hands the resulting uids in.
-        //    An empty vector means there was nothing to mirror by uid; a
-        //    non-empty vector must agree on a single, non-invalid uid (the
-        //    "all executors agree" invariant) or the registration is rejected.
+        // 2. Validate the per-executor registration uids the dispatcher pre-collected from its fan-out. The
+        //    dispatcher issues the per-executor register_udf sends, co_awaits every ack, drops any executor
+        //    that returned an error, and hands the resulting uids in. An empty vector means there was nothing
+        //    to mirror by uid; a non-empty one must agree on a single, non-invalid uid (the "all executors
+        //    agree" invariant) or the registration is rejected.
         const auto& uids = executor_uids_;
         if (!uids.empty()) {
             const auto first_uid = uids.front();
@@ -109,20 +107,17 @@ namespace components::operators {
             }
         }
 
-        // 3. THE WHOLE DISK PROLOGUE RUNS HERE, AHEAD OF THE ONLY MUTATION THIS OPERATOR MAKES.
-        //    Everything below that can refuse — the oid round, the namespace enumeration, the
-        //    namespace resolve, the pg_proc/pg_depend appends — happens while nothing has been
-        //    changed yet, so a refusal leaves the process exactly as it found it. Hoisting only
-        //    the oid round (which is where this started) was not enough: list_namespaces and
-        //    resolve_namespace stayed BEHIND the mirror, and scan_table can now refuse a catalog
-        //    read outright, so an unreadable pg_namespace left the default registry answering for
-        //    a function the catalog has no row for — visible to every plan-validation lookup in
-        //    this process, absent from every durable record of what exists.
+        // 3. THE WHOLE DISK PROLOGUE RUNS HERE, AHEAD OF THE ONLY MUTATION THIS OPERATOR MAKES. Everything
+        //    below that can refuse — the oid round, the namespace enumeration, the namespace resolve, the
+        //    pg_proc/pg_depend appends — happens while nothing has been changed yet, so a refusal leaves the
+        //    process exactly as it found it. Hoisting the oid round alone is not enough: with list_namespaces
+        //    and resolve_namespace left BEHIND the mirror — and scan_table able to refuse a catalog read
+        //    outright — an unreadable pg_namespace leaves the default registry answering for a function the
+        //    catalog has no row for: visible to every plan-validation lookup, absent from every durable record.
         //
-        //    The oid round itself: a round that delivered nothing used to be consumed anyway —
-        //    allocate() answers INVALID_OID — and the pg_proc row went out stamped with 0, so
-        //    CREATE FUNCTION reported success over a durable function with no identity, which is
-        //    what pg_depend and every later lookup key on.
+        //    The oid round itself: consuming a round that delivered nothing (allocate() answers INVALID_OID)
+        //    sends the pg_proc row out stamped with 0, so CREATE FUNCTION reports success over a durable
+        //    function with no identity — which is what pg_depend and every later lookup key on.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             catalog::oid_t fn_oid = catalog::INVALID_OID;
             {
@@ -239,16 +234,14 @@ namespace components::operators {
             }
         }
 
-        // 5. Mirror into the global default registry so validate_logical_plan lookups (which
-        //    probe get_default()) see the UDF. MUST reuse the LOCAL uid (uids.front()):
-        //    otherwise the global counter (which keeps growing across tests) and the
-        //    per-executor counters diverge, so a plan's function_uid() set from global matches
-        //    no local entry and the predicate gets a null function pointer at runtime.
+        // 5. Mirror into the global default registry so validate_logical_plan lookups (which probe
+        //    get_default()) see the UDF. MUST reuse the LOCAL uid (uids.front()): otherwise the global counter
+        //    (which keeps growing across tests) and the per-executor counters diverge, so a plan's
+        //    function_uid() set from global matches no local entry and the predicate gets a null function
+        //    pointer at runtime.
         //
-        //    LAST ON PURPOSE. This is the operator's ONLY mutation, and by the time it runs
-        //    every refusal is already known: the name is free, the uids agree, the identity was
-        //    minted, the namespace was resolved and the pg_proc/pg_depend rows are written. The
-        //    registry therefore never answers for a function the catalog does not carry. The
+        //    LAST ON PURPOSE. This is the operator's ONLY mutation, and by the time it runs every refusal is
+        //    already known, so the registry never answers for a function the catalog does not carry. The
         //    payload was copied at the top, so nothing here can refuse either.
         if (auto* def_reg = components::compute::function_registry_t::get_default()) {
             auto res = uids.empty() ? def_reg->add_function(std::move(registry_copy))

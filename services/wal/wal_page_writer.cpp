@@ -32,7 +32,7 @@ namespace services::wal {
         }
 #endif
         if (!file_) {
-            // write_file_header() below used to dereference this null handle. Refuse instead
+            // write_file_header() below would dereference this null handle. Refuse instead
             // and let every entry point answer with the reason.
             open_error_ = io_failure("wal segment could not be opened for writing");
             return;

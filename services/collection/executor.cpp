@@ -447,7 +447,7 @@ namespace services::collection::executor {
             // The resolve-to-slot-0 semantics are the registry's documented contract
             // (host-API knob; pinned by test_explain.cpp's out-of-range cases), but the
             // mismatch itself must be LOUD: a host asking for a renderer it never
-            // registered used to learn about it only at trace level.
+            // registered has to hear about it above trace level.
             error(log_,
                   "executor::explain: render_id {} is not registered on this executor — rendering with the "
                   "default (slot 0)",
@@ -485,12 +485,12 @@ namespace services::collection::executor {
         // by id. Sharing the node is why execute_plan copies (not drains) the
         // parameters: each binding must survive into the next plan.
         //
-        // Plan-only EXPLAIN does not EXECUTE the sub-queries (PostgreSQL: plain EXPLAIN runs no sub-plans),
-        // but it still BUILDS each one's physical plan and captures its IR so the output shows the InitPlan
-        // structure — exactly like PostgreSQL's plain EXPLAIN. EXPLAIN ANALYZE captures the executed IR
-        // (with per-operator stats); normal execution captures nothing. Both EXPLAIN modes hang the captured
-        // IRs on the main IR root as InitPlans (PG-faithful attach-at-root — otterbrix runs/plans them all
-        // top-level).
+        // Plan-only EXPLAIN does not EXECUTE the sub-queries (PostgreSQL: plain EXPLAIN runs
+        // no sub-plans) but still BUILDS each one's physical plan and captures its IR, so the
+        // output shows the InitPlan structure. EXPLAIN ANALYZE captures the executed IR (with
+        // per-operator stats); normal execution captures nothing. Both EXPLAIN modes hang the
+        // captured IRs on the main IR root as InitPlans (PG-faithful attach-at-root —
+        // otterbrix runs/plans them all top-level).
         const bool run_sub_queries = plan.explain != components::logical_plan::explain_type::plan;
         const bool plan_only = plan.explain == components::logical_plan::explain_type::plan;
         const bool capture_ir = plan.explain == components::logical_plan::explain_type::analyze;
@@ -654,10 +654,10 @@ namespace services::collection::executor {
             pending_set_tz_name.assign(tz_node->timezone_name().c_str(), tz_node->timezone_name().size());
         }
 
-        // (O1) The optimizer used to run here, early, before resolve. It now
-        // runs as a SINGLE pass AFTER the planner rewrite — see the
-        // components::planner::optimize(...) call just before the execute_plan
-        // delegate below. This gives the canonical planner → optimizer order.
+        // The optimizer does NOT run here, before resolve. It runs as a SINGLE pass
+        // AFTER the planner rewrite — see the components::planner::optimize(...) call
+        // just before the execute_plan delegate below — which is the canonical
+        // planner → optimizer order.
 
         // Top-up: register a lookup for every target the tree names
         services::dispatcher::register_plan_targets(resource(), plan.sub_queries.back().get(), &plan.catalog_resolves);
@@ -697,20 +697,19 @@ namespace services::collection::executor {
             original_type == node_type::set_timezone_t || original_type == node_type::vacuum_t;
 
         // Run the catalog_resolve_*_t front-children through their operators via
-        // co_await this->execute_plan (not a sync inter-actor call): those
-        // operators only do async mailbox sends to disk_address_ (no shared
-        // mutable state) and run in this same actor coroutine. resolve_txn is
-        // forwarded into both the resolve sub-plan and the final execute_plan
-        // delegate so they share one MVCC snapshot.
+        // co_await this->execute_plan (not a sync inter-actor call): those operators
+        // only do async mailbox sends to disk_address_ (no shared mutable state) and
+        // run in this same actor coroutine. resolve_txn is forwarded into both the
+        // resolve sub-plan and the final execute_plan delegate so they share one MVCC
+        // snapshot.
         //
-        // (C4) Shared resolve sub-plan runner — build a sequence_t over the given
-        // resolve nodes and run it. The resolve operators are read-only catalog
-        // probes that stamp OIDs onto the SAME nodes still in the parent tree
-        // (operator_resolve_*_t holds raw pointers to them). Used by the outer
-        // resolve pass and the view-expansion fresh-resolve pass. Takes `self` so
-        // the coroutine frame allocator finds the PMR resource (the [this] capture
-        // is not visible to promise_type::operator new). The throw-away
-        // context_storage keeps the caller's own context_storage untouched.
+        // Shared resolve sub-plan runner, used by the outer resolve pass and the
+        // view-expansion fresh-resolve pass: the resolve operators are read-only
+        // catalog probes that stamp OIDs onto the SAME nodes still in the parent tree
+        // (operator_resolve_*_t holds raw pointers to them). Takes `self` so the
+        // coroutine frame allocator finds the PMR resource (the [this] capture is not
+        // visible to promise_type::operator new). The throw-away context_storage keeps
+        // the caller's own untouched.
         auto run_resolve_subplan = [this, session, resolve_txn, &session_ctx, &context_storage, &plan](
                                        [[maybe_unused]] executor_t* self,
                                        std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes)
@@ -771,9 +770,9 @@ namespace services::collection::executor {
         // the reasons live there, this loop only sequences them and supplies the async
         // resolve round the pure pass cannot do.
         //
-        // This used to be `plan.sub_queries.back() = std::move(expanded_plan)` — the
-        // whole outer plan discarded and the bare view body returned as a successful
-        // answer to a query nobody asked.
+        // The splice must not collapse into `plan.sub_queries.back() = std::move(expanded_plan)`:
+        // that discards the whole outer plan and returns the bare view body as a
+        // successful answer to a query nobody asked.
         //
         // The loop repeats because a view body may itself read a view: each pass
         // splices one level, and the newly added references only become visible after
@@ -826,7 +825,6 @@ namespace services::collection::executor {
                         err.contains_error()) {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
-                    // The body brought its own catalog lookups; merge them in.
                     if (body.resolves) {
                         services::dispatcher::merge_catalog_resolves(resource(),
                                                                      plan.catalog_resolves,
@@ -1253,40 +1251,45 @@ namespace services::collection::executor {
                 break;
             case node_type::alter_table_t: {
                 // ADD COLUMN writes a column type into the durable catalog exactly like
-                // CREATE TABLE does — gate it on the same persistable-type predicate. The
-                // SQL surface cannot spell a non-encodable TYPE today (CREATE TYPE gates
-                // its own depth), so this is the last line of defence for host-built
-                // plans: without it the statement reported SUCCESS over a type the
-                // durable form refuses. Nothing downstream can say it either: the operator
-                // writes only the flat-text catalog spec (catalog::encode_type_spec returns
-                // a string and owns no error channel), and the binary form that does refuse
-                // — types::encode_type_spec, the checkpoint and WAL-header codec this gate
-                // asks — is not reached until long after the statement answered SUCCESS. So
+                // CREATE TABLE does — gate it on the same persistable-type predicate. This
+                // is the last line of defence for host-built plans (the SQL surface cannot
+                // spell a non-encodable TYPE today; CREATE TYPE gates its own depth):
+                // without it the statement reported SUCCESS over a type the durable form
+                // refuses. Nothing downstream can say it either — the operator writes only
+                // the flat-text catalog spec (catalog::encode_type_spec returns a string and
+                // owns no error channel), and the binary form that does refuse
+                // (types::encode_type_spec, the checkpoint and WAL-header codec this gate
+                // asks) is not reached until long after the statement answered SUCCESS. So
                 // this loop is the only place that can refuse, and it walks EVERY
                 // subcommand, not subcommands().front().
                 //
                 // THE TYPE, AND ONLY THE TYPE — and unlike the type, the DEFAULT half is
-                // spelled by ordinary SQL every day. The create_collection_t arm above
-                // pairs its gate_persistable_type loop with convert_column_defaults, which
-                // CASTS each DEFAULT to its column's type and rewrites the value in place;
-                // there is no such leg here, so `ADD COLUMN c integer DEFAULT 7` still
-                // carries the BIGINT that numeric_literal_value's T_Integer arm produced.
-                // Casting it would mean rewriting the subcommand, and
-                // node_alter_table_t::subcommands() hands out a const reference
-                // (components/logical_plan/node_alter_table.hpp:60).
+                // spelled by ordinary SQL every day. The create_collection_t arm above pairs
+                // its gate_persistable_type loop with convert_column_defaults, which CASTS
+                // each DEFAULT to its column's type in place; there is no such leg here, so
+                // `ADD COLUMN c integer DEFAULT 7` still carries the BIGINT that
+                // numeric_literal_value's T_Integer arm produced. Casting it HERE would mean
+                // rewriting the subcommand, and node_alter_table_t::subcommands() hands out a
+                // const reference (components/logical_plan/node_alter_table.hpp). One layer
+                // down, planner.cpp's rewrite_alter_table already takes a MUTABLE COPY
+                // (`auto col = sub.column;`) and rewrites col.type() in place on the next
+                // lines, so a cast has a home there that needs no mutating accessor; what it
+                // lacks is the cast_registry_t and execution_context convert_column_defaults
+                // wants. Whoever closes the parity should start from that copy, not from an
+                // accessor on the node.
                 //
-                // What keeps that divergence out of the catalog is therefore NOT here but
-                // one layer down, per clause: rewrite_alter_table lowers every subcommand
-                // into its own operator_alter_column_add_t, and that operator refuses on
-                // default-vs-column type inequality before its first catalog write
+                // What keeps that divergence out of the catalog is therefore one layer down,
+                // per clause: rewrite_alter_table lowers every subcommand into its own
+                // operator_alter_column_add_t, which refuses on default-vs-column type
+                // inequality before its first catalog write
                 // (alter_column_validators::validate_default_value_type, called from
-                // components/physical_plan/operators/operator_alter_column_add.cpp:51).
-                // That refusal is load-bearing rather than a duplicate of the codec check
-                // below it: attdefspec is type-directed and carries no type tag, so decode
-                // catches a WIDTH divergence (a BIGINT default read back as INTEGER is
-                // data_corruption) and silently accepts a same-width one (BIGINT read back
-                // as TIMESTAMP). Restating the rule here would be a second authority free
-                // to drift from it, so what is left standing is a PARITY gap — a DEFAULT
+                // components/physical_plan/operators/operator_alter_column_add.cpp). That
+                // refusal is load-bearing rather than a duplicate of the codec check below
+                // it: attdefspec is type-directed and carries no type tag, so decode catches
+                // a WIDTH divergence (a BIGINT default read back as INTEGER is
+                // data_corruption) and silently accepts a same-width one (BIGINT read back as
+                // TIMESTAMP). Do not restate that rule here: a second authority is free to
+                // drift from the first. What is left standing is a PARITY gap — a DEFAULT
                 // spelling CREATE TABLE accepts is refused by ALTER — pinned by
                 // services/dispatcher/tests/test_wave_exec_dispatcher.cpp,
                 // "alter_add_column_default_type_divergence_is_refused".
@@ -1319,10 +1322,10 @@ namespace services::collection::executor {
                     // rows at all — its columns live in pg_computed_column, whose attoids
                     // come from a different sequence — so an attoid written into
                     // pg_constraint.conkey for such a table can never be matched back to
-                    // a column name. UNIQUE / PRIMARY KEY used to be left out of this
-                    // gate: the DDL was accepted, and operator_resolve_constraint then
-                    // dropped the unresolvable group from the constraint set without a
-                    // word, so a declared key enforced nothing and duplicates went in.
+                    // a column name. UNIQUE / PRIMARY KEY must stay inside this gate:
+                    // left out, the DDL is accepted, operator_resolve_constraint drops the
+                    // unresolvable group from the constraint set without a word, and a
+                    // declared key enforces nothing while duplicates go in.
                     const bool key_kind =
                         cstr->kind() == constraint_kind::unique || cstr->kind() == constraint_kind::primary_key;
                     if (cstr->kind() == constraint_kind::foreign_key || cstr->kind() == constraint_kind::check ||
@@ -1453,7 +1456,7 @@ namespace services::collection::executor {
         // check_constraint_t / fk_check_t, and running it twice re-wraps on top
         // of the previous wrap (broken plan). The executor is the ONLY side
         // running these passes (the dispatcher routes the raw plan straight here).
-        // (O1) The optimizer no longer runs here — it runs as one pass after the
+        // The optimizer does not run here — it runs as one pass after the
         // planner rewrite, just before the execute_plan delegate.
         {
             // ctx carries resolve_txn so enrich sees the same MVCC snapshot.
@@ -1510,13 +1513,13 @@ namespace services::collection::executor {
             // coroutine frame allocator, and without `self` extract_resource_or_abort
             // fires.
             //
-            // IT ANSWERS WITH AN ERROR CHANNEL, NOT WITH AN EMPTY VECTOR. Both of the
-            // failures below used to `co_return std::vector<oid_t>{}`, which the caller
-            // could not tell apart from a successful round: it assigned the empty vector
-            // into the batch and the DDL rewrite read past its end (assert-only guard —
-            // gone under NDEBUG), stamping pg_class / pg_attribute / pg_depend with a
-            // garbage identity that then outlived the process. Rule 6: the refusal is
-            // loud, and the drive error travels verbatim rather than being flattened.
+            // IT ANSWERS WITH AN ERROR CHANNEL, NOT WITH AN EMPTY VECTOR. Neither failure
+            // below may `co_return std::vector<oid_t>{}`: the caller cannot tell that apart
+            // from a successful round — it assigns the empty vector into the batch and the
+            // DDL rewrite reads past its end (assert-only guard — gone under NDEBUG),
+            // stamping pg_class / pg_attribute / pg_depend with a garbage identity that then
+            // outlives the process. Rule 6: the refusal is loud, and the drive error travels
+            // verbatim rather than being flattened.
             auto allocate_oids_inline =
                 [this, session, &context_storage](
                     [[maybe_unused]] executor_t* self,
@@ -1683,10 +1686,10 @@ namespace services::collection::executor {
             }
 
             // DDL OID-batch allocation + planner rewrite — ONE path for all DDL
-            // kinds (C1). The per-kind OID count lives in
+            // kinds. The per-kind OID count lives in
             // planner::compute_oid_demand (single source of truth, mirrors
-            // walk_ddl's consumption), so the count formulas are no longer
-            // duplicated here. Pre-check (CREATE CONSTRAINT) and post-steps
+            // walk_ddl's consumption), so the count formulas are not duplicated
+            // here. Pre-check (CREATE CONSTRAINT) and post-steps
             // (CREATE INDEX capture, ALTER re-enrich) stay inline.
             auto is_ddl_oid_rewrite = [](node_type t) {
                 switch (t) {
@@ -1806,12 +1809,11 @@ namespace services::collection::executor {
         }
         // Unresolved-ALTER guard: a plan whose LITERAL root is still
         // alter_table_t after the rewrites means rewrite_alter_table bailed
-        // (table_oid unresolved by enrich). This used to answer an empty
-        // SUCCESS cursor — the client was told the ALTER applied while nothing
-        // happened — even though the planner's own comment promises "let
-        // execute_ddl error out" (its half now refuses, c355f572). Refuse,
-        // naming the table, exactly like CREATE INDEX / DROP INDEX on an
-        // unresolved target. Wrapped plans (sequence_t root with an
+        // (table_oid unresolved by enrich). Answering an empty SUCCESS cursor
+        // would tell the client the ALTER applied while nothing happened, and
+        // the planner's own comment promises "let execute_ddl error out".
+        // Refuse, naming the table, exactly like CREATE INDEX / DROP INDEX on
+        // an unresolved target. Wrapped plans (sequence_t root with an
         // alter_table_t child) keep the error path through the pipeline.
         if (original_type == node_type::alter_table_t && plan.sub_queries.back() &&
             plan.sub_queries.back()->type() == node_type::alter_table_t) {
@@ -1829,7 +1831,7 @@ namespace services::collection::executor {
                 make_cursor(resource(), core::error_t{core::error_code_t::table_not_exists, std::move(msg)})};
         }
 
-        // (O1) Single optimizer pass — runs HERE, after every planner rewrite
+        // Single optimizer pass — runs HERE, after every planner rewrite
         // (DML constraint-wrap + DDL lowering), so the schema stamps
         // key.side()/key.path() and table OIDs are present. const-fold +
         // pushdown_filter + hash-join selection; a no-op on DDL sequences.
@@ -1841,8 +1843,8 @@ namespace services::collection::executor {
         // a precondition, not a fallback.
         const bool can_push_to_agent = disk_address_ != actor_zeta::address_t::empty_address();
         // optimizer_pass_ is the host's final rewrite (ctor chain: base_spaces ->
-        // dispatcher -> executor). It used to be stored here and never forwarded,
-        // so a host-injected pass was silently ignored on every query.
+        // dispatcher -> executor) and must be FORWARDED into optimize below: merely
+        // storing it silently ignores a host-injected pass on every query.
         plan.sub_queries.back() = components::planner::optimize(resource(),
                                                                 std::move(plan.sub_queries.back()),
                                                                 plan.parameters.get(),
@@ -1888,9 +1890,9 @@ namespace services::collection::executor {
                                                  session_ctx.lowest_active_start_time,
                                                  std::move(captured_subplans));
 
-        // (C2) Shared failure-revert — undo this statement's storage appends +
+        // Shared failure-revert — undo this statement's storage appends +
         // index mirrors and abort the txn. Identical for the DML and DDL failure
-        // paths (was copy-pasted). Takes `self` so the coroutine frame allocator
+        // paths. Takes `self` so the coroutine frame allocator
         // finds the PMR resource — the [this] capture is not visible to
         // promise_type::operator new (same pattern as allocate_oids_inline).
         auto revert_failed_txn = [this, session, resolve_txn, &session_ctx](
@@ -1928,9 +1930,9 @@ namespace services::collection::executor {
             // Heap delete-mark un-stamp happens ONCE, below the index revert: the
             // base+catalog union block covers dml_deletes ∪ pg_catalog_delete_tables,
             // a strict superset of what a dml_deletes-only revert here would touch.
-            // This spot used to hold that narrower storage_revert_deletes too — an
-            // idempotent but fully redundant second disk round-trip on every failed
-            // DML that carried deletes.
+            // A second, narrower storage_revert_deletes here would be idempotent but
+            // fully redundant — an extra disk round-trip on every failed DML that
+            // carries deletes.
 
             // Index revert, two-phase (send-all then await-all), deduped per
             // table_oid. revert_insert ← pending index INSERT bucket (dml_appends);
@@ -2064,14 +2066,12 @@ namespace services::collection::executor {
                         // rows, un-stamp the delete marks and drop the pending
                         // index mirrors. Only its pg_catalog half is empty —
                         // pg_catalog_appends / pg_catalog_delete_tables WERE moved
-                        // into the payload just above.
-                        // Its closing txn_abort_msg is a proven no-op on this
-                        // path: transaction_inactive is raised exactly when
-                        // find_transaction() found no entry in transaction_manager
-                        // active_, and abort() returns early on that same lookup
-                        // (transaction_manager.cpp). It costs one message and
-                        // keeps the failed-statement tail single-shaped, so it is
-                        // left in rather than special-cased.
+                        // into the payload just above. Its closing txn_abort_msg is
+                        // a proven no-op on this path: transaction_inactive is
+                        // raised exactly when find_transaction() found no entry in
+                        // transaction_manager active_, and abort() returns early on
+                        // that same lookup. It costs one message and keeps the
+                        // failed-statement tail single-shaped.
                         co_await revert_failed_txn(this, exec_result);
                     }
                 }
@@ -2164,22 +2164,18 @@ namespace services::collection::executor {
                 // success over a catalog that does not describe what the
                 // statement claims to have created or dropped.
                 //
-                // revert_failed_txn is deliberately NOT called here, and not out
-                // of tidiness: it would have nothing right to do and one wrong
-                // thing to do. Its catalog fold is empty — pg_catalog_appends,
-                // pg_catalog_delete_tables, the backfills and the created /
-                // dropped oid sets were ALL std::move-d into the payload a few
-                // lines above (unlike the DML tail, which copies its base
-                // ranges). Its base fold, meanwhile, would reach for dml_appends
-                // / dml_deletes, which on this path carry the CREATE INDEX
-                // backfill ranges that the comment below documents as
+                // revert_failed_txn is deliberately NOT called here: it has
+                // nothing right to do and one wrong thing to do. Its catalog fold
+                // is empty — pg_catalog_appends, pg_catalog_delete_tables, the
+                // backfills and the created / dropped oid sets were ALL
+                // std::move-d into the payload a few lines above (unlike the DML
+                // tail, which copies its base ranges). Its base fold would reach
+                // for dml_appends / dml_deletes, which on this path carry the
+                // CREATE INDEX backfill ranges the comment below documents as
                 // ALREADY-COMMITTED rows kept out of the commit on purpose;
-                // handing them to storage_revert_appends would un-append
-                // committed rows. Its closing txn_abort_msg is the same proven
-                // no-op as on the DML tail (transaction_inactive is raised on the
-                // very lookup abort() returns early on), and no txn is left
-                // pinned either way. What DOES need undoing on this path — the
-                // CREATE INDEX engine — is handled by undo_create_index below.
+                // handing them to storage_revert_appends would un-append committed
+                // rows. What DOES need undoing here — the CREATE INDEX engine — is
+                // handled by undo_create_index below.
                 auto accumulate_err = co_await std::move(acf);
                 if (accumulate_err.contains_error()) {
                     exec_result.cursor = make_cursor(resource(), std::move(accumulate_err));
@@ -2255,27 +2251,26 @@ namespace services::collection::executor {
             // DDL inside an explicit BEGIN..COMMIT DEFERS its publish to the
             // SQL COMMIT — accumulate above already parked the catalog rows +
             // created/dropped artifacts on transaction_t, and the COMMIT
-            // statement's own operator_commit_transaction_t (run when the user
-            // issues COMMIT) publishes the catalog rows. Running run_commit_pipeline_
-            // here would publish mid-txn (a partial commit, and other sessions
-            // would see the new catalog rows before COMMIT). So gate the whole
-            // commit block on !is_explicit; accumulate stays unconditional (above).
+            // statement's own operator_commit_transaction_t publishes them.
+            // Running run_commit_pipeline_ here would publish mid-txn (a partial
+            // commit; other sessions would see the new catalog rows before
+            // COMMIT). So gate the whole commit block on !is_explicit;
+            // accumulate stays unconditional (above).
             //
             // The inline CREATE INDEX index-commit below is AUTOCOMMIT-ONLY by two
             // independent guards: this !is_explicit guard, and commit_result.commit_id
-            // (0 for a deferred txn — no commit ran in this pipeline). For an
-            // explicit-txn CREATE INDEX the backfilled index entries stay PENDING
-            // (tagged with the txn_id) — the SQL COMMIT operator does NOT yet flip
-            // them (its commit_inserts keys off the drained base_appends, which are
-            // empty for CREATE INDEX), so explicit-txn CREATE INDEX visibility at
-            // COMMIT is a deferred follow-up. The created_index IS parked on
-            // transaction_t regardless, so an explicit-txn ABORT drops the
-            // half-built index via operator_abort_transaction.
+            // (0 for a deferred txn). For an explicit-txn CREATE INDEX the backfilled
+            // index entries stay PENDING (tagged with the txn_id) — the SQL COMMIT
+            // operator does NOT yet flip them (its commit_inserts keys off the drained
+            // base_appends, empty for CREATE INDEX), so explicit-txn CREATE INDEX
+            // visibility at COMMIT is a deferred follow-up. The created_index IS parked
+            // on transaction_t regardless, so an explicit-txn ABORT drops the half-built
+            // index via operator_abort_transaction.
             //
-            // The cursor is re-read in the gate (see the DML tail): the
-            // is_success() that opened this tail was evaluated before the
-            // accumulate answered, so a refused park would otherwise still reach
-            // the commit and publish a transaction that holds nothing.
+            // The cursor is re-read in the gate (see the DML tail): the is_success()
+            // that opened this tail was evaluated before the accumulate answered, so a
+            // refused park would otherwise still reach the commit and publish a
+            // transaction that holds nothing.
             if (!session_ctx.is_explicit && exec_result.cursor->is_success()) {
                 auto commit_result = co_await run_commit_pipeline_(session,
                                                                    resolve_txn,
@@ -2352,7 +2347,7 @@ namespace services::collection::executor {
         }
 
         // ===== read-only txn release =====
-        // Plans that neither commit nor accumulate used to leave the
+        // A plan that neither commits nor accumulates would otherwise leave the
         // resolve-scope txn active forever, pinning lowest_active (and thereby
         // starving the DROP-GC horizon). Release it. Exclusions:
         //   - explicit txns (a SELECT inside BEGIN..COMMIT must not abort it);
@@ -2487,20 +2482,17 @@ namespace services::collection::executor {
         // sub-plan: traverse_plan_ splits a join's build AND probe sides into their own
         // sub-plans, which run (and mark_executed) before this one. Re-driving such an
         // operator's source_next would read an already-drained cursor (0 rows). So drive
-        // source_next only when this pipeline owns its scan source (chain bottom); when
-        // the bottom is already executed, stream from that operator's materialized output_.
-        // A materialized sub-plan (a join build/probe side split off by
-        // traverse_plan_) marks only its ROOT operator executed and stashes the rows
-        // in that root's output_; the drained SOURCE beneath it stays un-executed. So
-        // when a side is more than one operator deep — e.g. a single-table filter
-        // pushed below a join lowers to a streaming match/full_scan over its scan
-        // source — the executed operators are NOT a contiguous bottom prefix:
-        // chain[k] (the sub-plan root) is executed while chain[k-1] (its drained
-        // source) is not. Take the materialized boundary as the operator just ABOVE
-        // the TOPMOST executed op: everything at or below it belongs to an already-run
-        // sub-plan (stream from that root's output_), and re-driving the drained
-        // source below it would read an empty cursor. A bottom-scan-owned pipeline
-        // (nothing pre-executed) leaves start == 0.
+        // source_next only when this pipeline owns its scan source (chain bottom); when the
+        // bottom is already executed, stream from that operator's materialized output_.
+        //
+        // A materialized sub-plan marks only its ROOT operator executed and stashes the rows
+        // in that root's output_; the drained SOURCE beneath it stays un-executed. So when a
+        // side is more than one operator deep — e.g. a single-table filter pushed below a
+        // join lowers to a streaming match/full_scan over its scan source — the executed
+        // operators are NOT a contiguous bottom prefix: chain[k] (the sub-plan root) is
+        // executed while chain[k-1] (its drained source) is not. Take the materialized
+        // boundary as the operator just ABOVE the TOPMOST executed op. A
+        // bottom-scan-owned pipeline (nothing pre-executed) leaves start == 0.
         std::size_t start = 0;
         for (std::size_t i = 0; i < chain.size(); ++i) {
             if (chain[i]->is_executed()) {
@@ -2667,7 +2659,7 @@ namespace services::collection::executor {
             }
         } else if (start == 0) {
             ops::operator_t* source = chain.front();
-            // A4: a source that stops early (error mid-pump, satisfied LIMIT, abandoned
+            // A source that stops early (error mid-pump, satisfied LIMIT, abandoned
             // sub-plan) leaves its agent-side fetch-next cursor open forever — nothing else
             // reclaims it, and a live cursor permanently gates compact() on that table. Every
             // exit from this loop therefore goes through release_cursor, which is idempotent
@@ -2773,15 +2765,13 @@ namespace services::collection::executor {
         // for the materialize path. await_async_and_resume sets the operator's
         // output_ (RETURNING / affected-row count) and marks it executed.
         //
-        // Iterate over only the operators THIS pipeline drove ([op_start, end)) and
-        // go DEEPEST-FIRST: chain[op_start] is the deepest op in this range, chain.back()
-        // the root, so ascending index == bottom-up. For a sourceless sink bottom the
-        // real chain[0] was already driven (deepest-first) in the PUMP block above, so
-        // this range (op_start==1) covers only its ancestors — still bottom-up overall.
-        // Every op in this range that sets needs_async_finalize() is driven here,
-        // bottom-up: a chain may hold several async ops (e.g. a spillable sink
-        // under a DML sink, or a constraint above a DML), each awaited in
-        // ascending (deepest-first) index order. Stop on the first error.
+        // Iterate over only the operators THIS pipeline drove ([op_start, end)) and go
+        // DEEPEST-FIRST: chain[op_start] is the deepest op in this range, chain.back()
+        // the root, so ascending index == bottom-up. A chain may hold several async ops
+        // (a spillable sink under a DML sink, a constraint above a DML); each is awaited
+        // in that order and the first error stops the loop. For a sourceless sink bottom
+        // the real chain[0] was already driven in the PUMP block above, so this range
+        // (op_start==1) covers only its ancestors — still bottom-up overall.
         //
         // This is the FINAL flush: any mid-pump partial flushes above ran with
         // dml_flush_is_final=false; restore the default so the DML sink's await

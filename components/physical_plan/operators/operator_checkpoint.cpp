@@ -18,42 +18,29 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::checkpoint) {}
 
     actor_zeta::unique_future<void> operator_checkpoint_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // STEP 1 NOW DOES TWO THINGS, AND THE SECOND IS THE ONE THE ROUND CANNOT START
-        // WITHOUT. flush_all_indexes ARMS the durable "these indexes are about to be
-        // renumbered and are not yet rebuilt" guard before it flushes anything
-        // (manager_index_t::rebuild_marker_path_), because this handler is the first step of
-        // both compacting orchestrations and is sent from nowhere else in the tree. A guard
-        // that could not be written comes back as a refusal here and stops the round below,
-        // ahead of the compaction it was meant to cover.
+        // STEP 1 NOW DOES TWO THINGS, AND THE SECOND IS THE ONE THE ROUND CANNOT START WITHOUT.
+        // flush_all_indexes ARMS the durable "these indexes are about to be renumbered and are not yet rebuilt"
+        // guard before it flushes anything (manager_index_t::rebuild_marker_path_), because this handler is the
+        // first step of both compacting orchestrations and is sent from nowhere else in the tree. A guard that could
+        // not be written comes back as a refusal here and stops the round below, ahead of the compaction it was
+        // meant to cover.
         //
-        // THE FLUSH ITSELF IS HERE FOR ITS ANSWER, NOT FOR ITS BYTES, and the distinction was
-        // measured rather than argued.
+        // THE FLUSH ITSELF IS HERE FOR ITS ANSWER, NOT FOR ITS BYTES, and the distinction was measured rather than
+        // argued. What it writes is genuinely dead: force_flush persists each store's dirty state, then the rebuild
+        // at the end of this operator calls repopulate_table, whose first act per index is
+        // index_agent_contract::clear — btree_index_disk_t::clear removes the whole tree DIRECTORY
+        // (core::filesystem::remove_directory is recursive) and re-creates an empty one,
+        // bitcask_index_disk_t::clear unlinks every segment, CURRENT, the txn log and its applied-offset sidecar.
+        // What makes the RESULT durable is the rebuild's own force_flush inside publish_buckets.
         //
-        // What it writes is genuinely dead. force_flush persists each store's dirty state;
-        // the rebuild at the end of this operator then calls repopulate_table, whose first
-        // act per index is index_agent_contract::clear -- btree_index_disk_t::clear removes
-        // the whole tree DIRECTORY (core::filesystem::remove_directory is recursive) and
-        // re-creates an empty one, bitcask_index_disk_t::clear unlinks every segment, CURRENT,
-        // the txn log and its applied-offset sidecar. So every byte this flush put on the
-        // device for a rebuilt index is unlinked a few steps later, and what makes the RESULT
-        // durable is the rebuild's own force_flush inside publish_buckets (both agent
-        // families end commit_inserts with it). The old justification standing here -- "so a
-        // post-recovery rebuild starts from a consistent on-disk index state" -- named a
-        // bootstrap rebuild that was removed from this branch as a proven no-op.
-        //
-        // WHAT IS NOT DEAD IS THE REFUSAL, and it is the ONLY report on the health of the
-        // index's EXISTING durable state, taken before the rebuild below destroys and
-        // re-creates the store. Measured by removing this block and running
-        // test_index_flush_refusal: with the tree's `metadata` path replaced by a directory,
-        // the CHECKPOINT stopped failing and started SUCCEEDING -- clear()'s recursive
-        // remove_directory erases the injected fault together with the tree, so the rebuild's
-        // flush then lands on a clean path and the round reports success over a device the
-        // index could not write a moment earlier. The last step truncates the WAL, so that
-        // success is not harmless.
-        //
-        // Replacing it with a probe that reports the same health WITHOUT writing bytes that
-        // are about to be unlinked needs a new door on index_agent_contract, which is not this
-        // change's surface.
+        // WHAT IS NOT DEAD IS THE REFUSAL, the ONLY report on the health of the index's EXISTING durable state,
+        // taken before the rebuild below destroys and re-creates the store. Measured by removing this block and
+        // running test_index_flush_refusal: with the tree's `metadata` path replaced by a directory, the CHECKPOINT
+        // stopped failing and started SUCCEEDING — clear()'s recursive remove_directory erases the injected fault
+        // together with the tree, so the rebuild's flush lands on a clean path and the round reports success over a
+        // device the index could not write a moment earlier. The last step truncates the WAL, so that success is not
+        // harmless. Replacing the flush with a probe that reports the same health without writing doomed bytes needs
+        // a new door on index_agent_contract.
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             auto [_fi, fif] = actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::flush_all_indexes,
@@ -101,39 +88,32 @@ namespace components::operators {
             checkpoint_wal_id = co_await std::move(cpf);
         }
 
-        // Index rebuild. It MUST run AFTER checkpoint_all and BEFORE the truncate below, and
-        // the two halves of that sandwich are owed to different facts.
+        // Index rebuild. It MUST run AFTER checkpoint_all and BEFORE the truncate below, and the two halves of that
+        // sandwich are owed to different facts.
         //
-        // AFTER checkpoint_all, because checkpoint_inner compact()s each table's on-disk
-        // storage, which renumbers row ids (0-based, gap-free post-compact). The index stores
-        // those PHYSICAL ids, so rebuilding earlier would re-stage the ids that are about to
-        // be replaced. repopulate_table clears the on-disk index backing AND the agents'
-        // stores before re-inserting, so both btree duplicate-growth and disk_hash wrong-row
-        // drift are wiped in one pass. Sequential per-oid is fine: checkpoint is a cold,
-        // exclusive operation.
+        // AFTER checkpoint_all, because checkpoint_inner compact()s each table's on-disk storage, which renumbers
+        // row ids (0-based, gap-free post-compact). The index stores those PHYSICAL ids, so rebuilding earlier would
+        // re-stage the ids that are about to be replaced. repopulate_table clears the on-disk index backing AND the
+        // agents' stores before re-inserting, so both btree duplicate-growth and disk_hash wrong-row drift are wiped
+        // in one pass. Sequential per-oid is fine: checkpoint is a cold, exclusive operation.
         //
-        // BEFORE truncate_before, because THE TRUNCATION IS THIS ROUND'S POINT OF NO RETURN
-        // and the rebuild is the round's last chance to fail recoverably. Between the compact
-        // committing its header and the rebuild's force_flush landing (btree and bitcask both
-        // end commit_inserts with one), the durable state is a post-compact table under
-        // pre-compact indexes. Whatever ends the round inside that window — a refused
-        // truncate returning through the branch below, or a kill -9 — must not ALSO have
-        // destroyed journal segments. Ordering it this way is what makes the refusal path
-        // safe; it does not shorten the window itself, and it never could: a call order
-        // cannot reach past the round's own death. What does reach past it is the durable
-        // guard step 1 armed (manager_index_t::rebuild_marker_path_, armed inside
-        // flush_all_indexes and cleared per table inside repopulate_table). A start that
-        // finds it still armed declines to wire the indexes it names, so the window now
-        // costs full scans and an error line rather than silent wrong answers.
+        // BEFORE truncate_before, because THE TRUNCATION IS THIS ROUND'S POINT OF NO RETURN and the rebuild is the
+        // round's last chance to fail recoverably. Between the compact committing its header and the rebuild's
+        // force_flush landing (btree and bitcask both end commit_inserts with one), the durable state is a
+        // post-compact table under pre-compact indexes. Whatever ends the round inside that window — a refused
+        // truncate returning through the branch below, or a kill -9 — must not ALSO have destroyed journal segments.
+        // This ordering is what makes the refusal path safe; it does not shorten the window, and no call order
+        // could. What does reach past the round's own death is the durable guard step 1 armed
+        // (manager_index_t::rebuild_marker_path_, cleared per table inside repopulate_table): a start that finds it
+        // still armed declines to wire the indexes it names, so the window costs full scans and an error line rather
+        // than silent wrong answers.
         //
-        // THE LOOP ITSELF LIVES IN services::index::repopulate_indexes_after_compaction, and
-        // it being there is the point rather than tidiness. compact() is reached from three
-        // orchestrations — this operator, manager_wal_replicate_t's auto-checkpoint and
-        // operator_vacuum_t — and only this one once had the rebuild written out longhand, so
-        // every auto-checkpoint renumbered indexed tables and left their indexes naming
-        // pre-compact rows. One shared driver is what stops a fourth caller from repeating
-        // that; the ORDER around it is stated on the driver, because that is the half a
-        // shared function cannot enforce for its callers and the half these two diverged on.
+        // THE LOOP ITSELF LIVES IN services::index::repopulate_indexes_after_compaction, and it being there is the
+        // point rather than tidiness. compact() is reached from three orchestrations — this operator,
+        // manager_wal_replicate_t's auto-checkpoint and operator_vacuum_t — and a rebuild written out longhand in
+        // one of them is a rebuild the others do without: an auto-checkpoint that renumbers indexed tables and
+        // leaves their indexes naming pre-compact rows. One shared driver stops a fourth caller from repeating that;
+        // the ORDER around it is stated on the driver, because that is the half a shared function cannot enforce.
         {
             auto rebuild_error =
                 co_await services::index::repopulate_indexes_after_compaction(resource_,

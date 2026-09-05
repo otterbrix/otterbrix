@@ -8,8 +8,8 @@
 namespace otterbrix::benchmark {
 
 // Unconditional: every table is disk-backed, so a benchmark that never checkpoints is
-// measuring an engine that never flushed. Used to be gated on `--disk`, which selected
-// a storage mode that no longer exists.
+// measuring an engine that never flushed. Not gated on `--disk` -- that flag selected a
+// storage mode that no longer exists.
 inline void checkpoint_now(benchmark_state_t& state, const char* context = nullptr) {
     if (state.dispatcher == nullptr) {
         return;

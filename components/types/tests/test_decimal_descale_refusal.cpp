@@ -4,9 +4,9 @@
 // sentinels, and logical_value_t::cast_as turns those into a conversion_failure reading
 // "numeric field overflow" (components/types/logical_value.cpp, the create_decimal lambda).
 // DECIMAL -> int is the same question asked backwards: decimal_to_numeric descales and hands
-// back std::nullopt when the result does not fit the integer target, and that nullopt used to
+// back std::nullopt when the result does not fit the integer target, and that nullopt must not
 // become a SILENT NA -- a success-shaped NULL standing in for a value that exists and simply
-// does not fit. The refusal for it (logical_value.cpp:487) shipped without a test; this is it.
+// does not fit.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/types/logical_value.hpp>

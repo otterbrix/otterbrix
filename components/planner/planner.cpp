@@ -91,14 +91,12 @@ namespace components::planner {
                 cur = fk_node;
             }
 
-            // A UNIQUE / PK group none of whose columns this UPDATE writes cannot be
-            // violated by it — the stored key does not change. Such a group is dropped
-            // here, before the operator is spliced in, because its existing-row layer
-            // costs one FULL pass over the target table per 1024 written rows.
-            // Identity is the top-level column NAME on both sides: that is what the
-            // groups carry and what operator_unique_constraint_t resolves them by.
-            // A nested SET (SET a[0] = ...) still names column `a`, so writing into a
-            // key column's element keeps the group.
+            // A UNIQUE / PK group none of whose columns this UPDATE writes cannot be violated by it — the
+            // stored key does not change. Such a group is dropped here, before the operator is spliced in,
+            // because its existing-row layer costs one FULL pass over the target table per 1024 written rows.
+            // Identity is the top-level column NAME on both sides: that is what the groups carry and what
+            // operator_unique_constraint_t resolves them by, and a nested SET (SET a[0] = ...) still names
+            // column `a`, so writing into a key column's element keeps the group.
             std::vector<std::vector<std::string>> live_unique_groups;
             for (const auto& group : upd->unique_groups()) {
                 const bool touched = std::any_of(group.begin(), group.end(), [&](const std::string& col) {
@@ -213,13 +211,11 @@ namespace components::planner {
                                                              rk);
             cc->set_table_oid(table_oid);
 
-            // Constraints declared inside this CREATE TABLE. They arrive as
-            // create_constraint_t children (transformer) whose names enrich already
-            // checked against the declared column list; the ATTOIDS come into existence
-            // just above, in build_create_table_writes, so this is the only place that
-            // can pair the two. Same builder, same rows, as ALTER TABLE ADD CONSTRAINT —
-            // they land in the same catalog-write sequence, so the table and everything
-            // constraining it are written under one operator, in one transaction.
+            // Constraints declared inside this CREATE TABLE. They arrive as create_constraint_t children
+            // (transformer) whose names enrich already checked against the declared column list; the ATTOIDS
+            // come into existence just above, in build_create_table_writes, so this is the only place that can
+            // pair the two. Same builder, same rows, as ALTER TABLE ADD CONSTRAINT, landing in the same
+            // catalog-write sequence — table and everything constraining it under one operator, one transaction.
             auto attoid_of = [cc](const std::string& name) {
                 for (const auto& col : cc->column_definitions()) {
                     if (col.name() == name) {
@@ -393,20 +389,17 @@ namespace components::planner {
 
         // CREATE MATERIALIZED VIEW — stamp-only rewrite.
         //
-        // The matview node carries body_plan as child[0] (transformer wired it).
-        // Source schema was derived by enrich's derive_matview_output_schema —
-        // inferred_columns / namespace_oid / source_table_oid are already on the
-        // node. Planner consumes the oid batch and stamps:
-        //   - matview's own oid (mv_oid + N attoids via build_create_table_writes)
-        //   - rule_oid (for pg_rewrite)
-        //   - catalog_writes vector (pg_class + pg_attribute + pg_rewrite + pg_depend)
-        // physical_plan_generator's case create_matview_t then builds the composite
-        // operator_create_matview_t which atomically performs heap creation,
-        // catalog row writes, body scan, and storage_append in one async coroutine.
+        // The matview node carries body_plan as child[0] (transformer wired it). Source schema was derived by
+        // enrich's derive_matview_output_schema — inferred_columns / namespace_oid / source_table_oid are already
+        // on the node. The planner consumes the oid batch and stamps the matview's own oid (mv_oid + N attoids via
+        // build_create_table_writes), the rule_oid (for pg_rewrite) and the catalog_writes vector (pg_class +
+        // pg_attribute + pg_rewrite + pg_depend). physical_plan_generator's create_matview_t case then builds
+        // operator_create_matview_t, which atomically performs heap creation, catalog row writes, body scan and
+        // storage_append in one async coroutine.
         node_ptr rewrite_create_matview(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cm = static_cast<logical_plan::node_create_matview_t*>(node.get());
             // Non-const: build_create_table_writes stamps the allocated attoids back onto
-            // these columns (RN-oid), and plan-gen reads THIS list into the create operator.
+            // these columns, and plan-gen reads THIS list into the create operator.
             auto& cols = cm->inferred_columns();
             if (cols.empty()) {
                 // Schema derivation failed (see derive_matview_output_schema).
@@ -444,22 +437,16 @@ namespace components::planner {
 
         // CREATE TYPE → sequence_t(catalog-write node_insert_t × N).
         //
-        //   STRUCT  → composite type, persisted PostgreSQL-style as a pg_class entry
-        //             with relkind='c' + one pg_attribute row per field. We reuse
-        //             build_create_table_writes (the same builder used for CREATE
-        //             TABLE) since pg_class+pg_attribute is the source of truth for
-        //             composite types — sidesteps the flat-text type_spec roundtrip bug
-        //             for nested STRUCT typdefspec encoding.
+        //   STRUCT  → composite type, persisted PostgreSQL-style as a pg_class entry with relkind='c' + one
+        //             pg_attribute row per field. Reuses build_create_table_writes (the CREATE TABLE builder)
+        //             since pg_class+pg_attribute is the source of truth for composite types — it sidesteps the
+        //             flat-text type_spec roundtrip bug for nested STRUCT typdefspec encoding.
+        //   ENUM/other → persisted via pg_type; build_create_type_writes encodes the non-composite definition
+        //             into a single typdefspec string.
         //
-        //   ENUM/other → persisted via pg_type; build_create_type_writes encodes the
-        //                non-composite definition into a single typdefspec string.
-        //
-        // Pre-conditions (must be satisfied by the dispatcher before this rewrite):
-        //   * existence/collision check via check_type_exists has passed,
-        //   * each STRUCT child of type UNKNOWN has been resolved to its definition
-        //     (probe_type_in_path replaces UNKNOWN with the concrete type),
-        //   * namespace_oid() has been set (resolved from CREATE TYPE database_name).
-        //
+        // Pre-conditions (the dispatcher must satisfy them before this rewrite): the existence/collision check via
+        // check_type_exists has passed; each STRUCT child of type UNKNOWN has been resolved to its definition
+        // (probe_type_in_path); namespace_oid() has been set from CREATE TYPE database_name.
         // OID requirements: STRUCT needs (1 + field_cols.size()); ENUM needs 1.
         node_ptr rewrite_create_type(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             using LT = components::types::logical_type;
@@ -471,8 +458,7 @@ namespace components::planner {
             std::vector<catalog::catalog_write_t> writes;
             if (ct->type().type() == LT::STRUCT) {
                 // Composite: build pg_class+pg_attribute via build_create_table_writes
-                // with relkind='c'. Mirrors the inline path that used to live in the
-                // dispatcher; nested STRUCT children become UNKNOWN-by-name references
+                // with relkind='c'. Nested STRUCT children become UNKNOWN-by-name references
                 // (populated against pg_class entries with relkind='c'/'d' on read).
                 std::vector<components::table::column_definition_t> field_cols;
                 field_cols.reserve(ct->type().child_types().size());
@@ -524,29 +510,24 @@ namespace components::planner {
 
         // CREATE INDEX → sequence_t(catalog-write node_insert_t × N, create_index_t).
         //
-        // The trailing create_index_t carries the resolved metadata (name, keys,
-        // type, namespace_oid, table_oid, index_oid, indkey, column_attoids) so
-        // the physical plan generator can lower the sequence into:
+        // The trailing create_index_t carries the resolved metadata (name, keys, type, namespace_oid, table_oid,
+        // index_oid, indkey, column_attoids) so the physical plan generator can lower the sequence into:
         //   operator_create_index_metadata_t  — pg_class+pg_index+pg_depend writes
-        //   operator_create_index_backfill_t  — index agent register/create + scan
-        //                                       + insert_rows + flip indisvalid=true
+        //   operator_create_index_backfill_t  — index agent register/create + scan + insert_rows + flip
+        //                                       indisvalid=true
         //
-        // Pre-conditions: enrich_logical_plan has stamped namespace_oid, table_oid,
-        // column_names, column_attoids, indkey on the node. The dispatcher has
-        // allocated a 1-OID batch for the index_oid.
+        // Pre-conditions: enrich_logical_plan has stamped namespace_oid, table_oid, column_names, column_attoids,
+        // indkey on the node; the dispatcher has allocated a 1-OID batch for the index_oid.
         core::result_wrapper_t<node_ptr>
         rewrite_create_index(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* ci = static_cast<logical_plan::node_create_index_t*>(node.get());
             const catalog::oid_t ns_oid = ci->namespace_oid();
             const catalog::oid_t table_oid = ci->table_oid();
 
-            // enrich stamps these OIDs from the statement's resolved entries and
-            // stamps NOTHING when the named table is not in the catalog — it never
-            // refuses by itself. This rewrite is the first reader of the identity,
-            // so the miss is answered here: refuse the statement (rule 6). The
-            // shape this replaces passed the bare create_index_t through "to
-            // preserve the original silent no-op", and the executor then reported
-            // success for an index that was never created.
+            // enrich stamps these OIDs from the statement's resolved entries and stamps NOTHING when the named
+            // table is not in the catalog — it never refuses by itself. This rewrite is the first reader of the
+            // identity, so the miss is answered here (rule 6): passing the bare create_index_t through instead
+            // makes the executor report success for an index that was never created.
             if (ns_oid == catalog::INVALID_OID || table_oid == catalog::INVALID_OID) {
                 std::pmr::string msg{r};
                 msg.append("CREATE INDEX ");
@@ -559,13 +540,11 @@ namespace components::planner {
                 return core::error_t{core::error_code_t::table_not_exists, std::move(msg)};
             }
 
-            // The NAME is checked the same way the table was: enrich resolved the
-            // {db, indexname} demand the transformer registered, and stamped the
-            // pg_class oid of whatever already answers to it. Nothing checked
-            // relname uniqueness before — duplicate detection was by (keys, type)
-            // only, so a second index under a taken name minted a second pg_class
-            // row with the same relname, and DROP INDEX by name then answered
-            // about whichever row the resolve found.
+            // The NAME is checked the same way the table was: enrich resolved the {db, indexname} demand the
+            // transformer registered and stamped the pg_class oid of whatever already answers to it. Detecting
+            // duplicates by (keys, type) alone is not enough — a second index under a taken name would mint a
+            // second pg_class row with the same relname, and DROP INDEX by name would then answer about
+            // whichever row the resolve found.
             if (ci->name_conflict_oid() != catalog::INVALID_OID) {
                 std::pmr::string msg{r};
                 msg.append("CREATE INDEX: relation ");
@@ -608,18 +587,15 @@ namespace components::planner {
 
         // DROP INDEX → sequence_t(catalog-delete node_delete_t × N, drop_index_t).
         //
-        // The deletes scrub pg_index/pg_depend/pg_class rows for the index oid;
-        // the trailing drop_index_t carries the index name and OID so
-        // operator_drop_index_t can call manager_index_t::drop_index.
+        // The deletes scrub pg_index/pg_depend/pg_class rows for the index oid; the trailing drop_index_t carries
+        // the index name and OID so operator_drop_index_t can call manager_index_t::drop_index.
         //
-        // An unresolved index oid means enrich found no pg_class row answering to
-        // the name: the index does not exist. That is a refusal — with one carve-out:
-        // `DROP INDEX IF EXISTS` (missing_ok) lowers to an empty sequence, the
-        // no-op success PostgreSQL grants that form. The shape this replaces
-        // emitted the trailing drop_index_t anyway, whose engine teardown
-        // tolerates an unknown oid by design — so DROP INDEX over garbage
-        // reported success, and operator_drop_index_t's no-identity-row-deleted
-        // verdict never fired because not one delete spec was emitted.
+        // An unresolved index oid means enrich found no pg_class row answering to the name: the index does not
+        // exist. That is a refusal — with one carve-out: `DROP INDEX IF EXISTS` (missing_ok) lowers to an empty
+        // sequence, the no-op success PostgreSQL grants that form. Emitting the trailing drop_index_t regardless is
+        // not a refusal: its engine teardown tolerates an unknown oid by design, so DROP INDEX over garbage would
+        // report success, and operator_drop_index_t's no-identity-row-deleted verdict would never fire because not
+        // one delete spec was emitted.
         core::result_wrapper_t<node_ptr> rewrite_drop_index(std::pmr::memory_resource* r, node_ptr node) {
             auto* di = static_cast<logical_plan::node_drop_t*>(node.get());
             const catalog::oid_t index_oid = di->index_oid();
@@ -654,18 +630,15 @@ namespace components::planner {
             return node_ptr{seq};
         }
 
-        // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO → one
-        // node_dynamic_cascade_delete_t. The (classid, seed objid) pair is
-        // derived from the node's kind(); behavior() is forwarded.
+        // DROP DATABASE / TABLE / TYPE / SEQUENCE / VIEW / MACRO → one node_dynamic_cascade_delete_t. The
+        // (classid, seed objid) pair is derived from the node's kind(); behavior() is forwarded.
         //
-        // The dynamic cascade operator self-resolves the pg_depend closure at runtime
-        // and performs catalog row deletes + (for pg_class regular/computed entries)
-        // storage drop + index unregister. INVALID_OID seeds become a runtime no-op
-        // inside the operator.
+        // The dynamic cascade operator self-resolves the pg_depend closure at runtime and performs catalog row
+        // deletes + (for pg_class regular/computed entries) storage drop + index unregister. INVALID_OID seeds
+        // become a runtime no-op inside the operator.
         //
-        // DROP INDEX is NOT routed here — it keeps its own rewrite_drop_index path
-        // because the dynamic cascade operator never tears down the index actor for
-        // relkind 'i'.
+        // DROP INDEX is NOT routed here — it keeps its own rewrite_drop_index path, because the dynamic cascade
+        // operator never tears down the index actor for relkind 'i'.
         node_ptr rewrite_drop(std::pmr::memory_resource* r, node_ptr node) {
             auto* d = static_cast<logical_plan::node_drop_t*>(node.get());
             catalog::oid_t classid = catalog::INVALID_OID;
@@ -696,17 +669,14 @@ namespace components::planner {
 
         // ALTER TABLE → sequence_t(alter_column_{add,rename,drop}_t × N).
         //
-        // Splits a multi-clause node_alter_table_t into per-clause primitives —
-        // node_alter_column_t(op) leaves (add/rename/drop), plus the computed_=true
-        // variant for relkind='g' DROP COLUMN. Each is lowered by the physical-plan
-        // generator into a dedicated operator that performs the pg_attribute /
-        // pg_depend / in-memory schema work for that single clause.
+        // Splits a multi-clause node_alter_table_t into per-clause primitives — node_alter_column_t(op) leaves
+        // (add/rename/drop), plus the computed_=true variant for relkind='g' DROP COLUMN. Each is lowered by the
+        // physical-plan generator into a dedicated operator that performs the pg_attribute / pg_depend / in-memory
+        // schema work for that single clause.
         //
-        // Pre-conditions: enrich_logical_plan has stamped table_oid on the node.
-        // No OIDs are pre-allocated; the add operator allocates its own attoid at
-        // execution time (one per clause) since attnum/attoid are per-row. The
-        // drop_column operator looks up the attoid by (table_oid, column_name) at
-        // execution time too.
+        // Pre-conditions: enrich_logical_plan has stamped table_oid on the node. No OIDs are pre-allocated: the add
+        // operator allocates its own attoid at execution time (one per clause) since attnum/attoid are per-row, and
+        // the drop operator looks up the attoid by (table_oid, column_name) at execution time too.
         node_ptr rewrite_alter_table(std::pmr::memory_resource* r, node_ptr node) {
             auto* alter = static_cast<logical_plan::node_alter_table_t*>(node.get());
             const auto table_oid = alter->table_oid();
@@ -733,12 +703,11 @@ namespace components::planner {
                     add->set_column(std::move(col));
                     seq->append_child(add);
                 } else if (sub.kind == logical_plan::alter_table_kind::rename_column) {
-                    // No relkind='g' split here, unlike the DROP clause below. A
-                    // document table's columns are not in pg_attribute either, but
-                    // operator_alter_column_rename_t answers for both kinds: its refusal
-                    // path already reads pg_class for the relation's name, and takes the
-                    // wording from that row's relkind. Splitting here would need a second
-                    // operator whose only reachable outcome is the same refusal.
+                    // No relkind='g' split here, unlike the DROP clause below. A document table's columns are not
+                    // in pg_attribute either, but operator_alter_column_rename_t answers for both kinds: its refusal
+                    // path already reads pg_class for the relation's name, and takes the wording from that row's
+                    // relkind. Splitting here would need a second operator whose only reachable outcome is the same
+                    // refusal.
                     auto rename = logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::rename);
                     rename->set_table_oid(table_oid);
                     rename->set_old_name(core::columnname_t{sub.column_name});
@@ -761,8 +730,8 @@ namespace components::planner {
                         // RESTRICT/CASCADE comes from the subcommand (defaulted to
                         // cascade_ until the transformer copies the grammar's
                         // AlterTableCmd::behavior); the operator refuses blocked
-                        // drops under restrict_. The hardcoded cascade_ that stood
-                        // here made RESTRICT unreachable by construction.
+                        // drops under restrict_. Hardcoding cascade_ here would make
+                        // RESTRICT unreachable by construction.
                         drop->set_behavior(sub.behavior);
                     }
                     seq->append_child(drop);

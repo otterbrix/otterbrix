@@ -125,10 +125,9 @@ namespace components::pipeline {
         uint64_t committed_id{0};
 
         explicit context_t(logical_plan::storage_parameters init_parameters);
-        // Defaulted so EVERY member moves. The previous hand-written one moved
-        // six members and silently dropped the other ~19 (txn, the DML range
-        // lists, the created/dropped back-channels, committed_id, ...) — a
-        // moved context published nothing and reverted nothing. Defaulting also
+        // Defaulted so EVERY member moves. A hand-written one drops whatever it forgets
+        // (txn, the DML range lists, the created/dropped back-channels, committed_id, ...)
+        // and a moved context then publishes nothing and reverts nothing. Defaulting also
         // keeps future members covered without anyone remembering this ctor.
         context_t(context_t&& context) noexcept = default;
         context_t(session::session_id_t session,

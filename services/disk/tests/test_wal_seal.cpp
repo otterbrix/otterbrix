@@ -23,34 +23,32 @@
 #include <unistd.h>
 
 // ---------------------------------------------------------------------------
-// B2 — WAL SEALING. checkpoint_all's return value is the floor handed to
-// wal_worker_t::truncate_before, which DELETES every WAL segment lying entirely at or
-// below it. The one invariant that matters here:
+// WAL SEALING. checkpoint_all's return value is the floor handed to
+// wal_worker_t::truncate_before, which DELETES every WAL segment lying entirely at or below it.
+// The one invariant that matters here:
 //
 //     truncating the WAL must never discard a record a restart would still need.
 //
-// The floor that satisfies it is min(prev_checkpoint_wal_id) over EVERY entry the agents
-// own — not over the entries that were checkpointed this round. checkpoint_inner defers
-// entries for four documented reasons (degraded block storage, an open scan cursor,
-// version stamps above the compact watermark, a checkpoint that returned an error) and a
-// deferred entry keeps its old file, its old sidecar and its UNCHANGED
-// prev_checkpoint_wal_id — which it still feeds into the min. That contribution is what
-// pins the floor below the records the deferred table has not persisted yet.
+// The floor that satisfies it is min(prev_checkpoint_wal_id) over EVERY entry the agents own — not
+// over the entries that were checkpointed this round. checkpoint_inner defers entries for four
+// documented reasons (degraded block storage, an open scan cursor, version stamps above the compact
+// watermark, a checkpoint that returned an error) and a deferred entry keeps its old file, its old
+// sidecar and its UNCHANGED prev_checkpoint_wal_id — which it still feeds into the min. That
+// contribution is what pins the floor below the records the deferred table has not persisted yet.
 //
-// B6 added a fifth path that writes nothing, and it is NOT a deferral: an entry that is
-// unchanged since its durable root skips the rebuild, but advances prev <- current and
-// current <- this round's id exactly as a rewrite would have, writes its sidecar, and
-// contributes the same prev. That is why every number below is unchanged: the floor a round
-// reports does not depend on which entries had work to do, only on what each one's durable
-// root is. See services/disk/tests/test_checkpoint_dirty.cpp.
+// A fifth path writes nothing and is NOT a deferral: an entry unchanged since its durable root
+// skips the rebuild, but advances prev <- current and current <- this round's id exactly as a
+// rewrite would have, writes its sidecar, and contributes the same prev. That is why every number
+// below is unchanged: the floor a round reports does not depend on which entries had work to do.
+// See services/disk/tests/test_checkpoint_dirty.cpp.
 //
 // These tests own the two ends of that contract:
-//   * floor_pinned_by_deferred_table — a table that does NOT get checkpointed holds the
-//     floor down while every other table races ahead, across consecutive rounds, and a
-//     restart proves its rows really never reached the file.
-//   * no_seal_when_no_entry_reports_a_floor — the min_prev_id == max() edge case: no entry
-//     reported anything, so there is no floor to seal at and checkpoint_all must answer 0
-//     ("do not truncate") rather than pass the sentinel on as a truncation boundary.
+//   * floor_pinned_by_deferred_table — a table that does NOT get checkpointed holds the floor down
+//     while every other table races ahead, across consecutive rounds, and a restart proves its rows
+//     really never reached the file.
+//   * no_seal_when_no_entry_reports_a_floor — the min_prev_id == max() edge case: no entry reported
+//     anything, so there is no floor to seal at and checkpoint_all must answer 0 ("do not truncate")
+//     rather than pass the sentinel on as a truncation boundary.
 // ---------------------------------------------------------------------------
 
 using namespace services::disk;
@@ -186,7 +184,7 @@ namespace {
 //
 //    Timeline (the wal ids are what checkpoint_all is told the WAL has reached):
 //      round 1 @ 100 -> every table: prev 0,   current 100.  floor 0 ("do not truncate").
-//      round 2 @ 200 -> every table: prev 100, current 200.  floor 100.  (B6: nothing has
+//      round 2 @ 200 -> every table: prev 100, current 200.  floor 100.  (Nothing has
 //                       changed since round 1, so this round advances the chain without
 //                       rewriting a single file.)
 //      rows are appended to the user table and a cursor is opened on it and abandoned.
@@ -218,7 +216,7 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
         // Round 2. Now every table's fall-back root is the one taken at 100, so 100 is the
         // floor. It is NOT 200: the records between 100 and 200 are still live for any table
         // whose next round dies before its header commit and reopens that root. (Nothing has
-        // changed since round 1, so under B6 this round rewrites nothing — the arithmetic is
+        // changed since round 1, so this round rewrites nothing — the arithmetic is
         // the same either way, which is the point.)
         REQUIRE(fd.checkpoint_round(services::wal::id_t{200}) == services::wal::id_t{100});
 

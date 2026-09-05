@@ -30,11 +30,11 @@ namespace actor_zeta {
             static_assert(type_traits::is_unique_future_v<result_type>, "Method must return unique_future<T>");
 
             if (!target) {
-                // An empty target gets a LOUD refusal, in every build mode. The old shorthand
-                // promised a ready future with a default value — "nobody is listening" dressed
-                // as "answered, with nothing" (the interface overload below spells out why that
-                // shape is forbidden) — and built it on target.resource(), which is null for an
-                // empty address. So what it actually delivered was never the promised default:
+                // An empty target gets a LOUD refusal, in every build mode. A ready future
+                // with a default value here is "nobody is listening" dressed as "answered, with
+                // nothing" (the interface overload below spells out why that shape is
+                // forbidden), and it cannot even deliver that: it would be built on
+                // target.resource(), which is null for an empty address, so what arrives is
                 // an assert-abort in Debug (make_ready_future's null-resource assert) and a
                 // null memory_resource dereference (SIGSEGV) under NDEBUG. Every live call
                 // site targets a spawned actor; the one contract an unreachable branch may
@@ -66,27 +66,25 @@ namespace actor_zeta {
 
         // SEND THROUGH A CONTRACT, NAMING THE METHOD AT COMPILE TIME.
         //
-        // Use this when one address may belong to any of several unrelated actor classes
-        // that implement the same contract (actor_zeta::implements<>), so the caller has
-        // no class to name: services::index::manager_index_t addressing an index agent,
-        // which is a bitcask_index_agent_t or a btree_index_agent_t and it does not know
-        // which. The message id is the method's POSITION in the contract's dispatch_traits
-        // list, and `implements<>` is what guarantees every implementation agrees on it.
+        // Use this when one address may belong to any of several unrelated actor classes that
+        // implement the same contract (actor_zeta::implements<>), so the caller has no class to
+        // name: services::index::manager_index_t addressing an index agent, which is a
+        // bitcask_index_agent_t or a btree_index_agent_t and it does not know which. The message
+        // id is the method's POSITION in the contract's dispatch_traits list, and `implements<>`
+        // is what guarantees every implementation agrees on it.
         //
         // WHY NOT actor_zeta::send(target, &contract::method, ...). The library's own
-        // interface-polymorphic send takes the method pointer as a VALUE and then compares
-        // it at runtime against each entry of the contract's list
-        // (runtime_dispatch_helper_address). That comparison ODR-USES the address of every
-        // contract method, so the linker demands a BODY for each -- it turns a pure
-        // message vocabulary into a set of functions that exist only to be never called.
-        // Naming the method as a template argument resolves the id through the same
-        // positional rule (action_id_impl -> find_method_index, which compares TYPES) at
-        // compile time, and asks nothing of the contract but its declarations.
+        // interface-polymorphic send takes the method pointer as a VALUE and compares it at
+        // runtime against each entry of the contract's list (runtime_dispatch_helper_address).
+        // That comparison ODR-USES the address of every contract method, so the linker demands a
+        // BODY for each -- it turns a pure message vocabulary into a set of functions that exist
+        // only to be never called. Naming the method as a template argument resolves the id
+        // through the same positional rule (action_id_impl -> find_method_index, which compares
+        // TYPES) at compile time, and asks nothing of the contract but its declarations.
         //
-        // An empty target is refused here exactly like in the send() above: every caller
-        // of this overload holds an address it got from a live agent, and a ready future
-        // for an empty one would turn "nobody is listening" into "answered, with
-        // nothing". actor-zeta asserts on the empty address instead.
+        // An empty target is refused here exactly like in the send() above: a ready future for
+        // an empty address would turn "nobody is listening" into "answered, with nothing", and
+        // every caller of this overload holds an address it got from a live agent.
         template<auto MethodPtr,
                  typename... Args,
                  typename Interface = typename type_traits::callable_trait<decltype(MethodPtr)>::class_type>

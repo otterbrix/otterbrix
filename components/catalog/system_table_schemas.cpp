@@ -14,7 +14,7 @@
 //   pg_namespace  — no `nspowner`           : no role/user system today.
 //   pg_class      — no `reltuples/relpages` : optimizer reads counts live from data_table_t.
 //                 — no `reltype`             : composite-row types not implemented.
-//                 — adds `relstoragemode`    : always 'd' (B1a: disk-only; write-only column).
+//                 — adds `relstoragemode`    : always 'd' (disk-only; write-only column).
 //                 — relkind 'g' = computing : doc proposed 'c', but 'c' collides with
 //                                              PG's "composite type" relkind. 'g' aligns
 //                                              with PG GENERATED terminology.
@@ -87,8 +87,8 @@ namespace components::catalog {
             c.emplace_back(
                 "relkind",
                 str_col(),
-                true); // 'r' relation, 'i' index, 'S' sequence, 'v' view, 'm' macro, 'c' composite type, 'g' generated/computing
-            c.emplace_back("relstoragemode", str_col(), true); // always 'd' (B1a: disk-only, write-only)
+                true); // 'r' relation, 'i' index, 'S' sequence, 'v' view, 'm' macro, 'c' composite, 'g' computing
+            c.emplace_back("relstoragemode", str_col(), true); // always 'd' (disk-only, write-only)
             return c;
         }
 
@@ -321,7 +321,7 @@ namespace components::catalog {
         return nullptr;
     }
 
-    
+
     // ── flat-text type spec helpers ──────────────────────────────────────────────
     // Format (recursive, scalar names match pg_type.typname):
     //   scalar            →  bool int1 int2 int4 int8 float4 float8 text
@@ -474,14 +474,13 @@ namespace components::catalog {
     // Forward declaration for mutual recursion.
     static std::string encode_type_nested(const types::complex_logical_type& t);
 
-    // ЗАПИСЬ #366: the flat codec used to write names AS IS, so a struct field, union
-    // member, enum name/label or user-type name carrying one of the format's own
-    // delimiters ( ) , : = produced a spec the strict decoder refuses — the DDL went
-    // through and every later resolve failed per-statement, with no writer gate anywhere.
-    // The encoder escapes those characters (backslash-prefixed) and the decoder reads the
-    // escapes back. A backslash before anything OUTSIDE this set — including a raw
-    // backslash an old build may have written — is a loud data_corruption refusal, never
-    // a silent decode to a DIFFERENT name.
+    // Names written AS IS produce a spec the strict decoder refuses whenever a struct
+    // field, union member, enum name/label or user-type name carries one of the format's
+    // own delimiters ( ) , : = — the DDL goes through and every later resolve fails
+    // per-statement, with no writer gate anywhere. So the encoder escapes those characters
+    // (backslash-prefixed) and the decoder reads the escapes back. A backslash before
+    // anything OUTSIDE this set — including a raw backslash an old build may have written —
+    // is a loud data_corruption refusal, never a silent decode to a DIFFERENT name.
     static bool flat_name_needs_escape(char c) {
         return c == '\\' || c == '(' || c == ')' || c == ',' || c == ':' || c == '=';
     }
@@ -561,17 +560,17 @@ namespace components::catalog {
     // Recursive-descent parser for the flat-text format. The parse context owns the
     // error channel (rule 2 — no exceptions): the FIRST failure wins, every later step
     // short-circuits, and decode_type_spec turns the failure into a core::error_t.
-    // The old parser had no channel at all — everything unreadable collapsed into
-    // logical_type::UNKNOWN, the very value that also means "named user-type reference",
-    // so corruption was indistinguishable from a legitimate answer.
+    // Without a channel everything unreadable collapses into logical_type::UNKNOWN, the
+    // very value that also means "named user-type reference" — corruption indistinguishable
+    // from a legitimate answer.
 
     // THE DEPTH WINDOW IS SHARED with the binary codec: components/types/
     // type_spec_codec.cpp refuses nesting beyond MAX_SPEC_DEPTH = 64 on BOTH encode and
     // decode, and the dispatcher's write gate (gate_persistable_type in
     // services/dispatcher/validate_logical_plan.cpp) runs that encoder over every
     // plan-level column/type before this codec's text is written — so a flat spec deeper
-    // than the window is not something this engine wrote. Before the limit existed here
-    // the parser recursed unbounded: a 2^20-deep LIST(...) walked it off the stack.
+    // than the window is not something this engine wrote. Without the limit the parser
+    // recurses unbounded: a 2^20-deep LIST(...) walks it off the stack.
     static constexpr uint32_t MAX_FLAT_SPEC_DEPTH = 64;
 
     struct flat_parse_ctx_t {
@@ -673,7 +672,7 @@ namespace components::catalog {
     }
 
     // Whole-token integer read (mirrors parse_oid_csv): from_chars stops at the first
-    // character it cannot use and still reports success, so "12x" used to read as 12.
+    // character it cannot use and still reports success, so "12x" would read as 12.
     template<typename Int>
     static bool read_whole_int(const std::string& tok, Int& out) {
         const auto [ptr, ec] = std::from_chars(tok.data(), tok.data() + tok.size(), out);
@@ -727,8 +726,7 @@ namespace components::catalog {
             }
             // Range-check BEFORE narrowing: "numeric(256,0)" would otherwise wrap to
             // DECIMAL(0,0). An out-of-window pair is refused HERE, through the decode
-            // error channel — the refusal no longer leans on callers treating UNKNOWN
-            // as a rejection (none of them ever did).
+            // error channel, rather than leaning on callers to read UNKNOWN as a rejection.
             if (wv < 0 || scv < 0 || wv > types::DECIMAL_MAX_WIDTH || scv > types::DECIMAL_MAX_WIDTH) {
                 ctx.fail("type spec: numeric(" + w + "," + sc + ") is outside the DECIMAL window");
                 return unknown();
@@ -827,9 +825,9 @@ namespace components::catalog {
             }
             return types::complex_logical_type::create_union(std::move(fields));
         }
-        // An unrecognised keyword WITH arguments used to be silently consumed to the
-        // matching ')' and answered as a named UNKNOWN — a spec this build cannot parse
-        // round-tripped as a plausible user-type reference. It is a refusal now.
+        // An unrecognised keyword WITH arguments is a REFUSAL: consuming it to the matching
+        // ')' and answering a named UNKNOWN round-trips a spec this build cannot parse as a
+        // plausible user-type reference.
         ctx.fail("type spec: unrecognised type keyword '" + name + "'");
         return unknown();
     }
@@ -932,9 +930,9 @@ namespace components::catalog {
             }
             return components::types::complex_logical_type::create_enum(name, std::move(entries));
         }
-        // Flat-text format for all other types. No catch(...) any more: the old arm
-        // swallowed EVERYTHING (bad_alloc included) into UNKNOWN; the parser reports
-        // through its context instead of throwing.
+        // Flat-text format for all other types. No catch(...): it would swallow EVERYTHING
+        // (bad_alloc included) into UNKNOWN. The parser reports through its context instead
+        // of throwing.
         flat_parse_ctx_t ctx{spec, 0, false, std::string{}};
         auto parsed = parse_flat_type(resource, ctx, 0);
         if (ctx.failed) {
@@ -988,11 +986,11 @@ namespace components::catalog {
                 case K::custom:
                     // A raw resolver closure has no introspectable form; its runtime
                     // shape comes back through prouid → compute::function_registry,
-                    // never by parsing this column. The old arm wrote "s:0" here — a
-                    // same-type-as-argument-0 contract the function never declared.
-                    // "c" states the truth instead of guessing a contract. Refusing is
-                    // not an option either: registering a computed(...) output is
-                    // pinned legal behaviour (integration test_udfs does exactly that).
+                    // never by parsing this column. Writing "s:0" here would claim a
+                    // same-type-as-argument-0 contract the function never declared; "c"
+                    // states the truth instead of guessing one. Refusing is not an option
+                    // either: registering a computed(...) output is pinned legal behaviour
+                    // (integration test_udfs does exactly that).
                     out += 'c';
                     break;
             }
@@ -1157,7 +1155,7 @@ namespace components::catalog {
         out.clear();
         if (v.is_null()) {
             // An explicit DEFAULT NULL is a default. Recording it as "" would make it
-            // indistinguishable from having none, which is what the old flat-text form did.
+            // indistinguishable from having none.
             out.push_back(kDefaultSpecNull);
             return core::error_t::no_error();
         }

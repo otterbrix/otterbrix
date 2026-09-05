@@ -13,17 +13,17 @@
 #include <stdexcept>
 #include <string>
 
-// FIN-1 — THE STATEMENT ABOVE THE JOURNAL MUST SEE A REFUSED WRITE.
+// THE STATEMENT ABOVE THE JOURNAL MUST SEE A REFUSED WRITE.
 //
 // The unit-level proofs of the four defects live in services/wal/tests/test_wal_write_refusal.cpp.
 // This file covers the two that only a real statement can show:
 //
 //   - a page write the device refuses must FAIL THE STATEMENT rather than let it report rows
-//     inserted over a journal record that does not exist. Every wal_worker_t write handler
-//     used to drop wal_page_writer_t::append's answer and return the wal_id regardless;
+//     inserted over a journal record that does not exist: wal_page_writer_t::append's answer
+//     has to travel up through every wal_worker_t write handler, not just the wal_id;
 //   - a segment that WILL NOT OPEN must stop startup rather than let the engine come up
-//     missing every committed transaction the segment held. read_all_records answered an
-//     empty vector for that case, indistinguishable from "there is nothing to replay".
+//     missing every committed transaction the segment held: an empty vector out of
+//     read_all_records is indistinguishable from "there is nothing to replay".
 //
 // THE INJECTION. WAL segments are opened by the WAL itself through core::filesystem::open_file,
 // so the .otbx seam (single_file_block_manager_t::dev_set_file_interposer) never saw them; the
@@ -45,7 +45,7 @@ namespace {
         wal_fault_scope_t& operator=(const wal_fault_scope_t&) = delete;
 
         std::string refuse_open_marker; // these segment files do not open at all
-        std::string faulty_marker;      // these get the T3 faulty handle driven by `plan`
+        std::string faulty_marker;      // these get the faulty handle driven by `plan`
         otterbrix_test::fault_plan_t plan;
 
         std::unique_ptr<core::filesystem::file_handle_t>
@@ -63,7 +63,7 @@ namespace {
 
     // A single INSERT wide enough that its WAL record cannot fit in one 4 KiB page, so
     // wal_page_writer_t::append has to flush a full page mid-record — the write whose answer
-    // used to be discarded. A statement that only buffers would not exercise it.
+    // must not be discarded. A statement that only buffers would not exercise it.
     std::string wide_insert_sql(int rows) {
         std::ostringstream sql;
         sql << "INSERT INTO refusal.t (id, payload) VALUES ";
@@ -80,11 +80,11 @@ namespace {
 } // namespace
 
 // ===========================================================================
-// FIN-1 / item 1 — AN INSERT WHOSE JOURNAL RECORD WAS REFUSED MUST FAIL.
+// AN INSERT WHOSE JOURNAL RECORD WAS REFUSED MUST FAIL.
 //
-// BEFORE: write_physical_insert answered with the freshly allocated wal_id, storage_append
-// materialized the rows on the strength of it, and the statement reported them inserted with
-// nothing in the journal to replay them from.
+// If write_physical_insert answered with the freshly allocated wal_id regardless, storage_append
+// would materialize the rows on the strength of it and the statement would report them inserted
+// with nothing in the journal to replay them from.
 // ===========================================================================
 TEST_CASE("integration::cpp::test_wal_write_refusal::insert_fails_when_the_wal_page_write_is_refused") {
     auto config = test_helpers::make_test_config(integration_fixture_path("test_wal_write_refusal/insert"),
@@ -114,7 +114,7 @@ TEST_CASE("integration::cpp::test_wal_write_refusal::insert_fails_when_the_wal_p
 }
 
 // ===========================================================================
-// FIN-1 / item 4 — A SEGMENT THAT WILL NOT OPEN MUST STOP STARTUP.
+// A SEGMENT THAT WILL NOT OPEN MUST STOP STARTUP.
 //
 // Why startup refusal and not a first-statement refusal: the scan that reads these segments is
 // also the one that recovers the wal id allocator (manager_wal_replicate_t's constructor sets
@@ -122,10 +122,8 @@ TEST_CASE("integration::cpp::test_wal_write_refusal::insert_fails_when_the_wal_p
 // not see leave both BELOW ids already on disk, so the first write after startup reuses them
 // and the page_lsn ordering, the CRC chain and read_all_records(after_id) all start comparing
 // against duplicated ids. That is the one outcome nothing later undoes. Refusing to start
-// writes nothing and deletes nothing — truncation now refuses on the same segment instead of
+// writes nothing and deletes nothing — truncation refuses on the same segment instead of
 // unlinking it — so the segment is still there for the next attempt.
-//
-// BEFORE: the engine opened, and the transactions in that segment were simply not there.
 // ===========================================================================
 TEST_CASE("integration::cpp::test_wal_write_refusal::startup_refuses_a_wal_segment_that_will_not_open") {
     auto config = test_helpers::make_test_config(integration_fixture_path("test_wal_write_refusal/startup"),

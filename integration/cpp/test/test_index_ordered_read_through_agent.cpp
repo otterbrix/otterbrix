@@ -5,28 +5,27 @@
 // including no USING clause at all — is index_type::single, so an ordinary
 // `CREATE INDEX i ON t (c)` is the default and by far the common case.
 //
-// Its committed rows have always been written to an on-disk b+tree, but until C2b
-// they were also kept in a second, in-memory copy, and every SELECT was answered
-// from that copy. The tree was write-only: the manager rebuilt the memory copy from
-// it at start-up and never read it again. This file pins the engine change — reads
-// now travel a message to the index's own agent, which reads the tree — and it has
-// to pin it with something other than row counts, because the two engines return
-// the same rows when both are healthy. A facade that registers, gets chosen by the
-// planner and answers out of a leftover in-memory structure would satisfy every
-// count assertion in the suite while changing nothing.
+// Its committed rows have always been written to an on-disk b+tree, but they were also
+// kept in a second, in-memory copy that every SELECT was answered from; the tree was
+// write-only, rebuilt into memory at start-up and never read again. This file pins the
+// engine change — reads now travel a message to the index's own agent, which reads the
+// tree — and it has to pin it with something other than row counts, because the two
+// engines return the same rows when both are healthy. A facade that registers, gets
+// chosen by the planner and answers out of a leftover in-memory structure would satisfy
+// every count assertion in the suite while changing nothing.
 //
 // So each case asserts THREE things at once:
-//   * the plan really uses the index (without this the file would be a full-scan
-//     test in disguise, and would pass with the index deleted);
+//   * the plan really uses the index (without this the file is a full-scan test in
+//     disguise, and would pass with the index deleted);
 //   * the ROWS are exactly right, by id, not merely right in number;
-//   * services::index::index_agent_reads() moved, i.e. the answer came out of the
-//     disk agent rather than out of memory.
+//   * services::index::index_agent_reads() moved, i.e. the answer came out of the disk
+//     agent rather than out of memory.
 //
-// The range predicates carry a second load. Before C2b the agent's read message
-// was equality-only: there was no message a `<`, `<=`, `>`, `>=` or `<>` could
-// travel on at all, so those queries could not have been answered this way even in
-// principle. Every range case below is therefore both a correctness gate and a
-// witness that the message now carries the predicate.
+// The range predicates carry a second load. The agent's read message was once
+// equality-only — there was no message a `<`, `<=`, `>`, `>=` or `<>` could travel on —
+// so those queries could not have been answered this way even in principle. Every range
+// case below is both a correctness gate and a witness that the message now carries the
+// predicate.
 // ============================================================================
 
 #include "test_config.hpp"

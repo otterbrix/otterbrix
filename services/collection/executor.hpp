@@ -61,23 +61,21 @@ namespace services::collection::executor {
     // streaming_pipeline_runs().
     uint64_t dml_flush_count() noexcept;
 
-    // T3 fault-injection seam for the DDL OID-ALLOCATION ROUND.
+    // Fault-injection seam for the DDL OID-ALLOCATION ROUND.
     //
     // WHY A NEW SEAM. The round is a message round-trip to the disk actor over an
     // in-memory atomic counter (manager_disk_t::allocate_oids_batch -> oid_generator):
     // no file, no page, no block. Neither the .otbx interposer
     // (single_file_block_manager_t::dev_set_file_interposer) nor the WAL one
-    // (services::wal::dev_set_wal_file_interposer) can reach it, and there is no
-    // device to make fail — so nothing in the tree could put a statement in front of
-    // an allocation that did not deliver.
+    // (services::wal::dev_set_wal_file_interposer) can reach it, and there is no device
+    // to make fail.
     //
-    // WHAT IT MODELS, AND WHY THAT IS FAITHFUL. It substitutes the batch the round
-    // hands back. An EMPTY batch is not an invented state: it is EXACTLY the value
-    // allocate_oids_inline's own failure branches produce (a physical plan that would
-    // not build, and a drive that returned an error both answered with an empty
-    // vector), so a test driving it drives the real reachable state rather than a
-    // pretend one. Plain virtual interface, NOT std::function (rule 14); process-wide,
-    // DEV_MODE-only, consulted exactly once per allocation round.
+    // It substitutes the batch the round hands back. An EMPTY batch is not an invented
+    // state: it is EXACTLY the value allocate_oids_inline's own failure branches produce
+    // (a physical plan that would not build, and a drive that returned an error), so a
+    // test driving it drives the real reachable state. Plain virtual interface, NOT
+    // std::function (rule 14); process-wide, DEV_MODE-only, consulted exactly once per
+    // allocation round.
     struct oid_alloc_interposer_t {
         virtual ~oid_alloc_interposer_t() = default;
         // `allocated` is what the disk round produced for `requested` OIDs. Return it

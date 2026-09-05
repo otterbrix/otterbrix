@@ -1,17 +1,15 @@
 """Opening a connection must OPEN the database, never erase it.
 
-`otterbrix.connect(path)` used to call std::filesystem::remove_all(path) inside
-connection_environment_t::make_space, so pointing the binding at an existing
-database silently destroyed it: the user's tables were gone before the first
-statement ran. These tests are the gate on that.
+A `connection_environment_t::make_space` that calls std::filesystem::remove_all(path)
+makes `otterbrix.connect(path)` destroy an existing database silently: the user's
+tables are gone before the first statement runs. These tests are the gate on that.
 
 Read-back goes through `Client`, not through the connection returned by
 `connect()`, and deliberately stays that way: `Client` opens the very same
 on-disk layout through a *different* entry point (both reach
 configuration::config::create_config), so the rows are proved to be on disk
-rather than merely still in the writer's own hands. (`execute` no longer drops
-its cursor -- it returns the rows now -- but reading them back through the same
-object that wrote them would test less than this does.)
+rather than merely still in the writer's own hands: reading them back through the
+same object that wrote them would test less than this does.
 """
 
 import gc
@@ -44,7 +42,7 @@ def test_reopening_a_database_keeps_its_data():
     gc.collect()
 
     # 2. Open the SAME path again. Nothing else happens here — the reopen alone
-    #    is what used to wipe the directory.
+    #    is what would wipe the directory.
     reopened = otterbrix.connect(path)
     reopened.close()
     del reopened

@@ -47,8 +47,8 @@ namespace {
         return batch;
     }
 
-    // A1 removed the whole-table storage_scan leg; the streaming leg drained to
-    // completion is the same read. Counts rows so the assertions below are unchanged.
+    // There is no whole-table storage_scan leg; the streaming leg drained to completion
+    // is the same read. Counts rows so the assertions below are unchanged.
     template<typename Fx>
     size_t drain_row_count(Fx& fx, catalog::oid_t table_oid) {
         size_t total = 0;
@@ -426,7 +426,7 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
         REQUIRE(rows_b_live == 1);
         REQUIRE(rows_b_tomb == 1);
         REQUIRE(b_tomb_v > b_live_v);
-        // Tombstone reuses the live attoid (operator_computed_field_unregister.cpp:81).
+        // Tombstone reuses the live attoid (operator_computed_field_unregister.cpp).
         REQUIRE(observed_b_live_attoid == attoid_b);
         REQUIRE(observed_b_tomb_attoid == attoid_b);
     } else {
@@ -526,7 +526,7 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
 
     // Imitate operator_vacuum_t step 5: collect attoids of dead rows (rc<=0)
     // and delete by attoid. Because the unregister tombstone shares attoid
-    // with its live counterpart (operator_computed_field_unregister.cpp:81),
+    // with its live counterpart (operator_computed_field_unregister.cpp),
     // the per-attoid delete drops BOTH rows for column "b".
     {
         components::types::logical_value_t toid_lv(&fx.resource, table_oid);
@@ -619,8 +619,8 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     REQUIRE(table_oid >= FIRST_USER_OID);
 
     // Storage entry must exist for storage_append / compact to operate on.
-    // B4: schema-less storages are created through the one surviving CREATE leg. The
-    // computed (relkind='g') flag is what the schema-less entry used to carry implicitly.
+    // Schema-less storages go through the one CREATE leg, with the computed (relkind='g')
+    // flag passed explicitly rather than inferred from the empty column list.
     fx.invoke(&manager_disk_t::create_storage_disk,
               session_id_t{},
               table_oid,
@@ -779,8 +779,8 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     // writes catalog rows). storage_append needs a storage entry to operate on,
     // so create one explicitly (schema-less, mirroring the runtime path that
     // create_collection takes for fresh tables).
-    // B4: schema-less storages are created through the one surviving CREATE leg. The
-    // computed (relkind='g') flag is what the schema-less entry used to carry implicitly.
+    // Schema-less storages go through the one CREATE leg, with the computed (relkind='g')
+    // flag passed explicitly rather than inferred from the empty column list.
     fx.invoke(&manager_disk_t::create_storage_disk,
               session_id_t{},
               table_oid,
@@ -963,9 +963,9 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     // Post-DROP: all N targets are gone on every observable surface.
     for (std::size_t i = 0; i < N; ++i) {
         REQUIRE_FALSE(fx.manager->has_storage(targets[i]));
-        // The ROW COUNT of a dropped storage is a refusal, not 0. It used to answer 0 —
-        // the row count of an EMPTY TABLE — so this assertion could not tell "dropped"
-        // from "still there and emptied", which is the difference the case is named after.
+        // The ROW COUNT of a dropped storage is a refusal, not 0 — 0 is the row count of an
+        // EMPTY TABLE, so this assertion could not otherwise tell "dropped" from "still there
+        // and emptied", which is the difference the case is named after.
         {
             auto rows = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, targets[i]);
             REQUIRE(rows.has_error());
@@ -1106,7 +1106,7 @@ TEST_CASE("services::disk::ddl::computing_table_pg_attribute_empty") {
     REQUIRE(rr.columns.empty());
 
     // After a primitive pg_computed_column write the field lives in pg_computed_column.
-    // V4 resolve_table for relkind='g' tables fills `columns` from pg_computed_column
+    // resolve_table for relkind='g' tables fills `columns` from pg_computed_column
     // (latest non-zero refcount per attname).
     test_computed_append_simple(fx, table_oid, "count", components::catalog::well_known_oid::int64_type);
     auto rr2 = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("agg"));
@@ -1117,17 +1117,16 @@ TEST_CASE("services::disk::ddl::computing_table_pg_attribute_empty") {
     REQUIRE(rr2.columns[0].atttypid == components::catalog::well_known_oid::int64_type);
 }
 
-// FIN-0 / item 1 — A CATALOG ROW THAT CANNOT BE WRITTEN IS REPORTED, NOT COUNTED AS ZERO.
+// A CATALOG ROW THAT CANNOT BE WRITTEN IS REPORTED, NOT COUNTED AS ZERO.
 //
-// append_pg_catalog_row used to answer with a pg_catalog_append_range_t and nothing else, so
-// its three failures — a refused append, a cast that could not be made, and this one, a
-// catalog oid whose OWNING agent holds no storage — all came back as {oid, 0, 0}. Every
-// caller reads a zero-count range as "nothing was asked to be written" and carries on; that
-// is how a DDL statement could report success over a catalog row that does not exist.
+// Answering with a bare pg_catalog_append_range_t collapses all three of
+// append_pg_catalog_row's failures — a refused append, a cast that could not be made, and this
+// one, a catalog oid whose OWNING agent holds no storage — into {oid, 0, 0}. Every caller reads
+// a zero-count range as "nothing was asked to be written" and carries on; that is how a DDL
+// statement reports success over a catalog row that does not exist.
 //
 // The oid below is routed exactly like any other: pool_idx_for_oid names its owner before the
-// message is sent. What is missing is the storage, and that is the distinction the old leg's
-// "not owned by this agent" wording got backwards.
+// message is sent. What is missing is the storage, not the ownership.
 TEST_CASE("services::disk::ddl::catalog_append_refuses_when_the_owner_has_no_storage") {
     fixture fx;
 
@@ -1162,18 +1161,16 @@ TEST_CASE("services::disk::ddl::catalog_append_refuses_when_the_owner_has_no_sto
     CHECK(no_op.value().count == 0);
 }
 
-// FIN-0 / item 2 — THE CAST ON THE CATALOG APPEND PATH RUNS, AND ITS RESULT IS THE ROW.
+// THE CAST ON THE CATALOG APPEND PATH RUNS, AND ITS RESULT IS THE ROW.
 //
-// A GUARD ON THE SUCCESS PATH, and it is a guard rather than a red test on purpose: the
-// branch it protects used to carry `assert(!casted_val.has_error() && "numeric/string column
-// cast can not fail")` followed by .value(). The guard above that assert admits
-// STRING_LITERAL on either side, so it does NOT establish what the assert claimed — and under
-// NDEBUG the assert is gone while .value() still reads the value half of a possibly-errored
-// result. No input reaches a failing cast TODAY (logical_value_t's string->integer leg goes
-// through atoll, which answers 0 for anything rather than refusing), so there is no red input
-// to name; what this case pins is that the cast is on the path and its OUTPUT is what gets
-// stored. Break the cast leg — make it return an error, or drop the result — and this goes
-// red.
+// A GUARD ON THE SUCCESS PATH. `assert(!casted_val.has_error() && "numeric/string column cast
+// can not fail")` followed by .value() would not hold: the guard above it admits STRING_LITERAL
+// on either side, so it does NOT establish what the assert claims — and under NDEBUG the assert
+// is gone while .value() still reads the value half of a possibly-errored result. No input
+// reaches a failing cast today (logical_value_t's string->integer leg goes through atoll, which
+// answers 0 for anything rather than refusing), so what this case pins is that the cast is on
+// the path and its OUTPUT is what gets stored. Break the cast leg — make it return an error, or
+// drop the result — and this fails.
 TEST_CASE("services::disk::ddl::catalog_append_stores_the_cast_result_not_the_raw_cell") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nscast");
@@ -1209,14 +1206,14 @@ TEST_CASE("services::disk::ddl::catalog_append_stores_the_cast_result_not_the_ra
     CHECK(probe.oid == probe_oid);
 }
 
-// FIN-0 / item 4 — A REPLAY MUTATION FOR A TABLE WITH NO STORAGE IS REFUSED.
+// A REPLAY MUTATION FOR A TABLE WITH NO STORAGE IS REFUSED.
 //
-// These three helpers are the WAL-replay path. Each used to log "oid not owned by this
-// agent — no-op" and return void, and the wording was the tell: manager_disk_t picks the
-// agent with pool_idx_for_oid BEFORE forwarding, so ownership is settled and the agent that
-// logged it IS the owner. What was actually missing was the storage, and a replay mutation
-// dropped there is a journalled change recovery declined to restore — rows the WAL says are
-// deleted staying alive after a restart, with nothing anywhere to notice.
+// These three helpers are the WAL-replay path, and "oid not owned by this agent — no-op" is not
+// what the miss means: manager_disk_t picks the agent with pool_idx_for_oid BEFORE forwarding,
+// so ownership is settled and the agent reading the miss IS the owner. What is missing is the
+// storage, and a replay mutation dropped there is a journalled change recovery declined to
+// restore — rows the WAL says are deleted staying alive after a restart, with nothing anywhere
+// to notice.
 TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_storage") {
     fixture fx;
 

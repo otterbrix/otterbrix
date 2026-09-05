@@ -26,7 +26,7 @@ namespace components::catalog {
 
         // CASCADE: compute full topological drop order via DFS.
         // The DFS returns only dependents of the seed; append the seed itself last
-        // so build_drop_sequence deletes its catalog rows after all dependents.
+        // so the executor deletes its catalog rows after all dependents.
         // On back-edge, cycle_at carries the offending oid — surface as
         // ddl_status::cycle_detected, blocking_oid populated for diagnostics.
         oid_t cycle_at = INVALID_OID;

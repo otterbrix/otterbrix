@@ -17,7 +17,7 @@ namespace components::logical_plan {
         // The statement's OWN fields fold in too. The OIDs alone are worthless at
         // plan time — enrich has not stamped them yet, so `DROP TABLE a`,
         // `DROP TABLE b`, `DROP TABLE IF EXISTS a` and `DROP TABLE a RESTRICT`
-        // all hashed IDENTICALLY (every OID still INVALID_OID).
+        // would all hash IDENTICALLY (every OID still INVALID_OID).
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(kind_));
         boost::hash_combine(hash_value, dbname_);

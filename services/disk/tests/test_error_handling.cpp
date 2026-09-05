@@ -655,14 +655,14 @@ TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_
 // 25. THE ROUTER'S OWN REFUSAL, one floor above the agent's. Every case above reaches the
 //     leg through a real agent that turns out to own no storage for the oid. This one
 //     removes the agent: a manager configured with NO disk agents has nowhere to send
-//     anything, and each leg used to answer that with its own natural empty value — an
+//     anything, and each leg must not answer that with its own natural empty value — an
 //     empty type list, 0 rows, an empty chunk vector, a zero-length append range, a drained
 //     cursor, an empty fold.
 //
 //     THIS TOPOLOGY IS NOT REACHED BY A STATEMENT TODAY, and the case does not pretend
 //     otherwise: an agentless manager owns no storage at all, so no DML can find a row to
-//     write and no scan a row to read — the same verdict the storage_delete_rows wave
-//     recorded for its own routing legs. What it pins is that the refusal EXISTS and is
+//     write and no scan a row to read — the same verdict storage_delete_rows' own routing
+//     legs carry. What it pins is that the refusal EXISTS and is
 //     reachable through the public contract, so the day a topology can lose an agent slot
 //     the answer is an error and not an empty table.
 TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_answering_empty") {
@@ -732,9 +732,9 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
 }
 
 // 24. NOT NULL enforcement (stage 2b of storage_append_inner) is a REFUSAL, not a
-//     zero-length append. It used to co_return (0,0) with a trace line — the exact value an
-//     EMPTY batch legitimately produces — so the manager's per-chunk loop read it as
-//     "continue" and the statement reported success with the rows silently dropped. The
+//     zero-length append. (0,0) is the exact value an EMPTY batch legitimately produces, so
+//     the manager's per-chunk loop reads it as "continue" and the statement reports success
+//     with the rows silently dropped. The
 //     refusal sits ABOVE the WAL write and the materialization, so nothing lands anywhere:
 //     the honest answer is an error, same family as cases 17-22.
 TEST_CASE("services::disk::error::a_not_null_violation_is_a_refusal_not_an_empty_append") {
@@ -805,12 +805,12 @@ TEST_CASE("services::disk::error::a_not_null_violation_is_a_refusal_not_an_empty
     }
 }
 
-// 25. #48 — a publish/revert leg that finds NO storage on the OWNING agent is a flip that
-//     did not happen, and it says so. The manager partitions every range/oid to its owner
-//     with pool_idx_for_oid before forwarding, so a miss never means "somebody else's oid";
-//     the four inner handlers used to skip it with ZERO noise (and a manager comment called
-//     that "idempotent for not-owned OIDs"). The handlers stay unique_future<void> — their
-//     callers can only log — so the channel is an error line per miss plus this DEV tally.
+// 25. A publish/revert leg that finds NO storage on the OWNING agent is a flip that did not
+//     happen, and it says so. The manager partitions every range/oid to its owner with
+//     pool_idx_for_oid before forwarding, so a miss never means "somebody else's oid" and the
+//     four inner handlers must not skip it silently as "idempotent for a not-owned OID". The
+//     handlers stay unique_future<void> — their callers can only log — so the channel is an
+//     error line per miss plus this DEV tally.
 TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says_so") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns_miss");

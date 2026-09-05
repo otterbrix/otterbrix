@@ -55,29 +55,26 @@ namespace components::table {
 
         // publish() MINUS THE CAS — and the missing CAS is the whole of it.
         //
-        // A commit pipeline that dies after commit() allocated the id but before the
-        // barrier leaves that id in in_flight_commits_ with nobody left to remove it:
-        // commit() has already erased the txn from active_, so find_transaction()
-        // answers nullptr and neither ROLLBACK nor the dispatcher's failure-release
-        // net can reach it. The id then floors visible_to_all_locked() at
-        // commit_id - 1 for the life of the process, which stops
-        // data_table_t::compact(), the DROP-GC tombstone sweep and the deferred
-        // index-delete sweep — all three read that one number and none of them ever
-        // sees a snapshot.
+        // A commit pipeline that dies after commit() allocated the id but before the barrier
+        // leaves that id in in_flight_commits_ with nobody left to remove it: commit() has
+        // already erased the txn from active_, so find_transaction() answers nullptr and
+        // neither ROLLBACK nor the dispatcher's failure-release net can reach it. The id then
+        // floors visible_to_all_locked() at commit_id - 1 for the life of the process, which
+        // stops data_table_t::compact(), the DROP-GC tombstone sweep and the deferred
+        // index-delete sweep — all three read that one number and none of them sees a snapshot.
         //
-        // WHY IT CANNOT PUBLISH ANYTHING. published_horizon_ is NOT advanced here, so
-        // no commit becomes visible by being forgotten. What makes the erase itself
-        // safe is an ordering rule enforced by operator_commit_transaction_t — no step
-        // that can fail may run after the first step that stamps the commit_id — so a
-        // discarded id is stamped on nothing: no row version, no pg_attribute column,
-        // no deferred index-delete entry, no WAL marker. There is nothing left for a
-        // reader to have to hide, which is why the id may leave the set outright
-        // instead of moving into a second "discarded" set that the floor would then
-        // have to honour anyway (that set gives back exactly what it took).
+        // WHY IT CANNOT PUBLISH ANYTHING. published_horizon_ is NOT advanced here, so no commit
+        // becomes visible by being forgotten. What makes the erase itself safe is an ordering
+        // rule enforced by operator_commit_transaction_t — no step that can fail may run after
+        // the first step that stamps the commit_id — so a discarded id is stamped on nothing:
+        // no row version, no pg_attribute column, no deferred index-delete entry, no WAL
+        // marker. There is nothing left for a reader to have to hide, which is why the id may
+        // leave the set outright instead of moving into a second "discarded" set that the floor
+        // would then have to honour anyway (that set gives back exactly what it took).
         //
-        // Monotone in the safe direction, the property every horizon reader rests on:
-        // erasing a member of in_flight_commits_ only RAISES min(), never lowers it.
-        // Idempotent, and a no-op for an id that was never in flight.
+        // Monotone in the safe direction, the property every horizon reader rests on: erasing a
+        // member of in_flight_commits_ only RAISES min(), never lowers it. Idempotent, and a
+        // no-op for an id that was never in flight.
         void discard(uint64_t commit_id);
 
         // Capture an MVCC snapshot atomically. Caller supplies the resource for
@@ -129,29 +126,27 @@ namespace components::table {
         uint64_t visible_to_all_locked() const;
 
         std::pmr::memory_resource* resource_;
-        // NOT SEEDED FROM THE JOURNAL, UNLIKE THE COMMIT CLOCK ABOVE — and the asymmetry is
-        // deliberate enough to be worth naming, because it is not obvious and it has already
-        // cost one durability bug (ЗАПИСЬ #363).
+        // NOT SEEDED FROM THE JOURNAL, UNLIKE THE COMMIT CLOCK ABOVE — the asymmetry is
+        // deliberate, not obvious, and has already cost one durability bug.
         //
         // A pending txn id is a WITHIN-PROCESS name: row_version_manager reads it only as
-        // "id >= TRANSACTION_ID_START ⇒ somebody's uncommitted write", never as an ordering,
-        // and no reopened row carries one (replay stamps transaction_data{0,0}; a loaded row
-        // group starts with null version_info). So every process restarting the counter at
-        // TRANSACTION_ID_START is sound IN MEMORY. restore_commit_clock exists because
-        // COMMIT ids are the opposite: they are stamped into pg_attribute and compared
-        // across restarts.
+        // "id >= TRANSACTION_ID_START ⇒ somebody's uncommitted write", never as an ordering, and
+        // no reopened row carries one (replay stamps transaction_data{0,0}; a loaded row group
+        // starts with null version_info). So restarting the counter at TRANSACTION_ID_START every
+        // process is sound IN MEMORY. restore_commit_clock exists because COMMIT ids are the
+        // opposite: they are stamped into pg_attribute and compared across restarts.
         //
-        // The one place a pending txn id DOES cross a restart is the journal, where the same
-        // id is handed out again to a different transaction. A seeding entry point IS
-        // constructible — the max txn id over the replayed records, the way base_spaces
-        // already derives the commit-id frontier from the replayed COMMIT markers — but it
-        // does not exist, and it would live in the bootstrap, not here. What carries the
-        // burden today is the place the ids are actually compared: the replay filter pairs a
-        // physical record with a COMMIT marker at a STRICTLY GREATER wal id
-        // (services::wal::filter_committed_records, services/wal/wal.hpp), which recycling
-        // cannot forge because wal ids are re-derived from the segment files and keep growing.
-        // If a seeding entry point is ever added here, that filter is what it must agree with,
-        // and the filter stays needed regardless: it also fixes journals already on disk.
+        // The one place a pending txn id DOES cross a restart is the journal, where the same id is
+        // handed out again to a different transaction. A seeding entry point IS constructible —
+        // the max txn id over the replayed records, the way base_spaces already derives the
+        // commit-id frontier from the replayed COMMIT markers — but it does not exist, and it
+        // would live in the bootstrap, not here. What carries the burden today is the place the
+        // ids are actually compared: the replay filter pairs a physical record with a COMMIT
+        // marker at a STRICTLY GREATER wal id (services::wal::filter_committed_records,
+        // services/wal/wal.hpp), which recycling cannot forge because wal ids are re-derived from
+        // the segment files and keep growing. A seeding entry point added here must agree with
+        // that filter, and the filter stays needed regardless — it also fixes journals already on
+        // disk.
         std::atomic<uint64_t> next_transaction_id_{TRANSACTION_ID_START};
         std::atomic<uint64_t> current_timestamp_{1};
         mutable std::mutex lock_;

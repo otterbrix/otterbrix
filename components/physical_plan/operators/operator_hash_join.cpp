@@ -50,8 +50,8 @@ namespace components::operators {
 
         // Vectorized typed hash of the key columns of one chunk into `out_hashes`
         // (one uint64 per row), via data_chunk_t::hash (per physical_type +
-        // combine_hash for multi-column). data_chunk_t::hash is non-const, but the
-        // hash is a pure read; the const_cast mirrors operator_group's fast path.
+        // combine_hash for multi-column). data_chunk_t::hash is non-const, but the hash
+        // is a pure read, hence the const_cast.
         void hash_key_columns(const vector::data_chunk_t& chunk,
                               const std::pmr::vector<uint64_t>& key_cols,
                               vector::vector_t& out_hashes) {

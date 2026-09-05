@@ -28,7 +28,7 @@
 #include <services/wal/wal_page_reader.hpp>
 #include <services/wal/wal_reader.hpp>
 
-// FIN-2 — A CRC BREAK MUST NOT MAKE THE ALLOCATOR FORGET WHAT IS ON THE DISK.
+// A CRC BREAK MUST NOT MAKE THE ALLOCATOR FORGET WHAT IS ON THE DISK.
 //
 // recover_from_disk() logged "truncating at corruption point" and then `break`ed out of the
 // segment loop WITHOUT TRUNCATING ANYTHING. Two different answers were being taken from one
@@ -93,7 +93,7 @@ namespace {
         return base / "wal" / std::to_string(static_cast<unsigned>(kMainDb));
     }
 
-    // A RESTART, not a fresh database: unlike the FIN-1 harness this one never wipes the
+    // A RESTART, not a fresh database: unlike the write-refusal harness this one never wipes the
     // directory, because every test here is about what a SECOND open makes of what the first
     // one left behind.
     configuration::config_wal reopen_config(const std::filesystem::path& path) {
@@ -125,20 +125,16 @@ namespace {
         }
 
         // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton. This is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only
-        // thing that would report a chunk still alive after the manager is gone. Production
-        // hands the manager chunks off the executor's arena; this is that shape.
-        //
-        // resource_ outlives the asynchronous processing for three independent reasons:
-        // ~wal_env_t stops the scheduler and resets manager_ -- destroying the mailbox
-        // and any message still holding this batch -- inside its own body; resource_ is
-        // declared FIRST, so it is destroyed LAST; and otterbrix_resource is thread-safe in
-        // both builds (synchronized_pool_resource normally, the mutex-guarded
-        // resource_tracer_t under ASAN). manager_ itself is already allocated on it.
-        //
-        // Extracted so a test can assert the ARENA of a REAL payload: the batch is moved
-        // into the message and is unobservable after send.
+        // singleton: this is real load, and off resource_ it never reaches
+        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
+        // that would report a chunk still alive after the manager is gone. Production hands the manager
+        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
+        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
+        // over: ~wal_env_t stops the scheduler and resets manager_
+        // (destroying the mailbox and any message still holding this batch) inside its own body,
+        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
+        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
+        // the batch is moved into the message and is unobservable after send.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -300,7 +296,7 @@ namespace {
 
     // Overwrite the page_end_lsn field (offset 8) of a data page header with `value`. This is
     // the same class of damage as break_page_crc — the page's checksum stops verifying — but
-    // it is aimed at the ONE field truncate_before used to act on without checking it.
+    // it is aimed at the ONE field truncate_before must not act on without checking it.
     void forge_page_end_lsn(const std::filesystem::path& seg, size_t data_page_index, uint64_t value) {
         std::fstream file(seg, std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(file.is_open());
@@ -320,7 +316,7 @@ namespace {
 } // namespace
 
 // ===========================================================================
-// FIN-2 / item 1 — THE FIRST ID AFTER A RESTART MUST NOT BE ONE THE JOURNAL ALREADY HOLDS.
+// THE FIRST ID AFTER A RESTART MUST NOT BE ONE THE JOURNAL ALREADY HOLDS.
 //
 // One segment, an interior data page corrupted, live pages after it. The manager's startup
 // scan derived global_id_ from read_all_records(), which stops at the break, so it came up
@@ -387,7 +383,7 @@ TEST_CASE("wal::reissue::the_first_id_after_a_crc_break_is_not_one_the_journal_a
 }
 
 // ===========================================================================
-// FIN-2 / item 2 — A RECORD THE JOURNAL ACCEPTED MUST BE READABLE FROM IT.
+// A RECORD THE JOURNAL ACCEPTED MUST BE READABLE FROM IT.
 //
 // The same `break` left current_segment_index_ at the CORRUPTED segment, so ensure_writer()
 // reopened it and appended after its last page — behind the corruption point. Every reader in
@@ -427,7 +423,7 @@ TEST_CASE("wal::reissue::a_record_written_after_a_crc_break_is_reachable_in_the_
 }
 
 // ===========================================================================
-// FIN-2 / item 3 — current_wal_id MUST NOT UNDERSTATE THE JOURNAL BECAUSE OF AN EARLY BREAK.
+// current_wal_id MUST NOT UNDERSTATE THE JOURNAL BECAUSE OF AN EARLY BREAK.
 //
 // This is the literal shape named in recover_from_disk(): discover_segments() sorts ascending
 // and the loop `break`s, so a break in segment 000000 meant segments 000001+ were never
@@ -480,22 +476,20 @@ TEST_CASE("wal::reissue::current_wal_id_counts_the_segments_after_a_broken_one")
 }
 
 // ===========================================================================
-// FIN-2 / item 4 — TRUNCATION MUST NOT DELETE A SEGMENT ON THE STRENGTH OF A HEADER FIELD
+// TRUNCATION MUST NOT DELETE A SEGMENT ON THE STRENGTH OF A HEADER FIELD
 // THE CHECKSUM NEVER VOUCHED FOR.
 //
-// truncate_before read page_end_lsn straight out of the LAST data page's header and unlinked
-// the file when it came out <= the checkpoint. That field is inside the region the page CRC
-// covers, and a corrupt page's header is exactly what the CRC failed to vouch for: forge it
-// low and the branch deletes a segment full of records ABOVE the checkpoint.
+// Reading page_end_lsn straight out of the LAST data page's header and unlinking the file when
+// it comes out <= the checkpoint trusts a field inside the region the page CRC covers, and a
+// corrupt page's header is exactly what the CRC failed to vouch for: forge it low and the branch
+// deletes a segment full of records ABOVE the checkpoint. Same family as the refusal already in
+// this function for a segment that will not OPEN — "unreadable is not empty" — one field down.
 //
-// This is the same family as the refusal already in this function for a segment that will not
-// OPEN — "unreadable is not empty" — one field down.
-//
-// THE SETUP NEEDS TWO DAMAGED SEGMENTS AND THAT IS NOT PADDING. truncate_before never touches
-// the segment the writer is using, and the recover_from_disk this file also covers used to
-// park the writer on the FIRST broken segment — so with only 000001 forged, 000001 WAS the
-// writer's segment and got skipped for an unrelated reason, hiding the defect. Breaking
-// 000000 is what moves the writer off the segment under test. 000001 is the one under test.
+// THE SETUP DAMAGES TWO SEGMENTS AND THAT IS NOT PADDING. truncate_before never touches the
+// segment the writer is using, so the segment under test must not be the writer's: with only
+// 000001 forged, a recovery that parks the writer on the FIRST broken segment would make 000001
+// the writer's segment and skip it for an unrelated reason, hiding the defect. Breaking 000000 is
+// what moves the writer off 000001, the segment under test.
 //
 // BEFORE: segment 000001 was unlinked and the records between the checkpoint and its real
 // page_end_lsn went with it.
@@ -548,16 +542,10 @@ TEST_CASE("wal::reissue::truncation_keeps_a_segment_whose_last_header_is_corrupt
 }
 
 // ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA.
-//
-// gen_data_chunk output is REAL load, and on the process-global new_delete_resource
-// singleton it escapes core::pmr::otterbrix_resource entirely -- which under ASAN IS
-// resource_tracer_t, so nothing accounts for it. Production hands the manager chunks
-// off the executor's arena; the fixture has to model that.
-//
-// The batch is moved into the message, so it is unobservable after send. The assertion
-// is therefore made on the object make_insert_batch produces -- the same call, on the
-// same path, that send_insert makes -- and not on a value handed in by the test.
+// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
+// make_insert_batch above. The batch is moved into the message and is unobservable after
+// send, so the assertion is made on the object make_insert_batch produces: the same call, on
+// the same path, that send_insert makes -- not a value handed in by the test.
 // ===========================================================================
 TEST_CASE("wal::reissue::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";

@@ -126,10 +126,10 @@ namespace components::storage {
         // same way whether or not it asked for a projection.
         // Returns the buffer-pool OOM / data_corruption the point-fetch left in
         // column_fetch_state::fetch_error (same value-shape as fetch_next_batch's
-        // scan_error above), else true. An error nobody reads is the same silent
-        // failure the old abort was replaced to avoid — every caller must check.
+        // scan_error above), else true. An error nobody reads is as silent as the abort
+        // this channel replaced — every caller must check.
         //
-        // VISIBILITY IS PART OF THE CALL, and neither parameter has a default (C4b):
+        // VISIBILITY IS PART OF THE CALL, and neither parameter has a default:
         //   SNAPSHOT — the row must be visible to `txn`. Rows that are not are DROPPED, so
         //              the reply is SHORTER than the request and cannot be paired with it by
         //              position; `output.row_ids` names the rows actually carried, in order.
@@ -145,13 +145,11 @@ namespace components::storage {
                                                                  table::fetch_visibility_t visibility) = 0;
 
         // THE REPLAY APPEND IS THE TXN APPEND WITH transaction_data{0, 0}, AND NOTHING ELSE.
-        // There used to be a second, argument-less `append(data)` beside this one whose body was
-        // this body with every result_wrapper_t bound to a [[maybe_unused]] local and asserted
-        // instead of returned. Under NDEBUG those asserts are not compiled at all, so the one
-        // caller that took it -- the direct-write leg of agent_disk_t::storage_append_inner --
-        // read a start_row out of an append state whose append had failed, and answered with it.
-        // The duplicate is gone; the direct-write leg passes transaction_data{0, 0} explicitly,
-        // which is byte-for-byte the finalize_append the deleted overload performed.
+        // A separate argument-less `append(data)` that asserted its results instead of
+        // returning them would be compiled away under NDEBUG, and its one caller -- the
+        // direct-write leg of agent_disk_t::storage_append_inner -- would read a start_row out
+        // of an append state whose append had failed, and answer with it. So there is no such
+        // overload: the direct-write leg passes transaction_data{0, 0} explicitly.
         //
         // Returns write_conflict / out_of_memory surfaced by the table-layer append chain; the
         // start_row on success.
@@ -159,12 +157,12 @@ namespace components::storage {
                                                                       table::transaction_data txn) = 0;
 
         // THE REPLAY UPDATE, and NOT a duplicate of the txn one below it: this writes the rows
-        // IN PLACE (update_segment_t), where the txn overload does an MVCC delete + append. It
-        // stays, and what it grows is the answer. It was `void`, so
-        // agent_disk_t::direct_update_sync -- the WAL-replay update router -- could only end in
+        // IN PLACE (update_segment_t), where the txn overload does an MVCC delete + append.
+        // It answers rather than returning `void`: with `void`,
+        // agent_disk_t::direct_update_sync -- the WAL-replay update router -- can only end in
         // `return no_error()`, and every refusal underneath (a payload naming a column the
-        // storage has not materialised, out_of_memory, write_conflict) was an assert that
-        // vanishes under NDEBUG. A committed row recovery declined to restore was reported to
+        // storage has not materialised, out_of_memory, write_conflict) is an assert that
+        // vanishes under NDEBUG, so a committed row recovery declined to restore is reported to
         // base_spaces' replay loop as restored.
         //
         // CONTRACT: recover-then-report. The materialized part of the payload is applied in
@@ -175,10 +173,10 @@ namespace components::storage {
         // instead: there the statement can still be declined before anything is journalled.
         [[nodiscard]] virtual core::error_t update(vector::vector_t& row_ids, vector::data_chunk_t& data) = 0;
         // Returns write_conflict / out_of_memory from the table-layer update; on success
-        // {start_row, affected-row count}. PURE, like the txn append above it: the default
-        // body that used to sit here forwarded to the replay overload and answered a
-        // constant {0, 0} for the count -- a fallback whose only consumer was a test double,
-        // which now overrides this itself.
+        // {start_row, affected-row count}. PURE, like the txn append above it: a default body
+        // forwarding to the replay overload could only answer a constant {0, 0} for the count,
+        // and a fallback whose only consumer is a test double is one the double should override
+        // itself (rule 6).
         [[nodiscard]] virtual core::result_wrapper_t<std::pair<int64_t, uint64_t>>
         update(vector::vector_t& row_ids, vector::data_chunk_t& data, table::transaction_data txn) = 0;
 

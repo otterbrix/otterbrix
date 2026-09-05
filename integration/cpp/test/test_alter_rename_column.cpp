@@ -23,12 +23,12 @@
 // THE NO-OP. node_alter_column_t::set_attoid has no callers anywhere in the pipeline, so
 // operator_alter_column_rename_t saw attoid_ == INVALID_OID on every execution, took its early
 // return and reported SUCCESS having written nothing. This is the exact sibling of the DROP
-// COLUMN defect B3c1 fixed, and it was pinned by a note at
+// COLUMN defect, and it was pinned by a note at
 // integration/cpp/test/test_multi_database_isolation.cpp (the RENAME case there asserts
 // cross-database isolation only, deliberately not the rename itself).
 //
 // THE MINE UNDER THE FIX, which is why the second case below is the real gate.
-// manager_disk_t::rearm_dropped_column_blocks_sync (B3c2) reconciles the loaded storage's
+// manager_disk_t::rearm_dropped_column_blocks_sync reconciles the loaded storage's
 // columns against the live pg_attribute rows at every bootstrap, BY NAME, and treats a storage
 // column the catalog does not name as a DROP — it removes it from the collection and arms its
 // blocks for release. That is sound only while nothing can write a new name into pg_attribute
@@ -73,8 +73,8 @@ namespace {
     struct offline_walk_t {
         otterbrix_test::walk_report_t report;
         std::vector<std::string> columns;
-        // RN-oid: the durable schema's IDENTITIES. This is the field the reconciliation keys
-        // on, so it is read straight off the file rather than inferred from behaviour.
+        // The durable schema's IDENTITIES: the field the reconciliation keys on, so it is read
+        // straight off the file rather than inferred from behaviour.
         std::vector<std::uint32_t> attoids;
     };
 
@@ -91,8 +91,8 @@ namespace {
         }
         components::table::storage::single_file_block_manager_t* bm = nullptr;
         {
-            // Counted collection copy scoped to reading the manager reference out of it
-            // (ITEM C): a holder kept alive across a reclaim keeps block handles alive too.
+            // Counted collection copy scoped to reading the manager reference out of it: a
+            // holder kept alive across a reclaim keeps block handles alive too.
             auto collection = ts.table().row_group();
             bm = static_cast<components::table::storage::single_file_block_manager_t*>(&collection->block_manager());
         }
@@ -185,8 +185,8 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_column_rebinds_the
 // SHAPE, and every part is load-bearing:
 //   * `payload` is bigint[40] — 40 * 8 B * 2048 rows per row group, past
 //     partial_block_manager_t's FULL_THRESHOLD, so its segments take DEDICATED blocks that "a"
-//     cannot share. If B3c2's walk mistakes the rename for a drop, the durable root loses those
-//     blocks and the loss is measurable rather than hidden behind B2's packing;
+//     cannot share. If that walk mistakes the rename for a drop, the durable root loses those
+//     blocks and the loss is measurable rather than hidden behind block packing;
 //   * rows are added in TWO rounds around a checkpoint, so some of the column's blocks are
 //     named by no durable root;
 //   * the content is checked per row, not just the count: a walk that dropped the column and a
@@ -309,42 +309,40 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
     CHECK(after.report.unexplained.empty());
 }
 
-// CASE 3 — RN-oid. THE CRASH WINDOW, and the reason the reconciliation cannot key on names.
+// CASE 3 — THE CRASH WINDOW, and the reason the reconciliation cannot key on names.
 //
 // CASE 2 above proves the rename reaches the storage and survives a CLEAN restart, because the
-// CHECKPOINT in between made both halves durable together. This case removes that checkpoint,
-// which is the only thing that was holding the invariant up.
+// CHECKPOINT in between made both halves durable together. This case removes that checkpoint.
 //
-// What the two halves are durable at is not symmetric and cannot be made so by ordering:
-//   * the CATALOG half — the pg_attribute row carrying the new attname — is durable at the
-//     ALTER's WAL commit marker;
-//   * the STORAGE half — the renamed column definition inside the .otbx — is durable only at
-//     that table's NEXT CHECKPOINT, which is an unbounded time later.
-// Kill the process in between and the next start loads a storage naming `payload` against a
-// catalog naming `payload2`. A reconciliation that reads "in the storage, not in the live
-// catalog" as a DROP then releases a SURVIVING column's blocks — the column and every one of
-// its rows, gone, on a database that was never asked to drop anything.
+// What the two halves are durable at is not symmetric and cannot be made so by ordering: the
+// CATALOG half (the pg_attribute row carrying the new attname) is durable at the ALTER's WAL
+// commit marker, while the STORAGE half (the renamed column definition inside the .otbx) is
+// durable only at that table's NEXT CHECKPOINT, an unbounded time later. Kill the process in
+// between and the next start loads a storage naming `payload` against a catalog naming
+// `payload2`. A reconciliation that reads "in the storage, not in the live catalog" as a DROP
+// then releases a SURVIVING column's blocks — the column and every one of its rows, gone, on a
+// database that was never asked to drop anything.
 //
-// THE CRASH is executed only through the T3 fault-injection seam. A clean scope exit runs
-// test_spaces' destructor, which issues a CHECKPOINT — precisely the event this case must be
-// missing. Arming fail_writes_from AFTER the RENAME makes every later .otbx write fail, so no
-// header commits for any table and every durable file stays byte-identical (the conservative
-// crash semantics). The WAL is a different file and does NOT go through the block manager's
-// interposer, so the ALTER's commit marker survives — which is the whole point: the catalog
-// half must be durable while the storage half is not.
+// THE CRASH goes through the fault-injection seam only: a clean scope exit runs test_spaces'
+// destructor, which issues a CHECKPOINT — precisely the event this case must be missing.
+// Arming fail_writes_from AFTER the RENAME makes every later .otbx write fail, so no header
+// commits for any table and every durable file stays byte-identical (conservative crash
+// semantics). The WAL is a different file and does NOT go through the block manager's
+// interposer, so the ALTER's commit marker survives — the whole point: catalog half durable,
+// storage half not.
 //
-// EVERY ROW IS CHECKPOINTED BEFORE THE RENAME, deliberately, and it costs the case nothing: the
-// rows are added in two rounds (so the column's blocks are named by two different durable roots)
-// and both rounds are committed before the kill, so the ONLY thing the crash takes away is the
-// storage half of the rename. Leaving round 2 WAL-only instead would drag in a defect that has
-// nothing to do with this one — an ARRAY column's element data does not survive WAL replay (see
-// the report note), so the check would fail for a reason no reconciliation can influence.
+// EVERY ROW IS CHECKPOINTED BEFORE THE RENAME, deliberately, and it costs the case nothing:
+// the rows are added in two rounds (so the column's blocks are named by two different durable
+// roots) and both are committed before the kill, so the ONLY thing the crash takes away is the
+// storage half of the rename. Leaving round 2 WAL-only would drag in an unrelated defect — an
+// ARRAY column's element data does not survive WAL replay — so the check would fail for a
+// reason no reconciliation can influence.
 //
 // THE GATE is the CONTENT, on many rows, not a column count and not a row count: a column that
 // was dropped and re-derived as all-NULL keeps both intact. `payload` is bigint[40] so its
-// segments take DEDICATED blocks past partial_block_manager_t's FULL_THRESHOLD (B2 packing
-// would otherwise hide the released space behind the surviving column's), and the durable root
-// is walked offline before and after so a release shows up as a root that SHRANK.
+// segments take DEDICATED blocks past partial_block_manager_t's FULL_THRESHOLD (packing would
+// otherwise hide the released space behind the surviving column's), and the durable root is
+// walked offline before and after so a release shows up as a root that SHRANK.
 TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a_crash_before_the_checkpoint") {
     auto config = test_create_config(integration_fixture_path("test_alter_rename_column/crash"));
     test_clear_directory(config);
@@ -465,7 +463,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
     CHECK(after.report.unexplained.empty());
 }
 
-// CASE 4 — RN-oid's ACQUIRED PROPERTY: with identity carried by the attoid, a RENAME and an
+// CASE 4 — THE ACQUIRED PROPERTY: with identity carried by the attoid, a RENAME and an
 // ADD COLUMN that storage has not materialized yet are TELLABLE APART, and they sit on opposite
 // sides of the comparison:
 //   * the renamed column's attoid IS in the live catalog — under a different name — so it is

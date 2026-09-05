@@ -48,11 +48,11 @@ namespace components::types {
 
     } // anonymous namespace
 
-    // The throw this replaced was reachable from ordinary SQL — `NUMERIC(39,0)` walked
-    // straight into it through create_decimal — and from the DECIMAL arm of the index-key
-    // decoder, which reads width from disk bytes. Rule 2: no exceptions. The out-of-window
-    // answer is INVALID, and create_decimal (the only path that reaches the extension
-    // constructor with a caller-supplied width) refuses before ever getting here.
+    // A throw here would be reachable from ordinary SQL — `NUMERIC(39,0)` walks straight into
+    // it through create_decimal — and from the DECIMAL arm of the index-key decoder, which reads
+    // width from disk bytes. Rule 2: no exceptions. The out-of-window answer is INVALID, and
+    // create_decimal (the only path that reaches the extension constructor with a
+    // caller-supplied width) refuses before ever getting here.
     physical_type decimal_storage_for_width(uint8_t width) noexcept {
         static constexpr uint8_t max_width_16 = 4;
         static constexpr uint8_t max_width_32 = 9;
@@ -542,10 +542,20 @@ namespace components::types {
     core::result_wrapper_t<complex_logical_type>
     complex_logical_type::create_decimal(uint8_t width, uint8_t scale, std::string alias) {
         if (!is_valid_decimal_spec(width, scale)) {
-            // No resource parameter reaches this factory and adding one would push a
-            // memory_resource through every type-construction site in the tree. The
-            // message is built on the explicitly named new/delete resource — never
-            // std::pmr::get_default_resource() (rule 14) — and only on the refusal path.
+            // RULE 14 DEBT, AND THE REASON IT STANDS IS THE SIGNATURE, NOT A MISSING
+            // RESOURCE. No resource reaches this factory, so the refusal message is built on
+            // the explicitly named new/delete resource — never std::pmr::get_default_resource()
+            // — and only on the refusal path.
+            //
+            // What is NOT true is that a resource would have to be invented for the callers:
+            // most of them already hold one where they stand — type_spec_codec.cpp (decode_one),
+            // base_statistics.cpp, logical_value_binary_codec.hpp (read_decimal_payload),
+            // sql/transformer/utils.cpp (get_type), system_table_schemas.cpp (parse_flat_type),
+            // arrow/scaner/arrow_type.cpp (type_from_format), and cast_registry.cpp, whose
+            // enclosing cast_registry_t carries resource_ and simply is not asked. The sibling
+            // factories create_map and create_variant already take a resource, so the shape is
+            // precedented. What is left is a signature change on the declaration plus its call
+            // sites — a mechanical edit, not an absent arena.
             return core::error_t(core::error_code_t::invalid_parameter,
                                  std::pmr::string{"DECIMAL(" + std::to_string(static_cast<unsigned>(width)) + "," +
                                                       std::to_string(static_cast<unsigned>(scale)) +

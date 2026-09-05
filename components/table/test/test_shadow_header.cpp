@@ -1,6 +1,6 @@
-// A7.1 — shadow paging, step 1: the double-header protocol must actually keep a PREVIOUS
-// root, the header sector must be self-validating, and winner selection must be a validity
-// test rather than an integer compare.
+// Shadow paging: the double-header protocol must actually keep a PREVIOUS root, the header
+// sector must be self-validating, and winner selection must be a validity test rather than an
+// integer compare.
 //
 // Three defects, three gates:
 //   (1) one slot per checkpoint  — the other slot keeps the previous root;
@@ -8,7 +8,7 @@
 //   (3) the winner is the slot with a VALID checksum AND the greater iteration; garbage
 //       with any iteration whatsoever loses, and two invalid slots are data_corruption.
 //
-// Crash states are produced ONLY through the T3 fault-injection seam (fault_injection_file.hpp).
+// Crash states are produced ONLY through the fault-injection seam (fault_injection_file.hpp).
 // Corruption states — a slot overwritten with garbage — are produced by mutating the file's
 // bytes directly, exactly as the existing block-checksum and bad-magic tests do: that is
 // injected corruption, not a hand-laid crash state.
@@ -270,8 +270,7 @@ TEST_CASE("shadow_header: a crash after a checkpoint leaves the PREVIOUS root op
         // A THIRD checkpoint, caught in flight. Its data and metadata blocks go to the file;
         // the fsync barrier and the header write never happen, because the power goes out
         // first. This is the only interesting moment for a crash: after checkpoint B's fsync
-        // there is nothing in flight to lose, and a "crash" there reverts nothing at all —
-        // which is exactly what this case used to do (M9).
+        // there is nothing in flight to lose, and a "crash" there would revert nothing at all.
         append_rows(*table, env, 4000, 2000);
         {
             tstorage::metadata_manager_t meta_mgr(bm);
@@ -287,11 +286,11 @@ TEST_CASE("shadow_header: a crash after a checkpoint leaves the PREVIOUS root op
         }
 
         // kill -9 right here: everything since the last successful fsync is lost. That
-        // fsync was checkpoint B's, so the frozen file is exactly the post-B state — the
-        // moment the plan cares about, "after the header write, before the next checkpoint".
+        // fsync was checkpoint B's, so the frozen file is exactly the post-B state — "after
+        // the header write, before the next checkpoint".
         REQUIRE(scope.last() != nullptr);
 
-        // M9: a crash test whose crash reverts nothing is not coverage, it only reads like
+        // A crash test whose crash reverts nothing is not coverage, it only reads like
         // coverage. Prove the seam has something to take away BEFORE taking it, and prove it
         // put the file back to the last fsync boundary afterwards.
         const auto pre_crash = read_whole_file(path);
@@ -358,10 +357,9 @@ TEST_CASE("shadow_header: the durable header carries a verifiable checksum") {
     CHECK_FALSE(tampered.checksum_ok());
 
     // ...and on the padding too: the CRC domain is the WHOLE sector, with no carve-out, so a
-    // stray byte anywhere in it is caught. (M4: this case used to be labelled "a sector torn
-    // past the fields cannot pass". It was retargeted rather than removed, because the
-    // property it measures — the CRC covers the tail — is real and worth pinning; only the
-    // torn-write claim attached to it was false, and the case below now pins the truth.)
+    // stray byte anywhere in it is caught. This is NOT a statement about torn writes — a tear
+    // reassembles into a byte-exact copy of one generation and passes; the case below pins
+    // that.
     tstorage::database_header_t stray = newest;
     stray.padding[sizeof(stray.padding) - 1] ^= 0xFF;
     CHECK_FALSE(stray.checksum_ok());
@@ -418,12 +416,11 @@ TEST_CASE("shadow_header: garbage with a huge iteration never beats a valid slot
     // Both slots are good roots now, so smashing either one still leaves a root that
     // carries real data — the gate can demand the DATA back, not merely "no crash".
     //
-    // L12: REQUIRE, not CHECK. This is a PRECONDITION, not a finding: the loop below smashes
-    // one slot per trial and demands specific rows from the other, and it can only mean that
-    // if the other slot really is a valid root. Continuing past a failed precondition runs
-    // 64 trials on a false premise and reports whatever they happen to say. The rationale
-    // for the downgrade ("on a build without the fix this is already false") does not hold
-    // on any build this test is compiled into: two checkpoints on a fresh file leave two
+    // REQUIRE, not CHECK. This is a PRECONDITION, not a finding: the loop below smashes one
+    // slot per trial and demands specific rows from the other, and it can only mean that if
+    // the other slot really is a valid root. Continuing past a failed precondition runs 64
+    // trials on a false premise and reports whatever they happen to say. Downgrading it is not
+    // justified on any build this test is compiled into: two checkpoints on a fresh file leave two
     // valid slots, and if they do not, nothing below is a measurement.
     REQUIRE(valid_slot_count(pristine) == 2);
 
@@ -561,13 +558,13 @@ TEST_CASE("shadow_header: a freshly created database opens cleanly with one vali
     remove_file(path);
 }
 
-// --- H2: a FAILED header write must not move the target slot --------------------------
+// --- A FAILED header write must not move the target slot ------------------------------
 //
-// The slot is a pure function of iteration_ parity, and iteration_ used to be incremented
-// unconditionally BEFORE the write. So a header write that failed still advanced the
-// counter, and the retry aimed at the OTHER slot — the one holding the last durable root.
-// The retry then overwrote the very state it existed to preserve. A retry must reuse the
-// slot the failed attempt was aiming at; the previous root is not the retry's to spend.
+// The slot is a pure function of iteration_ parity. Incrementing iteration_ unconditionally
+// BEFORE the write has a failed header write still advance the counter, so the retry aims at
+// the OTHER slot — the one holding the last durable root — and overwrites the very state it
+// exists to preserve. A retry must reuse the slot the failed attempt was aiming at; the
+// previous root is not the retry's to spend.
 TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME slot") {
     const std::string path = shadow_db_path("retry_slot");
     remove_file(path);
@@ -651,13 +648,12 @@ TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME sl
     remove_file(path);
 }
 
-// --- L5: create_new_database also throws its write results away ------------------------
+// --- create_new_database must not throw its write results away -------------------------
 //
-// Its signature is already core::result_wrapper_t<bool>, and it already reports a failed
-// open — but the two writes and the fsync that actually LAY DOWN the file were discarded, so
-// a single failed write produced a file with no valid slot while the engine was told the
-// database had been created. The very next open of that file is data_corruption, and by then
-// the create is long past.
+// Reporting a failed open is not enough: the two writes and the fsync that actually LAY DOWN
+// the file must report too. Discarding them lets a single failed write produce a file with no
+// valid slot while the engine is told the database was created. The very next open of that
+// file is data_corruption, and by then the create is long past.
 TEST_CASE("shadow_header: create_new_database reports a write that did not land") {
     SECTION("the header slot write fails") {
         const std::string path = shadow_db_path("create_slot_fail");
@@ -710,7 +706,7 @@ TEST_CASE("shadow_header: create_new_database reports a write that did not land"
     }
 }
 
-// --- A7.6: meta_block == INVALID_INDEX is "never checkpointed", but ONLY with evidence ---
+// --- meta_block == INVALID_INDEX is "never checkpointed", but ONLY with evidence ---------
 //
 // A freshly created .otbx legitimately carries meta_block == INVALID_INDEX until its first
 // checkpoint commits. Corruption that knocks out the newest slot of a CHECKPOINTED file

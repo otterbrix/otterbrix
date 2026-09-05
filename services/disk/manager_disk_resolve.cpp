@@ -17,12 +17,11 @@ namespace services::disk {
     // filtering stays in each caller (it differs per table: equality on name,
     // name-match collect, enumerate).
     //
-    // A READ THAT COULD NOT BE PERFORMED IS AN ERROR, NEVER AN EMPTY ANSWER. All three legs
-    // below used to return an empty batch list and a comment called that a fallback "matching
-    // the no-agent / not-owned fallbacks above". An empty batch list is also exactly what "no
-    // matching rows" looks like, so every reader upstream turned an unreadable catalog into a
-    // negative fact about it: no such namespace, no such function, no such cast. Same shape,
-    // same words, as read_chunks_by_key three functions below.
+    // A READ THAT COULD NOT BE PERFORMED IS AN ERROR, NEVER AN EMPTY ANSWER. An empty batch
+    // list is exactly what "no matching rows" looks like, so returning one from the three legs
+    // below would turn an unreadable catalog into a negative fact about it: no such namespace,
+    // no such function, no such cast. Same shape, same words, as read_chunks_by_key three
+    // functions below.
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::scan_table(components::catalog::oid_t table_oid,
                                std::unique_ptr<components::table::table_filter_t> filter,
@@ -54,13 +53,12 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
-    // ctx.txn, NOT the default snapshot — the same fix resolve_function_by_name and
-    // find_cast_oid below already carry. On transaction_data{} this scan saw only committed
-    // rows, so a namespace created inside an open transaction was invisible to ITS OWN
-    // resolve and one dropped in it still answered found=true; any verdict built on the
-    // negative ("no such namespace" collision checks, follow-up DDL in the txn) read a lie.
-    // A zero-txn ctx carries transaction_data{0,...}, which sees exactly the committed
-    // state — the behaviour every existing caller had.
+    // ctx.txn, NOT the default snapshot — the same rule resolve_function_by_name and
+    // find_cast_oid below carry. On transaction_data{} this scan sees only committed rows, so a
+    // namespace created inside an open transaction is invisible to ITS OWN resolve and one
+    // dropped in it still answers found=true; any verdict built on the negative ("no such
+    // namespace" collision checks, follow-up DDL in the txn) then reads a lie.
+    // A zero-txn ctx carries transaction_data{0,...}, which sees exactly the committed state.
     manager_disk_t::unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
     manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t /*since_version*/) {
         resolve_namespace_result_t out(resource());
@@ -260,9 +258,9 @@ namespace services::disk {
         // Thin router: the caller passes storage column ORDINALS and the eq-AND filtered
         // scan runs intra-agent in read_chunks_by_key_inner (no row-major flatten, no
         // column-name resolution hop at all). Callers read cells via chunk.value(col, row).
-        // These used to return an empty vector, which the resolve operators read as
-        // "no such row" — a misrouted or agent-less read then surfaced as "Database does
-        // not exist". A read that never ran is an error.
+        // These must not return an empty vector: the resolve operators read that as "no such
+        // row", so a misrouted or agent-less read surfaces as "Database does not exist". A read
+        // that never ran is an error.
         if (key_col_indices.empty()) {
             co_return core::error_t{core::error_code_t::invalid_parameter,
                                     std::pmr::string{"read_chunks_by_key: no key columns given", resource()}};

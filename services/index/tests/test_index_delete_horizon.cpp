@@ -1,21 +1,17 @@
-// C5c — THE PHYSICAL ERASE OF AN INDEX ENTRY WAITS FOR THE SNAPSHOT FLOOR.
+// THE PHYSICAL ERASE OF AN INDEX ENTRY WAITS FOR THE SNAPSHOT FLOOR.
 //
-// An index is allowed to name rows a reader may not see: the table filters them on the
-// point fetch (C4b). It is NOT allowed to withhold an id, because nothing downstream can
-// put back a row the index never named. So a committed DELETE may publish its erase only
-// once EVERY live snapshot already hides the row — that is, once the commit-id horizon has
-// reached the delete's commit_id.
+// An index is allowed to name rows a reader may not see: the table filters them on the point fetch.
+// It is NOT allowed to withhold an id, because nothing downstream can put back a row the index
+// never named. So a committed DELETE may publish its erase only once EVERY live snapshot already
+// hides the row -- once the commit-id horizon has reached the delete's commit_id. An in-memory
+// index gets this for free from its delete_id stamp plus cleanup_versions(lowest_active); a disk
+// index has no stamp, so the wait is a QUEUE in the manager, the actor that owns both halves of the
+// decision.
 //
-// The in-memory index used to get this for free: it stamped delete_id = commit_id and left
-// the entry in place until cleanup_versions(lowest_active). There is no stamp on a disk
-// index and no in-memory index left to carry one, so the wait is rebuilt as a QUEUE in the
-// manager — the actor that owns both halves of the decision, the commit_id and the horizon.
-//
-// integration/cpp/test/test_index_delete_horizon.cpp pins the user-visible half of this
-// (two overlapping transactions over SQL). What THAT test cannot see is the other end: that
-// the entry is eventually erased for real rather than kept forever, and that the erase is
-// driven by the horizon and by nothing else. Both are asked here, of the manager, with the
-// agent pumped by hand so the interleaving is chosen rather than raced for.
+// integration/cpp/test/test_index_delete_horizon.cpp pins the user-visible half (two overlapping
+// transactions over SQL). What THAT test cannot see is the other end: that the entry is eventually
+// erased for real rather than kept forever, and that the erase is driven by the horizon and by
+// nothing else. Both are asked here, of the manager, with the agent pumped by hand.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -187,8 +183,8 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     };
     REQUIRE(probe(onlooker_txn) == std::vector<int64_t>{7});
 
-    // The deleting transaction stages its delete and then COMMITS through the manager,
-    // which is where the erase used to be dispatched.
+    // The deleting transaction stages its delete and then COMMITS through the manager, which
+    // is the door that must NOT dispatch the erase.
     REQUIRE_FALSE(
         ask<&index_agent_contract::stage_deletes>(agent, session, deleter_txn, one_entry(&resource, 42, 7))
             .contains_error());
@@ -203,8 +199,8 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     CHECK(services::index::index_deferred_deletes() == deferred_before + 1);
 
     INFO("a reader whose snapshot predates the commit must still be given the id");
-    // RED before C5c: the commit fanned the erase out to the agent immediately, so the
-    // entry was gone from the tree and no reader could be handed it any more.
+    // A commit that fanned the erase out to the agent immediately would take the entry out of
+    // the tree, and no reader could be handed it any more.
     CHECK(probe(onlooker_txn) == std::vector<int64_t>{7});
 
     INFO("a horizon that has NOT reached the commit id changes nothing");

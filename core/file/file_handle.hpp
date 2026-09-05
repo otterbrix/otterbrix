@@ -22,25 +22,23 @@ namespace core::filesystem {
 
     // THE ANSWER OF A SEQUENTIAL WRITE, which an int64_t could not give.
     //
-    // The old return packed a byte count and an error code into one integer, and the packing
-    // lost the only fact a caller can act on: a write that short-counts and THEN refuses has
-    // already put bytes on the device and already moved the descriptor over them. The count
-    // was accumulated across the loop's iterations and then thrown away in favour of the
-    // failing iteration's own return -- -1 on POSIX, and 0 on Windows, where FSInternalWrite
-    // answers a refusal with an unsigned `DWORD()`. So "nothing was written" and "12 of the
-    // 25 bytes were written" arrived as the same answer -- and a caller that cannot tell them
-    // apart can neither truncate the stump nor rewind to it.
+    // Packing a byte count and an error code into one integer loses the only fact a caller can
+    // act on: a write that short-counts and THEN refuses has already put bytes on the device and
+    // already moved the descriptor over them. The count accumulated across the loop's iterations
+    // is then thrown away in favour of the failing iteration's own return -- -1 on POSIX, and 0
+    // on Windows, where FSInternalWrite answers a refusal with an unsigned `DWORD()`. So "nothing
+    // was written" and "12 of the 25 bytes were written" arrive as the same answer, and a caller
+    // that cannot tell them apart can neither truncate the stump nor rewind to it.
     //
     // Both fields are needed, and neither derives from the other:
-    //   - bytes_written is how much REACHED the file and therefore how far the descriptor
-    //     moved. It is meaningful on refusal, which is the whole point;
+    //   - bytes_written is how much REACHED the file and therefore how far the descriptor moved.
+    //     It is meaningful on refusal, which is the whole point;
     //   - complete says whether the request finished. It cannot be recomputed as
-    //     `bytes_written == requested` at every call site, because a zero-byte request makes
-    //     the full success and the outright refusal both `bytes_written == 0`.
+    //     `bytes_written == requested` at every call site, because a zero-byte request makes the
+    //     full success and the outright refusal both `bytes_written == 0`.
     //
     // core::result_wrapper_t is deliberately NOT the vehicle: it holds a value OR an error
-    // (value() asserts !has_error()), so it cannot express "this much landed AND it failed",
-    // which is exactly the state being reported here.
+    // (value() asserts !has_error()), so it cannot express "this much landed AND it failed".
     struct [[nodiscard]] write_result_t {
         uint64_t bytes_written{0};
         bool complete{false};
@@ -71,7 +69,7 @@ namespace core::filesystem {
         virtual ~file_handle_t();
 
         // The I/O entry points are virtual so a test-side wrapper can interpose fault
-        // injection / crash simulation (plan task T3). Production handles inherit the
+        // injection / crash simulation. Production handles inherit the
         // default bodies, which delegate to the filesystem free functions; those free
         // functions reinterpret_cast the handle to the PLATFORM handle type, so a wrapper
         // must always override and delegate to its wrapped inner handle, never pass itself.

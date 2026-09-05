@@ -33,16 +33,16 @@ namespace services::wal {
         ///
         /// When committed_out is non-null, the union of committed transaction ids
         /// across all scanned databases is written into it. The bitcask index
-        /// txn-log recover gate (M1.1) needs this set to discard frames of
+        /// txn-log recover gate needs this set to discard frames of
         /// transactions whose WAL commit marker never landed: index txn-log frames
         /// are fsync'd durable BEFORE the WAL commit marker, so a crash inside that
         /// window would otherwise resurrect uncommitted transactions' index
         /// entries. The set is threaded out (not derived in the index layer) so it
         /// stays byte-identical with the filter applied here.
         ///
-        /// REFUSES when a segment cannot be OPENED. This used to answer an empty list for
-        /// that case, indistinguishable from "there is nothing to replay", so a startup that
-        /// could not read a segment came up silently missing every committed transaction the
+        /// REFUSES when a segment cannot be OPENED. An empty list for that case is
+        /// indistinguishable from "there is nothing to replay", so a startup that could not
+        /// read a segment would come up silently missing every committed transaction the
         /// segment held. See the caller in base_spaces.cpp for why that refusal stops startup.
         core::result_wrapper_t<std::vector<record_t>>
         read_committed_records(id_t after_wal_id, std::set<std::uint64_t>* committed_out = nullptr);

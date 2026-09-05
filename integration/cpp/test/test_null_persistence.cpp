@@ -6,24 +6,21 @@
 
 // NULL values must survive a checkpoint + restart.
 //
-// They do not. A checkpoint flushes only each column's MAIN segments; the validity bitmap
-// is never written. On reopen, `column_data_t::initialize_column_validity`
-// (components/table/column_data.cpp) MANUFACTURES one validity segment per data pointer,
-// and `column_segment_t`'s constructor 0xFF-fills it — all-valid. The comment there states
-// the consequence outright: "reloaded validity reads all-valid". So every NULL in a
-// checkpointed table silently becomes a non-NULL zero/empty value.
+// THE HAZARD. A checkpoint that flushes only each column's MAIN segments leaves the validity
+// bitmap unwritten, and the reload then MANUFACTURES one validity segment per data pointer
+// which `column_segment_t`'s constructor 0xFF-fills — all-valid. Every NULL in a checkpointed
+// table silently becomes a non-NULL zero/empty value. What keeps that out is the PERSISTED
+// validity child (components/table/column_data.hpp, checkpoint_children: child_columns[0] is
+// always the validity child).
 //
-// Why nothing catches this today:
-//   * most tables had no file behind them when this was written, so the .otbx load path was
-//     rarely taken;
-//   * restart tests that DO pass mostly replay the WAL, which rebuilds rows from records
+// Why nothing else catches it:
+//   * restart tests that pass mostly replay the WAL, which rebuilds rows from records
 //     and therefore preserves NULLs — the loss only appears once a CHECKPOINT has folded
 //     the rows into the .otbx and the WAL no longer carries them;
 //   * the existing persistence tests assert on non-NULL values and on row COUNTS, and the
 //     count is right either way. That is exactly what makes the corruption silent.
 //
-// This matters far more after B1a (disk becomes the only storage mode): at that point every
-// NULL in every table is subject to it.
+// Disk is the only storage mode, so every NULL in every table is subject to it.
 //
 // The checks below deliberately probe THREE distinct observations of the same fact, because
 // a partial fix could satisfy one and not the others: IS NULL as a predicate, the cursor's
@@ -48,7 +45,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and
         REQUIRE(exec("INSERT INTO b.t (id, v, s) VALUES (1, 10, 'a'), (2, NULL, NULL), (3, 30, 'c');")
                     ->is_success());
 
-        // Before the restart the engine has this right — so the phase-2 failure is the
+        // Before the restart the engine has this right, so any phase-2 failure is the
         // restart, not the insert.
         {
             auto cur = exec("SELECT id FROM b.t WHERE v IS NULL;");

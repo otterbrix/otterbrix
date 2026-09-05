@@ -6,38 +6,32 @@
 // insert and delete ranges, the storage oids a CREATE brought up and a DROP
 // retired, pg_catalog row ranges, pg_attribute commit-id backfills. It answers
 // core::error_t and refuses with transaction_inactive when the session has no
-// transaction_t to park any of that on (dispatcher.cpp,
-// manager_dispatcher_t::txn_accumulate_msg).
+// transaction_t to park any of that on (dispatcher.cpp).
 //
 // Its two callers in the executor — the DML tail and the DDL tail of
 // execute_plan_full — used to `co_await std::move(acf);` without binding the
-// answer. A refusal was therefore invisible to them: they went straight on to
-// run_commit_pipeline_, which drained a transaction_t holding NOTHING, took the
-// empty-COMMIT leg, allocated no commit id and published nothing — while the
-// cursor still said success. Rows physically appended to the heap were never
-// made visible and the user was told the statement worked.
+// answer, so a refusal was invisible: they went on to run_commit_pipeline_,
+// which drained a transaction_t holding NOTHING, took the empty-COMMIT leg,
+// allocated no commit id and published nothing — while the cursor still said
+// success. Rows physically appended to the heap were never made visible.
 //
-// WHY THIS IS A SENTINEL AND NOT A DIRECT REPRODUCTION. The path is not named:
-// execute_plan_full opens every statement with txn_begin_session_msg, whose
-// begin_transaction is idempotent and always leaves an active txn behind, and
-// nothing on the INSERT / UPDATE / DELETE / SET TIMEZONE / VACUUM / DDL routes
-// ends that txn before the accumulate — the abort legs (txn_abort_msg, the
-// empty-COMMIT abort inside txn_commit_drain_msg, the dispatcher's failure
-// release) all run strictly after it. There is no SQL that puts the session in
-// the refused state, so no test can drive the refusal through the front door.
+// WHY THIS IS A SENTINEL AND NOT A DIRECT REPRODUCTION. The path is not named
+// from SQL: execute_plan_full opens every statement with txn_begin_session_msg,
+// whose begin_transaction is idempotent and always leaves an active txn behind,
+// and nothing on the INSERT / UPDATE / DELETE / SET TIMEZONE / VACUUM / DDL
+// routes ends that txn before the accumulate — the abort legs (txn_abort_msg,
+// the empty-COMMIT abort inside txn_commit_drain_msg, the dispatcher's failure
+// release) all run strictly after it.
 //
 // What this file pins instead is the INVARIANT the swallowed answer broke:
 //
 //     a statement reports success  <=>  its work is visible afterwards
 //
-// stated as an equality so that BOTH directions fail loudly. The defect breaks
-// exactly one of them — success reported, work gone — so with the answer
-// swallowed and txn_accumulate_msg forced to refuse, the equality goes red;
-// with the answer read, the statement reports the refusal and the equality
-// holds (false <=> false). That sensitivity was proven by injection: making
+// stated as an equality so BOTH directions fail loudly; the defect breaks
+// exactly one of them. Sensitivity proven by injection: making
 // txn_accumulate_msg refuse every payload carrying base appends turns the DML
-// case below red on the un-fixed tail and leaves the equality intact on the
-// fixed one.
+// case below red on the un-fixed tail and leaves the equality intact
+// (false <=> false) on the fixed one.
 // ============================================================================
 
 #include "test_config.hpp"

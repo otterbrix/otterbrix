@@ -62,9 +62,9 @@ static List* base_raw_parser(std::pmr::memory_resource* resource, const char* st
     scanner_finish(yyscanner);
 
     if (yyresult) {
-        // A grammar failure is NOT "there was nothing to parse", and this arm used to
-        // answer with the same empty list that an empty query produces — leaving the
-        // caller no way to tell the two apart. Everything the scanner and the grammar
+        // A grammar failure is NOT "there was nothing to parse": answering with the same
+        // empty list an empty query produces leaves the caller no way to tell the two
+        // apart. Everything the scanner and the grammar
         // reject leaves through scanner_yyerror -> ereport, which throws; what is left
         // here is bison's own abort (YYABORT, or its parser stack exhausted). Refuse in
         // the channel the rest of this file already uses, so the empty list keeps
@@ -108,9 +108,9 @@ List* raw_parser(std::pmr::memory_resource* resource,
     try {
         // The core grammar accepted the text, and that settles it either way. A tree
         // with no statement in it is "nothing to parse", not "did not parse": there is
-        // no failure for an extension to rescue, so none is consulted. This used to
-        // fall through to the dispatch below, which handed every registered extension a
-        // query the core parser had already answered.
+        // no failure for an extension to rescue, so none is consulted. Falling through to
+        // the dispatch below would hand every registered extension a query the core parser
+        // had already answered.
         return base_raw_parser(resource, str);
     } catch (const parser_exception_t& error) {
         base_error_opt = error;
@@ -120,13 +120,12 @@ List* raw_parser(std::pmr::memory_resource* resource,
     if (ext_result.has_error()) {
         throw parser_exception_t(ext_result.error().what.c_str(), "");
     }
-    // A claim is a tree with a statement in it. This used to be `!= NIL`, a POINTER
-    // test against the one shared empty-list sentinel — so an extension that declined
-    // with an empty list it had allocated itself passed the test, and raw_parser
-    // returned that empty tree: the core parser's syntax error went on the floor,
-    // `SELECT FROM` came back as success-with-no-statement, and the caller's linitial()
-    // reached for an element that does not exist. Emptiness is a property of the list,
-    // not of its address.
+    // A claim is a tree with a statement in it. A `!= NIL` test here is a POINTER test
+    // against the one shared empty-list sentinel, which an extension declining with an
+    // empty list it allocated itself passes — raw_parser then returns that empty tree, the
+    // core parser's syntax error goes on the floor, `SELECT FROM` comes back as
+    // success-with-no-statement, and the caller's linitial() reaches for an element that
+    // does not exist. Emptiness is a property of the list, not of its address.
     if (list_length(ext_result.value()) > 0) {
         return ext_result.value();
     }
@@ -137,9 +136,9 @@ List* raw_parser(std::pmr::memory_resource* resource,
         throw *base_error_opt;
     }
     // Unreachable: the try either returns or records a parser_exception_t, and any other
-    // exception propagates past this function. Kept as a guard that fails LOUDLY —
-    // the one thing this tail must never do again is answer with an empty list, which
-    // is what made "did not parse" and "nothing to parse" the same value.
+    // exception propagates past this function. Kept as a guard that fails LOUDLY — the one
+    // thing this tail must never do is answer with an empty list, which would make "did not
+    // parse" and "nothing to parse" the same value.
     throw parser_exception_t("the parser produced neither a statement nor a diagnostic", "");
 }
 

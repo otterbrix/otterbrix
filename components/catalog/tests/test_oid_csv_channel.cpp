@@ -52,8 +52,8 @@ TEST_CASE("parse_oid_csv: a token that is not a number is reported, not dropped"
 
 TEST_CASE("parse_oid_csv: a token with trailing garbage is reported, not truncated", "[oid_csv]") {
     // std::from_chars stops at the first character it cannot use and still reports
-    // success, so "12x" used to read as 12 — a key column silently swapped for
-    // whichever column oid 12 happens to be.
+    // success, so "12x" reads as 12 unless the WHOLE token is required — a key column
+    // silently swapped for whichever column oid 12 happens to be.
     bool ok = true;
     const auto out = parse_oid_csv("12x", ok);
     REQUIRE_FALSE(ok);
@@ -70,9 +70,9 @@ TEST_CASE("parse_oid_csv: an empty token between commas is reported", "[oid_csv]
 }
 
 TEST_CASE("parse_oid_csv: a list that lost EVERY token is empty AND unreadable", "[oid_csv]") {
-    // The shape that used to repeal a declared key in silence: the caller's
-    // emptiness check alone cannot tell this from a constraint written with no
-    // columns, and only one of the two is corruption.
+    // The shape that repeals a declared key in silence: the caller's emptiness check
+    // alone cannot tell this from a constraint written with no columns, and only one
+    // of the two is corruption.
     bool ok = true;
     const auto out = parse_oid_csv("zz", ok);
     REQUIRE_FALSE(ok);
@@ -93,15 +93,14 @@ TEST_CASE("parse_oid_csv: everything encode_oid_csv writes reads back ok", "[oid
 }
 
 // ---------------------------------------------------------------------------
-// TWO SHAPES THE CHANNEL DID NOT SEE — both of them the very shape it was added
-// for: the string decodes to a DIFFERENT list than the one that was written, and
-// answers `ok == true` while doing it.
+// TWO SHAPES THAT MUST NOT PASS: the string decodes to a DIFFERENT list than the
+// one that was written, and answers `ok == true` while doing it.
 // ---------------------------------------------------------------------------
 
 TEST_CASE("parse_oid_csv: a list cut off at a comma is reported, not silently shortened", "[oid_csv]") {
-    // "7,11,13" truncated after the second separator. The loop used to stop as
-    // soon as the last comma was the final character — the token AFTER it was
-    // never looked at, so the list that lost its tail read back clean. This is
+    // "7,11,13" truncated after the second separator. A loop that stops as soon as
+    // the last comma is the final character never looks at the token AFTER it, so a
+    // list that lost its tail reads back clean. This is
     // the exact shape a short write / truncated page leaves, and it is the one
     // shape the caller cannot recover: the surviving tokens are a shorter key
     // that agrees with every length guard downstream.
@@ -121,8 +120,8 @@ TEST_CASE("parse_oid_csv: a lone trailing comma is an empty token, not an empty 
 
 TEST_CASE("parse_oid_csv: a token too large for an oid is reported, not folded onto another column",
           "[oid_csv]") {
-    // oid_t is 32 bits; the read used to go through a 64-bit `unsigned long` and
-    // then static_cast the result. 4294967297 == 2^32 + 1 therefore READ AS 1 —
+    // oid_t is 32 bits; a read through a 64-bit `unsigned long` that static_casts the
+    // result makes 4294967297 == 2^32 + 1 READ AS 1 —
     // the key column silently swapped for whichever column oid 1 happens to be.
     // That is the neighbouring-column shift with the length guard looking the
     // other way: one token in, one token out, lengths agree.

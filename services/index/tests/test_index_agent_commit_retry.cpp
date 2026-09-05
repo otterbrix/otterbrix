@@ -1,12 +1,11 @@
 // THE BUCKET IS CLEARED ONLY AFTER THE JOURNAL SAYS YES.
 //
-// commit_inserts/commit_deletes (txn != 0) used to run `take(txn_id)` -- which erased the
-// pending bucket INSIDE itself -- and only then ask the store to journal the batch
-// (apply_txn_inserts / apply_txn_deletes). A journal IO refusal therefore LOST the staged
-// batch: the statement heard about the error, but a RETRY of the same commit found an empty
-// bucket and reported success over nothing. These cases pin the branch lesson "state is
-// cleared only AFTER the operation succeeds" at the agent level: a refused commit keeps the
-// bucket, and the retried commit actually publishes it.
+// If commit_inserts/commit_deletes (txn != 0) ran `take(txn_id)` -- erasing the pending bucket
+// INSIDE itself -- and only then asked the store to journal the batch (apply_txn_inserts /
+// apply_txn_deletes), a journal IO refusal would LOSE the staged batch: the statement hears about
+// the error, but a RETRY of the same commit finds an empty bucket and reports success over nothing.
+// These cases pin "state is cleared only AFTER the operation succeeds" at the agent level: a
+// refused commit keeps the bucket, and the retried commit actually publishes it.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -149,8 +148,8 @@ TEST_CASE("services::index::bitcask_index_agent_t keeps the staged bucket across
         auto retried = ask<&index_agent_contract::commit_inserts>(agent, session, txn1);
         REQUIRE_FALSE(retried.contains_error());
 
-        // RED before the fix: the retry reported success over an ALREADY-ERASED bucket, so
-        // nothing was ever journalled and the row is absent for everyone.
+        // What this catches: a retry reporting success over an ALREADY-ERASED bucket, so
+        // nothing is ever journalled and the row is absent for everyone.
         CHECK(read(0) == std::vector<int64_t>{7});
         CHECK(read(txn2) == std::vector<int64_t>{7});
     }
@@ -177,22 +176,21 @@ TEST_CASE("services::index::bitcask_index_agent_t keeps the staged bucket across
         auto retried = ask<&index_agent_contract::commit_deletes>(agent, session, txn2);
         REQUIRE_FALSE(retried.contains_error());
 
-        // RED before the fix: the retried delete succeeded over an empty bucket, so the row
-        // stayed in the index while the statement was told the delete landed.
+        // What this catches: a retried delete succeeding over an empty bucket, so the row
+        // stays in the index while the statement is told the delete landed.
         CHECK(read(0).empty());
     }
 
     std::filesystem::remove_all(path);
 }
 
-// ЗАПИСЬ #353: the txn==0 leg (rebuild / repopulate feed, no journal) erased the bucket
-// AFTER applying it to the store but BEFORE force_flush() answered. The batch itself was
-// not lost (the keydir held it), but a commit whose flush refused had already cleared its
-// bucket — so the RETRY of that commit published nothing, found nothing parked, and
-// reported success without ever re-asking the store for durability. Same branch lesson as
-// the txn!=0 fix above: state is cleared only AFTER the operation succeeds. Re-publishing
-// a kept bucket is safe in this family: bitcask's insert/remove doors are idempotent on
-// the (key, row) pair.
+// The txn==0 leg (rebuild / repopulate feed, no journal) must not erase the bucket after
+// applying it to the store but BEFORE force_flush() answers. The batch itself is not lost (the
+// keydir holds it), but a commit whose flush refused would have cleared its bucket already —
+// so the RETRY of that commit publishes nothing, finds nothing parked, and reports success
+// without ever re-asking the store for durability. Same rule as the txn!=0 leg above: state is
+// cleared only AFTER the operation succeeds. Re-publishing a kept bucket is safe in this
+// family: bitcask's insert/remove doors are idempotent on the (key, row) pair.
 TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucket until the flush verdict") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -251,17 +249,17 @@ TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucke
         INFO("the rotation refusal must reach the statement");
         REQUIRE(refused.contains_error());
 
-        // RED before the fix: the bucket was erased ahead of the flush verdict, so this
-        // retry published nothing, found nothing parked, and answered no_error — success
-        // over a delete that never reached the device.
+        // What this catches: the bucket erased ahead of the flush verdict, so this retry
+        // publishes nothing, finds nothing parked, and answers no_error — success over a
+        // delete that never reached the device.
         auto retried = ask<&index_agent_contract::commit_deletes>(agent, session, uint64_t{0});
         REQUIRE(retried.contains_error());
 
         // The kept bucket keeps the SEMANTICS straight too: bucket 0 is committed for
         // everyone (readers subtract it), merely not yet durable — so the reader already
         // sees the delete while the statement keeps hearing "not durable" until a retry
-        // lands. Before the fix the erased bucket made the reader UN-see a committed
-        // delete that was then never going to be published.
+        // lands. An erased bucket would make the reader UN-see a committed delete that is
+        // then never going to be published.
         CHECK(read(0).empty());
     }
 
@@ -280,7 +278,7 @@ TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucke
         INFO("the append refusal must reach the statement");
         REQUIRE(refused.contains_error());
 
-        // RED before the fix: same vacuous success as the delete leg.
+        // What this catches: the same vacuous success as the delete leg.
         auto retried = ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0});
         REQUIRE(retried.contains_error());
     }

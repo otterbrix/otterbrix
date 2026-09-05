@@ -3,31 +3,29 @@
 //
 // enrich_logical_plan fetches index info per table of the statement; it must be
 // stored per table_oid (context_storage_t::table_indexes) and read through the
-// oid-taking accessors. Historically the info landed in two FLAT vectors that
-// each loop iteration OVERWROTE, so every scan of a multi-table statement was
-// judged against the index set of whichever table happened to enumerate LAST
+// oid-taking accessors. Historically the info landed in two FLAT vectors that each
+// loop iteration OVERWROTE, so every scan of a multi-table statement was judged
+// against the index set of whichever table happened to enumerate LAST
 // (table_oid_dependencies() is an unordered_set — the "winner" is hash-order):
 //
-//   * a predicate on an UNINDEXED column of table X became an index_scan on
-//     X's oid whenever the surviving set (another table's!) carried that column
-//     name — manager_index_t::search finds nothing on X and the scan silently
-//     returned ZERO rows;
-//   * the mirror: a real index on X was invisible whenever another table's
-//     key set survived — silent full scan, correct rows, lost index.
+//   * a predicate on an UNINDEXED column of table X became an index_scan on X's oid
+//     whenever the surviving set (another table's!) carried that column name —
+//     manager_index_t::search finds nothing on X and the scan silently returned ZERO
+//     rows;
+//   * the mirror: a real index on X was invisible whenever another table's key set
+//     survived — silent full scan, correct rows, lost index.
 //
-// The multi-table statements that actually reach create_plan_match_'s index
-// selection are UNION branches and scalar-sub-query (InitPlan) statements —
-// JOIN children deliberately lower to Filter-over-Seq-Scan, so a join predicate
-// never consults the index info. The tests below use:
-//   * UNION ALL "symmetric" shapes: each branch's predicate column is indexed
-//     only on the OTHER table, so EITHER unordered_set iteration order poisons
-//     exactly one branch — red without depending on oid hashing;
-//   * a scalar-sub-query shape: the acceptance case verbatim (scan target has
-//     no index on the predicate column; the sub-query's table, possibly
-//     enumerated last, carries an index on a same-named column).
+// The multi-table statements that actually reach create_plan_match_'s index selection
+// are UNION branches and scalar-sub-query (InitPlan) statements — JOIN children
+// deliberately lower to Filter-over-Seq-Scan, so a join predicate never consults the
+// index info. The tests below use UNION ALL "symmetric" shapes (each branch's
+// predicate column is indexed only on the OTHER table, so EITHER unordered_set
+// iteration order poisons exactly one branch — red without depending on oid hashing)
+// and a scalar-sub-query shape (scan target has no index on the predicate column; the
+// sub-query's table, possibly enumerated last, carries an index on a same-named one).
 //
-// Tables: ta(id, ka INDEXED, kb) and tb(id, ka, kb INDEXED); each table's
-// UNindexed column carries the SAME NAME as the other table's indexed one.
+// Tables: ta(id, ka INDEXED, kb) and tb(id, ka, kb INDEXED); each table's UNindexed
+// column carries the SAME NAME as the other table's indexed one.
 // ============================================================================
 
 #include "test_config.hpp"

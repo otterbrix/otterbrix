@@ -1,9 +1,9 @@
-// A7.3 — reclaim root N once root N+1 is durable.
+// Reclaim root N once root N+1 is durable.
 //
-// A7.1 made the previous root real (two slots, live CRC, winner among valid slots) and A7.2
-// stopped handing out a block the durable root still names (pending_free_ / reusable_). What
-// neither did is the other direction: NOTHING ever frees the SUPERSEDED root, so a checkpoint
-// of an UNCHANGED table extends the file every single round, forever.
+// The two-slot header makes the previous root real, and the split free pool keeps a block the
+// durable root still names from being handed out. Neither covers the other direction: with
+// nothing ever freeing the SUPERSEDED root, a checkpoint of an UNCHANGED table extends the
+// file every single round, forever.
 //
 // The freeing formula this file gates:
 //
@@ -231,10 +231,10 @@ TEST_CASE("root_reclaim: PROBE measure per-round growth and load-time allocation
 }
 
 // ---------------------------------------------------------------------------------------
-// A7.3 GATE 1 — the plan's gate: on an UNCHANGED database the file does not grow round to
+// GATE 1 — on an UNCHANGED database the file does not grow round to
 // round.
 //
-// RED on HEAD: every checkpoint writes a fresh metadata chain, a fresh free-list chain and a
+// The defect: every checkpoint writes a fresh metadata chain, a fresh free-list chain and a
 // fresh set of packed data blocks, and nothing frees the superseded root's copies of any of
 // the three. Measured on the probe above: +5 blocks EVERY round, forever, on a table nobody
 // touched.
@@ -281,7 +281,7 @@ TEST_CASE("root_reclaim: an unchanged database does not grow round to round", "[
 }
 
 // ---------------------------------------------------------------------------------------
-// A7.3 GATE 2 — the walker reports ZERO unexplained blocks after a compacting checkpoint,
+// GATE 2 — the walker reports ZERO unexplained blocks after a compacting checkpoint,
 // and every id the round reclaimed is provably neither reachable from the NEW root nor live
 // in the registry (the formula's two subtractions, asserted directly rather than assumed).
 // ---------------------------------------------------------------------------------------
@@ -297,7 +297,7 @@ TEST_CASE("root_reclaim: nothing reclaimed is reachable from the new root or liv
     // previous live tree. A session that appends and then closes WITHOUT compacting strands
     // its live tree -- no root ever named those blocks, so no root reclaim can find them
     // either. That one-off cost per unclean session is measured in the PROBE above and is a
-    // different defect from the one A7.3 fixes; it is not smuggled into this gate by choosing
+    // different defect from the one the root reclaim fixes; it is not smuggled into this gate by choosing
     // a session shape that hides it.
     tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
     REQUIRE(!bm.create_new_database().has_error());
@@ -308,7 +308,7 @@ TEST_CASE("root_reclaim: nothing reclaimed is reachable from the new root or liv
         bm.dev_reset_tracking();
         REQUIRE(table->compact(WATERMARK));
         // Everything mark_as_free'd during the round: compact's release of the outgoing
-        // collection AND A7.3's reclaim of the superseded root.
+        // collection AND the reclaim of the superseded root.
         std::set<uint64_t> released;
         for (auto id : bm.dev_freed_ids()) {
             released.insert(id);
@@ -346,7 +346,7 @@ TEST_CASE("root_reclaim: nothing reclaimed is reachable from the new root or liv
 }
 
 // ---------------------------------------------------------------------------------------
-// A7.3 GATE 3 — a crash BETWEEN the reclaim and the header write leaves root N intact and
+// GATE 3 — a crash BETWEEN the reclaim and the header write leaves root N intact and
 // READABLE. The reclaim files ids into pending_free_, which free_block_id never draws from,
 // so nothing root N reads can have been overwritten by the round that died.
 // ---------------------------------------------------------------------------------------
@@ -379,7 +379,7 @@ TEST_CASE("root_reclaim: crash between reclaim and header write leaves root N re
     }
 
     // Round N+1 runs up to (and including) the reclaim and the pre-header barrier, then the
-    // power goes out. No file bytes are placed by hand: the T3 interposer reverts everything
+    // power goes out. No file bytes are placed by hand: the fault interposer reverts everything
     // written since the last successful fsync and kills the handle.
     {
         otterbrix_test::fault_plan_t plan;
@@ -426,7 +426,7 @@ TEST_CASE("root_reclaim: crash between reclaim and header write leaves root N re
 // calling compact() every round — so the table grows by its own full size EVERY round,
 // forever.
 //
-// RED on HEAD: block_count climbs by a full copy per round after ONE failed fsync.
+// The defect: block_count climbs by a full copy per round after ONE failed fsync.
 // The chosen fix is that a DEGRADED manager stops the rebuild: data_table_t::compact refuses
 // (the round is skipped exactly like the MVCC-gate skip), table_storage_t::checkpoint
 // refuses with the latched error, and agent_disk_t::checkpoint_inner logs and defers. Reads
@@ -511,7 +511,7 @@ TEST_CASE("root_reclaim: one transient fsync failure does not grow the file with
 }
 
 // ---------------------------------------------------------------------------------------
-// A7.3, rule 19: the candidate list is DISK BYTES, so it must not reach an assert().
+// Rule 19: the candidate list is DISK BYTES, so it must not reach an assert().
 //
 // The reclaim's candidates come from two disk-fed places: the durable root's data blocks,
 // which data_table_t::load_from_disk collects out of data_pointer_t::block_pointer.block_id
@@ -558,14 +558,14 @@ TEST_CASE("root_reclaim: a transient-domain candidate is dropped and latched, no
 }
 
 // ---------------------------------------------------------------------------------------
-// ITEM A — a FAILED RECLAIM must not fail every checkpoint forever while the file grows.
+// A FAILED RECLAIM must not fail every checkpoint forever while the file grows.
 //
 // reclaim_superseded_root walks root N's chains through metadata_manager_t::chain_blocks,
 // which pins each sub-block via single_file_block_manager_t::read(). read() reports
-// io_error / data_corruption but latched NOTHING, so the checkpoint failed while degraded()
-// stayed false. Every health gate of the previous round keys exclusively on degraded()
+// io_error / data_corruption; propagating that without latching leaves the checkpoint failed
+// while degraded() stays false. Every health gate keys exclusively on degraded()
 // (data_table_t::compact, table_storage_t::checkpoint, agent_disk_t::checkpoint_inner), so
-// none of them fired: the next round compacted again, rebuilt the whole collection into
+// none of them fires: the next round compacts again, rebuilds the whole collection into
 // freshly extended blocks (compact's release goes to pending_free_, which only a COMMITTED
 // header drains), failed the same walk, and did it again. One rotten bit in root N's
 // metadata chain therefore cost a full copy of the table PER ROUND, forever, with every
@@ -576,7 +576,7 @@ TEST_CASE("root_reclaim: a transient-domain candidate is dropped and latched, no
 // NOT roll its allocations back. See the long note at reclaim_superseded_root for why the
 // rollback would be the more dangerous half.
 //
-// RED on HEAD: degraded() == false after the failed round, and block_count climbs every
+// The defect: degraded() == false after the failed round, and block_count climbs every
 // round after it.
 // ---------------------------------------------------------------------------------------
 TEST_CASE("root_reclaim: a failed reclaim latches degraded and stops the file growing", "[a7.3][item_a]") {
@@ -675,7 +675,7 @@ TEST_CASE("root_reclaim: a failed reclaim latches degraded and stops the file gr
 }
 
 // ---------------------------------------------------------------------------------------
-// ITEM C — a collection held across compact must not strip the registry entry of a block id
+// A collection held across compact must not strip the registry entry of a block id
 // that has since been REUSED by the live table.
 //
 // data_table_t::row_group() hands out COUNTED collection copies BY VALUE (the count lives
@@ -684,12 +684,12 @@ TEST_CASE("root_reclaim: a failed reclaim latches degraded and stops the file gr
 // the outgoing collection's ids while that collection's segments still own handles for them;
 // the ids go to pending_free_, a committed header promotes them to reusable_, and the next
 // round hands one back out and register_block()s a FRESH handle for it. When the stale holder
-// finally lets go, the old handle's destructor used to erase blocks_[id] by ID — taking the
+// finally lets go, an old handle destructor that erased blocks_[id] by ID would take the
 // LIVE handle's slot with it. registry_alive(id) then reads false while a live segment is
 // still reading the block, and registry_alive is the subtraction that stops
 // reclaim_superseded_root from freeing live table state.
 //
-// RED on HEAD: the reused ids lose their registry entry the moment the stale collection is
+// The defect: the reused ids lose their registry entry the moment the stale collection is
 // released, and the next compacting checkpoint frees blocks the live table is reading (the
 // walker reports them as unexplained and the scan stops matching).
 // ---------------------------------------------------------------------------------------
@@ -705,7 +705,7 @@ TEST_CASE("root_reclaim: a collection held across compact does not strip a reuse
     append_rows(*table, env, 0, RECLAIM_ROWS);
     checkpoint_production(bm, *table);
 
-    // The holder agent_disk_t::maybe_cleanup_inner used to keep across its compact() call.
+    // A holder on the current collection, kept alive across the compact() rounds below.
     auto stale = table->row_group();
     REQUIRE(stale);
 

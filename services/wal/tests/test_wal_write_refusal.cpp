@@ -26,31 +26,30 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_reader.hpp>
 
-// FIN-1 — THE JOURNAL MUST NOT REPORT WORK IT DID NOT DO.
+// THE JOURNAL MUST NOT REPORT WORK IT DID NOT DO.
 //
-// Four defects of one family lived here: the write path and the segment-read path had no
-// error channel, so four different failures all came back looking like success.
+// Four failures of one family are pinned here. Without an error channel on the write path and on
+// the segment-read path, all four come back looking like success:
 //
-//   1. Every wal_worker_t write handler dropped wal_page_writer_t::append's answer — the one
-//      documented "false on write error (e.g. disk full)" — and returned the wal_id anyway.
-//      The caller was handed the number of a record that is not in the journal.
-//   2. commit_txn dropped flush_and_sync()'s answer, so under wal_sync_mode::FULL a FAILED
-//      fsync still returned a wal_id: a transaction reporting a durable commit over a page
-//      that never reached the device.
-//   3. wal_page_reader_t left file_ null and file_size_ zero when the open failed, so
-//      page_count() answered 0 — and truncate_before read that as "this segment is empty,
-//      safe to remove" and UNLINKED the one segment nobody could read.
-//   4. read_all_records answered an empty vector for the same unopened segment, so startup
-//      replay came up silently missing every committed transaction it held.
+//   1. A wal_worker_t write handler that drops wal_page_writer_t::append's answer — the one
+//      documented "false on write error (e.g. disk full)" — and returns the wal_id anyway hands
+//      the caller the number of a record that is not in the journal.
+//   2. commit_txn dropping flush_and_sync()'s answer means that under wal_sync_mode::FULL a FAILED
+//      fsync still returns a wal_id: a transaction reporting a durable commit over a page that
+//      never reached the device.
+//   3. A wal_page_reader_t that leaves file_ null and file_size_ zero when the open fails answers
+//      page_count() == 0 — and truncate_before reads that as "empty, safe to remove" and UNLINKS
+//      the one segment nobody could read.
+//   4. read_all_records answering an empty vector for the same unopened segment brings startup
+//      replay up silently missing every committed transaction it held.
 //
-// THE INJECTION. These files are opened by the WAL itself through core::filesystem::open_file,
-// not by single_file_block_manager_t, so the existing T3 seam could not reach them. The WAL now
-// carries the same shape of seam (services::wal::dev_set_wal_file_interposer, DEV_MODE only),
-// and the interposer below drives it two ways:
-//   - returning nullptr models a segment that WILL NOT OPEN. That is faithful, not a
-//     stand-in: local_file_system.cpp's open_file answers nullptr for exactly this;
-//   - wrapping with otterbrix_test::faulty_file_handle_t models a device that refuses writes
-//     or fsyncs, driven by the same fault_plan_t the .otbx tests use.
+// THE INJECTION. These files are opened by the WAL itself through core::filesystem::open_file, not
+// by single_file_block_manager_t, so the .otbx seam cannot reach them. The WAL carries the same
+// shape of seam (services::wal::dev_set_wal_file_interposer, DEV_MODE only), driven two ways:
+// returning nullptr models a segment that WILL NOT OPEN (faithful, not a stand-in:
+// local_file_system.cpp's open_file answers nullptr for exactly this), and wrapping with
+// otterbrix_test::faulty_file_handle_t models a device refusing writes or fsyncs, driven by the
+// same fault_plan_t the .otbx tests use.
 
 using namespace services;
 using namespace services::wal;
@@ -82,7 +81,7 @@ namespace {
 
         // Segment files whose path contains this marker do not open at all.
         std::string refuse_open_marker;
-        // Segment files whose path contains this marker get the T3 faulty handle below.
+        // Segment files whose path contains this marker get the faulty handle below.
         std::string faulty_marker;
         otterbrix_test::fault_plan_t plan;
 
@@ -155,20 +154,16 @@ namespace {
         }
 
         // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton. This is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only
-        // thing that would report a chunk still alive after the manager is gone. Production
-        // hands the manager chunks off the executor's arena; this is that shape.
-        //
-        // resource_ outlives the asynchronous processing for three independent reasons:
-        // ~wal_env_t stops the scheduler and resets manager_ -- destroying the mailbox
-        // and any message still holding this batch -- inside its own body; resource_ is
-        // declared FIRST, so it is destroyed LAST; and otterbrix_resource is thread-safe in
-        // both builds (synchronized_pool_resource normally, the mutex-guarded
-        // resource_tracer_t under ASAN). manager_ itself is already allocated on it.
-        //
-        // Extracted so a test can assert the ARENA of a REAL payload: the batch is moved
-        // into the message and is unobservable after send.
+        // singleton: this is real load, and off resource_ it never reaches
+        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
+        // that would report a chunk still alive after the manager is gone. Production hands the manager
+        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
+        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
+        // over: ~wal_env_t stops the scheduler and resets manager_
+        // (destroying the mailbox and any message still holding this batch) inside its own body,
+        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
+        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
+        // the batch is moved into the message and is unobservable after send.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -223,7 +218,7 @@ namespace {
 } // namespace
 
 // ===========================================================================
-// FIN-1 / item 1 — A REFUSED PAGE WRITE MUST NOT COME BACK AS A WAL ID.
+// A REFUSED PAGE WRITE MUST NOT COME BACK AS A WAL ID.
 //
 // The record below is 500 rows wide, which is more than PAGE_DATA_SIZE, so append() has to
 // flush a full page in the middle of the record rather than only buffering it — the exact
@@ -252,7 +247,7 @@ TEST_CASE("wal::refusal::a_refused_page_write_is_not_reported_as_a_written_recor
 }
 
 // ===========================================================================
-// FIN-1 / item 2 — A FAILED fsync UNDER FULL MUST REFUSE THE COMMIT.
+// A FAILED fsync UNDER FULL MUST REFUSE THE COMMIT.
 //
 // wal_sync_mode::FULL is the mode whose whole meaning is "this marker is on the device". The
 // plan lets every write through and fails the first sync(), which is the one flush_and_sync
@@ -281,7 +276,7 @@ TEST_CASE("wal::refusal::a_failed_fsync_under_full_sync_refuses_the_commit") {
 }
 
 // ===========================================================================
-// FIN-1 / item 3 — TRUNCATION MUST REFUSE A SEGMENT IT CANNOT READ, NOT DELETE IT.
+// TRUNCATION MUST REFUSE A SEGMENT IT CANNOT READ, NOT DELETE IT.
 //
 // "unreadable" and "empty" both arrived at truncate_before as page_count() == 0, and the
 // branch for "empty" unlinks the file. So the ONE segment whose contents nobody could account
@@ -336,7 +331,7 @@ TEST_CASE("wal::refusal::truncation_keeps_a_segment_it_cannot_read") {
 }
 
 // ===========================================================================
-// FIN-1 / item 4 — STARTUP REPLAY MUST REFUSE AN UNOPENABLE SEGMENT.
+// STARTUP REPLAY MUST REFUSE AN UNOPENABLE SEGMENT.
 //
 // The first half of the test reads the same directory with no fault and REQUIREs records, so
 // the empty answer in the second half can only be caused by the refusal — not by a journal
@@ -383,16 +378,10 @@ TEST_CASE("wal::refusal::startup_replay_refuses_a_segment_that_will_not_open") {
 }
 
 // ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA.
-//
-// gen_data_chunk output is REAL load, and on the process-global new_delete_resource
-// singleton it escapes core::pmr::otterbrix_resource entirely -- which under ASAN IS
-// resource_tracer_t, so nothing accounts for it. Production hands the manager chunks
-// off the executor's arena; the fixture has to model that.
-//
-// The batch is moved into the message, so it is unobservable after send. The assertion
-// is therefore made on the object make_insert_batch produces -- the same call, on the
-// same path, that send_insert makes -- and not on a value handed in by the test.
+// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
+// make_insert_batch above. The batch is moved into the message and is unobservable after
+// send, so the assertion is made on the object make_insert_batch produces: the same call, on
+// the same path, that send_insert makes -- not a value handed in by the test.
 // ===========================================================================
 TEST_CASE("wal::refusal::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";

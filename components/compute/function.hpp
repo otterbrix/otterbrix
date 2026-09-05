@@ -94,7 +94,7 @@ namespace components::compute {
 
         // `ctx` is not optional and has no default: it names the memory resource everything
         // below allocates from. See the note over exec_context_t in kernel_utils.hpp for what
-        // the default used to be and cost.
+        // a default would cost.
         virtual core::result_wrapper_t<datum_t>
         execute(const vector::data_chunk_t& args, const function_options* options, exec_context_t& ctx) const;
 

@@ -14,13 +14,12 @@
 namespace services::wal {
 
 #ifdef DEV_MODE
-    // T3 fault-injection seam for WAL SEGMENT FILES.
+    // Fault-injection seam for WAL SEGMENT FILES.
     //
-    // The existing seam (single_file_block_manager_t::dev_set_file_interposer) wraps the
-    // handle of an .otbx database file and covers nothing else; the WAL opens its segments
-    // itself through core::filesystem::open_file, so no test could tell the journal "this
-    // page write fails" or "this segment will not open" — which is exactly the pair of
-    // inputs the four defects in this file family are about. Plain virtual interface, NOT
+    // The .otbx seam (single_file_block_manager_t::dev_set_file_interposer) wraps the handle
+    // of a database file and covers nothing else; the WAL opens its segments itself through
+    // core::filesystem::open_file, so without this no test can tell the journal "this page
+    // write fails" or "this segment will not open". Plain virtual interface, NOT
     // std::function (rule 14); process-wide, DEV_MODE-only, read once per open by
     // wal_page_writer_t and wal_page_reader_t.
     //
@@ -95,9 +94,6 @@ namespace services::wal {
         /// Compute CRC32 over the full page (PAGE_SIZE bytes starting at page_data).
         /// The checksum field within the header is zeroed during computation.
         void compute_checksum(char* page_data) {
-            // The CRC covers the whole page with the checksum field zeroed, so zero it, copy
-            // the header into the page, compute, and write the final value into both the
-            // struct and the page buffer.
             checksum = 0;
             std::memcpy(page_data, this, PAGE_HEADER_SIZE);
             checksum = compute_page_crc(page_data);

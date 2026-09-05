@@ -19,7 +19,7 @@
 #include <thread>
 #include <unistd.h>
 
-// ЗАПИСЬ #364: the write path routes an incoming column onto an existing storage column
+// The write path routes an incoming column onto an existing storage column
 // BY NAME (plus the bare logical_type ENUM on a computed table), so DECIMAL(12,4) data
 // landed inside a column whose storage is DECIMAL(10,2). The first tripwire was the
 // statistics merge (logical_value_t comparison across two decimal parameterizations —
@@ -134,7 +134,7 @@ TEST_CASE("services::disk::document_decimal::second_scale_refuses_instead_of_mer
         REQUIRE(appended.value().second == 1);
     }
 
-    // Second document: x = 2.7182 as DECIMAL(12,4). RED before the fix: the by-name
+    // Second document: x = 2.7182 as DECIMAL(12,4). Without the exact-type check the by-name
     // (and enum-only) routing moved this vector into the (10,2) column and the
     // statistics merge died on the cross-parameterization comparison (SIGABRT in this
     // debug build; silent ×100 misread under NDEBUG). The honest answer is a refusal.

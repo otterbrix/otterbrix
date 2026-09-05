@@ -1,34 +1,32 @@
 // ============================================================================
 // WHAT A HASHED INDEX LOOKUP IS ALLOWED TO ANSWER.
 //
-// A hashed index is backed by bitcask, and bitcask stores one SNAPSHOT RECORD per
-// key holding the whole row-id list. Its in-memory keydir keeps a single entry per
-// key pointing at that record, and the entry's payload field carries only
-// `rows.back()` (bitcask_index_disk.cpp, append_snapshot). So there are two ways to
-// answer "which rows carry this key", and they do not agree:
+// A hashed index is backed by bitcask, which stores one SNAPSHOT RECORD per key holding
+// the whole row-id list. Its in-memory keydir keeps a single entry per key pointing at
+// that record, and the entry's payload field carries only `rows.back()`
+// (bitcask_index_disk.cpp, append_snapshot). So there are two ways to answer "which rows
+// carry this key", and they do not agree:
 //
-//   * through the KEYDIR (disk_hash_table_t::get_all) -- one value_ref per key,
-//     whose `.value` is the LAST row id written. Every earlier duplicate is lost.
-//     Nothing above the bitcask store can even ask it that way any more: the handle
-//     the index facade used to hold went with C2c.
-//   * through the RECORD (bitcask_index_disk_t::find) -- the payload is read back
-//     and unrolled, so all duplicates come out.
+//   * through the KEYDIR (disk_hash_table_t::get_all) -- one value_ref per key, whose
+//     `.value` is the LAST row id written; every earlier duplicate is lost. Nothing above
+//     the bitcask store can even ask it that way: no handle to the keydir is published
+//     outside the agent that owns it.
+//   * through the RECORD (bitcask_index_disk_t::find) -- the payload is read back and
+//     unrolled, so all duplicates come out.
 //
-// Only the second is the truth. A SELECT that loses duplicates is not a slow
-// answer, it is a WRONG one, and no row-count assertion anywhere else in the suite
-// notices, because every OTHER path (full scan, btree index) reads its rows from
-// somewhere else entirely.
+// Only the second is the truth, and a SELECT that loses duplicates is a WRONG answer that
+// no row-count assertion elsewhere notices, because every OTHER path (full scan, btree
+// index) reads its rows from somewhere else entirely.
 //
-// The second case below is the other half, and it is not about duplicates at all:
-// uncommitted index entries never reach the disk (owner decision 16, per-txn
-// buckets), so a lookup that reads ONLY the disk answers "no such row" to the very
-// transaction that just inserted it. The rows-from-disk half and the
-// own-uncommitted half must BOTH be in the answer, and the second half must be
-// scoped to the ASKING transaction -- another transaction's uncommitted insert must
-// stay invisible.
+// The second case is the other half and is not about duplicates: uncommitted index entries
+// never reach the disk (owner decision 16, per-txn buckets), so a lookup that reads ONLY
+// the disk answers "no such row" to the very transaction that just inserted it. The
+// rows-from-disk half and the own-uncommitted half must BOTH be in the answer, and the
+// second must be scoped to the ASKING transaction — another transaction's uncommitted
+// insert must stay invisible.
 //
-// Both cases go through the SQL front door on purpose: they pin the behaviour a
-// user can observe, not the shape of whatever component currently produces it.
+// Both cases go through the SQL front door on purpose: they pin the behaviour a user can
+// observe, not the shape of whatever component currently produces it.
 // ============================================================================
 
 #include "test_config.hpp"

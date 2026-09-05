@@ -8,28 +8,17 @@
 
 namespace components::table::storage {
 
-    // Block manager for TRANSIENT buffers — the ones the buffer manager hands out for
-    // temporary payloads that never belong to a file (standard_buffer_manager_t's
-    // `temp_block_manager_`). It owns geometry (block size / allocation size) and the
-    // block_handle_t construction those buffers need, and nothing else.
+    // Block manager for TRANSIENT buffers — the ones the buffer manager hands out for temporary
+    // payloads that never belong to a file (standard_buffer_manager_t's `temp_block_manager_`). It
+    // owns geometry and block_handle_t construction, nothing else. It is NOT a storage mode: the
+    // name survives an "in-memory table" mode that no longer exists.
     //
-    // It is NOT a storage mode. The class was named after the "in-memory table" mode it used
-    // to back; that mode is gone (B1a made disk the only table substrate, B4 removed the
-    // machinery), and the name went with it. What survives is the one honest use: buffers
-    // with no file behind them.
-    //
-    // Every file-facing virtual therefore has no answer to give. Rule 2 forbids exceptions and
-    // rule 6 forbids silent degradation, and `core::error_t` does not fit either: twelve of the
-    // sixteen overridden below return `std::unique_ptr` / `uint64_t` / `bool` / `void`, so
-    // there is no channel to report on. Reaching any of them is a CALLER BUG — a transient
-    // block manager was handed to something that wanted a file — so each says which one was
-    // called and aborts.
-    //
-    // The four that COULD report do not, and that is deliberate: `read()` used to return an
-    // io_error that block_handle_t::load never asked for (it only calls read() for a real disk
-    // id, block_id < MAXIMUM_BLOCK), so the value went nowhere and the caller saw an empty
-    // buffer instead of a failure. An unreachable branch that reports into a channel nobody
-    // reads is indistinguishable from one that works.
+    // Every file-facing virtual therefore has no answer to give, and no channel to give it through:
+    // twelve of the sixteen overridden below return `std::unique_ptr` / `uint64_t` / `bool` / `void`.
+    // Reaching any of them is a CALLER BUG — a transient block manager handed to something that
+    // wanted a file — so each names itself and aborts. The four that COULD report deliberately do
+    // not: block_handle_t::load only calls read() for a real disk id (block_id < MAXIMUM_BLOCK), so
+    // the value would go nowhere and the caller would see an empty buffer instead of a failure.
     class transient_block_manager_t : public block_manager_t {
     public:
         using block_manager_t::block_manager_t;

@@ -21,12 +21,11 @@ namespace components::operators {
         , fk_(std::move(fk)) {}
 
     actor_zeta::unique_future<void> operator_fk_cascade_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Resolve the source here directly in await_async_and_resume. fk_cascade is the
-        // plan ROOT, so output_ becomes the DELETE result cursor — set it to the deleted
-        // (matched) rows (the cursor count equals the number of deleted parent rows
-        // regardless of cascade outcome). Multiple cascade ops STACK above one DELETE, so
-        // walk DOWN the left_ spine to the DELETE's constraint_input() snapshot of its
-        // matched OLD rows (single canonical source, R6). Empty => nothing to cascade.
+        // Resolve the source here directly in await_async_and_resume. fk_cascade is the plan ROOT, so output_
+        // becomes the DELETE result cursor — set it to the deleted (matched) rows (the count equals the number of
+        // deleted parent rows regardless of cascade outcome). Multiple cascade ops STACK above one DELETE, so walk
+        // DOWN the left_ spine to the DELETE's constraint_input() snapshot of its matched OLD rows (single
+        // canonical source, R6). Empty => nothing to cascade.
         const auto& source = constraint_detail::resolve_constraint_source(left_);
         output_ = source;
         if (!source || source->size() == 0) {
@@ -39,17 +38,14 @@ namespace components::operators {
         const auto& par_indices = fk_.parent_col_indices;
         const std::size_t absent = std::numeric_limits<std::size_t>::max();
 
-        // THE TWO COLUMN LISTS MUST BE THE SAME LENGTH, and this is the only place that
-        // says so. The keys-chunk below is built from parent_col_indices (one column per
-        // referenced column) while the key column NAMES sent alongside it are
-        // child_col_names (one per referencing column); the disk side resolves the names
-        // and matches the two counts. Nothing on the DDL path rejects
-        // `FOREIGN KEY (a, b) REFERENCES parent (x)` — the transformer copies both lists
-        // verbatim and each is resolved to attoids on its own — so a lopsided constraint
-        // does reach here. The disk side now refuses it, but it refuses a request it
-        // cannot read; the defect is the CONSTRAINT, and naming it here is what makes the
-        // error legible. Refusing is not optional: a cascade that cannot be evaluated and
-        // reports "no children" deletes the parent and orphans the child rows.
+        // THE TWO COLUMN LISTS MUST BE THE SAME LENGTH, and this is the only place that says so. The keys-chunk
+        // below is built from parent_col_indices (one column per referenced column) while the key column NAMES
+        // sent alongside it are child_col_names (one per referencing column); the disk side resolves the names and
+        // matches the two counts. Nothing on the DDL path rejects `FOREIGN KEY (a, b) REFERENCES parent (x)` — the
+        // transformer copies both lists verbatim and resolves each on its own — so a lopsided constraint does
+        // reach here. The disk side refuses it too, but it refuses a request it cannot read; the defect is the
+        // CONSTRAINT, and naming it here is what makes the error legible. Refusing is not optional: a cascade that
+        // cannot be evaluated and reports "no children" deletes the parent and orphans the child rows.
         if (par_indices.size() != fk_.child_col_names.size()) {
             std::pmr::string what{"FK constraint: foreign key column count mismatch — ", resource_};
             what.append(std::to_string(fk_.child_col_names.size()).c_str());
@@ -61,19 +57,16 @@ namespace components::operators {
             co_return;
         }
 
-        // A CASCADE THAT CANNOT BE EVALUATED IS NOT A CASCADE WITH NO CHILDREN. Both
-        // legs below used to `mark_executed(); co_return;` — success — which lets the
-        // DELETE underneath this operator stand: the parent row goes and every child
-        // row that referenced it stays behind, pointing at nothing. Under RESTRICT it
-        // is worse still, because the whole purpose of the operator is to STOP that
-        // delete and it reports that nothing referenced the parent.
+        // A CASCADE THAT CANNOT BE EVALUATED IS NOT A CASCADE WITH NO CHILDREN. Reporting success from either leg
+        // below lets the DELETE underneath this operator stand: the parent row goes and every child row that
+        // referenced it stays behind, pointing at nothing. Under RESTRICT it is worse still — the whole purpose of
+        // the operator is to STOP that delete.
         //
-        // `absent` (std::numeric_limits<std::size_t>::max(), fk_info_t's own marker)
-        // is written by enrich_logical_plan when a name in parent_col_names matches no
-        // column of the parent's resolved schema; an empty list means the constraint
-        // named no referenced column at all. Neither is a fact about the DATA — they
-        // are both "the key this cascade keys on was never resolved", and the reply to
-        // that is words, not a silent success.
+        // `absent` (std::numeric_limits<std::size_t>::max(), fk_info_t's own marker) is written by
+        // enrich_logical_plan when a name in parent_col_names matches no column of the parent's resolved schema;
+        // an empty list means the constraint named no referenced column at all. Neither is a fact about the DATA —
+        // both are "the key this cascade keys on was never resolved", and the reply to that is words, not a silent
+        // success.
         for (std::size_t i = 0; i < par_indices.size(); ++i) {
             if (par_indices[i] != absent) {
                 continue;
@@ -99,17 +92,14 @@ namespace components::operators {
             co_return;
         }
 
-        // EVERY SET-DEFAULT COLUMN MUST CARRY ITS OWN DEFAULT SPEC. The SET DEFAULT leg
-        // ('d') reads child_col_default_specs[ci] for ci over child_col_schema_indices,
-        // guarded only by `ci < ...size()`. A specs list SHORTER than the position list
-        // therefore did not fail: the tail columns fell silently into the SET NULL arm,
-        // substituting one referential action for another — the same quiet substitution
-        // the `absent` and narrow-parent guards above already refuse. Hoisted here with
-        // the other structural guards (it depends on no fetched data), so a poisoned
-        // descriptor is refused BEFORE the first scan/fetch send. The one producer
-        // (enrich) fills both vectors in one loop, so the skew is unreachable through SQL
-        // today — this is the floor under an fk_info_t that arrived by another road. Only
-        // 'd' needs specs; SET NULL ('n') and the other actions are exempt.
+        // EVERY SET-DEFAULT COLUMN MUST CARRY ITS OWN DEFAULT SPEC. The SET DEFAULT leg ('d') reads
+        // child_col_default_specs[ci] for ci over child_col_schema_indices, guarded only by `ci < ...size()`, so a
+        // specs list SHORTER than the position list does not fail there: the tail columns fall silently into the
+        // SET NULL arm, substituting one referential action for another — the same quiet substitution the `absent`
+        // and narrow-parent guards above refuse. Checked here with the other structural guards (it depends on no
+        // fetched data), so a poisoned descriptor is refused BEFORE the first scan/fetch send. The one producer
+        // (enrich) fills both vectors in one loop, so the skew is unreachable through SQL today — this is the
+        // floor under an fk_info_t that arrived by another road. Only 'd' needs specs.
         if (fk_.del_action == 'd' &&
             fk_.child_col_default_specs.size() < fk_.child_col_schema_indices.size()) {
             std::pmr::string what{"FK constraint: ON DELETE SET DEFAULT has ", resource_};
@@ -130,39 +120,33 @@ namespace components::operators {
             key_cols.emplace_back(n);
         }
 
-        // Stage A: per input chunk (each <= DEFAULT_VECTOR_CAPACITY rows), build an OWNED keys-chunk
-        // and scan the child table; accumulate per_row_child_ids across all chunks.
-        // per_row_child_ids[row] = referencing child row_ids for that parent row (empty -> nothing
-        // references it). Gathering ALL streamed batches into one combined keys-chunk would overflow
-        // the chunk capacity (the source can stream many batches), so the scan is windowed per chunk;
-        // the cascade actions below aggregate the per-row results across ALL parent rows, so the
-        // per-chunk scan is value-equivalent to the old single combined scan. The keys-chunk is an
-        // OWNED copy (it crosses the mailbox; actors must not share buffers). The per-chunk scans are
-        // sequential co_awaits in this nested operator coroutine (driven by the executor) — no lost-wakeup.
+        // Stage A: per input chunk (each <= DEFAULT_VECTOR_CAPACITY rows), build an OWNED keys-chunk and scan the
+        // child table; accumulate per_row_child_ids across all chunks (per_row_child_ids[row] = referencing child
+        // row_ids for that parent row; empty -> nothing references it). One combined keys-chunk over ALL streamed
+        // batches would overflow the chunk capacity, so the scan is windowed per chunk and the cascade actions
+        // below aggregate across ALL parent rows — value-equivalent to the old single combined scan. The
+        // keys-chunk is an OWNED copy (it crosses the mailbox; actors must not share buffers), and the per-chunk
+        // scans are sequential co_awaits in this nested operator coroutine, so no lost-wakeup.
         //
-        // WHAT THE OUTER INDEX IS AND IS NOT. scan_by_keys states its own invariant: on SUCCESS
-        // result.size() == keys.size(), one (possibly empty) bucket per key in input order — a
-        // shape it guarantees rather than one this operator infers, which is why the error legs
-        // below return instead of reading a short answer as "matched nothing". But NO branch below
-        // indexes per_row_child_ids: RESTRICT / NO ACTION only ask whether a bucket is non-empty,
-        // and CASCADE / SET NULL / SET DEFAULT flatten every bucket into one id set. So the parent
-        // row a bucket came from is never needed, and nothing here pairs a reply with a request by
-        // position. The ids themselves are the addressing, all the way down.
+        // WHAT THE OUTER INDEX IS AND IS NOT. scan_by_keys guarantees, on SUCCESS, result.size() == keys.size():
+        // one (possibly empty) bucket per key in input order — a shape it states rather than one this operator
+        // infers, which is why the error legs below return instead of reading a short answer as "matched nothing".
+        // But NO branch below indexes per_row_child_ids: RESTRICT / NO ACTION only ask whether a bucket is
+        // non-empty, and CASCADE / SET NULL / SET DEFAULT flatten every bucket into one id set, so nothing here
+        // pairs a reply with a request by position. The ids themselves are the addressing, all the way down.
         //
-        // The ids are also already the reader's OWN view: the semi-join streams the child table
-        // under exec_ctx's transaction, so a child row this transaction has itself deleted earlier
-        // in the statement is filtered out of the buckets and never reaches any action below.
+        // The ids are also already the reader's OWN view: the semi-join streams the child table under exec_ctx's
+        // transaction, so a child row this transaction has itself deleted earlier in the statement is filtered out
+        // of the buckets and never reaches any action below.
 
-        // AND THE INDEX HAS TO BE A POSITION IN THE ROW IT ADDRESSES. `absent` and an
-        // empty list are checked above; this is the third way par_indices can fail to
-        // name a column — a number that is not a column of the matched parent rows.
-        // chunk.data is a std::pmr::vector and operator[] does not check its bound, so
-        // the reply to that was not a refusal but a read PAST THE END of the chunk's
-        // column array: a type, and then a whole vector_t, taken from whatever follows
-        // it in memory. The CHILD side of this same operator refuses the same shape
-        // ("the child row batch has N column(s), too few to hold referencing column at
-        // position P"); a guard standing on one side of a pair hides what happens on
-        // the other, so the parent side answers the same way.
+        // AND THE INDEX HAS TO BE A POSITION IN THE ROW IT ADDRESSES. `absent` and an empty list are checked
+        // above; this is the third way par_indices can fail to name a column — a number that is not a column of
+        // the matched parent rows. chunk.data is a std::pmr::vector and operator[] does not check its bound, so an
+        // unguarded read is not a refusal but a read PAST THE END of the chunk's column array: a type, and then a
+        // whole vector_t, taken from whatever follows it in memory. The CHILD side of this same operator refuses
+        // the same shape ("the child row batch has N column(s), too few to hold referencing column at position
+        // P"); a guard standing on one side of a pair hides what happens on the other, so the parent side answers
+        // the same way.
         auto refuse_narrow_parent = [&](std::size_t width, std::size_t pidx, std::size_t slot) {
             std::pmr::string what{"FK constraint: the matched parent rows have ", resource_};
             what.append(std::to_string(width).c_str());
@@ -248,23 +232,18 @@ namespace components::operators {
                 break;
 
             case 'c': { // CASCADE — delete child rows via storage_delete_rows
-                // Aggregate every referencing child row_id across all parent rows
-                // into one delete. The child delete is stamped with the PARENT txn
-                // id (exec_ctx) so it is part of the parent's transaction: the
-                // executor records the child table on the txn's delete channel, so
-                // COMMIT publishes the cascade delete and ROLLBACK reverts it
-                // (revert_all_deletes(parent_txn_id)) — all-or-nothing atomicity.
+                // Aggregate every referencing child row_id across all parent rows into one delete. The child delete
+                // is stamped with the PARENT txn id (exec_ctx) so it is part of the parent's transaction: the
+                // executor records the child table on the txn's delete channel, so COMMIT publishes the cascade
+                // delete and ROLLBACK reverts it (revert_all_deletes(parent_txn_id)) — all-or-nothing atomicity.
                 //
-                // NO REPLY IS PAIRED WITH A REQUEST HERE. This is the whole reason the
-                // C4b rework of SET NULL / SET DEFAULT below has no counterpart in this
-                // branch: CASCADE never reads a row back. The ids come out of the scan and
-                // go straight into storage_delete_rows as the rows to mark deleted, which
-                // addresses each row BY ITS ID. Flattening therefore only has to preserve
-                // the SET — order, bucket boundaries and any short-vs-long answer are all
-                // irrelevant to a by-id delete, so there is no positional assumption to
-                // break and nothing for chunk.row_ids to correct. Should this branch ever
-                // grow a read-modify-write step, it acquires the pairing problem the SET
-                // NULL branch has, and must be addressed by the ids the reply REPORTS.
+                // NO REPLY IS PAIRED WITH A REQUEST HERE, which is why the id-addressed pairing the SET NULL / SET
+                // DEFAULT branch below needs has no counterpart here: CASCADE never reads a row back. The ids come
+                // out of the scan and go straight into storage_delete_rows as the rows to mark deleted, which
+                // addresses each row BY ITS ID — so flattening only has to preserve the SET, and order, bucket
+                // boundaries and any short-vs-long answer are all irrelevant to a by-id delete. Should this branch
+                // ever grow a read-modify-write step, it acquires the pairing problem the SET NULL branch has, and
+                // must be addressed by the ids the reply REPORTS.
                 std::pmr::vector<int64_t> all_child_ids(resource_);
                 for (const auto& child_ids : per_row_child_ids) {
                     for (auto id : child_ids) {
@@ -286,11 +265,9 @@ namespace components::operators {
                                                    static_cast<uint64_t>(all_child_ids.size()));
                 // READ THE REPLY. The child delete is the whole cascade: if it is refused,
                 // the parent DELETE below it must not stand, or the rows this branch was
-                // supposed to remove outlive the row they reference. The reply used to be
-                // dropped on the floor and storage_delete_rows had no error channel at all,
-                // so a refusal was indistinguishable from a delete of already-stamped rows.
-                // The COUNT is deliberately not checked: it is legitimately lower than the
-                // request when a row already carries a delete stamp.
+                // supposed to remove outlive the row they reference. The COUNT is
+                // deliberately not checked: it is legitimately lower than the request when
+                // a row already carries a delete stamp.
                 auto deleted_r = co_await std::move(dfut);
                 if (deleted_r.has_error()) {
                     set_error(deleted_r.error());
@@ -308,16 +285,13 @@ namespace components::operators {
             }
             case 'n':   // SET NULL
             case 'd': { // SET DEFAULT
-                // Mirror the CASCADE branch's flattening: aggregate EVERY referencing
-                // child row_id across all parent rows into ONE set, then do a single
-                // fetch + single update against the SAME child_table_oid (one owning
-                // agent). The SET NULL / SET DEFAULT transform is uniform across rows
-                // — it keys off per-COLUMN child_col_schema_indices / per-COLUMN
-                // child_col_default_specs, never off the parent row — so a single
-                // combined update chunk is value-correct. Each fetched row is paired
-                // back to its id through the chunk's OWN row_ids, which the producer
-                // stamps with the rows it carries: the reply is NOT positionally the
-                // request, because the fetch drops rows this transaction may not see.
+                // Mirror the CASCADE branch's flattening: aggregate EVERY referencing child row_id across all parent
+                // rows into ONE set, then do a single fetch + single update against the SAME child_table_oid (one
+                // owning agent). The SET NULL / SET DEFAULT transform is uniform across rows — it keys off
+                // per-COLUMN child_col_schema_indices / child_col_default_specs, never off the parent row — so a
+                // single combined update chunk is value-correct. Each fetched row is paired back to its id through
+                // the chunk's OWN row_ids: the reply is NOT positionally the request, because the fetch drops rows
+                // this transaction may not see.
                 std::pmr::vector<int64_t> all_child_ids(resource_);
                 for (const auto& child_ids : per_row_child_ids) {
                     for (auto id : child_ids) {
@@ -365,13 +339,11 @@ namespace components::operators {
                 // Apply the uniform per-column transform to every fetched row in every chunk.
                 for (std::size_t ci = 0; ci < fk_.child_col_schema_indices.size(); ++ci) {
                     const auto schema_idx = fk_.child_col_schema_indices[ci];
-                    // THE COLUMN THIS ACTION IS ABOUT. Skipping it left the child row in
-                    // place with its foreign key still pointing at the parent row this
-                    // statement just deleted — which is precisely the dangling reference
-                    // SET NULL / SET DEFAULT exists to prevent — and said nothing. The
-                    // marker is written by operator_resolve_constraint_t when the column's
-                    // position could not be resolved (it now refuses there, so this is the
-                    // floor under a constraint that arrived by another road).
+                    // THE COLUMN THIS ACTION IS ABOUT. Skipping it leaves the child row in place with its foreign
+                    // key still pointing at the parent row this statement just deleted — precisely the dangling
+                    // reference SET NULL / SET DEFAULT exists to prevent — and says nothing. The marker is written
+                    // by operator_resolve_constraint_t when the column's position could not be resolved (which it
+                    // refuses there, so this is the floor under a constraint that arrived by another road).
                     if (schema_idx == absent) {
                         std::pmr::string what{"FK constraint: referencing column ", resource_};
                         if (ci < fk_.child_col_names.size()) {
@@ -410,12 +382,11 @@ namespace components::operators {
                         }
                     }
                     for (auto& chunk : fetched) {
-                        // The fetch was issued WITHOUT a projection, so every chunk is the
-                        // child table's full width and schema_idx is a position in it. A
-                        // chunk too narrow to hold the column is a reply of a shape this
-                        // operator did not ask for; writing the other chunks and leaving
-                        // this one's rows untouched would clear the reference on some child
-                        // rows and leave it dangling on the rest, in silence.
+                        // The fetch was issued WITHOUT a projection, so every chunk is the child table's full
+                        // width and schema_idx is a position in it. A chunk too narrow to hold the column is a
+                        // reply of a shape this operator did not ask for; writing the other chunks and leaving
+                        // this one's rows untouched would clear the reference on some child rows and leave it
+                        // dangling on the rest, in silence.
                         if (schema_idx >= chunk.column_count()) {
                             std::pmr::string what{"FK constraint: the child row batch has ", resource_};
                             what.append(std::to_string(chunk.column_count()).c_str());
@@ -436,15 +407,12 @@ namespace components::operators {
                     }
                 }
 
-                // Single update for the whole set — one chunk per fetched chunk, addressed by
-                // the ids the FETCH REPORTS rather than by re-slicing all_child_ids.
-                //
-                // The old code walked all_child_ids positionally on the assumption that the
-                // reply is the request. Since C4b it is not: the point fetch drops rows this
-                // transaction may not see (a child row the same statement already deleted is
-                // the reachable case), so one dropped row would shift every later id by one
-                // and the SET NULL / SET DEFAULT would be written to the WRONG child rows.
-                // chunk.row_ids is stamped by the producer with the rows the chunk carries.
+                // Single update for the whole set — one chunk per fetched chunk, addressed by the ids the FETCH
+                // REPORTS rather than by re-slicing all_child_ids. THE REPLY IS NOT THE REQUEST: the point fetch
+                // drops rows this transaction may not see (a child row the same statement already deleted is the
+                // reachable case), so walking all_child_ids positionally would let one dropped row shift every later
+                // id by one and write the SET NULL / SET DEFAULT to the WRONG child rows. chunk.row_ids is stamped
+                // by the producer with the rows the chunk actually carries.
                 std::pmr::vector<components::vector::vector_t> upd_ids_batch(resource_);
                 std::pmr::vector<components::vector::data_chunk_t> upd_data_batch(resource_);
                 for (auto& chunk : fetched) {
@@ -457,12 +425,10 @@ namespace components::operators {
                     upd_ids_batch.emplace_back(std::move(ids));
                     upd_data_batch.emplace_back(std::move(chunk));
                 }
-                // Stamp the child update with the PARENT txn (exec_ctx) so the
-                // SET NULL / SET DEFAULT version write rides the parent's
-                // transaction: the executor tracks the child table on BOTH the
-                // append channel (the new versions) and the delete channel (the
-                // superseded old versions, marked deleted at parent_txn_id), so
-                // COMMIT publishes the child update and ROLLBACK reverts it.
+                // Stamp the child update with the PARENT txn (exec_ctx) so the SET NULL / SET DEFAULT version
+                // write rides the parent's transaction: the executor tracks the child table on BOTH the append
+                // channel (the new versions) and the delete channel (the superseded old versions, marked deleted
+                // at parent_txn_id), so COMMIT publishes the child update and ROLLBACK reverts it.
                 auto [_u, ufut] = actor_zeta::send(ctx->disk_address,
                                                    &services::disk::manager_disk_t::storage_update,
                                                    exec_ctx,
@@ -494,18 +460,14 @@ namespace components::operators {
                 break;
             }
             default: {
-                // AN ACTION THIS BUILD HAS NO MEANING FOR IS NOT "NO CHILDREN". Falling
-                // out of the switch performed no cascade, reported SUCCESS, and let the
-                // DELETE underneath this operator stand — so the parent row went and every
-                // child row that referenced it stayed behind pointing at nothing, which is
-                // the exact outcome the operator exists to prevent, produced by the
-                // operator itself. It is the same silence the `absent` legs above were
-                // just cleaned of, in the same statement.
+                // AN ACTION THIS BUILD HAS NO MEANING FOR IS NOT "NO CHILDREN". Falling out of the switch would
+                // perform no cascade, report SUCCESS, and let the DELETE underneath this operator stand — the parent
+                // row goes and every child row that referenced it stays behind pointing at nothing, the exact outcome
+                // the operator exists to prevent, produced by the operator itself.
                 //
-                // confdeltype is written from the five SQL actions only (both transformer
-                // routes normalize it), so a char outside {'a','r','c','n','d'} is a
-                // catalog this engine did not produce: another build, or a writer that
-                // lost the field. Refusing names it instead of enforcing nothing.
+                // confdeltype is written from the five SQL actions only (both transformer routes normalize it), so a
+                // char outside {'a','r','c','n','d'} is a catalog this engine did not produce. Refusing names it
+                // instead of enforcing nothing.
                 std::pmr::string what{"FK constraint: ON DELETE action '", resource_};
                 what.append(std::pmr::string(1, fk_.del_action, resource_));
                 what.append("' in pg_constraint.confdeltype is not one of the actions this build can apply "

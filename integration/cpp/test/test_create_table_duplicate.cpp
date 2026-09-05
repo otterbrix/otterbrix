@@ -1,35 +1,32 @@
 // ============================================================================
 // A SECOND `CREATE TABLE t` MUST NOT REPORT SUCCESS.
 //
-// ЗАПИСЬ [377]. The refusal itself was never missing: services/collection/
-// executor.cpp, the create_collection_t arm, already calls
-// check_collection_exists and answers either the IF NOT EXISTS no-op or
+// The refusal itself was not the missing part: the create_collection_t arm of
+// services/collection/executor.cpp already calls check_collection_exists and
+// answers either the IF NOT EXISTS no-op or
 // core::error_code_t::table_already_exists. What was missing is its INPUT.
 //
-// check_collection_exists is a pure read of the plan's resolved catalog
-// entries (services/dispatcher/validate_logical_plan.cpp) — it does not query
-// the catalog itself. The entries come from register_plan_targets, which walks
-// the tree asking target_names_of for each node's {dbname, relname} and skips
-// any node whose relname is empty (services/dispatcher/enrich_logical_plan.cpp,
-// `if (relname.empty()) continue`). The create_collection_t arm of
-// target_names_of returned an EMPTY relname, so CREATE TABLE registered its
-// namespace and nothing else. The existence check therefore ran against a plan
-// that had never asked about the name, always answered "does not exist", and
+// check_collection_exists is a pure read of the plan's resolved catalog entries
+// (services/dispatcher/validate_logical_plan.cpp) — it does not query the catalog.
+// The entries come from register_plan_targets, which walks the tree asking
+// target_names_of for each node's {dbname, relname} and skips any node whose
+// relname is empty (enrich_logical_plan.cpp, `if (relname.empty()) continue`). The
+// create_collection_t arm of target_names_of returned an EMPTY relname, so CREATE
+// TABLE registered its namespace and nothing else; the existence check ran against a
+// plan that had never asked about the name, always answered "does not exist", and
 // the duplicate was written.
 //
-// The consequence is not a cosmetic wrong verdict. pg_class has no unique
-// index on (relname, relnamespace) — system_table_schemas.cpp declares the
-// columns not-null, not unique — so the second CREATE appends a SECOND row for
-// the same name, under a NEW oid, with NEW storage created for it. From then
-// on operator_resolve_table binds the name to whichever of the two rows its
-// scan reaches first, which is not necessarily the one the storage was made
-// for.
+// The consequence is not a cosmetic wrong verdict. pg_class has no unique index on
+// (relname, relnamespace) — system_table_schemas.cpp declares the columns not-null,
+// not unique — so the second CREATE appends a SECOND row for the same name, under a
+// NEW oid, with NEW storage. From then on operator_resolve_table binds the name to
+// whichever of the two rows its scan reaches first, which is not necessarily the one
+// the storage was made for.
 //
-// The asymmetry pinned by `inline_constraint_form_was_already_refused` below is
-// what localises the defect: an inline constraint hangs a create_constraint_t
-// child off the create node, and that node's target_names_of DOES name the
-// table — so the identical statement was refused or accepted depending on
-// whether a column happened to carry a PRIMARY KEY.
+// `inline_constraint_form_was_already_refused` below localises the defect: an inline
+// constraint hangs a create_constraint_t child off the create node, and THAT node's
+// target_names_of does name the table — so the identical statement was refused or
+// accepted depending on whether a column happened to carry a PRIMARY KEY.
 // ============================================================================
 
 #include "test_config.hpp"

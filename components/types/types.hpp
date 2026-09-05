@@ -484,10 +484,10 @@ namespace components::types {
 
         static bool type_is_constant_size(logical_type type);
 
-        // Rule 6: an out-of-window (width, scale) is an ERROR, not an assert. The assert
-        // this replaced vanished under NDEBUG — exactly the build users ship — and let a
-        // DECIMAL(0,0) / DECIMAL(39,0) / DECIMAL(5,7) reach the checkpoint, which writes
-        // it happily and then refuses to read it back forever. See is_valid_decimal_spec.
+        // Rule 6: an out-of-window (width, scale) is an ERROR, not an assert. An assert
+        // vanishes under NDEBUG — exactly the build users ship — and lets a DECIMAL(0,0) /
+        // DECIMAL(39,0) / DECIMAL(5,7) reach the checkpoint, which writes it happily and
+        // then refuses to read it back forever. See is_valid_decimal_spec.
         [[nodiscard]] static core::result_wrapper_t<complex_logical_type>
         create_decimal(uint8_t width, uint8_t scale, std::string alias = "");
         static complex_logical_type

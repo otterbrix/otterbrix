@@ -34,35 +34,33 @@ namespace services::wal {
 
     // THE ONE COMMITTED-RECORD FILTER of the journal, shared by BOTH replay readers —
     // wal_worker_t::load (the CREATE INDEX backfill catchup) and
-    // wal_reader_t::read_database_segments (the bootstrap replay). It lives here for the
-    // same reason parse_database_dir_name lives in base.hpp: two copies of one rule drifted
-    // apart once already, and the two walks must never disagree about what "committed"
-    // means.
+    // wal_reader_t::read_database_segments (the bootstrap replay). It lives here for the same
+    // reason parse_database_dir_name lives in base.hpp: two copies of one rule drifted apart once
+    // already, and the two walks must never disagree about what "committed" means.
     //
-    // THE RULE IS ORDERED BY wal_id, AND THE ORDERING IS THE WHOLE OF IT. A physical
-    // record at wal id r belongs to a committed transaction only when a COMMIT marker for
-    // the SAME txn id sits at a STRICTLY GREATER wal id. Membership in an unordered set of
-    // committed txn ids — what both filters used to test — is not enough, because TXN IDS
-    // ARE REUSED ACROSS RESTARTS: transaction_manager_t::next_transaction_id_ is a plain
-    // {TRANSACTION_ID_START} member that is never seeded from the surviving journal, unlike
-    // the commit clock (restore_commit_clock). Wal ids are the opposite — recover_from_disk
-    // re-derives the allocator from the segment files, so they keep growing across restarts.
-    // So the unordered test let a COMMIT marker written by the PREVIOUS process vouch for
-    // physical records the NEXT one wrote under the recycled id and never committed:
+    // THE RULE IS ORDERED BY wal_id. A physical record at wal id r belongs to a committed
+    // transaction only when a COMMIT marker for the SAME txn id sits at a STRICTLY GREATER wal id.
+    // Membership in an unordered set of committed txn ids is not enough, because TXN IDS ARE REUSED
+    // ACROSS RESTARTS: transaction_manager_t::next_transaction_id_ is a plain
+    // {TRANSACTION_ID_START} member that is never seeded from the surviving journal, unlike the
+    // commit clock (restore_commit_clock), while wal ids keep growing because recover_from_disk
+    // re-derives the allocator from the segment files. So an unordered test lets a COMMIT marker
+    // written by the PREVIOUS process vouch for physical records the NEXT one wrote under the
+    // recycled id and never committed:
     //
     //   session 1:  wal 1 PHYSICAL_INSERT(txn T)   wal 2 COMMIT(txn T)
     //   -- restart, no checkpoint --
     //   session 2:  wal 3 PHYSICAL_INSERT(txn T)   <crash before COMMIT>
     //   replay:     committed = {T}  ->  wal 3 applied AS COMMITTED
     //
-    // The commit marker of a transaction is always written after its physical records
-    // (WAL-first: the append handler awaits the PHYSICAL_* future, and only the later
-    // commit pipeline sends commit_txn), so "strictly greater" never rejects a genuine one.
+    // The commit marker of a transaction is always written after its physical records (WAL-first:
+    // the append handler awaits the PHYSICAL_* future, and only the later commit pipeline sends
+    // commit_txn), so "strictly greater" never rejects a genuine one.
     //
-    // Records with transaction_id == 0 are system records and are always kept; COMMIT
-    // markers are kept as they always were (a valid marker vouched for itself before).
-    // Invalid records are dropped. committed_out, when non-null, receives the union of the
-    // committed txn ids — see wal_reader_t::read_committed_records for its consumer.
+    // Records with transaction_id == 0 are system records and are always kept; COMMIT markers are
+    // kept as they always were. Invalid records are dropped. committed_out, when non-null, receives
+    // the union of the committed txn ids — see wal_reader_t::read_committed_records for its
+    // consumer.
     [[nodiscard]] inline std::vector<record_t> filter_committed_records(std::vector<record_t>&& records,
                                                                         std::set<std::uint64_t>* committed_out) {
         // txn id -> the wal ids of its COMMIT markers, ascending.
@@ -135,9 +133,9 @@ namespace services::wal {
         // -----------------------------------------------------------------------
 
         // The wrapper is the difference between "no record past after_wal_id" and "a segment
-        // could not be read": read_all_records used to answer an empty vector for both, and
-        // the CREATE INDEX backfill that consumes this would then build an index missing
-        // every row the unreadable segment described.
+        // could not be read": a bare vector answers the same empty list for both, and the
+        // CREATE INDEX backfill that consumes this would then build an index missing every row
+        // the unreadable segment described.
         unique_future<core::result_wrapper_t<std::vector<record_t>>> load(session_id_t session, wal::id_t after_wal_id);
 
         // commit_id is the MVCC version timestamp allocated by
@@ -149,16 +147,16 @@ namespace services::wal {
                                                                     wal::id_t wal_id,
                                                                     uint64_t commit_id);
 
-        // Refuses rather than deleting when a segment cannot be READ: "unreadable" and
-        // "empty" used to be the same answer here (page_count() == 0), and the unreadable
-        // one was unlinked.
+        // Refuses rather than deleting when a segment cannot be READ: "unreadable" and "empty"
+        // collapse into one answer here (page_count() == 0), and unlinking on that answer
+        // destroys the unreadable one.
         unique_future<core::error_t> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
 
         unique_future<wal::id_t> current_wal_id(session_id_t session);
 
-        // Every write handler below reports whether the record REACHED the segment. They
-        // used to return the wal_id unconditionally while dropping wal_page_writer_t::append's
-        // answer, so the caller was handed the number of a record that is not in the journal.
+        // Every write handler below reports whether the record REACHED the segment. Returning
+        // the wal_id unconditionally while dropping wal_page_writer_t::append's answer hands
+        // the caller the number of a record that is not in the journal.
         unique_future<core::result_wrapper_t<wal::id_t>>
         write_physical_insert(session_id_t session,
                               components::catalog::oid_t table_oid,

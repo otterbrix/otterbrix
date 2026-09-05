@@ -13,20 +13,19 @@
 
 // WHICH BACKEND A WRITE TRAVELS THROUGH, witnessed on disk.
 //
-// The index agents' insert_many / remove_many split every committed statement two ways.
-// A backend that owns a durable transaction log journals the whole statement under its
-// txn_id (bitcask, the index_type::hashed backend); a backend that owns none takes the
-// bulk path -- insert_bulk_unchecked per row, then one force_flush (the ordered B+tree,
-// every other index_type). The split is what arms the recover gate: after a crash bitcask
-// replays only those journalled frames whose txn_id the WAL marked committed.
+// The index agents' insert_many / remove_many split every committed statement two ways. A
+// backend that owns a durable transaction log journals the whole statement under its txn_id
+// (bitcask, the index_type::hashed backend); a backend that owns none takes the bulk path --
+// insert_bulk_unchecked per row, then one force_flush (the ordered B+tree, every other
+// index_type). The split is what arms the recover gate: after a crash bitcask replays only
+// those journalled frames whose txn_id the WAL marked committed.
 //
-// "The rows are still there afterwards" does NOT witness that split. Both routes end with
-// the rows on disk, so a dispatch that quietly sent EVERYTHING down the bulk path -- the
-// exact shape a hook with a silent no-op default would produce -- would satisfy any
-// row-count or round-trip check while the txn-log semantics disappeared unnoticed.
+// "The rows are still there afterwards" does NOT witness that split. Both routes end with the
+// rows on disk, so a dispatch that quietly sent EVERYTHING down the bulk path -- the exact
+// shape a hook with a silent no-op default would produce -- would satisfy any row-count or
+// round-trip check while the txn-log semantics disappeared unnoticed.
 //
-// What separates the two routes is an artefact ONLY the txn route leaves in the index
-// directory:
+// What separates the two routes is an artefact ONLY the txn route leaves in the index directory:
 //   bitcask.txn.log      one frame per journalled statement, appended by apply_txn_inserts
 //                        / apply_txn_deletes and by nothing else;
 //   bitcask.txn.applied  the applied-offset sidecar, rewritten after each frame.
@@ -91,7 +90,7 @@ namespace {
 
     // A COMMITTED DELETE NO LONGER JOURNALS INSIDE THE STATEMENT, and this waits for it.
     //
-    // Since C5c the erase does not reach any store at commit time: the index would
+    // The erase does not reach any store at commit time: the index would
     // otherwise stop naming a row that an older reader's snapshot still owns, and a short
     // index answer is one nothing downstream can undo (see
     // services/index/manager_index.hpp, deferred_deletes_). commit_deletes queues the

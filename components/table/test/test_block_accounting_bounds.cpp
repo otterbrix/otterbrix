@@ -382,9 +382,9 @@ TEST_CASE("accounting_bounds: a header claiming block_alloc_size 0 is refused", 
 // ---------------------------------------------------------------------------------------
 // GATE 5 — A RESERVATION THAT DID NOT HAPPEN MUST SAY SO.
 //
-// reserve_memory returned void. On OOM it swallowed evict_blocks_or_error's refusal and
-// returned exactly as it does on success, so the caller went on to spend memory the pool
-// never granted -- the same defect class as the pre-L1 `void write()` one level down.
+// A void reserve_memory swallows evict_blocks_or_error's refusal on OOM and returns exactly
+// as it does on success, so the caller goes on to spend memory the pool never granted -- the
+// same defect class as a `void write()` one level down.
 // ---------------------------------------------------------------------------------------
 TEST_CASE("accounting_bounds: a reservation that could not be made is reported", "[bounds]") {
     core::pmr::otterbrix_resource resource;
@@ -414,8 +414,8 @@ TEST_CASE("accounting_bounds: a reservation that could not be made is reported",
 //
 // Gate 2 moved the READER of the durable free list to the file's extent: an id at or past
 // the header's own block_count is data_corruption and the open is refused. The WRITER of
-// that very list -- serialize_free_list's R-LEAK third term, the registry-live ids not named
-// by the root under construction -- kept the old domain filter (< MAXIMUM_BLOCK). Those ids
+// that very list -- serialize_free_list's third term, the registry-live ids not named by the
+// root under construction -- must not stop at the domain filter (< MAXIMUM_BLOCK). Those ids
 // are DISK-FED with no extent check on the way in: column_data.cpp and column_state.cpp hand
 // data_pointer_t::block_pointer.block_id / overflow_blocks straight to register_block. On a
 // NON-compacting checkpoint no mark_as_free ever sees such an id, so nothing latches, the
@@ -461,8 +461,8 @@ TEST_CASE("accounting_bounds: a checkpoint refuses to publish a free-list id its
 
     // The other half of the property, and the reason the refusal points the safe way: the
     // refused round landed NO header, so the durable root is still the last committed one and
-    // the file must open. Before the fix this open FAILED with data_corruption naming the
-    // bogus id -- a file bricked by its own writer, unrepairable from inside the engine.
+    // the file must open. An open that FAILS here with data_corruption naming the bogus id is a
+    // file bricked by its own writer, unrepairable from inside the engine.
     bounds_env_t env2;
     tstorage::single_file_block_manager_t bm2(env2.buffer_manager, env2.fs, path);
     auto reopened = bm2.load_existing_database();

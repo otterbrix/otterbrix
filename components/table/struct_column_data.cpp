@@ -16,10 +16,10 @@ namespace components::table {
         assert(type_.to_physical_type() == types::physical_type::STRUCT);
         auto& child_types = type_.child_types();
         assert(!child_types.empty());
-        // The "a table cannot be created from an unnamed struct" precondition used to throw HERE,
-        // where nothing can refuse: a constructor has no return value, the object graph is half
-        // built, and the throw unwound across the disk agent's mailbox into a coroutine with an
-        // empty unhandled_exception() — a hang, not a refusal (rules 2/9). It now lives in
+        // The "a table cannot be created from an unnamed struct" precondition is NOT checked
+        // here: a constructor has no return value, the object graph is half built, and a throw
+        // would unwind across the disk agent's mailbox into a coroutine with an empty
+        // unhandled_exception() — a hang, not a refusal (rules 2/9). It lives in
         // column_data_t::validate_column_type, asked BEFORE any node is built at the one write
         // gate that already owns an error channel (collection_t::initialize_append). Same rule,
         // same UNION exemption, one canonical statement of it.
@@ -380,7 +380,7 @@ namespace components::table {
         // see initialize_column above); it is kept so every node reports through one path.
         // What a reloaded struct column actually owns is its children: the validity bitmap and
         // one sub-column per field, each sitting on the blocks initialize_column registered.
-        // Before F6 this override did not exist and compact leaked all of them.
+        // Without this override compact leaks all of them.
         column_data_t::collect_disk_block_ids(out);
         validity.collect_disk_block_ids(out);
         for (const auto& sub_column : sub_columns) {

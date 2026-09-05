@@ -114,7 +114,7 @@ namespace services::dispatcher::validation {
         // sub-plan's schema is labelled with the derived table's alias, so a reference
         // written inside it against the inner relation's own name ('inner_t.k' against
         // 'sub'.k) matches nothing here, and raw node_data inputs carry no alias at all.
-        // Both are resolved by the by-name rules, which is what every key used to get.
+        // Both are resolved by the by-name rules.
         // A qualifier the schema does know is the opposite case: the relation is right
         // here and simply has no such column, and answering with a same-named column of
         // another relation is a wrong answer, not a fallback. Decided once, before the

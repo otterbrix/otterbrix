@@ -176,9 +176,9 @@ namespace components::operators {
         dep_graph.clear();
 
         if (plan.status == catalog::ddl_status::restrict_blocked) {
-            // Surface the blocked status to the executor. TODO: structured
-            // error cursor — for now the string carries enough info for the
-            // dispatcher's catch-all to map back to make_ddl_error_cursor.
+            // Surface the blocked status to the executor. There is no structured
+            // DDL-refusal cursor: the message string is the only channel, so it has to
+            // name the blocking oid itself.
             std::string msg = "DROP RESTRICT: object has dependents (blocking oid ";
             msg += std::to_string(plan.blocking_oid) + ")";
             set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
@@ -193,14 +193,12 @@ namespace components::operators {
             co_return;
         }
 
-        // ONE STEP PER OBJECT. topological_drop_order pushes a dependent once per edge
-        // that reaches it (its order.push_back sits outside the black-set re-visit
-        // check), so a diamond — an FK constraint reachable from BOTH its table and its
-        // referenced table — appears in plan.steps twice. The catalog deletes are
-        // idempotent, so duplicates only cost over-generated specs; but the own-row
-        // zero judgement below is NOT duplicate-proof (the second occurrence's own row
-        // legitimately deletes 0 rows), so the plan is deduplicated by (classid, objid)
-        // first, keeping the first — dependents-first — occurrence.
+        // ONE STEP PER OBJECT. topological_drop_order pushes a dependent once per edge that reaches it (its
+        // order.push_back sits outside the black-set re-visit check), so a diamond — an FK constraint reachable
+        // from BOTH its table and its referenced table — appears in plan.steps twice. The catalog deletes are
+        // idempotent, so duplicates only cost over-generated specs; but the own-row zero judgement below is NOT
+        // duplicate-proof (the second occurrence's own row legitimately deletes 0 rows), so the plan is
+        // deduplicated by (classid, objid), keeping the first — dependents-first — occurrence.
         std::pmr::vector<catalog::drop_step_t> steps(resource_);
         steps.reserve(plan.steps.size());
         {
@@ -222,12 +220,10 @@ namespace components::operators {
 
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
-        // pg_class relkind probe: each storage step's read is keyed by its own
-        // step.objid and only decides whether the oid is storage-backed, so no read
-        // feeds another iteration's read (probes are independent). `steps` is fixed
-        // before this loop, so the probe oids are all known up front — gather the
-        // pg_class-keyed step oids in step order and run ONE batched read_chunks_by_keys
-        // keyed on "oid", then map result[i] back to the i-th probed step.
+        // pg_class relkind probe: each storage step's read is keyed by its own step.objid and only decides
+        // whether the oid is storage-backed, so no read feeds another iteration's read. `steps` is fixed before
+        // this loop, so the probe oids are all known up front — gather the pg_class-keyed step oids in step order
+        // and run ONE batched read_chunks_by_keys keyed on "oid", then map result[i] back to the i-th probed step.
         std::pmr::vector<catalog::oid_t> probe_oids(resource_);
         for (const auto& step : steps) {
             if (step.classid != catalog::well_known_oid::pg_class_table)
@@ -273,19 +269,15 @@ namespace components::operators {
             }
         }
 
-        // execute the catalog-row deletes in the planned order.
-        // Over-deletion is safe: scans that find no matching rows for a
-        // given (table, col, oid) tuple are silent no-ops. This matches
-        // build_drop_sequence's behaviour in the old dispatcher path.
-        // deletes_for_classid is a pure local helper and `steps` is fixed
-        // before this loop, so no spec depends on an intervening read; collect
-        // every (table, col, oid) delete into one batched call.
+        // Execute the catalog-row deletes in the planned order. Over-deletion is safe: scans that find no matching
+        // rows for a given (table, col, oid) tuple are silent no-ops. deletes_for_classid is a pure local helper
+        // and `steps` is fixed before this loop, so no spec depends on an intervening read — collect every
+        // (table, col, oid) delete into one batched call.
         //
-        // ONE spec per step is NOT over-generation: the step's OWN row,
-        // {step.classid, col 0, step.objid} — the row whose existence is the object.
-        // Its index is recorded so the per-spec counts can be judged below; every
-        // other spec of the template stays judgement-free (a plain table really has
-        // no pg_sequence or pg_rewrite rows, and that zero says nothing).
+        // ONE spec per step is NOT over-generation: the step's OWN row, {step.classid, col 0, step.objid} — the row
+        // whose existence is the object. Its index is recorded so the per-spec counts can be judged below; every
+        // other spec of the template stays judgement-free (a plain table really has no pg_sequence or pg_rewrite
+        // rows, and that zero says nothing).
         struct own_row_spec_t {
             std::size_t spec_idx;
             catalog::oid_t classid;
@@ -310,18 +302,14 @@ namespace components::operators {
                                              exec_ctx,
                                              std::move(catalog_specs));
             auto deleted_r = co_await std::move(df);
-            // WHICH ZERO IS AN ERROR HERE — exactly one per step: the step's own row.
-            // The rest of the spec list is deliberately OVER-GENERATED (deletes_for_classid
-            // re-issues the whole per-classid template for every step, e.g. pg_sequence and
-            // pg_rewrite rows for a plain table), so a zero there is the template
-            // over-reaching and carries no information. But the own row IS the object the
-            // pg_depend walk planned; deleting it 0 times means the catalog never held (or
-            // no longer holds) that object, and reporting success over it is the DROP that
-            // "dropped" something the catalog cannot account for. Both the refusal and the
-            // zero are read BEFORE the storage/index marks below: those marks are what a
-            // COMMIT turns into an irreversible teardown, and taking them over a catalog
-            // that disagrees with the plan is the half-applied DROP this operator exists
-            // to avoid.
+            // WHICH ZERO IS AN ERROR HERE — exactly one per step: the step's own row. The rest of the spec list
+            // is deliberately OVER-GENERATED (deletes_for_classid re-issues the whole per-classid template for
+            // every step, e.g. pg_sequence and pg_rewrite rows for a plain table), so a zero there is the
+            // template over-reaching and carries no information. But the own row IS the object the pg_depend walk
+            // planned; deleting it 0 times means the catalog never held (or no longer holds) that object. Both
+            // the refusal and the zero are read BEFORE the storage/index marks below: those marks are what a
+            // COMMIT turns into an irreversible teardown, and taking them over a catalog that disagrees with the
+            // plan is the half-applied DROP this operator exists to avoid.
             if (deleted_r.has_error()) {
                 set_error(deleted_r.error());
                 co_return;
@@ -353,34 +341,27 @@ namespace components::operators {
             }
         }
 
-        // Mark the storage + index entry dropped per table, but DO NOT physically
-        // tear them down here. The mark_table_dropped / mark_storage_dropped_many
-        // tombstones record (oid, dropped_at) for the next horizon-advance GC
-        // sweep; the actual drop_storage + unregister_collection now fire only at
-        // COMMIT time (operator_commit_transaction, after the txn_publish barrier).
+        // Mark the storage + index entry dropped per table, but DO NOT physically tear them down here. The
+        // mark_table_dropped / mark_storage_dropped_many tombstones record (oid, dropped_at) for the next
+        // horizon-advance GC sweep; the actual drop_storage + unregister_collection now fire only at COMMIT time
+        // (operator_commit_transaction, after the txn_publish barrier).
         //
-        // drop_storage and unregister_collection are deliberately
-        // NOT sent here. A DROP inside a txn must be REVERTIBLE until COMMIT — an
-        // explicit-txn ROLLBACK (operator_abort_transaction → storage_drop_aborted
-        // / table_drop_aborted) un-marks the tombstones and the table survives — so
-        // the backing .otbx and the index engine must still exist at abort time.
-        // And other sessions must keep READING the table until publish, which the
-        // un-removed storage + still-registered collection allow (the tombstone is
-        // GC-invisible until on_horizon_advanced after publish).
+        // They are deliberately NOT sent here because a DROP inside a txn must be REVERTIBLE until COMMIT — an
+        // explicit-txn ROLLBACK (operator_abort_transaction → storage_drop_aborted / table_drop_aborted) un-marks
+        // the tombstones and the table survives — so the backing .otbx and the index engine must still exist at
+        // abort time. And other sessions must keep READING the table until publish, which the un-removed storage +
+        // still-registered collection allow (the tombstone is GC-invisible until on_horizon_advanced after publish).
         //
-        // dropped_at = txn_id: the real commit_id isn't known yet, but txn_id is a
-        // monotone upper bound that the GC predicate (dropped_at < new_horizon)
-        // handles correctly once every snapshot older than this DROP has closed.
-        // txn=0 (auto-commit/bootstrap) records 0, matching catalog-scan rebuild.
+        // dropped_at = txn_id: the real commit_id is not known yet, but txn_id is a monotone upper bound that the
+        // GC predicate (dropped_at < new_horizon) handles correctly once every snapshot older than this DROP has
+        // closed. txn=0 (auto-commit/bootstrap) records 0, matching catalog-scan rebuild.
         const uint64_t dropped_at = ctx->txn.transaction_id;
         bool any_storage_drop = false;
-        // Two-phase fan-out: send the per-table index mark (mark_table_dropped) without
-        // awaiting in the loop and collect the dropped storage oids; then issue ONE
-        // batched disk mark (mark_storage_dropped_many — every oid in this cascade shares
-        // the same dropped_at) and await every future afterwards. No intra-target drop
-        // ordering is required (the marks have no ordered follow-up here; the physical
-        // drop_storage / unregister_collection run at COMMIT), so awaiting below is
-        // completion-sync only and batching the disk mark cannot reorder anything.
+        // Two-phase fan-out: send the per-table index mark (mark_table_dropped) without awaiting in the loop and
+        // collect the dropped storage oids; then issue ONE batched disk mark (mark_storage_dropped_many — every oid
+        // in this cascade shares the same dropped_at) and await every future afterwards. No intra-target drop
+        // ordering is required (the physical drop_storage / unregister_collection run at COMMIT), so awaiting below
+        // is completion-sync only and batching the disk mark cannot reorder anything.
         std::pmr::vector<actor_zeta::unique_future<void>> drop_futures(resource_);
         drop_futures.reserve(pending_storage_drops.size() + 1);
         std::pmr::vector<catalog::oid_t> dropped_storage_oids(resource_);

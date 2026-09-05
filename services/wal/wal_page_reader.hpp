@@ -17,18 +17,16 @@ namespace services::wal {
     public:
         /// Open a segment for reading.
         ///
-        /// THE OPEN CAN FAIL AND THE FAILURE IS KEPT. The constructor used to leave file_
-        /// null and file_size_ zero on a failed open, which made an UNREADABLE segment
-        /// indistinguishable from an EMPTY one at every accessor: page_count() answered 0
-        /// and read_all_records() answered {}. truncate_before read the first as "safe to
-        /// delete" and unlinked the file; startup replay read the second as "this segment
-        /// held nothing" and came up without every committed transaction that lived in it.
-        /// is_open()/open_error() and the wrapper on read_all_records are what separate the
-        /// two cases now.
+        /// THE OPEN CAN FAIL AND THE FAILURE IS KEPT. A failed open that only left file_ null
+        /// and file_size_ zero would make an UNREADABLE segment indistinguishable from an
+        /// EMPTY one at every accessor: page_count() answers 0 and read_all_records() answers
+        /// {}. truncate_before reads the first as "safe to delete" and unlinks the file;
+        /// startup replay reads the second as "this segment held nothing" and comes up without
+        /// every committed transaction that lived in it. is_open()/open_error() and the
+        /// wrapper on read_all_records are what separate the two cases.
         ///
-        /// resource backs the decoded records AND the diagnostic in open_error(); it
-        /// replaces the std::pmr::get_default_resource() this class used to reach for
-        /// (rule 14).
+        /// resource backs the decoded records AND the diagnostic in open_error(); reaching for
+        /// std::pmr::get_default_resource() here is what rule 14 forbids.
         wal_page_reader_t(std::pmr::memory_resource* resource, const std::filesystem::path& segment_path);
 
         /// True when the segment file is open and readable.
@@ -82,9 +80,9 @@ namespace services::wal {
             // THE TWO FIELDS BELOW ANSWER A THIRD QUESTION: NOT "how far did replay get" and
             // not "where may the allocator resume", but "WHAT DID THE BREAK HIDE" — where
             // does the next id the segment can still vouch for sit, so a caller can tell an
-            // interval it merely stopped short of from an interval it SKIPPED OVER. Nothing
-            // above reads them; the three existing consumers (recover_from_disk,
-            // wal_reader_t, manager_wal_replicate_t's ctor) keep the exact meanings they had.
+            // interval it merely stopped short of from an interval it SKIPPED OVER. Only
+            // wal_worker_t::load asks that; recover_from_disk, wal_reader_t and
+            // manager_wal_replicate_t's ctor read the fields above and are unaffected.
 
             /// page_lsn of the first data page that verifies AFTER first_broken_page; 0 when
             /// nothing verifies past the break (the ordinary torn tail) or when there is no

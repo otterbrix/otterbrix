@@ -15,30 +15,30 @@
 // ============================================================================
 // THE MAILBOX IS THE ONLY THING THAT ORDERS A HASHED INDEX.
 //
-// bitcask_index_disk_t used to hold a shared_mutex, and it held one for a concrete
-// reason: it started a std::thread of its own and pushed every segment merge onto it
-// (rotate_active_segment -> enqueue_task). So an index had TWO serialization domains --
-// its agent's mailbox and that mutex -- and the second one existed only to make the
-// first one's guarantee false. The merge is the agent's own work now, run at the end of
-// the write handler that caused the rotation, and the mutex is gone with the thread.
+// bitcask_index_disk_t used to hold a shared_mutex for a concrete reason: it started a
+// std::thread of its own and pushed every segment merge onto it (rotate_active_segment
+// -> enqueue_task). So an index had TWO serialization domains -- its agent's mailbox and
+// that mutex -- and the second existed only to make the first one's guarantee false. The
+// merge is the agent's own work now, run at the end of the write handler that caused the
+// rotation, and the mutex is gone with the thread.
 //
 // A GREP PROVES NOTHING HERE. "No mutex left" is satisfied just as well by a forgotten
-// door that reaches the store without going through the mailbox at all -- which is
-// exactly the shape of the thing being removed. What has to be exercised is the real
-// path: many CLIENT THREADS, through the dispatcher, reading and writing ONE index at
-// once, hard enough that the merger actually runs.
+// door that reaches the store without going through the mailbox at all -- exactly the
+// shape of the thing being removed. What has to be exercised is the real path: many
+// CLIENT THREADS, through the dispatcher, reading and writing ONE index at once, hard
+// enough that the merger actually runs.
 //
-// THE VOLUME IS PART OF THE ASSERTION. bitcask_segment_record_limit is configured down
-// to a handful of records so the committed inserts below rotate the active segment many
+// THE VOLUME IS PART OF THE ASSERTION. bitcask_segment_record_limit is configured down to
+// a handful of records so the committed inserts below rotate the active segment many
 // times over, and the fixture ASSERTS afterwards -- off CURRENT and the on-disk segment
 // ids -- that they did and that a merged segment was published. Without that a green run
 // would mean only that the merger never ran.
 //
-// The reader threads ask about ANCHOR keys, which are inserted once, before the storm,
-// and which no writer ever touches. Their answer is therefore invariant, and any reader
-// that sees something else has seen a torn read of a keydir or a segment set that a
-// merge was rewriting underneath it. Catch2's assertion macros are not thread-safe, so
-// the readers count violations into atomics and the main thread asserts after the join.
+// The reader threads ask about ANCHOR keys, inserted once before the storm and never
+// touched by a writer, so their answer is invariant and any reader that sees something
+// else has seen a torn read of a keydir or a segment set a merge was rewriting underneath
+// it. Catch2's assertion macros are not thread-safe, so the readers count violations into
+// atomics and the main thread asserts after the join.
 // ============================================================================
 
 namespace {

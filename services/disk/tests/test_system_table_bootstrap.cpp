@@ -236,11 +236,10 @@ TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
     cleanup_boot_dir();
 }
 
-// 4. Empty config_disk.path — bootstrap is a safe no-op. It used to mean "in-memory
-// deployment" and built file-less system storages; B4 removed that mode, so an empty
-// path now names no directory a .otbx could live in and the call refuses with a logged
-// error instead of manufacturing a relative-path database under the process CWD. What
-// this case pins is unchanged: the call is safe, idempotent, and leaves nothing behind.
+// 4. Empty config_disk.path — bootstrap is a safe no-op. An empty path names no directory a
+// .otbx could live in, so the call refuses with a logged error instead of manufacturing a
+// relative-path database under the process CWD. What this case pins: the call is safe,
+// idempotent, and leaves nothing behind.
 TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
     core::pmr::otterbrix_resource resource;
     log_t log = initialization_logger("python", "/tmp/docker_logs/");
@@ -320,9 +319,9 @@ TEST_CASE("services::disk::sysboot::load_after_bootstrap_in_same_process") {
     cleanup_boot_dir();
 }
 
-// --- D2: A SYSTEM TABLE THAT DID NOT COME UP MUST STOP THE START ------------------------
+// --- A SYSTEM TABLE THAT DID NOT COME UP MUST STOP THE START ----------------------------
 //
-// bootstrap_one (manager_disk_bootstrap.cpp:126-170) had three ways to leave a pg_* table
+// bootstrap_one (manager_disk_bootstrap.cpp) had three ways to leave a pg_* table
 // absent while reporting nothing an operator could act on:
 //   * a failed load_storage_disk_sync was logged at WARN and the lambda returned false
 //     ("not freshly created"), which ALSO skipped the seeding branch — so the engine came up
@@ -364,8 +363,8 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
 
     // Phase 2 — pg_class cannot be read at all. Offset 0 is the main header, the first read
     // load_existing_database issues, and 0 is a legal value for the knob (its off switch is
-    // UINT64_MAX, fault_injection_file.hpp:53-58). The load fails through
-    // construction_failed() -> data_corruption (manager_disk_io.cpp:442-446).
+    // UINT64_MAX, fault_injection_file.hpp). The load fails through
+    // construction_failed() -> data_corruption (manager_disk_io.cpp).
     {
         otterbrix_test::fault_plan_t plan;
         plan.fail_reads_at_location = 0;
@@ -375,7 +374,7 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
 
         disk_only_fixture fd2(base);
         INFO("a pg_catalog table that could not be opened must stop the start, not be skipped");
-        // RED today: the failure is a WARN line and the engine comes up with no pg_class.
+        // Without a refusal the failure is a WARN line and the engine comes up with no pg_class.
         REQUIRE_THROWS_AS(fd2.manager->bootstrap_system_tables_sync(), std::runtime_error);
         REQUIRE(plan.reads_failed > 0);
     }
@@ -400,7 +399,7 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
 }
 
 // 10. THE CORRUPTION MECHANISM, stated as an assertion. restore_oid_generator_sync skips a
-// system table whose entry is null (manager_disk_bootstrap.cpp:313-316), so a catalog table
+// system table whose entry is null (manager_disk_bootstrap.cpp), so a catalog table
 // that did not come up takes its oids out of the frontier: the generator is left at its
 // default seed (FIRST_USER_OID - 1) and the next allocation hands out an oid that is ALIVE on
 // disk. After the refusal there is nothing to mint over, because there is no start.
@@ -452,7 +451,7 @@ TEST_CASE("services::disk::sysboot::a_catalog_that_did_not_come_up_never_lowers_
 }
 
 // 11. The CREATE leg of the same hole. create_storage_disk_sync returns void
-// (agent_disk.cpp:151-160 records the construction failure and drops the entry), so a system
+// (agent_disk.cpp records the construction failure and drops the entry), so a system
 // table whose very first write failed leaves bootstrap_one returning "freshly created" over a
 // storage that does not exist — and the seeding that follows appends into nothing.
 TEST_CASE("services::disk::sysboot::uncreatable_system_table_refuses_the_start") {
@@ -493,10 +492,10 @@ TEST_CASE("services::disk::sysboot::uncreatable_system_table_refuses_the_start")
 //
 // A crash between "the system table's .otbx was created" and "its first checkpoint committed"
 // leaves a proven-young file: exactly BLOCK_START bytes, no `.wal_id` sidecar. That file opens
-// cleanly (A7.6 overlays the builtin schema) and yields ZERO rows, so bootstrap_one returned
-// "not freshly created" and every seeding branch was skipped. Nothing anywhere reported an
-// error — the catalog was simply empty. This is NOT a refusal case: the file is healthy, and a
-// refusal would repeat on every start forever.
+// cleanly (the builtin schema is overlaid) and yields ZERO rows, so reading it as "not freshly
+// created" skips every seeding branch with nothing anywhere reporting an error — the catalog is
+// simply empty. This is NOT a refusal case either: the file is healthy, and a refusal would
+// repeat on every start forever.
 TEST_CASE("services::disk::sysboot::a_system_table_that_loads_empty_is_seeded_again") {
     cleanup_boot_dir();
     auto base = std::filesystem::path(boot_test_dir());

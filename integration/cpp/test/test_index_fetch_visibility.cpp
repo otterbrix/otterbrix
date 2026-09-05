@@ -1,26 +1,25 @@
 // ============================================================================
-// C4b — VISIBILITY ON THE POINT FETCH (index -> storage_fetch by row_id).
+// VISIBILITY ON THE POINT FETCH (index -> storage_fetch by row_id).
 //
 // The index answer is deliberately a SUPERSET filter, not a visibility one:
 // manager_index_t::search_with_preferred_type says so in as many words — "which
-// committed rows a reader may SEE is the table's decision, and storage_fetch
-// applies it". storage_fetch did NOT apply it: the point-fetch path resolved the
-// row group and gathered the cells without ever asking
-// row_version_manager_t::fetch(txn, row). So the whole "index -> fetch by row_id"
-// route handed a reader rows its snapshot must not contain.
+// committed rows a reader may SEE is the table's decision, and storage_fetch applies
+// it". storage_fetch did NOT apply it: the point-fetch path resolved the row group and
+// gathered the cells without ever asking row_version_manager_t::fetch(txn, row), so the
+// whole "index -> fetch by row_id" route handed a reader rows its snapshot must not
+// contain.
 //
 // The two SELECTs below differ ONLY in which column the equality names:
 //   WHERE id = ...   -> INDEXED  -> index_scan  -> storage_fetch (the broken leg)
 //   WHERE val = ...  -> UNINDEXED-> full_scan   -> storage_fetch_next_batch (MVCC-correct)
-// Same session, same snapshot, same row. The scan leg has always hidden the row;
-// only the point-fetch leg leaked it, so a disagreement between the two is the
-// defect itself and not a claim about snapshot semantics in general.
+// Same session, same snapshot, same row. The scan leg has always hidden the row; only the
+// point-fetch leg leaked it, so a disagreement between the two is the defect itself and
+// not a claim about snapshot semantics in general.
 //
-// THE ROW IS PAST 1024 ON PURPOSE. Version slots are addressed per row group
-// (A6) while the point fetch names collection-ABSOLUTE row ids, so a row inside
-// the FIRST row group cannot tell a correct rebase from a missing one — every
-// MVCC test that stops at ten rows is blind to that whole class. The table is
-// seeded past one row group so the row under test lives in the second.
+// THE ROW IS PAST 1024 ON PURPOSE. Version slots are addressed per row group while the
+// point fetch names collection-ABSOLUTE row ids, so a row inside the FIRST row group
+// cannot tell a correct rebase from a missing one — every MVCC test that stops at ten
+// rows is blind to that whole class.
 // ============================================================================
 
 #include "test_config.hpp"
@@ -116,10 +115,9 @@ TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_honours_the_rea
         q << "SELECT id, val FROM VisDb.t WHERE id = " << kLateId << ";";
         auto cur = exec(dispatcher, reader, q.str());
         REQUIRE(cur->is_success());
-        // RED before C4b: the index returns the row_id (a superset answer) and
-        // storage_fetch gathered it without consulting the row version manager,
-        // so the reader saw a row committed after its own snapshot — while the
-        // scan leg above hid it.
+        // The index returns the row_id (a superset answer); a storage_fetch that
+        // gathers it without consulting the row version manager shows the reader a
+        // row committed after its own snapshot — while the scan leg above hides it.
         REQUIRE(cur->size() == 0);
     }
 

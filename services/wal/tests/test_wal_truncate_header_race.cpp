@@ -25,12 +25,12 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_page.hpp>
 
-// ONE PAGE, ONE READ. truncate_before used to decide a segment's fate from TWO reads of the
-// same page: verify_page_checksum read and verified it, then read_page_header read it AGAIN —
-// and swallowed the read's answer, returning a zeroed header on failure. A read that succeeds
-// the first time and fails the second (a device on its way out, a truncated file, an
-// interposer — anything between the two reads) produced page_end_lsn == 0, which is <= every
-// checkpoint id, so the branch UNLINKED a segment whose records sit ABOVE the checkpoint.
+// ONE PAGE, ONE READ. Deciding a segment's fate from TWO reads of the same page —
+// verify_page_checksum reads and verifies it, then read_page_header reads it AGAIN and
+// swallows that read's answer, returning a zeroed header on failure — lets a read that
+// succeeds the first time and fails the second (a device on its way out, a truncated file, an
+// interposer — anything between the two reads) produce page_end_lsn == 0, which is <= every
+// checkpoint id, so the branch UNLINKS a segment whose records sit ABOVE the checkpoint.
 //
 // The injection below allows the first read of the last data page and refuses the second —
 // the exact window between the two calls.
@@ -180,20 +180,16 @@ namespace {
         }
 
         // Built on the fixture's OWN arena, never the process-global new_delete_resource
-        // singleton. This is real load, and off resource_ it never reaches
-        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only
-        // thing that would report a chunk still alive after the manager is gone. Production
-        // hands the manager chunks off the executor's arena; this is that shape.
-        //
-        // resource_ outlives the asynchronous processing for three independent reasons:
-        // ~wal_env_t stops the scheduler and resets manager_ -- destroying the mailbox
-        // and any message still holding this batch -- inside its own body; resource_ is
-        // declared FIRST, so it is destroyed LAST; and otterbrix_resource is thread-safe in
-        // both builds (synchronized_pool_resource normally, the mutex-guarded
-        // resource_tracer_t under ASAN). manager_ itself is already allocated on it.
-        //
-        // Extracted so a test can assert the ARENA of a REAL payload: the batch is moved
-        // into the message and is unobservable after send.
+        // singleton: this is real load, and off resource_ it never reaches
+        // core::pmr::otterbrix_resource -- which under ASAN IS resource_tracer_t, the only thing
+        // that would report a chunk still alive after the manager is gone. Production hands the manager
+        // chunks off the calling actor's own arena (agent_disk_t::storage_append_inner builds them on
+        // resource()); this is that shape. resource_ outlives the asynchronous processing three times
+        // over: ~wal_env_t stops the scheduler and resets manager_
+        // (destroying the mailbox and any message still holding this batch) inside its own body,
+        // resource_ is declared FIRST so it is destroyed LAST, and otterbrix_resource is
+        // thread-safe in both builds. Extracted so a test can assert the ARENA of a REAL payload:
+        // the batch is moved into the message and is unobservable after send.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return one_chunk(&resource_, rows);
         }
@@ -292,16 +288,10 @@ TEST_CASE("wal::truncate::a_failed_header_reread_does_not_unlink_a_live_segment"
 }
 
 // ===========================================================================
-// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA.
-//
-// gen_data_chunk output is REAL load, and on the process-global new_delete_resource
-// singleton it escapes core::pmr::otterbrix_resource entirely -- which under ASAN IS
-// resource_tracer_t, so nothing accounts for it. Production hands the manager chunks
-// off the executor's arena; the fixture has to model that.
-//
-// The batch is moved into the message, so it is unobservable after send. The assertion
-// is therefore made on the object make_insert_batch produces -- the same call, on the
-// same path, that send_insert makes -- and not on a value handed in by the test.
+// THE INSERT PAYLOAD MUST BE BUILT ON THE FIXTURE'S OWN ARENA -- see the note on
+// make_insert_batch above. The batch is moved into the message and is unobservable after
+// send, so the assertion is made on the object make_insert_batch produces: the same call, on
+// the same path, that send_insert makes -- not a value handed in by the test.
 // ===========================================================================
 TEST_CASE("wal::truncate::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";

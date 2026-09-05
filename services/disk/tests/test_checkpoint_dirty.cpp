@@ -27,39 +27,32 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// B6 — CHECKPOINT DIRTY FLAG. A checkpoint round used to rewrite every table it owns,
-// whether or not anything in it had changed: compact() rebuilt the whole collection into
-// freshly allocated blocks and checkpoint() wrote them out behind two fsyncs, per table,
-// per round. T1 measured what that costs — a round over 100 tables of 100 rows took
-// 124.4 ms when they were all dirty, and an EMPTY round immediately after took 205.7 ms,
-// i.e. doing nothing cost MORE than doing everything (the second round has a full free
-// list to walk and a superseded root to reclaim, which the first one had not).
+// CHECKPOINT DIRTY FLAG. Without it a round rewrites every table it owns, changed or not:
+// compact() rebuilds the whole collection into freshly allocated blocks and checkpoint() writes
+// them out behind two fsyncs, per table, per round. Measured over 100 tables of 100 rows: a
+// round with everything dirty took 124.4 ms, and an EMPTY round immediately after took
+// 205.7 ms — doing nothing cost MORE than doing everything, because the second round has a full
+// free list to walk and a superseded root to reclaim that the first one had not.
 //
 // The gate below is CORRECTNESS, not time, and deliberately so: a stopwatch measures the
-// machine. What is asserted is that a round over N tables with ONE of them changed leaves
-// the other N-1 `table.otbx` files BYTE-IDENTICAL and with an untouched mtime. Before the
-// dirty flag every one of them was rewritten, so the assertion below fails on every
-// unchanged table.
+// machine. What is asserted is that a round over N tables with ONE of them changed leaves the
+// other N-1 `table.otbx` files BYTE-IDENTICAL and with an untouched mtime.
 //
-// Recorded next to T1's figures, with NO threshold attached — the plan is explicit that the
-// gate is correctness, and a stopwatch here would only measure the machine. Debug,
-// macOS arm64, 100 tables x 100 rows, driven straight at manager_disk (T1 drove SQL, so the
-// dirty rounds are not exactly comparable; the EMPTY round is the number that matters):
-//     dirty round        151.5 / 153.6 / 151.9 ms      (T1: 124.4 ms)
-//     EMPTY round         15.4 /  15.3 /  12.4 ms      (T1: 205.7 ms)
+// With the gate in place, and with NO threshold attached (Debug, macOS arm64, 100 tables x 100
+// rows, driven straight at manager_disk):
+//     dirty round        151.5 / 153.6 / 151.9 ms
+//     EMPTY round         15.4 /  15.3 /  12.4 ms
 //     EMPTY round again   13.5 /  13.9 /  12.7 ms
 // The residual is not the tables — no .otbx is opened for writing at all — it is the 114
 // eight-byte `.wal_id` sidecars the round still rewrites through tmp+rename, one per entry.
-// Numbers to be compared with T1's, not asserted on.
 //
-// WHAT IS STILL DONE FOR AN UNCHANGED TABLE, and why the two are not the same thing: the
-// entry stays in the round. It advances its wal-id chain (prev <- current, current <- the
-// round's wal id), rewrites its 8-byte `.otbx.wal_id` sidecar and feeds
-// prev_checkpoint_wal_id into the round's min() exactly like an entry that was rewritten.
-// Only the physical rebuild is skipped. That is what keeps B2's WAL sealing invariant
-// intact — see clean_table_still_reports_its_wal_floor below, and the B2 cases in
-// test_wal_seal.cpp, which pass unchanged precisely because the floor arithmetic is
-// unaffected by the skip.
+// WHAT IS STILL DONE FOR AN UNCHANGED TABLE, and why the two are not the same thing: the entry
+// stays in the round. It advances its wal-id chain (prev <- current, current <- the round's wal
+// id), rewrites its 8-byte `.otbx.wal_id` sidecar and feeds prev_checkpoint_wal_id into the
+// round's min() exactly like an entry that was rewritten. Only the physical rebuild is skipped.
+// That is what keeps the WAL sealing invariant intact — see
+// clean_table_still_reports_its_wal_floor below, and the sealing cases in test_wal_seal.cpp,
+// whose floor arithmetic is unaffected by the skip.
 // ---------------------------------------------------------------------------
 
 using namespace services::disk;
@@ -216,9 +209,9 @@ namespace {
 // 1. THE GATE. N tables, one of them changed between two rounds. The round must rewrite
 //    exactly that one — proven against the files, not against a stopwatch.
 //
-//    Before the dirty flag every unchanged table came back with a different hash, a
-//    different mtime and (once the free list had something in it) a different size, because
-//    checkpoint_inner compacted and rewrote every entry it owned unconditionally.
+//    Without the dirty flag every unchanged table comes back with a different hash, a
+//    different mtime and (once the free list has something in it) a different size, because
+//    checkpoint_inner compacts and rewrites every entry it owns unconditionally.
 TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_table") {
     auto dir = dirty_dir() + "/one_changed";
     std::filesystem::remove_all(dir);
@@ -299,7 +292,7 @@ TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_tab
     std::filesystem::remove_all(dir);
 }
 
-// 2. THE TRAP B2 LEFT BEHIND. checkpoint_all's answer is min(prev_checkpoint_wal_id) over
+// 2. THE TRAP THE DIRTY FLAG LEAVES BEHIND. checkpoint_all's answer is min(prev_checkpoint_wal_id) over
 //    EVERY entry the agents own, and it is handed straight to truncate_before, which DELETES
 //    whole WAL segments. An entry that contributes nothing drops the floor to whatever the
 //    remaining entries report; an entry that contributes a stale prev pins it forever and the

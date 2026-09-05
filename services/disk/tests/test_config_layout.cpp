@@ -6,31 +6,18 @@
 #include <type_traits>
 
 // ---------------------------------------------------------------------------
-// config_disk_path_layout — the storage root is `<base>/wal`, and it has to stay
-// there.
+// config_disk_path_layout — the storage root is `<base>/wal`, and it has to stay there.
 //
-// `config_disk` used to declare its path twice, and the two disagreed:
+// config_disk's constructor is the only way to build one — the struct is not an aggregate, and the
+// constructor's default argument covers default-construction — so its `path(path / "wal")` is the
+// single reachable initializer. Every database ever written therefore lives under `<base>/wal`,
+// sharing the directory with the WAL segments.
 //
-//     std::filesystem::path path{std::filesystem::current_path() / "disk"};  // (a)
-//     explicit config_disk(const std::filesystem::path& path = current_path())
-//         : path(path / "wal") {}                                            // (b)
-//
-// (b) is a copy of config_wal's constructor four lines above; both arrived together
-// in 96d5ffaa (2024-08-27), which also deleted the hand-written
-// `res.disk.path = path / "disk"` that create_config used until then.
-//
-// (a) has never run. config_disk carries a user-provided constructor, so it is not
-// an aggregate, and (b) — default argument and all — is the only way to build one.
-// Every database written since that commit therefore lives under `<base>/wal`,
-// sharing the directory with the WAL segments, and (a) has only ever misled readers.
-//
-// That is why "fixing the typo" by writing `path / "disk"` is not a fix: it is a
-// silent relocation. The engine does not look for a database anywhere but
-// `config_disk::path`; point that somewhere else and a reopen finds an empty
-// directory, bootstraps a fresh pg_catalog and reports success while the tables sit
-// untouched next door. The Python binding — the shipped package — hands
-// `Client(path)` straight to `config::create_config`, so it is exactly the
-// configuration users' data is under.
+// That is why "fixing the typo" by writing `path / "disk"` is not a fix but a silent relocation:
+// the engine does not look for a database anywhere but `config_disk::path`, so a reopen finds an
+// empty directory, bootstraps a fresh pg_catalog and reports success while the tables sit untouched
+// next door. The Python binding — the shipped package — hands `Client(path)` straight to
+// `config::create_config`, so this is exactly the configuration users' data is under.
 //
 // The layout works because the two trees interleave without colliding:
 //
@@ -39,11 +26,8 @@
 //     <base>/wal/<db_oid>/<tbl_oid>/table.otbx    tables, one directory each
 //     <base>/wal/<db_oid>/<tbl_oid>/table.otbx.wal_id
 //
-// Every WAL scan below `<base>/wal/<db_oid>` takes regular files only, and every
-// disk scan takes directories with numeric names only, so neither sees the other's
-// entries.
-//
-// This test pins that layout. It is the guard against a future well-meant rename.
+// Every WAL scan below `<base>/wal/<db_oid>` takes regular files only, and every disk scan takes
+// directories with numeric names only, so neither sees the other's entries.
 // ---------------------------------------------------------------------------
 
 TEST_CASE("config_disk_path_layout") {
@@ -65,7 +49,7 @@ TEST_CASE("config_disk_path_layout") {
     REQUIRE(defaulted.path == std::filesystem::current_path() / "wal");
     REQUIRE(defaulted.path == configuration::config_disk{std::filesystem::current_path()}.path);
 
-    // config_wal::on stays. The WAL can genuinely be switched off and tests do it;
-    // only config_disk::on went, because after B4 it selected nothing.
+    // config_wal::on stays: the WAL can genuinely be switched off and tests do it. There is no
+    // config_disk::on, because it would select nothing.
     REQUIRE(config.wal.on);
 }

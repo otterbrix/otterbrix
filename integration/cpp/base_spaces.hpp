@@ -107,10 +107,10 @@ namespace otterbrix {
         //
         // committed_txn_ids is the WAL-replay set of committed transaction ids,
         // forwarded by value into each spawned bitcask agent's txn-log recover
-        // gate (M1.1). Passed during the single-threaded pre-scheduler window.
-        // No config_disk parameter any more: nothing on this road opens or configures an
-        // index store. The index manager already holds the same config.disk.* thresholds
-        // (they were handed to its constructor) and it is what raises the agents.
+        // gate. Passed during the single-threaded pre-scheduler window.
+        // No config_disk parameter: nothing on this road opens or configures an index store.
+        // The index manager already holds the same config.disk.* thresholds (handed to its
+        // constructor) and it is what raises the agents.
         void bootstrap_indexes_sync(const std::set<std::uint64_t>& committed_txn_ids);
 
     private:

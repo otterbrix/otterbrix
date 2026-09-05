@@ -3733,40 +3733,33 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_re_add_after_drop
     }
 }
 
-// Edge case: DROP a column then re-INSERT it on a relkind='g' table while
-// a *different* column stays alive. Existing dynamic_schema_re_add_after_drop
-// covers the all-columns-dropped variant; this case keeps column 'a' across
-// the cycle to verify per-column isolation:
+// Edge case: DROP a column then re-INSERT it on a relkind='g' table while a
+// *different* column stays alive. dynamic_schema_re_add_after_drop covers the
+// all-columns-dropped variant; this case keeps column 'a' across the cycle to
+// verify per-column isolation:
 //
 //   CREATE TABLE foo();
 //   INSERT (a=1, b='x')        -- registers a (BIGINT) + b (STRING)
 //   ALTER TABLE foo DROP COLUMN b
-//   SELECT * FROM foo          -- expect 1 row, columns {a} only (b hidden)
+//   SELECT * FROM foo          -- 1 row, columns {a} only (b hidden)
 //   INSERT (b='y')             -- attempts to re-register b
-//   SELECT * FROM foo          -- expect 2 rows; column-set behavior depends on
-//                                 the operator_computed_field_register_t
-//                                 short-circuit semantics
+//   SELECT * FROM foo          -- 2 rows; column set depends on the
+//                                 operator_computed_field_register_t short-circuit
 //
-// Behavioral subtlety pinned down by this test (see
-// components/physical_plan/operators/operator_computed_field_register.cpp:67-134
-// and operator_computed_field_unregister.cpp:81-88):
-//   * unregister appends a tombstone (refcount=0) that REUSES the live attoid
-//     and atttypid, with attversion = max+1.
-//   * register reads ALL pg_computed_column rows for (relid, attname) (NO
-//     refcount filter when computing max_version / latest_atttypid) and short-
-//     circuits to a no-op when latest_atttypid == new_atttypid (`same_type`
-//     branch). Re-INSERTing the same name with the SAME type therefore does
-//     NOT bump the version, does NOT clear the tombstone, and the resolver
-//     (which gates on refcount>0) keeps the column hidden.
-//   * Re-INSERT with a DIFFERENT type would bump attversion + allocate a fresh
-//     attoid (the type-evolution path), making the column visible again — see
-//     dynamic_schema_type_evolution_multistep.
+// The pinned subtlety (operator_computed_field_register.cpp /
+// operator_computed_field_unregister.cpp): unregister appends a tombstone
+// (refcount=0) REUSING the live attoid and atttypid with attversion = max+1, while
+// register reads ALL pg_computed_column rows for (relid, attname) — NO refcount
+// filter when computing max_version / latest_atttypid — and short-circuits to a
+// no-op when latest_atttypid == new_atttypid (`same_type`). So re-INSERTing the same
+// name with the SAME type does NOT bump the version, does NOT clear the tombstone,
+// and the resolver (which gates on refcount>0) keeps the column hidden. A DIFFERENT
+// type takes the type-evolution path — fresh attoid, bumped attversion, column
+// visible again (dynamic_schema_type_evolution_multistep).
 //
-// Storage side: storage_append for relkind='g' auto-extends the in-memory
-// schema. Once column 'b' has been added
-// to storage during INSERT 1, subsequent INSERTs with 'b' append to the
-// existing storage column — row 1's stored 'x' and row 2's stored 'y' both
-// persist on disk regardless of catalog visibility.
+// Storage side: storage_append for relkind='g' auto-extends the in-memory schema, so
+// once 'b' exists in storage both row 1's 'x' and row 2's 'y' persist on disk
+// regardless of catalog visibility.
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_then_readd_preserves_old_data") {
     auto config = test_create_config("/tmp/test_sql_features/dynamic_schema_drop_then_readd");
     test_clear_directory(config);

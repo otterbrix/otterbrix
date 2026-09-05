@@ -51,8 +51,7 @@ namespace components::table {
         // pg_attribute.attoid (uint32_t, 0 = unset). Distinct from oid()/storage_oid().
         // Immutable after first non-zero assignment: re-stamping the same value is a no-op;
         // a DIFFERENT value is refused (the first stamp stays) and reported on stderr, in
-        // every build. It does NOT throw — rule 2 leaves no exception channel here, and the
-        // std::logic_error this comment used to promise was never thrown by any build.
+        // every build. It does NOT throw — rule 2 leaves no exception channel here.
         std::uint32_t attoid() const noexcept { return attoid_; }
         void set_attoid(std::uint32_t v);
 

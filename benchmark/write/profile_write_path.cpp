@@ -101,10 +101,9 @@ namespace {
 
     private:
         static configuration::config make_config(const options_t& o) {
-            // One named base directory, laid out by create_config. This used to be
-            // default_config() plus hand-assigned `current_path()/"disk"` and
-            // `current_path()/"wal"` roots, which split one database across two
-            // directories and dropped both into whatever directory the profiler was
+            // One named base directory, laid out by create_config. Hand-assigning
+            // `current_path()/"disk"` and `current_path()/"wal"` instead splits one database
+            // across two directories and drops both into whatever directory the profiler was
             // launched from.
             auto cfg = configuration::config::create_config(std::filesystem::current_path() /
                                                             "otterbrix_write_profile_data");

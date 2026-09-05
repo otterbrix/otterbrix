@@ -3,42 +3,32 @@
 // THE MAILBOX SURFACE OF A DISK INDEX AGENT, AND THE CONTRACT THAT HOLDS IT.
 //
 // There are TWO agent classes, one per storage family: bitcask_index_agent_t holds a
-// bitcask_index_disk_t and btree_index_agent_t holds a btree_index_disk_t, each BY VALUE
-// and BY ITS CONCRETE TYPE -- a member, not a pointee: one owner, one static type, no
-// erased base, so the indirection bought nothing. Neither derives from the other and
-// there is no common base, no CRTP and no template with two instantiations -- a template
-// is one body serving two types, which is the unification this split exists to undo.
-// What the two bodies share is stated here instead, and checked twice:
+// bitcask_index_disk_t and btree_index_agent_t holds a btree_index_disk_t, each BY VALUE and BY ITS
+// CONCRETE TYPE -- one owner, one static type, no erased base, so the indirection bought nothing.
+// Neither derives from the other; there is no common base, no CRTP and no template with two
+// instantiations, because a template is one body serving two types and that unification is what
+// this split exists to undo. What the two bodies share is stated here instead, and checked twice:
 //
-//   * index_agent_contract -- the actor-zeta INTERFACE. actor-zeta derives a message id
-//     from a method's POSITION in a dispatch_traits list, so an address_t send only lands
-//     on the right handler if both classes agree on that order. `implements<>` is what
-//     makes them agree: each class binds its handlers to this contract positionally, and
-//     the library refuses a binding whose count or signatures drift. That is also what
-//     lets manager_index_t hold a bare actor_zeta::address_t and send to EITHER family
-//     without knowing which it has -- the erasure is the framework's, and no base class
-//     of ours is needed for it.
+//   * index_agent_contract -- the actor-zeta INTERFACE. A message id is a method's POSITION in a
+//     dispatch_traits list, so an address_t send lands on the right handler only if both classes
+//     agree on that order; `implements<>` makes them agree, and the library refuses a binding whose
+//     count or signatures drift. It is also what lets manager_index_t hold a bare
+//     actor_zeta::address_t and send to EITHER family -- the erasure is the framework's, and no
+//     base class of ours is needed for it.
+//   * index_agent_impl -- the CONCEPT, asserted on the line after each class, catching what
+//     `override` cannot because there is no base for it to attach to: a handler never written, a
+//     drifted signature, an owning-pointer alias typed by something other than the class itself, a
+//     missing static answer to "what backend am I". The diagnostic lands where the class is
+//     WRITTEN rather than at the send site in manager_index.cpp.
 //
-//   * index_agent_impl -- the CONCEPT, asserted on the line after each class. It catches
-//     what `override` cannot, because there is no base here for `override` to attach to
-//     at all: a handler never written, a handler written with the wrong signature, an
-//     owning-pointer alias typed by something other than the class itself, a missing
-//     static answer to "what backend am I".
-//     The diagnostic lands where the class is WRITTEN rather than at the send site in
-//     manager_index.cpp.
+// AN AGENT IS THE WHOLE INDEX. It owns BOTH halves of every answer: the COMMITTED half in the store
+// it opened, and the UNCOMMITTED half -- this transaction's own inserts and deletes, in per-txn
+// buckets, since nothing writes through before commit. Splitting the two across actors means
+// stitching one answer together after the read comes back; one owner is why read_rows below takes
+// the asking transaction's id and merges where both halves are.
 //
-// AN AGENT IS THE WHOLE INDEX. It owns BOTH halves of every answer: the COMMITTED half,
-// which lives in the store it opened, and the UNCOMMITTED half -- this transaction's own
-// inserts and deletes, in per-txn buckets (owner decision 16: no write-through before
-// commit). The uncommitted half used to live in a facade object registered in a per-table
-// registry above the mailbox, which meant the two halves of one answer were owned by two
-// different actors and stitched together after the read came back. They are one owner
-// now, which is why read_rows below takes the asking transaction's id: the merge happens
-// where both halves are.
-//
-// Duplication between the two implementations is ACCEPTED. It is cheaper than the
-// coupling a shared base would reintroduce, and the contract plus the concept are what
-// keep the two copies honest.
+// Duplication between the two implementations is ACCEPTED: it is cheaper than the coupling a shared
+// base would reintroduce, and the contract plus the concept are what keep the two copies honest.
 
 #include <core/result_wrapper.hpp>
 
@@ -72,24 +62,19 @@ namespace services::index {
 
     // AN INDEX STORES EXACTLY THE NON-NULL KEYS OF THE LIVE ROWS.
     //
-    // ONE function, called by BOTH agent classes at every door a key can enter or be
-    // probed through. It is a free function and not a member of either class for the
-    // reason it was a member of index_t before them: it is an invariant OF AN INDEX, not
-    // a policy of one family. Two private copies would be two chances to forget one, and
-    // the recorded consequence of forgetting it is not a missing row -- it is a b+tree
-    // ordered by something that is not a strict weak ordering.
+    // ONE function, called by BOTH agent classes at every door a key can enter or be probed
+    // through. A free function and not a member of either class, because it is an invariant OF AN
+    // INDEX rather than a policy of one family: two private copies would be two chances to forget
+    // one, and the consequence of forgetting it is not a missing row -- it is a b+tree ordered by
+    // something that is not a strict weak ordering.
     //
-    // The invariant is what SQL requires: a NULL satisfies no value comparison, and the
-    // only predicates the planner routes to an index are eq/lt/lte/gt/gte (IS NULL is
-    // answered from the validity mask, never from an index). So a NULL-free index is a
-    // COMPLETE index for every question an index scan can be asked.
-    //
-    // It is also what keeps the stores sound. A NULL key carries logical_type::NA rather
-    // than the column's type, and both backends cast every key to the column type before
-    // storing it -- a cast that fails for NA. Admitting a NULL key therefore corrupts the
-    // index (a truncated batch, or, when the NULL arrives first, a tree of mixed NA/typed
-    // keys ordered by a comparator that is not a strict weak ordering). Keeping NULLs out
-    // means a backend only ever sees a key of the column's own type.
+    // The invariant is what SQL requires: a NULL satisfies no value comparison, and the only
+    // predicates the planner routes to an index are eq/lt/lte/gt/gte (IS NULL is answered from the
+    // validity mask, never from an index). It is also what keeps the stores sound: a NULL key
+    // carries logical_type::NA rather than the column's type, and both backends cast every key to
+    // the column type before storing it -- a cast that fails for NA. Admitting one corrupts the
+    // index (a truncated batch, or, when the NULL arrives first, a tree of mixed NA/typed keys
+    // under a comparator that is not a strict weak ordering).
     [[nodiscard]] inline bool index_key_is_null(const components::types::logical_value_t& key) noexcept {
         return key.is_null();
     }
@@ -106,24 +91,20 @@ namespace services::index {
         // left to serve, so every other handler below refuses once this has run.
         unique_future<void> drop(session_id_t session);
 
-        // Wipe the stored index data AND every pending bucket while keeping the agent
-        // alive and writable (bitcask: segments + keydir + txn-log + applied-offset
-        // sidecar; btree: the tree file). NOT the terminal drop -- the runtime repopulate
-        // path clears and then re-stages with txn_id == 0.
-        //
-        // The buckets go WITH the store: they are the not-yet-durable half of the same
-        // index, and a clear that wiped only the durable half would leave a rebuilt index
+        // Wipe the stored index data AND every pending bucket while keeping the agent alive and
+        // writable (bitcask: segments + keydir + txn-log + applied-offset sidecar; btree: the tree
+        // file). NOT the terminal drop -- the runtime repopulate path clears and then re-stages
+        // with txn_id == 0. The buckets go WITH the store: they are the not-yet-durable half of the
+        // same index, and a clear that wiped only the durable half would leave a rebuilt index
         // reporting rows the scan it was rebuilt from never produced.
         unique_future<core::error_t> clear(session_id_t session);
 
-        // RECORD a whole statement's inserts / deletes in this transaction's bucket.
-        // Nothing reaches the store here (owner decision 16). txn_id == 0 is the
-        // committed-for-everyone bucket the rebuild feeds use.
-        //
-        // The unit is a BATCH OF (key, row_id) PAIRS rather than a data_chunk_t: the
-        // manager already resolved which chunk column carries this index's key (it owns
-        // the key sets), so forwarding the chunk would clone every column of it, per
-        // agent, to read one.
+        // RECORD a whole statement's inserts / deletes in this transaction's bucket. Nothing
+        // reaches the store here -- there is no write-through before commit. txn_id == 0 is the
+        // committed-for-everyone bucket the rebuild feeds use. The unit is a BATCH OF (key, row_id)
+        // PAIRS rather than a data_chunk_t: the manager already resolved which chunk column carries
+        // this index's key, so forwarding the chunk would clone every column of it, per agent, to
+        // read one.
         unique_future<core::error_t>
         stage_inserts(session_id_t session, uint64_t txn_id, std::vector<std::pair<value_t, size_t>> values);
         unique_future<core::error_t>
@@ -142,28 +123,21 @@ namespace services::index {
         unique_future<core::error_t> revert_inserts(session_id_t session, uint64_t txn_id);
         unique_future<core::error_t> revert_deletes(session_id_t session, uint64_t txn_id);
 
-        // THE read: every row id whose key satisfies `compare` against `key`, duplicates
-        // included, in ONE reply (no cursor -- owner decision 4).
-        //
-        // BOTH HALVES, merged here rather than by the caller: the committed rows out of
-        // the store, plus `txn_id`'s own staged inserts (and bucket 0's), minus its own
-        // staged deletes. That is what makes the answer a transaction can act on, and it
-        // is why the predicate travels with the key -- a staged row keyed 3 belongs in the
-        // answer to `x < 5` and not in the answer to `x = 5`.
-        //
-        // An empty vector means "no row satisfies the predicate"; anything else that went
-        // wrong comes back as the error half of the wrapper.
+        // THE read: every row id whose key satisfies `compare` against `key`, duplicates included,
+        // in ONE reply -- there is no cursor. BOTH HALVES, merged here rather than by the caller:
+        // the committed rows out of the store, plus `txn_id`'s own staged inserts (and bucket 0's),
+        // minus its own staged deletes. That is why the predicate travels with the key -- a staged
+        // row keyed 3 belongs in the answer to `x < 5` and not in the answer to `x = 5`. An empty
+        // vector means "no row satisfies the predicate"; anything else that went wrong comes back
+        // as the error half of the wrapper.
         unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
         read_rows(session_id_t session, components::expressions::compare_type compare, value_t key, uint64_t txn_id);
 
-        // Checkpoint fan-out from manager_index_t::flush_all_indexes. Ordered behind any
-        // pending write in this agent's FIFO, so it never races one.
-        //
-        // IT REPORTS. The return type used to be void, so both families ended their handler
-        // by logging the store's io_error and replying as if the flush had happened — and the
-        // checkpoint that asked for it went on to truncate the WAL behind an index whose
-        // entries were still only in memory. There is a statement above this fan-out on the
-        // CHECKPOINT path, and it is now the one that decides what a failed flush means.
+        // Checkpoint fan-out from manager_index_t::flush_all_indexes. Ordered behind any pending
+        // write in this agent's FIFO, so it never races one. IT REPORTS: a void return would have
+        // both families log the store's io_error and reply as if the flush had happened, and the
+        // checkpoint that asked for it would go on to truncate the WAL behind an index whose
+        // entries were still only in memory.
         unique_future<core::error_t> force_flush(session_id_t session);
 
         // THE ORDER IS THE MESSAGE ID SPACE. actor_zeta::msg_id is the method's INDEX in
@@ -186,29 +160,25 @@ namespace services::index {
         index_agent_contract() = delete;
     };
 
-    // WHAT EVERY DISK INDEX AGENT MUST BE, checked AT ITS OWN DEFINITION.
+    // WHAT EVERY DISK INDEX AGENT MUST BE, checked AT ITS OWN DEFINITION. Four things nothing else
+    // catches, because these classes have no base class:
     //
-    // Four things nothing else catches, because these classes have no base class:
-    //   * a handler never written. There is no abstract-class diagnostic to fall back on
-    //     and no `override` to attach; the first word would arrive at whichever send site
-    //     wanted it, in another translation unit.
-    //   * a handler with a drifted signature. `implements<>` compares against the
-    //     contract POSITIONALLY, so two swapped-but-same-shaped methods pass it; the
-    //     named requirements below do not.
-    //   * an owning-pointer alias typed by anything but the class itself.
-    //     actor_zeta::pmr::deleter_t deallocates sizeof(static type), so an owner typed by
-    //     a base -- or by the other family's agent -- returns the wrong number of bytes to
-    //     the pool. That is why manager_index_t owns two typed vectors and not one.
-    //   * a missing STATIC answer to "which backend am I, and can I be asked an ordered
-    //     probe". Those two were virtual accessors on the dead index_t; they are compile-
-    //     time constants of the class now, and manager_index_t copies them into the record
-    //     it keeps per index so a range predicate is refused BEFORE any send. Without the
-    //     requirement a family could simply not declare them and the refusal would become
-    //     an abort inside the agent.
+    //   * a handler never written -- no abstract-class diagnostic and no `override` to attach,
+    //     so the first word would arrive at a send site in another translation unit;
+    //   * a handler with a drifted signature -- `implements<>` compares against the contract
+    //     POSITIONALLY, so two swapped-but-same-shaped methods pass it; the requirements below
+    //     do not;
+    //   * an owning-pointer alias typed by anything but the class itself:
+    //     actor_zeta::pmr::deleter_t deallocates sizeof(static type), so an owner typed by a
+    //     base -- or by the other family's agent -- returns the wrong number of bytes to the
+    //     pool, which is why manager_index_t owns two typed vectors and not one;
+    //   * a missing STATIC answer to "which backend am I, and can I be asked an ordered probe".
+    //     manager_index_t copies both into its per-index record so a range predicate is refused
+    //     BEFORE any send; without the requirement the refusal becomes an abort in the agent.
     //
-    // What is deliberately NOT here: create(). The two factories take different
-    // parameters (a segment-record limit and the WAL committed-txn set exist only for the
-    // family that keeps a txn log) and that difference is the specialization, not a drift.
+    // What is deliberately NOT here: create(). The two factories take different parameters (a
+    // segment-record limit and the WAL committed-txn set exist only for the family that keeps a txn
+    // log) and that difference is the specialization, not a drift.
     template<typename agent_t>
     concept index_agent_impl =
         !std::is_abstract_v<agent_t> &&

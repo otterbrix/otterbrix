@@ -86,12 +86,10 @@ namespace services::disk {
             return local;
         }
 
-        // ЗАПИСЬ #375: a block of `using components::catalog::{decode,encode}_type_spec /
-        // logical_type_to_pg_name / oid_to_builtin_type` stood here under a comment claiming
-        // they were "used unqualified". None were: every call site in services/disk spells
-        // the qualified name, and logical_type_to_pg_name is not named in the subsystem at
-        // all. Do not re-add them — components::types declares its own decode_type_spec and
-        // encode_type_spec, so an unqualified call would be ambiguous, not convenient.
+        // No `using components::catalog::{decode,encode}_type_spec / logical_type_to_pg_name /
+        // oid_to_builtin_type` here on purpose: every call site in services/disk spells the
+        // qualified name, and components::types declares its own decode_type_spec and
+        // encode_type_spec, so an unqualified call would be ambiguous rather than convenient.
 
         // ---------------------------------------------------------------------------
         // pg_catalog system table OIDs (well-known) — internal aliases.

@@ -26,13 +26,11 @@ namespace otterbrix {
         // ---------------------------------------------------------------------
         // Column-schema derivation.
         //
-        // These helpers reproduce, op-by-op, what the former ColumnsVisitor
-        // (relation.cpp) computed while walking the Relation variant tree.
-        // Instead of walking a tree, each chaining op now recomputes the
-        // output schema eagerly from the source schema + the op's expressions,
-        // and the result is carried in built_relation_t::columns. The exact
-        // name/type results are preserved (count -> UBIGINT, avg(x) -> DOUBLE,
-        // field lookups against the source schema, "#"/UNKNOWN sentinels).
+        // Each chaining op recomputes the output schema eagerly from the source
+        // schema + the op's expressions, and the result is carried in
+        // built_relation_t::columns — no Relation tree is walked. The name/type
+        // rules the callers rely on: count -> UBIGINT, avg(x) -> DOUBLE, field
+        // lookups against the source schema, "#"/UNKNOWN sentinels.
         const std::string error_str = "#";
 
         components::types::complex_logical_type find_type(const std::string& name,
@@ -199,14 +197,14 @@ namespace otterbrix {
         // THE NAME HAS TO BE UNUSED IN THE DATABASE, NOT MERELY UNUSED IN THIS PROCESS.
         // The counter is process-wide and starts at zero in every new process, while the
         // tmp.* tables it names are persisted with the database — so the second process to
-        // open a database that a first one built relations against asked for a name that was
-        // already there. That was not a hypothetical: running
+        // open a database that a first one built relations against asks for a name that is
+        // already there. Measured: running
         // integration/python/tests/fast/dataframe/test_dataframe_limit.py twice against the
         // same `default` directory turned "4 passed" into "4 failed", every one of them
         // `RuntimeError: relation: creating the scratch table tmp.t2 failed: collection
         // already exists`.
         //
-        // Two changes, and both are needed. The name now carries the PID, so two processes
+        // Two mechanisms, and both are needed. The name carries the PID, so two processes
         // sharing a database do not walk the same sequence at all; and a name that IS taken
         // (a recycled pid, or the same process re-opening its own leftovers) advances to the
         // next one instead of failing the user's operation. Taken-ness is not an error of the
@@ -223,7 +221,7 @@ namespace otterbrix {
             name = "t" + std::to_string(pid) + "_" + std::to_string(indx.fetch_add(1, std::memory_order_relaxed));
             // A fresh session per attempt: the previous one carries a refused statement.
             auto session = otterbrix::session_id_t();
-            // Rule 6: this cursor used to go on the floor. A scratch table that was not
+            // Rule 6: this cursor must not go on the floor. A scratch table that was not
             // created cannot hold the aggregate's output, and saying nothing only moves
             // the failure to a later, less obvious statement.
             auto create = space->dispatcher()->execute_sql(session, "CREATE TABLE tmp." + name + "();");

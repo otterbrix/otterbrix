@@ -36,7 +36,7 @@ namespace {
         }
     }
 
-    // Since C5c a committed DELETE does not touch the tree inside the statement: the erase
+    // A committed DELETE does not touch the tree inside the statement: the erase
     // is queued until the snapshot floor reaches its commit id (services/index/
     // manager_index.hpp, deferred_deletes_), so the leaf flushes it causes land in the
     // horizon sweep instead. index_deferred_deletes() reaching zero is that sweep having

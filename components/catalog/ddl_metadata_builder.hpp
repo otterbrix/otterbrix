@@ -28,14 +28,13 @@ namespace components::catalog {
     //     still get a pg_attribute row but their pg_depend row is omitted.
     //   - oid_batch must hold at least 1 + N OIDs (table OID + one attoid per column).
     //
-    // RN-oid: `columns` is taken by NON-const reference because this is the ONE place the
+    // `columns` is taken by NON-const reference because this is the ONE place the
     // attoid of a brand-new column comes into existence. Every allocated attoid is stamped
     // back onto its column_definition_t, so the very list handed to the physical storage
     // (node_create_collection_t::column_definitions / node_create_matview_t::inferred_columns,
     // read by plan-gen AFTER this rewrite) carries the identity the catalog just minted. The
     // storage serializes it into the .otbx and the bootstrap reconciliation compares on it.
-    // Returning it out-of-band instead would let the two halves drift apart silently, which is
-    // exactly the class of defect this closes.
+    // Returning it out-of-band instead would let the two halves drift apart silently.
     std::vector<catalog_write_t> build_create_table_writes(std::pmr::memory_resource* resource,
                                                            const std::string& dbname,
                                                            const std::string& relname,
@@ -100,11 +99,11 @@ namespace components::catalog {
     // oid_batch must hold at least 1 OID (index_oid).
     //
     // WRITER-SIDE GATE (same class as build_create_constraint_writes' conkey gate): an
-    // INVALID_OID member of column_attoids means the caller lost a column identity. The
-    // old code wrote the token into the indkey CSV anyway and silently SKIPPED that
-    // column's 'i' pg_depend edge, so the index claimed a column no dependency walk could
-    // see — the same DROP COLUMN blindness the constraint gate closed. Refused instead
-    // (rule 6; the refusal costs one DDL).
+    // INVALID_OID member of column_attoids means the caller lost a column identity.
+    // Writing the token into the indkey CSV while silently SKIPPING that column's 'i'
+    // pg_depend edge leaves the index claiming a column no dependency walk can see — the
+    // same DROP COLUMN blindness the constraint gate closes. Refused instead (rule 6; the
+    // refusal costs one DDL).
     core::result_wrapper_t<std::vector<catalog_write_t>>
     build_create_index_writes(std::pmr::memory_resource* resource,
                               const std::string& index_name,
@@ -150,9 +149,9 @@ namespace components::catalog {
     // see operator_alter_column_drop_t).
     //
     // REFUSES (invalid_constraint) any INVALID_OID inside fk_column_attoids /
-    // ref_column_attoids: such an entry used to be written into the conkey/confkey CSV
-    // while its pg_depend edge was silently omitted, so the constraint claimed a column
-    // that no dependency walk could see. An EMPTY list stays legal — its floor is the
+    // ref_column_attoids: written into the conkey/confkey CSV while its pg_depend edge is
+    // silently omitted, such an entry leaves the constraint claiming a column no dependency
+    // walk can see. An EMPTY list stays legal — its floor is the
     // read side (test_declared_key_conkey_loss.cpp).
     [[nodiscard]] core::result_wrapper_t<std::vector<catalog_write_t>>
     build_create_constraint_writes(std::pmr::memory_resource* resource,

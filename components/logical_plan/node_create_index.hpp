@@ -49,11 +49,11 @@ namespace components::logical_plan {
         // pg_class oid of an EXISTING relation already answering to this index's
         // NAME — another index, or a table (they share pg_class). Stamped by
         // enrich from the {db, indexname} resolve the transformer registers; the
-        // planner's rewrite refuses the statement when it is valid. Before this
-        // slot nothing checked relname uniqueness at all: duplicate detection was
-        // by (keys, type) only, so a second index under a taken name minted a
-        // second pg_class row and DROP INDEX by name answered about WHICHEVER row
-        // the resolve happened to find.
+        // planner's rewrite refuses the statement when it is valid. Without this
+        // slot nothing checks relname uniqueness — duplicate detection is by
+        // (keys, type) only — so a second index under a taken name mints a second
+        // pg_class row and DROP INDEX by name answers about WHICHEVER row the
+        // resolve happens to find.
         components::catalog::oid_t name_conflict_oid() const noexcept { return name_conflict_oid_; }
         void set_name_conflict_oid(components::catalog::oid_t oid) noexcept { name_conflict_oid_ = oid; }
 

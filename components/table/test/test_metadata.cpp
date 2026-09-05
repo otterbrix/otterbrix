@@ -56,7 +56,7 @@ TEST_CASE("metadata: write and read small data") {
         metadata_writer_t writer(manager);
         writer.write_data(test_data.data(), test_data.size());
         pointer = writer.get_block_pointer();
-        writer.flush();
+        REQUIRE_FALSE(writer.flush().has_error());
     }
 
     // read back
@@ -88,7 +88,7 @@ TEST_CASE("metadata: write and read typed data") {
         writer.write<uint8_t>(42);
         writer.write_string("hello world");
         pointer = writer.get_block_pointer();
-        writer.flush();
+        REQUIRE_FALSE(writer.flush().has_error());
     }
 
     {
@@ -127,13 +127,13 @@ TEST_CASE("metadata: multiple independent chains") {
         writer3.write<uint64_t>(333);
         ptr3 = writer3.get_block_pointer();
 
-        writer1.flush();
-        writer2.flush();
-        writer3.flush();
+        REQUIRE_FALSE(writer1.flush().has_error());
+        REQUIRE_FALSE(writer2.flush().has_error());
+        REQUIRE_FALSE(writer3.flush().has_error());
     }
 
     // all three managed by same manager, flush once is enough
-    manager.flush();
+    REQUIRE_FALSE(manager.flush().has_error());
 
     {
         metadata_reader_t reader1(manager, ptr1);
@@ -173,7 +173,7 @@ TEST_CASE("metadata_reader: read past end of chain -> sticky data_corruption (er
         metadata_writer_t writer(manager);
         writer.write<uint64_t>(0xABCDEF0123456789ULL);
         pointer = writer.get_block_pointer();
-        writer.flush();
+        REQUIRE_FALSE(writer.flush().has_error());
     }
 
     // A single sub-block holds (sub_block_size - SUB_BLOCK_HEADER_SIZE) readable
@@ -244,6 +244,11 @@ TEST_CASE("metadata: a file from an older format version is refused") {
     using namespace components::table::storage;
     cleanup_test_file();
 
+    const uint32_t legacy_version = 1; // what pre-reset builds wrote
+    static_assert(main_header_t::CURRENT_VERSION == 0,
+                  "format version changed: point legacy_version at a version this build does "
+                  "NOT write, so this test keeps exercising the refusal");
+
     {
         test_env_t env;
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
@@ -254,7 +259,6 @@ TEST_CASE("metadata: a file from an older format version is refused") {
     {
         std::FILE* f = std::fopen(test_db_path().c_str(), "r+b");
         REQUIRE(f != nullptr);
-        const uint32_t legacy_version = 1; // what pre-reset builds wrote
         REQUIRE(std::fseek(f, sizeof(uint32_t), SEEK_SET) == 0); // past the magic
         REQUIRE(std::fwrite(&legacy_version, sizeof(legacy_version), 1, f) == 1);
         std::fclose(f);
@@ -267,6 +271,10 @@ TEST_CASE("metadata: a file from an older format version is refused") {
         REQUIRE(result.has_error());
         INFO("error: " << result.error().what);
         CHECK(result.error().type == core::error_code_t::data_corruption);
+        // The refusal must name BOTH versions: the file's and the one this build writes.
+        const std::string what(result.error().what.data(), result.error().what.size());
+        CHECK(what.find("version " + std::to_string(legacy_version)) != std::string::npos);
+        CHECK(what.find(std::to_string(main_header_t::CURRENT_VERSION)) != std::string::npos);
     }
 
     cleanup_test_file();

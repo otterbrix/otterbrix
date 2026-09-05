@@ -33,6 +33,8 @@
 #include <limits>
 #include <unistd.h>
 
+#include "table_segment_scan.hpp"
+
 namespace {
     std::string test_db_path() {
         static std::string path = "/tmp/test_otterbrix_disk_backed_scan_" + std::to_string(::getpid()) + ".otbx";
@@ -128,7 +130,7 @@ namespace {
     uint64_t scan_and_verify_sequential(components::table::data_table_t& table, uint64_t expected_rows) {
         using namespace components::vector;
         uint64_t scanned = 0;
-        table.scan_table_segment(0, expected_rows, [&](data_chunk_t& chunk) {
+        otterbrix_test::scan_table_segment(table, 0, expected_rows, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 auto val = chunk.data[0].value(i);
                 REQUIRE(val.value<int64_t>() == static_cast<int64_t>(scanned + i));
@@ -220,7 +222,7 @@ TEST_CASE("disk_backed_scan: filled segments are written through to disk before 
 // (data_table_t::fetch_next_batch), so each fetch independently re-pins the
 // segment(s) for one vector via initialize_scan_with_offset -> get_segment. This
 // is the path the agent_disk streaming source drives per batch; the whole-scan
-// path (scan_table_segment) never exercises it. Asserts: the per-batch fetch
+// test helper (otterbrix_test::scan_table_segment) never exercises it. Asserts: the per-batch fetch
 // reads EVERY row in order, correct values, and stays bounded under a pool small
 // enough to evict between fetches (reloadable disk-backed segments must reload).
 TEST_CASE("disk_backed_scan: streaming fetch_next_batch reloads correctly under eviction", "[step2]") {
@@ -298,7 +300,7 @@ TEST_CASE("disk_backed_scan: streaming fetch_next_batch over reopened checkpoint
         table_pointer = writer.get_block_pointer();
         database_header_t header;
         header.initialize();
-        bm.write_header(header);
+        REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
     {
@@ -402,7 +404,7 @@ TEST_CASE("disk_backed_scan: checkpoint of large table, reopen yields identical 
 
         database_header_t header;
         header.initialize();
-        bm.write_header(header);
+        REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
     // reopen phase — identical row count + values read back from the file.
@@ -445,26 +447,74 @@ TEST_CASE("disk_backed_scan: repeated compaction does not bloat the file", "[ste
     append_int64_data(*table, &env.resource, COMPACT_ROWS);
     REQUIRE(table->calculate_size() == COMPACT_ROWS);
 
-    // Compact once (watermark above all stamps -> compaction is allowed), record
-    // the on-disk block footprint, then compact several more times.
+    // A7.2 changed WHEN a reclaimed block becomes reusable, and this case had to follow it.
+    // compact() releases the blocks of the collection it replaces -- which is exactly the
+    // collection the DURABLE root still points at -- so those ids are quarantined until a root
+    // that does NOT name them is on disk. The unit of reclaim is therefore compact + checkpoint,
+    // which is also the only sequence production ever runs (agent_disk_t::checkpoint_inner
+    // compacts and then immediately checkpoints the same entry). Repeated compaction WITHOUT a
+    // checkpoint now grows the file by one collection per round, deliberately: until a header
+    // commits, every one of those blocks is still part of the state a crash recovers.
+    //
+    // The property under test is unchanged: reclaim must actually happen, so N rounds must not
+    // cost N copies of the table.
     constexpr uint64_t WATERMARK = std::numeric_limits<uint64_t>::max();
-    table->compact(WATERMARK);
-    uint64_t blocks_after_first = bm.total_blocks();
+    auto compact_and_checkpoint = [&]() {
+        REQUIRE(table->compact(WATERMARK));
+        metadata_manager_t meta_mgr(bm);
+        metadata_writer_t writer(meta_mgr);
+        REQUIRE_FALSE(table->checkpoint(writer).has_error());
+        REQUIRE_FALSE(writer.flush().has_error());
+        bm.set_meta_block(writer.get_block_pointer().block_pointer);
+        auto free_ptr = bm.serialize_free_list();
+        REQUIRE_FALSE(free_ptr.has_error());
+        REQUIRE_FALSE(bm.file_sync().has_error());
+        database_header_t header;
+        header.initialize();
+        header.free_list = free_ptr.value().block_pointer;
+        REQUIRE_FALSE(bm.write_header(header).has_error());
+    };
 
-    for (int i = 0; i < 5; i++) {
-        table->compact(WATERMARK);
+    compact_and_checkpoint();
+    const uint64_t blocks_after_first = bm.total_blocks();
+
+    // A7.3 TIGHTENING (see the slack note below for what this replaces). The first round is
+    // not steady state: it is the round that pays for the second copy of the table (the
+    // superseded root's blocks only become reusable once the new header is durable, so both
+    // copies live in the file at once), and it has no previous root's chains to reclaim yet.
+    // The SECOND round is the first that can spend what the first one released, so that is
+    // where the closed cycle starts.
+    compact_and_checkpoint();
+    const uint64_t blocks_at_steady_state = bm.total_blocks();
+
+    constexpr int EXTRA_ROUNDS = 5;
+    for (int i = 0; i < EXTRA_ROUNDS; i++) {
+        compact_and_checkpoint();
     }
-    uint64_t blocks_after_repeated = bm.total_blocks();
+    const uint64_t blocks_after_repeated = bm.total_blocks();
 
     // Data must still be intact after repeated compaction.
     REQUIRE(table->calculate_size() == COMPACT_ROWS);
     REQUIRE(scan_and_verify_sequential(*table, COMPACT_ROWS) == COMPACT_ROWS);
 
-    // Free-list reclaim: repeated compaction of unchanged data must not grow the
-    // file unbounded. Each compaction should reuse reclaimed blocks rather than
-    // always appending new ones, so there is no net growth beyond the first
-    // compaction's footprint.
-    REQUIRE(blocks_after_repeated <= blocks_after_first);
+    // Free-list reclaim: repeated compaction of unchanged data must not grow the file.
+    //
+    // This case used to allow PER_ROUND_METADATA_SLACK = 4 blocks per round, explicitly
+    // "because nothing frees the superseded METADATA chain until A7.3 reclaims old roots".
+    // A7.3 is done: data_table_t::checkpoint hands the block manager the data blocks of the
+    // root it is building, and the manager walks the DURABLE root's metadata and free-list
+    // chains and files everything root N owns and root N+1 does not into pending_free_. The
+    // slack has nothing left to cover, so it is gone: from the steady state on, an unchanged
+    // table is a closed cycle and the block count must not move AT ALL.
+    //
+    // No residual slack is required. The one thing A7.3 does not reclaim -- the previous LIVE
+    // tree, which no root ever named -- is released by compact() itself in the very same
+    // round, which is why this loop closes exactly.
+    WARN("[A7.3] blocks after 1 compact+checkpoint round: "
+         << blocks_after_first << ", at steady state (round 2): " << blocks_at_steady_state << ", after "
+         << (EXTRA_ROUNDS + 2) << " rounds: " << blocks_after_repeated);
+    REQUIRE(blocks_after_repeated == blocks_at_steady_state);
+    REQUIRE(blocks_after_repeated < 2 * blocks_after_first);
 
     cleanup_test_file();
 }
@@ -681,7 +731,7 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
         table_pointer = writer.get_block_pointer();
         database_header_t header;
         header.initialize();
-        bm.write_header(header);
+        REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
     // Reopen under the SMALL pool and stream a single held batch under eviction.
@@ -733,6 +783,93 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
         std::string got = *val.value<std::string*>();
         REQUIRE(got == expected_string(i));
     }
+
+    cleanup_test_file();
+}
+
+// ---------------------------------------------------------------------------
+// Multi-row-group revert on a DISK table must leave surviving rows byte-intact.
+//
+// The bounded-DML abort shape: a committed seed row, then a large append that
+// spans several row groups (each FILLED row group is closed mid-append and its
+// segments are write-through PACKED into shared partial blocks: the data
+// segment at offset 0, its validity child BEHIND it in the SAME block), then
+// the whole append is reverted (constraint rejected at finalize).
+//
+// revert_append on the PACKED validity segment must address its bitmap at
+// handle.ptr() + block_offset(); addressing the block BASE instead smashes
+// 0xFF over the data segment packed at offset 0 -- the surviving row 0 of the
+// FIRST column then reads a mask-shaped value (-1/-2), which is exactly the
+// integration failure bounded_dml_flush::error_after_mid_flush_reverts_all.
+// ---------------------------------------------------------------------------
+TEST_CASE("disk_backed_scan: multi-row-group revert leaves surviving row intact", "[step2]") {
+    using namespace components::table;
+    using namespace components::table::storage;
+    using namespace components::types;
+    using namespace components::vector;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.create_new_database().has_error());
+
+    std::vector<column_definition_t> columns;
+    columns.emplace_back("value", logical_type::BIGINT);
+    auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "disk_backed");
+
+    // Seed ONE committed row (value 42) in its own finalized append -- the survivor.
+    {
+        auto types = table->copy_types();
+        data_chunk_t chunk(&env.resource, types, 1);
+        chunk.set_cardinality(1);
+        chunk.set_value(0, 0, int64_t{42});
+        table_append_state state(&env.resource);
+        REQUIRE_FALSE(table->append_lock(state).has_error());
+        REQUIRE_FALSE(table->initialize_append(state).has_error());
+        REQUIRE_FALSE(table->append(chunk, state).has_error());
+        table->finalize_append(state, transaction_data{0, 0});
+    }
+
+    // Large append: rows 1..kBigAppend with values DISTINCT from the seed, crossing
+    // >= 4 row-group boundaries (row_group_size == DEFAULT_VECTOR_CAPACITY) so several
+    // row groups fill, close, and get their segments packed to disk mid-append.
+    REQUIRE(table->row_group()->row_group_size() == DEFAULT_VECTOR_CAPACITY);
+    constexpr uint64_t kBigAppend = DEFAULT_VECTOR_CAPACITY * 4;
+    {
+        auto types = table->copy_types();
+        uint64_t offset = 0;
+        while (offset < kBigAppend) {
+            uint64_t batch = std::min(kBigAppend - offset, uint64_t(DEFAULT_VECTOR_CAPACITY));
+            data_chunk_t chunk(&env.resource, types, batch);
+            chunk.set_cardinality(batch);
+            for (uint64_t i = 0; i < batch; i++) {
+                chunk.set_value(0, i, static_cast<int64_t>(100000 + offset + i));
+            }
+            table_append_state state(&env.resource);
+            REQUIRE_FALSE(table->append_lock(state).has_error());
+            REQUIRE_FALSE(table->initialize_append(state).has_error());
+            REQUIRE_FALSE(table->append(chunk, state).has_error());
+            table->finalize_append(state, transaction_data{0, 0});
+            offset += batch;
+        }
+    }
+    REQUIRE(table->row_group()->total_rows() == 1 + kBigAppend);
+
+    // Revert the WHOLE large append (row 1 onward), exactly like the DML abort does.
+    table->revert_append(1, kBigAppend);
+    REQUIRE(table->row_group()->total_rows() == 1);
+
+    // The surviving row 0 must still hold its original value, byte-for-byte.
+    int64_t got = 0;
+    uint64_t rows = 0;
+    otterbrix_test::scan_table_segment(*table, 0, 1, [&](data_chunk_t& chunk) {
+        for (uint64_t i = 0; i < chunk.size(); i++) {
+            got = chunk.data[0].value(i).value<int64_t>();
+            rows++;
+        }
+    });
+    REQUIRE(rows == 1);
+    REQUIRE(got == 42);
 
     cleanup_test_file();
 }

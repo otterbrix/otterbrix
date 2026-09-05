@@ -4,6 +4,12 @@ set(${PROJECT_NAME}_SOURCES
         test_column.cpp
         test_table.cpp
         test_block_manager.cpp
+        test_block_reachability.cpp
+        test_fault_injection.cpp
+        test_shadow_header.cpp
+        test_shadow_free_list.cpp
+        test_big_strings.cpp
+        test_storage_adapter_fetch.cpp
         test_eviction_guard.cpp
         test_buffer_spill.cpp
         test_eviction_queue_leak_repro.cpp
@@ -14,6 +20,9 @@ set(${PROJECT_NAME}_SOURCES
         test_statistics.cpp
         test_block_e_procarray.cpp
         test_disk_backed_scan.cpp
+        test_root_reclaim.cpp
+        test_failed_round_rollback.cpp
+        test_checkpoint_crash_matrix.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

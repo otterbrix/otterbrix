@@ -12,6 +12,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_insert.cpp
         test_delete_column_pruning.cpp
         test_index_create_failure.cpp
+        test_index_key_type_gate.cpp
         test_catalog_scan_cost.cpp
         test_log_laziness.cpp
         test_index_mirror_gate.cpp
@@ -21,10 +22,17 @@ set( ${PROJECT_NAME}_SOURCES
         test_s3_cleanup_scaling.cpp
         test_index_flush_scope.cpp
         test_ssb_load_scaling.cpp
+        test_insert_scaling.cpp
         test_scan_pin_scope.cpp
         test_string_projection.cpp
         test_check_on_update.cpp
         test_index_bootstrap_failure.cpp
+        test_index_type_persistence.cpp
+        test_index_rebuild_crash.cpp
+        test_index_rebuild_live_snapshot.cpp
+        test_dml_dictionary_rowids.cpp
+        test_persistence_gaps.cpp
+        test_null_persistence.cpp
         test_pump_hops.cpp
         test_append_pin_lifetime.cpp
         test_gather_string_lifetime.cpp
@@ -91,6 +99,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_streaming_dml.cpp
         test_streaming_match.cpp
         test_streaming_index_scan.cpp
+        test_index_oid_selection.cpp
         test_streaming_join.cpp
         test_streaming_ddl_leaf.cpp
         test_streaming_recursive_cte.cpp

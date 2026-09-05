@@ -1,6 +1,7 @@
 #include "base_spaces.hpp"
 #include <actor-zeta.hpp>
 #include <actor-zeta/spawn.hpp>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/logical_plan/node_checkpoint.hpp>
 #include <core/executor.hpp>
@@ -57,8 +58,6 @@ namespace otterbrix {
             }
         }
 
-        auto index_definitions = std::pmr::vector<components::logical_plan::node_create_index_ptr>(&resource);
-
         // Read WAL records via wal_reader_t. Capture the union of committed txn
         // ids alongside the records: the bitcask index txn-log recover gate
         // (M1.1) needs it to discard frames belonging to transactions whose WAL
@@ -70,10 +69,7 @@ namespace otterbrix {
         services::wal::wal_reader_t wal_reader(config.wal, log_);
         auto wal_records = wal_reader.read_committed_records(last_wal_id, &committed_txn_ids);
 
-        trace(log_,
-              "spaces::PHASE 1 complete - loaded {} index definitions, {} WAL records",
-              index_definitions.size(),
-              wal_records.size());
+        trace(log_, "spaces::PHASE 1 complete - {} WAL records", wal_records.size());
 
         trace(log_, "spaces::manager_wal start");
         auto manager_wal_address = actor_zeta::address_t::empty_address();
@@ -167,18 +163,19 @@ namespace otterbrix {
             // so the WAL-replay filter below can correctly skip
             // already-checkpointed records for user tables.
             disk_ptr->load_user_table_storages_sync();
-            // pg_class persists unconditionally, but IN_MEMORY user tables leave
-            // no .otbx, so load_user_table_storages_sync cannot bring their
-            // storage back. Reconstruct the (empty) storage shell for any alive
-            // user table the catalog knows about but whose storage is still
-            // missing, from its pg_attribute columns. Without this, a reopened
-            // session's CREATE TABLE IF NOT EXISTS finds the table "exists" and
-            // skips creating storage, resolve_table returns a schema, but every
-            // INSERT silently no-ops (storage_append returns 0,0) and scans see
-            // nothing. Runs after load_user_table_storages_sync so on-disk tables
-            // (already loaded) are skipped, and before WAL replay so replayed
-            // INSERTs land in the rehydrated storage.
-            disk_ptr->rehydrate_in_memory_user_storages_sync();
+            // B1a: every user table is disk-backed, so an alive pg_class row
+            // whose .otbx is missing means the file was lost (the directory
+            // entry of a freshly created .otbx is not fsynced, so a crash can
+            // durably keep the catalog row while losing the file). Recreate the
+            // missing .otbx from the pg_attribute columns so catalog and storage
+            // agree again. Without this, a reopened session's CREATE TABLE IF
+            // NOT EXISTS finds the table "exists" and skips creating storage,
+            // resolve_table returns a schema, but every INSERT silently no-ops
+            // (storage_append returns 0,0) and scans see nothing. Runs after
+            // load_user_table_storages_sync so on-disk tables (already loaded)
+            // are skipped, and before WAL replay so replayed INSERTs land in the
+            // recreated storage.
+            disk_ptr->rehydrate_missing_user_storages_sync();
         }
         if (disk_ptr) {
             // Pass WAL address: disk uses this to write pg_catalog WAL records inline from
@@ -237,9 +234,12 @@ namespace otterbrix {
                         case services::wal::wal_record_type::PHYSICAL_INSERT:
                             if (!r->physical_data.empty()) {
                                 if (!disk_ptr->has_storage(table_oid)) {
-                                    // Try lazy-load from .otbx; if that fails (table is
-                                    // in-memory or .otbx absent), synthesise an in-memory
-                                    // storage from the WAL chunk's column types.
+                                    // Try lazy-load from .otbx; if the file is absent
+                                    // (lost with its unfsynced directory entry, or the
+                                    // record predates this table's .otbx) synthesise a
+                                    // DISK storage from the WAL chunk's column types at
+                                    // the standard path — B1a: every table is
+                                    // disk-backed, replay synthesis included.
                                     disk_ptr->load_storage_for_wal_replay_sync(table_oid, main_db_oid);
                                     if (!disk_ptr->has_storage(table_oid)) {
                                         auto types = r->physical_data.front().types();
@@ -248,9 +248,25 @@ namespace otterbrix {
                                         for (const auto& t : types) {
                                             cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
                                         }
-                                        disk_ptr->create_storage_with_columns_sync(table_oid,
-                                                                                   main_db_oid,
-                                                                                   std::move(cols));
+                                        auto otbx = disk_ptr->path_db() /
+                                                    std::to_string(static_cast<unsigned>(main_db_oid)) /
+                                                    std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
+                                        std::filesystem::create_directories(otbx.parent_path());
+                                        // B1b: the synthesised storage must keep the computed
+                                        // (relkind='g') flag — its columns come from the WAL
+                                        // chunk, so they are NON-empty even for a computed
+                                        // table, and the flag cannot be inferred from them.
+                                        // pg_class is final here: system-table records replay
+                                        // FIRST and sequentially, user replay is sequential
+                                        // too, so the single-threaded relkind scan is safe.
+                                        const bool synth_computed =
+                                            disk_ptr->relkind_for_oid_sync(table_oid) ==
+                                            components::catalog::relkind::computed;
+                                        disk_ptr->create_storage_disk_sync(table_oid,
+                                                                           main_db_oid,
+                                                                           std::move(cols),
+                                                                           otbx,
+                                                                           synth_computed);
                                     }
                                 }
                                 // TODO: load timezone from settings?
@@ -274,9 +290,21 @@ namespace otterbrix {
                                         for (const auto& t : types) {
                                             cols.emplace_back(t.has_alias() ? t.alias() : std::string{}, t);
                                         }
-                                        disk_ptr->create_storage_with_columns_sync(table_oid,
-                                                                                   main_db_oid,
-                                                                                   std::move(cols));
+                                        // B1a: synthesise DISK storage (standard path),
+                                        // mirroring the PHYSICAL_INSERT branch above —
+                                        // including the B1b relkind-derived computed flag.
+                                        auto otbx = disk_ptr->path_db() /
+                                                    std::to_string(static_cast<unsigned>(main_db_oid)) /
+                                                    std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
+                                        std::filesystem::create_directories(otbx.parent_path());
+                                        const bool synth_computed =
+                                            disk_ptr->relkind_for_oid_sync(table_oid) ==
+                                            components::catalog::relkind::computed;
+                                        disk_ptr->create_storage_disk_sync(table_oid,
+                                                                           main_db_oid,
+                                                                           std::move(cols),
+                                                                           otbx,
+                                                                           synth_computed);
                                         // create_* already seeded these columns; nothing
                                         // more to add for a freshly-synthesised storage.
                                         break;
@@ -341,7 +369,7 @@ namespace otterbrix {
 
             // Replay user tables sequentially. The parallel variant raced on
             // manager_disk_t::storages_ (unordered_map) — each worker called
-            // create_storage_with_columns_sync() concurrently, and the hash
+            // the synchronous storage-create path concurrently, and the hash
             // table is not thread-safe (TSan-confirmed). Bootstrap is a rare
             // path, so the perf hit is negligible.
             for (auto& [oid, records] : user_by_oid) {
@@ -357,6 +385,18 @@ namespace otterbrix {
                       physical_count,
                       system_by_oid.size() + user_by_oid.size());
             }
+        }
+
+        // A7.6 post-replay walk: the pre-replay walk DEFERS any never-checkpointed .otbx
+        // whose catalog rows still sat in the WAL (a table created, never checkpointed,
+        // crashed — its schema exists only as replayed pg_attribute rows). Now that replay
+        // has repopulated the catalog, walk the user-table directories again: already-loaded
+        // oids are skipped (has_storage), deferred young files open as legitimately empty
+        // DISK tables with their catalog schema. Without this second walk such a table would
+        // answer queries through the storage-less record branch — empty by accident, and any
+        // later CHECKPOINT would never reach its .otbx.
+        if (disk_ptr) {
+            disk_ptr->load_user_table_storages_sync();
         }
 
         // Reseed after WAL replay so any OIDs minted in post-checkpoint WAL records
@@ -406,7 +446,7 @@ namespace otterbrix {
                 for (auto& [oid, delete_id] : dropped_oids) {
                     // Mirrors create_storage_disk's layout:
                     //   ${db_root}/${db_oid}/${tbl_oid}/table.otbx
-                    // with sidecars `table.otbx.wal_id` and `table.otbx.prev`
+                    // with sidecar `table.otbx.wal_id`
                     // — same files drop_storage removes on the live path.
                     auto base = db_root / std::to_string(static_cast<unsigned>(main_db_oid)) /
                                 std::to_string(static_cast<unsigned>(oid));
@@ -416,11 +456,6 @@ namespace otterbrix {
                         auto wal_id_sidecar = otbx;
                         wal_id_sidecar += ".wal_id";
                         sidecars.push_back(std::move(wal_id_sidecar));
-                    }
-                    {
-                        auto prev_sidecar = otbx;
-                        prev_sidecar += ".prev";
-                        sidecars.push_back(std::move(prev_sidecar));
                     }
                     disk_ptr->register_dropped_storage_sync(oid, delete_id, std::move(otbx), std::move(sidecars));
                     manager_index_->mark_table_dropped_sync(oid, delete_id);
@@ -457,25 +492,10 @@ namespace otterbrix {
 
         // NOT NULL overlays are recorded in pg_attribute (attnotnull) and applied
         // lazily by resolve_table when the storage is first loaded.
-        (void) disk_ptr;
-
-        if (!wal_records.empty()) {
-            trace(log_, "spaces::PHASE 3 - Skipping {} indexes (WAL replay handled them)", index_definitions.size());
-        } else if (!index_definitions.empty()) {
-            auto session = components::session::session_id_t();
-
-            for (auto& index_def : index_definitions) {
-                trace(log_, "spaces::creating index: {}", index_def->name());
-                auto cursor = wrapper_dispatcher_->execute_plan(
-                    session,
-                    components::logical_plan::execution_plan_t{&resource, index_def, nullptr});
-                if (cursor->is_error()) {
-                    warn(log_, "spaces::failed to create index {}: {}", index_def->name(), cursor->get_error().what);
-                } else {
-                    trace(log_, "spaces::index {} created successfully", index_def->name());
-                }
-            }
-        }
+        //
+        // No index re-creation here: on-disk indexes were re-attached from their
+        // pg_index rows by bootstrap_indexes_sync above (the retired
+        // metadata-file replay used to run in this spot).
 
         trace(log_, "spaces::PHASE 3 complete");
         trace(log_, "spaces::spaces() final");
@@ -532,12 +552,12 @@ namespace otterbrix {
             }
 
             // Spawn args must match manager_index_t::create_index so the agent is
-            // equivalent to one from the runtime DDL path. Ctor takes a non-pmr
-            // index_name_t (std::string) but row.name is pmr::string, hence the copy.
-            const auto index_name = std::string(row.name.data(), row.name.size());
+            // equivalent to one from the runtime DDL path. The index directory is
+            // ${disk}/${table_oid}/${indexrelid}/ — oid-keyed, never name-keyed.
             services::index::disk_hash_table_ptr shared_hash_storage;
             if (row.type == components::logical_plan::index_type::hashed && !disk_config.path.empty()) {
-                const auto base = disk_config.path / std::to_string(static_cast<unsigned>(row.table_oid)) / index_name;
+                const auto base = disk_config.path / std::to_string(static_cast<unsigned>(row.table_oid)) /
+                                  std::to_string(static_cast<unsigned>(row.oid));
                 std::filesystem::create_directories(base);
                 // The direct ctor asserts and aborts on exactly the failures this bootstrap is
                 // meant to survive (unopenable file, unreadable or incompatible header), so it
@@ -548,13 +568,20 @@ namespace otterbrix {
                     services::index::disk_hash_table_t::default_bucket_count,
                     &resource);
                 if (storage.has_error()) {
+                    // Skip the WHOLE index, not just the shared storage: spawning the
+                    // bitcask agent with a null shared hash would make it open the same
+                    // broken file through disk_hash_table_t's direct ctor, which
+                    // asserts and aborts — the exact failure this branch survives.
+                    // An unregistered index costs a full scan; the table stays readable.
                     error(log_,
-                          "bootstrap_indexes_sync: disk hash storage init failed for {}: {}",
-                          index_name,
+                          "bootstrap_indexes_sync: disk hash storage init failed for index_oid={}: {} — "
+                          "index left unregistered",
+                          static_cast<unsigned>(row.oid),
                           storage.error().what);
-                } else {
-                    shared_hash_storage = std::move(storage.value());
+                    ++indexes_skipped_unfinished;
+                    continue;
                 }
+                shared_hash_storage = std::move(storage.value());
             }
 
             // the WAL committed-txn set, used by the bitcask agent's
@@ -570,7 +597,7 @@ namespace otterbrix {
                 actor_zeta::spawn<services::index::index_agent_disk_t>(&resource,
                                                                        disk_config.path,
                                                                        row.table_oid,
-                                                                       index_name,
+                                                                       row.oid,
                                                                        row.type,
                                                                        disk_config.bitcask_flush_threshold,
                                                                        disk_config.bitcask_segment_record_limit,
@@ -581,7 +608,7 @@ namespace otterbrix {
             auto agent_addr = agent->address();
 
             manager_index_->bootstrap_index_sync(row.table_oid,
-                                                 std::move(row.name),
+                                                 row.oid,
                                                  row.type,
                                                  std::move(row.keys),
                                                  agent_addr,
@@ -610,12 +637,22 @@ namespace otterbrix {
             }
             if (row_count == 0)
                 continue;
-            manager_index_->bootstrap_repopulate_sync(oid, std::move(chunks), row_count);
+            auto rebuild_error = manager_index_->bootstrap_repopulate_sync(oid, std::move(chunks), row_count);
+            if (rebuild_error.contains_error()) {
+                // Producer defect in the rebuild feed (scan chunks without physical
+                // row_ids). Bootstrap has no statement to fail, so log LOUDLY; the
+                // engine was not touched (the gate runs before any clearing), so the
+                // rehydrated entries stay as bootstrap_index_sync left them.
+                error(log_,
+                      "spaces::bootstrap_indexes_sync: index rebuild for oid={} failed: {} — index left unrebuilt",
+                      static_cast<unsigned>(oid),
+                      rebuild_error.what);
+            }
         }
 
         trace(log_,
               "spaces::PHASE 4 bootstrap_indexes_sync: {} engines, {} indexes wired "
-              "({} skipped as unfinished), {} dropped tombstones restored",
+              "({} skipped: unfinished build or unopenable storage), {} dropped tombstones restored",
               live_tables.size(),
               indexes_wired,
               indexes_skipped_unfinished,

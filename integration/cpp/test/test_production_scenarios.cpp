@@ -582,7 +582,7 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.TestCollection (id bigint, value bigint) "
-                                    "WITH (storage = 'disk');");
+                                    ";");
         }
 
         // Insert 100K rows in batches of 1000
@@ -748,7 +748,7 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.TestCollection (id bigint, name string) "
-                                    "WITH (storage = 'disk');");
+                                    ";");
         }
 
         // Insert 50 rows
@@ -852,8 +852,9 @@ TEST_CASE("integration::cpp::production::corrupted_otbx_recovery") {
 TEST_CASE("integration::cpp::production::wal_segment_rotation") {
     auto config = test_create_config("/tmp/otterbrix/production/wal_rotation");
     test_clear_directory(config);
-    // disk.on = true for catalog persistence (needed for restart recovery)
-    // Table uses in-memory storage (no WITH storage='disk') so data comes from WAL replay
+    // B1a: tables are always disk-backed. Restart recovery draws from the
+    // table's .otbx checkpoint plus WAL replay above the checkpoint floor; this
+    // test's point — WAL segment rotation under row-by-row load — is unchanged.
     config.wal.max_segment_size = 4 * 1024; // 4 KB — force small segments
 
     INFO("phase 1: insert 500 rows (one by one to force many WAL records)");
@@ -960,7 +961,7 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.TestCollection (id bigint, value bigint) "
-                                    "WITH (storage = 'disk');");
+                                    ";");
         }
 
         // Insert 1000 rows
@@ -1045,9 +1046,9 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
 // this must (a) accept every INSERT batch without OOM and (b) complete the large
 // scan with the CORRECT aggregate — prove COMPLETION, not just no-crash.
 //
-// DISK-backed (config.disk.on, storage = 'disk') so write-through is actually
-// exercised — an in-memory table would pin the whole working set and clean-OOM
-// by design, which cannot validate the write-through bound.
+// DISK-backed (B1a: every table is) so write-through is actually exercised —
+// an in-memory table would pin the whole working set and clean-OOM by design,
+// which cannot validate the write-through bound.
 //
 // Working-set / pool note: there is NO buffer-pool / memory-limit knob in
 // configuration::config — the pool size is hardcoded (4 GiB) inside the disk
@@ -1099,7 +1100,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
         {
             // Mirror the SSB lineorder shape: many wide bigint columns plus a few
             // text columns, so a 1024-row row-group is a large working set.
-            // storage = 'disk' enables write-through for this table.
+            // Disk-backed by default (B1a), so write-through applies.
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session,
                                     "CREATE TABLE TestDatabase.Lineorder ("
@@ -1120,7 +1121,7 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
                                     "lo_tax bigint, "
                                     "lo_commitdate bigint, "
                                     "lo_shipmode string) "
-                                    "WITH (storage = 'disk');");
+                                    ";");
         }
     }
 
@@ -1239,7 +1240,7 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
                                                "lo_quantity bigint, "
                                                "lo_extendedprice bigint, "
                                                "lo_discount bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
         {

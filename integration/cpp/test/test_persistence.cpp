@@ -2,6 +2,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <components/catalog/catalog_oids.hpp>
+#include <cstdlib>
 #include <filesystem>
 #include <set>
 #include <sstream>
@@ -555,19 +557,23 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
     }
 }
 
-// Dynamic-schema (relkind='g' / IN_MEMORY computing) tables grow their column set
-// per-INSERT (stage 1b in agent_disk::storage_append_inner). That growth is made durable
-// by emitting a PHYSICAL_ADD_COLUMN WAL record (the new columns as a 0-row alias-tagged
-// chunk) BEFORE the dependent PHYSICAL_INSERT, and replaying it on restart (base_spaces
-// replay loop -> direct_add_column_sync) so the grown schema is reconstructed ahead of
-// the rows that reference it.
+// Dynamic-schema (relkind='g' computed) tables grow their column set per-INSERT
+// (stage 1b in agent_disk::storage_append_inner). B1a made every table disk-backed;
+// B1b makes the computed flag itself durable, so growth still works after restart.
+// The growth is made durable by emitting a PHYSICAL_ADD_COLUMN WAL record (the new
+// columns as a 0-row alias-tagged chunk) BEFORE the dependent PHYSICAL_INSERT, and
+// replaying it on restart (base_spaces replay loop -> direct_add_column_sync) so the
+// grown schema is reconstructed ahead of the rows that reference it.
 //
 // Scenario: a computing table is created with WAL ON, a first INSERT introduces (id,
 // name), a second INSERT introduces an ADDITIONAL new column (value) — triggering stage-1b
 // growth and a PHYSICAL_ADD_COLUMN record — then the engine is restarted and ALL columns +
 // rows must survive.
-// TODO: computed schema does not work for now
-/*
+//
+// B1b: re-enabled. This test was disabled ("TODO: computed schema does not work for
+// now") while computed tables were IN_MEMORY-only; its assertions are unchanged — the
+// table is now a disk-backed .otbx whose computed flag is restored from
+// pg_class.relkind on load.
 TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recovery") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/computed_schema_growth_wal");
     test_clear_directory(config);
@@ -647,7 +653,372 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 3;", 1);
     }
 }
-*/
+
+// B1b end-to-end gate, clean-restart leg: the computed (relkind='g') flag must
+// survive a restart, proven by the one behavior only the flag enables — merging a
+// NEW type variant of an existing field name into its OWN physical column. A table
+// that lost is_computed on reload would match the post-restart {a:bool} chunk by
+// name alone and glue the boolean vector into the bigint 'a' column.
+//
+// {a:int}, {a:string}, restart, {a:bool}: SELECT * must return all three rows with
+// each variant in its own column.
+TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/computed_variants_restart");
+    test_clear_directory(config);
+
+    INFO("phase 1: computed table, two type variants of 'a' (bigint, string)");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection ();");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id, a) VALUES (1, 10);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id, a) VALUES (2, 'str');");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->column_count() == 3); // id, a:bigint, a:string
+        }
+        // In-session '::?type' variant selection (a plain column ref, not a jsonb
+        // chain) — the transformer must mark the key variant_select, not lower it
+        // to a cast, or validation refuses the multi-type name as ambiguous.
+        {
+            auto s2 = otterbrix::session_id_t();
+            auto c2 = dispatcher->execute_sql(s2, "SELECT id, a::?bigint FROM TestDatabase.TestCollection ORDER BY id;");
+            REQUIRE(c2->is_success());
+            REQUIRE(c2->size() == 2);
+            REQUIRE(c2->value(1, 0).value<int64_t>() == 10);
+            REQUIRE(c2->value(1, 1).is_null());
+        }
+        // Pushed-down WHERE on the multi-type table (in-session baseline).
+        CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE id = 1;", 1);
+    }
+
+    INFO("phase 2: restart, add the THIRD type variant (bool), all three merge");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        // Both pre-restart variants replayed.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
+
+        // Pushed-down WHERE and the '::?' selector still work on the reloaded
+        // multi-type table BEFORE any new write.
+        CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE id = 1;", 1);
+        {
+            auto s2 = otterbrix::session_id_t();
+            auto c2 = dispatcher->execute_sql(s2, "SELECT a::?bigint FROM TestDatabase.TestCollection WHERE id = 1;");
+            REQUIRE(c2->is_success());
+            REQUIRE(c2->size() == 1);
+            REQUIRE(c2->value(0, 0).value<int64_t>() == 10);
+        }
+
+        // The variant added AFTER the restart is the proof the flag survived:
+        // stage-1b growth must key on (name, type), which only runs computed.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id, a) VALUES (3, true);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->column_count() == 4); // id + three 'a' variants
+
+        // Locate the three 'a' variants by physical type — each in its OWN column.
+        const auto& chunk = cur->chunks().front();
+        int a_bigint = -1, a_string = -1, a_bool = -1;
+        for (size_t c = 0; c < chunk.column_count(); ++c) {
+            if (std::string(chunk.data[c].type().alias()) != "a") {
+                continue;
+            }
+            switch (chunk.data[c].type().type()) {
+                case logical_type::BIGINT:
+                    a_bigint = static_cast<int>(c);
+                    break;
+                case logical_type::STRING_LITERAL:
+                    a_string = static_cast<int>(c);
+                    break;
+                case logical_type::BOOLEAN:
+                    a_bool = static_cast<int>(c);
+                    break;
+                default:
+                    break;
+            }
+        }
+        REQUIRE(a_bigint >= 0);
+        REQUIRE(a_string >= 0);
+        REQUIRE(a_bool >= 0);
+
+        // bigint variant: only row id=1.
+        REQUIRE(chunk.get_value<int64_t>(static_cast<size_t>(a_bigint), 0) == 10);
+        REQUIRE(chunk.value(static_cast<size_t>(a_bigint), 1).is_null());
+        REQUIRE(chunk.value(static_cast<size_t>(a_bigint), 2).is_null());
+        // string variant: only row id=2.
+        REQUIRE(chunk.value(static_cast<size_t>(a_string), 0).is_null());
+        REQUIRE(chunk.get_value<std::string_view>(static_cast<size_t>(a_string), 1) == "str");
+        REQUIRE(chunk.value(static_cast<size_t>(a_string), 2).is_null());
+        // bool variant: only row id=3 (the post-restart insert).
+        REQUIRE(chunk.value(static_cast<size_t>(a_bool), 0).is_null());
+        REQUIRE(chunk.value(static_cast<size_t>(a_bool), 1).is_null());
+        REQUIRE(chunk.get_value<bool>(static_cast<size_t>(a_bool), 2) == true);
+
+        // The ::?type variant selector agrees.
+        // Each '::?type' selector picks its own variant after the growth.
+        {
+            auto s2 = otterbrix::session_id_t();
+            auto c2 = dispatcher->execute_sql(s2, "SELECT a::?bigint FROM TestDatabase.TestCollection WHERE id = 1;");
+            REQUIRE(c2->is_success());
+            REQUIRE(c2->size() == 1);
+            REQUIRE(c2->value(0, 0).value<int64_t>() == 10);
+        }
+        {
+            auto s2 = otterbrix::session_id_t();
+            auto c2 = dispatcher->execute_sql(s2, "SELECT a::?string FROM TestDatabase.TestCollection WHERE id = 2;");
+            REQUIRE(c2->is_success());
+            REQUIRE(c2->size() == 1);
+            REQUIRE(c2->value(0, 0).value<std::string_view>() == "str");
+        }
+        {
+            auto s2 = otterbrix::session_id_t();
+            auto c2 = dispatcher->execute_sql(s2, "SELECT a::?bool FROM TestDatabase.TestCollection;");
+            REQUIRE(c2->is_success());
+            REQUIRE(c2->size() == 3);
+        }
+        // Pushed-down WHERE still matches AFTER the post-restart growth. This pinned
+        // the reopened-oid-generator defect: the (a, bool) registration re-minted an
+        // attoid already taken by a persisted computed column, the duplicate broke
+        // resolve_table's attoid order against the storage order, and every pushed
+        // filter on the table matched zero rows.
+        CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE id = 3;", 1);
+        {
+            auto s2 = otterbrix::session_id_t();
+            auto c2 = dispatcher->execute_sql(s2, "SELECT a::?bool FROM TestDatabase.TestCollection WHERE id = 3;");
+            REQUIRE(c2->is_success());
+            REQUIRE(c2->size() == 1);
+            REQUIRE(c2->value(0, 0).value<bool>() == true);
+        }
+    }
+}
+
+// B1b end-to-end gate, crash leg: the computed flag must survive WAL replay
+// SYNTHESIS, not only a clean reload of the .otbx. Crash model (same kill -9
+// simulation as test_persistence_gaps::create_then_kill_before_checkpoint): copy
+// the LIVE data directory, then delete the user table's storage directory from the
+// COPY — a freshly created .otbx's directory entry is not fsynced, so a real crash
+// durably keeps the pg_class row and the WAL while losing the file (the exact
+// scenario base_spaces' replay-synthesis branch exists for). On reopen the storage
+// is synthesised from the WAL chunks' column types; the synthesised entry must
+// still be computed (from pg_class.relkind), or the post-recovery {a:bool} insert
+// would be glued into the bigint 'a' column instead of a new variant column.
+TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_crash_replay_synthesis") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/computed_variants_crash_src");
+    test_clear_directory(config);
+
+    const std::filesystem::path crash_dir =
+        "/tmp/otterbrix/integration/test_persistence/computed_variants_crash_copy";
+
+    INFO("phase 1: computed table, two type variants; copy the live directory (crash image)");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection ();");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id, a) VALUES (1, 10);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id, a) VALUES (2, 'str');");
+            REQUIRE(cur->is_success());
+        }
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
+
+        std::filesystem::remove_all(crash_dir);
+        std::filesystem::create_directories(crash_dir.parent_path());
+        std::filesystem::copy(config.main_path, crash_dir, std::filesystem::copy_options::recursive);
+    }
+
+    // Model the lost directory entry: drop every USER table's storage directory from
+    // the crash image (oid >= FIRST_USER_OID; system tables keep theirs). The WAL —
+    // which carries the PHYSICAL_INSERT / PHYSICAL_ADD_COLUMN records — survives.
+    {
+        std::vector<std::filesystem::path> user_table_dirs;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(crash_dir)) {
+            if (!entry.is_regular_file() || entry.path().filename() != "table.otbx") {
+                continue;
+            }
+            const std::string oid_dir = entry.path().parent_path().filename().string();
+            char* end = nullptr;
+            const unsigned long oid = std::strtoul(oid_dir.c_str(), &end, 10);
+            if (end && *end == '\0' && oid >= components::catalog::FIRST_USER_OID) {
+                user_table_dirs.push_back(entry.path().parent_path());
+            }
+        }
+        INFO("the crash image must contain exactly the one user table's storage dir");
+        REQUIRE(user_table_dirs.size() == 1);
+        std::filesystem::remove_all(user_table_dirs.front());
+    }
+
+    INFO("phase 2: reopen the crash image — replay synthesis rebuilds the computed storage");
+    {
+        auto crash_config = test_create_config(crash_dir);
+        test_spaces space(crash_config);
+        auto* dispatcher = space.dispatcher();
+
+        // Both pre-crash rows come back through the synthesised storage.
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
+
+        // Third type variant AFTER the crash recovery: only a synthesised entry that
+        // kept is_computed grows a NEW (a, bool) column instead of gluing by name.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur =
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.TestCollection (id, a) VALUES (3, true);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+        }
+
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection ORDER BY id;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->column_count() == 4); // id + three 'a' variants
+
+        const auto& chunk = cur->chunks().front();
+        int a_bigint = -1, a_string = -1, a_bool = -1;
+        for (size_t c = 0; c < chunk.column_count(); ++c) {
+            if (std::string(chunk.data[c].type().alias()) != "a") {
+                continue;
+            }
+            switch (chunk.data[c].type().type()) {
+                case logical_type::BIGINT:
+                    a_bigint = static_cast<int>(c);
+                    break;
+                case logical_type::STRING_LITERAL:
+                    a_string = static_cast<int>(c);
+                    break;
+                case logical_type::BOOLEAN:
+                    a_bool = static_cast<int>(c);
+                    break;
+                default:
+                    break;
+            }
+        }
+        REQUIRE(a_bigint >= 0);
+        REQUIRE(a_string >= 0);
+        REQUIRE(a_bool >= 0);
+
+        REQUIRE(chunk.get_value<int64_t>(static_cast<size_t>(a_bigint), 0) == 10);
+        REQUIRE(chunk.value(static_cast<size_t>(a_bigint), 1).is_null());
+        REQUIRE(chunk.value(static_cast<size_t>(a_bigint), 2).is_null());
+        REQUIRE(chunk.value(static_cast<size_t>(a_string), 0).is_null());
+        REQUIRE(chunk.get_value<std::string_view>(static_cast<size_t>(a_string), 1) == "str");
+        REQUIRE(chunk.value(static_cast<size_t>(a_string), 2).is_null());
+        REQUIRE(chunk.value(static_cast<size_t>(a_bool), 0).is_null());
+        REQUIRE(chunk.value(static_cast<size_t>(a_bool), 1).is_null());
+        REQUIRE(chunk.get_value<bool>(static_cast<size_t>(a_bool), 2) == true);
+
+        // Pushed-down WHERE and the '::?' selector across replay synthesis + growth
+        // (same attoid-frontier and variant-column pins as the clean-restart test).
+        CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE id = 3;", 1);
+        {
+            auto s2 = otterbrix::session_id_t();
+            auto c2 = dispatcher->execute_sql(s2, "SELECT a::?bool FROM TestDatabase.TestCollection WHERE id = 3;");
+            REQUIRE(c2->is_success());
+            REQUIRE(c2->size() == 1);
+            REQUIRE(c2->value(0, 0).value<bool>() == true);
+        }
+    }
+}
+
+// B1b guard: a ZERO-COLUMN REGULAR table (relkind='r' whose only column was
+// dropped) must NOT come back computed after a restart. Its pg_attribute schema is
+// empty — exactly the shape the load path once used as the computed heuristic — so
+// only the relkind check keeps it regular. Regular vs computed is observable
+// through INSERT: a computed table adopts arbitrary per-document columns, a regular
+// zero-column table refuses them.
+TEST_CASE("integration::cpp::test_persistence::zero_column_regular_table_stays_regular") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/zero_col_regular");
+    test_clear_directory(config);
+
+    INFO("phase 1: regular one-column table, DROP the only column");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.OneCol (x BIGINT);");
+            REQUIRE(cur->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.OneCol DROP COLUMN x;");
+            REQUIRE(cur->is_success());
+        }
+        // In-session: still a regular table — refuses arbitrary document columns.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.OneCol (id, a) VALUES (1, 10);");
+            REQUIRE_FALSE(cur->is_success());
+        }
+    }
+
+    INFO("phase 2: restart — the empty-schema regular table must NOT become computed");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        // A computed table would adopt (id, a) and take the row; the regular
+        // zero-column table must still refuse it.
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.OneCol (id, a) VALUES (1, 10);");
+            REQUIRE_FALSE(cur->is_success());
+        }
+    }
+}
 
 TEST_CASE("integration::cpp::test_persistence::double_restart") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/double_restart");
@@ -747,7 +1118,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
 
@@ -804,7 +1175,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
 
@@ -882,7 +1253,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
 
@@ -958,7 +1329,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
             auto cur = dispatcher->execute_sql(
                 session,
                 "CREATE TABLE TestDatabase.TestCollection "
-                "(name string, score bigint, tag string DEFAULT 'untagged') WITH (storage = 'disk');");
+                "(name string, score bigint, tag string DEFAULT 'untagged') ;");
             REQUIRE(cur->is_success());
         }
 
@@ -1029,7 +1400,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
             auto cur = dispatcher->execute_sql(
                 session,
                 "CREATE TABLE TestDatabase.TestCollection "
-                "(name string NOT NULL, status string NOT NULL DEFAULT 'pending') WITH (storage = 'disk');");
+                "(name string NOT NULL, status string NOT NULL DEFAULT 'pending') ;");
             REQUIRE(cur->is_success());
         }
 
@@ -1103,7 +1474,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_wal_only_recovery") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
 
@@ -1153,7 +1524,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_double_restart") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
 
@@ -1235,7 +1606,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
 
@@ -1314,7 +1685,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart"
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
 
@@ -1365,7 +1736,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart"
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (val bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
 
@@ -1421,7 +1792,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "CREATE TABLE TestDatabase.GcSurvivor (val bigint) "
-                                           "WITH (storage = 'disk');");
+                                           ";");
         REQUIRE(cur->is_success());
     }
     {
@@ -1440,7 +1811,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "CREATE TABLE TestDatabase.GcVictim (name string, count bigint) "
-                                           "WITH (storage = 'disk');");
+                                           ";");
         REQUIRE(cur->is_success());
     }
     {
@@ -1538,7 +1909,7 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.DropVictim (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
         {
@@ -1654,7 +2025,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
 
@@ -1836,7 +2207,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_mixed_ops_checkpoint_r
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
         {
@@ -1920,7 +2291,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_long_keys_survive_chec
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
         {
@@ -1974,7 +2345,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
         {
@@ -2043,7 +2414,7 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.users (id INT, email TEXT) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
         {
@@ -2077,23 +2448,15 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // Structural witness: the disk agent's bitcask dir at
-        // ${disk.path}/${users_oid}/users_email_idx exists, proving bootstrap
-        // respawned it. Walk the oid-keyed dirs (oid >= 16384 = user tables).
+        // Structural witness: the disk agent's b+tree dir at
+        // ${disk.path}/${users_oid}/${indexrelid} exists, proving bootstrap
+        // respawned it. The layout is oid-keyed and carries no index name, so the
+        // dir is found by content: the ordered b+tree backend owns a `metadata`
+        // file in its directory (bitcask would own CURRENT instead).
         bool found = false;
         if (std::filesystem::exists(config.disk.path)) {
-            for (const auto& d : std::filesystem::directory_iterator(config.disk.path)) {
-                if (!d.is_directory())
-                    continue;
-                try {
-                    auto oid = std::stoull(d.path().filename().string());
-                    if (oid < 16384)
-                        continue;
-                } catch (...) {
-                    continue;
-                }
-                auto candidate = d.path() / "users_email_idx";
-                if (std::filesystem::exists(candidate) && std::filesystem::is_directory(candidate)) {
+            for (const auto& d : std::filesystem::recursive_directory_iterator(config.disk.path)) {
+                if (d.is_directory() && std::filesystem::exists(d.path() / "metadata")) {
                     found = true;
                     break;
                 }
@@ -2224,7 +2587,7 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
         {
@@ -2290,23 +2653,25 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
 }
 
 // Regression guard for the SSB-reopen bug: with disk AND wal OFF (the SSB
-// benchmark configuration), pg_class is still persisted unconditionally, but an
-// IN_MEMORY user table's row storage is not. On reopen the catalog therefore
-// reports the table as existing while the disk agent owns no storage at its oid.
-// CREATE TABLE IF NOT EXISTS then skips storage creation, resolve_table returns
-// the schema, yet every INSERT silently no-ops (storage_append returns 0,0) and a
-// regular snapshot scan sees nothing. rehydrate_in_memory_user_storages_sync
-// reconstructs the missing storage shell at bootstrap so post-reopen inserts land
-// and are visible. Without that bootstrap step phase-2 returns 0 rows.
-TEST_CASE("integration::cpp::test_persistence::reopen_in_memory_reinsert_visible") {
+// benchmark configuration), pg_class is still persisted unconditionally.
+// B1a SEMANTICS CHANGE (explicit): user tables are now ALWAYS disk-backed, so the
+// phase-1 rows are durable across the reopen (the shutdown checkpoint seals the
+// .otbx) and phase 2 sees the union of old + re-inserted rows (200), where the
+// pre-B1a IN_MEMORY table lost its rows and saw only the re-inserted 100. The
+// test's load-bearing core is unchanged: after a reopen the storage must exist
+// again, the re-run CREATE TABLE IF NOT EXISTS must be a clean no-op, and the
+// re-INSERT must land and be visible (the SSB "4ms / 0 rows" regression, where
+// storage_append silently no-opped against a catalog-only table).
+TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/reopen_in_memory_reinsert");
-    // SSB benchmark config: both disk and WAL persistence are OFF. User tables are
-    // created IN_MEMORY; only the system catalog is durable.
+    // SSB benchmark config: WAL persistence OFF. B1a: tables are disk-backed
+    // regardless; durability across a clean shutdown comes from the shutdown
+    // checkpoint.
     config.disk.on = false;
     config.wal.on = false;
     test_clear_directory(config);
 
-    INFO("phase 1: create IN_MEMORY table + insert 100 rows");
+    INFO("phase 1: create table + insert 100 rows");
     {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
@@ -2365,9 +2730,98 @@ TEST_CASE("integration::cpp::test_persistence::reopen_in_memory_reinsert_visible
         }
 
         // Decisive gate: a REGULAR snapshot scan must see the re-inserted rows.
-        // With the bug this returns 0 (the SSB "4ms / 0 rows" symptom).
-        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
-        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 1);
-        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
+        // With the bug this returns 100 (only the durable phase-1 rows; the SSB
+        // "4ms / 0 rows" symptom shape). B1a: phase-1 rows survived the reopen,
+        // so the union is 200 and each count value now matches two rows (row_N
+        // and reopen_N).
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 200);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 2);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 2);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B1a gates: disk is the ONLY storage mode.
+//   1. A plain CREATE TABLE (no WITH clause) produces a .otbx under
+//      ${db_oid}/${table_oid}/ — no opt-in required.
+//   2. Its pg_class row carries relstoragemode == 'd' (the column stays,
+//      write-only, always 'd').
+//   3. create → insert → restart → read back round-trips end to end through
+//      SQL with no storage clause anywhere.
+// ---------------------------------------------------------------------------
+TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_persistence/b1a_disk_default");
+    test_clear_directory(config);
+
+    const auto disk_root = config.disk.path;
+
+    INFO("phase 1: plain CREATE TABLE must create a .otbx and a 'd' pg_class row");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        {
+            auto session = otterbrix::session_id_t();
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "CREATE TABLE TestDatabase.B1aDefault (name string, count bigint);");
+            REQUIRE(cur->is_success());
+        }
+
+        // Gate 1: the table's .otbx exists at ${namespace_oid}/${table_oid}/
+        // under the disk root — both components are user oids (>= FIRST_USER_OID).
+        // (The relstoragemode == 'd' half of the gate is asserted at the write
+        // site — catalog::ddl::create_table_writes tests — because SQL cannot
+        // project pg_class columns today: bare `SELECT oid FROM pg_class` fails
+        // with "path: 'oid' was not found"; system tables' own columns have no
+        // pg_attribute rows.)
+        {
+            auto numeric_oid = [](const std::filesystem::path& dir) -> unsigned long {
+                const auto name = dir.filename().string();
+                char* end = nullptr;
+                const unsigned long oid = std::strtoul(name.c_str(), &end, 10);
+                return (end != nullptr && *end == '\0' && !name.empty()) ? oid : 0;
+            };
+            bool found = false;
+            for (const auto& ns_entry : std::filesystem::directory_iterator(disk_root)) {
+                if (!ns_entry.is_directory() || numeric_oid(ns_entry.path()) < components::catalog::FIRST_USER_OID) {
+                    continue;
+                }
+                for (const auto& tbl_entry : std::filesystem::directory_iterator(ns_entry.path())) {
+                    if (tbl_entry.is_directory() &&
+                        numeric_oid(tbl_entry.path()) >= components::catalog::FIRST_USER_OID &&
+                        std::filesystem::exists(tbl_entry.path() / "table.otbx")) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) {
+                    break;
+                }
+            }
+            REQUIRE(found);
+        }
+
+        {
+            auto session = otterbrix::session_id_t();
+            auto cur = dispatcher->execute_sql(
+                session,
+                "INSERT INTO TestDatabase.B1aDefault (name, count) VALUES ('a', 1), ('b', 2), ('c', 3);");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 3);
+        }
+    }
+
+    INFO("phase 2: restart — rows come back with no storage clause anywhere");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.B1aDefault;", 3);
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.B1aDefault WHERE count = 2;", 1);
     }
 }

@@ -20,13 +20,16 @@
 
 #include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <charconv>
+#include <map>
+#include <set>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory_resource>
 #include <sstream>
-#include <tuple>
 #include <unistd.h>
+#include <utility>
 
 using components::expressions::compare_type;
 using components::expressions::side_t;
@@ -38,6 +41,37 @@ static const database_name_t database_name = "testdatabase";
 static const collection_name_t collection_name = "testcollection";
 
 constexpr int kDocuments = 100;
+
+// The on-disk index layout is oid-keyed (<disk>/<table_oid>/<indexrelid>/) and carries
+// no index name, so a test binds name -> directory by observing which directory a
+// CREATE INDEX brought into being (see CREATE_INDEX). CHECK_EXISTS_INDEX then asserts
+// on the recorded directory's existence.
+static std::map<std::string, std::filesystem::path> g_created_index_dirs;
+
+static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::path& disk_path) {
+    std::set<std::filesystem::path> dirs;
+    if (!std::filesystem::exists(disk_path)) {
+        return dirs;
+    }
+    for (const auto& tbl : std::filesystem::directory_iterator(disk_path)) {
+        if (!tbl.is_directory()) {
+            continue;
+        }
+        // user-table dirs are oid-named (>= FIRST_USER_OID)
+        const auto fn = tbl.path().filename().string();
+        uint64_t table_oid = 0;
+        const auto [ptr, ec] = std::from_chars(fn.data(), fn.data() + fn.size(), table_oid);
+        if (ec != std::errc{} || ptr != fn.data() + fn.size() || table_oid < 16384) {
+            continue;
+        }
+        for (const auto& sub : std::filesystem::directory_iterator(tbl.path())) {
+            if (sub.is_directory()) {
+                dirs.insert(sub.path());
+            }
+        }
+    }
+    return dirs;
+}
 
 #define INIT_COLLECTION()                                                                                              \
     do {                                                                                                               \
@@ -84,8 +118,16 @@ constexpr int kDocuments = 100;
                                                                                       database_name,                   \
                                                                                       collection_name,                 \
                                                                                       node);                           \
+        const auto dirs_before = list_index_dirs(config.disk.path);                                                    \
         dispatcher->execute_plan(session,                                                                              \
                                  components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});   \
+        /* bind name -> the directory this CREATE brought into being (oid-keyed layout carries no name) */             \
+        for (const auto& d : list_index_dirs(config.disk.path)) {                                                      \
+            if (dirs_before.count(d) == 0) {                                                                           \
+                g_created_index_dirs[INDEX_NAME] = d;                                                                  \
+                break;                                                                                                 \
+            }                                                                                                          \
+        }                                                                                                              \
     } while (false)
 
 #define CREATE_EXISTED_INDEX(INDEX_NAME, KEY)                                                                          \
@@ -180,26 +222,17 @@ constexpr int kDocuments = 100;
 // The test fixture creates exactly one user table, so we resolve the
 // table_oid by scanning for the numeric directory that contains the named
 // index dir.
+/* The on-disk index layout is oid-keyed (<disk>/<table_oid>/<indexrelid>/) and carries no
+ * name, so resolve NAME -> indexrelid through pg_class (the only place the name lives),
+ * then look for the oid-named directory. A dropped index loses both its pg_class row and
+ * its directory, so "not found" covers either signal disappearing. */
 #define CHECK_EXISTS_INDEX(NAME, EXISTS)                                                                               \
     do {                                                                                                               \
+        /* the oid-keyed layout carries no name; the binding was recorded at CREATE time */                            \
         bool found = false;                                                                                            \
-        if (std::filesystem::exists(config.disk.path)) {                                                               \
-            for (const auto& d : std::filesystem::directory_iterator(config.disk.path)) {                              \
-                if (!d.is_directory())                                                                                 \
-                    continue;                                                                                          \
-                try {                                                                                                  \
-                    auto oid = std::stoull(d.path().filename().string());                                              \
-                    if (oid < 16384)                                                                                   \
-                        continue;                                                                                      \
-                } catch (...) {                                                                                        \
-                    continue;                                                                                          \
-                }                                                                                                      \
-                auto candidate = d.path() / NAME;                                                                      \
-                if (std::filesystem::exists(candidate) && std::filesystem::is_directory(candidate)) {                  \
-                    found = true;                                                                                      \
-                    break;                                                                                             \
-                }                                                                                                      \
-            }                                                                                                          \
+        auto rec = g_created_index_dirs.find(NAME);                                                                    \
+        if (rec != g_created_index_dirs.end()) {                                                                       \
+            found = std::filesystem::exists(rec->second) && std::filesystem::is_directory(rec->second);                \
         }                                                                                                              \
         REQUIRE(found == EXISTS);                                                                                      \
     } while (false)
@@ -508,7 +541,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                           "WITH (storage = 'disk');");
+                                           ";");
         REQUIRE(cur->is_success());
     }
     {
@@ -560,25 +593,16 @@ namespace {
 
     constexpr uint64_t kMinBitcaskBytesAfterCheckpoint = 10'000;
 
-    std::filesystem::path find_hash_index_dir(const std::filesystem::path& disk_path, const std::string& index_name) {
+    // The on-disk layout is oid-keyed (<disk>/<table_oid>/<indexrelid>/) and carries no
+    // index name, so the single hash index of these tests is found by content: only the
+    // bitcask backend leaves a CURRENT marker in its directory.
+    std::filesystem::path find_hash_index_dir(const std::filesystem::path& disk_path) {
         if (!std::filesystem::exists(disk_path)) {
             return {};
         }
-        for (const auto& d : std::filesystem::directory_iterator(disk_path)) {
-            if (!d.is_directory()) {
-                continue;
-            }
-            try {
-                const auto oid = std::stoull(d.path().filename().string());
-                if (oid < 16384) {
-                    continue;
-                }
-            } catch (...) {
-                continue;
-            }
-            const auto candidate = d.path() / index_name;
-            if (std::filesystem::exists(candidate) && std::filesystem::is_directory(candidate)) {
-                return candidate;
+        for (const auto& d : std::filesystem::recursive_directory_iterator(disk_path)) {
+            if (d.is_directory() && std::filesystem::exists(d.path() / "CURRENT")) {
+                return d.path();
             }
         }
         return {};
@@ -629,7 +653,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
                                                "CREATE TABLE TestDatabase.TestCollection (count bigint) "
-                                               "WITH (storage = 'disk');");
+                                               ";");
             REQUIRE(cur->is_success());
         }
         {
@@ -658,7 +682,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
             REQUIRE(cur->is_success());
         }
 
-        const auto index_dir = find_hash_index_dir(config.disk.path, kHashIndexName);
+        const auto index_dir = find_hash_index_dir(config.disk.path);
         REQUIRE_FALSE(index_dir.empty());
         REQUIRE(bitcask_data_bytes(index_dir) >= kMinBitcaskBytesAfterCheckpoint);
 
@@ -672,7 +696,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        const auto index_dir = find_hash_index_dir(config.disk.path, kHashIndexName);
+        const auto index_dir = find_hash_index_dir(config.disk.path);
         REQUIRE_FALSE(index_dir.empty());
         REQUIRE(bitcask_data_bytes(index_dir) >= kMinBitcaskBytesAfterCheckpoint);
 
@@ -703,7 +727,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "CREATE TABLE TestDatabase.TestCollection (name string, count bigint) "
-                                           "WITH (storage = 'disk');");
+                                           ";");
         REQUIRE(cur->is_success());
     }
     {
@@ -751,7 +775,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 48;", 0);
 }
 
-// CREATE INDEX backfill scans the table via storage_scan_segment, which emits
+// CREATE INDEX backfill scans the table via the streaming fetch-next leg, which emits
 // chunks of at most DEFAULT_VECTOR_CAPACITY (1024) rows. A regression that
 // overwrites the scan buffer on each chunk leaves only the last chunk indexed
 // in single_field_index, so equality lookups in the first (rows - 1024) keys
@@ -775,7 +799,7 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
                                            "CREATE TABLE TestDatabase.TestCollection (count bigint) "
-                                           "WITH (storage = 'disk');");
+                                           ";");
         REQUIRE(cur->is_success());
     }
 
@@ -883,7 +907,7 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
     // The exact N=4 primitive_delete spec set rewrite_drop_index emits:
     // pg_index(objid col 0), pg_depend(objid col 1), pg_depend(refobjid col 3),
     // pg_class(oid col 0). Same order so the test fails loudly if that contract drifts.
-    const std::array<std::tuple<oid_t, std::int64_t>, 4> delete_specs = {{
+    const std::array<std::pair<oid_t, std::int64_t>, 4> delete_specs = {{
         {pg_index, std::int64_t{0}},
         {pg_depend, std::int64_t{1}},
         {pg_depend, std::int64_t{3}},
@@ -902,7 +926,6 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
         append_delete_leaves(seq);
         auto di = lp::make_node_drop(res, lp::drop_target_kind::index);
         di->set_index_oid(index_oid);
-        di->set_runtime_index_name("idx_folded");
         seq->append_child(di); // trailing drop_index_t marker
 
         auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
@@ -954,7 +977,7 @@ TEST_CASE("integration::cpp::test_index::out_of_domain_key_defined_behavior") {
 
         components::index::keys_base_storage_t keys(res);
         keys.emplace_back(res, "a");
-        components::index::single_field_index_t index(res, "idx_a", keys);
+        components::index::single_field_index_t index(res, 701u, keys);
 
         // The first key locks the key domain to BIGINT.
         index.insert(logical_value_t(res, int64_t{1}), components::index::index_value_t(int64_t{0}), tz);

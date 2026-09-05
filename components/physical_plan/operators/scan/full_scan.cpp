@@ -169,6 +169,27 @@ namespace components::operators {
             co_return co_await emit_or_skip(ctx, std::move(reply.batch));
         }
 
+#ifdef DEV_MODE
+        // Between-batches pause gate (see services::disk::scan_advance_gate_t). Polling by one
+        // cross-actor round-trip per ask keeps every mailbox free while the gate holds: the
+        // await parks this nested coroutine, it never blocks an actor thread.
+        while (true) {
+            auto* gate = services::disk::dev_scan_advance_gate();
+            if (gate == nullptr || !gate->hold(table_oid_, cursor_id_)) {
+                break;
+            }
+            auto [_g, gf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::storage_total_rows,
+                                                        ctx->session,
+                                                        table_oid_);
+            auto ping = co_await std::move(gf);
+            if (ping.has_error()) {
+                // The poll target is gone — the world is tearing down; holding forever
+                // would hang it. Let the fetch below answer for the cursor.
+                break;
+            }
+        }
+#endif
         // ADVANCE: read one more batch from the open cursor (filter dropped — the agent owns it).
         auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                     &services::disk::manager_disk_t::storage_fetch_next_batch,

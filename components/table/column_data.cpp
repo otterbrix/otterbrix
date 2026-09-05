@@ -63,8 +63,8 @@ namespace components::table {
         if (statistics_.min_value().is_null() || statistics_.max_value().is_null()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
-        // Stats may be stale after updates — skip pruning if column has updates
-        if (has_updates()) {
+        // Stats may be stale after updates — skip pruning if column carries an overlay
+        if (has_update_segment()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
         // Pruning needs a constant filter's (column, op, constant); a filter graph does not expose
@@ -113,14 +113,14 @@ namespace components::table {
         return type_;
     }
 
-    bool column_data_t::has_updates() const { return updates_.get(); }
+    bool column_data_t::has_update_segment() const { return updates_.get(); }
 
     scan_vector_type
     column_data_t::get_vector_scan_type(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {
         if (result.get_vector_type() != vector::vector_type::FLAT) {
             return scan_vector_type::SCAN_ENTIRE_VECTOR;
         }
-        if (has_updates()) {
+        if (has_update_segment()) {
             return scan_vector_type::SCAN_FLAT_VECTOR;
         }
         if (!state.current) {
@@ -531,7 +531,7 @@ namespace components::table {
             column_info.segment_idx = segment_idx;
             column_info.segment_start = segment->start;
             column_info.segment_count = segment->count;
-            column_info.has_updates = has_updates();
+            column_info.has_updates = has_update_segment();
             // A transient block's 64-bit id does not fit the uint32 field and names nothing
             // durable anyway, so only a disk-backed segment reports its id.
             const bool disk_backed = segment->block && segment->block->is_reloadable();

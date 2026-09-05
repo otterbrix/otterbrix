@@ -370,11 +370,19 @@ namespace services::disk {
                 continue;
             }
             components::table::column_definition_t def(name, ctype);
-            // A materialised column must carry its pg_attribute.attoid. This replay leg re-applies
-            // a schema-growth record, so the identity comes from whatever the catalog published for
-            // this table (see collection_storage_entry_t::note_column_identity). 0 means nothing
-            // published it — the relkind='g' case, whose columns live in pg_computed_column and
-            // which the bootstrap reconciliation never walks.
+            // A materialised column must carry its pg_attribute.attoid — and, where the ALTER
+            // declared one, its DEFAULT: add_column below backfills every row that predates the
+            // column with it (row_group_t::add_column), which is the same constant the adapter has
+            // been answering for those rows all along. Reading it BEFORE take_column_identity is
+            // not a style choice — take_ CONSUMES the parked publication.
+            //
+            // This replay leg re-applies a schema-growth record, so both facts come from whatever
+            // the catalog published for this table (see collection_storage_entry_t::note_column_identity).
+            // attoid 0 means nothing published it — the relkind='g' case, whose columns live in
+            // pg_computed_column and which the bootstrap reconciliation never walks.
+            if (const auto* published = entry->find_unmaterialized(name); published != nullptr) {
+                def.set_default_value(published->default_value_opt());
+            }
             def.set_attoid(entry->take_column_identity(name));
             entry->add_column(def, resource());
             // add_column rebuilt the adapter; refresh the local pointer.
@@ -620,6 +628,16 @@ namespace services::disk {
                     // bootstrap re-publishing it after a crash); for a relkind='g' table there is
                     // none — its columns are described by pg_computed_column, and the
                     // reconciliation excludes 'g' at the source.
+                    //
+                    // The publication's DEFAULT is stamped on with it, and it is the whole reason
+                    // the answer does not MOVE across this line: entry->add_column below backfills
+                    // every row that predates the column with this constant (row_group_t::add_column),
+                    // which is exactly what table_storage_adapter_t has been answering for those
+                    // rows since the ALTER. Read before take_column_identity — that call consumes
+                    // the publication.
+                    if (const auto* published = entry->find_unmaterialized(col.name()); published != nullptr) {
+                        col.set_default_value(published->default_value_opt());
+                    }
                     col.set_attoid(entry->take_column_identity(col.name()));
                     entry->add_column(col, resource());
                     // Record for the PHYSICAL_ADD_COLUMN WAL record written below.
@@ -783,14 +801,14 @@ namespace services::disk {
                 }
                 auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
                 schema_chunk->set_cardinality(0);
-                auto [_sc, scf] = actor_zeta::send(manager_wal_addr_,
-                                                   &wal::manager_wal_replicate_t::write_physical_add_column,
-                                                   ctx.session,
-                                                   table_oid,
-                                                   std::move(schema_chunk),
-                                                   static_cast<std::uint64_t>(wal_added_columns.size()),
-                                                   txn.transaction_id,
-                                                   db_oid);
+                auto [_sc, scf] = actor_zeta::otterbrix::send(manager_wal_addr_,
+                                                              &wal::manager_wal_replicate_t::write_physical_add_column,
+                                                              ctx.session,
+                                                              table_oid,
+                                                              std::move(schema_chunk),
+                                                              static_cast<std::uint64_t>(wal_added_columns.size()),
+                                                              txn.transaction_id,
+                                                              db_oid);
                 add_column_future = std::move(scf);
             }
 
@@ -807,15 +825,15 @@ namespace services::disk {
             data->copy(wal_chunk, 0);
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
             wal_chunks.emplace_back(std::move(wal_chunk));
-            auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
-                                             &wal::manager_wal_replicate_t::write_physical_insert,
-                                             ctx.session,
-                                             table_oid,
-                                             std::move(wal_chunks),
-                                             start_row,
-                                             actual_count,
-                                             txn.transaction_id,
-                                             db_oid);
+            auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
+                                                        &wal::manager_wal_replicate_t::write_physical_insert,
+                                                        ctx.session,
+                                                        table_oid,
+                                                        std::move(wal_chunks),
+                                                        start_row,
+                                                        actual_count,
+                                                        txn.transaction_id,
+                                                        db_oid);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
                 // WAL-FIRST means the journal is the promise the materialize below keeps: a
@@ -1359,6 +1377,17 @@ namespace services::disk {
         // (3) Pipeline context for group.push/finalize. Build IN PLACE (its move-ctor DROPS
         //     txn/function_registry — NEVER move it). No parameters/session_tz are needed: the
         //     WHERE is already baked into `filter`, and builtin SUM/COUNT/... read neither.
+        //
+        //     THIS CONTEXT IS DELIBERATELY UNWIRED, AND IT IS THE NARROWEST CASE OF A KNOWN TRAP.
+        //     context_t defaults disk_address, index_address and wal_address to empty_address(),
+        //     so the object below has NO mailbox at all — only address_ (self) and the txn. It is
+        //     sound for exactly one reason: the single operator driven here is
+        //     operator_hash_group_t, whose push/finalize send nothing (step 4 says "send-free" and
+        //     means it). Swap in an operator that sends, or grow one inside hash_group, and this
+        //     stops being sound. What it does NOT do any more is fail quietly: every addressed
+        //     send in this tree goes through actor_zeta::otterbrix::send, which refuses an empty
+        //     target with a message and abort() in Debug and Release alike, so the breakage would
+        //     announce itself instead of dereferencing a null mailbox.
         components::logical_plan::storage_parameters params{resource};
         components::pipeline::context_t ctx{session,
                                             self_address,
@@ -1680,7 +1709,20 @@ namespace services::disk {
             if (src.get_vector_type() != components::vector::vector_type::FLAT) {
                 src.flatten(nkeys);
             }
-            if (src.type().to_physical_type() == stored_key_types[j].to_physical_type()) {
+            // THE BULK LEG'S CONDITION IS THE CALLEE'S PRECONDITION, NOT THE WEAKER PHYSICAL ONE.
+            // vector_ops::copy asserts LOGICAL equality (vector_operations.cpp, the 6-argument
+            // overload), so a pair that agrees only PHYSICALLY — DATE and INTEGER are both INT32,
+            // TIME/TIMESTAMP/BIGINT/DECIMAL are all INT64 — used to enter here and split by build
+            // type: SIGABRT on the assert under Debug, a raw bit copy under NDEBUG. No FK
+            // type-compatibility check exists at DDL time, so `FOREIGN KEY (d DATE) REFERENCES
+            // parent (id INTEGER)` reaches this line from ordinary SQL and killed the process on
+            // the child's first INSERT (integration test
+            // test_sql_features::fk_cross_logical_same_physical_key_is_answered).
+            // Such a pair now falls through to the per-row leg below, which is the leg that
+            // already owns cross-type keys: it settles the pair once on a null probe and then
+            // admits a cell only if it round-trips EXACTLY. The bulk leg keeps the identical-type
+            // case, which is every FK in practice.
+            if (src.type() == stored_key_types[j]) {
                 components::vector::vector_ops::copy(src, norm_keys.data[j], nkeys, 0, 0);
                 continue;
             }
@@ -2836,9 +2878,10 @@ namespace services::disk {
         if (dropped_storages_.empty() && manager_dispatcher_addr_ != actor_zeta::address_t::empty_address()) {
             // DISK_KIND matches the dispatcher's subscriber-kind enum.
             constexpr uint8_t DISK_KIND = 1;
-            [[maybe_unused]] auto _ = actor_zeta::send(manager_dispatcher_addr_,
-                                                       &services::dispatcher::manager_dispatcher_t::on_subscriber_empty,
-                                                       DISK_KIND);
+            [[maybe_unused]] auto _ =
+                actor_zeta::otterbrix::send(manager_dispatcher_addr_,
+                                            &services::dispatcher::manager_dispatcher_t::on_subscriber_empty,
+                                            DISK_KIND);
         }
         co_return;
     }
@@ -2968,7 +3011,7 @@ namespace services::disk {
     // Catalog DDL handlers (Track A). These moved off the manager loop: the catalog
     // scan + mutation now run on this (CATALOG / agent-0) thread against the agent's
     // OWN slice, so the manager no longer borrows the agent's storage_entry across
-    // the actor boundary. WAL goes through manager_wal_addr_ (plain actor_zeta::send +
+    // the actor boundary. WAL goes through manager_wal_addr_ (actor_zeta::otterbrix::send +
     // co_await; the WAL manager self-schedules, so NO scheduler_disk_->enqueue here).
     // ---------------------------------------------------------------------------
 
@@ -2997,15 +3040,15 @@ namespace services::disk {
             // pg_catalog writes route to main_database (ctx.database_oid is always
             // INVALID_OID for catalog writes).
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-            auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
-                                             &wal::manager_wal_replicate_t::write_physical_insert,
-                                             ctx.session,
-                                             table_oid,
-                                             std::move(wal_chunks),
-                                             std::uint64_t{0},
-                                             static_cast<std::uint64_t>(row.size()),
-                                             ctx.txn.transaction_id,
-                                             db_oid);
+            auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
+                                                        &wal::manager_wal_replicate_t::write_physical_insert,
+                                                        ctx.session,
+                                                        table_oid,
+                                                        std::move(wal_chunks),
+                                                        std::uint64_t{0},
+                                                        static_cast<std::uint64_t>(row.size()),
+                                                        ctx.txn.transaction_id,
+                                                        db_oid);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
                 // Same shape as the three refusals already travelling this wrapper: a catalog
@@ -3207,14 +3250,14 @@ namespace services::disk {
         }
         if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
             std::pmr::vector<std::int64_t> wal_ids(row_ids.begin(), row_ids.end(), resource());
-            auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
-                                             &wal::manager_wal_replicate_t::write_physical_delete,
-                                             ctx.session,
-                                             table_oid,
-                                             std::move(wal_ids),
-                                             static_cast<std::uint64_t>(row_ids.size()),
-                                             ctx.txn.transaction_id,
-                                             components::catalog::well_known_oid::main_database);
+            auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
+                                                        &wal::manager_wal_replicate_t::write_physical_delete,
+                                                        ctx.session,
+                                                        table_oid,
+                                                        std::move(wal_ids),
+                                                        static_cast<std::uint64_t>(row_ids.size()),
+                                                        ctx.txn.transaction_id,
+                                                        components::catalog::well_known_oid::main_database);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
                 // REFUSED, and the rows stay. Falling through to the delete below would put
@@ -3407,15 +3450,15 @@ namespace services::disk {
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
             wal_chunks.emplace_back(std::move(wal_chunk));
             std::pmr::vector<std::int64_t> wal_row_ids(row_ids.begin(), row_ids.end(), resource());
-            auto [_w, wf] = actor_zeta::send(manager_wal_addr_,
-                                             &wal::manager_wal_replicate_t::write_physical_update,
-                                             ctx.session,
-                                             pg_attr_oid,
-                                             std::move(wal_row_ids),
-                                             std::move(wal_chunks),
-                                             static_cast<std::uint64_t>(row_ids.size()),
-                                             ctx.txn.transaction_id,
-                                             components::catalog::well_known_oid::main_database);
+            auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
+                                                        &wal::manager_wal_replicate_t::write_physical_update,
+                                                        ctx.session,
+                                                        pg_attr_oid,
+                                                        std::move(wal_row_ids),
+                                                        std::move(wal_chunks),
+                                                        static_cast<std::uint64_t>(row_ids.size()),
+                                                        ctx.txn.transaction_id,
+                                                        components::catalog::well_known_oid::main_database);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
                 // WAL-FIRST, AND THE PATCH BELOW DOES NOT RUN. Applying the storage patch over a
@@ -3656,12 +3699,13 @@ namespace services::disk {
     // See the declaration and collection_storage_entry_t::note_column_identity: this parks the
     // identity of a column the catalog has already created and the storage has not materialised
     // yet, so that whichever INSERT does materialise it stamps the right attoid instead of
-    // leaving a 0 the bootstrap reconciliation would have to refuse.
+    // leaving a 0 the bootstrap reconciliation would have to refuse — and so that every reader in
+    // between answers the column with the DEFAULT the ALTER declared for it.
     agent_disk_t::unique_future<void>
     agent_disk_t::note_column_identity_inner(components::catalog::oid_t table_oid,
                                              std::string attname,
                                              std::uint32_t attoid,
-                                             components::types::complex_logical_type type) {
+                                             components::pg_attribute_commit_id_backfill_t::added_column_type_t type) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr) {
             trace(log_,
@@ -3670,7 +3714,35 @@ namespace services::disk {
                   static_cast<unsigned>(table_oid));
             co_return;
         }
-        it->second->note_column_identity(std::move(attname), attoid, type);
+        // The DEFAULT arrives in pg_attribute.attdefspec's own encoding and is decoded HERE,
+        // against the type that travelled with it — the agent owns no catalog and has nowhere
+        // else to read either from. Decoded on THIS agent's resource(), which is what the parked
+        // definition is then stored under: logical_value_t's copy constructor carries the SOURCE
+        // resource pointer along, so a value decoded on a caller-local arena would outlive its
+        // allocator inside the entry.
+        //
+        // A spec this agent cannot decode is LOUD and not fatal (rule 6): the ALTER is long
+        // committed and the pg_attribute row is durable, so refusing would only cost the caller
+        // an answer it cannot act on — this is a fire-and-forget note with no error channel back
+        // to the statement. What it must not do is park the column WITHOUT the default and let it
+        // read NULL in silence; the log is the channel, and the value stays recoverable because
+        // every later load re-derives the publication from pg_attribute.
+        std::optional<components::types::logical_value_t> default_value;
+        if (!type.default_spec.empty()) {
+            auto ec =
+                components::catalog::decode_default_spec(resource(), type.type, type.default_spec, default_value);
+            if (ec.contains_error()) {
+                error(log_,
+                      "agent_disk[{}]::note_column_identity_inner: oid {} column '{}' attdefspec is unreadable "
+                      "({}); the column is published WITHOUT its DEFAULT and reads NULL until the next load",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid),
+                      attname,
+                      ec.what.c_str());
+                default_value.reset();
+            }
+        }
+        it->second->note_column_identity(std::move(attname), attoid, type.type, default_value);
         co_return;
     }
 

@@ -1171,13 +1171,16 @@ namespace services::disk {
     std::unordered_map<components::catalog::oid_t, std::vector<components::table::column_definition_t>>
     manager_disk_t::collect_catalog_columns_sync(const std::unordered_set<components::catalog::oid_t>& wanted) const {
         // One scan of pg_attribute (agents_[0] owns every pg_* table; bootstrap thread,
-        // pre-scheduler-start) grouping live (non-dropped) columns by attrelid. pg_attribute
-        // layout: [0=attoid, 1=attrelid, 2=attname, 3=atttypid, 4=attnum, 5=attnotnull,
-        // 6=atthasdefault, 7=attisdropped, 8=atttypspec, ...]. Each column's (attnum, name,
-        // type) reconstructs the storage schema in ordinal order — the same order CREATE
-        // TABLE registered. NOT-NULL is deliberately not part of the storage schema here:
-        // it is enforced ABOVE storage, by operator_check_constraint over the materialised
-        // row, from the catalog's own attnotnull.
+        // pre-scheduler-start) grouping live (non-dropped) columns by attrelid. Each column's
+        // (attnum, name, type, default) reconstructs the storage schema in ordinal order — the
+        // same order CREATE TABLE registered. Every ordinal below is named through
+        // catalog::pg_attribute_col so the width guard and the reads cannot drift apart.
+        // NOT-NULL is deliberately not part of the storage schema here: it is enforced ABOVE
+        // storage, by operator_check_constraint over the materialised row, from attnotnull.
+        namespace att = catalog::pg_attribute_col;
+        // The widest ordinal read below, so the guard cannot end up narrower than the reads.
+        // A hand-written `< 9` here is what left attdefspec (column 9) out of this scan.
+        constexpr std::uint64_t widest_read = att::attdefspec;
         struct catalog_col_t {
             std::int32_t attnum{0};
             // pg_attribute.attoid — the column's IDENTITY, and from here on the ONLY
@@ -1187,6 +1190,10 @@ namespace services::disk {
             catalog::oid_t attoid{catalog::INVALID_OID};
             std::string name;
             components::types::complex_logical_type type;
+            // Decoded on resource_ (the manager's), NOT on the scan's local arena: a
+            // logical_value_t copy keeps its source resource pointer, and this value outlives
+            // this function by way of the storage entry that publishes it.
+            std::optional<components::types::logical_value_t> default_value;
         };
         std::unordered_map<catalog::oid_t, std::vector<catalog_col_t>> raw_by_relid;
         std::unordered_map<catalog::oid_t, std::vector<components::table::column_definition_t>> result;
@@ -1199,7 +1206,7 @@ namespace services::disk {
                 return result;
             }
             auto& attr_table = const_cast<collection_storage_entry_t*>(attr_entry)->table_storage.table();
-            if (attr_table.column_count() < 9 || attr_table.calculate_size() == 0) {
+            if (attr_table.column_count() <= widest_read || attr_table.calculate_size() == 0) {
                 return result;
             }
             core::pmr::otterbrix_resource scan_resource;
@@ -1223,25 +1230,26 @@ namespace services::disk {
                 if (chunk.size() == 0)
                     break;
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    if (chunk.is_null(1, i))
+                    if (chunk.is_null(att::attrelid, i))
                         continue;
-                    const auto relid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                    const auto relid =
+                        static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(att::attrelid, i));
                     if (wanted.find(relid) == wanted.end())
                         continue;
-                    if (!chunk.is_null(7, i) && chunk.get_value<bool>(7, i))
+                    if (!chunk.is_null(att::attisdropped, i) && chunk.get_value<bool>(att::attisdropped, i))
                         continue; // tombstoned column
                     catalog_col_t rc;
-                    rc.attoid = chunk.is_null(0, i)
+                    rc.attoid = chunk.is_null(att::attoid, i)
                                     ? catalog::INVALID_OID
-                                    : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                    if (!chunk.is_null(2, i)) {
-                        auto attname_v = chunk.get_value<std::string_view>(2, i);
+                                    : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(att::attoid, i));
+                    if (!chunk.is_null(att::attname, i)) {
+                        auto attname_v = chunk.get_value<std::string_view>(att::attname, i);
                         rc.name.assign(attname_v.data(), attname_v.size());
                     }
-                    rc.attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
+                    rc.attnum = chunk.is_null(att::attnum, i) ? 0 : chunk.get_value<std::int32_t>(att::attnum, i);
                     std::string typspec;
-                    if (!chunk.is_null(8, i)) {
-                        auto typspec_v = chunk.get_value<std::string_view>(8, i);
+                    if (!chunk.is_null(att::atttypspec, i)) {
+                        auto typspec_v = chunk.get_value<std::string_view>(att::atttypspec, i);
                         typspec.assign(typspec_v.data(), typspec_v.size());
                     }
                     if (!typspec.empty()) {
@@ -1264,13 +1272,36 @@ namespace services::disk {
                             rc.type = std::move(rc_type_r.value());
                         }
                     } else {
-                        const auto atttypid = chunk.is_null(3, i)
-                                                  ? catalog::INVALID_OID
-                                                  : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                        const auto atttypid =
+                            chunk.is_null(att::atttypid, i)
+                                ? catalog::INVALID_OID
+                                : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(att::atttypid, i));
                         rc.type = components::types::complex_logical_type(catalog::oid_to_builtin_type(atttypid));
                     }
                     if (!rc.name.empty() && !rc.type.has_alias()) {
                         rc.type.set_alias(rc.name);
+                    }
+                    // THE DEFAULT IS PART OF THE SCHEMA THIS REBUILDS, not a decoration on it. A
+                    // column ALTERed in with one and not yet materialised is answered from the
+                    // publication this feeds (collection_storage_entry_t::adopt_catalog_columns),
+                    // so a load that drops it makes the column read NULL — and the first INSERT
+                    // then backfills that NULL into the pre-existing rows for good.
+                    if (!chunk.is_null(att::attdefspec, i)) {
+                        auto defspec_v = chunk.get_value<std::string_view>(att::attdefspec, i);
+                        std::string defspec(defspec_v.data(), defspec_v.size());
+                        auto def_ec = catalog::decode_default_spec(resource_, rc.type, defspec, rc.default_value);
+                        if (def_ec.contains_error()) {
+                            // Same DB-open reading as an unreadable atttypspec above: loud, and
+                            // the column loads without the default rather than bricking the open.
+                            auto log = log_;
+                            error(log,
+                                  "manager_disk_t::collect_catalog_columns_sync: relid={} column '{}' "
+                                  "attdefspec is unreadable: {}",
+                                  static_cast<unsigned>(relid),
+                                  rc.name,
+                                  def_ec.what);
+                            rc.default_value.reset();
+                        }
                     }
                     raw_by_relid[relid].push_back(std::move(rc));
                 }
@@ -1285,6 +1316,7 @@ namespace services::disk {
             for (auto& c : cols) {
                 defs.emplace_back(c.name, c.type);
                 defs.back().set_attoid(static_cast<std::uint32_t>(c.attoid));
+                defs.back().set_default_value(std::move(c.default_value));
             }
             result.emplace(relid, std::move(defs));
         }

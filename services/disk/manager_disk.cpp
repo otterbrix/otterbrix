@@ -37,7 +37,6 @@ namespace services::disk {
         constexpr auto kImplementedIds = behavior_expected_ids_t<manager_disk_t::dispatch_traits::methods>::value;
 
         constexpr std::array kBehaviorHandledIds{
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::flush>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::checkpoint_all>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::vacuum_all>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::maybe_cleanup_many>,
@@ -115,7 +114,12 @@ namespace services::disk {
         // std::terminate. Record the error and leave table_/block_manager_ null; the caller checks
         // construction_failed().
         if (auto r = bm->create_new_database(); r.has_error()) {
-            construction_error_ = r.error();
+            // error_on, not a plain copy: error_t's copy constructor does not carry the message's
+            // resource with it (the note on error_t), so assigning it directly would leave the
+            // latched refusal's text on the default resource while the entry that holds it lives
+            // on `resource` -- the same arena the hand-built refusal in the load ctor below
+            // already names.
+            construction_error_ = core::error_on(resource, r.error());
             return;
         }
         block_manager_ = std::move(bm);
@@ -137,7 +141,8 @@ namespace services::disk {
         // would std::terminate. Record the error and leave table_/block_manager_ null; the caller checks
         // construction_failed() and refuses the file loudly, leaving it byte-identical.
         if (auto r = bm->load_existing_database(); r.has_error()) {
-            construction_error_ = r.error();
+            // Same as the create ctor above: the latched message is rebuilt on this entry's arena.
+            construction_error_ = core::error_on(resource, r.error());
             return;
         }
         block_manager_ = std::move(bm);
@@ -174,7 +179,7 @@ namespace services::disk {
         components::table::storage::metadata_reader_t reader(meta_mgr, meta_ptr);
         auto loaded = components::table::data_table_t::load_from_disk(resource, *block_manager_, reader);
         if (loaded.has_error()) {
-            construction_error_ = loaded.error();
+            construction_error_ = core::error_on(resource, loaded.error());
             return;
         }
         table_ = std::move(loaded.value());
@@ -686,10 +691,6 @@ namespace services::disk {
 
     actor_zeta::behavior_t manager_disk_t::behavior(actor_zeta::mailbox::message* msg) {
         switch (msg->command()) {
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::flush>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::flush, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::checkpoint_all>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::checkpoint_all, msg);
                 break;

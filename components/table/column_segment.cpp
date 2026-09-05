@@ -1108,9 +1108,33 @@ namespace components::table {
                 }
             }
         }
+
+        // The arena a column segment's statistics live on, taken from the block the segment is
+        // built over. It is a function and not an inline dereference in the initializer list so
+        // that the check can stand AHEAD of the dereference it guards: segment_statistics_ is
+        // initialized from this resource, so a constructor BODY runs too late to say anything
+        // about a null handle.
+        //
+        // An invariant rather than a refusal, established by reading every construction site:
+        // create_segment forwards an error-checked register_transient_memory (make_shared /
+        // pin(...).block_handle(), never null) and column_data_t's checkpoint and reload paths
+        // forward block_manager_t::register_block, which returns a locked live entry or a
+        // make_shared. There is no caller that can deliver null, and no channel here to report
+        // it through. Under NDEBUG the check is gone and a null handle is a null dereference,
+        // which is the same answer this code gave before, one line later.
+        static std::pmr::memory_resource* segment_arena(const std::shared_ptr<storage::block_handle_t>& block) {
+            assert(block && "a column segment takes its arena from its block; the handle cannot be null");
+            return block->block_manager.buffer_manager.resource();
+        }
     } // namespace impl
 
-    column_segment_t::column_segment_t(std::shared_ptr<storage::block_handle_t> block,
+    // The block parameter is deliberately NOT named `block`: it used to shadow the member of
+    // that name, and the shadow killed the size guard below. `assert(!block || ...)` in the body
+    // read the PARAMETER, which the initializer list had already moved into the member, and a
+    // moved-from std::shared_ptr is guaranteed empty -- so `!block` was true for every segment
+    // ever built and the comparison behind it never ran. The same assert in the two move
+    // constructors reads the MEMBER and is live, which is what kept the dead one looking right.
+    column_segment_t::column_segment_t(std::shared_ptr<storage::block_handle_t> block_p,
                                        const types::complex_logical_type& type,
                                        int64_t start,
                                        uint64_t count,
@@ -1121,12 +1145,21 @@ namespace components::table {
         : segment_base_t(start, count)
         , type(type)
         , type_size(impl::stored_element_size(type))
-        , block(std::move(block))
+        , block(std::move(block_p))
         , block_id_(block_id)
         , offset_(offset)
         , segment_size_(segment_size)
-        , segment_statistics_(std::pmr::get_default_resource()) {
-        assert(!block || segment_size_ <= block_manager().block_size());
+        // The segment's arena is the buffer manager's, reached through the block this segment
+        // is built over -- the same road this constructor's own error message takes a few lines
+        // down (the register_block loop). Read from `this->block`, which is already initialized
+        // here (it is declared ahead of the statistics), and screened by impl::segment_arena so
+        // the null check stands ahead of the dereference instead of behind it.
+        , segment_statistics_(impl::segment_arena(this->block)) {
+        // Now that nothing shadows the member, the guard is the one that was meant: a segment
+        // that does not fit its block overruns it on the first scan. The disk path screens the
+        // same number ahead of the constructor and reports data_corruption
+        // (column_data_t::initialize_column), so what is left here is the in-process invariant.
+        assert(segment_size_ <= block_manager().block_size());
 
         if (type.type() == types::logical_type::VALIDITY) {
             auto& buffer_manager = this->block->block_manager.buffer_manager;

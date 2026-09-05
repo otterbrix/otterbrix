@@ -10,6 +10,20 @@
 
 namespace components::table {
 
+    void fill_published_default(vector::vector_t& target, const column_definition_t* published, uint64_t rows) {
+        if (rows == 0) {
+            return;
+        }
+        if (published == nullptr || !published->has_default_value() || published->default_value().is_null()) {
+            target.validity().set_all_invalid(rows);
+            return;
+        }
+        const auto& fill = published->default_value();
+        for (uint64_t row = 0; row < rows; row++) {
+            target.set_value(row, fill);
+        }
+    }
+
     row_group_segment_tree_t::row_group_segment_tree_t(collection_t& collection)
         : collection_(collection)
         , current_row_group_(0)
@@ -515,7 +529,13 @@ namespace components::table {
 
     core::result_wrapper_t<boost::intrusive_ptr<collection_t>>
     collection_t::add_column(column_definition_t& new_column) {
-        auto new_types = types_;
+        // Allocator-extended copy: std::pmr::vector's plain copy constructor asks
+        // select_on_container_copy_construction for the new allocator, which for a
+        // polymorphic_allocator is a DEFAULT-constructed one -- the successor's schema would
+        // land on the process-wide default resource while the collection it is handed to lives
+        // here. Naming the resource is the only way a pmr container inherits one on copy
+        // (data_table_t::adopt_schema already spells it this way).
+        std::pmr::vector<types::complex_logical_type> new_types(types_, resource_);
         new_types.push_back(new_column.type());
         // Plain `new`, never the pmr resource: the reference count lives inside the collection, so
         // the counter's `delete` is the matching deallocation. Nothing was lost by giving up
@@ -545,7 +565,8 @@ namespace components::table {
 
     boost::intrusive_ptr<collection_t> collection_t::remove_column(uint64_t col_idx) {
         assert(col_idx < types_.size());
-        auto new_types = types_;
+        // Same allocator-extended copy as add_column above.
+        std::pmr::vector<types::complex_logical_type> new_types(types_, resource_);
         new_types.erase(new_types.begin() + static_cast<int64_t>(col_idx));
 
         // Same allocation note as add_column above.

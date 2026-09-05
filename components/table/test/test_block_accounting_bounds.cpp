@@ -32,6 +32,7 @@
 // statement no writer of this build would make.
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/table/column_segment.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/metadata_manager.hpp>
@@ -41,6 +42,7 @@
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
 
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -48,6 +50,7 @@
 #include <limits>
 #include <set>
 #include <string>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "block_reachability_walker.hpp"
@@ -472,3 +475,66 @@ TEST_CASE("accounting_bounds: a checkpoint refuses to publish a free-list id its
 
     remove_file(path);
 }
+
+// (7) The SEVENTH boundary, and the only one in this file that is measured inside a
+// constructor: a column_segment_t must fit the block it is built over. The guard reads
+//
+//     assert(!block || segment_size_ <= block_manager().block_size());
+//
+// and in the reload/create constructor `block` there named the CONSTRUCTOR PARAMETER, which
+// the initializer list had already moved into the member one line earlier -- a moved-from
+// std::shared_ptr is guaranteed empty, so `!block` was TRUE for every construction and the
+// comparison behind it was never evaluated. The identical assert in the two move constructors
+// below it reads the MEMBER and is live, which is what made the dead one invisible.
+//
+// Reachability of the null half, established by reading every construction site rather than
+// assumed: create_segment forwards an error-checked register_transient_memory (both of its
+// branches end in make_shared / pin(...).block_handle(), never null), and column_data_t's
+// checkpoint (column_data.cpp:749) and reload (column_data.cpp:1041) paths forward
+// block_manager_t::register_block, which returns either a locked live entry or a make_shared.
+// No caller can deliver a null handle, which is why the segment's arena is taken from
+// `this->block` unconditionally -- and why the surviving guard is the SIZE one.
+//
+// The oversize segment is built in a child process: the correct answer is a deliberate abort.
+#if !defined(NDEBUG) && (defined(__unix__) || defined(__APPLE__))
+TEST_CASE("components::table::column_segment::a_segment_larger_than_its_block_is_refused") {
+    core::pmr::otterbrix_resource resource;
+    core::filesystem::local_file_system_t fs;
+    tstorage::buffer_pool_t buffer_pool(&resource, uint64_t(1) << 32, false, uint64_t(1) << 24);
+    tstorage::standard_buffer_manager_t buffer_manager(&resource, fs, buffer_pool);
+
+    auto registered = buffer_manager.register_transient_memory(buffer_manager.block_size(), buffer_manager.block_size());
+    REQUIRE_FALSE(registered.has_error());
+    auto& block = registered.value();
+    REQUIRE(block != nullptr);
+
+    // The number the guard compares against, read from the same road the constructor takes.
+    const uint64_t limit = block->block_manager.block_size();
+    REQUIRE(limit > 0);
+
+    // BIGINT on purpose: VALIDITY and STRING_LITERAL memset/format segment_size() bytes inside
+    // the constructor, so an oversize segment of those types would run off the block before
+    // reaching any guard, and the child would die of the overrun rather than of the check.
+    const pid_t child = ::fork();
+    REQUIRE(child >= 0);
+    if (child == 0) {
+        ::signal(SIGABRT, SIG_DFL);
+        ::signal(SIGSEGV, SIG_DFL);
+        ::signal(SIGBUS, SIG_DFL);
+        column_segment_t oversized(block,
+                                   complex_logical_type{logical_type::BIGINT},
+                                   0,
+                                   0,
+                                   tstorage::INVALID_BLOCK,
+                                   0,
+                                   limit + 1);
+        // Reached only if the guard let it through: report the size it accepted.
+        _exit(oversized.segment_size() == limit + 1 ? 42 : 43);
+    }
+    int status = 0;
+    REQUIRE(::waitpid(child, &status, 0) == child);
+    INFO("block_size " << limit << ", segment_size " << (limit + 1) << ", wait status " << status);
+    REQUIRE(WIFSIGNALED(status));
+    CHECK(WTERMSIG(status) == SIGABRT);
+}
+#endif

@@ -61,13 +61,13 @@ namespace components::operators {
         constexpr catalog::oid_t pg_attr_oid = catalog::well_known_oid::pg_attribute_table;
         std::pmr::vector<std::uint64_t> pa_keys(resource_);
         pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
-        auto [_pa, paf] = actor_zeta::send(ctx->disk_address,
-                                           &services::disk::manager_disk_t::read_chunks_by_key,
-                                           exec_ctx,
-                                           pg_attr_oid,
-                                           std::move(pa_keys),
-                                           components::operators::make_key_chunk(resource_, table_oid_),
-                                           std::pmr::vector<std::uint64_t>{resource_});
+        auto [_pa, paf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                      &services::disk::manager_disk_t::read_chunks_by_key,
+                                                      exec_ctx,
+                                                      pg_attr_oid,
+                                                      std::move(pa_keys),
+                                                      components::operators::make_key_chunk(resource_, table_oid_),
+                                                      std::pmr::vector<std::uint64_t>{resource_});
         auto attr_batches_r = co_await std::move(paf);
         if (attr_batches_r.has_error()) {
             // A failed pg_attribute read is not a miss; treating it as one lets the
@@ -89,8 +89,9 @@ namespace components::operators {
             }
         }
 
-        auto [_oa, oaf] =
-            actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::allocate_oids_batch, std::size_t{1});
+        auto [_oa, oaf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                      &services::disk::manager_disk_t::allocate_oids_batch,
+                                                      std::size_t{1});
         auto allocated = co_await std::move(oaf);
         // Like every validation above, this refusal lands BEFORE the first catalog mutation.
         // Consuming a round that delivered nothing (allocate() answers INVALID_OID) sends the
@@ -136,11 +137,11 @@ namespace components::operators {
                                                        defspec,
                                                        /*added_at_commit_id=*/0,
                                                        /*dropped_at_commit_id=*/0);
-        auto [_w, wf] = actor_zeta::send(ctx->disk_address,
-                                         &services::disk::manager_disk_t::append_pg_catalog_row,
-                                         exec_ctx,
-                                         pg_attr_oid,
-                                         std::move(att_row));
+        auto [_w, wf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                    exec_ctx,
+                                                    pg_attr_oid,
+                                                    std::move(att_row));
         auto rng_r = co_await std::move(wf);
         if (rng_r.has_error()) {
             // The pg_attribute row IS the added column. Refused, ALTER TABLE ADD COLUMN added
@@ -165,11 +166,15 @@ namespace components::operators {
                 table_oid_,
                 std::string(column_.name()),
                 std::string{},
-                // ...and the column's TYPE with it. Until an INSERT materialises the column, the
-                // storage still has to ANSWER it — pg_attribute shows it from this statement on,
-                // so `SELECT <it>` is a legal query with a legal answer (NULL in every existing
-                // row) and the agent has no catalog to type it from.
-                column_.type()});
+                // ...and the column's TYPE with it, plus the DEFAULT in the very encoding that
+                // just went into pg_attribute.attdefspec (`defspec` above — one string, so the
+                // agent's copy cannot drift from the catalog's). Until an INSERT materialises the
+                // column, the storage still has to ANSWER it — pg_attribute shows it from this
+                // statement on, so `SELECT <it>` is a legal query with a legal answer, and that
+                // answer is the DEFAULT in every existing row (PostgreSQL 11+ attmissingval;
+                // ADD COLUMN ... DEFAULT does not rewrite the table there either) or NULL when
+                // there is no default. The agent has no catalog to read either fact from.
+                components::pg_attribute_commit_id_backfill_t::added_column_type_t{column_.type(), defspec}});
         }
 
         // resolve_table rebuilds columns from pg_attribute on each call, so

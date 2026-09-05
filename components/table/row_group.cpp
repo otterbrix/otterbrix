@@ -275,10 +275,10 @@ namespace components::table {
         // the graph was typed against the CATALOG's column list (storage_types), and pg_attribute
         // can legally name a column this storage has not materialized yet — ALTER TABLE ADD
         // COLUMN writes the catalog row and stops, the physical column is created by the first
-        // INSERT that carries it. Such a column is NULL in every existing row, so it is fed to
-        // the graph as an all-invalid vector of the type the graph itself carries for that slot
-        // (the same "type + set_all_invalid" shape the append path uses for a column an incoming
-        // chunk omits). Calling get_column() on it would abort inside row_group_t::get_column.
+        // INSERT that carries it. Such a column reads what the catalog published for it, which is
+        // its DEFAULT where the ALTER declared one — fill_published_default (collection.cpp) is
+        // that answer, and the projection leg fills the same ordinals from the same function.
+        // Calling get_column() on it would abort inside row_group_t::get_column.
         const size_t materialized = get_column_count();
         std::vector<size_t> referenced;
         size_t width = 0;
@@ -324,7 +324,7 @@ namespace components::table {
         for (size_t column : referenced) {
             auto& column_state = fetch_state.child(child_slot++);
             if (column >= materialized) {
-                rows.data[column].validity().set_all_invalid(count);
+                fill_published_default(rows.data[column], collection_->published_column(column - materialized), count);
                 continue;
             }
             for (uint64_t row = 0; row < count; row++) {

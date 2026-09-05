@@ -28,6 +28,7 @@ set(${PROJECT_NAME}_SOURCES
         test_failed_round_rollback.cpp
         test_checkpoint_crash_matrix.cpp
         test_alter_column_sharing.cpp
+        test_alter_schema_arena.cpp
         test_alter_version_sharing.cpp
         test_collection_ownership.cpp
         test_wide_decimal_storage.cpp
@@ -36,6 +37,7 @@ set(${PROJECT_NAME}_SOURCES
         test_wave_table.cpp
         test_segment_tree_reinitialize.cpp
         test_storage_update_rollback.cpp
+        test_update_overlay_predicate.cpp
         test_column_identity_restamp.cpp
         test_predicate_fetch_state.cpp
 )

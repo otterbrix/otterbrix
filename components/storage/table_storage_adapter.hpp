@@ -19,10 +19,12 @@ namespace components::storage {
     // This adapter is the seam where that gap is closed for EVERY reader at once: the storage
     // scan, the pushed-down filter, the aggregate-pushdown reduce (which reads through
     // fetch_next_batch) and the row-id gather all take their column count and their column
-    // ordinals from here. The unmaterialized columns are presented as trailing all-NULL columns
-    // — NULL being exactly what row_group_t::add_column will backfill into the rows that predate
+    // ordinals from here. The unmaterialized columns are presented as trailing CONSTANT columns —
+    // the column's published DEFAULT in every row, or NULL where the ALTER declared none — that
+    // constant being exactly what row_group_t::add_column will backfill into the rows that predate
     // the column when the materializing INSERT finally arrives, so the answer does not change
-    // across that boundary.
+    // across that boundary. PostgreSQL answers the same window the same way and out of the same
+    // pair of facts (pg_attribute.atttypid + attmissingval); see fill_unmaterialized.
     //
     // They are NOT added to columns()/has_schema(): those describe the PHYSICAL schema and drive
     // the append path's schema-growth and column-expansion stages, which must go on seeing the
@@ -41,7 +43,7 @@ namespace components::storage {
         // The CATALOG's width: the materialized columns at their storage ordinals, then the
         // columns pg_attribute has published and no INSERT has materialized yet. Every chunk this
         // adapter fills is built from this list, so a projected ordinal past the physical schema
-        // addresses a real (all-NULL) column instead of falling off the end.
+        // addresses a real column (all-NULL, or all-DEFAULT) instead of falling off the end.
         std::pmr::vector<types::complex_logical_type> types() const override {
             auto t = table_.copy_types();
             for (const auto& col : unmaterialized_columns()) {
@@ -68,21 +70,21 @@ namespace components::storage {
         uint64_t calculate_size() override { return table_.calculate_size(); }
 
         void scan(vector::data_chunk_t& output, const table::table_filter_t* filter, int64_t limit) override {
-            auto column_indices = storage_indices(nullptr);
+            auto column_indices = begin_read(nullptr);
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);
             table_.scan(output, state);
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
-            null_fill_unmaterialized(output, output.size());
+            fill_unmaterialized(output, output.size());
         }
 
         void scan(vector::data_chunk_t& output,
                   const table::table_filter_t* filter,
                   int64_t limit,
                   table::transaction_data txn) override {
-            auto column_indices = storage_indices(nullptr);
+            auto column_indices = begin_read(nullptr);
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);
             state.table_state.txn = txn;
@@ -91,21 +93,21 @@ namespace components::storage {
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
-            null_fill_unmaterialized(output, output.size());
+            fill_unmaterialized(output, output.size());
         }
 
         void scan_projected(vector::data_chunk_t& output,
                             const table::table_filter_t* filter,
                             int limit,
                             const std::vector<size_t>& projected_cols) override {
-            auto column_indices = storage_indices(&projected_cols);
+            auto column_indices = begin_read(&projected_cols);
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);
             table_.scan(output, state);
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
-            null_fill_unmaterialized(output, output.size());
+            fill_unmaterialized(output, output.size());
         }
 
         void scan_projected(vector::data_chunk_t& output,
@@ -113,7 +115,7 @@ namespace components::storage {
                             int limit,
                             const std::vector<size_t>& projected_cols,
                             table::transaction_data txn) override {
-            auto column_indices = storage_indices(&projected_cols);
+            auto column_indices = begin_read(&projected_cols);
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);
             state.table_state.txn = txn;
@@ -122,7 +124,7 @@ namespace components::storage {
             if (limit >= 0) {
                 output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
             }
-            null_fill_unmaterialized(output, output.size());
+            fill_unmaterialized(output, output.size());
         }
 
         [[nodiscard]] core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
@@ -130,7 +132,7 @@ namespace components::storage {
                                                                 int64_t limit,
                                                                 const std::vector<size_t>* projected_cols,
                                                                 table::transaction_data txn) override {
-            auto column_indices = storage_indices(projected_cols);
+            auto column_indices = begin_read(projected_cols);
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, filter);
             state.table_state.txn = txn;
@@ -175,7 +177,7 @@ namespace components::storage {
                 batches.erase(batches.begin() + static_cast<std::ptrdiff_t>(keep), batches.end());
             }
             for (auto& batch : batches) {
-                null_fill_unmaterialized(batch, batch.size());
+                fill_unmaterialized(batch, batch.size());
             }
             return true;
         }
@@ -194,7 +196,7 @@ namespace components::storage {
                 pos.drained = true;
                 return true;
             }
-            auto column_indices = storage_indices(projected_cols);
+            auto column_indices = begin_read(projected_cols);
             // data_table_t owns the transient-scan-state seek + single-batch read + position
             // advance (it has row_group.hpp; the scan state and its pins live and die inside that
             // call, so nothing pinned survives this round-trip).
@@ -203,7 +205,7 @@ namespace components::storage {
             if (read.has_error()) {
                 return read;
             }
-            null_fill_unmaterialized(output, output.size());
+            fill_unmaterialized(output, output.size());
             return read;
         }
 
@@ -251,7 +253,7 @@ namespace components::storage {
             if (state.fetch_error.contains_error()) {
                 return state.fetch_error;
             }
-            null_fill_unmaterialized(output, output.size());
+            fill_unmaterialized(output, output.size());
             return true;
         }
 
@@ -425,14 +427,23 @@ namespace components::storage {
         // ones no row group holds. data_table_t can only write the PHYSICAL schema, so those
         // trailing columns are dropped here.
         //
-        // Dropping them is sound only while they carry NOTHING, and that is checked rather than
-        // assumed: a value in one of them is an UPDATE that would first have to materialize the
-        // column, which only the append path's schema-growth stage can do (it owns the
+        // Dropping them is sound only while they carry NOTHING NEW, and that is checked rather
+        // than assumed: a value in one of them is an UPDATE that would first have to materialize
+        // the column, which only the append path's schema-growth stage can do (it owns the
         // PHYSICAL_ADD_COLUMN WAL record that keeps replay in schema-then-rows order). Writing the
         // row and silently losing that value is exactly what rule 6 forbids, so the statement is
         // refused instead. The refusal reaches the agent before any WAL record is written for the
         // update (operator_update journals only after storage_update succeeds), so a refused
         // statement leaves nothing behind.
+        //
+        // "NOTHING NEW", not "NOTHING", and the difference is the column's own DEFAULT. Since
+        // fill_unmaterialized answers a published column with its default, the payload an UPDATE
+        // that merely FILTERS on such a column carries back is a column full of that default —
+        // non-null, and written by the READ, not by the statement. Dropping it loses nothing (the
+        // column reads the same constant for every row that predates it, before and after this
+        // write), so refusing there would turn `UPDATE t SET a = 9 WHERE extra IS NOT NULL` into
+        // an error on a table whose only sin is having a DEFAULT. A value that DIFFERS from the
+        // default is still the statement's own and still refused.
         //
         // THE REFUSAL IS THE SANCTIONED CONTRACT, not a gap left open by accident:
         // integration/cpp/test/test_alter_add_column_unmaterialized.cpp pins
@@ -447,12 +458,17 @@ namespace components::storage {
             }
             const auto& declared = unmaterialized_columns();
             for (size_t i = physical; i < data.column_count(); i++) {
+                const size_t declared_idx = i - physical;
+                const auto* published =
+                    declared_idx < declared.size() ? &declared[declared_idx].default_value_opt() : nullptr;
                 for (uint64_t row = 0; row < data.size(); row++) {
                     if (data.is_null(i, row)) {
                         continue;
                     }
+                    if (published != nullptr && published->has_value() && data.data[i].value(row) == **published) {
+                        continue; // the READ's own fill, echoed back — see the note above
+                    }
                     std::pmr::string what{"UPDATE writes column '", resource_};
-                    const size_t declared_idx = i - physical;
                     what.append(declared_idx < declared.size() ? declared[declared_idx].name().c_str() : "?");
                     what.append("', which ALTER TABLE ADD COLUMN has published in the catalog and no INSERT "
                                 "has materialized in the storage yet; insert a row carrying it first");
@@ -478,8 +494,18 @@ namespace components::storage {
             const auto& declared = unmaterialized_columns();
             std::pmr::string lost_columns{resource_};
             for (size_t i = physical; i < data.column_count(); i++) {
+                const size_t published_idx = i - physical;
+                const auto* published =
+                    published_idx < declared.size() ? &declared[published_idx].default_value_opt() : nullptr;
                 for (uint64_t row = 0; row < data.size(); row++) {
                     if (data.is_null(i, row)) {
+                        continue;
+                    }
+                    // Mirrors the live trim: a cell equal to the column's published DEFAULT is the
+                    // READ's own fill travelling back through the journal, not a value the update
+                    // wrote, so nothing is lost by dropping it and naming it here would be a false
+                    // report of data loss.
+                    if (published != nullptr && published->has_value() && data.data[i].value(row) == **published) {
                         continue;
                     }
                     if (!lost_columns.empty()) {
@@ -515,11 +541,29 @@ namespace components::storage {
             return core::error_t{core::error_code_t::unimplemented_yet, std::move(what)};
         }
 
+        // EVERY read entry point starts here, and it does two things that only look unrelated.
+        //
+        // It drops the ordinals no row group can read (storage_indices, below) — which is what
+        // leaves those columns for fill_unmaterialized to answer AFTER the scan. And it hands the
+        // published list to the collection the scan is about to walk, because the pushed-down
+        // filter reads those same columns DURING the scan (row_group_t::evaluate_predicate), one
+        // layer below the fill. Do only the first and the projection answers the DEFAULT while
+        // the predicate answers NULL — the split
+        // integration/cpp/test/test_alter_add_column_unmaterialized.cpp's
+        // default_answers_the_predicate_leg pins.
+        //
+        // Bound per read rather than once here: data_table_t::compact installs a new collection
+        // under this adapter without rebuilding it.
+        std::vector<table::storage_index_t> begin_read(const std::vector<size_t>* projected_cols) const {
+            table_.row_group()->publish_unmaterialized_columns(&unmaterialized_columns());
+            return storage_indices(projected_cols);
+        }
+
         // The caller's (catalog) ordinals reduced to the ones a row group can actually read.
         // `projected_cols == nullptr` means "every materialized column".
         //
         // An ordinal at or past the physical schema is DROPPED here on purpose: it names a column
-        // pg_attribute has and no INSERT has materialized, which null_fill_unmaterialized answers.
+        // pg_attribute has and no INSERT has materialized, which fill_unmaterialized answers.
         // The result may legitimately be EMPTY — a projection naming only such columns — and that
         // is a row-count-only scan, not an error (see table_scan_state::column_ids) — the scan
         // must not assert on an empty column list.
@@ -542,15 +586,15 @@ namespace components::storage {
             return out;
         }
 
-        // Answer the unmaterialized columns: NULL in every row, which is what the materializing
-        // INSERT will backfill into these same rows (row_group_t::add_column fills pre-existing
-        // rows from the column definition's default, and the definition stage 1b builds carries
-        // none). The shape is the append path's own missing-column fill — a typed vector with an
-        // all-invalid validity mask — so the two agree by construction.
+        // The PROJECTION leg's half of the answer; the predicate leg's half is
+        // row_group_t::evaluate_predicate, and both write it through fill_published_default. The
+        // constant is the one row_group_t::add_column backfills into these same rows when the
+        // materializing INSERT arrives, so the answer does not move across that boundary — the
+        // same device PostgreSQL 11+ uses (pg_attribute.attmissingval, no heap rewrite).
         //
         // A column the projected chunk ctor left as a buffer-less placeholder is skipped: nothing
         // reads it, and it is dropped at the cursor boundary.
-        void null_fill_unmaterialized(vector::data_chunk_t& chunk, uint64_t rows) const {
+        void fill_unmaterialized(vector::data_chunk_t& chunk, uint64_t rows) const {
             const auto& declared = unmaterialized_columns();
             if (declared.empty() || rows == 0) {
                 return;
@@ -565,7 +609,7 @@ namespace components::storage {
                 if (column.data() == nullptr && column.auxiliary() == nullptr) {
                     continue;
                 }
-                column.validity().set_all_invalid(rows);
+                table::fill_published_default(column, &declared[i], rows);
             }
         }
 

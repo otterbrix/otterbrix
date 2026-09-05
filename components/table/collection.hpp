@@ -20,6 +20,15 @@ namespace components::table {
 
     class data_table_t;
 
+    // The cells an UNMATERIALIZED column reads — a column pg_attribute publishes and no row group
+    // holds: the DEFAULT the catalog published for it in every row, all-NULL where it published
+    // none (`published == nullptr` included). Both readers of such a column call THIS one
+    // function, and that is the whole reason it exists: the projection
+    // (components/storage/table_storage_adapter.hpp fill_unmaterialized) and the pushed-down
+    // predicate (row_group_t::evaluate_predicate) answered it apart and disagreed — `SELECT extra`
+    // read the DEFAULT while `WHERE extra = <that default>` matched no row at all.
+    void fill_published_default(vector::vector_t& target, const column_definition_t* published, uint64_t rows);
+
     class row_group_segment_tree_t : public segment_tree_t<row_group_t, true> {
     public:
         explicit row_group_segment_tree_t(collection_t& collection);
@@ -176,6 +185,25 @@ namespace components::table {
 
         void set_total_rows(uint64_t total) { total_rows_ = total; }
 
+        // Columns pg_attribute publishes that no row group here holds. BORROWED from the storage
+        // entry and REBOUND on every read (table_storage_adapter_t::begin_read), not once at
+        // construction: data_table_t::compact installs a freshly built collection under the same
+        // adapter, and collection_t::add_column / remove_column build successors, so a binding
+        // made at construction would silently go missing under exactly those.
+        //
+        // The reader is row_group_t::evaluate_predicate. A pushed-down filter can bind an ordinal
+        // past the last materialized column, and it has to see the same constant the projection
+        // leg writes there.
+        void publish_unmaterialized_columns(const std::vector<column_definition_t>* columns) noexcept {
+            unmaterialized_ = columns;
+        }
+        // The column `offset` slots past the materialized schema, or nullptr when nothing is
+        // published for it — which fill_published_default reads as all-NULL.
+        const column_definition_t* published_column(size_t offset) const noexcept {
+            return unmaterialized_ != nullptr && offset < unmaterialized_->size() ? &(*unmaterialized_)[offset]
+                                                                                 : nullptr;
+        }
+
     private:
         bool is_empty(std::unique_lock<std::mutex>&) const;
 
@@ -189,6 +217,8 @@ namespace components::table {
         // every consumer takes .get() or operator->).
         std::unique_ptr<row_group_segment_tree_t> row_groups_;
         uint64_t allocation_size_;
+        // BORROWED, may be null. See publish_unmaterialized_columns.
+        const std::vector<column_definition_t>* unmaterialized_ = nullptr;
     };
 
 } // namespace components::table

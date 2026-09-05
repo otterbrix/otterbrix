@@ -30,10 +30,19 @@ namespace components::table {
         // The DDL site must read the latch before installing the successor.
         data_table_t(data_table_t& parent, column_definition_t& new_column);
         data_table_t(data_table_t& parent, uint64_t removed_column);
-        data_table_t(data_table_t& parent,
-                     uint64_t changed_idx,
-                     const types::complex_logical_type& target_type,
-                     const std::vector<storage_index_t>& bound_columns);
+        // THERE IS NO ALTER TYPE SUCCESSOR CONSTRUCTOR, and its absence is the refusal.
+        // The one that used to stand here --
+        //   data_table_t(parent, changed_idx, target_type, bound_columns)
+        // -- never assigned row_groups_ (it copied the definitions, rewrote one type, and
+        // returned) while it DID execute `parent.is_root_ = false`. Its first caller would
+        // have got a table whose every hot method dereferences a null collection --
+        // adopt_schema, initialize_scan, row_group_size, calculate_size, total_rows -- on top
+        // of a parent that now refuses its own writes with write_conflict. It had zero
+        // callers, and it could not have been completed either: BOTH halves it needs,
+        // collection_t::alter_type (collection.hpp) and row_group_t::alter_type
+        // (row_group.hpp), are commented out. Re-declaring it before those exist turns a
+        // compile error into a null dereference, so the declaration stays out and
+        // components/table/test/test_update_overlay_predicate.cpp holds it out.
 
         // ALTER-constructor failure latch — see the ADD COLUMN constructor above.
         bool has_construction_error() const noexcept { return construction_error_.contains_error(); }
@@ -105,6 +114,31 @@ namespace components::table {
         // components/table/test/test_storage_update_rollback.cpp measures it). The
         // txn-carrying UPDATE a statement runs is delete-stamp + append, in
         // components/storage/table_storage_adapter.hpp.
+        //
+        // WHY THAT IS NOT A LIVE DEFECT — the enumerated caller set, current as of this line.
+        // The missing rollback and the missing write-write detection can only hurt where a
+        // caller could roll back, or where a second writer could reach the same row. Neither
+        // exists on either of the two production doors into this overload, both of which
+        // arrive through storage_t::update(row_ids, data) -> agent_disk_t::direct_update_sync:
+        //   1. WAL REPLAY (integration/cpp/base_spaces.cpp, the PHYSICAL_UPDATE arm). It runs
+        //      inside the pre-scheduler bootstrap window -- scheduler_, scheduler_disk_ and
+        //      scheduler_dispatcher_ are started AFTER it -- so there is no second writer at
+        //      all; and its records are pre-filtered by wal_reader_t::read_committed_records,
+        //      so there is nothing uncommitted to undo.
+        //   2. THE COMMIT-ID STAMP on pg_attribute (agent_disk_t::
+        //      update_pg_attribute_commit_id_field_inner, reached from
+        //      operator_commit_transaction_t STEP 4). It runs BELOW the durable commit marker,
+        //      so no rollback can follow it; and the row it patches was inserted by the
+        //      committing transaction itself and still carries insert_id == transaction_id, so
+        //      it is invisible to every other snapshot and no second writer can name it. Both
+        //      marker kinds hold: the added_at row is the ALTER's own new pg_attribute row, and
+        //      the dropped_at row is the TOMBSTONE this same transaction appended
+        //      (operator_alter_column_drop.cpp -- it deletes the live row and appends a fresh
+        //      one rather than patching in place).
+        // So: the path is LIVE, the defect on it is NOT REACHABLE. What keeps it that way is
+        // caller discipline, not this signature -- a third caller that can abort, or one that
+        // patches a row another transaction can see, makes it reachable again with no
+        // diagnostic anywhere. Add one and the version chain has to come with it.
         [[nodiscard]] core::result_wrapper_t<std::pair<int64_t, uint64_t>>
         update(table_update_state& state,
                vector::vector_t& row_ids,

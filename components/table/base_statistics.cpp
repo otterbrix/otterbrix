@@ -313,7 +313,7 @@ namespace components::table {
                     auto width = reader.read<uint8_t>();
                     auto scale = reader.read<uint8_t>();
                     auto raw = reader.read<types::int128_t>();
-                    auto dec_type = types::complex_logical_type::create_decimal(width, scale);
+                    auto dec_type = types::complex_logical_type::create_decimal(resource, width, scale);
                     if (dec_type.has_error()) {
                         // A (width, scale) outside the window can only come from a corrupt
                         // stream. This helper has no error channel; answering NA leaves min/max

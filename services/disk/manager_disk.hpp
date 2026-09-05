@@ -437,13 +437,24 @@ namespace services::disk {
         // durable facts every time.
         //
         // THE SAME LIST ALSO ANSWERS THE READS. Until it materialises, the column is one
-        // pg_attribute SHOWS and no row group holds, so the entry carries its TYPE alongside its
-        // identity and the storage adapter presents those columns as trailing all-NULL ones (see
-        // table_storage_adapter_t). Publishing therefore has to be complete, not best-effort:
-        // adopt_catalog_columns() re-derives the set on EVERY load, bootstrap and lazy alike.
+        // pg_attribute SHOWS and no row group holds, so the entry carries its TYPE and its DEFAULT
+        // alongside its identity and the storage adapter presents those columns as trailing
+        // constant ones — the default in every row where the ALTER declared one, NULL where it did
+        // not (see table_storage_adapter_t). Publishing therefore has to be complete, not
+        // best-effort: adopt_catalog_columns() re-derives the set on EVERY load, bootstrap and
+        // lazy alike.
+        //
+        // THE DEFAULT IS PART OF THE PUBLICATION, not a decoration on it. PostgreSQL 11+ answers
+        // ALTER TABLE ADD COLUMN ... DEFAULT out of pg_attribute.attmissingval without rewriting
+        // the table, and this list is the same device: the read below it and the backfill
+        // row_group_t::add_column performs when the column finally materialises BOTH take the
+        // constant from here, which is what makes the answer identical on either side of the
+        // materialisation. A publication that dropped it would make the column read NULL and then
+        // flip to the default the moment some INSERT carried it.
         void note_column_identity(std::string attname,
                                   std::uint32_t attoid,
-                                  const components::types::complex_logical_type& type) {
+                                  const components::types::complex_logical_type& type,
+                                  const std::optional<components::types::logical_value_t>& default_value = {}) {
             if (attname.empty() || attoid == 0) {
                 return;
             }
@@ -460,12 +471,36 @@ namespace services::disk {
                     if (p.attoid() == 0) {
                         p.set_attoid(attoid);
                     }
+                    // Same rule as the attoid: a publisher that KNOWS the default completes a
+                    // parked entry that does not, and none overwrites one that already has it.
+                    // The two publishers see different halves — the ALTER's own commit carries
+                    // the default it just encoded, a re-derivation from pg_attribute carries
+                    // whatever that scan read — so first-writer-wins would lose it whenever the
+                    // poorer publisher happened to run first.
+                    if (!p.has_default_value() && default_value.has_value()) {
+                        p.set_default_value(default_value);
+                    }
                     return;
                 }
             }
             components::table::column_definition_t def(std::move(attname), type);
             def.set_attoid(attoid);
+            def.set_default_value(default_value);
             unmaterialized_columns.push_back(std::move(def));
+        }
+
+        // The parked publication for `attname`, or nullptr. Distinct from take_column_identity:
+        // that one CONSUMES the entry, and the materialising caller needs to read the DEFAULT out
+        // of it (the constant row_group_t::add_column backfills into every pre-existing row)
+        // before the consumption drops it.
+        [[nodiscard]] const components::table::column_definition_t*
+        find_unmaterialized(const std::string& attname) const noexcept {
+            for (const auto& p : unmaterialized_columns) {
+                if (p.name() == attname) {
+                    return &p;
+                }
+            }
+            return nullptr;
         }
 
         // 0 = nothing published for this name. The caller is the one materialising the column,
@@ -513,7 +548,13 @@ namespace services::disk {
                     }
                 }
                 if (!in_storage) {
-                    note_column_identity(def.name(), def.attoid(), def.type());
+                    // The DEFAULT travels with the type here for the same reason it travels on the
+                    // ALTER's marker: it is what the adapter answers and what the materialisation
+                    // backfills. A catalog column list that carries none publishes none and the
+                    // column reads NULL — so collect_catalog_columns_sync decodes attdefspec on
+                    // the MANAGER's resource, not on its scan arena: a logical_value_t copy keeps
+                    // its source resource pointer and this value outlives that scan.
+                    note_column_identity(def.name(), def.attoid(), def.type(), def.default_value_opt());
                 }
             }
         }
@@ -1078,25 +1119,16 @@ namespace services::disk {
 
         void sync(disk_sync_pack_t pack);
 
-        /// A NAME THAT PROMISES DURABILITY AND DELIVERS NOTHING — said here rather than
-        /// discovered at the definition. The body traces and returns; it flushes no buffer, syncs
-        /// no file and touches no entry (manager_disk_io.cpp). Durability of a table is
-        /// checkpoint_all's, and only its; a caller that reads this call as "the writes are on the
-        /// device now" is reading a promise nothing in this class makes.
-        ///
-        /// It is not removed here because removal is not local, and the reason is the SHAPE of
-        /// the edit and not the mailbox: dropping the method breaks the three call sites that
-        /// still name it, all of them outside this component
-        /// (components/physical_plan/operators/operator_commit_transaction.cpp,
-        /// operator_update.cpp, operator_delete.cpp, plus the semantics documented at
-        /// components/logical_plan/node_transaction.hpp), so it is one atomic edit across three
-        /// components. Message ids do NOT stand in the way — they are computed from the position
-        /// of the method POINTER in dispatch_traits::methods at compile time, on the send side and
-        /// the dispatch side alike, so removing a method renumbers both together and a missed
-        /// sender is a compile error, never a silent misroute (see the note on since_version
-        /// above). Nor can it be given meaning from in here: what those three callers want
-        /// flushed is theirs to say, not this class's to guess.
-        unique_future<void> flush(session_id_t session, wal::id_t wal_id);
+        // `flush` USED TO SIT HERE AND IS GONE. It was a registered contract method whose body
+        // traced and returned: no buffer flushed, no file synced, no entry touched — a name that
+        // promised durability and delivered nothing. Durability of a table is checkpoint_all's,
+        // and only its. The three call sites that named it (operator_commit_transaction.cpp,
+        // operator_update.cpp, operator_delete.cpp) are gone with it in the same edit, which is
+        // what removal always needed: it renumbers every method below it in dispatch_traits, so
+        // contract, actor, behavior() and senders move as ONE change.
+        //
+        // Do not reintroduce a no-op under this name. If a caller needs "the writes are on the
+        // device now", it has to say WHAT it wants durable and the answer is checkpoint_all.
 
         // compact_watermark (here and below): the dispatcher's visible-to-all
         // horizon (txn_compact_watermark_msg / txn_publish_msg return) handed to
@@ -1289,7 +1321,6 @@ namespace services::disk {
                                                    std::vector<components::catalog::oid_t> tables);
 
         using dispatch_traits = actor_zeta::implements<disk_contract,
-                                                       &manager_disk_t::flush,
                                                        &manager_disk_t::checkpoint_all,
                                                        &manager_disk_t::vacuum_all,
                                                        &manager_disk_t::maybe_cleanup_many,

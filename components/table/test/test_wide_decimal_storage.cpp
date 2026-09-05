@@ -169,7 +169,7 @@ namespace {
 
         cleanup_test_file();
         test_env_t env;
-        auto decimal_type_result = complex_logical_type::create_decimal(width, scale);
+        auto decimal_type_result = complex_logical_type::create_decimal(&env.resource, width, scale);
         REQUIRE_FALSE(decimal_type_result.has_error());
         const auto decimal_type = decimal_type_result.value();
         REQUIRE(decimal_type.to_physical_type() == physical_type::INT128);

@@ -62,8 +62,6 @@ namespace services::disk {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        actor_zeta::unique_future<void> flush(session_id_t session, services::wal::id_t wal_id);
-
         // compact_watermark (here and below): the dispatcher's visible-to-all
         // horizon (txn_compact_watermark_msg / txn_publish_msg return); any
         // version stamp above it makes the MVCC-gated compact a no-op.
@@ -469,8 +467,7 @@ namespace services::disk {
         // un-marking the DROP so on_horizon_advanced never reclaims the still-live .otbx.
         actor_zeta::unique_future<void> storage_drop_aborted(session_id_t session, uint64_t txn_id);
 
-        using dispatch_traits = actor_zeta::dispatch_traits<&disk_contract::flush,
-                                                            &disk_contract::checkpoint_all,
+        using dispatch_traits = actor_zeta::dispatch_traits<&disk_contract::checkpoint_all,
                                                             &disk_contract::vacuum_all,
                                                             &disk_contract::maybe_cleanup_many,
                                                             // Storage management

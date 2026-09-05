@@ -32,15 +32,6 @@ namespace services::disk {
         }
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::flush(session_id_t session, wal::id_t wal_id) {
-        // NOTHING IS FLUSHED HERE, AND THE DECLARATION SAYS SO AT LENGTH (manager_disk.hpp):
-        // durability belongs to checkpoint_all. This body is a trace so the call is at least
-        // visible; it is neither a stub waiting to be filled in from this side nor a step any
-        // caller may read as a barrier.
-        trace(log_, "manager_disk_t::flush , session : {} , wal_id : {}", session.data(), wal_id);
-        co_return;
-    }
-
     manager_disk_t::unique_future<wal::id_t>
     manager_disk_t::checkpoint_all(session_id_t session, wal::id_t current_wal_id, uint64_t compact_watermark) {
         trace(log_,

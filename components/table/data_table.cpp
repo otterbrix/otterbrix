@@ -140,20 +140,10 @@ namespace components::table {
         parent.is_root_ = false;
     }
 
-    data_table_t::data_table_t(data_table_t& parent,
-                               uint64_t changed_idx,
-                               const types::complex_logical_type& target_type,
-                               const std::vector<storage_index_t>&)
-        : resource_(parent.resource_)
-        , is_root_(true) {
-        for (auto& column_def : parent.column_definitions_) {
-            column_definitions_.emplace_back(column_def);
-        }
-
-        column_definitions_[changed_idx].type() = target_type;
-
-        parent.is_root_ = false;
-    }
+    // The ALTER TYPE successor constructor that used to stand here is GONE -- see the note in
+    // data_table.hpp where its declaration was: it left row_groups_ null while demoting its
+    // parent out of root, had no callers, and cannot be written at all until
+    // collection_t::alter_type and row_group_t::alter_type stop being commented out.
 
     [[nodiscard]] std::pmr::vector<types::complex_logical_type> data_table_t::copy_types() const {
         std::pmr::vector<types::complex_logical_type> types(resource_);
@@ -281,11 +271,14 @@ namespace components::table {
             return false;
         }
 
-        auto types = row_groups_->types();
+        // By reference: types() hands back a reference into the live collection, and `auto` would
+        // COPY that std::pmr::vector -- a copy whose allocator does not propagate, so the
+        // throw-away intermediate would land on the default resource before being re-hosted below.
+        const auto& types = row_groups_->types();
         auto new_collection = boost::intrusive_ptr<collection_t>(
             new collection_t(resource_,
                              row_groups_->block_manager(),
-                             std::pmr::vector<types::complex_logical_type>(types.begin(), types.end(), resource_),
+                             std::pmr::vector<types::complex_logical_type>(types, resource_),
                              0));
 
         {

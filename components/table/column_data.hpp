@@ -85,7 +85,20 @@ namespace components::table {
         virtual void set_start(int64_t new_start);
         const types::complex_logical_type& root_type() const;
         const types::complex_logical_type& type() const { return type_; }
-        bool has_updates() const;
+        // ANSWERS THAT THE OVERLAY OBJECT EXISTS, NOT THAT IT CHANGED A VALUE, and the name
+        // says which because the difference is reachable: update_internal allocates the
+        // update_segment_t before it knows the update will change anything, so writing a row
+        // back to the value it already holds flips this to true forever after
+        // (components/table/test/test_update_overlay_predicate.cpp measures exactly that).
+        // Nothing ever clears updates_, so it never returns to false either.
+        //
+        // Every consumer therefore over-reports in the SAFE direction -- an extra zonemap
+        // miss, an extra flat-vector scan, one checkpoint rebuild nobody needed
+        // (services/disk/manager_disk_t::has_pending_update_overlay). Under-reporting would
+        // cost a value, so a consumer that needs "did any row actually change" must ask a
+        // narrower question than this one -- update_segment_t::has_updates(vector_index) and
+        // has_updates(start_row, end_row) are the per-range predicates.
+        bool has_update_segment() const;
         virtual scan_vector_type
         get_vector_scan_type(column_scan_state& state, uint64_t scan_count, vector::vector_t& result);
         virtual void initialize_scan(column_scan_state& state);

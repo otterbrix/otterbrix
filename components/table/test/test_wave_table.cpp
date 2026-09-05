@@ -334,7 +334,7 @@ TEST_CASE("components::table::wave::hugeint_and_decimal_columns_get_minmax_stati
     }
 
     SECTION("wide DECIMAL(38,2) min/max survive a serialize round-trip") {
-        auto dec_type_r = complex_logical_type::create_decimal(38, 2);
+        auto dec_type_r = complex_logical_type::create_decimal(&env.resource, 38, 2);
         REQUIRE_FALSE(dec_type_r.has_error());
         auto dec_type = dec_type_r.value();
         base_statistics_t stats(&env.resource, logical_type::DECIMAL);

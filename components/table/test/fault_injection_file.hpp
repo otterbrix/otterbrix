@@ -227,7 +227,9 @@ namespace otterbrix_test {
 
         uint64_t file_size() override { return inner_->file_size(); }
 
-        void close() override { inner_->close(); }
+        // Delegating, and it must FORWARD the refusal: a slot of its own answering "no error"
+        // while the wrapped handle refused would be a new liar (core/file/file_handle.hpp).
+        core::error_t close() override { return inner_->close(); }
 
         // Simulate kill -9: revert every positional write since the last successful sync
         // (restore pre-images newest-first, then restore the synced length) and kill the

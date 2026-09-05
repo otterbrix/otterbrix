@@ -679,13 +679,16 @@ namespace services::disk {
         //   storage_append_inner can stamp it onto the storage column the moment it materialises
         //   the column. See collection_storage_entry_t::note_column_identity for why the identity
         //   has to arrive BEFORE the column, and who publishes it. Not-owned oids no-op. The
-        //   column's TYPE rides along: the same list is what table_storage_adapter_t reads to
-        //   answer a published-but-unmaterialised column with NULLs, and it cannot build a column
-        //   without one.
-        unique_future<void> note_column_identity_inner(components::catalog::oid_t table_oid,
-                                                       std::string attname,
-                                                       std::uint32_t attoid,
-                                                       components::types::complex_logical_type type);
+        //   column's TYPE AND DEFAULT ride along (added_column_type_t): the same list is what
+        //   table_storage_adapter_t reads to answer a published-but-unmaterialised column, and it
+        //   can build neither the column nor the constant every pre-existing row reads without
+        //   them. The default arrives ENCODED (pg_attribute.attdefspec's own text) and is decoded
+        //   here, against the type that came with it.
+        unique_future<void>
+        note_column_identity_inner(components::catalog::oid_t table_oid,
+                                   std::string attname,
+                                   std::uint32_t attoid,
+                                   components::pg_attribute_commit_id_backfill_t::added_column_type_t type);
 
         // Bootstrap-only: base_spaces wires the manager_dispatcher_t address into
         // every agent before scheduler.start. on_horizon_advanced_inner uses it to

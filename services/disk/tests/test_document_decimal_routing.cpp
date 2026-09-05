@@ -13,6 +13,7 @@
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
+#include <core/pmr.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <filesystem>
@@ -82,8 +83,16 @@ namespace {
         }
     };
 
+    // The ONE arena this file builds DECIMALs on. create_decimal allocates only on its refusal
+    // path, and that message belongs to the caller, so the caller has to name an arena it owns
+    // rather than reach for the process-global one (rule 14).
+    std::pmr::memory_resource* decimal_resource() {
+        static core::pmr::otterbrix_resource arena;
+        return &arena;
+    }
+
     complex_logical_type decimal_with_alias(uint8_t width, uint8_t scale, const char* alias) {
-        auto created = complex_logical_type::create_decimal(width, scale);
+        auto created = complex_logical_type::create_decimal(decimal_resource(), width, scale);
         REQUIRE_FALSE(created.has_error());
         auto t = std::move(created.value());
         t.set_alias(alias);
@@ -164,7 +173,7 @@ TEST_CASE("services::disk::document_decimal::regular_table_refuses_parameterizat
     auto ns_oid = test_create_namespace(fx, "regns");
     std::vector<components::table::column_definition_t> cols;
     {
-        auto created = complex_logical_type::create_decimal(10, 2);
+        auto created = complex_logical_type::create_decimal(&fx.resource, 10, 2);
         REQUIRE_FALSE(created.has_error());
         cols.emplace_back("x", std::move(created.value()));
     }

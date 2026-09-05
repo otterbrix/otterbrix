@@ -72,7 +72,7 @@ Otterbrix seamlessly integrates with column-oriented memory format and can repre
 
 | Feature/Challenge | DuckDB | Velox | OtterBrix |
 | ----- | ----- | ----- | ----- |
-| Memory Usage | Can exhaust available memory on large datasets and doesn't always spill to disk gracefully | High memory consumption with extensive caching; requires careful tuning | Efficient memory layout optimized for three modes: in-memory, disk-only and hybrid |
+| Memory Usage | Can exhaust available memory on large datasets and doesn't always spill to disk gracefully | High memory consumption with extensive caching; requires careful tuning | Efficient memory layout over disk-backed storage with an in-memory cache and spillable operators |
 | Semi-Structured Data | Limited support for nested data; requires flattening | Supports complex types but typically requires schema definition | Native handling of deeply nested structures without performance degradation |
 | Integration Model | Embedded library with direct SQL interface | Component library for building systems; requires significant integration effort | Complete embedded solution with SQL interface and DataFrame API for direct application integration |
 | Performance on JSON | Underperforms when working with complex JSON structures | Relies on host system for JSON parsing and schema conversion | Purpose-built for high-performance JSON analytics with optimized path expressions |

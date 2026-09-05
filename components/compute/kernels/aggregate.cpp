@@ -578,21 +578,21 @@ namespace {
 namespace components::compute {
     // WARNING: array size, names order and uid has to be the same as in DEFAULT_FUNCTIONS
     void register_default_functions(function_registry_t& r) {
-        (void) r.add_function(make_sum_func(r.resource(),
+        r.add_builtin(make_sum_func(r.resource(),
                                             "sum",
                                             "Add all numeric values",
                                             "Results in a single number of the same type as input"));
-        (void) r.add_function(make_min_func(r.resource(),
+        r.add_builtin(make_min_func(r.resource(),
                                             "min",
                                             "Selects minimal value",
                                             "Results in a single number of the same type as input"));
-        (void) r.add_function(make_max_func(r.resource(),
+        r.add_builtin(make_max_func(r.resource(),
                                             "max",
                                             "Selects maximum value",
                                             "Results in a single number of the same type as input"));
-        (void) r.add_function(
+        r.add_builtin(
             make_count_func(r.resource(), "count", "Return data size", "Results in a single number of uint64"));
-        (void) r.add_function(make_avg_func(r.resource(),
+        r.add_builtin(make_avg_func(r.resource(),
                                             "avg",
                                             "Return data size",
                                             "Results in a single number of the same type as input"));

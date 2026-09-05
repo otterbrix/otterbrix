@@ -2,6 +2,7 @@
 
 #include <core/pmr.hpp>
 
+#include <algorithm>
 #include <optional>
 
 using namespace components::vector;
@@ -404,6 +405,10 @@ namespace components::compute {
     }
 
     core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
+        if (builtin_error_.contains_error()) {
+            // Poisoned: a broken builtin table must stay empty (see add_builtin).
+            return core::error_on(resource_, builtin_error_);
+        }
         if (!function) {
             return core::error_t(core::error_code_t::function_registry_error,
                                  std::pmr::string{"Cannot add null function", resource_});
@@ -416,6 +421,10 @@ namespace components::compute {
 
     core::result_wrapper_t<function_uid> function_registry_t::add_function_with_uid(function_uid uid,
                                                                                     function_ptr function) {
+        if (builtin_error_.contains_error()) {
+            // Poisoned: a broken builtin table must stay empty (see add_builtin).
+            return core::error_on(resource_, builtin_error_);
+        }
         if (!function) {
             return core::error_t(core::error_code_t::function_registry_error,
                                  std::pmr::string{"Cannot add null function", resource_});
@@ -466,6 +475,51 @@ namespace components::compute {
     }
 
     std::pmr::memory_resource* function_registry_t::resource() const noexcept { return resource_; }
+
+    void function_registry_t::add_builtin(function_ptr function) {
+        if (builtin_error_.contains_error()) {
+            return; // already poisoned; the FIRST failure is the one reported
+        }
+        if (!function) {
+            poison_builtins_(
+                core::error_t(core::error_code_t::function_registry_error,
+                              std::pmr::string{"builtin registration handed a null function", resource_}));
+            return;
+        }
+        const auto& name = function->name();
+        const auto* row = std::find_if(DEFAULT_FUNCTIONS.begin(),
+                                       DEFAULT_FUNCTIONS.end(),
+                                       [&](const auto& entry) { return entry.first == name; });
+        if (row == DEFAULT_FUNCTIONS.end()) {
+            std::pmr::string what{"builtin '", resource_};
+            what += std::pmr::string{name, resource_};
+            what += "' has no DEFAULT_FUNCTIONS row";
+            poison_builtins_(core::error_t(core::error_code_t::function_registry_error, std::move(what)));
+            return;
+        }
+        auto added = add_function(std::move(function));
+        if (added.has_error()) {
+            poison_builtins_(core::error_on(resource_, added.error()));
+            return;
+        }
+        if (added.value() != row->second) {
+            std::pmr::string what{"builtin '", resource_};
+            what += std::pmr::string{name, resource_};
+            what += "' landed on uid ";
+            what += std::pmr::string{std::to_string(added.value()), resource_};
+            what += " instead of ";
+            what += std::pmr::string{std::to_string(row->second), resource_};
+            what += "; the whole uid table is shifted";
+            poison_builtins_(core::error_t(core::error_code_t::function_registry_error, std::move(what)));
+        }
+    }
+
+    const core::error_t& function_registry_t::builtin_registration_error() const noexcept { return builtin_error_; }
+
+    void function_registry_t::poison_builtins_(core::error_t error) {
+        builtin_error_ = std::move(error);
+        functions_.clear();
+    }
 
     void function_registry_t::register_builtin_functions() { register_default_functions(*this); }
 

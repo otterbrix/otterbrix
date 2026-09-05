@@ -301,6 +301,20 @@ namespace components::compute {
         // cross-registry stable.
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function_with_uid(function_uid uid,
                                                                                  function_ptr function);
+        // Register one BUILTIN. uids are REGISTRATION ORDER, so the uid this
+        // insert lands on must be exactly the DEFAULT_FUNCTIONS row bearing the
+        // function's name: one missed, extra or misordered registration would
+        // silently SHIFT the whole table and every later lookup would run the
+        // WRONG function. On any failure — a refused add, a name absent from
+        // DEFAULT_FUNCTIONS, a uid mismatch — the registry poisons itself: the
+        // first error is recorded, every function is dropped, and every further
+        // add refuses with that error. A broken builtin table serves NOTHING
+        // (loud "function not found" at every lookup) instead of the wrong
+        // function. The recorded error is the refusal channel of builtin
+        // registration: builtin_registration_error().
+        void add_builtin(function_ptr function);
+        // no_error() when builtin registration succeeded (or has not run).
+        [[nodiscard]] const core::error_t& builtin_registration_error() const noexcept;
         function* get_function(function_uid uid) const;
         [[nodiscard]] std::vector<std::pair<std::string, function_uid>> get_functions() const;
 
@@ -315,12 +329,16 @@ namespace components::compute {
 
     private:
         void register_builtin_functions();
+        // Record the first builtin-registration failure and drop every function
+        // so a shifted table can never be served. See add_builtin.
+        void poison_builtins_(core::error_t error);
 
         static std::once_flag init_flag_;
         static std::unique_ptr<function_registry_t> default_registry_;
         std::pmr::memory_resource* resource_;
         std::pmr::unordered_map<function_uid, function_ptr> functions_;
         function_uid current_uid_{0};
+        core::error_t builtin_error_{core::error_t::no_error()};
     };
 
     // WARNING: array size, names order, uid and signatures has to be the same as in register_default_functions()
@@ -343,7 +361,15 @@ namespace components::compute {
         std::pair<std::string, function_uid>{"cbrt", 13},
         std::pair<std::string, function_uid>{"factorial", 14}};
 
+    // Register the whole builtin set. Every insert goes through
+    // function_registry_t::add_builtin, which pins each function to its
+    // DEFAULT_FUNCTIONS uid and poisons the registry on any mismatch — so a
+    // missed or reordered registration can no longer shift the uid table
+    // silently; interrogate builtin_registration_error() for the outcome.
     void register_default_functions(function_registry_t& registry);
+    // ORDERED STAGES of register_default_functions — never call standalone: on
+    // a fresh registry a stage's functions would land below their table uids
+    // and the add_builtin check would poison the registry.
     void register_string_functions(function_registry_t& registry);
     void register_expand_functions(function_registry_t& registry);
     void register_math_functions(function_registry_t& registry);

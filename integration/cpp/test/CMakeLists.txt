@@ -29,6 +29,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_index_bootstrap_failure.cpp
         test_catalog_write_refusal.cpp
         test_catalog_delete_refusal.cpp
+        test_drop_cascade_lost_row.cpp
         test_catalog_read_refusal.cpp
         test_udf_refusal_registry_state.cpp
         test_oid_alloc_refusal.cpp
@@ -53,6 +54,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_checkpoint_rebuild_before_truncate.cpp
         test_auto_checkpoint_rebuild_refusal.cpp
         test_commit_discard_horizon.cpp
+        test_maintenance_wiring_refusal.cpp
+        test_ddl_commit_marker_after_drain.cpp
         test_index_rebuild_live_snapshot.cpp
         test_dml_dictionary_rowids.cpp
         test_persistence_gaps.cpp
@@ -88,6 +91,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_wide_integer_literal.cpp
         test_update_upsert_refusal.cpp
         test_fk_cascade_set_default_specs.cpp
+        test_pipeline_context_move.cpp
         test_delete_affected_count.cpp
         test_tinyint_numeric_cast.cpp
         test_alter_add_column_unmaterialized.cpp
@@ -137,8 +141,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_arithmetic.cpp
         test_clean_break_startup.cpp
         test_column_projection.cpp
-        # TODO: casts for dynamic schema
-        # test_computed_schema.cpp
+        test_computed_schema.cpp
         test_pushdown_filter.cpp
         test_cte_pushdown.cpp
         test_subqueries.cpp
@@ -166,8 +169,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_aggregate_pushdown_e2e.cpp
         test_pushdown_traffic.cpp
         test_pushed_reduce_scan_lateral.cpp
-        # TODO: casts for dynamic schema
-        # test_jsonb_support.cpp
+        test_jsonb_support.cpp
         test_select_intermediate.cpp
 
         # TODO: casts for dynamic schema

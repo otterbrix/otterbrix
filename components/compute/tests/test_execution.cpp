@@ -488,7 +488,12 @@ namespace {
         core::pmr::otterbrix_resource resource;
         function_registry_t registry{&resource};
 
-        string_registry_fixture() { register_string_functions(registry); }
+        // The full builtin set, not register_string_functions alone: the
+        // helpers are ORDERED STAGES of register_default_functions ("substring"
+        // must land on uid 5), and a standalone stage now poisons the registry
+        // for shifting the uid table. Lookups here are by name, so the extra
+        // builtins are invisible to these cases.
+        string_registry_fixture() { register_default_functions(registry); }
 
         function* get(const std::string& name) const {
             for (const auto& [n, uid] : registry.get_functions()) {

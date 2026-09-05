@@ -345,17 +345,17 @@ namespace components::compute {
     // WARNING: uids and signatures must mirror DEFAULT_FUNCTIONS entries 5..8 in function.hpp —
     // a uid is the REGISTRATION ORDER, so inserting here shifts everything registered after it.
     void register_string_functions(function_registry_t& r) {
-        (void) r.add_function(make_substring_func(r.resource(),
+        r.add_builtin(make_substring_func(r.resource(),
                                                   "substring",
                                                   "Returns substring",
                                                   "SUBSTRING(s, start[, len]) — 1-based; out-of-range -> empty"));
-        (void) r.add_function(
+        r.add_builtin(
             make_length_func(r.resource(), "length", "Returns byte length", "LENGTH(s) -> int64 (bytes, not chars)"));
-        (void) r.add_function(make_regexp_replace_func(r.resource(),
+        r.add_builtin(make_regexp_replace_func(r.resource(),
                                                        "regexp_replace",
                                                        "Regex substitution",
                                                        "REGEXP_REPLACE(s, pattern, replacement)"));
-        (void) r.add_function(
+        r.add_builtin(
             make_regexp_like_func(r.resource(),
                                   "regexp_like",
                                   "Regex match test",

@@ -97,8 +97,7 @@ namespace components::pipeline {
         bool dml_has_parent_constraint{false};
         // EXPLAIN ANALYZE: when true, execute_pipeline records per-operator time/rows/loops into the
         // operators it drives (zero clock sampling when false). Set in-place in execute_sub_plan_ and
-        // read via this ctx pointer only; the hand-written move ctor (context.cpp) does not copy it —
-        // harmless, a populated context_t is never move-constructed.
+        // read via this ctx pointer only.
         bool analyze{false};
         // DROP back-channel: operator_dynamic_cascade_delete_t records each
         // storage oid it dropped (alongside the mark_storage_dropped_many send). The
@@ -126,7 +125,12 @@ namespace components::pipeline {
         uint64_t committed_id{0};
 
         explicit context_t(logical_plan::storage_parameters init_parameters);
-        context_t(context_t&& context) noexcept;
+        // Defaulted so EVERY member moves. The previous hand-written one moved
+        // six members and silently dropped the other ~19 (txn, the DML range
+        // lists, the created/dropped back-channels, committed_id, ...) — a
+        // moved context published nothing and reverted nothing. Defaulting also
+        // keeps future members covered without anyone remembering this ctor.
+        context_t(context_t&& context) noexcept = default;
         context_t(session::session_id_t session,
                   actor_zeta::address_t address,
                   actor_zeta::address_t sender,

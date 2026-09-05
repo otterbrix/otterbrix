@@ -397,6 +397,59 @@ TEST_CASE("integration::clean_break_startup::hard_fail_on_legacy_catalog_otbx") 
     std::filesystem::remove_all(dir);
 }
 
+// 8b. A REFUSED STARTUP MUST NOT MAKE THE DIRECTORY UNOPENABLE. base_otterbrix_t
+// registers main_path_ in a process-wide set to refuse a second LIVE instance on
+// the same directory, and it inserts that entry BEFORE everything that can throw.
+// The destructor is what erases it — and a constructor that throws never gets one.
+// So without the scope guard that releases the registration on the way out, the
+// operator fixes the real fault (here: removes the legacy catalog.otbx the previous
+// attempt refused on) and the retry in the same process answers "otterbrix instance
+// has to have unique directory": a refusal naming neither the real fault nor
+// anything actionable, for a directory that is in fact free. The registration must
+// therefore survive only a SUCCESSFUL construction.
+TEST_CASE("integration::clean_break_startup::a_refused_startup_releases_the_directory") {
+    auto dir = std::filesystem::path(clean_break_dir() + "/refused_release");
+    std::filesystem::remove_all(dir);
+    auto disk_subdir = dir / "wal";
+    std::filesystem::create_directories(disk_subdir);
+
+    // Arm the same startup refusal case 8 uses.
+    const auto legacy = disk_subdir / "catalog.otbx";
+    {
+        std::ofstream out(legacy.string(), std::ios::binary);
+        out << "legacy_marker";
+    }
+    REQUIRE(std::filesystem::exists(legacy));
+
+    auto config = test_create_config(dir);
+    bool first_refused = false;
+    try {
+        test_spaces space(config);
+    } catch (const std::runtime_error& e) {
+        first_refused = std::string(e.what()).find("Legacy catalog format detected") != std::string::npos;
+    }
+    REQUIRE(first_refused);
+
+    // The operator does exactly what the refusal asked for.
+    std::filesystem::remove(legacy);
+    REQUIRE_FALSE(std::filesystem::exists(legacy));
+
+    // The retry must now START, not report the directory taken.
+    std::string retry_error;
+    bool retry_started = false;
+    try {
+        test_spaces space(config);
+        retry_started = true;
+    } catch (const std::runtime_error& e) {
+        retry_error = e.what();
+    }
+    INFO("retry refused with: " << retry_error);
+    CHECK(retry_error.find("unique directory") == std::string::npos);
+    REQUIRE(retry_started);
+
+    std::filesystem::remove_all(dir);
+}
+
 // 9. WAL replay split (pg_catalog first, user collections second) — tested implicitly
 // via base_spaces; here we document the expected ordering.
 TEST_CASE("integration::clean_break_startup::wal_replay_split_pg_catalog_first") {

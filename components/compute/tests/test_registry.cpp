@@ -76,3 +76,78 @@ TEST_CASE("components::compute::registry::a_refused_null_payload_never_enters_th
     REQUIRE_FALSE(registry.remove_function(0));
     REQUIRE(registry.get_functions().empty());
 }
+
+// uids are REGISTRATION ORDER: one stray registration in front of the builtins
+// shifts the WHOLE table, and every later lookup by DEFAULT_FUNCTIONS uid runs
+// the WRONG function (sum's uid answers with the stray, min's uid answers with
+// sum, ...). The registry must never SERVE such a table: every DEFAULT_FUNCTIONS
+// row resolves either to the function bearing its name or to nothing at all.
+TEST_CASE("components::compute::registry::shifted_builtin_table_never_serves") {
+    core::pmr::otterbrix_resource resource;
+    function_registry_t registry(&resource);
+
+    // Occupy uid 0 before the builtins arrive.
+    auto added = registry.add_function(
+        std::make_unique<row_function>("stray", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
+    REQUIRE_FALSE(added.has_error());
+    REQUIRE(added.value() == 0);
+
+    register_default_functions(registry);
+
+    for (const auto& [name, uid] : DEFAULT_FUNCTIONS) {
+        auto* fn = registry.get_function(uid);
+        INFO("uid " << uid << " belongs to '" << name << "'");
+        CHECK((fn == nullptr || fn->name() == name));
+    }
+}
+
+// The refusal channel of builtin registration: a failure poisons the registry —
+// the error is recorded, nothing is served, and further adds refuse. (The dirty
+// registry above triggers it via the very first uid mismatch.)
+TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_and_refuses") {
+    core::pmr::otterbrix_resource resource;
+    function_registry_t registry(&resource);
+
+    auto added = registry.add_function(
+        std::make_unique<row_function>("stray", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
+    REQUIRE_FALSE(added.has_error());
+
+    register_default_functions(registry);
+
+    // the channel names the shift
+    const auto& err = registry.builtin_registration_error();
+    REQUIRE(err.contains_error());
+    CHECK(err.type == core::error_code_t::function_registry_error);
+    CHECK(std::string(err.what).find("shifted") != std::string::npos);
+
+    // a poisoned registry serves nothing — the stray is gone too
+    CHECK(registry.get_functions().empty());
+    for (const auto& [name, uid] : DEFAULT_FUNCTIONS) {
+        INFO("uid " << uid << " belongs to '" << name << "'");
+        CHECK(registry.get_function(uid) == nullptr);
+    }
+
+    // and refuses every further add with the recorded error
+    auto after = registry.add_function(
+        std::make_unique<row_function>("late", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
+    REQUIRE(after.has_error());
+    CHECK(after.error().type == core::error_code_t::function_registry_error);
+}
+
+// The green half: on a clean registry the builtins land EXACTLY on their
+// DEFAULT_FUNCTIONS uids and the channel stays silent.
+TEST_CASE("components::compute::registry::clean_builtin_registration_matches_the_table") {
+    core::pmr::otterbrix_resource resource;
+    function_registry_t registry(&resource);
+
+    register_default_functions(registry);
+
+    REQUIRE_FALSE(registry.builtin_registration_error().contains_error());
+    CHECK(registry.get_functions().size() == DEFAULT_FUNCTIONS.size());
+    for (const auto& [name, uid] : DEFAULT_FUNCTIONS) {
+        auto* fn = registry.get_function(uid);
+        INFO("uid " << uid << " belongs to '" << name << "'");
+        REQUIRE(fn != nullptr);
+        CHECK(fn->name() == name);
+    }
+}

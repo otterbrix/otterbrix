@@ -210,30 +210,30 @@ namespace components::compute {
 
     // WARNING: uid and signature must mirror the DEFAULT_FUNCTIONS "abs" entry in function.hpp
     void register_math_functions(function_registry_t& r) {
-        (void) r.add_function(
+        r.add_builtin(
             make_abs_func(r.resource(), "abs", "Absolute value", "ABS(x) -> the magnitude of x, in x's own type"));
-        (void) r.add_function(make_fixed_type_func(r.resource(),
+        r.add_builtin(make_fixed_type_func(r.resource(),
                                                    "pow",
                                                    "Exponentiation",
                                                    "POW(x, y) -> x raised to the power y",
                                                    logical_type::DOUBLE,
                                                    2,
                                                    row_pow));
-        (void) r.add_function(make_fixed_type_func(r.resource(),
+        r.add_builtin(make_fixed_type_func(r.resource(),
                                                    "sqrt",
                                                    "Square root",
                                                    "SQRT(x) -> the square root of x",
                                                    logical_type::DOUBLE,
                                                    1,
                                                    row_sqrt));
-        (void) r.add_function(make_fixed_type_func(r.resource(),
+        r.add_builtin(make_fixed_type_func(r.resource(),
                                                    "cbrt",
                                                    "Cube root",
                                                    "CBRT(x) -> the cube root of x",
                                                    logical_type::DOUBLE,
                                                    1,
                                                    row_cbrt));
-        (void) r.add_function(make_fixed_type_func(r.resource(),
+        r.add_builtin(make_fixed_type_func(r.resource(),
                                                    "factorial",
                                                    "Factorial",
                                                    "FACTORIAL(x) -> the product of the integers 1..x",

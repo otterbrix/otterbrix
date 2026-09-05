@@ -2,6 +2,26 @@
 #include <catch2/catch_test_macros.hpp>
 #include <set>
 #include <string>
+#include <unistd.h>
+
+namespace {
+    // Fixture paths are pid-qualified: parallel test processes share /tmp, and
+    // two of them clearing and reseeding one directory corrupt each other.
+    std::string cs_fixture_dir(const char* leaf) {
+        return "/tmp/test_computed_schema_" + std::to_string(::getpid()) + "/" + leaf;
+    }
+
+    // REGRESSION (#622, same as test_jsonb_support.cpp's header note): every
+    // TABLE-VALUED jsonb operator (-> #> - #-) in the select list is refused by
+    // validation with "<op> is not valid in a value position". The affected
+    // sections below pin the refusal, each keeping its old expected answer in a
+    // "correct:" comment. Scalar navigation, existence and ::? survived.
+    void require_value_position_refusal(const components::cursor::cursor_t_ptr& cur) {
+        REQUIRE(cur);
+        REQUIRE_FALSE(cur->is_success());
+        CHECK(std::string(cur->get_error().what).find("is not valid in a value position") != std::string::npos);
+    }
+} // namespace
 
 // Tests for computed_schema (dynamic per-type columnar storage)
 // A computed-schema table is created with CREATE TABLE db.t() — no fixed columns.
@@ -10,7 +30,7 @@
 
 
 TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
-    auto config = test_create_config("/tmp/test_computed_schema/basic");
+    auto config = test_create_config(cs_fixture_dir("basic"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -63,7 +83,7 @@ TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
 }
 
 TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
-    auto config = test_create_config("/tmp/test_computed_schema/evolving");
+    auto config = test_create_config(cs_fixture_dir("evolving"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -118,7 +138,7 @@ TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
 // but different types. SELECT * returns ALL of them; an explicit reference to the
 // ambiguous name errors (type selection is needed — see ::? in a later step).
 TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
-    auto config = test_create_config("/tmp/test_computed_schema/multitype_star");
+    auto config = test_create_config(cs_fixture_dir("multitype_star"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -178,7 +198,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_select_star") {
 }
 
 TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
-    auto config = test_create_config("/tmp/test_computed_schema/delete");
+    auto config = test_create_config(cs_fixture_dir("delete"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -222,7 +242,7 @@ TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
 // Nested fields are flattened: INSERT (a.b, a.c) creates columns "a/b","a/c".
 // A scalar jsonb chain (terminated by ->>/#>>) addresses one flattened column.
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
-    auto config = test_create_config("/tmp/test_computed_schema/jsonb_scalar");
+    auto config = test_create_config(cs_fixture_dir("jsonb_scalar"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -278,14 +298,9 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
         REQUIRE(cur2->value(0, 0).value<int64_t>() == 9);
     }
 
-    SECTION("a chain still ending in -> resolves to a single leaf column") {
-        // j -> 'a' -> 'b' : prefix a/b is a leaf -> one column named 'b'
-        auto cur = exec("SELECT j -> 'a' -> 'b' FROM cs_testdb.j ORDER BY x;");
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->column_count() == 1);
-        REQUIRE(std::string(cur->chunks().front().data[0].type().alias()) == "b");
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->value(0, 1).value<int64_t>() == 10);
+    SECTION("a chain still ending in -> is refused in the select list (regression)") {
+        // correct: j -> 'a' -> 'b' resolves to one column 'b' with 1, 10.
+        require_value_position_refusal(exec("SELECT j -> 'a' -> 'b' FROM cs_testdb.j ORDER BY x;"));
     }
 }
 
@@ -294,7 +309,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_scalar_navigation") {
 // Note: a key absent from the table schema currently errors (see plan §0.1),
 // so tests use keys that exist in the schema.
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_exists") {
-    auto config = test_create_config("/tmp/test_computed_schema/jsonb_exists");
+    auto config = test_create_config(cs_fixture_dir("jsonb_exists"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -343,7 +358,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_exists") {
 // JSONB delete '-' / '#-' over a computing table. Returns a table = all columns
 // except those under the deleted prefix (column-set exclusion, expanded in SELECT).
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_delete") {
-    auto config = test_create_config("/tmp/test_computed_schema/jsonb_delete");
+    auto config = test_create_config(cs_fixture_dir("jsonb_delete"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -353,35 +368,18 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_delete") {
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    auto alias_set = [](const auto& cur) {
-        std::set<std::string> s;
-        for (size_t c = 0; c < cur->column_count(); ++c) {
-            s.insert(std::string(cur->chunks().front().data[c].type().alias()));
-        }
-        return s;
-    };
 
     REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
     REQUIRE(exec("CREATE TABLE cs_testdb.jd ();")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.jd (a.b, a.c, x) VALUES (1, 2, 9), (10, 20, 90);")->is_success());
 
-    SECTION("- 'x' drops a top-level key") {
-        auto cur = exec("SELECT jd - 'x' FROM cs_testdb.jd;");
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 2);
-        REQUIRE(alias_set(cur) == std::set<std::string>{"a/b", "a/c"});
-    }
-
-    SECTION("- 'a' drops a whole subtree") {
-        auto cur = exec("SELECT jd - 'a' FROM cs_testdb.jd;");
-        REQUIRE(cur->is_success());
-        REQUIRE(alias_set(cur) == std::set<std::string>{"x"});
-    }
-
-    SECTION("#- 'a.b' drops one nested leaf, keeps the sibling") {
-        auto cur = exec("SELECT jd #- 'a.b' FROM cs_testdb.jd;");
-        REQUIRE(cur->is_success());
-        REQUIRE(alias_set(cur) == std::set<std::string>{"a/c", "x"});
+    // REGRESSION (#622): the whole select-list deletion surface is refused.
+    // correct: - 'x' -> {a/b, a/c} over 2 rows; - 'a' -> {x};
+    // #- 'a.b' -> {a/c, x}.
+    SECTION("select-list key deletion is refused (regression)") {
+        require_value_position_refusal(exec("SELECT jd - 'x' FROM cs_testdb.jd;"));
+        require_value_position_refusal(exec("SELECT jd - 'a' FROM cs_testdb.jd;"));
+        require_value_position_refusal(exec("SELECT jd #- 'a.b' FROM cs_testdb.jd;"));
     }
 }
 
@@ -390,7 +388,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_delete") {
 // SELECT-list form; `SELECT * FROM t -> 'a'` is intentionally not supported
 // (it would require a parser/grammar change).
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
-    auto config = test_create_config("/tmp/test_computed_schema/jsonb_expand");
+    auto config = test_create_config(cs_fixture_dir("jsonb_expand"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -400,36 +398,18 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    auto alias_set = [](const auto& cur) {
-        std::set<std::string> s;
-        for (size_t c = 0; c < cur->column_count(); ++c) {
-            s.insert(std::string(cur->chunks().front().data[c].type().alias()));
-        }
-        return s;
-    };
 
     REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
     REQUIRE(exec("CREATE TABLE cs_testdb.je ();")->is_success());
     REQUIRE(exec("INSERT INTO cs_testdb.je (a.b, a.c, x) VALUES (1, 2, 9);")->is_success());
 
-    SECTION("-> 'a' expands the subtree, rerooted (strips the 'a/' prefix)") {
-        auto cur = exec("SELECT je -> 'a' FROM cs_testdb.je;");
-        REQUIRE(cur->is_success());
-        REQUIRE(alias_set(cur) == std::set<std::string>{"b", "c"}); // a/b -> b, a/c -> c
-    }
-
-    SECTION("#> 'a' (single-element path) expands the same way") {
-        auto cur = exec("SELECT je #> 'a' FROM cs_testdb.je;");
-        REQUIRE(cur->is_success());
-        REQUIRE(alias_set(cur) == std::set<std::string>{"b", "c"});
-    }
-
-    SECTION("-> to a leaf yields a single rerooted column with the value") {
-        auto cur = exec("SELECT je -> 'a' -> 'c' FROM cs_testdb.je;");
-        REQUIRE(cur->is_success());
-        REQUIRE(cur->column_count() == 1);
-        REQUIRE(std::string(cur->chunks().front().data[0].type().alias()) == "c");
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+    // REGRESSION (#622): the whole select-list expansion surface is refused.
+    // correct: -> 'a' expands rerooted to {b, c}; #> 'a' the same;
+    // -> 'a' -> 'c' yields the single rerooted column 'c' holding 2.
+    SECTION("select-list expansion is refused (regression)") {
+        require_value_position_refusal(exec("SELECT je -> 'a' FROM cs_testdb.je;"));
+        require_value_position_refusal(exec("SELECT je #> 'a' FROM cs_testdb.je;"));
+        require_value_position_refusal(exec("SELECT je -> 'a' -> 'c' FROM cs_testdb.je;"));
     }
 }
 
@@ -437,7 +417,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_expand") {
 // matches (the '::' cast is left for value conversion). 'val' is inserted as
 // bigint then string, producing two physical 'val' columns.
 TEST_CASE("integration::cpp::test_computed_schema::multitype_variant_select") {
-    auto config = test_create_config("/tmp/test_computed_schema/multitype_variant");
+    auto config = test_create_config(cs_fixture_dir("multitype_variant"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -489,7 +469,7 @@ TEST_CASE("integration::cpp::test_computed_schema::multitype_variant_select") {
 // resolve single-type fields normally, drop/expand around the multi-type one,
 // and an unselected reference to the multi-type name stays ambiguous.
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multitype") {
-    auto config = test_create_config("/tmp/test_computed_schema/jsonb_multitype");
+    auto config = test_create_config(cs_fixture_dir("jsonb_multitype"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -497,13 +477,6 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multityp
     auto exec = [&](const std::string& sql) {
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
-    };
-    auto alias_set = [](const auto& cur) {
-        std::set<std::string> s;
-        for (size_t c = 0; c < cur->column_count(); ++c) {
-            s.insert(std::string(cur->chunks().front().data[c].type().alias()));
-        }
-        return s;
     };
 
     REQUIRE(exec("CREATE DATABASE cs_testdb;")->is_success());
@@ -527,10 +500,10 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multityp
         REQUIRE(cur->value(0, 1).is_null());
     }
 
-    SECTION("'-' drops every variant of the multi-type field") {
-        auto cur = exec("SELECT m - 'v' FROM cs_testdb.m;");
-        REQUIRE(cur->is_success());
-        REQUIRE(alias_set(cur) == std::set<std::string>{"x", "a/b"});
+    SECTION("'-' in the select list is refused (regression, #622)") {
+        // correct: m - 'v' drops every variant of the multi-type field,
+        // leaving {x, a/b}.
+        require_value_position_refusal(exec("SELECT m - 'v' FROM cs_testdb.m;"));
     }
 
     SECTION("'?' on a present field") {
@@ -554,7 +527,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_operators_with_multityp
 // '::?' composes onto a jsonb-nav chain to pick the variant of a nested
 // multi-type leaf.
 TEST_CASE("integration::cpp::test_computed_schema::jsonb_multitype_semantics") {
-    auto config = test_create_config("/tmp/test_computed_schema/jsonb_mt_sem");
+    auto config = test_create_config(cs_fixture_dir("jsonb_mt_sem"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);
@@ -618,7 +591,7 @@ TEST_CASE("integration::cpp::test_computed_schema::jsonb_multitype_semantics") {
 // detection must not treat it as a delete (or it dereferences null). See the
 // crash that 'INSERT ... ; SELECT -x' would otherwise cause.
 TEST_CASE("integration::cpp::test_computed_schema::unary_minus_not_jsonb_delete") {
-    auto config = test_create_config("/tmp/test_computed_schema/unary_minus");
+    auto config = test_create_config(cs_fixture_dir("unary_minus"));
     test_clear_directory(config);
     config.wal.on = false;
     test_spaces space(config);

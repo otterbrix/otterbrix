@@ -608,10 +608,24 @@ namespace core::filesystem {
 
     bool file_sync(local_file_system_t&, file_handle_t& handle) {
         int fd = reinterpret_cast<unix_file_handle_t&>(handle).fd;
+#if defined(__APPLE__)
+        // On Darwin fsync(2) only pushes dirty pages to the DRIVE, not through
+        // the drive's own write cache — after a crash the data is there, after a
+        // POWER LOSS it may not be. F_FULLFSYNC is the barrier that reaches the
+        // platter; every sync in this engine is a durability barrier (WAL,
+        // checkpoint root, bitcask segment), so anything less is a silent lie.
+        // No fsync fallback when it fails (rule 6): a filesystem that cannot
+        // give the barrier reports false and the caller decides, loudly.
+        if (::fcntl(fd, F_FULLFSYNC) == -1) {
+            return false;
+        }
+        return true;
+#else
         if (fsync(fd) != 0) {
             return false;
         }
         return true;
+#endif
     }
 
     bool move_files(local_file_system_t&, const path_t& source, const path_t& target) {

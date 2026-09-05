@@ -804,8 +804,32 @@ namespace services::dispatcher {
                                     }
                                     column = std::move(new_column);
                                 } else {
-                                    assert(false &&
-                                           "missing type conversion in dispatcher_t::check_collections_format_");
+                                    // WHAT THIS BRANCH DID UNDER NDEBUG. The assert that
+                                    // stood here is compiled out of every release build,
+                                    // and what followed it was not undefined behaviour but
+                                    // a DEFINED wrong answer: `column` was left exactly as
+                                    // it arrived — the incoming type, not the target type
+                                    // this loop exists to convert to — and the INSERT then
+                                    // carried it to storage under the target column's name.
+                                    // Every sibling branch above refuses through `result`
+                                    // instead; this one differed only in being invisible.
+                                    //
+                                    // No SQL path reaches it today: the suite runs Debug
+                                    // with DEV_MODE=ON, so a reachable case would already
+                                    // be aborting on the assert. That is exactly why it
+                                    // must not stay an assert — the day a new type pair
+                                    // reaches it, Debug aborts and release silently
+                                    // mis-stores.
+                                    result = core::error_t(
+                                        core::error_code_t::schema_error,
+                                        std::pmr::string{"no conversion to column '" + it->alias() +
+                                                             "': incoming logical_type " +
+                                                             std::to_string(static_cast<int>(column.type().type())) +
+                                                             " cannot be stored as logical_type " +
+                                                             std::to_string(static_cast<int>(it->type())) +
+                                                             " — the value was not stored",
+                                                         resource});
+                                    return false;
                                 }
                             }
                         }

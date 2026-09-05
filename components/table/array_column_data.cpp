@@ -177,8 +177,27 @@ namespace components::table {
         count_ = static_cast<uint64_t>(start_row - start_);
     }
 
-    uint64_t array_column_data_t::fetch(column_scan_state&, int64_t, vector::vector_t&) {
-        throw std::logic_error("Function is not implemented: Array fetch");
+    uint64_t array_column_data_t::fetch(column_scan_state& state, int64_t, vector::vector_t&) {
+        // POINT FETCH OF A WHOLE ARRAY CELL IS NOT IMPLEMENTED, and this override exists to say
+        // so rather than to be filled in. Deleting it would be worse than leaving it: an ARRAY
+        // node owns NO segments at all (see initialize_column), so the base column_data_t::fetch
+        // would dereference an empty segment tree.
+        //
+        // Nothing calls it. column_data_t::fetch has exactly two call sites: column_data_t::update
+        // (on `this`) and struct_column_data_t::fetch (on a field). ARRAY, LIST and STRUCT all
+        // override BOTH update and update_column, so column_data_t::update is never entered with a
+        // nested node as `this`; struct_column_data_t::fetch therefore has no caller either, and
+        // neither has this. No SQL statement names the path: whole-array reads go through
+        // scan/scan_count, and the in-place ARRAY update rewrites the element column directly.
+        //
+        // The refusal travels on the channel the ONE potential caller already reads:
+        // column_data_t::update checks state.has_error() right after fetch() and returns
+        // state.scan_error. A throw here would unwind into the disk agent's coroutine, whose
+        // unhandled_exception() is empty — a hang, not an error (rules 2/9).
+        state.scan_error =
+            core::error_t(core::error_code_t::unimplemented_yet,
+                          std::pmr::string("point fetch of a whole ARRAY cell is not implemented", resource_));
+        return 0;
     }
 
     core::result_wrapper_t<bool> array_column_data_t::update(uint64_t column_index,

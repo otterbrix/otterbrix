@@ -168,6 +168,15 @@ namespace components::table {
                                              std::vector<uint64_t> col_path,
                                              std::vector<column_segment_info>& result);
 
+        // The precondition create_column cannot state itself: a constructor has no way to
+        // refuse, so struct_column_data_t used to THROW on an unnamed struct — across the disk
+        // agent's mailbox, into a coroutine with an empty unhandled_exception(), i.e. a hang
+        // rather than an error (rules 2/9). Ask this about the TYPE first, at a gate that owns
+        // an error channel; collection_t::initialize_append is that gate for every write.
+        // Recursive over the same three nested shapes create_column dispatches on.
+        [[nodiscard]] static core::error_t validate_column_type(const types::complex_logical_type& type,
+                                                                std::pmr::memory_resource* resource);
+
         // Hands back EXCLUSIVE ownership. Nested children (list/array child_column, struct
         // sub_columns) keep it exactly so; a row group adopting the result as one of its
         // shared top-level columns transfers it into the intrusive counter instead — see
@@ -253,7 +262,12 @@ namespace components::table {
         uint64_t
         scan_vector(uint64_t vector_index, column_scan_state& state, vector::vector_t& result, uint64_t target_scan);
 
-        void fetch_updates(uint64_t vector_index,
+        // `state` is here for one reason: allow_updates == false over a column that HAS updates
+        // is a refusal (an index build cannot see an update overlay), and this was the only
+        // place in the scan chain with nothing to say it on. It goes into state.scan_error, the
+        // same channel row_group_t aggregates for every other scan failure.
+        void fetch_updates(column_scan_state& state,
+                           uint64_t vector_index,
                            vector::vector_t& result,
                            uint64_t result_offset,
                            uint64_t scan_count,

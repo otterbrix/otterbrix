@@ -16,9 +16,13 @@ namespace components::table {
         assert(type_.to_physical_type() == types::physical_type::STRUCT);
         auto& child_types = type_.child_types();
         assert(!child_types.empty());
-        if (type_.type() != types::logical_type::UNION && type_.is_unnamed()) {
-            throw std::logic_error("A table cannot be created from an unnamed struct");
-        }
+        // The "a table cannot be created from an unnamed struct" precondition used to throw HERE,
+        // where nothing can refuse: a constructor has no return value, the object graph is half
+        // built, and the throw unwound across the disk agent's mailbox into a coroutine with an
+        // empty unhandled_exception() — a hang, not a refusal (rules 2/9). It now lives in
+        // column_data_t::validate_column_type, asked BEFORE any node is built at the one write
+        // gate that already owns an error channel (collection_t::initialize_append). Same rule,
+        // same UNION exemption, one canonical statement of it.
         uint64_t sub_column_index = 1;
         for (auto& child_type : child_types) {
             sub_columns.push_back(
@@ -240,14 +244,31 @@ namespace components::table {
                                                                      uint64_t update_count,
                                                                      uint64_t depth) {
         if (depth >= column_path.size()) {
-            throw std::runtime_error("Attempting to directly update a struct column - this should not be possible");
+            // The path ran out ON a struct node, i.e. the caller asked to overwrite a whole
+            // struct cell through the sub-column update path. There is nothing to write here: a
+            // struct node owns no segments, every byte lives in a field. The path is supplied by
+            // whoever called row_group_t::update_column, so this is a caller error and it belongs
+            // on the result_wrapper_t<bool> this function already returns — the throw would have
+            // crossed the disk agent's mailbox and unwound into a coroutine with an empty
+            // unhandled_exception(), hanging the statement instead of failing it (rules 2/9).
+            // (row_group_t::update_column has no caller today: collection_t::update_column hands
+            // its path to row_group_t::UPDATE instead. Reported, not patched here.)
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string("struct column update: the column path ends on the struct itself; name a field",
+                                 resource()));
         }
         auto update_column = column_path[depth];
         if (update_column == 0) {
             return validity.update_column(column_path, update_vector, row_ids, update_count, depth + 1);
         } else {
             if (update_column > sub_columns.size()) {
-                throw std::runtime_error("update column_path out of range");
+                // Same channel, same reason: the path names a field this struct does not have.
+                return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string("struct column update: the column path names field " +
+                                                          std::to_string(update_column) + " of a struct with " +
+                                                          std::to_string(sub_columns.size()) + " fields",
+                                                      resource()));
             }
             return sub_columns[update_column - 1]->update_column(column_path,
                                                                  update_vector,

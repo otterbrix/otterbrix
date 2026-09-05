@@ -500,6 +500,37 @@ namespace components::table {
         }
     }
 
+    core::error_t column_data_t::validate_column_type(const types::complex_logical_type& type,
+                                                      std::pmr::memory_resource* resource) {
+        // Mirrors create_column's dispatch, one step ahead of it: the same three nested shapes,
+        // asked about the TYPE before any node exists. This is where struct_column_data_t's
+        // constructor precondition moved to — a constructor cannot refuse, and the throw that
+        // used to stand there crossed the disk agent's mailbox (rules 2/9).
+        //
+        // The rule is the one that throw carried, unchanged: a STRUCT-shaped node must be NAMED,
+        // with UNION exempt because create_union deliberately leaves the alias empty.
+        const auto physical = type.to_physical_type();
+        if (physical == types::physical_type::STRUCT) {
+            if (type.type() != types::logical_type::UNION && type.is_unnamed()) {
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string("a table column cannot be built from an unnamed struct type", resource));
+            }
+            // child_types() is an unchecked cast on a non-struct extension, so it is only ever
+            // reached under the physical-STRUCT test above.
+            for (const auto& child : type.child_types()) {
+                if (auto err = validate_column_type(child, resource); err.contains_error()) {
+                    return err;
+                }
+            }
+            return core::error_t::no_error();
+        }
+        if (physical == types::physical_type::LIST || physical == types::physical_type::ARRAY) {
+            return validate_column_type(type.child_type(), resource);
+        }
+        return core::error_t::no_error();
+    }
+
     std::unique_ptr<column_data_t> column_data_t::create_column(std::pmr::memory_resource* resource,
                                                                 storage::block_manager_t& block_manager,
                                                                 uint64_t column_index,
@@ -739,7 +770,17 @@ namespace components::table {
                                         uint64_t remaining,
                                         scan_vector_type scan_type) {
         if (scan_type == scan_vector_type::SCAN_FLAT_VECTOR && result.get_vector_type() != vector::vector_type::FLAT) {
-            throw std::logic_error("scan_vector called with SCAN_FLAT_VECTOR but result is not a flat vector");
+            // Callers pick the scan type either through get_vector_scan_type — which answers
+            // SCAN_ENTIRE_VECTOR for exactly this case and so cannot produce the mismatch — or by
+            // naming SCAN_FLAT_VECTOR against a vector they just constructed flat
+            // (column_data_t::fetch's pre-image, the LIST offset vectors). No caller can reach it
+            // today; it stays as the invariant's guard rather than as a comment, and it reports on
+            // the scan state's scan_error like every other refusal here. A throw would unwind into
+            // the disk agent's coroutine, whose unhandled_exception() is empty (rules 2/9).
+            state.scan_error = core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string("column scan: a flat-vector scan was asked for a non-flat result", resource_));
+            return 0;
         }
         state.previous_states.clear();
         if (!state.initialized) {
@@ -810,12 +851,13 @@ namespace components::table {
         auto scan_count = scan_vector(state, result, target_scan, scan_type);
         if (scan_type != scan_vector_type::SCAN_ENTIRE_VECTOR) {
             auto update_index = vector_index - static_cast<uint64_t>(start_) / vector::DEFAULT_VECTOR_CAPACITY;
-            fetch_updates(update_index, result, state.result_offset, scan_count, ALLOW_UPDATES, SCAN_COMMITTED);
+            fetch_updates(state, update_index, result, state.result_offset, scan_count, ALLOW_UPDATES, SCAN_COMMITTED);
         }
         return scan_count;
     }
 
-    void column_data_t::fetch_updates(uint64_t vector_index,
+    void column_data_t::fetch_updates(column_scan_state& state,
+                                      uint64_t vector_index,
                                       vector::vector_t& result,
                                       uint64_t result_offset,
                                       uint64_t scan_count,
@@ -825,7 +867,17 @@ namespace components::table {
             return;
         }
         if (!allow_updates) {
-            throw std::logic_error("Cannot create index with outstanding updates");
+            // table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES asked for a snapshot with no
+            // update overlay, and this column carries one. The caller is
+            // data_table_t::create_index_scan, whose scan state is exactly what row_group_t
+            // aggregates scan_error into, so the refusal reaches it on the channel it already
+            // reads. `state` is threaded in for that: fetch_updates had no way to speak, and a
+            // throw here unwound across the disk agent's mailbox into a coroutine with an empty
+            // unhandled_exception() — a hang, not a refusal (rules 2/9).
+            state.scan_error = core::error_t(
+                core::error_code_t::index_create_fail,
+                std::pmr::string("index build scan: the column has outstanding updates", resource_));
+            return;
         }
         result.flatten(scan_count);
         if (scan_committed) {

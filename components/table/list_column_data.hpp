@@ -72,10 +72,16 @@ namespace components::table {
                             persistent_column_data_t& persistent) override;
 
         uint64_t fetch_list_offset(int64_t row_idx);
-        std::pmr::vector<int64_t> gather_child_update(vector::vector_t& update_vector,
-                                                      int64_t* row_ids,
-                                                      uint64_t update_count,
-                                                      vector::vector_t& child_update_out);
+        // The per-element row ids an in-place LIST update has to write, or a refusal when the
+        // new cell's length differs from the stored one — in-place cannot move a row's
+        // neighbours aside. Both callers (update / update_column) already return
+        // result_wrapper_t<bool>, so the refusal reaches data_table_t::update unchanged
+        // instead of unwinding across the disk agent's mailbox (rules 2/9).
+        [[nodiscard]] core::result_wrapper_t<std::pmr::vector<int64_t>>
+        gather_child_update(vector::vector_t& update_vector,
+                            int64_t* row_ids,
+                            uint64_t update_count,
+                            vector::vector_t& child_update_out);
     };
 
 } // namespace components::table

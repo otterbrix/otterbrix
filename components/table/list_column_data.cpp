@@ -120,7 +120,21 @@ namespace components::table {
                 child_entry.type().to_physical_type() != types::physical_type::ARRAY &&
                 static_cast<uint64_t>(state.child_states[1].row_index) + child_scan_count >
                     static_cast<uint64_t>(child_column->start()) + child_column->max_entry()) {
-                throw std::runtime_error("list_column_data_t::scan_count - internal list scan offset is out of range");
+                // The cumulative offsets read above come off THIS column's own segments, i.e.
+                // off disk, so a run that reaches past the element column's end is a corrupt
+                // offset stream — not a program error. It reports on the SAME channel every
+                // other read failure in this layer uses: the scan state's scan_error, which
+                // row_group_t aggregates into collection_scan_state::scan_error and every scan
+                // loop bails on. The throw that stood here unwound into the disk agent's
+                // coroutine, whose unhandled_exception() is empty, so the statement HUNG
+                // instead of failing (rules 2/9).
+                state.scan_error = core::error_t(
+                    core::error_code_t::data_corruption,
+                    std::pmr::string("list column scan: a stored list offset runs past the end of the element column",
+                                     resource_));
+                // Nothing here may be trusted: the entries written into `result` above were
+                // derived from the very offsets this guard rejects.
+                return 0;
             }
             state.child_states[1].result_offset = prev_size;
             result.reserve(prev_size + child_scan_count);
@@ -261,14 +275,36 @@ namespace components::table {
         child_column->revert_append(start_ + static_cast<int64_t>(child_offset));
     }
 
-    uint64_t list_column_data_t::fetch(column_scan_state&, int64_t, vector::vector_t&) {
-        throw std::logic_error("Function is not implemented: List fetch");
+    uint64_t list_column_data_t::fetch(column_scan_state& state, int64_t, vector::vector_t&) {
+        // POINT FETCH OF A WHOLE LIST CELL IS NOT IMPLEMENTED, and this override exists to say
+        // so rather than to be filled in. Deleting it would be worse than leaving it: the base
+        // column_data_t::fetch would scan this node's OWN segments, which hold the cumulative
+        // ELEMENT OFFSETS, into a LIST-typed result — silently answering with offsets where the
+        // caller asked for lists.
+        //
+        // Nothing calls it. column_data_t::fetch has exactly two call sites: column_data_t::update
+        // (on `this`) and struct_column_data_t::fetch (on a field). LIST, ARRAY and STRUCT all
+        // override BOTH update and update_column, so column_data_t::update is never entered with a
+        // nested node as `this`; struct_column_data_t::fetch therefore has no caller either, and
+        // neither has this. No SQL statement names the path: whole-list reads go through
+        // scan_count, and the in-place LIST update builds its pre-image per element in
+        // gather_child_update instead of fetching the cell.
+        //
+        // The refusal travels on the channel the ONE potential caller already reads:
+        // column_data_t::update checks state.has_error() right after fetch() and returns
+        // state.scan_error. A throw here would unwind into the disk agent's coroutine, whose
+        // unhandled_exception() is empty — a hang, not an error (rules 2/9).
+        state.scan_error =
+            core::error_t(core::error_code_t::unimplemented_yet,
+                          std::pmr::string("point fetch of a whole LIST cell is not implemented", resource_));
+        return 0;
     }
 
-    std::pmr::vector<int64_t> list_column_data_t::gather_child_update(vector::vector_t& update_vector,
-                                                                      int64_t* row_ids,
-                                                                      uint64_t update_count,
-                                                                      vector::vector_t& child_update_out) {
+    core::result_wrapper_t<std::pmr::vector<int64_t>>
+    list_column_data_t::gather_child_update(vector::vector_t& update_vector,
+                                            int64_t* row_ids,
+                                            uint64_t update_count,
+                                            vector::vector_t& child_update_out) {
         update_vector.flatten(update_count);
         const auto* update_entries = update_vector.data<types::list_entry_t>();
         auto& update_validity = update_vector.validity();
@@ -281,7 +317,19 @@ namespace components::table {
             const auto stored_length = fetch_list_offset(row_id) - start_offset;
             const auto new_length = update_validity.row_is_valid(r) ? update_entries[r].length : 0;
             if (new_length != stored_length) {
-                throw std::logic_error("list_column_data_t::update: in-place update cannot change a row's list length");
+                // In-place update writes each element over the element the row already owns, so
+                // it cannot move the row's neighbours to make room. A length change is a real
+                // statement-level refusal, not an internal impossibility: this path is the WAL
+                // REPLAY leg of an update (table_storage_adapter_t::update(row_ids, data)), so
+                // the offending length arrives from a journal on disk. It rides the
+                // result_wrapper_t<bool> both callers below already return, up through
+                // row_group_t::update -> collection_t::update -> data_table_t::update. The throw
+                // that stood here crossed the disk agent's mailbox boundary and unwound into a
+                // coroutine with an empty unhandled_exception() — a hang, not a refusal
+                // (rules 2/9).
+                return core::error_t(core::error_code_t::unimplemented_yet,
+                                     std::pmr::string("in-place LIST update cannot change a row's list length",
+                                                      resource_));
             }
             total += stored_length;
         }
@@ -311,7 +359,7 @@ namespace components::table {
             return true;
         }
         vector::vector_t child_update(resource_, type_.child_type());
-        auto child_ids = gather_child_update(update_vector, row_ids, update_count, child_update);
+        VALUE_OR_RETURN(auto child_ids, gather_child_update(update_vector, row_ids, update_count, child_update));
         uint64_t remaining_count = child_ids.size();
         int64_t* remaining_child_ids = child_ids.data();
         uint64_t remaining_column_index = column_index;
@@ -337,7 +385,7 @@ namespace components::table {
             return true;
         }
         vector::vector_t child_update(resource_, type_.child_type());
-        auto child_ids = gather_child_update(update_vector, row_ids, update_count, child_update);
+        VALUE_OR_RETURN(auto child_ids, gather_child_update(update_vector, row_ids, update_count, child_update));
         uint64_t remaining_count = child_ids.size();
         int64_t* remaining_child_ids = child_ids.data();
         while (remaining_count > 0) {

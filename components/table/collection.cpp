@@ -225,6 +225,17 @@ namespace components::table {
     bool collection_t::is_empty(std::unique_lock<std::mutex>& l) const { return row_groups_->is_empty(l); }
 
     core::result_wrapper_t<bool> collection_t::initialize_append(table_append_state& state) {
+        // Every write reaches a row group's columns through here, and a row group builds them
+        // with column_data_t::create_column — whose constructors cannot refuse a type they
+        // cannot represent. So the type is judged FIRST, on the channel this function already
+        // returns. Before this, an unnamed struct threw inside struct_column_data_t's
+        // constructor, across the disk agent's mailbox and into a coroutine with an empty
+        // unhandled_exception(): the statement hung instead of failing (rules 2/9).
+        for (const auto& type : types_) {
+            if (auto err = column_data_t::validate_column_type(type, resource_); err.contains_error()) {
+                return err;
+            }
+        }
         state.row_start = static_cast<int64_t>(total_rows_.load());
         state.current_row = state.row_start;
         state.total_append_count = 0;

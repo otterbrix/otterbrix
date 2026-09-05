@@ -51,7 +51,22 @@ namespace components::sql::transform {
 
     inline std::string construct_alias(Alias* alias) { return alias ? construct(alias->aliasname) : std::string(); }
 
-    std::pmr::string indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices);
+    // Renders an array subscript (`arr[N]`) as the path segment it addresses.
+    // The index is read BY NODE TAG: an int32-sized literal arrives as a
+    // T_Integer in `ival`, a wider one as a T_Float carrying its original
+    // digits in `str` — the same union slot, so reading `ival` unconditionally
+    // rendered the BIT PATTERN OF A POINTER into the column path for
+    // arr[3000000000]. A non-literal or fractional subscript, and the slice
+    // form arr[a:b], are refusals: there is no integer to address a segment by.
+    core::result_wrapper_t<std::pmr::string> indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices);
+
+    // Refuses the FuncCall decorations the transformer reads for NOBODY: an
+    // OVER clause (the call would run as a plain aggregate — one value per
+    // group instead of one per row), VARIADIC (the argument would be passed
+    // unexpanded), and an aggregate-internal ORDER BY / WITHIN GROUP (the
+    // ordering would be dropped). Called by every FuncCall lowering entry
+    // point; answers no_error() for an undecorated call.
+    core::error_t refuse_dropped_call_decorations(std::pmr::memory_resource* resource, const FuncCall& call);
 
     // Role-named DTO produced by the transformer when reading a RangeVar
     // (table reference) out of the parser AST. Carries each of the four name
@@ -342,6 +357,19 @@ namespace components::sql::transform {
     // for — DECIMAL's scaled payload tops out there too, which is where DECIMAL_MAX_WIDTH
     // == 38 comes from.
     integer_text_t parse_exact_integer(std::string_view text, types::int128_t& out);
+
+    // Reads `text` (optional sign, decimal digits, optional '.' + digits; surrounding
+    // spaces allowed, no exponent) as the EXACT scaled integer of a DECIMAL(width,
+    // scale): the value times 10^scale, digit for digit, rounding only the digits past
+    // `scale` (half away from zero, PostgreSQL's rule). This is the second half of the
+    // wide-literal repair: the integer half reads digits exactly through
+    // parse_exact_integer, and this is the fractional half — atof would flatten a
+    // NUMERIC(38,20) literal with more than ~15 significant digits into the nearest
+    // double, a silently different number. A value whose integer part needs more than
+    // (width - scale) digits is a refusal (PostgreSQL's "numeric field overflow"), and
+    // malformed text is a refusal — never a partial parse.
+    core::result_wrapper_t<types::int128_t>
+    parse_exact_decimal(std::pmr::memory_resource* resource, std::string_view text, uint8_t width, uint8_t scale);
 
     // The value a numeric literal (T_Integer or T_Float Value node) denotes, exactly.
     // BIGINT when it fits int64, HUGEINT when it needs the full 128 bits, DOUBLE only for

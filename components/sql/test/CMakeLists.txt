@@ -16,6 +16,7 @@ set(${PROJECT_NAME}_SOURCES
         test_checkpoint.cpp
         test_constraints_ddl.cpp
         test_parser_extension.cpp
+        test_silent_narrowing.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

@@ -409,6 +409,10 @@ namespace components::sql::transform {
         if (!with_clause) {
             return core::error_t::no_error();
         }
+        // Names registered by THIS clause, to tell a duplicate inside one WITH list
+        // (PostgreSQL's own error) apart from a collision with another WITH of the
+        // same statement (unimplemented scoping).
+        std::pmr::unordered_set<std::string_view> this_clause{resource_};
         for (const auto& item : with_clause->ctes->lst) {
             auto* cte = pg_ptr_cast<CommonTableExpr>(item.data);
             if (nodeTag(cte->ctequery) != T_SelectStmt) {
@@ -417,6 +421,27 @@ namespace components::sql::transform {
                 return core::error_t(core::error_code_t::unimplemented_yet,
                                      std::pmr::string{"data-modifying WITH (CTE) is not supported", resource_});
             }
+            // Registration is a flat per-statement map, and unordered_map::emplace is a
+            // SILENT NO-OP on a duplicate key: a name written twice kept the FIRST body
+            // and ran the query against it, success reported. Both duplicate shapes are
+            // refused — a repeat inside one WITH list gets PostgreSQL's own message, and
+            // a name arriving from another WITH of the same statement (a sub-query's, a
+            // UNION arm's) is refused as unimplemented scoping: with one flat map the
+            // reference would resolve to whichever body registered FIRST, which for a
+            // shadowing inner WITH is exactly the wrong one.
+            if (this_clause.count(cte->ctename) != 0) {
+                std::pmr::string msg{"WITH query name \"", resource_};
+                msg += cte->ctename;
+                msg += "\" specified more than once";
+                return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
+            }
+            if (cte_queries_.count(cte->ctename) != 0 || recursive_cte_queries_.count(cte->ctename) != 0) {
+                std::pmr::string msg{"WITH query name \"", resource_};
+                msg += cte->ctename;
+                msg += "\" is already defined in this statement: WITH scoping is not supported yet";
+                return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
+            }
+            this_clause.emplace(cte->ctename);
             if (with_clause->recursive) {
                 recursive_cte_queries_.emplace(cte->ctename, pg_ptr_cast<SelectStmt>(cte->ctequery));
             } else {
@@ -556,6 +581,35 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_select(SelectStmt& node,
                                                                                  logical_plan::execution_plan_t* plan) {
+        // Three SelectStmt fields no code below reads, refused before anything else
+        // runs (rule 6). Each of them used to be a statement that reported success
+        // while answering a different question:
+        //   - intoClause: SELECT ... INTO ran as a plain SELECT — rows came back,
+        //     no table was created, nothing said the INTO half was dropped;
+        //   - lockingClause: FOR UPDATE / FOR SHARE parsed and locked nothing;
+        //   - windowClause: WINDOW w AS (...) parsed and defined nothing (an OVER
+        //     that references it is refused at the FuncCall, this is the clause
+        //     itself). The checks run in every recursion, so a UNION arm or a
+        //     sub-select carrying one of these is refused the same way.
+        if (node.intoClause) {
+            return core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{
+                    "SELECT ... INTO is not supported yet: rows would have come back and no table would have "
+                    "been created",
+                    resource_});
+        }
+        if (node.lockingClause && !node.lockingClause->lst.empty()) {
+            return core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"the locking clause (FOR UPDATE / FOR SHARE) is not supported yet: rows would "
+                                 "not have been locked",
+                                 resource_});
+        }
+        if (node.windowClause && !node.windowClause->lst.empty()) {
+            return core::error_t(core::error_code_t::unimplemented_yet,
+                                 std::pmr::string{"the WINDOW clause is not supported yet", resource_});
+        }
         // Set operations (UNION / INTERSECT / EXCEPT) are not yet wired
         // through the transformer. For a SETOP_* node, node.targetList is
         // null (the column projection lives on the larg / rarg children),
@@ -774,6 +828,7 @@ namespace components::sql::transform {
                     case T_FuncCall: {
                         // Aggregate function in SELECT
                         auto func = pg_ptr_cast<FuncCall>(res->val);
+                        RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *func));
 
                         auto funcname = std::string{strVal(linitial(func->funcname))};
                         std::pmr::vector<param_storage> args{resource_};

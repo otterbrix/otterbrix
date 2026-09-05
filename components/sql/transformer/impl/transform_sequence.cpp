@@ -88,34 +88,92 @@ namespace components::sql::transform {
         int64_t max_value = std::numeric_limits<int64_t>::max();
 
         if (node.options) {
+            // Every SeqOptElem the grammar can hand over, BY NAME, with a loud refusal
+            // for what create_sequence cannot carry (rule 6). The old loop read the four
+            // bounds and dropped everything else without a word — most damningly CYCLE:
+            // the node has no cycle field and the planner hard-codes cycle=false, so a
+            // sequence declared CYCLE was created NO CYCLE and reported success. The
+            // grammar's full name list lives in SeqOptElem (gram.y): cache, cycle,
+            // increment, maxvalue, minvalue, owned_by, start, restart.
             for (auto data : node.options->lst) {
                 auto def = pg_ptr_cast<DefElem>(data.data);
-                if (!def->defname)
-                    continue;
+                if (!def->defname) {
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"a sequence option with no name", resource_});
+                }
                 const std::string_view opt_name{def->defname};
-                // `NO MAXVALUE` / `NO MINVALUE` (and a bare `RESTART`) reach here with a
-                // null arg, and for the two bounds that means "use the default" — which
-                // is what the initialisers above already hold. A legitimate skip, not a
-                // dropped clause.
-                if (!def->arg) {
-                    continue;
-                }
                 if (opt_name == "start") {
-                    VALUE_OR_RETURN(start, sequence_bound(resource_, opt_name, def->arg));
+                    if (def->arg) {
+                        VALUE_OR_RETURN(start, sequence_bound(resource_, opt_name, def->arg));
+                    }
                 } else if (opt_name == "increment") {
-                    VALUE_OR_RETURN(increment, sequence_bound(resource_, opt_name, def->arg));
+                    if (def->arg) {
+                        VALUE_OR_RETURN(increment, sequence_bound(resource_, opt_name, def->arg));
+                    }
                 } else if (opt_name == "minvalue") {
-                    VALUE_OR_RETURN(min_value, sequence_bound(resource_, opt_name, def->arg));
+                    // `NO MINVALUE` arrives with a null arg and means "use the default" —
+                    // exactly what the initialiser above already holds.
+                    if (def->arg) {
+                        VALUE_OR_RETURN(min_value, sequence_bound(resource_, opt_name, def->arg));
+                    }
                 } else if (opt_name == "maxvalue") {
-                    VALUE_OR_RETURN(max_value, sequence_bound(resource_, opt_name, def->arg));
+                    if (def->arg) {
+                        VALUE_OR_RETURN(max_value, sequence_bound(resource_, opt_name, def->arg));
+                    }
+                } else if (opt_name == "cycle") {
+                    // The grammar always attaches a T_Integer TRUE/FALSE here. NO CYCLE
+                    // restates the default; CYCLE changes what the sequence DOES at
+                    // MAXVALUE and nothing downstream can carry it.
+                    if (def->arg && nodeTag(def->arg) == T_Integer && intVal(def->arg) != 0) {
+                        return core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string{"CREATE SEQUENCE ... CYCLE is not supported yet: the sequence "
+                                             "would have been created NO CYCLE",
+                                             resource_});
+                    }
+                } else if (opt_name == "cache") {
+                    // CACHE 1 is PostgreSQL's default (no preallocation) — accepted.
+                    // Any other cache size asks for batching this engine does not do;
+                    // accepting it silently would misdescribe the sequence in the catalog.
+                    int64_t cache_size = 0;
+                    if (!def->arg) {
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"CACHE requires a value", resource_});
+                    }
+                    VALUE_OR_RETURN(cache_size, sequence_bound(resource_, opt_name, def->arg));
+                    if (cache_size != 1) {
+                        return core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string{"CREATE SEQUENCE ... CACHE is not supported yet (only CACHE 1, "
+                                             "the default, is accepted)",
+                                             resource_});
+                    }
+                } else if (opt_name == "owned_by") {
+                    // `OWNED BY NONE` restates the default. A real column would create a
+                    // dependency (drop the column, drop the sequence) nothing records.
+                    auto* names = def->arg ? pg_ptr_cast<List>(def->arg) : nullptr;
+                    const bool is_none = names && list_length(names) == 1 &&
+                                         nodeTag(linitial(names)) == T_String &&
+                                         std::string_view{strVal(linitial(names))} == "none";
+                    if (!is_none) {
+                        return core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string{"CREATE SEQUENCE ... OWNED BY is not supported yet: the ownership "
+                                             "dependency would have been dropped",
+                                             resource_});
+                    }
+                } else if (opt_name == "restart") {
+                    // PostgreSQL itself accepts RESTART only in ALTER SEQUENCE; the shared
+                    // grammar rule lets it through to here.
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"RESTART is not supported in CREATE SEQUENCE", resource_});
+                } else {
+                    // A name outside the grammar's own list — refuse rather than resurrect
+                    // the silent drop for whatever gets added next.
+                    std::pmr::string msg{"unsupported sequence option: ", resource_};
+                    msg += def->defname;
+                    return core::error_t(core::error_code_t::sql_parse_error, std::move(msg));
                 }
-                // NOT closed here: every other SeqOptElem the grammar accepts — CACHE,
-                // CYCLE, OWNED BY, RESTART — is still dropped without a word. CACHE is a
-                // batching hint and having none is a strict subset of what it asks for,
-                // but CYCLE changes what the sequence does at MAXVALUE and node
-                // create_sequence has no field to carry it, so refusing it properly means
-                // widening the node, the catalog row and the operator. Out of scope for a
-                // repair to how the BOUNDS are read; left whole rather than half-done.
             }
         }
 

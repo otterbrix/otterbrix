@@ -401,6 +401,7 @@ namespace components::sql::transform {
             case T_FuncCall: {
                 // In SELECT context, FuncCall is an aggregate
                 auto func = pg_ptr_cast<FuncCall>(node);
+                RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *func));
                 auto funcname = std::string{strVal(linitial(func->funcname))};
 
                 std::pmr::vector<param_storage> args(resource_);
@@ -1221,6 +1222,7 @@ namespace components::sql::transform {
     core::result_wrapper_t<expression_ptr> transformer::transform_a_expr_func(FuncCall* node,
                                                                               const name_collection_t& names,
                                                                               logical_plan::parameter_node_t* params) {
+        RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *node));
         std::string funcname = strVal(node->funcname->lst.front().data);
         std::pmr::vector<param_storage> args;
         args.reserve(node->args->lst.size());
@@ -1673,6 +1675,7 @@ namespace components::sql::transform {
         switch (nodeTag(node)) {
             case T_FuncCall: {
                 auto func = pg_ptr_cast<FuncCall>(node);
+                RETURN_IF_ERROR(refuse_dropped_call_decorations(resource_, *func));
                 auto funcname = std::string{strVal(linitial(func->funcname))};
                 // The arguments have to be built before anything can be matched: two aggregates of
                 // the same name are different aggregates. Binding HAVING sum(g) to a projected

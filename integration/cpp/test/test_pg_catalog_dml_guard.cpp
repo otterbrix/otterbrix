@@ -3,8 +3,16 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <components/logical_plan/execution_plan.hpp>
+#include <components/logical_plan/node_create_index.hpp>
+#include <components/logical_plan/node_sequence.hpp>
+#include <components/logical_plan/param_storage.hpp>
+#include <components/sql/transformer/utils.hpp>
+
 #include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
 // SQL DML must never reach a pg_catalog table. pg_class IS the list of relations, so a
 // `DELETE FROM pg_class` that lands takes every user table with it: the storage file stays on
@@ -173,5 +181,46 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::create_index_cannot_target_th
     // The refusal must not over-reach: the same statement against the user table still works,
     // and the refused attempts left no half-created index under the smuggled name.
     REQUIRE(test_helpers::exec(dispatcher, "CREATE INDEX smuggled_idx ON guarddb.alpha (name);")->is_success());
+    require_user_table_intact(dispatcher);
+}
+
+// The refusal above rides the plan ROOT being a create_index node: the executor's
+// validation dispatches on the root type, and its create-index arm (where the catalog
+// check lives) never runs for any other root. A raw plan handed through the C++ API --
+// the same surface test_constraint_entry_lost_target drives -- can nest the create_index
+// under a sequence_t, the shape the planner itself emits for multi-step DDL. Schema
+// validation then descends into the child and takes its own create-index arm, the one
+// WITHOUT a catalog check. This case walks exactly that arm and pins the refusal there.
+TEST_CASE("integration::cpp::pg_catalog_dml_guard::sequence_wrapped_create_index_cannot_reach_the_catalog") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("pg_catalog_dml_guard/index_pg_class_seq"),
+                                                 /*wal_on=*/true);
+    config.log.level = log_t::level::off;
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    seed_user_table(dispatcher);
+
+    auto* resource = dispatcher->resource();
+    auto index_node = logical_plan::make_node_create_index(resource,
+                                                           core::indexname_t{std::string{"smuggled_seq_idx"}},
+                                                           logical_plan::index_type::single);
+    index_node->keys().emplace_back(resource, "relname");
+    index_node->set_dbname("pg_catalog");
+    index_node->set_relname("pg_class");
+    auto sequence =
+        boost::intrusive_ptr<logical_plan::node_t>(new logical_plan::node_sequence_t(resource));
+    sequence->append_child(index_node);
+
+    logical_plan::execution_plan_t plan{resource, sequence, logical_plan::make_parameter_node(resource)};
+    // The table and the new index name, registered exactly as the SQL transformer does.
+    std::vector<std::pair<std::string, std::string>> targets;
+    targets.emplace_back("pg_catalog", "pg_class");
+    targets.emplace_back("pg_catalog", "smuggled_seq_idx");
+    components::sql::transform::register_catalog_resolve_tables(resource, &plan.catalog_resolves, targets);
+
+    auto cursor = dispatcher->execute_plan(otterbrix::session_id_t(), std::move(plan));
+    REQUIRE(cursor);
+    INFO("a create_index smuggled under a sequence_t must be refused, it targets pg_class: "
+         << (cursor->is_error() ? cursor->get_error().what.c_str() : "<accepted>"));
+    REQUIRE(cursor->is_error());
     require_user_table_intact(dispatcher);
 }

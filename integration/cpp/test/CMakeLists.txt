@@ -93,6 +93,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_insert_param_column_routing.cpp
         test_insert_param_retype_preserves_cells.cpp
         test_select_missing_table_refusal.cpp
+        test_unresolved_target_dml_refusal.cpp
         test_update_upsert_refusal.cpp
         test_fk_cascade_set_default_specs.cpp
         test_pipeline_context_move.cpp

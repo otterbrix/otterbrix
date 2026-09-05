@@ -400,6 +400,14 @@ namespace services::planner::impl {
                         child,
                         static_cast<const components::logical_plan::node_match_t*>(child.get())->read_cap(),
                         projected_cols);
+                    // A refused scan child (a named table that never resolved) must
+                    // refuse the aggregate. Falling through would swap the refusal for
+                    // the no-table sentinel transfer_scan below, which FABRICATES one
+                    // synthetic row — an answer for a table that does not exist. A null
+                    // root surfaces as create_physical_plan_error instead.
+                    if (!match_op) {
+                        return nullptr;
+                    }
                     break;
                 case node_type::group_t:
                     // A GROUP BY is never cardinality-preserving from its scan and has no
@@ -459,6 +467,28 @@ namespace services::planner::impl {
                 executor = std::move(match_op);
             }
         } else {
+            // No source child at all: the base scan comes from the aggregate's own
+            // declaration — not the oid — because INVALID_OID looks the same for a
+            // no-FROM SELECT and a named table that never resolved. No default arm: a
+            // new source kind must choose its plan here or the build stops.
+            if (!match_op) {
+                switch (agg_node->source()) {
+                    case components::logical_plan::match_source::none:
+                        // No-FROM sentinel scan below: transfer_scan over INVALID_OID
+                        // emits the single synthetic placeholder row.
+                        break;
+                    case components::logical_plan::match_source::table:
+                        if (!context.has_table_oid(node->table_oid())) {
+                            // A table was NAMED but no resolved oid arrived. Validation
+                            // refuses this before plan generation; if that refusal is
+                            // ever lost again, planning the sentinel here would answer a
+                            // synthetic row for a table that does not exist. A null root
+                            // surfaces as create_physical_plan_error instead.
+                            return nullptr;
+                        }
+                        break;
+                }
+            }
             // Build projected_cols (storage chunk column indices) for transfer_scan.
             // For relkind='g' we read live columns by their chunk_position (resolved at
             // resolve-table time). For relkind='r' we read column_pruning output from

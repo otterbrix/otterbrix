@@ -2763,6 +2763,16 @@ namespace services::dispatcher {
             }
             case node_type::create_index_t: {
                 auto* idx_node = static_cast<node_create_index_t*>(node);
+                // DDL never reaches a system catalog. The executor refuses this too, but
+                // only when the create_index node is the plan ROOT — its check dispatches
+                // on the root type. Validation recurses (a sequence_t descends into its
+                // consumer child), so a nested create_index takes THIS arm having passed
+                // no other check; refuse here, loudly and non-fatally.
+                if (components::catalog::is_catalog_table(idx_node->table_oid())) {
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"cannot create an index on a system catalog table", resource});
+                }
                 const auto* tbl_idx = idx_node->table_metadata();
                 if (!tbl_idx) {
                     // node_create_index_t carries only the index name, no table names.

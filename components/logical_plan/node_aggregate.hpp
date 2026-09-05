@@ -3,6 +3,7 @@
 #include "identifier_types.hpp"
 #include "node.hpp"
 #include "node_limit.hpp"
+#include "node_match.hpp"
 
 #include <components/expressions/key.hpp>
 
@@ -36,6 +37,13 @@ namespace components::logical_plan {
         // routing in resolved-stage code uses table_oid().
         const core::dbname_t& dbname() const noexcept { return dbname_; }
         const core::relname_t& relname() const noexcept { return relname_; }
+        // Same declaration a match node makes (see match_source): the base class's
+        // table_oid() cannot distinguish "SELECT without FROM" from "the named table
+        // never resolved" -- both look like INVALID_OID there -- and the two demand
+        // opposite plans (the one-row synthetic source vs a refusal). A child-body
+        // source (CTE / derived table / view splice) clears the relname and lowers
+        // through its child, so it reads as `none` here and never consults this.
+        match_source source() const noexcept { return relname_.t.empty() ? match_source::none : match_source::table; }
         // Parser-supplied external identifier from a SQL fully-qualified
         // `<uid>.<db>.<schema>.<rel>` form. Carries through the parser-window
         // for client-side externals (e.g. raw-chunk injection in JOIN tests

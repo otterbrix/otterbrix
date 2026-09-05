@@ -76,6 +76,10 @@ TEST_CASE("create_plan: aggregate WITHOUT pushdown lowers to the normal aggregat
     services::context_storage_t context(&resource, log_t{}, core::date::timezone_offset_t{});
     components::compute::function_registry_t registry(&resource);
 
+    // The aggregate NAMES its table, so the planner demands a resolved, known oid
+    // (an unknown named table now refuses instead of scanning the no-FROM sentinel).
+    context.known_oids.insert(components::catalog::oid_t{123});
+
     auto node = build_agg(&resource, /*pushdown=*/false);
     auto plan =
         services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);

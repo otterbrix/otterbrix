@@ -119,7 +119,9 @@ namespace {
         const std::filesystem::path source =
             std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" /
             "data" / "ssb" / "lineorder.tbl";
-        REQUIRE(std::filesystem::exists(source));
+        if (!std::filesystem::exists(source)) {
+            SKIP("benchmark/data/ssb/lineorder.tbl is missing; fetch it with benchmark/download_data.sh");
+        }
 
         auto config = test_create_config(root);
         test_clear_directory(config);

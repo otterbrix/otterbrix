@@ -108,10 +108,9 @@ namespace {
         }
 
         void vacuum() {
-            invoke(&manager_disk_t::vacuum_all,
-                   session_id_t{},
-                   std::numeric_limits<uint64_t>::max(),
-                   std::numeric_limits<uint64_t>::max());
+            // vacuum_all now answers how many storages it RENUMBERED; this harness only needs
+            // the call to have run, and the footprint assertions below are what judge it.
+            invoke(&manager_disk_t::vacuum_all, session_id_t{}, std::numeric_limits<uint64_t>::max());
         }
     };
 

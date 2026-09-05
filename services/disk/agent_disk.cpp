@@ -2106,10 +2106,13 @@ namespace services::disk {
         co_return checkpoint_result_t{min_prev_id};
     }
 
-    agent_disk_t::unique_future<void> agent_disk_t::vacuum_inner(session_id_t /*session*/,
-                                                                 uint64_t lowest_active_start_time,
-                                                                 uint64_t /*compact_watermark*/) {
+    agent_disk_t::unique_future<uint64_t> agent_disk_t::vacuum_inner(session_id_t /*session*/,
+                                                                     uint64_t lowest_active_start_time) {
         trace(log_, "agent_disk[{}]::vacuum_inner: {} entries in local slice", pool_idx_, storages_.size());
+        // How many entries this pass RENUMBERED — see the header: it is the answer the caller
+        // rebuilds indexes on, and it is counted at the line where a renumbering would be
+        // performed rather than inferred anywhere above.
+        uint64_t renumbered = 0;
         for (auto& slot : storages_) {
             auto& entry = slot.second;
             if (entry == nullptr) {
@@ -2119,17 +2122,25 @@ namespace services::disk {
             // In-memory MVCC version-chain GC, and the whole of what VACUUM does per entry.
             // Touches no block manager and costs no blocks.
             //
-            // ITEM B — nothing is compacted here. See the long note at maybe_cleanup_inner:
-            // under A7.2's split pool a compact without a committed header cannot return
-            // space, only spend it, and VACUUM used to do exactly that for EVERY entry on
-            // EVERY call — even one with nothing dead in it. Compaction belongs to the
-            // checkpoint round, which already performs it and is the only place that can
-            // commit the release. It used to still run here for the one kind of entry that
-            // had no checkpoint round of its own — the in-memory table — and that kind no
+            // ITEM B — nothing is compacted here, and THIS is the line where a compact would
+            // stand and where `++renumbered` would stand beside it. See the long note at
+            // maybe_cleanup_inner: under A7.2's split pool a compact without a committed
+            // header cannot return space, only spend it, and VACUUM used to do exactly that
+            // for EVERY entry on EVERY call — even one with nothing dead in it. Compaction
+            // belongs to the checkpoint round, which already performs it and is the only place
+            // that can commit the release. It used to still run here for the one kind of entry
+            // that had no checkpoint round of its own — the in-memory table — and that kind no
             // longer exists.
+            //
+            // cleanup_versions cannot renumber, and that is a property of what it reaches, not
+            // a hope: row_group_collection_t::cleanup_versions -> row_version_manager_t::
+            // cleanup_append only ever REPLACES a chunk_info inside vector_info_. No row moves,
+            // no row group is rebuilt, and data_table_t::modified_since_checkpoint_ is
+            // deliberately left alone by it for the same reason. So `renumbered` stays 0 and
+            // the VACUUM statement owes no index rebuild.
             table.cleanup_versions(lowest_active_start_time);
         }
-        co_return;
+        co_return renumbered;
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::maybe_cleanup_inner(components::catalog::oid_t table_oid,

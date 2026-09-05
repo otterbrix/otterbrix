@@ -18,15 +18,41 @@ namespace components::operators {
         : read_write_operator_t(resource, std::move(log), operator_type::checkpoint) {}
 
     actor_zeta::unique_future<void> operator_checkpoint_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // Flush dirty index btrees so a post-recovery rebuild starts from a
-        // consistent on-disk index state.
+        // THIS STEP IS HERE FOR ITS ANSWER, NOT FOR ITS BYTES, and the distinction was
+        // measured rather than argued.
+        //
+        // What it writes is genuinely dead. force_flush persists each store's dirty state;
+        // the rebuild at the end of this operator then calls repopulate_table, whose first
+        // act per index is index_agent_contract::clear -- btree_index_disk_t::clear removes
+        // the whole tree DIRECTORY (core::filesystem::remove_directory is recursive) and
+        // re-creates an empty one, bitcask_index_disk_t::clear unlinks every segment, CURRENT,
+        // the txn log and its applied-offset sidecar. So every byte this flush put on the
+        // device for a rebuilt index is unlinked a few steps later, and what makes the RESULT
+        // durable is the rebuild's own force_flush inside publish_buckets (both agent
+        // families end commit_inserts with it). The old justification standing here -- "so a
+        // post-recovery rebuild starts from a consistent on-disk index state" -- named a
+        // bootstrap rebuild that was removed from this branch as a proven no-op.
+        //
+        // WHAT IS NOT DEAD IS THE REFUSAL, and it is the ONLY report on the health of the
+        // index's EXISTING durable state, taken before the rebuild below destroys and
+        // re-creates the store. Measured by removing this block and running
+        // test_index_flush_refusal: with the tree's `metadata` path replaced by a directory,
+        // the CHECKPOINT stopped failing and started SUCCEEDING -- clear()'s recursive
+        // remove_directory erases the injected fault together with the tree, so the rebuild's
+        // flush then lands on a clean path and the round reports success over a device the
+        // index could not write a moment earlier. Step 4 truncates the WAL, so that success is
+        // not harmless.
+        //
+        // Replacing it with a probe that reports the same health WITHOUT writing bytes that
+        // are about to be unlinked needs a new door on index_agent_contract, which is not this
+        // change's surface.
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             auto [_fi, fif] = actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::flush_all_indexes,
                                                ctx->session);
-            // THE STATEMENT IS THE CHANNEL. Step 4 below truncates the WAL behind whatever
-            // this step made durable, so an index flush that did not reach the device must
-            // stop the round here rather than be logged inside the agent and forgotten.
+            // THE STATEMENT IS THE CHANNEL. Step 4 below truncates the WAL, so an index that
+            // cannot reach the device must stop the round here rather than be logged inside
+            // the agent and forgotten.
             if (auto flush_error = co_await std::move(fif); flush_error.contains_error()) {
                 set_error(flush_error);
                 mark_failed();

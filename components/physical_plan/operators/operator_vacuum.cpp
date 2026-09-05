@@ -8,7 +8,7 @@
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
-#include <services/dispatcher/dispatcher.hpp>
+#include <services/index/index_rebuild_driver.hpp>
 #include <services/index/manager_index.hpp>
 
 #include <algorithm>
@@ -29,36 +29,27 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_vacuum_t::await_async_and_resume(pipeline::context_t* ctx) {
         const std::uint64_t lowest = ctx->lowest_active_start_time;
 
-        // Compact watermark for vacuum_inner's MVCC-gated compact: the
-        // dispatcher's visible-to-all horizon. lowest_active_start_time is NOT a
-        // substitute — it lives in start-time space and ignores in-flight
-        // (committed-but-unpublished) commits whose versions a compact would
-        // drop. 0 when no dispatcher is wired: compacts are then skipped.
-        std::uint64_t compact_watermark = 0;
-        if (ctx->current_message_sender != actor_zeta::address_t::empty_address()) {
-            auto [_wm, wmf] = actor_zeta::send(ctx->current_message_sender,
-                                               &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
-            compact_watermark = co_await std::move(wmf);
-        }
-
-        // cleanup_versions + compact across every user storage. The disk manager
-        // iterates its own storages_ map, so one global call suffices.
-        {
+        // cleanup_versions across every user storage. The disk manager iterates its own
+        // storages_ map, so one global call suffices — and it ANSWERS how many storages it
+        // renumbered, which is the only fact that can oblige this statement to rebuild an
+        // index (see the rebuild step below, and agent_disk_t::vacuum_inner for where the
+        // count is produced).
+        //
+        // THE MVCC COMPACT WATERMARK IS NO LONGER FETCHED HERE. It existed for a compact on
+        // this route, and there is none: vacuum_inner ignored the argument by name and
+        // manager_disk_t::vacuum_all passed it through untouched, so the
+        // manager_dispatcher_t::txn_compact_watermark_msg round-trip that produced it was one
+        // extra cross-actor hop per VACUUM spent on a value nobody read.
+        std::uint64_t renumbered_storages = 0;
+        if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_v, vf] = actor_zeta::send(ctx->disk_address,
                                              &services::disk::manager_disk_t::vacuum_all,
                                              ctx->session,
-                                             lowest,
-                                             compact_watermark);
-            co_await std::move(vf);
+                                             lowest);
+            renumbered_storages = co_await std::move(vf);
         }
 
-        // Without an index actor the rest of the work is moot.
-        if (ctx->index_address == actor_zeta::address_t::empty_address()) {
-            mark_executed();
-            co_return;
-        }
-
-        {
+        if (ctx->index_address != actor_zeta::address_t::empty_address()) {
             auto [_cv, cvf] = actor_zeta::send(ctx->index_address,
                                                &services::index::manager_index_t::cleanup_all_versions,
                                                ctx->session,
@@ -66,8 +57,60 @@ namespace components::operators {
             co_await std::move(cvf);
         }
 
-        // Enumerate user relations via pg_class (relkind 'r'/'g') and rebuild +
-        // repopulate their indexes: the compact pass above invalidated row positions.
+        // THE INDEX REBUILD, AND THE FACT IT NOW WAITS FOR.
+        //
+        // A full rebuild — a drained scan of the table plus a clear() that unlinks the index
+        // directory plus a refill of every entry — is owed for exactly one reason: a
+        // renumbering. data_table_t::compact is the only thing in the tree that renumbers, and
+        // it has ONE call site, agent_disk_t::checkpoint_inner. VACUUM does not reach it.
+        //
+        // This used to be a loop over every relation in pg_class calling repopulate_table on
+        // each, justified by a comment reading "the compact pass above invalidated row
+        // positions". There was no compact pass above: vacuum_inner carries its own note
+        // saying nothing is compacted there, because under the split free pool a compact whose
+        // release no header commits can only spend space. So every VACUUM paid a full scan and
+        // a clear-and-refill per relation for a renumbering that never happened — the very
+        // price that got the bootstrap rebuild deleted, moved to the run time.
+        //
+        // What replaces it is not "assume the other way". vacuum_all ANSWERS the question, and
+        // the answer is produced at the line inside vacuum_inner where a compact would stand.
+        // If compaction ever returns to that route the count returns with it and this rebuild
+        // wakes up; nothing here has to be remembered.
+        //
+        // And the rebuild it wakes up into is the SHARED driver, not a second longhand copy.
+        // repopulate_indexes_after_compaction is the one place that knows how to rebuild after
+        // a renumbering, it walks all_indexed_oids (which already excludes oids mid-DROP)
+        // rather than every relation in pg_class, and having two hand-written versions of it is
+        // exactly how the WAL auto-checkpoint ended up without one.
+        if (renumbered_storages > 0) {
+            auto rebuild_error =
+                co_await services::index::repopulate_indexes_after_compaction(resource_,
+                                                                              ctx->disk_address,
+                                                                              ctx->index_address,
+                                                                              ctx->session,
+                                                                              ctx->txn,
+                                                                              ctx->execution_context.timezone_offset);
+            if (rebuild_error.contains_error()) {
+                // A producer defect in the rebuild feed (scan chunks without physical row_ids)
+                // or a refused scan: fail the VACUUM statement loudly rather than leave behind
+                // an index that lies.
+                set_error(rebuild_error);
+                mark_failed();
+                co_return;
+            }
+        }
+
+        // The rest of this operator is the pg_computed_column GC, which needs the DISK actor
+        // and not the index one. It used to sit behind an "without an index actor the rest is
+        // moot" early return, which stopped being true the moment the index work above shrank
+        // to one no-op message.
+        if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
+            mark_executed();
+            co_return;
+        }
+
+        // Enumerate relations via pg_class to find the COMPUTING tables (relkind 'g'), whose
+        // pg_computed_column rows the two GC passes further down reclaim.
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
         // A1: the read contract has exactly two legs — streaming-by-predicate
@@ -122,14 +165,9 @@ namespace components::operators {
             co_return;
         }
 
-        // Per-table rebuild loop. We collect oids first so we don't
-        // hold the data_chunk across more co_awaits than necessary.
-        struct user_table_t {
-            catalog::oid_t table_oid;
-        };
-        std::vector<user_table_t> user_tables;
-        // Collect computing-table OIDs in the same pass so the later
-        // pg_computed_column GC doesn't have to re-scan pg_class.
+        // Collect the COMPUTING-table OIDs. This is the only thing the pg_class scan is
+        // still for: the relation list used to feed a per-table index rebuild as well, and
+        // that rebuild is gone with the compaction it was written for.
         std::vector<catalog::oid_t> computing_table_oids;
 
         for (const auto& pg_class_rows : pg_class_batches) {
@@ -151,98 +189,6 @@ namespace components::operators {
                 if (relkind == catalog::relkind::computed) {
                     computing_table_oids.push_back(this_oid);
                 }
-                user_tables.push_back({this_oid});
-            }
-        }
-
-        // For each user table, re-populate its index from the just-compacted
-        // storage via repopulate_table (clears the on-disk index backing + the
-        // in-memory engine internally, then re-inserts at post-compact ids).
-        //
-        // repopulate_table re-inserts with txn_id=0 (committed-for-everyone), the
-        // path that needs no commit. Entries inserted under a real txn id stay
-        // PENDING-invisible unless that txn index-commits, and VACUUM never
-        // index-commits — so the txn_id=0 path is required here.
-        for (auto& tbl : user_tables) {
-            std::uint64_t total = 0;
-            {
-                auto [_tr, trf] = actor_zeta::send(ctx->disk_address,
-                                                   &services::disk::manager_disk_t::storage_total_rows,
-                                                   ctx->session,
-                                                   tbl.table_oid);
-                auto total_r = co_await std::move(trf);
-                if (total_r.has_error()) {
-                    // `tbl` came out of a pg_class scan of relkind 'r'/'g', so it names a
-                    // table that must have a storage. A count that could not be read is a
-                    // broken storage layer, not an empty table — and it is handed straight
-                    // to repopulate_table as the size of the index to rebuild.
-                    set_error(total_r.error());
-                    mark_failed();
-                    co_return;
-                }
-                total = total_r.value();
-            }
-
-            // total==0 (table emptied by compact) still repopulates: the clear
-            // step inside repopulate_table wipes stale index entries. A drained scan of an
-            // empty table yields an empty vector, which is exactly what repopulate_table
-            // expects.
-            std::pmr::vector<components::vector::data_chunk_t> scan_data(resource_);
-            {
-                uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
-                bool scan_failed = false;
-                while (true) {
-                    auto [_ss, ssf] = actor_zeta::send(ctx->disk_address,
-                                                       &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                                       ctx->session,
-                                                       tbl.table_oid,
-                                                       cursor_id,
-                                                       std::unique_ptr<components::table::table_filter_t>(nullptr),
-                                                       /*limit=*/int64_t{-1},
-                                                       std::vector<size_t>{},
-                                                       ctx->txn);
-                    auto scan_r = co_await std::move(ssf);
-                    if (scan_r.has_error()) {
-                        set_error(scan_r.error());
-                        scan_failed = true;
-                        break;
-                    }
-                    auto reply = std::move(scan_r.value());
-                    cursor_id = reply.cursor_id;
-                    if (!reply.batch || reply.batch->size() == 0) {
-                        break;
-                    }
-                    scan_data.emplace_back(std::move(*reply.batch));
-                }
-                if (scan_failed) {
-                    if (cursor_id != 0) {
-                        auto [_cc, ccf] = actor_zeta::send(ctx->disk_address,
-                                                           &services::disk::manager_disk_t::storage_close_cursor,
-                                                           ctx->session,
-                                                           tbl.table_oid,
-                                                           cursor_id);
-                        co_await std::move(ccf);
-                    }
-                    mark_failed();
-                    co_return;
-                }
-            }
-
-            auto [_rp, rpf] = actor_zeta::send(ctx->index_address,
-                                               &services::index::manager_index_t::repopulate_table,
-                                               ctx->session,
-                                               tbl.table_oid,
-                                               std::move(scan_data),
-                                               total,
-                                               ctx->execution_context.timezone_offset);
-            auto repopulate_error = co_await std::move(rpf);
-            if (repopulate_error.contains_error()) {
-                // Producer defect in the rebuild feed (scan chunks without
-                // physical row_ids): fail the VACUUM statement loudly rather
-                // than rebuild an index that lies.
-                set_error(repopulate_error);
-                mark_failed();
-                co_return;
             }
         }
 

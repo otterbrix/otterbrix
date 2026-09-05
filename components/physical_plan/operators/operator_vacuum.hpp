@@ -7,24 +7,28 @@ namespace components::operators {
     // VACUUM — global no-arg operation.
     //
     // Steps (in await_async_and_resume):
-    //   1. manager_disk_t::vacuum_all — for every user storage: cleanup_versions
-    //      (drop tuple versions older than lowest_active_start_time) + compact
-    //      (consolidate live segments). Implemented globally on the disk side;
-    //      called once.
-    //   2. manager_index_t::cleanup_all_versions — drop index entries whose
-    //      tuple versions were just reclaimed. Called once if index_address
-    //      is set.
-    //   3. Iterate pg_class via a drained fetch-next scan and repopulate indexes for every
-    //      user relation (relkind 'r' = regular, 'g' = computing). Compact in
-    //      step 1 changes row positions, so we must, per oid:
-    //        a. storage_total_rows(oid)            — post-compact row count
-    //        b. streaming fetch-next drained to completion — read the consolidated rows
-    //        c. repopulate_table(oid, chunk, total) — clear on-disk index backing
-    //           + in-memory engine, then re-insert at post-compact ids with
-    //           txn_id=0 (committed-for-everyone).
-    //      pg_class is the source of truth for the set of user relations.
-    //      The txn_id=0 re-insert needs no index-commit; entries inserted under a
-    //      real txn id would stay PENDING-invisible (VACUUM never index-commits).
+    //   1. manager_disk_t::vacuum_all — for every user storage, cleanup_versions (drop tuple
+    //      versions older than lowest_active_start_time). Implemented globally on the disk
+    //      side; called once. It ANSWERS how many storages it renumbered.
+    //   2. manager_index_t::cleanup_all_versions — called once if index_address is set.
+    //   3. An index rebuild, IF AND ONLY IF step 1 reported a renumbering.
+    //   4. pg_computed_column GC (tombstones + stale versions) and the physical column
+    //      compaction for relkind='g' tables, driven by a drained pg_class scan.
+    //
+    // ON STEP 3, WHICH USED TO BE UNCONDITIONAL. A full rebuild is owed for exactly one
+    // reason: something moved a physical row id, because that is what an index entry stores.
+    // Only data_table_t::compact does, and its single call site is agent_disk_t::
+    // checkpoint_inner — a route VACUUM does not take. The old code rebuilt every index of
+    // every relation in pg_class on every VACUUM, citing a compact pass that vacuum_inner had
+    // already stopped performing, so each call paid a drained scan of each table plus a
+    // clear-and-refill of each of its indexes for a renumbering that never happened.
+    //
+    // The condition is a FACT rather than a guess: vacuum_all returns the count, produced
+    // inside vacuum_inner at the line a compact would occupy, so re-enabling compaction there
+    // re-arms this rebuild without anyone having to remember. And when it does fire it calls
+    // services::index::repopulate_indexes_after_compaction — the SAME driver the CHECKPOINT
+    // statement and the WAL auto-checkpoint use — rather than a third longhand copy of the
+    // loop, which is how the auto-checkpoint came to have no rebuild at all.
     //
     // Reads pipeline_context.lowest_active_start_time (set by executor from
     // txn_manager_t) — same value the legacy inline path used.

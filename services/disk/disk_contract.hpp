@@ -69,8 +69,12 @@ namespace services::disk {
         // version stamp above it makes the MVCC-gated compact a no-op.
         actor_zeta::unique_future<services::wal::id_t>
         checkpoint_all(session_id_t session, services::wal::id_t current_wal_id, uint64_t compact_watermark);
-        actor_zeta::unique_future<void>
-        vacuum_all(session_id_t session, uint64_t lowest_active_start_time, uint64_t compact_watermark);
+        // Returns the number of storages whose PHYSICAL ROW IDS this VACUUM moved. An index
+        // entry stores a physical row id, so this is the fact a caller rebuilds indexes on;
+        // agent_disk_t::vacuum_inner produces it at the line a compact would occupy. No
+        // compact_watermark: nothing on this route compacts, and both hops used to ignore the
+        // argument by name.
+        actor_zeta::unique_future<uint64_t> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
         // Batched GC-threshold check + compact: routes each table_oid to its owning
         // agent's maybe_cleanup_inner with the shared compact_watermark.
         // operator_commit_transaction sends one call covering all just-touched tables.

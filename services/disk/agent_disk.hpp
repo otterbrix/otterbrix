@@ -495,7 +495,6 @@ namespace services::disk {
         checkpoint_inner(session_id_t session, wal::id_t current_wal_id, uint64_t compact_watermark);
 
         // vacuum_inner — cleanup_versions per entry. Compaction is NOT done here.
-        //   compact_watermark: same visible-to-all horizon contract as checkpoint_inner.
         //   ITEM B: under A7.2's split free pool a compact whose release is never committed by
         //   a header cannot return space, only spend it, so compaction is one indivisible unit
         //   with the checkpoint that commits it — and checkpoint_inner already performs that
@@ -503,8 +502,21 @@ namespace services::disk {
         //   their own; that mode is gone. See the long note at maybe_cleanup_inner's definition
         //   for the full reasoning, including why "checkpoint after compacting" here would
         //   duplicate rows on recovery.
-        unique_future<void>
-        vacuum_inner(session_id_t session, uint64_t lowest_active_start_time, uint64_t compact_watermark);
+        //
+        //   RETURNS THE NUMBER OF STORAGES IN THIS SLICE WHOSE PHYSICAL ROW IDS THIS CALL
+        //   MOVED, and that number is the whole point of the return type. An index entry
+        //   stores a physical row id, so whoever renumbers owes the rebuild — and the caller
+        //   used to ASSUME the answer (operator_vacuum_t rebuilt every index of every relation
+        //   in pg_class on the strength of a comment claiming a compact pass that this handler
+        //   had already stopped doing). The count is produced HERE, where a renumbering would
+        //   happen, so the assumption cannot drift from the code again. It is 0 today and the
+        //   body says why at the one line a compact would occupy.
+        //
+        //   compact_watermark is GONE from this handler and from manager_disk_t::vacuum_all
+        //   with it: both hops ignored it by name, and the round-trip that produced it
+        //   (manager_dispatcher_t::txn_compact_watermark_msg) was one more message per VACUUM
+        //   spent on an argument nobody read.
+        unique_future<uint64_t> vacuum_inner(session_id_t session, uint64_t lowest_active_start_time);
 
         // maybe_cleanup_inner — single-OID target. NOTHING is compacted here (ITEM B, as
         //   above): the compaction of a file-backed table belongs to the checkpoint round that

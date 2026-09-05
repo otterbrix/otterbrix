@@ -105,31 +105,33 @@ namespace services::disk {
         co_return wal::id_t{0};
     }
 
-    manager_disk_t::unique_future<void>
-    manager_disk_t::vacuum_all(session_id_t session, uint64_t lowest_active_start_time, uint64_t compact_watermark) {
+    manager_disk_t::unique_future<uint64_t> manager_disk_t::vacuum_all(session_id_t session,
+                                                                       uint64_t lowest_active_start_time) {
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
-        // Per-agent vacuum_inner runs the canonical cleanup_versions + compact.
-        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        // Per-agent vacuum_inner runs the canonical cleanup_versions. It answers how many of
+        // ITS storages it renumbered; this hop only sums the slices, because the set of
+        // storages is partitioned across the agents and nothing here knows a slice's contents.
+        std::pmr::vector<unique_future<uint64_t>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
                                                                   &agent_disk_t::vacuum_inner,
                                                                   session,
-                                                                  lowest_active_start_time,
-                                                                  uint64_t{compact_watermark});
+                                                                  lowest_active_start_time);
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }
             agent_futures.emplace_back(std::move(fut));
         }
 
+        uint64_t renumbered = 0;
         for (auto& f : agent_futures) {
-            co_await std::move(f);
+            renumbered += co_await std::move(f);
         }
 
-        trace(log_, "manager_disk_t::vacuum_all complete");
-        co_return;
+        trace(log_, "manager_disk_t::vacuum_all complete , renumbered storages : {}", renumbered);
+        co_return renumbered;
     }
 
     manager_disk_t::unique_future<void>

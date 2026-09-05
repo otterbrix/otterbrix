@@ -12,6 +12,11 @@
 #include <string_view>
 #include <unordered_set>
 
+#include "index_fixture_path.hpp"
+
+using services::index::tests::index_fixture_path;
+using services::index::tests::index_fixture_root;
+
 using components::types::logical_value_t;
 using services::index::bitcask_index_disk_t;
 
@@ -90,7 +95,7 @@ namespace {
 TEST_CASE("services::index::bitcask_index_disk::randomized_insert_remove_find_stress", "[stress][long]") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_randomized_stress"};
+    std::filesystem::path path{index_fixture_path("bitcask_randomized_stress")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 

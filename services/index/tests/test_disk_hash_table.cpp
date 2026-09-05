@@ -12,11 +12,16 @@
 #include <unordered_map>
 #include <vector>
 
+#include "index_fixture_path.hpp"
+
+using services::index::tests::index_fixture_path;
+using services::index::tests::index_fixture_root;
+
 using services::index::disk_hash_table_t;
 
 namespace {
     std::filesystem::path mk_path(const std::string& name) {
-        const auto dir = std::filesystem::path("/tmp/index_disk");
+        const auto dir = std::filesystem::path(index_fixture_root());
         std::filesystem::create_directories(dir);
         return dir / name;
     }

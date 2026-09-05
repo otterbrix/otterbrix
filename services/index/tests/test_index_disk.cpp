@@ -12,6 +12,11 @@
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <vector>
 
+#include "index_fixture_path.hpp"
+
+using services::index::tests::index_fixture_path;
+using services::index::tests::index_fixture_root;
+
 using components::types::logical_value_t;
 using services::index::bitcask_index_disk_t;
 using services::index::btree_index_disk_t;
@@ -35,7 +40,7 @@ std::string gen_str_logical_value_t(int i, std::size_t size = 5) {
 TEST_CASE("services::index::index_disk::string") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/string"};
+    std::filesystem::path path{index_fixture_path("string")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto index = btree_index_disk_t(path, &resource);
@@ -68,7 +73,7 @@ TEST_CASE("services::index::index_disk::string") {
 TEST_CASE("services::index::index_disk::int32") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/int32"};
+    std::filesystem::path path{index_fixture_path("int32")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto index = btree_index_disk_t(path, &resource);
@@ -101,7 +106,7 @@ TEST_CASE("services::index::index_disk::int32") {
 TEST_CASE("services::index::index_disk::uint32") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/uint32"};
+    std::filesystem::path path{index_fixture_path("uint32")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto index = btree_index_disk_t(path, &resource);
@@ -134,7 +139,7 @@ TEST_CASE("services::index::index_disk::uint32") {
 TEST_CASE("services::index::index_disk::double") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/double"};
+    std::filesystem::path path{index_fixture_path("double")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto index = btree_index_disk_t(path, &resource);
@@ -167,7 +172,7 @@ TEST_CASE("services::index::index_disk::double") {
 TEST_CASE("services::index::index_disk::multi_values::int32") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/int32_multi"};
+    std::filesystem::path path{index_fixture_path("int32_multi")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto index = btree_index_disk_t(path, &resource);
@@ -204,7 +209,7 @@ TEST_CASE("services::index::index_disk::multi_values::int32") {
 TEST_CASE("services::index::index_disk::persist_close_reopen") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/persist_reopen"};
+    std::filesystem::path path{index_fixture_path("persist_reopen")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -239,7 +244,7 @@ TEST_CASE("services::index::index_disk::persist_close_reopen") {
 TEST_CASE("services::index::index_disk::remove_flush_reload") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/remove_reload"};
+    std::filesystem::path path{index_fixture_path("remove_reload")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -348,7 +353,7 @@ TEST_CASE("services::index::index_disk::date_keys") {
 
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/date_keys"};
+    std::filesystem::path path{index_fixture_path("date_keys")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto index = btree_index_disk_t(path, &resource);
@@ -390,7 +395,7 @@ TEST_CASE("services::index::index_disk::timestamp_keys") {
 
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/timestamp_keys"};
+    std::filesystem::path path{index_fixture_path("timestamp_keys")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto index = btree_index_disk_t(path, &resource);
@@ -445,7 +450,7 @@ TEST_CASE("services::index::index_disk::timestamp_keys") {
 TEST_CASE("services::index::index_disk::a_threshold_flush_that_cannot_reach_the_disk_is_reported") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/flush_refused"};
+    std::filesystem::path path{index_fixture_path("flush_refused")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     // flush_threshold 1: every single write crosses the threshold, so flush_if_needed is on
@@ -478,7 +483,7 @@ TEST_CASE("services::index::index_disk::a_threshold_flush_that_cannot_reach_the_
 TEST_CASE("services::index::index_disk::write_path_never_uses_the_default_resource") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/default_resource"};
+    std::filesystem::path path{index_fixture_path("default_resource")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto index = btree_index_disk_t(path, &resource);
@@ -509,7 +514,7 @@ TEST_CASE("services::index::index_disk::write_path_never_uses_the_default_resour
 TEST_CASE("services::index::index_disk::ordered_reads_are_ascending") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/ascending"};
+    std::filesystem::path path{index_fixture_path("ascending")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto index = btree_index_disk_t(path, &resource);
@@ -540,7 +545,7 @@ TEST_CASE("services::index::index_disk::null_key_is_refused") {
 
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/null_key"};
+    std::filesystem::path path{index_fixture_path("null_key")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto index = btree_index_disk_t(path, &resource);
@@ -589,7 +594,7 @@ TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
 
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/scan_range"};
+    std::filesystem::path path{index_fixture_path("scan_range")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto on_disk = btree_index_disk_t(path, &resource);
@@ -733,7 +738,7 @@ TEST_CASE("services::index::index_disk::a_leaf_record_whose_key_will_not_decode_
 
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/corrupt_key"};
+    std::filesystem::path path{index_fixture_path("corrupt_key")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 

@@ -27,6 +27,11 @@
 #include <utility>
 #include <vector>
 
+#include "index_fixture_path.hpp"
+
+using services::index::tests::index_fixture_path;
+using services::index::tests::index_fixture_root;
+
 using components::types::logical_value_t;
 using services::index::bitcask_index_disk_t;
 using services::index::btree_index_disk_t;
@@ -450,7 +455,7 @@ namespace {
 TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_int64"};
+    std::filesystem::path path{index_fixture_path("bitcask_int64")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto index = make_test_index(path, &resource);
@@ -475,7 +480,7 @@ TEST_CASE("services::index::bitcask_index_disk::int64_basic") {
 TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_persist_reopen"};
+    std::filesystem::path path{index_fixture_path("bitcask_persist_reopen")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -509,7 +514,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen") {
 TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen_large_dataset") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_persist_reopen_large"};
+    std::filesystem::path path{index_fixture_path("bitcask_persist_reopen_large")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -536,7 +541,7 @@ TEST_CASE("services::index::bitcask_index_disk::persist_close_reopen_large_datas
 TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_merge_segments"};
+    std::filesystem::path path{index_fixture_path("bitcask_merge_segments")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -569,7 +574,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_immutable_segments") {
 TEST_CASE("services::index::bitcask_index_disk::merge_keeps_latest_snapshot_for_key") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_merge_latest_snapshot"};
+    std::filesystem::path path{index_fixture_path("bitcask_merge_latest_snapshot")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -609,7 +614,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_keeps_latest_snapshot_for_
 TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_merge_tombstone"};
+    std::filesystem::path path{index_fixture_path("bitcask_merge_tombstone")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -659,7 +664,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
 TEST_CASE("services::index::bitcask_index_disk::merge_survives_more_than_two_rounds") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_merge_many_rounds"};
+    std::filesystem::path path{index_fixture_path("bitcask_merge_many_rounds")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -695,7 +700,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_survives_more_than_two_rou
 TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_entries") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_merge_active_segment"};
+    std::filesystem::path path{index_fixture_path("bitcask_merge_active_segment")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -732,7 +737,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_preserves_active_segment_e
 TEST_CASE("services::index::bitcask_index_disk::remove_specific_row_id") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_remove_specific_row"};
+    std::filesystem::path path{index_fixture_path("bitcask_remove_specific_row")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -774,7 +779,7 @@ TEST_CASE("services::index::bitcask_index_disk::remove_specific_row_id") {
 TEST_CASE("services::index::bitcask_index_disk::deduplicates_same_row_for_key") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_deduplicate_rows"};
+    std::filesystem::path path{index_fixture_path("bitcask_deduplicate_rows")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -798,7 +803,7 @@ TEST_CASE("services::index::bitcask_index_disk::deduplicates_same_row_for_key") 
 TEST_CASE("services::index::bitcask_index_disk::load_entries_reflects_current_state") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_load_entries"};
+    std::filesystem::path path{index_fixture_path("bitcask_load_entries")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -824,7 +829,7 @@ TEST_CASE("services::index::bitcask_index_disk::load_entries_reflects_current_st
 TEST_CASE("services::index::bitcask_index_disk::drop_removes_storage_and_recreate_is_empty") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_drop_recreate"};
+    std::filesystem::path path{index_fixture_path("bitcask_drop_recreate")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -853,7 +858,7 @@ TEST_CASE("services::index::bitcask_index_disk::drop_removes_storage_and_recreat
 TEST_CASE("services::index::bitcask_index_disk::empty_index_operations_are_noop") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_empty_noop"};
+    std::filesystem::path path{index_fixture_path("bitcask_empty_noop")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -871,7 +876,7 @@ TEST_CASE("services::index::bitcask_index_disk::empty_index_operations_are_noop"
 TEST_CASE("services::index::bitcask_index_disk::string_keys_persist_and_range_queries") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_string_keys"};
+    std::filesystem::path path{index_fixture_path("bitcask_string_keys")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -894,7 +899,7 @@ TEST_CASE("services::index::bitcask_index_disk::string_keys_persist_and_range_qu
 TEST_CASE("services::index::bitcask_index_disk::flush_threshold_persists_without_explicit_force_flush") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_flush_threshold"};
+    std::filesystem::path path{index_fixture_path("bitcask_flush_threshold")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -918,7 +923,7 @@ TEST_CASE("services::index::bitcask_index_disk::flush_threshold_persists_without
 TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_data") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_merge_fs_error"};
+    std::filesystem::path path{index_fixture_path("bitcask_merge_fs_error")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -963,7 +968,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_fs_error_does_not_lose_dat
 TEST_CASE("services::index::bitcask_index_disk::recovery_ignores_corrupted_tail_record") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_corrupted_tail"};
+    std::filesystem::path path{index_fixture_path("bitcask_corrupted_tail")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -992,7 +997,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_ignores_corrupted_tail_
 TEST_CASE("services::index::bitcask_index_disk::a_crc_mismatch_in_the_active_segment_is_a_tail_the_open_cuts") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_crc_mismatch"};
+    std::filesystem::path path{index_fixture_path("bitcask_crc_mismatch")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1077,7 +1082,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_crc_mismatch_in_the_active_seg
 TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_damage_other_segments") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_crc_mismatch_segments_intact"};
+    std::filesystem::path path{index_fixture_path("bitcask_crc_mismatch_segments_intact")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1164,7 +1169,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
 TEST_CASE("services::index::bitcask_index_disk::an_unreadable_current_refuses_and_a_missing_one_does_not") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_invalid_current"};
+    std::filesystem::path path{index_fixture_path("bitcask_invalid_current")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1224,7 +1229,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unreadable_current_refuses_an
 TEST_CASE("services::index::bitcask_index_disk::tombstone_then_reinsert_persists_latest_state") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_tombstone_reinsert"};
+    std::filesystem::path path{index_fixture_path("bitcask_tombstone_reinsert")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1247,7 +1252,7 @@ TEST_CASE("services::index::bitcask_index_disk::tombstone_then_reinsert_persists
 TEST_CASE("services::index::bitcask_index_disk::string_key_with_embedded_null_persists") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_string_embedded_null"};
+    std::filesystem::path path{index_fixture_path("bitcask_string_embedded_null")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1282,7 +1287,7 @@ TEST_CASE("services::index::bitcask_index_disk::string_key_with_embedded_null_pe
 TEST_CASE("services::index::bitcask_index_disk::find_invokes_key_loader_for_truncated_key") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_find_loader_invoked"};
+    std::filesystem::path path{index_fixture_path("bitcask_find_loader_invoked")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1330,7 +1335,7 @@ TEST_CASE("services::index::bitcask_index_disk::find_invokes_key_loader_for_trun
 TEST_CASE("services::index::bitcask_index_disk::find_refuses_when_a_long_keys_record_cannot_be_read") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_long_key_unreadable"};
+    std::filesystem::path path{index_fixture_path("bitcask_long_key_unreadable")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1448,7 +1453,7 @@ TEST_CASE("services::index::bitcask_index_disk::find_refuses_when_a_long_keys_re
 TEST_CASE("services::index::bitcask_index_disk::very_long_string_key_persists") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_very_long_string_key"};
+    std::filesystem::path path{index_fixture_path("bitcask_very_long_string_key")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1471,7 +1476,7 @@ TEST_CASE("services::index::bitcask_index_disk::very_long_string_key_persists") 
 TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_replays_committed_batch") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_txn_recovery"};
+    std::filesystem::path path{index_fixture_path("bitcask_txn_recovery")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1496,7 +1501,7 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_replays_committ
 TEST_CASE("services::index::bitcask_index_disk::txn_log_applied_checkpoint_prevents_replay_duplicates") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_txn_recovery_idempotent"};
+    std::filesystem::path path{index_fixture_path("bitcask_txn_recovery_idempotent")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1519,7 +1524,7 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_applied_checkpoint_preve
 TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_is_order_independent_by_txn_id") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_txn_recovery_out_of_order_txn_id"};
+    std::filesystem::path path{index_fixture_path("bitcask_txn_recovery_out_of_order_txn_id")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1548,7 +1553,7 @@ TEST_CASE("services::index::bitcask_index_disk::txn_log_recovery_is_order_indepe
 TEST_CASE("services::index::bitcask_index_disk::max_size_t_row_id_persists") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_max_row_id"};
+    std::filesystem::path path{index_fixture_path("bitcask_max_row_id")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1576,7 +1581,7 @@ TEST_CASE("services::index::bitcask_index_disk::max_size_t_row_id_persists") {
 TEST_CASE("services::index::bitcask_index_disk::recover_gates_uncommitted_txn_frames") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_recover_gate"};
+    std::filesystem::path path{index_fixture_path("bitcask_recover_gate")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1624,7 +1629,7 @@ TEST_CASE("services::index::bitcask_index_disk::recover_gates_uncommitted_txn_fr
 TEST_CASE("services::index::bitcask_index_disk::recover_skipped_frames_advance_applied_offset") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_recover_skip_offset"};
+    std::filesystem::path path{index_fixture_path("bitcask_recover_skip_offset")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1668,7 +1673,7 @@ TEST_CASE("services::index::bitcask_index_disk::recover_skipped_frames_advance_a
 TEST_CASE("services::index::bitcask_index_disk::fresh_instance_with_empty_set_works") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_fresh_empty_set"};
+    std::filesystem::path path{index_fixture_path("bitcask_fresh_empty_set")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1695,7 +1700,7 @@ TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage"
 
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_clear_shared_hash"};
+    std::filesystem::path path{index_fixture_path("bitcask_clear_shared_hash")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1753,7 +1758,7 @@ TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage"
 TEST_CASE("services::index::bitcask_index_disk::insert_refuses_when_the_previous_rows_are_unreadable") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_insert_unreadable_previous"};
+    std::filesystem::path path{index_fixture_path("bitcask_insert_unreadable_previous")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1821,7 +1826,7 @@ TEST_CASE("services::index::bitcask_index_disk::insert_refuses_when_the_previous
 TEST_CASE("services::index::bitcask_index_disk::force_flush_refuses_a_failed_fsync_and_stays_dirty") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_failed_fsync"};
+    std::filesystem::path path{index_fixture_path("bitcask_failed_fsync")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1864,7 +1869,7 @@ TEST_CASE("services::index::bitcask_index_disk::force_flush_refuses_a_failed_fsy
 TEST_CASE("services::index::bitcask_index_disk::a_refused_record_write_refuses_the_operation") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_refused_record_write"};
+    std::filesystem::path path{index_fixture_path("bitcask_refused_record_write")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -1909,7 +1914,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_record_write_refuses_t
 TEST_CASE("services::index::bitcask_index_disk::a_torn_record_write_leaves_no_stump_in_the_segment") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_torn_record_write"};
+    std::filesystem::path path{index_fixture_path("bitcask_torn_record_write")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -2003,7 +2008,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_torn_record_write_leaves_no_st
 TEST_CASE("services::index::bitcask_index_disk::a_repair_that_was_not_made_durable_stops_the_store") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_undurable_repair"};
+    std::filesystem::path path{index_fixture_path("bitcask_undurable_repair")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -2093,7 +2098,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_repair_that_was_not_made_durab
 TEST_CASE("services::index::bitcask_index_disk::a_crash_left_stump_does_not_swallow_the_records_after_it") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_crash_left_stump"};
+    std::filesystem::path path{index_fixture_path("bitcask_crash_left_stump")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -2144,7 +2149,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_crash_left_stump_does_not_swal
 TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_append_refuses_the_commit") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_refused_txn_log_append"};
+    std::filesystem::path path{index_fixture_path("bitcask_refused_txn_log_append")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -2176,7 +2181,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_append_refuses
 TEST_CASE("services::index::bitcask_index_disk::merge_refuses_on_an_unreadable_record_and_publishes_nothing") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_merge_unreadable_record"};
+    std::filesystem::path path{index_fixture_path("bitcask_merge_unreadable_record")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -2224,7 +2229,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_refuses_on_an_unreadable_r
 TEST_CASE("services::index::bitcask_index_disk::an_unopenable_txn_log_refuses_the_open") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_unopenable_txn_log"};
+    std::filesystem::path path{index_fixture_path("bitcask_unopenable_txn_log")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -2279,7 +2284,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unopenable_txn_log_refuses_th
 TEST_CASE("services::index::bitcask_index_disk::a_corrupt_txn_log_frame_is_a_tail_the_open_cuts") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_corrupt_txn_log_frame"};
+    std::filesystem::path path{index_fixture_path("bitcask_corrupt_txn_log_frame")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -2342,7 +2347,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_corrupt_txn_log_frame_is_a_tai
 TEST_CASE("services::index::bitcask_index_disk::an_unopenable_segment_refuses_the_open") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_unopenable_segment"};
+    std::filesystem::path path{index_fixture_path("bitcask_unopenable_segment")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -2415,8 +2420,8 @@ TEST_CASE("services::index::bitcask_index_disk::an_unopenable_segment_refuses_th
 TEST_CASE("services::index::bitcask_index_disk::open_survives_a_keydir_entry_left_by_a_killed_merge") {
     auto resource = core::pmr::otterbrix_resource();
 
-    const std::filesystem::path path{"/tmp/index_disk/bitcask_keydir_after_killed_merge"};
-    const std::filesystem::path backup{"/tmp/index_disk/bitcask_keydir_after_killed_merge_snapshot"};
+    const std::filesystem::path path{index_fixture_path("bitcask_keydir_after_killed_merge")};
+    const std::filesystem::path backup{index_fixture_path("bitcask_keydir_after_killed_merge_snapshot")};
     std::filesystem::remove_all(path);
     std::filesystem::remove_all(backup);
     std::filesystem::create_directories(path);
@@ -2528,8 +2533,8 @@ TEST_CASE("services::index::bitcask_index_disk::open_survives_a_keydir_entry_lef
 TEST_CASE("services::index::bitcask_index_disk::a_killed_merge_never_broke_the_open_for_inline_keys") {
     auto resource = core::pmr::otterbrix_resource();
 
-    const std::filesystem::path path{"/tmp/index_disk/bitcask_keydir_after_killed_merge_inline"};
-    const std::filesystem::path backup{"/tmp/index_disk/bitcask_keydir_after_killed_merge_inline_snapshot"};
+    const std::filesystem::path path{index_fixture_path("bitcask_keydir_after_killed_merge_inline")};
+    const std::filesystem::path backup{index_fixture_path("bitcask_keydir_after_killed_merge_inline_snapshot")};
     std::filesystem::remove_all(path);
     std::filesystem::remove_all(backup);
     std::filesystem::create_directories(path);
@@ -2614,7 +2619,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_killed_merge_never_broke_the_o
 TEST_CASE("services::index::bitcask_index_disk::a_reopen_drops_a_keydir_entry_no_segment_justifies") {
     auto resource = core::pmr::otterbrix_resource();
 
-    const std::filesystem::path path{"/tmp/index_disk/bitcask_orphan_keydir_entry"};
+    const std::filesystem::path path{index_fixture_path("bitcask_orphan_keydir_entry")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -2680,7 +2685,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_reopen_drops_a_keydir_entry_no
 TEST_CASE("services::index::bitcask_index_disk::the_keydir_is_derived_from_the_segments") {
     auto resource = core::pmr::otterbrix_resource();
 
-    const std::filesystem::path path{"/tmp/index_disk/bitcask_keydir_is_derived"};
+    const std::filesystem::path path{index_fixture_path("bitcask_keydir_is_derived")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -2756,7 +2761,7 @@ TEST_CASE("services::index::bitcask_index_disk::the_keydir_is_derived_from_the_s
 TEST_CASE("services::index::bitcask_index_disk::a_refused_keydir_reset_is_a_value_not_a_death") {
     auto resource = core::pmr::otterbrix_resource();
 
-    const std::filesystem::path path{"/tmp/index_disk/bitcask_refused_keydir_reset"};
+    const std::filesystem::path path{index_fixture_path("bitcask_refused_keydir_reset")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -2837,7 +2842,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_keydir_reset_is_a_valu
 TEST_CASE("services::index::bitcask_index_disk::opening_over_a_read_only_directory_is_a_value_not_a_death") {
     auto resource = core::pmr::otterbrix_resource();
 
-    const std::filesystem::path path{"/tmp/index_disk/bitcask_read_only_directory"};
+    const std::filesystem::path path{index_fixture_path("bitcask_read_only_directory")};
     reset_index_directory(path);
 
     constexpr int key_count = 4;
@@ -2903,7 +2908,7 @@ TEST_CASE("services::index::bitcask_index_disk::opening_over_a_read_only_directo
 TEST_CASE("services::index::bitcask_index_disk::a_wipe_that_left_the_keydir_behind_refuses_the_open") {
     auto resource = core::pmr::otterbrix_resource();
 
-    const std::filesystem::path path{"/tmp/index_disk/bitcask_wipe_left_the_keydir"};
+    const std::filesystem::path path{index_fixture_path("bitcask_wipe_left_the_keydir")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -2971,7 +2976,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_wipe_that_left_the_keydir_behi
 TEST_CASE("services::index::bitcask_index_disk::clear_over_an_unlistable_directory_refuses_and_keeps_every_row") {
     auto resource = core::pmr::otterbrix_resource();
 
-    const std::filesystem::path path{"/tmp/index_disk/bitcask_clear_unlistable_directory"};
+    const std::filesystem::path path{index_fixture_path("bitcask_clear_unlistable_directory")};
     reset_index_directory(path);
 
     constexpr int key_count = 4;
@@ -3032,7 +3037,7 @@ TEST_CASE("services::index::bitcask_index_disk::clear_over_an_unlistable_directo
 TEST_CASE("services::index::bitcask_index_disk::an_append_after_a_refused_rotation_refuses_instead_of_crashing") {
     auto resource = core::pmr::otterbrix_resource();
 
-    const std::filesystem::path path{"/tmp/index_disk/bitcask_append_after_refused_rotation"};
+    const std::filesystem::path path{index_fixture_path("bitcask_append_after_refused_rotation")};
     reset_index_directory(path);
 
     constexpr uint64_t two_records_per_segment = 2;
@@ -3086,7 +3091,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_append_after_a_refused_rotati
 TEST_CASE("services::index::bitcask_index_disk::clear_refuses_when_the_index_directory_is_no_longer_one") {
     auto resource = core::pmr::otterbrix_resource();
 
-    const std::filesystem::path path{"/tmp/index_disk/bitcask_clear_path_is_a_file"};
+    const std::filesystem::path path{index_fixture_path("bitcask_clear_path_is_a_file")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -3140,7 +3145,7 @@ TEST_CASE("services::index::bitcask_index_disk::clear_refuses_when_the_index_dir
 TEST_CASE("services::index::bitcask_index_disk::a_clear_whose_wipe_refused_stays_loud_and_is_repairable") {
     auto resource = core::pmr::otterbrix_resource();
 
-    const std::filesystem::path path{"/tmp/index_disk/bitcask_clear_refused_wipe"};
+    const std::filesystem::path path{index_fixture_path("bitcask_clear_refused_wipe")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -3196,7 +3201,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_clear_whose_wipe_refused_stays
 TEST_CASE("services::index::bitcask_index_disk::clear_reports_the_artifact_it_could_not_remove") {
     auto resource = core::pmr::otterbrix_resource();
 
-    const std::filesystem::path path{"/tmp/index_disk/bitcask_clear_undeletable_artifact"};
+    const std::filesystem::path path{index_fixture_path("bitcask_clear_undeletable_artifact")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -3247,7 +3252,7 @@ TEST_CASE("services::index::bitcask_index_disk::clear_reports_the_artifact_it_co
 TEST_CASE("services::index::bitcask_index_disk::a_record_whose_key_will_not_decode_refuses_the_open") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_undecodable_key"};
+    std::filesystem::path path{index_fixture_path("bitcask_undecodable_key")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -3330,7 +3335,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_record_whose_key_will_not_deco
 TEST_CASE("services::index::bitcask_index_disk::a_crash_left_txn_log_stump_does_not_take_the_whole_log_down") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_crash_left_txn_stump"};
+    std::filesystem::path path{index_fixture_path("bitcask_crash_left_txn_stump")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     const auto log_path = path / "bitcask.txn.log";
@@ -3422,7 +3427,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_crash_left_txn_log_stump_does_
 TEST_CASE("services::index::bitcask_index_disk::every_byte_of_a_record_header_is_written_by_this_store") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_record_header_padding"};
+    std::filesystem::path path{index_fixture_path("bitcask_record_header_padding")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -3489,7 +3494,7 @@ TEST_CASE("services::index::bitcask_index_disk::every_byte_of_a_record_header_is
 TEST_CASE("services::index::bitcask_index_disk::a_merge_manifest_that_will_not_parse_refuses_the_open") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_unparsable_merge_manifest"};
+    std::filesystem::path path{index_fixture_path("bitcask_unparsable_merge_manifest")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -3540,7 +3545,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_merge_manifest_that_will_not_p
 TEST_CASE("services::index::bitcask_index_disk::a_finished_merge_leaves_no_manifest_behind") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_finished_merge_manifest"};
+    std::filesystem::path path{index_fixture_path("bitcask_finished_merge_manifest")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     const auto manifest = path / "bitcask.merge";
@@ -3580,7 +3585,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_finished_merge_leaves_no_manif
 TEST_CASE("services::index::bitcask_index_disk::a_source_the_merge_cleanup_cannot_unlink_refuses_the_open") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_unremovable_merge_source"};
+    std::filesystem::path path{index_fixture_path("bitcask_unremovable_merge_source")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -3656,7 +3661,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_source_the_merge_cleanup_canno
 TEST_CASE("services::index::bitcask_index_disk::a_merge_manifest_count_is_bounded_by_the_file_not_believed") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_manifest_impossible_count"};
+    std::filesystem::path path{index_fixture_path("bitcask_manifest_impossible_count")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -3710,7 +3715,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_merge_manifest_count_is_bounde
 TEST_CASE("services::index::bitcask_index_disk::a_record_whose_declared_payload_wraps_is_a_tail_not_an_allocation") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_wrapping_record_payload"};
+    std::filesystem::path path{index_fixture_path("bitcask_wrapping_record_payload")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -3758,7 +3763,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_record_whose_declared_payload_
 TEST_CASE("services::index::bitcask_index_disk::find_refuses_a_record_claiming_a_payload_past_the_segment") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_unbounded_record_read"};
+    std::filesystem::path path{index_fixture_path("bitcask_unbounded_record_read")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -3795,7 +3800,7 @@ TEST_CASE("services::index::bitcask_index_disk::find_refuses_a_record_claiming_a
 TEST_CASE("services::index::bitcask_index_disk::a_txn_frame_whose_declared_payload_wraps_is_a_tail_not_an_allocation") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_wrapping_frame_payload"};
+    std::filesystem::path path{index_fixture_path("bitcask_wrapping_frame_payload")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -3871,7 +3876,7 @@ namespace {
 TEST_CASE("services::index::bitcask_index_disk::an_unopenable_merge_manifest_is_said_apart_from_a_damaged_one") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_unopenable_merge_manifest"};
+    std::filesystem::path path{index_fixture_path("bitcask_unopenable_merge_manifest")};
     reset_index_directory(path);
 
     {
@@ -3925,7 +3930,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unopenable_merge_manifest_is_
 TEST_CASE("services::index::bitcask_index_disk::an_unreadable_applied_offset_sidecar_refuses_instead_of_replaying") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_unreadable_applied_offset"};
+    std::filesystem::path path{index_fixture_path("bitcask_unreadable_applied_offset")};
     reset_index_directory(path);
 
     {
@@ -3982,7 +3987,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unreadable_applied_offset_sid
 TEST_CASE("services::index::bitcask_index_disk::a_stale_merge_temp_that_will_not_unlink_refuses_the_merge") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_unremovable_merge_temp"};
+    std::filesystem::path path{index_fixture_path("bitcask_unremovable_merge_temp")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -4036,7 +4041,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_stale_merge_temp_that_will_not
 TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_repair_keeps_its_measurement") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_refused_txn_log_repair"};
+    std::filesystem::path path{index_fixture_path("bitcask_refused_txn_log_repair")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
@@ -4168,7 +4173,7 @@ namespace {
 TEST_CASE("services::index::bitcask_index_disk::a_find_on_the_active_segment_needs_no_new_descriptor") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::filesystem::path path{"/tmp/index_disk/bitcask_no_descriptor_per_find"};
+    std::filesystem::path path{index_fixture_path("bitcask_no_descriptor_per_find")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 

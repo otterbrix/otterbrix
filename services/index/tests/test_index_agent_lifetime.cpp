@@ -55,6 +55,11 @@
 #include <services/index/btree_index_agent.hpp>
 #include <services/index/manager_index.hpp>
 
+#include "index_fixture_path.hpp"
+
+using services::index::tests::index_fixture_path;
+using services::index::tests::index_fixture_root;
+
 using components::session::session_id_t;
 using components::types::logical_value_t;
 using services::index::manager_index_t;
@@ -114,7 +119,7 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
 
-    const std::filesystem::path path{"/tmp/otterbrix_test_index_agent_lifetime"};
+    const std::filesystem::path path{index_fixture_path("agent_lifetime")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path / std::to_string(static_cast<unsigned>(kTableOid)) /
                                         std::to_string(static_cast<unsigned>(kIndexOid)));

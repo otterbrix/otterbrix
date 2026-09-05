@@ -2121,6 +2121,19 @@ namespace services::disk {
         // pg_computed_column GC and the index repopulate owned by operator_vacuum_t, plus
         // IN_MEMORY compaction. Its DISK effect is DEFERRED to the next checkpoint round
         // instead of being immediate and negative.
+        //
+        // B3c3 settled "deferred, not lost" by measurement rather than by call graph, because
+        // that was the one claim the decision above rests on and the one nobody had checked.
+        // A counter on every exit of checkpoint_inner, run over the whole integration suite:
+        // 13053 DISK entry-rounds, 12962 compacts performed, and dead_rows_left_after_a
+        // _completed_round == 0 — not one entry ever finished a round still carrying a dead
+        // row. The four skip paths are all DEFERRALS and the numbers say how rare: cursor
+        // gate 7 (4 dead rows, next round takes them), MVCC watermark 84 (monotone, so a
+        // later round always clears it), failed-round 0 (last_checkpoint_failed_ clears on
+        // the next success, so it costs one round), degraded 0 (sticky — but a degraded file
+        // can no longer commit ANY root, so its reclaim was already unreachable here too).
+        // The end-to-end reading is in test_s3_cleanup_scaling: with the checkpoint compact
+        // disabled the durable root keeps 700000 rows where 149988 are live.
         if (entry->table_storage.mode() != storage_mode_t::IN_MEMORY) {
             trace(log_,
                   "agent_disk[{}]::maybe_cleanup_inner: oid={} is DISK-backed — its compaction belongs to the "
@@ -2703,6 +2716,26 @@ namespace services::disk {
         // un-released until some later checkpoint and, unlike the sibling compact, is not even
         // attached to one. Un-gating this call site is the follow-up the owner approved, not
         // this change.
+        //
+        // B3c3 measured what this gate costs and the answer is NOT a deferral, which is why
+        // the sibling gates' "the checkpoint round does it anyway" argument does not carry
+        // here. Three facts, each checked rather than reasoned:
+        //   * B1a made every table disk-backed — operator_create_collection_t sends
+        //     create_storage_disk for a relkind='g' table too — so the IN_MEMORY leg below is
+        //     unreachable for a computed table in production and this handler always returns 0;
+        //   * the checkpoint round compacts, it does not DROP COLUMNS. compact() enumerates
+        //     the collection as it stands, so a column the catalog stopped describing stays in
+        //     it forever;
+        //   * nothing else re-derives the drop. B3c1 wired ALTER TABLE DROP COLUMN to
+        //     drop_storage_column, but a 'g' table's DROP routes to
+        //     operator_computed_field_unregister_t, which writes only a pg_computed_column
+        //     refcount=0 tombstone and defers the physical half to VACUUM — to here. B3c2's
+        //     bootstrap re-arm excludes 'g' AT THE SOURCE, because a computed table's schema
+        //     lives in pg_computed_column and its empty pg_attribute set would read as "every
+        //     column dropped".
+        // Measured end to end: CREATE TABLE g(); INSERT (a,b); ALTER ... DROP COLUMN b;
+        // VACUUM; CHECKPOINT; reopen the .otbx offline — the durable root still names columns
+        // [a, b]. The gate refused exactly one column and no other path ever takes it.
         if (entry->table_storage.mode() != storage_mode_t::IN_MEMORY) {
             trace(log_,
                   "agent_disk[{}]::compact_relkind_g_storage_inner: skip DISK-backed oid={} — its drop belongs "

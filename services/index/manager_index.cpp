@@ -1943,13 +1943,12 @@ namespace services::index {
     // Apply one WAL record's effect to the build's engine during CREATE INDEX
     // catchup (single record per call; see index_contract for param semantics).
     //
-    // PHYSICAL_DELETE/UPDATE records ship only row_ids, so the operator does a
-    // storage_fetch(row_ids) and forwards the recovered chunk in physical_data;
-    // the same engine->mark_delete_row loop the DML path uses then applies it
-    // (no engine API change, no row_id->key reverse map). UPDATE is split by the
-    // operator into a PHYSICAL_UPDATE message (NEW chunk, insert half) followed
-    // by a PHYSICAL_DELETE message (recovered OLD chunk, delete half). See
-    // operator_create_index_backfill.cpp.
+    // IT ONLY EVER ADDS. UPDATE is split by the operator into a PHYSICAL_UPDATE message
+    // (NEW chunk, insert half) followed by a PHYSICAL_DELETE message (the OLD chunk it
+    // recovered with a RAW storage_fetch), and both PHYSICAL_DELETE shapes are recognised
+    // and then DROPPED here -- the journal has not yet said whether those deletes
+    // happened, and a delete that did not happen would take an id off a live row. The
+    // argument in full sits at the leg guard below.
     manager_index_t::unique_future<void>
     manager_index_t::apply_wal_record_for_index(session_id_t session,
                                                 components::catalog::oid_t table_oid,
@@ -1995,17 +1994,17 @@ namespace services::index {
             co_return;
         }
 
-        // Which leg, and where a row's physical id comes from, is the ONLY difference
-        // between the three record types:
+        // Which leg, and where a row's physical id comes from:
         //   PHYSICAL_INSERT / PHYSICAL_UPDATE  rows appended from physical_row_start; the
-        //                                      insert leg. UPDATE ships the NEW chunk only
-        //                                      and its OLD-row delete half arrives as a
-        //                                      separate PHYSICAL_DELETE message, which is
-        //                                      what lets the operator run the storage_fetch
-        //                                      with its own disk_address instead of this
-        //                                      manager needing one (rule 10).
+        //                                      insert leg, and the ONLY leg (see below).
+        //                                      UPDATE ships the NEW chunk only and its
+        //                                      OLD-row half arrives as a separate
+        //                                      PHYSICAL_DELETE message, which is what lets
+        //                                      the operator run the storage_fetch with its
+        //                                      own disk_address instead of this manager
+        //                                      needing one (rule 10).
         //   PHYSICAL_DELETE                    rows named by the row_ids that travelled
-        //                                      with the record; the delete leg.
+        //                                      with the record; recognised, and dropped.
         const bool is_delete_leg =
             record_type == static_cast<uint8_t>(services::wal::wal_record_type::PHYSICAL_DELETE);
         const bool is_insert_leg =
@@ -2021,26 +2020,57 @@ namespace services::index {
             co_return;
         }
 
+        // THE CATCHUP HAS AN INSERT LEG AND NOTHING ELSE, AND THE MISSING LEG IS THE POINT.
+        //
+        // A physical record is in the journal BEFORE its transaction has decided anything.
+        // operator_delete writes physical_delete ahead of the storage mark and says so --
+        // "uncommitted deletes are filtered by replay" -- and the filter it names is the
+        // COMMIT marker, which crash recovery reads and this catchup does not: load()
+        // hands back every physical record past the watermark, and record_t::is_valid()
+        // only claims the bytes are intact. So an undecided record fails in OPPOSITE
+        // directions on the two legs:
+        //   INSERT leg  names a row no snapshot can see -> a SUPERSET, and storage_fetch
+        //               drops it under the reader's own snapshot (index_scan, C4b).
+        //   DELETE leg  takes an id off a row that is still LIVE -> a SUBSET, and nothing
+        //               downstream can put back an id the index never named.
+        // The second is a short answer to a correct query. That is the one failure this
+        // index is not allowed to have, and it is the same asymmetry commit_deletes is
+        // built around (C5c) arriving one layer earlier.
+        //
+        // What stood here staged the delete into pending_deletes_[CREATE INDEX txn], and
+        // that bucket had NO EXIT. A build publishes through commit_inserts (the
+        // executor's CREATE INDEX back-channel); the batch commit_deletes keys off the
+        // base-table DELETE ranges, and a build writes none. So the entries were neither
+        // published nor reverted: they sat in the agent for the life of the index, and
+        // read_rows merges the ASKING transaction's own bucket -- so the one reader they
+        // were ever visible to was the build itself, which they answered SHORT. In the one
+        // shape where a later commit_deletes did carry the same txn id (BEGIN; DELETE FROM
+        // t; CREATE INDEX ON t; COMMIT) the horizon then published a CONCURRENT session's
+        // undecided deletes along with that statement's own.
+        //
+        // Dropping the leg takes nothing away from the published index, because the leg
+        // never reached it. What stays behind is an entry for a row deleted inside the
+        // build window -- the same superset the deferred-erase queue leaves between a
+        // commit and the horizon that clears it, and VACUUM/CHECKPOINT's repopulate_table
+        // is what eventually rebuilds the index without it.
+        if (is_delete_leg) {
+            trace(log_,
+                  "manager_index_t::apply_wal_record_for_index: dropping the delete leg "
+                  "(table_oid={} index_oid={} wal_id={} row_ids={}) -- an undecided "
+                  "journal delete may not shrink an index",
+                  static_cast<unsigned>(table_oid),
+                  static_cast<unsigned>(index_oid),
+                  wal_record_id,
+                  row_ids.size());
+            co_return;
+        }
+
         // Entries are tagged with the CREATE INDEX txn_id, so they stay in that
         // transaction's bucket until the post-pipeline commit publishes them with the rest
         // of the build.
         std::pmr::vector<unique_future<core::error_t>> futures(resource_);
         futures.reserve(it->second.size());
         for (const auto& record : it->second) {
-            if (is_delete_leg) {
-                auto batch = collect_by_row_ids(resource_, record.keys, physical_data, row_ids);
-                if (batch.empty()) {
-                    continue;
-                }
-                auto [needs_sched, f] = actor_zeta::otterbrix::send<&index_agent_contract::stage_deletes>(
-                    record.address,
-                    session,
-                    txn_id,
-                    std::move(batch));
-                schedule_agent(record.address, needs_sched);
-                futures.emplace_back(std::move(f));
-                continue;
-            }
             auto batch = collect_contiguous(resource_,
                                             record.keys,
                                             physical_data,

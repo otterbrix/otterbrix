@@ -12,6 +12,7 @@ set(${PROJECT_NAME}_SOURCES
     test_index_agent_buffer.cpp
     test_index_registry.cpp
     test_index_delete_horizon.cpp
+    test_index_catchup_delete_bucket.cpp
 
     # stress tests with sanitizer are incredibly slow
     $<$<NOT:$<BOOL:${ENABLE_ASAN}>>:stress_test_index.cpp>

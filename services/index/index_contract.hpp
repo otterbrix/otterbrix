@@ -214,9 +214,18 @@ namespace services::index {
         // CREATE INDEX catchup: operator_create_index_backfill calls this per
         // matching WAL record to apply a PHYSICAL_{INSERT,DELETE,UPDATE} effect to the
         // indexes of the table being built, by staging it into each index agent's bucket
-        // for the CREATE INDEX transaction — the same stage_inserts / stage_deletes path
-        // the DML insert_rows / delete_rows handlers take.
-        //   physical_data:      NEW rows for INSERT/UPDATE, empty/null for DELETE.
+        // for the CREATE INDEX transaction — the same stage_inserts path the DML
+        // insert_rows handler takes.
+        //
+        // ONLY THE INSERT LEG IS APPLIED. A PHYSICAL_DELETE record — including the OLD
+        // half an UPDATE is split into — is recognised and dropped: the journal carries a
+        // physical record BEFORE its transaction has committed, and only crash recovery
+        // reads the COMMIT markers that decide it. Applying an undecided delete would take
+        // an id off a row that is still live, and an index that WITHHOLDS an id is a short
+        // answer nothing downstream can repair; an index that names a dead row is a
+        // superset the point fetch filters. See manager_index.cpp for the full argument.
+        //   physical_data:      NEW rows for INSERT/UPDATE, the recovered OLD chunk for
+        //                       DELETE (unused — the leg is dropped).
         //   physical_row_start: WAL row-id base, used when row_ids is empty.
         //   txn_id:             the CREATE INDEX txn, so entries land in the
         //                       PENDING bucket and are committed by the

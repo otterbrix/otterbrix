@@ -6,7 +6,9 @@
 #include <csignal>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
+#include <sys/stat.h>
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -381,5 +383,146 @@ TEST_CASE("core::file::filesystem::sequential_write_separates_empty_from_refused
 
     read_only.reset();
     handle.reset();
+    remove_file(fs, fname);
+}
+
+// THE CLOSE THAT CAN BE REPORTED.
+//
+// file_handle_t::close() used to be `virtual void`, so a refused ::close(2) -- which on a
+// write-back filesystem is exactly where a deferred write error (EIO) surfaces -- could not be
+// handed to anyone: a lost write arrived as a clean close. The signature now carries a
+// core::error_t, and these cases pin the three facts that makes true.
+//
+// Staging the refusal: the descriptor is pulled out from under the handle and closed, so the
+// handle's own ::close(2) answers EBADF. The descriptor is found by IDENTITY rather than by
+// number -- fstat every open fd and keep the one whose (st_dev, st_ino) is this file's -- and
+// the match is unique because nothing else in this process has this path open. There is no
+// window for the number to be recycled: the ::close and the handle's close() are adjacent
+// statements in a single-threaded test with nothing between them that can open a file.
+static int descriptor_of(const path_t& path) {
+    struct stat want = {};
+    if (::stat(path.c_str(), &want) != 0) {
+        return -1;
+    }
+    long ceiling = 256;
+    struct rlimit limit = {};
+    if (::getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY &&
+        static_cast<long>(limit.rlim_cur) < ceiling) {
+        ceiling = static_cast<long>(limit.rlim_cur);
+    }
+    for (long candidate = 0; candidate < ceiling; ++candidate) {
+        struct stat got = {};
+        if (::fstat(static_cast<int>(candidate), &got) != 0) {
+            continue;
+        }
+        if (got.st_dev == want.st_dev && got.st_ino == want.st_ino) {
+            return static_cast<int>(candidate);
+        }
+    }
+    return -1;
+}
+
+namespace {
+    // THE SHAPE OF THE FIVE DELEGATING WRAPPERS IN THE TREE (test_b_plus_tree.cpp,
+    // fault_injection_file.hpp, test_wal_truncate_header_race.cpp,
+    // test_udf_refusal_registry_state.cpp, test_catalog_read_refusal.cpp), reproduced here so
+    // that the forwarding itself is under test and not merely assumed. A wrapper that swallowed
+    // the refusal would be the "new liar" the declaration warns about: its own slot answering
+    // "no error" while the wrapped handle held a lost write.
+    class forwarding_handle_t final : public file_handle_t {
+    public:
+        explicit forwarding_handle_t(std::unique_ptr<file_handle_t> inner)
+            : file_handle_t(inner->fs_, inner->path())
+            , inner_(std::move(inner)) {}
+        ~forwarding_handle_t() override = default;
+
+        int64_t read(void* buffer, uint64_t nr_bytes) override { return inner_->read(buffer, nr_bytes); }
+        bool read(void* buffer, uint64_t nr_bytes, uint64_t location) override {
+            return inner_->read(buffer, nr_bytes, location);
+        }
+        write_result_t write(void* buffer, uint64_t nr_bytes) override { return inner_->write(buffer, nr_bytes); }
+        bool write(void* buffer, uint64_t nr_bytes, uint64_t location) override {
+            return inner_->write(buffer, nr_bytes, location);
+        }
+        bool seek(uint64_t location) override { return inner_->seek(location); }
+        uint64_t seek_position() override { return inner_->seek_position(); }
+        bool sync() override { return inner_->sync(); }
+        bool truncate(int64_t new_size) override { return inner_->truncate(new_size); }
+        bool trim(uint64_t offset_bytes, uint64_t length_bytes) override {
+            return inner_->trim(offset_bytes, length_bytes);
+        }
+        uint64_t file_size() override { return inner_->file_size(); }
+        core::error_t close() override { return inner_->close(); }
+
+    private:
+        std::unique_ptr<file_handle_t> inner_;
+    };
+} // namespace
+
+TEST_CASE("core::file::filesystem::close_reports_its_refusal") {
+    local_file_system_t fs = local_file_system_t();
+    std::error_code ec;
+    std::filesystem::create_directories(testing_directory, ec);
+
+    auto fname = testing_directory;
+    fname /= "close_refusal";
+    remove_file(fs, fname);
+
+    INFO("a close that worked says so, and a second one does not invent a refusal");
+    {
+        auto handle = open_file(fs,
+                                fname,
+                                file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
+                                file_lock_type::NO_LOCK);
+        REQUIRE(handle != nullptr);
+
+        const core::error_t closed = handle->close();
+        REQUIRE_FALSE(closed.contains_error());
+
+        // Idempotence is part of the contract and not an accident: the destructor calls close()
+        // too, so a second call has to be a no-op rather than a second ::close(2) of a number
+        // the kernel may already have handed to another opener.
+        const core::error_t again = handle->close();
+        REQUIRE_FALSE(again.contains_error());
+        handle.reset();
+    }
+
+    INFO("a refused close reaches the caller as core::error_code_t::io_error");
+    {
+        auto handle = open_file(fs, fname, file_flags::READ, file_lock_type::NO_LOCK);
+        REQUIRE(handle != nullptr);
+
+        const int fd = descriptor_of(fname);
+        REQUIRE(fd != -1);
+        REQUIRE(::close(fd) == 0);
+
+        const core::error_t refused = handle->close();
+        REQUIRE(refused.contains_error());
+        REQUIRE(refused.type == core::error_code_t::io_error);
+
+        // THE STATE IS STILL CLEARED, and deliberately so: ::close(2) consumes the descriptor
+        // before it can report, so the handle must not keep it. This line is the proof that the
+        // refusal above did not leave a live fd behind for the destructor to close twice.
+        const core::error_t after = handle->close();
+        REQUIRE_FALSE(after.contains_error());
+        handle.reset();
+    }
+
+    INFO("and it travels out through a delegating wrapper");
+    {
+        auto inner = open_file(fs, fname, file_flags::READ, file_lock_type::NO_LOCK);
+        REQUIRE(inner != nullptr);
+        std::unique_ptr<file_handle_t> wrapped = std::make_unique<forwarding_handle_t>(std::move(inner));
+
+        const int fd = descriptor_of(fname);
+        REQUIRE(fd != -1);
+        REQUIRE(::close(fd) == 0);
+
+        const core::error_t refused = wrapped->close();
+        REQUIRE(refused.contains_error());
+        REQUIRE(refused.type == core::error_code_t::io_error);
+        wrapped.reset();
+    }
+
     remove_file(fs, fname);
 }

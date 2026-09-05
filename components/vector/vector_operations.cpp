@@ -1002,7 +1002,24 @@ namespace components::vector::vector_ops {
               uint64_t source_offset,
               uint64_t target_offset) {
         assert(source_offset <= source_count);
+        // THE PRECONDITION IS LOGICAL EQUALITY, AND IT IS STRICTER THAN THE PHYSICAL ONE A
+        // CALLER IS TEMPTED TO CHECK. The overload below dispatches on the SOURCE's physical
+        // type and writes target.data<T>() with that same T, so the two mismatches it can be
+        // handed are not the same kind of wrong:
+        //   * physical types AGREE, logical types do not (DATE/INTEGER over INT32;
+        //     TIME/TIMESTAMP/BIGINT/DECIMAL over INT64) — a well-defined bit copy that answers
+        //     with the wrong VALUE, e.g. a day count read as an integer key;
+        //   * physical types DISAGREE — a type-punned write through the target's buffer.
+        // Under NDEBUG this assert is gone and both proceed, which is how a caller guarding on
+        // to_physical_type() alone (fk_hash_semijoin's key normalization, services/disk/
+        // agent_disk.cpp) came to SIGABRT in Debug and silently mis-answer in Release on the
+        // same statement. A caller that cannot promise logical equality must cast first.
         assert(source.type() == target.type());
+        // NOTE, unrelated to the pair above and NOT fixed here: this assert is stricter than the
+        // body it delegates to. The 7-argument overload gives NA on either side an explicit
+        // meaning (copy into NA writes nothing; copy out of NA nulls every target row), so an
+        // NA/typed pair is supported THERE and refused HERE — and only in Debug. Making the two
+        // agree needs a caller that actually reaches it, which is not shown yet.
         uint64_t copy_count = source_count - source_offset;
         copy(source, target, indexing, source_count, source_offset, target_offset, copy_count);
     }

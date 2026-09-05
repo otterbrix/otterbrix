@@ -1,7 +1,10 @@
 #pragma once
 
+#include <core/result_wrapper.hpp>
+
 #include <cstdint>
 #include <filesystem>
+#include <memory_resource>
 #include <string>
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -25,10 +28,11 @@ namespace core::filesystem {
     // Packing a byte count and an error code into one integer loses the only fact a caller can
     // act on: a write that short-counts and THEN refuses has already put bytes on the device and
     // already moved the descriptor over them. The count accumulated across the loop's iterations
-    // is then thrown away in favour of the failing iteration's own return -- -1 on POSIX, and 0
-    // on Windows, where FSInternalWrite answers a refusal with an unsigned `DWORD()`. So "nothing
-    // was written" and "12 of the 25 bytes were written" arrive as the same answer, and a caller
-    // that cannot tell them apart can neither truncate the stump nor rewind to it.
+    // is then thrown away in favour of the failing iteration's own return -- -1, from the POSIX
+    // write(2) loop, which since the Windows arm was removed from local_file_system.cpp is the
+    // only loop there is. So "nothing was written" and "12 of the 25 bytes were written" arrive
+    // as the same answer, and a caller that cannot tell them apart can neither truncate the
+    // stump nor rewind to it.
     //
     // Both fields are needed, and neither derives from the other:
     //   - bytes_written is how much REACHED the file and therefore how far the descriptor moved.
@@ -99,7 +103,39 @@ namespace core::filesystem {
         virtual uint64_t file_size();
         file_type_t type();
 
-        virtual void close() = 0;
+        // THE CLOSE THAT CAN BE REPORTED. It used to be `virtual void close() = 0;`, and that
+        // `void` was the whole defect: ::close(2) can fail, and on a write-back filesystem it is
+        // where a deferred write error (EIO) is finally reported, so a refused close is a lost
+        // write and not a cosmetic detail. A void return could only lose it.
+        //
+        // The five delegating test wrappers -- core/b_plus_tree/tests/test_b_plus_tree.cpp,
+        // components/table/test/fault_injection_file.hpp,
+        // services/wal/tests/test_wal_truncate_header_race.cpp,
+        // integration/cpp/test/test_udf_refusal_registry_state.cpp and
+        // integration/cpp/test/test_catalog_read_refusal.cpp -- now read
+        // `core::error_t close() override { return inner_->close(); }`, so a refusal raised by the
+        // wrapped handle travels OUT through them. That is why the channel is this return value
+        // and not a second, parallel `close_status()` beside a void close(): the wrappers
+        // DELEGATE, so a separate slot of their own would answer "no error" while the wrapped
+        // handle held the refusal -- a new liar in place of an honest gap.
+        //
+        // WHAT `what` CARRIES, AND WHY IT IS EMPTY. core::error_t's message is a std::pmr::string
+        // and therefore needs an arena; this layer has none (file_handle_t holds a filesystem
+        // reference and a path, nothing more), rule 14 leaves no process-global to borrow, and
+        // binding the message to an arena the handle owns would hand the caller a string that
+        // dies with the handle. So the refusal is returned as `io_error` with an EMPTY message,
+        // built on std::pmr::null_memory_resource() -- allocation-free by construction, the same
+        // move error_t::no_error() already makes -- and the variable half (path and errno) is
+        // printed to stderr by the implementation that knows it. The value says THAT it failed,
+        // the stderr line says WHICH file and WHY; neither is silent (rule 6).
+        //
+        // THE DESTRUCTOR IS THE ONE CALLER THAT CANNOT ACT ON IT, and that is not a rule-6
+        // violation. See ~unix_file_handle_t in local_file_system.cpp: rule 6 asks a refusal to be
+        // LOUD, not FATAL, and the only upward channel a destructor has is a throw, which crosses
+        // a destructor into std::terminate -- trading a report about one lost write for the loss
+        // of every other handle still to be flushed. It therefore prints and drops, deliberately
+        // and by name.
+        virtual core::error_t close() = 0;
 
         path_t path() const { return path_; }
 

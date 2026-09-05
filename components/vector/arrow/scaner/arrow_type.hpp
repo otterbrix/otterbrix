@@ -16,14 +16,20 @@ namespace components::vector::arrow {
 
     typedef void (*cast_unique_arrow_t)(vector_t& source, vector_t& result, size_t count);
 
+    // Rule 14: the ArrowArray is refcounted intrusively (arrow_wrapper.hpp), not by
+    // std::shared_ptr. The shape is genuinely SHARED — one ArrowArray backs several vectors at
+    // once (three set_auxiliary sites in arrow_conversion.cpp all hand it the same
+    // arrow_array_scan_state::owned_data, and arrow_type.cpp does a fourth for the dictionary)
+    // — so intrusive_ptr, not unique_ptr, is the replacement. This holder keeps the array alive
+    // for as long as the vector buffer points into its data.
     class arrow_auxiliary_data_t : public vector_auxiliary_data_t {
     public:
-        explicit arrow_auxiliary_data_t(std::shared_ptr<arrow_array_wrapper_t> arrow_array_p)
+        explicit arrow_auxiliary_data_t(arrow_array_wrapper_ptr arrow_array_p)
             : vector_auxiliary_data_t(vector_auxiliary_type::ARROW)
             , arrow_array(std::move(arrow_array_p)) {}
         ~arrow_auxiliary_data_t() override = default;
 
-        std::shared_ptr<arrow_array_wrapper_t> arrow_array;
+        arrow_array_wrapper_ptr arrow_array;
     };
 
     // Intrusive refcount (rule 14: no std::shared_ptr): single-owner in practice —
@@ -137,7 +143,7 @@ namespace components::vector::arrow {
     struct arrow_array_scan_state {
         explicit arrow_array_scan_state();
 
-        std::shared_ptr<arrow_array_wrapper_t> owned_data;
+        arrow_array_wrapper_ptr owned_data;
         std::unordered_map<size_t, std::unique_ptr<arrow_array_scan_state>> children;
         // Non-owning cache key: points into the parent ArrowArray (released via owned_data),
         // so it must NOT own/free it. Only compared in cache_outdated().

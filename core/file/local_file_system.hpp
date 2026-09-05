@@ -30,13 +30,10 @@ namespace core::filesystem {
         path_t home_directory();
         bool set_home_directory(path_t path);
         path_t normalize_path_absolute(const path_t& path);
-        path_t extract_base_name(const path_t& path);
-        path_t extract_name(const path_t& path);
 
         bool set_file_pointer(file_handle_t& handle, uint64_t location);
         uint64_t file_pointer(file_handle_t& handle);
 
-        std::vector<path_t> fetch_file_without_glob(const path_t& path, bool absolute_path);
         const path_t& file_search_path() const { return file_search_path_; }
 
     protected:
@@ -106,9 +103,5 @@ namespace core::filesystem {
 
     bool seek(local_file_system_t&, file_handle_t& handle, uint64_t location);
     uint64_t seek_position(local_file_system_t&, file_handle_t& handle);
-
-#ifdef PLATFORM_WINDOWS
-    std::string last_error_as_string(local_file_system_t&);
-#endif
 
 } // namespace core::filesystem

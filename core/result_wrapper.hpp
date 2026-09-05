@@ -127,8 +127,52 @@ namespace core {
             return *this;
         }
 
+        // THE SAME TWO CONSEQUENCES AS THE ASSIGNMENTS ABOVE, and they are easy to miss here
+        // because these two lines say nothing: defaulted, they are member-wise, so the copy
+        // constructor lands the message on the DEFAULT resource and the move constructor KEEPS
+        // THE SOURCE'S ALLOCATOR. The move is not a defect by itself -- keeping the source
+        // allocator is what std::pmr::string is specified to do -- but it means a moved error_t
+        // outlives its arena only if that arena outlives it.
+        //
+        // AUDITED 2026-09-05, and no production path violates that today. The whole engine runs
+        // on ONE arena per space (base_otterbrix_t::resource, integration/cpp/base_spaces.hpp) --
+        // there is no per-actor, per-session or per-statement resource for an error to be moved
+        // out of. The only shorter-lived arenas in production are four scope-local
+        // std::pmr::monotonic_buffer_resource parser/scratch arenas
+        // (components/planner/view_expansion.cpp, components/sql/transformer/impl/
+        // transfrom_common.cpp, integration/cpp/wrapper_dispatcher.cpp twice, integration/python/
+        // arrow/arrow_scan_function.cpp), and not one of them hosts an error_t that escapes its
+        // scope: each builds its refusals on the OUTER resource, and the one that does receive an
+        // error built on its own arena consumes the text before the arena dies.
+        //
+        // So this stays defaulted, and the discipline is the guard: an owner that HAS a resource
+        // rebuilds a foreign error through error_on() below -- see view_expansion.cpp's transform
+        // leg for the worked example. What would re-open this is a NEW arena with a lifetime
+        // shorter than its error's reader; the audit above is the list to re-check against.
         error_t(const error_t&) = default;
         error_t(error_t&&) noexcept = default;
+
+        // Allocator-extended copy -- THE copy that inherits a resource. std::pmr::string cannot do
+        // it on its own: its copy constructor asks select_on_container_copy_construction, which
+        // for a polymorphic_allocator answers with a DEFAULT-constructed one, which is why the
+        // plain copy above lands the message on the default resource (see the note on the
+        // assignments). Naming the resource is the only way to say where the message lives, so
+        // every owner that HAS one copies through this -- error_on() below is exactly this call.
+        // The no_error() state is copyable here too: an empty string allocates nothing.
+        //
+        // The null check runs from the INITIALIZER (message_resource below) and not from the
+        // body, because the body is not reached in the one case it exists for: a message longer
+        // than the small-string buffer makes `what` call nullptr->allocate() while this
+        // constructor is still initializing. A body-level check therefore fired only for
+        // messages short enough NOT to allocate -- exactly the harmless ones -- and stood aside
+        // for the input it was written for.
+        error_t(const error_t& other, std::pmr::memory_resource* resource)
+            : type(other.type)
+            , what(other.what, message_resource(resource))
+#if not defined(NDEBUG)
+            , error_origin(other.error_origin)
+#endif
+        {}
 
         static error_t no_error() { return error_t(); }
 
@@ -140,6 +184,16 @@ namespace core {
             // since we are using null_memory_resource, we have to explicitly change allocator on assignments
             , what(std::pmr::null_memory_resource()) {}
 
+        // An INVARIANT, not a refusal: error_t is the bottom of the error channel, so there is
+        // nothing here to report a bad argument to, and the only caller (error_on) screens the
+        // same pointer first. It is therefore an assert -- and, like every assert, it is gone
+        // under NDEBUG, where a null resource is once again a null dereference inside
+        // std::pmr::string. Naming a resource is the caller's half of the contract.
+        static std::pmr::memory_resource* message_resource(std::pmr::memory_resource* resource) noexcept {
+            assert(resource != nullptr && "an error message needs a resource to live on");
+            return resource;
+        }
+
         template<typename... Args>
         void reconstruct_string(Args&&... args) {
             what.~basic_string();
@@ -150,21 +204,18 @@ namespace core {
     // THE one place that decides where an error message lives.
     //
     // Every owner that has a resource of its own — a cursor, an operator — funnels a foreign
-    // error_t through here instead of copying or moving it, because neither of error_t's own
+    // error_t through here instead of copying or moving it, because neither of error_t's IMPLICIT
     // paths puts the message on the owner's arena: a copy lands on the default resource, a
     // move keeps the producer's (see the note on error_t's assignments). Both are a lie in the
-    // same contract, in opposite directions; this rebuilds the string on `resource` so the
-    // answer is simply "the owner's".
+    // same contract, in opposite directions; this is the named door onto the allocator-extended
+    // copy constructor, which rebuilds the string on `resource` so the answer is simply
+    // "the owner's".
     [[nodiscard]] inline error_t error_on(std::pmr::memory_resource* resource, const error_t& error) {
         assert(resource != nullptr && "an error message needs a resource to live on");
         if (!error.contains_error()) {
             return error_t::no_error();
         }
-        error_t rebuilt{error.type, std::pmr::string{error.what, resource}};
-#if not defined(NDEBUG)
-        rebuilt.error_origin = error.error_origin;
-#endif
-        return rebuilt;
+        return error_t{error, resource};
     }
 
     // has implicit constructors to simplify usage

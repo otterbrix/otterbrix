@@ -20,6 +20,25 @@ namespace actor_zeta {
 
     namespace otterbrix {
 
+        // THE ONLY WAY THIS TREE SENDS TO AN ADDRESS. Every addressed send under components/ and
+        // services/ goes through here; a bare actor_zeta::send(address, ...) outside this file is
+        // a regression, not a style choice, and the reason is the empty-target branch below.
+        //
+        // The library's own address overload states the same precondition with an assert
+        // ("target address must not be empty"). An assert is the library's way of saying the
+        // CALLER guarantees it, and it is compiled out by the way the actor-zeta PACKAGE is
+        // built, not by how we build: with a Release package in the cache the check simply is not
+        // there, and an empty address then walks make_message(target.resource(), ...) with a null
+        // resource into address.ipp's enqueue_fn_(nullptr, ...) — SIGSEGV, no word printed. That
+        // is why the refusal here is fputs+abort rather than an assert: identical in Debug and
+        // Release, and identical whichever package variant is linked.
+        //
+        // What it does NOT do is make an unguarded send correct. Several call sites legitimately
+        // hold an address that may be empty (a WAL manager not spawned when config.wal.on is
+        // false); those still need their own `if (addr != empty_address())` and keep it. The
+        // guarantee this gives is narrower and worth stating exactly: a violated precondition
+        // becomes a named abort at the send site instead of undefined behaviour inside the
+        // mailbox.
         template<typename Method,
                  typename... Args,
                  typename Actor = typename type_traits::callable_trait<Method>::class_type>
@@ -28,6 +47,19 @@ namespace actor_zeta {
             using result_type = typename type_traits::callable_trait<Method>::result_type;
 
             static_assert(type_traits::is_unique_future_v<result_type>, "Method must return unique_future<T>");
+
+            // Carried over from the library's send() deliberately, because this shorthand REPLACES
+            // it at every call site and a replacement that checks less is a downgrade: the method
+            // must be registered in Actor::dispatch_traits and must belong to Actor. Beware what
+            // the first of those actually proves — validate_method_for_send matches by SIGNATURE
+            // (method_signature_exists_v) while the id comes from find_method_index, which matches
+            // by IDENTITY. Two registered methods with the same signature are therefore
+            // indistinguishable to the check, so un-registering one of them does NOT fail this
+            // static_assert; what catches it then is runtime_dispatch_helper's terminal case,
+            // which aborts with "Method not found in dispatch_traits" (std::abort, so under NDEBUG
+            // too). Loud either way, but the compiler is not the one that says it.
+            static_assert(detail::validate_method_for_send<Actor, Method>::valid,
+                          "send(): Method validation failed - see above for details");
 
             if (!target) {
                 // An empty target gets a LOUD refusal, in every build mode. A ready future

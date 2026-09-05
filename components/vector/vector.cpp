@@ -1043,10 +1043,19 @@ namespace components::vector {
                 uint8_t tag;
                 if (try_get_union_tag(*vector, index, tag)) {
                     auto value = vector->entries()[static_cast<size_t>(tag) + 1]->value(index);
-                    auto members = vector->type().child_types();
+                    // The tag has to go, so this copy is real -- and it is handed straight to
+                    // create_union, which keeps it. `auto members = ...child_types()` would copy the
+                    // std::pmr::vector without propagating its allocator, so the member list inside a
+                    // UNION value would sit on the default resource while the value itself lives on
+                    // vector->resource(). Naming the resource is the only way a pmr copy inherits one.
+                    std::pmr::vector<types::complex_logical_type> members(vector->type().child_types(),
+                                                                          vector->resource());
                     // remove tag
                     members.erase(members.begin());
-                    return types::logical_value_t::create_union(vector->resource(), members, tag, std::move(value));
+                    return types::logical_value_t::create_union(vector->resource(),
+                                                                std::move(members),
+                                                                tag,
+                                                                std::move(value));
                 } else {
                     return types::logical_value_t(vector->resource(), vector->type());
                 }

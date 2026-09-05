@@ -137,11 +137,4 @@ namespace core::filesystem {
         return seek_position(fs.backend(), std::forward<Args>(args)...);
     }
 
-#ifdef PLATFORM_WINDOWS
-    template<class FSC, class... Args>
-    std::string last_error_as_string(file_system<FSC>& fs, Args&&... args) {
-        return last_error_as_string(fs.backend(), std::forward<Args>(args)...);
-    }
-#endif
-
 } // namespace core::filesystem

@@ -285,17 +285,37 @@ namespace services::index {
         core::filesystem::remove_directory(fs_, path_);
     }
 
-    void btree_index_disk_t::clear() {
+    core::error_t btree_index_disk_t::clear() {
         // Wipe tree contents in place but keep the index writable: drop the
         // on-disk tree directory, then re-create an empty btree at the same
         // path. load() on a freshly created directory yields an empty tree,
         // so subsequent inserts repopulate cleanly. Unlike drop(), the
         // instance stays alive and usable.
         db_.reset();
-        core::filesystem::remove_directory(fs_, path_);
+        // THE ONE REFUSAL THIS FUNCTION CAN OBSERVE, and it used to be dropped: a directory
+        // that would not go leaves the whole tree on the device, and the load() below reads
+        // it straight back -- so the index goes on answering with every row this call
+        // promised to erase, and index_agent_contract::clear reported success over it.
+        const bool directory_removed = core::filesystem::remove_directory(fs_, path_);
+        // THE TREE IS REBUILT WHETHER OR NOT THE DIRECTORY WENT, and returning above this
+        // line would be the bug rather than the fix: every other door on this class
+        // dereferences db_, so a store left holding none would turn the next read into a
+        // crash. Over a surviving directory load() brings the old contents back, which is
+        // the honest state -- nothing was wiped, and the return value says so.
         db_ = std::make_unique<btree_t>(resource(), fs_, path_, item_key_getter);
+        // btree_t::load() IS VOID (core/b_plus_tree/b_plus_tree.hpp), so a tree that could
+        // not be read back after this wipe is still not observable from here. Naming it
+        // rather than papering over it: the fix is an error channel inside
+        // core/b_plus_tree, which is a wider surface than this change owns.
         db_->load();
         reset_flush_state();
+        if (!directory_removed) {
+            return core::error_t{core::error_code_t::index_create_fail,
+                                 std::pmr::string{"btree: the index directory " + path_.string() +
+                                                      " could not be removed for a clear",
+                                                  resource()}};
+        }
+        return core::error_t::no_error();
     }
 
     // THREE MEMBERS ARE GONE FROM HERE, and the absence is the change. apply_txn_inserts,

@@ -221,13 +221,14 @@ namespace services::index {
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"btree_index_agent_t::clear: the index has been dropped", resource()}};
         }
-        store_.clear();
-        // BOTH HALVES. The buckets are the not-yet-durable half of the same index; a clear
-        // that wiped only the tree would leave a rebuilt index answering with rows the
-        // scan it was rebuilt from never produced.
+        auto clear_error = store_.clear();
+        // BOTH HALVES, AND THE BUCKETS GO EVEN WHEN THE STORE REFUSED -- for the reason
+        // bitcask_index_agent_t::clear states at the same point: the repopulate that follows
+        // in the same FIFO would otherwise publish a bucket into an index this call failed
+        // to empty.
         pending_inserts_.clear();
         pending_deletes_.clear();
-        co_return core::error_t::no_error();
+        co_return clear_error;
     }
 
     btree_index_agent_t::unique_future<core::error_t>

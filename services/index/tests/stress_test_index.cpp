@@ -17,6 +17,23 @@ using services::index::bitcask_index_disk_t;
 using services::index::btree_index_disk_t;
 
 namespace {
+    // bitcask's find answers with a core::result_wrapper_t now: a keydir walk that met a
+    // page it could not read REFUSES instead of handing back the rows it managed to
+    // collect. None of the cases below is about that refusal, so each asserts it did not
+    // happen and goes on with the rows. The btree store's find still answers with the row
+    // list itself, and passes through here unchanged.
+    template<typename found_t>
+    auto rows_of(found_t&& found) {
+        if constexpr (core::detail::result_like<std::remove_reference_t<found_t>>) {
+            REQUIRE_FALSE(found.has_error());
+            return std::move(found.value());
+        } else {
+            return std::forward<found_t>(found);
+        }
+    }
+} // namespace
+
+namespace {
     constexpr uint64_t test_flush_threshold = 1000;
     constexpr uint64_t test_segment_record_limit = 100;
 
@@ -78,7 +95,7 @@ TEST_CASE("services::index::bitcask_index_disk::randomized_insert_remove_find_st
         std::array<std::unordered_set<size_t>, key_count> state;
         for (size_t key = 0; key < key_count; ++key) {
             const auto logical_key = logical_value_t(&resource, static_cast<int64_t>(key));
-            const auto actual_rows = from.find(logical_key);
+            const auto actual_rows = rows_of(from.find(logical_key));
 
             std::unordered_set<size_t> actual_set;
             actual_set.reserve(actual_rows.size());
@@ -114,7 +131,7 @@ TEST_CASE("services::index::bitcask_index_disk::randomized_insert_remove_find_st
                 } else if (op < 80) {
                     index.remove(logical_key, row);
                 } else {
-                    auto rows = index.find(logical_key);
+                    auto rows = rows_of(index.find(logical_key));
                     if (!rows.empty()) {
                         std::unordered_set<size_t> seen;
                         seen.reserve(rows.size());

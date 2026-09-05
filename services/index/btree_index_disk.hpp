@@ -109,7 +109,13 @@ namespace services::index {
         // Wipe all stored index data IN PLACE, keeping the backing live and writable:
         // subsequent insert/remove repopulate cleanly. NOT the terminal drop -- the file
         // survives (re-initialized empty) and the instance stays usable.
-        void clear();
+        //
+        // AND IT REPORTS THE ONE REFUSAL IT CAN SEE: a tree directory that would not be
+        // removed. The tree is reloaded over the survivor either way, so the instance stays
+        // usable and its contents stay honest -- they are simply the contents this call
+        // promised to erase, which is exactly what the error says. Without this,
+        // index_agent_contract::clear told the truth about one of its two implementations.
+        [[nodiscard]] core::error_t clear();
         // Returns io_error when the data did not reach the disk. The caller must fail the
         // statement: a discarded failure here means the table and its index disagree, and
         // nothing downstream would ever notice.

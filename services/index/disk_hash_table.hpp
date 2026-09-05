@@ -41,12 +41,20 @@ namespace services::index {
     // is stored, so it cannot dangle, there is no unhook to forget in a destructor, and
     // no null state for keys_equal to silently answer false from.
     template<typename loader_t>
-    concept hash_key_loader =
-        requires(const loader_t& load_full_key, uint32_t log_file_id, uint64_t log_offset, std::string& out_key) {
-        // out_key <- the whole encoded key of the record at (log_file_id, log_offset);
-        // false when it cannot be read, which makes the entry a non-match rather than a
-        // guessed one.
-        { load_full_key(log_file_id, log_offset, out_key) } -> std::same_as<bool>;
+    concept hash_key_loader = requires(const loader_t& load_full_key, uint32_t log_file_id, uint64_t log_offset) {
+        // THE ANSWER IS THE KEY ITSELF, not a flag saying a key was put somewhere. Success
+        // cannot be reported without producing the key, and a read that could not happen
+        // cannot be reported silently: it is a core::error_t travelling as a value. The
+        // record's KIND is not asked here -- a tombstone carries the same full key a value
+        // record does, and whether the key still holds rows is answered one layer up by
+        // read_rows_at's own three-way result, in find()/current_rows().
+        //
+        // std::pmr::string, not std::string (rule 8): the key comes back from a store that
+        // has a resource of its own, and the one allocation this answer costs belongs in
+        // that pool rather than in the process-wide heap. It is spelled in the CONCEPT
+        // because that is what makes it binding -- a loader that answered with a
+        // default-allocated string would simply not satisfy this and would not compile.
+        { load_full_key(log_file_id, log_offset) } -> std::same_as<core::result_wrapper_t<std::pmr::string>>;
     };
 
     class disk_hash_table_t final {
@@ -88,14 +96,30 @@ namespace services::index {
                           std::pmr::memory_resource* memory_resource);
         ~disk_hash_table_t();
 
-        bool put(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
+        // A WRITE THAT DID NOT LAND SAYS SO, and says why: an entry that could not be
+        // placed, or an auto-rehash the entry tripped that could not finish. Both are
+        // environmental, both leave the table CONSISTENT (see split_one_bucket_unlocked),
+        // and both mean the next write is likely to fail too -- so the caller is told
+        // rather than left to discover it from a load factor that never comes down.
+        [[nodiscard]] core::error_t
+        put(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
 
         // THE READS, each carrying the loader that resolves a truncated entry. The
         // parameter is what makes the resolution impossible to forget: a caller that has
         // no way to read a record back cannot call these at all, instead of calling them
         // and quietly missing every long key.
+        //
+        // A WALK THAT COULD NOT FINISH REFUSES. Each of these follows a bucket's page
+        // chain, and each of them used to `break` out of the chain when read_page said no,
+        // handing back whatever had been collected so far with no way to say that it
+        // stopped early. That makes "this key has three rows" indistinguishable from "the
+        // disk would not let me finish counting" -- a SUBSET presented as the whole
+        // answer, i.e. a wrong answer rather than a slow one, on what C1 made the only
+        // read path. The failure is a VALUE now, and result_wrapper_t is [[nodiscard]],
+        // so a caller cannot go on reading the rows without meeting it first.
         template<hash_key_loader loader_t>
-        std::vector<value_ref_t> get_all(std::string_view key, const loader_t& load_full_key) const {
+        [[nodiscard]] core::result_wrapper_t<std::vector<value_ref_t>>
+        get_all(std::string_view key, const loader_t& load_full_key) const {
             std::unique_lock lock(mutex_);
             const uint32_t key_hash = hash_key(key);
             uint64_t page_id = bucket_primary_page_id(bucket_id_for_hash(key_hash));
@@ -105,7 +129,7 @@ namespace services::index {
             page.resize(page_size);
             while (page_id != 0) {
                 if (!read_page(page_id, page)) {
-                    break; // unreadable page: stop walking this chain
+                    return page_read_failure(page_id);
                 }
                 const auto cnt = page_count(page);
                 for (uint16_t i = 0; i < cnt; ++i) {
@@ -117,7 +141,8 @@ namespace services::index {
                     if (!entry.valid) {
                         continue; // corrupt slot: skip it rather than read past the page
                     }
-                    if (!keys_equal(key, entry, load_full_key)) {
+                    VALUE_OR_RETURN(const bool matched, keys_equal(key, entry, load_full_key));
+                    if (!matched) {
                         continue;
                     }
                     values.push_back(value_ref_t{entry.value,
@@ -127,25 +152,31 @@ namespace services::index {
                 }
                 page_id = page_overflow(page);
             }
-            return {values.begin(), values.end()};
+            return std::vector<value_ref_t>(values.begin(), values.end());
         }
 
         template<hash_key_loader loader_t>
-        std::optional<value_ref_t> get(std::string_view key, const loader_t& load_full_key) const {
-            auto all = get_all(key, load_full_key);
+        [[nodiscard]] core::result_wrapper_t<std::optional<value_ref_t>>
+        get(std::string_view key, const loader_t& load_full_key) const {
+            VALUE_OR_RETURN(auto all, get_all(key, load_full_key));
             if (all.empty()) {
-                return std::nullopt;
+                return std::optional<value_ref_t>{};
             }
-            return all.front();
+            return std::optional<value_ref_t>{all.front()};
         }
 
+        // TRUE means an entry was removed, FALSE means the key (or the key/value pair) is
+        // not in the table -- and the error means the walk could not reach the answer, or
+        // reached it and could not persist the removal. The third case used to be folded
+        // into the second, which told erase_all_refs_for_key's loop that it was done.
         template<hash_key_loader loader_t>
-        bool erase(std::string_view key, const loader_t& load_full_key) {
+        [[nodiscard]] core::result_wrapper_t<bool> erase(std::string_view key, const loader_t& load_full_key) {
             return erase_matching(key, std::nullopt, load_full_key);
         }
 
         template<hash_key_loader loader_t>
-        bool erase(std::string_view key, int64_t value, const loader_t& load_full_key) {
+        [[nodiscard]] core::result_wrapper_t<bool>
+        erase(std::string_view key, int64_t value, const loader_t& load_full_key) {
             return erase_matching(key, std::optional<int64_t>(value), load_full_key);
         }
 
@@ -161,8 +192,14 @@ namespace services::index {
         // ::merge_immutable_segments) accumulate through a by-reference capture, so this is the
         // order they observe and hand on. `cb` is invoked synchronously, once per live entry,
         // and is never stored or deferred -- it is NOT forwarded, because it is called in a loop.
+        //
+        // AND IT REFUSES rather than stopping early, for the reason get_all does: a walk
+        // that broke out of a chain handed its caller a PREFIX of the order it promises,
+        // and both callers accumulate what they are given -- load_entries would rebuild a
+        // table's index from part of it, and the merge would relocate part of a segment
+        // and then delete the whole segment.
         template<typename callback_t>
-        void for_each(callback_t&& cb) const {
+        [[nodiscard]] core::error_t for_each(callback_t&& cb) const {
             std::shared_lock lock(mutex_);
             byte_buffer_t page(memory_resource_);
             page.resize(page_size);
@@ -170,7 +207,7 @@ namespace services::index {
                 uint64_t page_id = bucket_primary_page_id(bucket);
                 while (page_id != 0) {
                     if (!read_page(page_id, page)) {
-                        break; // unreadable page: stop walking this chain
+                        return page_read_failure(page_id);
                     }
                     const auto cnt = page_count(page);
                     for (uint16_t i = 0; i < cnt; ++i) {
@@ -193,17 +230,51 @@ namespace services::index {
                     page_id = page_overflow(page);
                 }
             }
+            return core::error_t::no_error();
         }
 
-        bool rehash(uint32_t new_bucket_count);
-        bool trigger_rehash_if_needed();
+        // GROW TO new_bucket_count, one linear-hashing split at a time, and say why it
+        // could not: a split that cannot copy every entry it owes the new bucket refuses
+        // instead of publishing, so a failure here means the addressing state was NOT
+        // advanced and the table still answers exactly as it did before the call.
+        [[nodiscard]] core::error_t rehash(uint32_t new_bucket_count);
+        [[nodiscard]] core::error_t trigger_rehash_if_needed();
         bool set_auto_rehash_suppressed(bool suppressed) noexcept;
         uint32_t bucket_count() const;
         double load_factor() const;
-        void sync();
-        // Wipe all buckets in place, keeping the object identity: the store that owns
-        // this table re-uses it across clear() instead of re-opening the file.
-        void clear();
+        // A REFUSED fsync IS AN ANSWER. This used to be void over two dropped bools, so the
+        // one caller that has to know -- bitcask_index_disk_t::sync_if_dirty, whose value
+        // force_flush hands to the checkpoint before it trims the WAL -- was told the keydir
+        // was durable whatever the device said.
+        [[nodiscard]] core::error_t sync();
+        // WIPE AND RE-CREATE AN EMPTY TABLE OF THE SAME WIDTH, reporting the reason it could
+        // not by value. The object identity survives: the store that owns this table re-uses
+        // it instead of re-opening the file.
+        //
+        // It stands on the OPEN path (bitcask_index_disk_t::load_from_disk), which is why it
+        // cannot be the `void clear()` it replaces. That one had no channel, so it ended in
+        // std::abort() one call away from every start of the engine -- and an environmental
+        // refusal has to cost the INDEX its registration, never the ENGINE its process.
+        // Deleting the old door rather than keeping it beside this one is the point: the
+        // abort is now structurally unreachable instead of guarded by a test.
+        //
+        // The width (bucket_count) and the hash seed OUTLIVE the wipe: the replay that
+        // follows refills a table of the size it just had, rather than 1024 buckets with
+        // auto-rehash suppressed for the whole replay, and a fixed seed keeps the layout
+        // reproducible across runs. The suppression flag is NOT touched -- the caller set it
+        // for the length of its replay, and clearing it here would let a rehash run in the
+        // middle of one while the caller's scope guard still restored the old value at the end.
+        //
+        // WHAT IT NEEDS FROM THE FILESYSTEM, said out loud because it was read as new: `w` on
+        // the DIRECTORY holding these two files, for the unlinks. It is not a requirement this
+        // adds. The owning index (bitcask_index_disk_t) publishes its CURRENT pointer through
+        // a temp file and a rename on every single open, so `w` on that directory was already
+        // the price of opening the index at all -- see the contract above
+        // bitcask_index_disk_t::open. There is no read-only mode here to break.
+        [[nodiscard]] core::error_t reset_storage();
+        // RELEASE BOTH BACKING FILES, leaving the table addressable and loud. For a caller
+        // whose wipe could not finish -- see the definition for why this needs no flag.
+        void close_storage();
 
     private:
         struct slot_t {
@@ -263,11 +334,21 @@ namespace services::index {
         // the message, built on THIS table's resource (which is why it is a member and
         // not a free function).
         [[nodiscard]] core::error_t io_failure(const std::string& message) const;
+        // The one reason every chain walk in this class can stop: a page the chain points
+        // at could not be read (a short/rotten file, a truncated overflow file). io_error
+        // rather than index_create_fail -- nothing is being created, an existing structure
+        // could not be read.
+        [[nodiscard]] core::error_t page_read_failure(uint64_t page_id) const;
+        [[nodiscard]] core::error_t page_write_failure(uint64_t page_id) const;
         [[nodiscard]] core::error_t open_or_create();
+        // The tail of reset_storage, and deliberately NOT open_or_create: it refuses a file
+        // that outlived the unlink instead of loading it as an existing table. See the body.
+        [[nodiscard]] core::error_t open_after_wipe_or_refuse();
         [[nodiscard]] core::error_t initialize_new_file();
         [[nodiscard]] core::error_t load_existing_file();
         [[nodiscard]] core::error_t open_overflow_file();
-        void sync_files();
+        // FALSE means at least one of the two backing files did not reach the device.
+        [[nodiscard]] bool sync_files();
 
         static bool is_overflow_page_id(uint64_t page_id);
         uint64_t main_page_count() const;
@@ -303,8 +384,15 @@ namespace services::index {
         // it needed a thread that takes THIS table's mutex first and the store's second,
         // and the only such caller was the index facade's find_impl reading the keydir
         // across the actor boundary (removed with the shared handle in C2c).
+        // TRUE = this entry's key IS the probe. FALSE = it is a different key. AN ERROR =
+        // the question could not be decided, because the record carrying the whole key
+        // could not be read. The third case used to be folded into the second, which told
+        // get_all "no such row" and try_erase_in_page "no such key" -- a SUBSET presented
+        // as the whole answer. Same three-way shape, and the same reason, as erase() above
+        // and bitcask_index_disk_t::read_rows_at.
         template<hash_key_loader loader_t>
-        bool keys_equal(std::string_view query_key, const decoded_entry_t& entry, const loader_t& load_full_key) const {
+        [[nodiscard]] core::result_wrapper_t<bool>
+        keys_equal(std::string_view query_key, const decoded_entry_t& entry, const loader_t& load_full_key) const {
             if ((entry.entry_flags & entry_flag_truncated) == 0) {
                 return query_key.size() == entry.full_key_len && query_key == entry.stored_key;
             }
@@ -312,15 +400,13 @@ namespace services::index {
                 query_key.substr(0, entry.stored_key.size()) != entry.stored_key) {
                 return false;
             }
-            std::string full;
-            if (!load_full_key(entry.log_file_id, entry.log_offset, full)) {
-                return false;
-            }
+            VALUE_OR_RETURN(const auto full, load_full_key(entry.log_file_id, entry.log_offset));
             return full == query_key;
         }
 
         template<hash_key_loader loader_t>
-        bool erase_matching(std::string_view key, std::optional<int64_t> expected_value, const loader_t& load_full_key) {
+        [[nodiscard]] core::result_wrapper_t<bool>
+        erase_matching(std::string_view key, std::optional<int64_t> expected_value, const loader_t& load_full_key) {
             std::unique_lock lock(mutex_);
             const uint32_t key_hash = hash_key(key);
             uint64_t page_id = bucket_primary_page_id(bucket_id_for_hash(key_hash));
@@ -328,32 +414,49 @@ namespace services::index {
             page.resize(page_size);
             while (page_id != 0) {
                 if (!read_page(page_id, page)) {
-                    break; // unreadable page: stop walking this chain
+                    return page_read_failure(page_id);
                 }
-                bool erased = false;
-                if (try_erase_in_page(page, key, key_hash, expected_value, load_full_key, erased)) {
-                    if (erased) {
-                        if (!write_page(page_id, page)) {
-                            return false;
-                        }
-                        if (entry_count_ > 0) {
-                            --entry_count_;
-                        }
+                VALUE_OR_RETURN(const bool erased,
+                                try_erase_in_page(page, key, key_hash, expected_value, load_full_key));
+                if (erased) {
+                    if (!write_page(page_id, page)) {
+                        return page_write_failure(page_id);
                     }
-                    return erased;
+                    if (entry_count_ > 0) {
+                        --entry_count_;
+                    }
+                    return true;
                 }
                 page_id = page_overflow(page);
             }
             return false;
         }
 
+        // TRUE = removed here, FALSE = not in this page, walk the overflow chain, ERROR =
+        // could not decide. The `bool& erased` this used to carry alongside the bool return
+        // is GONE rather than widened: only two of its four combinations were reachable
+        // (the one `erased = true` sat immediately above the one `return true`), so it
+        // duplicated the return value and had no room for the third answer anyway.
+        //
+        // THE ONE THING AN ERROR HERE GUARANTEES IS ABOUT THIS BUFFER, AND NOTHING WIDER.
+        // The page is mutated on the two lines before `return true` and nowhere else, so a
+        // refusal hands erase_matching back the bytes it was given and no write_page follows
+        // -- this frame has nothing to undo. The comment that used to stand here stopped
+        // there and read as if an erase that refused had changed nothing, which is not what
+        // the layer above does: erase_all_refs_for_key calls erase() in a LOOP, and every
+        // pass that answered true already wrote its page and dropped entry_count_. A refusal
+        // on the third pass therefore leaves the first two removals in the file. That is a
+        // PARTIAL removal, and it is reported rather than rolled back -- which is why the
+        // callers return the refusal instead of carrying on: append_snapshot hands it up
+        // BEFORE the put that would re-point the key, and append_tombstone hands it up as its
+        // own result. What repairs the partial state is not an undo but the next open, whose
+        // rebuild is the keydir's only author and derives every entry from the segments.
         template<hash_key_loader loader_t>
-        bool try_erase_in_page(byte_buffer_t& page,
-                               std::string_view key,
-                               uint32_t key_hash,
-                               std::optional<int64_t> expected_value,
-                               const loader_t& load_full_key,
-                               bool& erased) {
+        [[nodiscard]] core::result_wrapper_t<bool> try_erase_in_page(byte_buffer_t& page,
+                                                                     std::string_view key,
+                                                                     uint32_t key_hash,
+                                                                     std::optional<int64_t> expected_value,
+                                                                     const loader_t& load_full_key) {
             const auto cnt = page_count(page);
             for (uint16_t i = 0; i < cnt; ++i) {
                 auto slot = read_slot(page, i);
@@ -364,7 +467,8 @@ namespace services::index {
                 if (!entry.valid) {
                     continue; // corrupt slot: skip it rather than read past the page
                 }
-                if (!keys_equal(key, entry, load_full_key)) {
+                VALUE_OR_RETURN(const bool matched, keys_equal(key, entry, load_full_key));
+                if (!matched) {
                     continue;
                 }
                 if (expected_value.has_value() && entry.value != *expected_value) {
@@ -372,7 +476,6 @@ namespace services::index {
                 }
                 slot.flags = slot_flag_free;
                 write_slot(page, i, slot);
-                erased = true;
                 return true;
             }
             return false;
@@ -380,12 +483,14 @@ namespace services::index {
 
         bool
         try_insert_payload_in_page(byte_buffer_t& page, uint32_t key_hash, const byte_buffer_t& payload, bool& changed);
-        bool put_unlocked(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
-        bool insert_payload_into_bucket_unlocked(uint32_t bucket_id, uint32_t key_hash, const byte_buffer_t& payload);
+        [[nodiscard]] core::error_t
+        put_unlocked(std::string_view key, int64_t value, uint32_t log_file_id, uint64_t log_offset);
+        [[nodiscard]] core::error_t
+        insert_payload_into_bucket_unlocked(uint32_t bucket_id, uint32_t key_hash, const byte_buffer_t& payload);
         uint64_t count_entries_unlocked() const;
-        bool rehash_unlocked(uint32_t new_bucket_count);
-        bool maybe_rehash_if_needed_unlocked();
-        bool split_one_bucket_unlocked(bool durable_commit = true);
+        [[nodiscard]] core::error_t rehash_unlocked(uint32_t new_bucket_count);
+        [[nodiscard]] core::error_t maybe_rehash_if_needed_unlocked();
+        [[nodiscard]] core::error_t split_one_bucket_unlocked(bool durable_commit = true);
         bool slot_belongs_to_bucket_unlocked(uint32_t key_hash, uint32_t bucket_id) const;
         void initialize_linear_state_from_bucket_count();
         uint32_t bucket_id_for_hash(uint32_t key_hash) const;

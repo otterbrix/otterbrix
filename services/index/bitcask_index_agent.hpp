@@ -199,7 +199,7 @@ namespace services::index {
         // could buy -- this agent is the sole owner, the type is fixed at compile time,
         // and the erased base that once forced the indirection is gone. CONCRETE type,
         // and there is no erased base left to hold it by: the long-key loader
-        // (load_hash_key_at_unlocked, handed to every disk_hash_table_t call) and the
+        // (load_hash_key_at, handed to every disk_hash_table_t call) and the
         // durable txn log are bitcask's alone, and holding the type is what keeps them
         // reachable without a runtime question.
         bitcask_index_disk_t store_;

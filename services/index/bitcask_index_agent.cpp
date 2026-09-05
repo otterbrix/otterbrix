@@ -231,13 +231,19 @@ namespace services::index {
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"bitcask_index_agent_t::clear: the index has been dropped", resource()}};
         }
-        store_.clear();
-        // BOTH HALVES. The buckets are the not-yet-durable half of the same index; a clear
-        // that wiped only the store would leave a rebuilt index answering with rows the
-        // scan it was rebuilt from never produced.
+        auto clear_error = store_.clear();
+        // BOTH HALVES, AND THE BUCKETS GO EVEN WHEN THE STORE REFUSED. They are the
+        // not-yet-durable half of the same index, so a clear that wiped only the store would
+        // leave a rebuilt index answering with rows the scan it was rebuilt from never
+        // produced -- and keeping them BECAUSE the store refused is worse still: the
+        // repopulate that follows this call in the same FIFO would have commit_inserts
+        // publish a bucket belonging to the index this call failed to empty.
         pending_inserts_.clear();
         pending_deletes_.clear();
-        co_return core::error_t::no_error();
+        // THE STORE'S ANSWER IS THE HANDLER'S ANSWER. It used to be discarded and replaced
+        // with no_error, so manager_index_t::repopulate_table -- which does await this future
+        // and does fold it into its first_error -- was folding a constant.
+        co_return clear_error;
     }
 
     bitcask_index_agent_t::unique_future<core::error_t>
@@ -544,7 +550,14 @@ namespace services::index {
         // above this actor. Convert once, here, so the reply carries the type the reader
         // uses.
         bitcask_index_disk_t::result found(resource());
-        store_.find(key, found);
+        // A COMMITTED HALF THAT COULD NOT BE READ IS NOT AN EMPTY COMMITTED HALF. The
+        // keydir walk under find() refuses when it meets a page it cannot read, and this
+        // handler already answers with a core::result_wrapper_t -- so the reason travels
+        // instead of the reader receiving a row set with rows quietly missing from it and
+        // the pending half folded on top of nothing.
+        if (auto read_error = store_.find(key, found); read_error.contains_error()) {
+            co_return read_error;
+        }
         std::pmr::vector<int64_t> rows(resource());
         rows.reserve(found.size());
         for (auto row : found) {

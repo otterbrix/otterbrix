@@ -47,7 +47,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <string>
 #include <set>
 #include <utility>
 #include <vector>
@@ -98,6 +100,35 @@ namespace {
         std::sort(out.begin(), out.end());
         return out;
     }
+
+    // RAII around ONE environment variable, for the store's DEV_MODE seams. It restores the
+    // previous value rather than unsetting blindly, so a case cannot leak an arming into the
+    // rest of the run.
+    struct env_var_guard_t {
+        std::string name;
+        bool had_value{false};
+        std::string prev;
+
+        env_var_guard_t(std::string env_name, const std::string& value)
+            : name(std::move(env_name)) {
+            if (const char* current = std::getenv(name.c_str()); current != nullptr) {
+                had_value = true;
+                prev = current;
+            }
+            setenv(name.c_str(), value.c_str(), 1);
+        }
+
+        ~env_var_guard_t() {
+            if (had_value) {
+                setenv(name.c_str(), prev.c_str(), 1);
+            } else {
+                unsetenv(name.c_str());
+            }
+        }
+
+        env_var_guard_t(const env_var_guard_t&) = delete;
+        env_var_guard_t& operator=(const env_var_guard_t&) = delete;
+    };
 
 } // namespace
 
@@ -411,6 +442,86 @@ TEST_CASE("services::index::a NULL key is neither staged nor matched") {
                                                            txn);
     REQUIRE_FALSE(gte_probe.has_error());
     CHECK(sorted(std::move(gte_probe.value())) == std::vector<int64_t>{2});
+
+    std::filesystem::remove_all(path);
+}
+
+// ---------------------------------------------------------------------------------------
+// THE STORE'S REFUSAL IS THE HANDLER'S ANSWER, and the buckets go with it either way.
+//
+// index_agent_contract::clear returns a core::error_t and manager_index_t::repopulate_table
+// awaits it and folds it into its first_error -- but the hashed agent used to discard what
+// the store said and co_return no_error unconditionally, so the fold was over a constant. A
+// CHECKPOINT whose index rebuild refused therefore reported a clean rebuild, and the table and
+// its index disagreed with nothing anywhere saying so.
+//
+// The second half is the ordering risk the same FIFO carries: stage_inserts and
+// commit_inserts are queued right behind this clear, on the same agent, in the same
+// repopulate. If the buckets survived a refused clear, that commit would publish rows into
+// the index this call failed to empty -- so they are dropped even on the refusal, and the
+// commit that follows meets the store's own refusal rather than turning it into a success.
+TEST_CASE("services::index::bitcask_index_agent_t hands back the store's refusal to clear") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    const auto path = fresh_index_root("otterbrix_test_index_agent_refused_clear");
+
+    auto agent_result = bitcask_index_agent_t::create(&resource,
+                                                      path,
+                                                      kTableOid,
+                                                      kIndexOid,
+                                                      /*flush_threshold=*/1000,
+                                                      /*segment_record_limit=*/100,
+                                                      log,
+                                                      std::pmr::set<std::uint64_t>(&resource));
+    REQUIRE_FALSE(agent_result.has_error());
+    auto agent = std::move(agent_result.value());
+
+    const auto session = session_id_t::generate_uid();
+    const uint64_t txn1 = TRANSACTION_ID_START + 1;
+
+    REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 1}}))
+                      .contains_error());
+    REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, txn1).contains_error());
+    // A bucket left standing across the clear, which is what the second half is about.
+    REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, txn1, entries(&resource, {{42, 2}}))
+                      .contains_error());
+
+    {
+        env_var_guard_t armed("OTTERBRIX_DISK_HASH_RESET_FAILPOINT", "1");
+        const auto clear_error = ask<&index_agent_contract::clear>(agent, session);
+        INFO("a rebuild the store could not finish has to reach the manager that awaits this");
+        REQUIRE(clear_error.contains_error());
+
+        // The bucket went with the store. The staged row cannot come back from it.
+        const auto after = ask<&index_agent_contract::read_rows>(agent,
+                                                                 session,
+                                                                 compare_type::eq,
+                                                                 logical_value_t(&resource, int64_t{42}),
+                                                                 txn1);
+        INFO("a read over a store whose rebuild refused is a refusal, not an empty answer");
+        REQUIRE(after.has_error());
+
+        // And the repopulate's own next two messages do not turn the refusal into a success.
+        REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(&resource, {{42, 3}}))
+                          .contains_error());
+        REQUIRE(ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}).contains_error());
+    }
+
+    // Disarmed: the agent is repairable in place, which is what keeps "loud" from meaning
+    // "dead" for the index this agent stands for.
+    REQUIRE_FALSE(ask<&index_agent_contract::clear>(agent, session).contains_error());
+    REQUIRE_FALSE(ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(&resource, {{42, 4}}))
+                      .contains_error());
+    REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}).contains_error());
+    {
+        auto answer = ask<&index_agent_contract::read_rows>(agent,
+                                                            session,
+                                                            compare_type::eq,
+                                                            logical_value_t(&resource, int64_t{42}),
+                                                            uint64_t{0});
+        REQUIRE_FALSE(answer.has_error());
+        CHECK(sorted(std::move(answer.value())) == std::vector<int64_t>{4});
+    }
 
     std::filesystem::remove_all(path);
 }

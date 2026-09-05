@@ -13,9 +13,35 @@
 #include <memory>
 #include <memory_resource>
 #include <set>
+#include <string_view>
 #include <vector>
 
 namespace services::index {
+
+#ifdef DEV_MODE
+    // FAULT-INJECTION SEAM FOR THE BITCASK STORE'S OWN FILES.
+    //
+    // Everything this store meets from the OUTSIDE -- a segment truncated under it, a
+    // corrupted record, a missing file -- a test stages through the filesystem, and the
+    // cases in test_bitcask_index_disk.cpp do exactly that. Two failures are not reachable
+    // that way: a REFUSED WRITE and a REFUSED fsync on a descriptor this store opened
+    // itself. chmod does not reach an open fd, and the block manager's T3 interposer wraps
+    // single_file_block_manager_t, which this store does not use.
+    //
+    // So the seam is here, DEV_MODE only, shaped exactly like services::wal's
+    // dev_set_wal_file_interposer: a plain virtual interface (rule 14 -- not std::function),
+    // process-wide, consulted once per open_file this translation unit performs. Returning
+    // nullptr from wrap() models a file that WILL NOT OPEN and is faithful rather than a
+    // stand-in: core::filesystem::open_file answers nullptr for exactly that.
+    struct bitcask_file_interposer_t {
+        virtual ~bitcask_file_interposer_t() = default;
+        virtual std::unique_ptr<core::filesystem::file_handle_t>
+        wrap(const std::filesystem::path& path, std::unique_ptr<core::filesystem::file_handle_t> inner) = 0;
+    };
+
+    void dev_set_bitcask_file_interposer(bitcask_file_interposer_t* interposer); // nullptr = off
+    bitcask_file_interposer_t* dev_bitcask_file_interposer();
+#endif
 
     // THE HASHED STORE. It has no base class and there deliberately is not going to be
     // one: the erased index_disk_t it used to derive from existed so a single index agent
@@ -117,15 +143,23 @@ namespace services::index {
         // find() reads the SNAPSHOT RECORD and unrolls the whole row list: the keydir
         // keeps one entry per key whose payload field is `rows.back()`, so a reader that
         // consulted it would silently drop every duplicate.
-        void find(const value_t& value, result& res) const;
+        //
+        // AND IT REFUSES rather than answering short. The keydir walk underneath can meet
+        // a page it cannot read, and it used to stop there and hand back what it had --
+        // which arrives here as "this key has these rows" and reaches a reader as a row
+        // set with rows silently missing from it. bitcask_index_agent_t::read_rows already
+        // answers with a core::result_wrapper_t, so the value has somewhere to go.
+        [[nodiscard]] core::error_t find(const value_t& value, result& res) const;
 
         // By-value shorthand, built on resource_. Never on a default-constructed
         // std::pmr::vector, which is std::pmr::get_default_resource() by consequence --
         // and insert()/remove() reach it internally, so that would put the process default
         // resource on the WRITE path.
-        [[nodiscard]] result find(const value_t& value) const {
+        [[nodiscard]] core::result_wrapper_t<result> find(const value_t& value) const {
             result res(resource_);
-            find(value, res);
+            if (auto read_error = find(value, res); read_error.contains_error()) {
+                return read_error;
+            }
             return res;
         }
 
@@ -133,12 +167,23 @@ namespace services::index {
         // Wipe all stored index data IN PLACE, keeping the backing live and writable:
         // subsequent insert/remove repopulate cleanly. NOT the terminal drop -- the
         // files/directory survive (re-initialized empty), the instance stays usable.
-        void clear();
+        //
+        // AND IT REPORTS WHAT IT COULD NOT DO. This used to be void, so its only channel was
+        // pending_write_error_ -- which find() does not read -- and a rebuild that refused
+        // left the reader with "this key has no rows" over segments that were all still
+        // there. Three outcomes travel out of here now: the directory could not be listed
+        // (nothing was touched, every row is still readable); an artifact could not be
+        // removed (the store is consistent, it just holds more than this call promised); the
+        // rebuild could not finish (the keydir is CLOSED, so every later read and write
+        // refuses, and the next clear() repairs it).
+        [[nodiscard]] core::error_t clear();
         // Returns io_error when the data did not reach the disk. The caller must fail the
         // statement: a discarded failure here means the table and its index disagree, and
         // nothing downstream would ever notice.
         [[nodiscard]] core::error_t force_flush();
-        void load_entries(entries_t& entries) const;
+        // Refuses when the keydir walk could not finish: a rebuild fed from PART of an
+        // index is a rebuild that drops rows without saying so.
+        [[nodiscard]] core::error_t load_entries(entries_t& entries) const;
 
         // COMPACT THE ROTATED SEGMENTS, ON THE CALLER'S THREAD.
         //
@@ -193,9 +238,11 @@ namespace services::index {
             tombstone = 2
         };
 
-        // The whole encoded key of the record at (segment_id, value_offset) — the answer
-        // to the one question a truncated keydir entry cannot answer for itself.
-        bool load_hash_key_at(uint32_t segment_id, uint64_t value_offset, std::string& out_key) const;
+        // The whole encoded key of the record at (segment_id, value_offset) — the answer to
+        // the one question a truncated keydir entry cannot answer for itself, or the reason
+        // it could not be read.
+        [[nodiscard]] core::result_wrapper_t<std::pmr::string> load_hash_key_at(uint32_t segment_id,
+                                                                               uint64_t value_offset) const;
 
         // This store's answer to disk_hash_table_t's truncated-key question, as a
         // DEDUCED callable rather than a virtual interface and rather than a
@@ -209,8 +256,8 @@ namespace services::index {
         // null-loader state to answer a long key false from. It crosses no actor
         // boundary either (rule 10) — the table it is handed to is owned by this store.
         [[nodiscard]] auto key_loader() const noexcept {
-            return [this](uint32_t log_file_id, uint64_t log_offset, std::string& out_key) -> bool {
-                return load_hash_key_at(log_file_id, log_offset, out_key);
+            return [this](uint32_t log_file_id, uint64_t log_offset) -> core::result_wrapper_t<std::pmr::string> {
+                return load_hash_key_at(log_file_id, log_offset);
             };
         }
 
@@ -222,32 +269,67 @@ namespace services::index {
 
         using row_ids_t = std::pmr::vector<size_t>;
 
-        void initialize_storage();
-        void load_from_disk();
+        // The THROWING std::filesystem overload used to sit behind this, which is an
+        // exception escaping open() -- rule 2 -- for the one failure the whole open path is
+        // built to report as a value.
+        [[nodiscard]] core::error_t initialize_storage();
+        [[nodiscard]] core::error_t load_from_disk();
         void apply_merge_recovery_cleanup();
-        std::vector<segment_info_t> collect_segments() const;
-        void open_active_segment();
-        void rotate_active_segment();
-        void rotate_active_segment_if_needed();
+        // THE DIRECTORY LISTING IS A READ, AND A READ CAN REFUSE. This used to answer with a
+        // plain vector built by the THROWING std::filesystem overloads on a -fno-exceptions
+        // build (rule 2), which means a directory it could not enumerate came back as an
+        // EMPTY LIST -- indistinguishable from "this index has no segments yet".
+        //
+        // That undercount used to cost a skipped replay. It now costs the whole index:
+        // load_from_disk resets the keydir before it reads this list and rebuilds it from
+        // what the list holds, so an unlistable directory would answer with a keydir built
+        // from nothing and report success over it. A MISSING directory is still the empty
+        // list and still no error -- "there is no index here yet" is an answer; a listing
+        // that REFUSED is not.
+        [[nodiscard]] core::result_wrapper_t<std::pmr::vector<segment_info_t>> collect_segments() const;
+        // OPENING THE ACTIVE SEGMENT IS A STEP THAT CAN REFUSE. It used to abort, and it
+        // runs on EVERY start and EVERY rotation, so an unopenable path or a full disk cost
+        // the engine its process rather than the index its registration. open() already
+        // reports as a value and rotation happens under append_snapshot/append_tombstone,
+        // which do too.
+        [[nodiscard]] core::error_t open_active_segment();
+        [[nodiscard]] core::error_t rotate_active_segment();
+        [[nodiscard]] core::error_t rotate_active_segment_if_needed();
         uint64_t allocate_next_segment_id();
-        void merge_immutable_segments();
-        row_ids_t current_rows(const value_t& key) const;
-        bool
+        [[nodiscard]] core::error_t merge_immutable_segments();
+        [[nodiscard]] core::result_wrapper_t<row_ids_t> current_rows(const value_t& key) const;
+        // TRUE = the record at this location is a VALUE record and `rows` now holds its row
+        // list. FALSE = it is a TOMBSTONE, i.e. the legitimate "this key has no rows here".
+        // AN ERROR = the record could not be read at all: the segment would not open, the
+        // keydir pointed inside the header, the header or the payload came up short, or the
+        // CRC did not match.
+        //
+        // The bool used to carry all six outcomes, and every caller read the five failures
+        // as the one legal answer -- so an unreadable record arrived at current_rows() as
+        // "this key has no rows", and the very next append_snapshot REPLACED the key's row
+        // list with a list built from nothing. This is the same three-way shape
+        // disk_hash_table_t::erase carries for the same reason.
+        [[nodiscard]] core::result_wrapper_t<bool>
         read_rows_at(uint32_t segment_id, uint64_t value_offset, row_ids_t& rows, value_t* out_key = nullptr) const;
         std::string key_bytes_for_hash(const value_t& key) const;
-        void erase_all_refs_for_key(std::string_view key_bytes);
+        [[nodiscard]] core::error_t erase_all_refs_for_key(std::string_view key_bytes);
         // Reports a hash-index write failure instead of dropping it: the segment record is already
         // durable at that point, so a lost index entry would leave the key unfindable while the
         // statement reported success.
         [[nodiscard]] core::error_t append_snapshot(const value_t& key, const row_ids_t& rows);
-        void append_tombstone(const value_t& key);
+        [[nodiscard]] core::error_t append_tombstone(const value_t& key);
         // M3.5: returns no_error() on a clean append, an index_create_fail
         // error if the txn-log file cannot be opened (the only recoverable IO
         // failure on this path; write/sync surface through the file handle).
         [[nodiscard]] core::error_t append_txn_record(uint64_t txn_id,
                                                       uint8_t op_kind,
                                                       const std::vector<std::pair<value_t, size_t>>& values);
-        void recover_txn_log();
+        // A TXN LOG THAT CANNOT BE READ IS NOT AN EMPTY ONE. This used to return silently
+        // when the log would not open -- every committed frame of the last window vanished
+        // from the index for the whole uptime -- while a CORRUPT frame three lines below
+        // aborted the process. Both halves are the same event now: recovery refuses, open()
+        // hands the reason up, and the engine keeps running without the index.
+        [[nodiscard]] core::error_t recover_txn_log();
         std::filesystem::path txn_log_file_path() const;
         std::filesystem::path txn_applied_file_path() const;
         uint64_t read_applied_log_offset() const;
@@ -258,8 +340,16 @@ namespace services::index {
         // it as the index-side abort.
         [[nodiscard]] core::error_t write_applied_log_offset(uint64_t offset) const;
         void flush_if_needed();
-        void sync_if_dirty();
+        // Fsync the active segment AND the keydir, and say when one of them refused. On a
+        // refusal the store STAYS DIRTY -- clearing the flag would tell the next flush there
+        // was nothing left to write -- and force_flush() hands the reason to the caller, so
+        // a checkpoint can no longer trim the WAL behind an index that never reached disk.
+        [[nodiscard]] core::error_t sync_if_dirty();
         void note_write_error(core::error_t err);
+        // One door for this store's I/O refusals, so the code and the resource are the same
+        // on every one of them -- disk_hash_table_t::io_failure one layer down is the same
+        // idea. index_create_fail is the code the index error channel already carries.
+        [[nodiscard]] core::error_t io_failure(std::string_view message) const;
         // Opens the keydir file and says why it could not, as a VALUE: open() hands that
         // value back and the construct-and-open ctor aborts on it. Nothing is recorded on
         // the object, so no owner has to know to ask afterwards.

@@ -295,25 +295,29 @@ namespace components::table {
 
         // Default: UNCOMPRESSED
         auto segment_size = segment.segment_size();
-        auto allocation = partial_block_manager_.get_block_allocation(segment_size);
-
         storage::data_pointer_t dp;
-        if (data && segment_size > 0) {
-            // Read from the segment's OWN payload within its (possibly shared) block. A segment that the
-            // write-through re-pointed via partial-block packing lives at a NON-ZERO block_offset in a
-            // block shared with other segments; reading from data (offset 0) would copy a neighbour's bytes
-            // into the checkpoint (reopen corruption). The compressed and fixed-size branches above already
-            // add block_offset(); this UNCOMPRESSED branch (BIT/validity, STRING, single-tuple fixed-size)
-            // must too. Without packing every re-pointed segment sits at offset 0 and the bug stays latent.
-            auto* segment_data = data + segment.block_offset();
 
-            // A STRING segment with big-string markers is not self-contained: the payload can
-            // live in a TRANSIENT block that dies with the process. Copy the segment, move each
-            // payload into a real file block via partial_block_manager, and rewrite the markers;
-            // dp.overflow_blocks records them for reload/compact.
-            if (segment.references_string_overflow(segment_data, segment_size, tuple_count)) {
-                std::pmr::vector<std::byte> rewritten(segment_size, std::byte{0}, column_data_.resource());
-                std::memcpy(rewritten.data(), segment_data, segment_size);
+        // A STRING segment persists a TIGHT image, never its whole allocation. Two reasons, both
+        // handled on a writable copy of the segment:
+        //   * a partially-filled segment keeps its dictionary at the far end of the allocation
+        //     with the unused middle as zero slack — compact_string_dictionary slides the
+        //     dictionary down and shrinks the persisted size to the used prefix (measured before
+        //     this: 8000 rows of 4090-byte text cost 9635 bytes per row on disk, 1365 of them
+        //     this very slack — a quarter of the 16 KiB segment per three values);
+        //   * big-string markers can name TRANSIENT overflow blocks that die with the process —
+        //     persist_string_overflow moves each payload into a real file block and rewrites the
+        //     marker (dp.overflow_blocks records them for reload/compact).
+        // The compaction runs first so the markers are rewritten at their final positions.
+        if (phys == types::physical_type::STRING && data && segment_size > 0 && tuple_count > 0) {
+            auto* segment_data = data + segment.block_offset();
+            std::pmr::vector<std::byte> rewritten(segment_size, std::byte{0}, column_data_.resource());
+            std::memcpy(rewritten.data(), segment_data, segment_size);
+            auto compacted = segment.compact_string_dictionary(rewritten.data(), segment_size, tuple_count);
+            if (compacted.has_error()) {
+                return compacted.convert_error<bool>();
+            }
+            segment_size = compacted.value();
+            if (segment.references_string_overflow(rewritten.data(), segment_size, tuple_count)) {
                 auto persisted = segment.persist_string_overflow(rewritten.data(),
                                                                  segment_size,
                                                                  tuple_count,
@@ -322,16 +326,35 @@ namespace components::table {
                 if (persisted.has_error()) {
                     return persisted;
                 }
-                partial_block_manager_.write_to_block(allocation.block_id,
-                                                      allocation.offset_in_block,
-                                                      rewritten.data(),
-                                                      segment_size);
-            } else {
-                partial_block_manager_.write_to_block(allocation.block_id,
-                                                      allocation.offset_in_block,
-                                                      segment_data,
-                                                      segment_size);
             }
+            auto string_allocation = partial_block_manager_.get_block_allocation(segment_size);
+            partial_block_manager_.write_to_block(string_allocation.block_id,
+                                                  string_allocation.offset_in_block,
+                                                  rewritten.data(),
+                                                  segment_size);
+            dp.row_start = row_start;
+            dp.tuple_count = tuple_count;
+            dp.block_pointer = storage::block_pointer_t(string_allocation.block_id, string_allocation.offset_in_block);
+            dp.compression = compression::compression_type::UNCOMPRESSED;
+            dp.segment_size = segment_size;
+            data_pointers_.push_back(std::move(dp));
+            return true;
+        }
+
+        auto allocation = partial_block_manager_.get_block_allocation(segment_size);
+        if (data && segment_size > 0) {
+            // Read from the segment's OWN payload within its (possibly shared) block. A segment that the
+            // write-through re-pointed via partial-block packing lives at a NON-ZERO block_offset in a
+            // block shared with other segments; reading from data (offset 0) would copy a neighbour's bytes
+            // into the checkpoint (reopen corruption). The compressed and fixed-size branches above already
+            // add block_offset(); this UNCOMPRESSED branch (BIT/validity, empty-STRING, single-tuple
+            // fixed-size) must too. Without packing every re-pointed segment sits at offset 0 and the bug
+            // stays latent.
+            auto* segment_data = data + segment.block_offset();
+            partial_block_manager_.write_to_block(allocation.block_id,
+                                                  allocation.offset_in_block,
+                                                  segment_data,
+                                                  segment_size);
         }
 
         dp.row_start = row_start;

@@ -103,6 +103,16 @@ namespace components::table {
                                 storage::partial_block_manager_t& pbm,
                                 std::vector<uint64_t>& out_blocks);
 
+        // A partially-filled STRING segment keeps its dictionary pressed against the END of the
+        // allocation, leaving the unused middle as zero slack; persisting the whole allocation
+        // writes that slack to the file. This slides the dictionary of `segment_copy` down
+        // against the offset array, rewrites the stored dictionary end, and returns the tight
+        // byte size — the caller persists only that prefix. The LIVE segment is untouched; the
+        // read side resolves every string relative to the stored dictionary end, so the trimmed
+        // image reloads unchanged. Returns data_corruption on an inconsistent image.
+        [[nodiscard]] core::result_wrapper_t<uint64_t>
+        compact_string_dictionary(std::byte* segment_copy, uint64_t segment_size, uint64_t tuple_count) const;
+
         // OOM-propagating: pin/allocate failures surface as out_of_memory.
         [[nodiscard]] core::result_wrapper_t<bool> resize(uint64_t segment_size);
 

@@ -1288,6 +1288,46 @@ namespace components::table {
         return true;
     }
 
+    core::result_wrapper_t<uint64_t> column_segment_t::compact_string_dictionary(std::byte* segment_copy,
+                                                                                 uint64_t segment_size,
+                                                                                 uint64_t tuple_count) const {
+        auto* resource = block->block_manager.buffer_manager.resource();
+        auto corrupt = [&](const char* what) {
+            std::pmr::string message(resource);
+            message.append("checkpoint of STRING segment: ");
+            message.append(what);
+            return core::error_t(core::error_code_t::data_corruption, std::move(message));
+        };
+
+        const uint64_t fixed_part = impl::DICTIONARY_HEADER_SIZE + tuple_count * sizeof(int32_t);
+        if (segment_size < fixed_part) {
+            return corrupt("dictionary header and offset array do not fit the segment");
+        }
+        const auto dict_size = impl::load<uint32_t>(segment_copy);
+        const auto dict_end = impl::load<uint32_t>(segment_copy + sizeof(uint32_t));
+        // Both writers of this image (string_append and this function) keep the dictionary end
+        // equal to the segment size; anything else arrived from outside and cannot be trusted.
+        if (static_cast<uint64_t>(dict_end) != segment_size) {
+            return corrupt("dictionary end does not match the segment size");
+        }
+        if (static_cast<uint64_t>(dict_size) > static_cast<uint64_t>(dict_end)) {
+            return corrupt("dictionary size exceeds the dictionary end");
+        }
+        const uint64_t used = fixed_part + dict_size;
+        if (used > segment_size) {
+            return corrupt("dictionary overlaps the offset array");
+        }
+        if (used == segment_size) {
+            return segment_size; // already tight (a full or reloaded-trimmed segment)
+        }
+        // Slide the dictionary down against the offset array. Rows address their bytes as
+        // (dictionary end - stored offset), so distances survive the move verbatim — including
+        // big-string markers, which are just 16-byte dictionary entries.
+        std::memmove(segment_copy + used - dict_size, segment_copy + dict_end - dict_size, dict_size);
+        impl::store<uint32_t>(static_cast<uint32_t>(used), segment_copy + sizeof(uint32_t));
+        return used;
+    }
+
     core::result_wrapper_t<std::unique_ptr<column_segment_t>>
     column_segment_t::create_segment(storage::buffer_manager_t& manager,
                                      const types::complex_logical_type& type,

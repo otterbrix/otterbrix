@@ -92,45 +92,71 @@ namespace {
         test_clear_directory(config);
         config.wal.on = true;
         config.log.level = log_t::level::off;
-        test_spaces space(config);
-        auto* d = space.dispatcher();
-        auto exec = [&](const std::string& sql) {
-            auto session = otterbrix::session_id_t();
-            return d->execute_sql(session, sql);
-        };
-
-        REQUIRE(exec("CREATE DATABASE t;")->is_success());
-        REQUIRE(exec("CREATE TABLE t.wide (id bigint, payload text);")->is_success());
 
         const std::string small(static_cast<size_t>(value_length), 'x');
         const std::string big(static_cast<size_t>(big_length), 'y');
+        auto expected_payload = [&](int id) -> const std::string& {
+            const bool is_big = every_nth_big > 0 && (id % every_nth_big) == 0;
+            return is_big ? big : small;
+        };
 
-        constexpr int kBatch = 50;
-        for (int base = 0; base < rows; base += kBatch) {
-            std::string sql = "INSERT INTO t.wide (id, payload) VALUES ";
-            for (int i = 0; i < kBatch && base + i < rows; ++i) {
-                const int id = base + i;
-                const bool is_big = every_nth_big > 0 && (id % every_nth_big) == 0;
-                const std::string& value = is_big ? big : small;
-                if (i != 0) {
-                    sql += ", ";
+        {
+            test_spaces space(config);
+            auto* d = space.dispatcher();
+            auto exec = [&](const std::string& sql) {
+                auto session = otterbrix::session_id_t();
+                return d->execute_sql(session, sql);
+            };
+
+            REQUIRE(exec("CREATE DATABASE t;")->is_success());
+            REQUIRE(exec("CREATE TABLE t.wide (id bigint, payload text);")->is_success());
+
+            constexpr int kBatch = 50;
+            for (int base = 0; base < rows; base += kBatch) {
+                std::string sql = "INSERT INTO t.wide (id, payload) VALUES ";
+                for (int i = 0; i < kBatch && base + i < rows; ++i) {
+                    const int id = base + i;
+                    const std::string& value = expected_payload(id);
+                    if (i != 0) {
+                        sql += ", ";
+                    }
+                    sql += "(" + std::to_string(id) + ", '" + value + "')";
+                    out.payload_bytes += value.size();
                 }
-                sql += "(" + std::to_string(id) + ", '" + value + "')";
-                out.payload_bytes += value.size();
+                sql += ";";
+                auto session = otterbrix::session_id_t();
+                auto cur = d->execute_sql(session, sql);
+                if (cur->is_error()) {
+                    out.failed = true;
+                    out.error = cur->get_error().what;
+                    return out;
+                }
             }
-            sql += ";";
-            auto session = otterbrix::session_id_t();
-            auto cur = d->execute_sql(session, sql);
-            if (cur->is_error()) {
-                out.failed = true;
-                out.error = cur->get_error().what;
-                return out;
+            // CHECKPOINT so what is on disk is the settled layout, not whatever happened to be flushed.
+            REQUIRE(exec("CHECKPOINT;")->is_success());
+            out.table_bytes = user_table_bytes(config.disk.path);
+            out.root_bytes = directory_bytes(root);
+        }
+
+        // Reopen from disk and read rows back through the checkpointed layout. The amplification
+        // bound alone would stay green if a tighter layout dropped or garbled bytes, so this
+        // readback is what lets the bound be tightened safely: it covers the first/last rows of
+        // trimmed dictionary segments and (in the mixed shape) values behind big-string markers.
+        {
+            test_spaces reopened(config);
+            auto* d = reopened.dispatcher();
+            const int probes[] = {0, 1, rows / 2, rows - 1};
+            for (const int id : probes) {
+                auto session = otterbrix::session_id_t();
+                auto cur =
+                    d->execute_sql(session, "SELECT payload FROM t.wide WHERE id = " + std::to_string(id) + ";");
+                INFO("readback of row " << id << " after reopen");
+                REQUIRE(cur->is_success());
+                REQUIRE(cur->size() == 1);
+                const auto cell = cur->value(0, 0);
+                REQUIRE(cell.value<std::string_view>() == expected_payload(id));
             }
         }
-        // CHECKPOINT so what is on disk is the settled layout, not whatever happened to be flushed.
-        REQUIRE(exec("CHECKPOINT;")->is_success());
-        out.table_bytes = user_table_bytes(config.disk.path);
-        out.root_bytes = directory_bytes(root);
         return out;
     }
 } // namespace
@@ -149,18 +175,22 @@ TEST_CASE("integration::cpp::test_text_column_storage::amplification_stays_bound
     // segment can hold only a handful of them, and a mix where occasional huge values force
     // overflow blocks.
     //
-    // The bounds predate the numerator fix: they were calibrated when every CREATE TABLE built an
-    // IN_MEMORY table whose data never reached disk, so the old "measured" values were really
-    // (WAL + pg_catalog) / payload with no table in the numerator at all. Measured against the
-    // table's own files they hold for short and mixed values and are EXCEEDED for large inline
-    // ones:
-    //
-    //   short 64 B      9.9x measured   — a short text value still costs about ten times itself
-    //   inline 4090 B   2.36x measured  — 77,082,624 B for 32,720,000 B of payload, 9,635 B per
-    //                                     row carrying 4,098 B; the bound stays at 2.2 as the
-    //                                     target the layout has to come back to, so this case is
-    //                                     EXPECTED RED until near-block-sized values pack better
-    //   mixed           3.0x measured
+    //   short 64 B      9.73x measured  — a short text value still costs about ten times itself
+    //   inline 4090 B   1.74x measured  — was 2.36x (9,635 B on disk per 4,090 B row) while the
+    //                                     checkpoint persisted every 16 KiB string segment at its
+    //                                     full allocation: three 4,090-byte values left 4,082 B
+    //                                     of dictionary slack per segment (1,365 B/row) plus a
+    //                                     16 KiB partial-block tail per 15 segments (364 B/row).
+    //                                     Segments now persist trimmed (compact_string_dictionary),
+    //                                     which brought the LIVE layout to 1.04x; the rest of the
+    //                                     1.74x is the superseded shadow-paging generation the
+    //                                     file retains as free blocks (a mid-load checkpoint's
+    //                                     copy, 87 of 217 blocks, reusable but never truncated).
+    //                                     The 2.2 bound is therefore not tuned to the metric: it
+    //                                     is two checkpoint generations of a tightly-packed
+    //                                     layout (2 x ~1.05) plus margin, and a layout that
+    //                                     wastes the segment tail again will re-cross it.
+    //   mixed           3.02x measured
     const case_t cases[] = {
         {"short values (64 B)", 40000, 64, 0, 0, 10.5},
         {"large inline values (4090 B)", 8000, 4090, 0, 0, 2.2},

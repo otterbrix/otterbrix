@@ -18,6 +18,15 @@ inline configuration::config make_create_config(const std::filesystem::path& pat
     return config;
 }
 
+// column_index answers a result_wrapper_t: a name that is not in the chunk used to come
+// back as a SIZE_MAX sentinel behind an assert, so an embedder asking for a missing column
+// got a silent sentinel instead of a refusal. Unwrap loudly here, the way an embedder should.
+inline uint64_t column_of(const cursor::cursor_t_ptr& c, std::string_view name) {
+    auto idx = c->column_index(name);
+    REQUIRE_FALSE(idx.has_error());
+    return idx.value();
+}
+
 inline void clear_directory(const configuration::config& config) {
     std::filesystem::remove_all(config.disk.path);
     std::filesystem::create_directories(config.disk.path);
@@ -63,7 +72,7 @@ TEST_CASE("example::sql::base") {
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection ORDER BY count;");
             REQUIRE(c->size() == 100);
-            auto col = c->column_index("count");
+            auto col = column_of(c, "count");
             REQUIRE(c->value(col, 0).value<int64_t>() == 0);
             REQUIRE(c->value(col, 1).value<int64_t>() == 1);
             REQUIRE(c->value(col, 2).value<int64_t>() == 2);
@@ -73,7 +82,7 @@ TEST_CASE("example::sql::base") {
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection ORDER BY count DESC;");
             REQUIRE(c->size() == 100);
-            auto col = c->column_index("count");
+            auto col = column_of(c, "count");
             REQUIRE(c->value(col, 0).value<int64_t>() == 99);
             REQUIRE(c->value(col, 1).value<int64_t>() == 98);
             REQUIRE(c->value(col, 2).value<int64_t>() == 97);
@@ -83,7 +92,7 @@ TEST_CASE("example::sql::base") {
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection ORDER BY name;");
             REQUIRE(c->size() == 100);
-            auto col = c->column_index("count");
+            auto col = column_of(c, "count");
             REQUIRE(c->value(col, 0).value<int64_t>() == 0);
             REQUIRE(c->value(col, 1).value<int64_t>() == 1);
             REQUIRE(c->value(col, 2).value<int64_t>() == 10);
@@ -160,15 +169,15 @@ TEST_CASE("example::sql::group_by") {
                              R"_(GROUP BY name;)_");
         REQUIRE(c->size() == 10);
         for (size_t number = 0; number < c->size(); ++number) {
-            auto name = std::string(c->value(c->column_index("name"), number).value<std::string_view>());
+            auto name = std::string(c->value(column_of(c, "name"), number).value<std::string_view>());
             REQUIRE(name == "Name " + std::to_string(number));
-            REQUIRE(c->value(c->column_index("count_"), number).value<uint64_t>() == 10);
-            REQUIRE(c->value(c->column_index("sum_"), number).value<int64_t>() ==
+            REQUIRE(c->value(column_of(c, "count_"), number).value<uint64_t>() == 10);
+            REQUIRE(c->value(column_of(c, "sum_"), number).value<int64_t>() ==
                     5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
-            REQUIRE(static_cast<int64_t>(c->value(c->column_index("avg_"), number).value<double>()) ==
+            REQUIRE(static_cast<int64_t>(c->value(column_of(c, "avg_"), number).value<double>()) ==
                     (static_cast<int64_t>(number) % 20 + (static_cast<int64_t>(number) + 10) % 20) / 2);
-            REQUIRE(c->value(c->column_index("min_"), number).value<int64_t>() == static_cast<int64_t>(number) % 20);
-            REQUIRE(c->value(c->column_index("max_"), number).value<int64_t>() ==
+            REQUIRE(c->value(column_of(c, "min_"), number).value<int64_t>() == static_cast<int64_t>(number) % 20);
+            REQUIRE(c->value(column_of(c, "max_"), number).value<int64_t>() ==
                     (static_cast<int64_t>(number) + 10) % 20);
         }
     }
@@ -185,15 +194,15 @@ TEST_CASE("example::sql::group_by") {
         REQUIRE(c->size() == 10);
         for (size_t i = 0; i < c->size(); ++i) {
             int number = 9 - static_cast<int>(i);
-            auto name = std::string(c->value(c->column_index("name"), i).value<std::string_view>());
+            auto name = std::string(c->value(column_of(c, "name"), i).value<std::string_view>());
             REQUIRE(name == "Name " + std::to_string(number));
-            REQUIRE(c->value(c->column_index("count_"), i).value<uint64_t>() == 10);
-            REQUIRE(c->value(c->column_index("sum_"), i).value<int64_t>() ==
+            REQUIRE(c->value(column_of(c, "count_"), i).value<uint64_t>() == 10);
+            REQUIRE(c->value(column_of(c, "sum_"), i).value<int64_t>() ==
                     5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(static_cast<int64_t>(c->value(c->column_index("avg_"), i).value<double>()) ==
+            REQUIRE(static_cast<int64_t>(c->value(column_of(c, "avg_"), i).value<double>()) ==
                     (number % 20 + (number + 10) % 20) / 2);
-            REQUIRE(c->value(c->column_index("min_"), i).value<int64_t>() == number % 20);
-            REQUIRE(c->value(c->column_index("max_"), i).value<int64_t>() == (number + 10) % 20);
+            REQUIRE(c->value(column_of(c, "min_"), i).value<int64_t>() == number % 20);
+            REQUIRE(c->value(column_of(c, "max_"), i).value<int64_t>() == (number + 10) % 20);
         }
     }
 }

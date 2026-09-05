@@ -286,9 +286,14 @@ namespace components::types {
         absl::MakeInt128(0x1ED09BEAD87C0, 0x378D8E6400000000),
         absl::MakeInt128(0x13426172C74D82, 0x2B878FE800000000),
         absl::MakeInt128(0xC097CE7BC90715, 0xB34B9F1000000000),
-        absl::MakeInt128(0x785EE10D5DA46D9, 0xF436A000000000)
-        // There is another power of 10, but negative counterpart can not be represented, so we are not using it
-        //absl::MakeInt128(0x4B3B4CA85A86C47A, 0x98A224000000000)
+        absl::MakeInt128(0x785EE10D5DA46D9, 0xF436A000000000),
+        // 10^38. The comment that used to sit here claimed its negative counterpart could not
+        // be represented, so the entry was left out. That justification is false: int128's
+        // minimum is -2^127 = -1.70141...e38 and -10^38 clears it by 7.0e37. Leaving it out was
+        // not free — TWO readers indexed past the end of the array: decimal_length()'s
+        // >= POWERS_OF_TEN[38] test, and int_to_decimal's POWERS_OF_TEN[width - scale], which
+        // reaches index 38 for the perfectly legal NUMERIC(38,0).
+        absl::MakeInt128(0x4B3B4CA85A86C47A, 0x98A224000000000)
     };
 
     // double supports up to 15 decimal places, so we stop there

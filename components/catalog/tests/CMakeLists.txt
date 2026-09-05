@@ -13,6 +13,7 @@ set(${PROJECT_NAME}_SOURCES
         test_type_spec_roundtrip.cpp
         test_default_spec_roundtrip.cpp
         test_pg_attribute_mvcc_columns.cpp
+        test_oid_csv_channel.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

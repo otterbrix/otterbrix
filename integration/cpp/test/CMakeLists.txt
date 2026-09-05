@@ -68,6 +68,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_check_expr_unenforceable.cpp
         test_inline_constraints.cpp
         test_constraint_unresolvable_target.cpp
+        test_declared_key_conkey_loss.cpp
+        test_resolve_constraint_unresolved_table.cpp
         test_text_column_storage.cpp
         test_update.cpp
         test_wal_pool.cpp
@@ -78,6 +80,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_nested_payload_replay.cpp
         test_type_spec_write_gate.cpp
         test_wide_integer_literal.cpp
+        test_tinyint_numeric_cast.cpp
         test_alter_add_column_unmaterialized.cpp
         test_sql_features.cpp
         test_unique_constraint_operator.cpp

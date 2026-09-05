@@ -90,8 +90,32 @@ namespace components::operators {
             // The entry's table comes from the tables node; the fixed resolve order
             // (tables before constraints) guarantees its table_md is stamped.
             const auto& target_md = tables_node_->entries()[entry.target].table_md;
-            if (!target_md.has_value() || target_md->table_oid == catalog::INVALID_OID) {
+            // NO table_md is "the table was not found". operator_resolve_table_t
+            // stamps the field only when pg_class answered, and documents the empty
+            // optional as exactly that signal, so a constraint gather for a table
+            // that is not there has nothing to gather — and the missing table is
+            // reported by the layer that looked for it.
+            if (!target_md.has_value()) {
                 continue;
+            }
+            // A NAME THAT RESOLVED WITH NO IDENTITY IS NOT THAT FACT. The table is
+            // in pg_class and its oid came back zero, so nothing below can key on
+            // it. Skipping the entry leaves fks / check_exprs / unique_constraints /
+            // pk_columns EMPTY, and empty is indistinguishable from "this table
+            // declares no constraints": enrich stamps nothing on the DML node, the
+            // planner splices no constraint operator, and EVERY declared key,
+            // foreign key and CHECK on the table stops existing while the statement
+            // reports success. That is the same predicate operator_unique_constraint
+            // refuses on (an unresolved oid is not topology) with a WIDER
+            // consequence — all of the table's constraints instead of one layer
+            // inside one of them — so it is refused the same way.
+            if (target_md->table_oid == catalog::INVALID_OID) {
+                std::string msg = "constraint resolution: table \"";
+                msg += target_md->name;
+                msg += "\" resolved to no oid — its constraints cannot be read";
+                set_error(core::error_t{core::error_code_t::schema_error,
+                                        std::pmr::string{std::move(msg), resource_}});
+                co_return;
             }
             const catalog::oid_t table_oid = target_md->table_oid;
             const auto direction = entry.direction;
@@ -139,6 +163,13 @@ namespace components::operators {
                 // parse_oid_csv returns std::vector (not pmr), so these mirror that type.
                 std::vector<catalog::oid_t> child_attoids;
                 std::vector<catalog::oid_t> parent_attoids;
+                // False when conkey / confkey was not a well-formed OID CSV. A token
+                // parse_oid_csv cannot read is DROPPED from the list, and nothing
+                // downstream can see that it happened: the length guards below compare
+                // the resolved NAMES against the list they were resolved FROM, so a
+                // list that lost a token agrees with itself and passes. This is the
+                // only carrier of that fact.
+                bool keys_readable{true};
                 // conname, carried for the unresolved-column error below only —
                 // fk_info_t does not keep it and nothing else here needs it.
                 std::string constraint_name;
@@ -158,6 +189,9 @@ namespace components::operators {
             // nameable in the message.
             struct pending_unique_t {
                 std::vector<catalog::oid_t> attoids;
+                // False when conkey was not a well-formed OID CSV — see
+                // pending_fk_t::keys_readable for why the vector alone cannot say so.
+                bool conkey_readable{true};
                 bool is_pk{false};
                 std::string constraint_name;
                 catalog::oid_t constraint_oid{catalog::INVALID_OID};
@@ -169,13 +203,31 @@ namespace components::operators {
                     continue;
                 }
                 for (uint64_t ci = 0; ci < con_chunk.size(); ++ci) {
-                    if (con_chunk.is_null(catalog::pg_constraint_col::contype, ci)) {
-                        continue;
-                    }
-                    const auto contype_cell =
-                        con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::contype, ci);
+                    // A ROW WHOSE contype CANNOT BE READ IS A CONSTRAINT OF UNKNOWN
+                    // KIND — and one of those kinds is the UNIQUE / PRIMARY KEY the
+                    // user declared. This whole loop classifies by that one char, so
+                    // a row it cannot classify used to leave the constraint set right
+                    // here, one step BEFORE any of the refusals below could see it:
+                    // the same silence as a dropped conkey group, and it is what made
+                    // the "every 'u'/'p' row becomes a pending group" claim below
+                    // wider than the code. contype is NOT NULL in the schema and
+                    // build_create_constraint_writes always writes it, so an
+                    // unreadable one is a catalog nothing in this engine produced.
+                    const std::string_view contype_cell =
+                        con_chunk.is_null(catalog::pg_constraint_col::contype, ci)
+                            ? std::string_view{}
+                            : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::contype, ci);
                     if (contype_cell.empty()) {
-                        continue;
+                        std::string msg = "constraint row in pg_constraint (oid ";
+                        msg += con_chunk.is_null(catalog::pg_constraint_col::oid, ci)
+                                   ? std::string{"unreadable"}
+                                   : std::to_string(static_cast<catalog::oid_t>(
+                                         con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci)));
+                        msg += ") has no readable contype — what it declares cannot be determined, so it cannot "
+                               "be enforced or dismissed";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
                     }
                     const char contype = contype_cell[0];
 
@@ -211,14 +263,21 @@ namespace components::operators {
                                 ? 'a'
                                 : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confupdtype, ci)[0];
 
-                        pending.child_attoids = catalog::parse_oid_csv(std::string(
-                            con_chunk.is_null(catalog::pg_constraint_col::conkey, ci)
-                                ? std::string_view{}
-                                : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conkey, ci)));
-                        pending.parent_attoids = catalog::parse_oid_csv(std::string(
-                            con_chunk.is_null(catalog::pg_constraint_col::confkey, ci)
-                                ? std::string_view{}
-                                : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confkey, ci)));
+                        bool conkey_ok = true;
+                        bool confkey_ok = true;
+                        pending.child_attoids = catalog::parse_oid_csv(
+                            std::string(
+                                con_chunk.is_null(catalog::pg_constraint_col::conkey, ci)
+                                    ? std::string_view{}
+                                    : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conkey, ci)),
+                            conkey_ok);
+                        pending.parent_attoids = catalog::parse_oid_csv(
+                            std::string(
+                                con_chunk.is_null(catalog::pg_constraint_col::confkey, ci)
+                                    ? std::string_view{}
+                                    : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::confkey, ci)),
+                            confkey_ok);
+                        pending.keys_readable = conkey_ok && confkey_ok;
 
                         // One key row per FK, positionally aligned to pending_fks —
                         // child by child_table_oid, parent by parent_table_oid (both
@@ -245,22 +304,38 @@ namespace components::operators {
                     } else if ((contype == 'u' || contype == 'p') && direction == direction_t::outgoing) {
                         // UNIQUE / PRIMARY KEY: the enforced columns live in conkey
                         // (same encoding as an FK's conkey). Names resolved after the loop.
-                        auto attoids = catalog::parse_oid_csv(std::string(
-                            con_chunk.is_null(catalog::pg_constraint_col::conkey, ci)
-                                ? std::string_view{}
-                                : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conkey, ci)));
-                        if (!attoids.empty()) {
-                            pending_unique_t pending;
-                            pending.attoids = std::move(attoids);
-                            pending.is_pk = (contype == 'p');
-                            pending.constraint_oid = static_cast<catalog::oid_t>(
-                                con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci));
-                            if (!con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
-                                pending.constraint_name.assign(
-                                    con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
-                            }
-                            pending_uniques.push_back(std::move(pending));
+                        // EVERY 'u' / 'p' ROW BECOMES A PENDING GROUP, whatever its
+                        // conkey decoded to — and every row of the batch reaches this
+                        // classification now that an unreadable contype stops the
+                        // statement above instead of dropping the row. This used to be gated on
+                        // `if (!attoids.empty())`, and that gate is why a declared key
+                        // could stop existing in silence: the guards that refuse an
+                        // unresolvable key list all live in the loop over
+                        // pending_uniques BELOW, so a group dropped here was never seen
+                        // by any of them, the constraint left the set without a word,
+                        // and the table went back to taking every row while the
+                        // statement reported success. An empty or unreadable conkey is
+                        // a constraint that cannot be enforced — which is a refusal,
+                        // not a group to skip — so it is carried down to where the
+                        // refusal can name it.
+                        bool conkey_ok = true;
+                        auto attoids = catalog::parse_oid_csv(
+                            std::string(
+                                con_chunk.is_null(catalog::pg_constraint_col::conkey, ci)
+                                    ? std::string_view{}
+                                    : con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conkey, ci)),
+                            conkey_ok);
+                        pending_unique_t pending;
+                        pending.attoids = std::move(attoids);
+                        pending.conkey_readable = conkey_ok;
+                        pending.is_pk = (contype == 'p');
+                        pending.constraint_oid = static_cast<catalog::oid_t>(
+                            con_chunk.get_value<std::uint32_t>(catalog::pg_constraint_col::oid, ci));
+                        if (!con_chunk.is_null(catalog::pg_constraint_col::conname, ci)) {
+                            pending.constraint_name.assign(
+                                con_chunk.get_value<std::string_view>(catalog::pg_constraint_col::conname, ci));
                         }
+                        pending_uniques.push_back(std::move(pending));
                     }
                 }
             }
@@ -325,6 +400,44 @@ namespace components::operators {
                         }
                         return out;
                     };
+                    // conkey / confkey WAS NOT A WELL-FORMED OID CSV. The tokens that
+                    // did read are a shorter list, and the two length guards below
+                    // compare the resolved names against THAT list, so they agree with
+                    // themselves and pass — the constraint quietly becomes one on a
+                    // different column set. This is the only point where the loss is
+                    // still visible.
+                    if (!pending_fks[k].keys_readable) {
+                        std::string msg = "foreign key constraint \"";
+                        msg += describe_constraint();
+                        msg += "\": column list in pg_constraint cannot be read";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
+                    }
+                    // AND AN EMPTY COLUMN LIST IS NOT A FOREIGN KEY. Both lists are
+                    // read POSITIONALLY and paired with each other, so an FK with no
+                    // columns on either side references nothing and is enforceable
+                    // against nothing. It was believed empty lists ride down to a
+                    // refusal on their own; they do not. The two length guards below
+                    // compare the resolved names against the attoid list they came
+                    // FROM, so at length zero they compare 0 with 0 and pass, and the
+                    // push at the end of this pass is gated on the resulting name
+                    // lists being non-empty — so the constraint left `fks` WITHOUT A
+                    // WORD: enrich stamped no outgoing_fks, the planner spliced no
+                    // fk_check, and the referencing table took orphans while
+                    // ON DELETE RESTRICT let the parent go. Same shape, same reason
+                    // and same answer as the empty conkey on the UNIQUE / PK leg.
+                    if (child_attoids.empty() || parent_attoids.empty()) {
+                        std::string msg = "foreign key constraint \"";
+                        msg += describe_constraint();
+                        msg += child_attoids.empty() ? "\": referencing column list is empty in "
+                                                       "pg_constraint.conkey — nothing to enforce"
+                                                     : "\": referenced column list is empty in "
+                                                       "pg_constraint.confkey — nothing to point at";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
+                    }
                     std::pmr::vector<components::vector::data_chunk_t> empty_child(resource_);
                     std::pmr::vector<components::vector::data_chunk_t> empty_parent(resource_);
                     auto& child_attr = k < child_results.size() ? child_results[k] : empty_child;
@@ -535,9 +648,15 @@ namespace components::operators {
                         }
                     }
 
-                    if (!fk.child_col_names.empty() && !fk.parent_col_names.empty()) {
-                        fks.push_back(std::move(fk));
-                    }
+                    // UNCONDITIONAL. The gate that used to stand here — push only if
+                    // both name lists are non-empty — was the FK leg's silent drop:
+                    // it is reached only after the guards above have refused an
+                    // unreadable column list, an empty one on either side, and a
+                    // name list shorter than the attoids it was resolved from, so
+                    // both lists are now provably non-empty and of the declared
+                    // length. A condition that can no longer be false is not a guard;
+                    // leaving it would just hide the next way an FK could vanish.
+                    fks.push_back(std::move(fk));
                 }
             }
 
@@ -566,6 +685,39 @@ namespace components::operators {
 
                 for (auto& pending : pending_uniques) {
                     const auto& attoids = pending.attoids;
+                    // Names this constraint in the refusals below — a constraint the
+                    // resolve refuses has to be nameable even when it was written
+                    // without a name. Same shape as pending_fk_t's describe_constraint.
+                    auto describe_key = [&]() {
+                        std::string out = pending.is_pk ? "primary key constraint \"" : "unique constraint \"";
+                        if (pending.constraint_name.empty()) {
+                            out += "oid ";
+                            out += std::to_string(pending.constraint_oid);
+                        } else {
+                            out += pending.constraint_name;
+                        }
+                        out += '"';
+                        return out;
+                    };
+                    // A KEY COLUMN LIST THAT CANNOT BE READ IS NOT A KEY. Both shapes
+                    // arrive here now that the decode above stopped dropping them: a
+                    // conkey that is EMPTY (no columns to enforce — every row carries
+                    // the same zero-column key) and one whose tokens parse_oid_csv could
+                    // not read (the surviving tokens are a DIFFERENT, shorter key, and
+                    // the length guard below cannot tell, because it compares the names
+                    // against the very list that lost them). Either way the constraint
+                    // the user declared is not the one the engine would enforce, and the
+                    // rows are already written by the time a DML constraint sink runs —
+                    // so this refuses instead of enforcing something else or nothing.
+                    if (!pending.conkey_readable || attoids.empty()) {
+                        std::string msg = describe_key();
+                        msg += pending.conkey_readable
+                                   ? ": key column list is empty in pg_constraint.conkey — nothing to enforce"
+                                   : ": key column list in pg_constraint.conkey cannot be read";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
+                    }
                     std::vector<std::string> names;
                     names.reserve(attoids.size());
                     for (const auto& wanted_oid : attoids) {
@@ -610,14 +762,8 @@ namespace components::operators {
                     // refused at DDL (executor_t::execute_plan_full), so what is left is
                     // a catalog written before that gate existed.
                     if (names.size() != attoids.size()) {
-                        std::string msg = pending.is_pk ? "primary key constraint \"" : "unique constraint \"";
-                        if (pending.constraint_name.empty()) {
-                            msg += "oid ";
-                            msg += std::to_string(pending.constraint_oid);
-                        } else {
-                            msg += pending.constraint_name;
-                        }
-                        msg += "\": key column list cannot be resolved — a column it is declared on has no "
+                        std::string msg = describe_key();
+                        msg += ": key column list cannot be resolved — a column it is declared on has no "
                                "live pg_attribute row";
                         set_error(core::error_t{core::error_code_t::schema_error,
                                                 std::pmr::string{std::move(msg), resource_}});

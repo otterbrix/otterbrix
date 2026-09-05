@@ -1,11 +1,18 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 #include <services/dispatcher/dispatcher.hpp>
 
 #include <actor-zeta/spawn.hpp>
+#include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/helpers.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -312,4 +319,219 @@ TEST_CASE("services::dispatcher::computed_operations") {
         REQUIRE(seen_name);
         REQUIRE(seen_count);
     }
+}
+
+// ===========================================================================
+// A conkey THAT IS NOT WHAT encode_oid_csv WROTE MUST STOP THE STATEMENT.
+//
+// pg_constraint.conkey is a CSV of column attoids, read POSITIONALLY and
+// enforced as an ordered tuple. parse_oid_csv answers the decoded list plus an
+// `ok` channel, because the list alone cannot carry the loss: every guard
+// downstream compares the resolved column NAMES against the very attoid list
+// they were resolved from, so a list that lost a token — or gained a wrong one —
+// agrees with itself and passes.
+//
+// Two shapes used to come back with `ok == true`:
+//
+//   * TRUNCATED AT A COMMA ("7,11," for "7,11,13"): the loop stopped at the last
+//     separator without ever looking at the token behind it, so a two-column key
+//     read back as a two-column key while the third column was gone. The engine
+//     then enforces a NARROWER key than the one declared and refuses writes the
+//     declared key permits.
+//
+//   * A TOKEN TOO LARGE FOR AN OID ("4294967297"): the read went through a
+//     64-bit integer and static_cast the result down to 32 bits, so 2^32 + N
+//     read as N — THE KEY BINDS TO THE NEIGHBOURING COLUMN. One token in, one
+//     token out; the length guard has nothing to notice.
+//
+// HOW THE ROW IS PRODUCED. The pg_constraint row is built by the engine's own
+// build_create_constraint_writes for the constraint being declared and written
+// through the engine's own append_pg_catalog_row — the same call operator_insert
+// makes for every DDL row. Exactly ONE cell is then different: conkey carries the
+// text a truncated or mis-serialized write leaves behind, which is the only way
+// this population is reachable at all (encode_oid_csv, the writer, emits neither
+// shape).
+// ===========================================================================
+
+namespace {
+
+    // Write one pg_constraint row (+ its pg_depend rows) for a UNIQUE constraint
+    // on `key_attoids` of `table_oid`. `conkey_text` replaces the encoded column
+    // list, and a non-null `contype_text` replaces the constraint-kind code.
+    void plant_unique_constraint_row(test_dispatcher& test,
+                                     std::pmr::memory_resource* resource,
+                                     components::catalog::oid_t table_oid,
+                                     const std::string& con_name,
+                                     const std::vector<components::catalog::oid_t>& key_attoids,
+                                     const std::string& conkey_text,
+                                     const char* contype_text = nullptr) {
+        components::execution_context_t ctx{components::session::session_id_t{},
+                                            components::table::transaction_data{0, 0},
+                                            {}};
+        auto oids = test.disk_invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        REQUIRE_FALSE(oids.empty());
+        auto writes = components::catalog::build_create_constraint_writes(resource,
+                                                                          con_name,
+                                                                          table_oid,
+                                                                          oids.front(),
+                                                                          /*contype=*/'u',
+                                                                          components::catalog::INVALID_OID,
+                                                                          key_attoids,
+                                                                          /*ref_column_attoids=*/{},
+                                                                          /*fk_matchtype=*/'s',
+                                                                          /*fk_del_action=*/'a',
+                                                                          /*fk_upd_action=*/'a',
+                                                                          /*check_expr=*/"");
+        for (auto& w : writes) {
+            if (w.table_oid == well_known_oid::pg_constraint_table) {
+                w.row.set_value(components::catalog::pg_constraint_col::conkey,
+                                std::uint64_t{0},
+                                std::string_view{conkey_text});
+                if (contype_text != nullptr) {
+                    w.row.set_value(components::catalog::pg_constraint_col::contype,
+                                    std::uint64_t{0},
+                                    std::string_view{contype_text});
+                }
+            }
+            auto appended = test.disk_invoke(&manager_disk_t::append_pg_catalog_row, ctx, w.table_oid, std::move(w.row));
+            REQUIRE_FALSE(appended.has_error());
+        }
+        test.step();
+    }
+
+    // (table oid, attoid of `id`, attoid of `code`) for a freshly created
+    // two-column table, read back through the live catalog-read path.
+    struct planted_table_t {
+        components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
+        components::catalog::oid_t id_attoid{components::catalog::INVALID_OID};
+        components::catalog::oid_t code_attoid{components::catalog::INVALID_OID};
+    };
+
+    planted_table_t create_two_column_table(test_dispatcher& test) {
+        test.execute_sql("CREATE DATABASE conkey_db;");
+        REQUIRE(test.take_result()->is_success());
+        test.execute_sql("CREATE TABLE conkey_db.t (id bigint, code bigint);");
+        REQUIRE(test.take_result()->is_success());
+
+        auto rns = test.resolve_namespace("conkey_db");
+        REQUIRE(rns.found);
+        auto rt = test.resolve_table(rns.oid, "t");
+        REQUIRE(rt.found);
+        planted_table_t out;
+        out.table_oid = rt.oid;
+        for (const auto& col : rt.columns) {
+            if (col.attname == "id")
+                out.id_attoid = col.attoid;
+            if (col.attname == "code")
+                out.code_attoid = col.attoid;
+        }
+        REQUIRE(out.table_oid != components::catalog::INVALID_OID);
+        REQUIRE(out.id_attoid != components::catalog::INVALID_OID);
+        REQUIRE(out.code_attoid != components::catalog::INVALID_OID);
+        return out;
+    }
+
+} // namespace
+
+// UNIQUE (id, code) whose conkey lost its tail to a truncation. The declared key
+// permits two rows that share `id` and differ in `code`; the truncated key —
+// UNIQUE (id) — does not. Refusing that write as a DUPLICATE is the engine
+// enforcing a constraint the user never wrote, and saying so in the user's face.
+TEST_CASE("services::dispatcher::conkey_csv::a_conkey_truncated_at_a_comma_is_not_a_narrower_key") {
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_conkey_truncated");
+    const auto planted = create_two_column_table(test);
+
+    plant_unique_constraint_row(test,
+                                mr.get(),
+                                planted.table_oid,
+                                "uq_id_code",
+                                {planted.id_attoid, planted.code_attoid},
+                                std::to_string(planted.id_attoid) + ",");
+
+    test.execute_sql("INSERT INTO conkey_db.t (id, code) VALUES (1, 100);");
+    auto first = test.take_result();
+    INFO("first INSERT: " << (first->is_error() ? std::string(first->get_error().what) : std::string("accepted")));
+
+    test.execute_sql("INSERT INTO conkey_db.t (id, code) VALUES (1, 200);");
+    auto permitted = test.take_result();
+    const std::string what = permitted->is_error() ? std::string(permitted->get_error().what) : std::string();
+    INFO("INSERT the DECLARED key (id, code) permits: " << (permitted->is_error() ? what : std::string("accepted")));
+
+    INFO("a key column list that cannot be read is not a shorter key column list");
+    const bool refused_under_a_key_never_declared =
+        permitted->is_error() && what.find("UNIQUE constraint violated") != std::string::npos;
+    REQUIRE_FALSE(refused_under_a_key_never_declared);
+    if (permitted->is_error()) {
+        INFO("and a refusal has to name the constraint the user can act on");
+        CHECK(what.find("uq_id_code") != std::string::npos);
+    }
+}
+
+// UNIQUE (id) whose conkey token is 2^32 above the attoid of `code`. Read through
+// a 64-bit integer and cast down, it IS the attoid of `code`: the declared key
+// silently becomes a key on the neighbouring column, and duplicate `id`s walk in.
+TEST_CASE("services::dispatcher::conkey_csv::an_out_of_range_conkey_does_not_bind_the_key_to_another_column") {
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_conkey_out_of_range");
+    const auto planted = create_two_column_table(test);
+
+    const std::string shifted =
+        std::to_string(static_cast<std::uint64_t>(planted.code_attoid) + (std::uint64_t{1} << 32));
+    plant_unique_constraint_row(test, mr.get(), planted.table_oid, "uq_id", {planted.id_attoid}, shifted);
+
+    test.execute_sql("INSERT INTO conkey_db.t (id, code) VALUES (1, 100);");
+    auto first = test.take_result();
+    INFO("first INSERT: " << (first->is_error() ? std::string(first->get_error().what) : std::string("accepted")));
+
+    test.execute_sql("INSERT INTO conkey_db.t (id, code) VALUES (1, 200);");
+    auto dup = test.take_result();
+    INFO("duplicate-id INSERT: " << (dup->is_error() ? std::string(dup->get_error().what) : std::string("accepted")));
+
+    // THE USER CONSEQUENCE, read off the table: how many rows carry id = 1 under
+    // a declared UNIQUE (id).
+    test.execute_sql("SELECT code FROM conkey_db.t WHERE id = 1;");
+    auto stored = test.take_result();
+    INFO("read error: " << (stored->is_error() ? std::string(stored->get_error().what) : std::string("none")));
+    REQUIRE(stored->is_success());
+    INFO("rows carrying id = 1: " << stored->size());
+    INFO("a UNIQUE (id) that was accepted must be enforced on id, not on whichever column the token decayed to");
+    REQUIRE(stored->size() <= 1);
+}
+
+// A pg_constraint row whose contype cannot be read is a constraint of UNKNOWN
+// KIND — it may be the UNIQUE the user declared. The decode loop classified rows
+// by that char and skipped whatever it could not classify, so such a row left the
+// constraint set before any of the refusals below it could see it: the same
+// silence as a dropped conkey group, one step earlier in the same loop.
+TEST_CASE("services::dispatcher::conkey_csv::a_constraint_row_of_unknown_kind_is_not_skipped") {
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    test_dispatcher test(mr.get(), "/tmp/test_dispatcher_conkey_unknown_kind");
+    const auto planted = create_two_column_table(test);
+
+    // A perfectly readable key column list — only the KIND of the constraint is
+    // gone, so nothing but the classification step can notice this row at all.
+    plant_unique_constraint_row(test,
+                                mr.get(),
+                                planted.table_oid,
+                                "uq_id_kindless",
+                                {planted.id_attoid},
+                                std::to_string(planted.id_attoid),
+                                /*contype_text=*/"");
+
+    test.execute_sql("INSERT INTO conkey_db.t (id, code) VALUES (1, 100);");
+    auto first = test.take_result();
+    INFO("first INSERT: " << (first->is_error() ? std::string(first->get_error().what) : std::string("accepted")));
+
+    test.execute_sql("INSERT INTO conkey_db.t (id, code) VALUES (1, 200);");
+    auto dup = test.take_result();
+    INFO("duplicate-id INSERT: " << (dup->is_error() ? std::string(dup->get_error().what) : std::string("accepted")));
+
+    test.execute_sql("SELECT code FROM conkey_db.t WHERE id = 1;");
+    auto stored = test.take_result();
+    INFO("read error: " << (stored->is_error() ? std::string(stored->get_error().what) : std::string("none")));
+    REQUIRE(stored->is_success());
+    INFO("rows carrying id = 1: " << stored->size());
+    INFO("a constraint row that cannot be classified must stop the statement, not leave the set unannounced");
+    REQUIRE(stored->size() <= 1);
 }

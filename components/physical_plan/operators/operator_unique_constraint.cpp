@@ -233,13 +233,40 @@ namespace components::operators {
                 counts.push_back(chunk_count);
             }
 
-            // LAYER 2 — existing-row detection. Skipped without a disk actor / a
-            // resolved table oid (e.g. unit tests) — the within-batch guarantee
-            // above is unaffected. After LAYER 1 every qualifying key is unique in
-            // the batch, so the just-written row contributes exactly one row to its
-            // key's scan result: a match count > 1 means a pre-existing distinct row.
-            if (ctx->disk_address == actor_zeta::address_t::empty_address() || table_oid_ == catalog::INVALID_OID) {
+            // LAYER 2 — existing-row detection. After LAYER 1 every qualifying key is
+            // unique in the batch, so the just-written row contributes exactly one row
+            // to its key's scan result: a match count > 1 means a pre-existing distinct
+            // row.
+            //
+            // NO DISK ACTOR is TOPOLOGY: there is nobody to ask about stored rows, so
+            // the layer does not run and the within-batch guarantee above stands alone.
+            // That is how the operator's unit tests drive it.
+            if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
                 continue;
+            }
+            // AN UNRESOLVED TABLE OID IS NOT TOPOLOGY. The disk actor is right there and
+            // the operator would be declining to use it, which is this operator's SUCCESS
+            // path: the rows are ALREADY written when a constraint sink runs, so skipping
+            // the stored-row scan leaves a duplicate of a stored row in the table and
+            // reports success — the declared UNIQUE / PRIMARY KEY enforced nothing
+            // against anything already there. The two guards above refuse an empty key
+            // column list and a key column with no position in the written row for
+            // exactly that reason; an oid that never resolved is the same fact about the
+            // table instead of about the columns, so it is refused the same way.
+            //
+            // This names no live SQL path. Both splice sites (planner.cpp
+            // rewrite_insert / rewrite_update) pass the oid of the very node whose
+            // unique_groups came from catalog_resolves_t::constraints_for(table_oid),
+            // and that lookup returns nullptr for INVALID_OID — so a non-empty group
+            // list implies a resolved oid. It is the floor under a write-set that
+            // reached the sink without one.
+            if (table_oid_ == catalog::INVALID_OID) {
+                set_error(core::error_t{
+                    core::error_code_t::invalid_constraint,
+                    std::pmr::string{"UNIQUE constraint: the table it is declared on did not resolve — "
+                                     "stored rows cannot be checked",
+                                     resource_}});
+                co_return;
             }
 
             // STRADDLE-PACK all qualifying rows of the group (across input chunks)

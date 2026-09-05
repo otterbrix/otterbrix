@@ -256,3 +256,66 @@ TEST_CASE("unique constraint operator: a key column list that is empty is refuse
     REQUIRE(run_unique(&resource, std::move(chunk), {{}}, &err));
     INFO("error: " << err);
 }
+
+// ---------------------------------------------------------------------------
+// LAYER 2 IS NOT SWITCHED OFF BY AN UNRESOLVED TABLE NAME.
+//
+// The existing-row layer used to be skipped on
+//
+//     ctx->disk_address == empty_address() || table_oid_ == INVALID_OID
+//
+// and a skip here is this operator's SUCCESS path: the rows are ALREADY written
+// when a constraint sink runs, so skipping the scan leaves a duplicate of a
+// STORED row in the table and reports success. The two halves of that condition
+// are not the same kind of fact. An empty disk address is TOPOLOGY — there is no
+// disk actor to ask, which is how the unit tests above run. INVALID_OID is an
+// UNRESOLVED TABLE NAME: a disk actor is right there, and the operator declines
+// to use it. That is the same "success path a declared key must not have" the
+// empty-group and absent-column guards above already close, so it is closed the
+// same way.
+//
+// PATH NOT NAMED. No live SQL statement reaches it: both splice sites
+// (planner.cpp rewrite_insert / rewrite_update) take the oid from the very node
+// whose unique_groups came from catalog_resolves_t::constraints_for(table_oid),
+// and that function returns nullptr for INVALID_OID — so a non-empty group list
+// implies a resolved oid. This case is therefore a SENTINEL, and its sensitivity
+// is proven by injection rather than by being green: with the old
+// `|| table_oid_ == catalog::INVALID_OID` restored in the LAYER-2 skip, it goes
+// red on the REQUIRE below (the operator reports success over an existing-row
+// check it never ran). Re-adding the oid to the skip is exactly that injection.
+TEST_CASE("unique constraint operator: an unresolved table oid does not disable the existing-row layer",
+          "[unique_constraint]") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::vector<types::complex_logical_type> cols(&resource);
+    cols.emplace_back(types::logical_type::BIGINT);
+    cols.back().set_alias("a");
+    vector::data_chunk_t chunk(&resource, cols, 2);
+    // Two DISTINCT keys: LAYER 1 has nothing to say about them, so whatever the
+    // operator answers here is LAYER 2's answer alone.
+    chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
+    chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(2)));
+    chunk.set_cardinality(2);
+
+    operators::operator_ptr op(
+        new operators::operator_unique_constraint_t(&resource, log_t{}, catalog::INVALID_OID, {{"a"}}));
+    op->set_children(make_child(&resource, std::move(chunk)));
+
+    pipeline::context_t ctx(logical_plan::storage_parameters{&resource});
+    // A disk actor IS wired up. address_t::operator== compares the pointee, so
+    // any non-null pointer is "not the empty address" as far as the operator's
+    // topology check goes; nothing is ever enqueued on it, because the refusal
+    // lands before the first send.
+    int disk_actor_stand_in = 0;
+    ctx.disk_address = actor_zeta::address_t{&resource, &disk_actor_stand_in};
+
+    auto fut = op->await_async_and_resume(&ctx);
+    REQUIRE(fut.is_ready());
+    std::move(fut).take_ready();
+
+    INFO("a UNIQUE group whose table never resolved must be refused, not passed");
+    REQUIRE(op->has_error());
+    const std::string err{op->get_error().what};
+    INFO("error: " << err);
+    // The message has to say WHICH fact is missing, not just that something is.
+    REQUIRE(err.find("table") != std::string::npos);
+}

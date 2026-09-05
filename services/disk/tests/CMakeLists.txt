@@ -21,6 +21,7 @@ set(${PROJECT_NAME}_SOURCES
     test_persistence.cpp
     test_vacuum_footprint.cpp
     test_checkpoint_dirty.cpp
+    test_open_refusals.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

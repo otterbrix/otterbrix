@@ -218,8 +218,19 @@ namespace services::disk {
                           "manager_disk_t::bootstrap_system_tables_sync creating disk : {} oid={}",
                           std::string(def.name),
                           static_cast<unsigned>(tbl_oid));
-                    // System tables are never computed (relkind='g' is user-table-only).
-                    create_storage_disk_sync(tbl_oid, sys_db_oid, def.columns, otbx, /*is_computed=*/false);
+                    // System tables are never computed (relkind='g' is user-table-only). The
+                    // create reports now; the shared post-condition below is still what decides
+                    // the refusal (it also covers the load leg and the transfer), so this only
+                    // adds the CAUSE to the log line that used to call every failure a duplicate.
+                    if (auto create_err =
+                            create_storage_disk_sync(tbl_oid, sys_db_oid, def.columns, otbx, /*is_computed=*/false);
+                        create_err.contains_error()) {
+                        error(log_,
+                              "bootstrap , system table {} oid={} could not be created: {}",
+                              std::string(def.name),
+                              static_cast<unsigned>(tbl_oid),
+                              create_err.what.c_str());
+                    }
                     took_create_leg = true;
                     needs_seeding = true;
                 }
@@ -232,23 +243,17 @@ namespace services::disk {
             // same way — no storage for this oid — and this is the one place that can see it.
             if (agents_.empty() || agents_[0] == nullptr || !agents_[0]->has_storage_sync(tbl_oid)) {
                 // A REFUSAL MUST BE RETRYABLE, so it may not leave behind the one thing that
-                // would block the retry. A create that failed on its very first write still
-                // leaves the file the OPEN created: zero bytes, no header, no root. On the next
-                // start that file takes the LOAD leg and is refused as "not a database" — so a
-                // transient device error would have turned into a database nobody can open
-                // again. Removing it destroys no evidence (it never held a byte, this call made
-                // it seconds ago, and the log line below names it); a file that already existed
-                // when this call started took the load leg and is never touched here.
-                if (took_create_leg) {
-                    std::error_code ec;
-                    if (std::filesystem::exists(otbx, ec) && std::filesystem::file_size(otbx, ec) == 0 && !ec) {
-                        std::filesystem::remove(otbx, ec);
-                    }
-                }
+                // would block the retry: the zero-byte file a create leaves when its very first
+                // write is refused. That cleanup now lives inside create_storage_disk_sync,
+                // which is where every caller reaches it — rehydrate and replay synthesis run
+                // the same create and used to leave the same stump with no cleanup at all.
+                // `took_create_leg` stays: it is what tells this post-condition which leg the
+                // table came through, and the load leg must never be reported as a failed create.
                 error(log_,
-                      "bootstrap REFUSED , system table {} oid={} did not come up (path {})",
+                      "bootstrap REFUSED , system table {} oid={} did not come up on the {} leg (path {})",
                       std::string(def.name),
                       static_cast<unsigned>(tbl_oid),
+                      took_create_leg ? "create" : "load",
                       otbx.string());
                 throw std::runtime_error("a pg_catalog system table did not come up, refusing to start: " +
                                          std::string(def.name));
@@ -263,11 +268,24 @@ namespace services::disk {
         // above instead).
 
         // direct_append_sync answers with the appended row's START ROW, not a count
-        // (table_storage_adapter_t::append; manager_disk_storage.cpp:11-27, :63-71), and it
-        // returns 0 both for the FIRST row of a fresh table and for a failed append — so its
-        // answer cannot tell success from failure at any of the five bootstrap call sites, and
-        // all five discard it. The post-condition is therefore stated on the TABLE: a system
-        // table this bootstrap seeded must hold exactly the rows it wrote.
+        // (table_storage_adapter_t::append; manager_disk_storage.cpp), so its VALUE still
+        // cannot tell "seeded row 0" from "seeded row 0" at any of the five call sites below.
+        // Its wrapper can and does say when a row did not land at all, and each site reports
+        // that — but the post-condition stays stated on the TABLE, because a seed can also go
+        // missing without any single append refusing: a system table this bootstrap seeded
+        // must hold exactly the rows it wrote.
+        // Bind each seeding append's wrapper: a refused row is named here, with its cause,
+        // rather than being inferred from the row count that require_seeded checks after.
+        auto seed_row = [&](catalog::oid_t tbl_oid, std::string_view tbl_name, components::vector::data_chunk_t& row) {
+            if (auto seeded = direct_append_sync(tbl_oid, row); seeded.has_error()) {
+                error(log_,
+                      "bootstrap , builtin row for system table {} oid={} was not written: {}",
+                      std::string(tbl_name),
+                      static_cast<unsigned>(tbl_oid),
+                      seeded.error().what.c_str());
+            }
+        };
+
         auto require_seeded = [&](catalog::oid_t tbl_oid, std::string_view tbl_name, std::uint64_t expected) {
             const auto seeded = rows_in_sync(tbl_oid);
             if (seeded != expected) {
@@ -293,7 +311,7 @@ namespace services::disk {
                     chunk.set_value(0, 0, std::string_view("TimeZone"));
                     chunk.set_value(1, 0, std::string_view("UTC"));
                 });
-                direct_append_sync(catalog::well_known_oid::pg_settings_table, row);
+                seed_row(catalog::well_known_oid::pg_settings_table, settings_def->name, row);
                 require_seeded(catalog::well_known_oid::pg_settings_table, settings_def->name, 1);
             }
             auto tz_name = read_setting_sync("TimeZone");
@@ -351,7 +369,7 @@ namespace services::disk {
                     chunk.set_value(0, 0, db.oid);
                     chunk.set_value(1, 0, db.name);
                 });
-                direct_append_sync(pg_database_oid, row);
+                seed_row(pg_database_oid, def->name, row);
                 require_seeded(pg_database_oid, def->name, 1);
             }
         }
@@ -364,7 +382,7 @@ namespace services::disk {
                         chunk.set_value(0, 0, nrow.oid);
                         chunk.set_value(1, 0, nrow.name);
                     });
-                    direct_append_sync(pg_namespace_oid_tbl, row);
+                    seed_row(pg_namespace_oid_tbl, def->name, row);
                     ++written;
                 }
                 require_seeded(pg_namespace_oid_tbl, def->name, written);
@@ -380,7 +398,7 @@ namespace services::disk {
                         chunk.set_value(1, 0, trow.name);
                         chunk.set_value(2, 0, pg_catalog_ns_oid);
                     });
-                    direct_append_sync(pg_type_oid, row);
+                    seed_row(pg_type_oid, def->name, row);
                     ++written;
                 }
                 require_seeded(pg_type_oid, def->name, written);
@@ -396,7 +414,7 @@ namespace services::disk {
                         chunk.set_value(1, 0, frow.name);
                         chunk.set_value(2, 0, pg_catalog_ns_oid);
                     });
-                    direct_append_sync(pg_proc_oid, row);
+                    seed_row(pg_proc_oid, def->name, row);
                     ++written;
                 }
                 require_seeded(pg_proc_oid, def->name, written);
@@ -626,7 +644,7 @@ namespace services::disk {
         }
     }
 
-    void manager_disk_t::rehydrate_missing_user_storages_sync() {
+    core::result_wrapper_t<std::size_t> manager_disk_t::rehydrate_missing_user_storages_sync() {
         // B1a: every user table is disk-backed, so after
         // load_user_table_storages_sync has loaded every on-disk .otbx, any alive
         // user table still missing a storage lost its file (a freshly created
@@ -637,18 +655,29 @@ namespace services::disk {
         // creation, resolve_table returns a schema, but storage_append no-ops
         // (returns 0,0) and scans see nothing. Pre-scheduler-start,
         // single-threaded.
+        //
+        // THE WALK DID NOT RUN IS NOT THE WALK FOUND NOTHING. Each of the four returns below
+        // used to answer 0 — the same value a start where every alive table has its storage
+        // gives — so the one caller that reads the count could not tell a healthy database
+        // from one where this walk never looked at a single table.
         if (agents_.empty() || agents_[0] == nullptr) {
-            return;
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"rehydrate_missing_user_storages_sync: there is no catalog agent to "
+                                                  "read pg_class from; no alive table could be examined",
+                                                  resource()});
         }
         // B4: an empty disk path used to mean "in-memory deployment, no user .otbx could ever
         // have existed". That mode is gone; an empty path names no directory to recreate a file
         // in. Refuse up front rather than build relative paths under the process CWD (rule 6).
         if (config_.path.empty()) {
-            error(log_,
-                  "manager_disk_t::rehydrate_missing_user_storages_sync: config_disk::path is empty — no "
-                  "directory to recreate a lost .otbx in; refusing");
-            return;
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"rehydrate_missing_user_storages_sync: config_disk::path is empty — "
+                                                  "no directory to recreate a lost .otbx in; refusing",
+                                                  resource()});
         }
+        // Every alive user table this walk could NOT give a storage back to. The walk exists
+        // to close the catalog/storage divergence; the count is what it leaves open.
+        std::size_t unclosed = 0;
 
         // Pass 1: scan pg_class for alive user tables that have row storage
         // (relkind 'r' regular or 'm' materialized view) and are not yet loaded.
@@ -665,11 +694,23 @@ namespace services::disk {
         {
             const collection_storage_entry_t* cls_entry = agents_[0]->storage_entry_sync(pg_class_oid);
             if (cls_entry == nullptr) {
-                return;
+                return core::error_t(core::error_code_t::io_error,
+                                     std::pmr::string{"rehydrate_missing_user_storages_sync: pg_class is not loaded — "
+                                                      "no alive table can be named, so no lost .otbx can be recreated",
+                                                      resource()});
             }
             auto& cls_table = const_cast<collection_storage_entry_t*>(cls_entry)->table_storage.table();
-            if (cls_table.column_count() < 4 || cls_table.calculate_size() == 0) {
-                return;
+            if (cls_table.column_count() < 4) {
+                return core::error_t(
+                    core::error_code_t::data_corruption,
+                    std::pmr::string{"rehydrate_missing_user_storages_sync: pg_class carries only " +
+                                         std::to_string(cls_table.column_count()) +
+                                         " columns and cannot be scanned for alive tables",
+                                     resource()});
+            }
+            if (cls_table.calculate_size() == 0) {
+                // An empty pg_class names no table: nothing to rehydrate, honestly.
+                return std::size_t{0};
             }
             core::pmr::otterbrix_resource scan_resource;
             // Sparse scan of the non-adjacent [oid (0), relkind (3)] columns via
@@ -723,6 +764,7 @@ namespace services::disk {
                               "manager_disk_t::rehydrate_missing_user_storages_sync: pg_class row oid={} "
                               "carries no relnamespace; cannot place its .otbx and refusing to guess",
                               static_cast<unsigned>(oid));
+                        ++unclosed;
                         continue;
                     }
                     const auto ns_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(2, i));
@@ -731,7 +773,7 @@ namespace services::disk {
             }
         }
         if (need_oids.empty()) {
-            return;
+            return unclosed;
         }
 
         // Pass 2: one pg_attribute scan resolving every needed table's columns in attnum
@@ -747,9 +789,60 @@ namespace services::disk {
         // Pass 3: recreate the missing .otbx for each table at the standard path
         // ${db_root}/${relnamespace}/${oid}/table.otbx — the layout create_storage_disk uses.
         for (const auto& [oid, ns_oid] : need_oids) {
+            auto otbx = config_.path / std::to_string(static_cast<unsigned>(ns_oid)) /
+                        std::to_string(static_cast<unsigned>(oid)) / "table.otbx";
+
+            // WHAT THIS WALK IS FOR, AND WHAT IT IS NOT FOR. It recreates the file of a table
+            // whose .otbx was LOST — a freshly created file's directory entry is not fsynced,
+            // so a crash can keep the catalog row and lose the file. A table whose .otbx is
+            // PRESENT is a different state entirely: it was refused by the loader (a corrupt
+            // sidecar, a rotten header) and is still every byte the operator has. Creating
+            // over it would answer a refusal by destroying the thing that was refused. Both
+            // states arrive here as "no storage for this oid"; only one of them is this
+            // walk's.
+            std::error_code file_ec;
+            if (std::filesystem::exists(otbx, file_ec) && !file_ec) {
+                // AND ONE OF THE PRESENT FILES IS NOBODY'S FAULT. A file of exactly
+                // BLOCK_START bytes is the never-checkpointed signature (A7.6): the pre-replay
+                // walk DEFERS it because the catalog rows describing its schema are still only
+                // in the WAL, and the post-replay walk in base_spaces opens it as a
+                // legitimately empty table once replay has put them back. That is a table
+                // mid-recovery, not a divergence, and calling it one would report an error on
+                // every crash-before-first-checkpoint restart.
+                const auto file_bytes = std::filesystem::file_size(otbx, file_ec);
+                if (!file_ec && file_bytes == components::table::storage::BLOCK_START) {
+                    trace(log_,
+                          "manager_disk_t::rehydrate_missing_user_storages_sync: oid={} has a never-checkpointed "
+                          "{} — deferred to the post-replay walk, not rehydrated",
+                          static_cast<unsigned>(oid),
+                          otbx.string());
+                    continue;
+                }
+                error(log_,
+                      "manager_disk_t::rehydrate_missing_user_storages_sync: alive table oid={} has no storage but "
+                      "its file {} is present — it did not load, and rehydrate does not create over a file that "
+                      "exists. The catalog and the storage layer stay apart for this table.",
+                      static_cast<unsigned>(oid),
+                      otbx.string());
+                ++unclosed;
+                continue;
+            }
+
             auto it = cols_by_relid.find(oid);
             if (it == cols_by_relid.end() || it->second.empty()) {
-                continue; // no columns resolved — skip rather than create a 0-col storage
+                // A LEGITIMATE SKIP THAT MUST STILL BE HEARD. Nothing in this process can
+                // resolve columns pg_attribute does not have, and a zero-column storage is
+                // worse than none — so the skip is right and a refusal here would repeat on
+                // every start. What was wrong is that it happened without a word, in the one
+                // walk written to notice exactly this divergence.
+                error(log_,
+                      "manager_disk_t::rehydrate_missing_user_storages_sync: alive table oid={} (ns={}) has a live "
+                      "pg_class row, no storage and no pg_attribute columns — its .otbx cannot be rebuilt and the "
+                      "catalog still names a table this engine cannot serve",
+                      static_cast<unsigned>(oid),
+                      static_cast<unsigned>(ns_oid));
+                ++unclosed;
+                continue;
             }
             auto defs = std::move(it->second);
             trace(log_,
@@ -757,14 +850,21 @@ namespace services::disk {
                   static_cast<unsigned>(oid),
                   static_cast<unsigned>(ns_oid),
                   defs.size());
-            auto otbx = config_.path / std::to_string(static_cast<unsigned>(ns_oid)) /
-                        std::to_string(static_cast<unsigned>(oid)) / "table.otbx";
             std::filesystem::create_directories(otbx.parent_path());
             // Never computed here: the alive-oid scan is filtered to relkind 'r'/'m'
             // (computed tables have no pg_attribute schema and are recovered by WAL
             // replay synthesis instead — see the method comment).
-            create_storage_disk_sync(oid, ns_oid, std::move(defs), otbx, /*is_computed=*/false);
+            if (auto err = create_storage_disk_sync(oid, ns_oid, std::move(defs), otbx, /*is_computed=*/false);
+                err.contains_error()) {
+                error(log_,
+                      "manager_disk_t::rehydrate_missing_user_storages_sync: could not recreate the lost .otbx of "
+                      "alive table oid={} : {}",
+                      static_cast<unsigned>(oid),
+                      err.what.c_str());
+                ++unclosed;
+            }
         }
+        return unclosed;
     }
 
     // B3c2 — re-arm a DISK-backed column drop whose release a crash discarded.
@@ -1317,19 +1417,43 @@ namespace services::disk {
         return live;
     }
 
-    char manager_disk_t::relkind_for_oid_sync(components::catalog::oid_t table_oid) const {
+    core::result_wrapper_t<char> manager_disk_t::relkind_for_oid_sync(components::catalog::oid_t table_oid) const {
         // See header. Same pg_class {0=oid, 3=relkind} sparse-scan shape as
         // scan_live_table_oids_sync; the LAST matching row wins (latest append).
+        //
+        // THE THREE LEGS BELOW ARE NOT ONE ANSWER. "pg_class is not there to scan" is a read
+        // that did not happen; "pg_class is there and holds no row for this oid" is a read
+        // that did, and its '\0' is the honest one every consumer already handles. An EMPTY
+        // pg_class belongs with the second — a database where nothing has been created yet
+        // genuinely has no row for the oid.
         char result = '\0';
         if (agents_.empty() || agents_[0] == nullptr) {
-            return result;
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"relkind_for_oid_sync: no catalog agent to read pg_class from; "
+                                                  "the relkind of oid " +
+                                                      std::to_string(static_cast<unsigned>(table_oid)) +
+                                                      " is unknown, not 'regular'",
+                                                  resource()});
         }
         const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(pg_class_oid);
         if (entry == nullptr) {
-            return result;
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"relkind_for_oid_sync: pg_class is not loaded; the relkind of oid " +
+                                                      std::to_string(static_cast<unsigned>(table_oid)) +
+                                                      " is unknown, not 'regular'",
+                                                  resource()});
         }
         auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
-        if (table.column_count() < 4 || table.calculate_size() == 0) {
+        if (table.column_count() < 4) {
+            return core::error_t(core::error_code_t::data_corruption,
+                                 std::pmr::string{"relkind_for_oid_sync: pg_class carries only " +
+                                                      std::to_string(table.column_count()) +
+                                                      " columns and cannot hold a relkind; the relkind of oid " +
+                                                      std::to_string(static_cast<unsigned>(table_oid)) +
+                                                      " is unknown, not 'regular'",
+                                                  resource()});
+        }
+        if (table.calculate_size() == 0) {
             return result;
         }
         core::pmr::otterbrix_resource scan_resource;

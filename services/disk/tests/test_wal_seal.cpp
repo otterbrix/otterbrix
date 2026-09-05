@@ -240,9 +240,10 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
 
         // The premise, stated against the entry itself: its durable root is still the one
         // committed in round 2. Rounds 3 and 4 wrote nothing for it.
-        REQUIRE(fd.manager->peek_checkpoint_wal_id_from_disk(table_oid,
-                                                             catalog::well_known_oid::main_database) ==
-                services::wal::id_t{200});
+        auto peeked = fd.manager->peek_checkpoint_wal_id_from_disk(table_oid,
+                                                                    catalog::well_known_oid::main_database);
+        REQUIRE_FALSE(peeked.has_error());
+        REQUIRE(peeked.value() == services::wal::id_t{200});
     }
 
     // And the premise proven the hard way: a fresh manager over the same directory reopens

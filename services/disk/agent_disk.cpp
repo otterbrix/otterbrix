@@ -8,7 +8,7 @@
 #include <components/physical_plan_generator/create_plan.hpp> // create_plan + function_registry + context_storage_t
 #include <components/vector/cell_equal.hpp>                   // components::vector::cells_equal (typed FK hash-verify)
 #include <components/vector/vector_operations.hpp>
-#include <fstream>
+#include <core/file/local_file_system.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 
 namespace services::disk {
@@ -83,6 +83,7 @@ namespace services::disk {
         components::catalog::oid_t oid,
         const std::filesystem::path& otbx_path,
         wal::id_t sidecar_wal_id,
+        bool sidecar_readable,
         std::vector<components::table::column_definition_t> catalog_columns,
         bool is_computed) noexcept {
         // Probe BEFORE constructing the SFBM: on a duplicate key we must not even
@@ -98,11 +99,12 @@ namespace services::disk {
             return false;
         }
         trace(log_,
-              "agent_disk_t::bootstrap_disk_inner_sync: agent[{}] load oid={} path={} sidecar_wal_id={}",
+              "agent_disk_t::bootstrap_disk_inner_sync: agent[{}] load oid={} path={} sidecar_wal_id={} readable={}",
               pool_idx_,
               static_cast<unsigned>(oid),
               otbx_path.string(),
-              static_cast<uint64_t>(sidecar_wal_id));
+              static_cast<uint64_t>(sidecar_wal_id),
+              sidecar_readable);
         // `catalog_columns` is copied rather than moved: it is ALSO the input to the oid-set
         // difference below, which is what re-derives "the catalog has it, this storage does not"
         // on every load. Doing it here rather than only in the bootstrap walk is what covers the
@@ -121,7 +123,13 @@ namespace services::disk {
                  entry->table_storage.construction_error().what.c_str());
             return false;
         }
-        if (sidecar_wal_id > wal::id_t{0}) {
+        if (!sidecar_readable) {
+            // THE SIDECAR IS THERE AND DID NOT YIELD A FLOOR. Leaving the default 0 would say
+            // "never checkpointed, replay everything" about a table whose file plainly holds
+            // checkpointed content; the entry carries "unknown" instead, which
+            // peek_checkpoint_wal_id_from_disk reports and the replay filter drops records on.
+            entry->table_storage.set_checkpoint_wal_id_unreadable();
+        } else if (sidecar_wal_id > wal::id_t{0}) {
             entry->table_storage.set_checkpoint_wal_id(sidecar_wal_id);
         }
         entry->adopt_catalog_columns(catalog_columns);
@@ -1915,6 +1923,93 @@ namespace services::disk {
         co_return entry->storage->total_rows();
     }
 
+    namespace {
+        // DURABLY PUBLISH A TABLE'S CHECKPOINT SIDECAR, or leave the one already there
+        // untouched. There is no third outcome, and that is the whole contract: every reader
+        // of a `.otbx.wal_id` decides what to replay from it, so a file that is neither the
+        // old id nor the new one is a state none of them can honestly interpret.
+        //
+        // WHAT THE PREVIOUS WRITER ACTUALLY GUARANTEED: nothing of the sort. It opened an
+        // ofstream, wrote 8 bytes without checking the result, closed without checking,
+        // fsynced neither the file nor its directory, and renamed on `is_open()` alone. Two
+        // ROUTINE paths therefore produced a short or zero-length sidecar with no corruption
+        // anywhere: a full device or an I/O error during a checkpoint (no crash at all), and
+        // the classic rename-without-fsync, whose crash image is a zero-length file under the
+        // new name. Four comments and a test downstream justified refusing such a file with
+        // "it is written atomically, so a short one is corruption, not a crash image" -- a
+        // guarantee this code did not make, one file away from manager_disk_io.cpp:560, which
+        // says outright that a crash between the tmp write and the rename is legitimate.
+        //
+        // IT MAKES THE GUARANTEE NOW, in the order the guarantee needs:
+        //   * the bytes are counted (write_result_t reports both how much landed and whether
+        //     it finished -- a full device short-counts rather than refusing outright);
+        //   * the temp is fsynced BEFORE the rename, so the rename can never publish a name
+        //     over data that has not reached the device -- this is the step whose absence made
+        //     the zero-length crash image possible;
+        //   * the directory is fsynced after the rename, so the rename itself survives a
+        //     crash. Best-effort by design: if it fails, the data is still on the device and
+        //     the crash image is the PREVIOUS sidecar, which is a state readers understand.
+        //   * on ANY failure the temp is removed and the rename is not attempted, so the
+        //     sidecar already on disk is left byte-identical.
+        // close() is not checked because this filesystem layer's close() returns void; the
+        // fsync above it is the check that a checked close would have been standing in for.
+        [[nodiscard]] core::error_t persist_checkpoint_sidecar(std::pmr::memory_resource* resource,
+                                                               const std::filesystem::path& otbx_path,
+                                                               wal::id_t wal_id) {
+            auto sidecar_path = otbx_path;
+            sidecar_path += ".wal_id";
+            auto tmp_path = sidecar_path;
+            tmp_path += ".tmp";
+
+            core::filesystem::local_file_system_t fs;
+            auto refuse = [&](std::string reason) {
+                std::error_code rm_ec;
+                std::filesystem::remove(tmp_path, rm_ec);
+                return core::error_t(core::error_code_t::io_error,
+                                     std::pmr::string{"persist_checkpoint_sidecar: " + sidecar_path.string() +
+                                                          " was NOT updated: " + std::move(reason),
+                                                      resource});
+            };
+
+            std::error_code stale_ec;
+            std::filesystem::remove(tmp_path, stale_ec); // a stump a previously refused round left
+            auto tmp = core::filesystem::open_file(fs,
+                                                   tmp_path,
+                                                   core::filesystem::file_flags::WRITE |
+                                                       core::filesystem::file_flags::FILE_CREATE_NEW);
+            if (tmp == nullptr) {
+                return refuse("could not open the staging file " + tmp_path.string());
+            }
+            auto v = static_cast<uint64_t>(wal_id);
+            const auto written = tmp->write(&v, sizeof(v));
+            if (!written.complete || written.bytes_written != sizeof(v)) {
+                tmp.reset();
+                return refuse("the staging write landed " + std::to_string(written.bytes_written) + " of " +
+                              std::to_string(sizeof(v)) + " bytes");
+            }
+            if (!tmp->sync()) {
+                tmp.reset();
+                return refuse("the staging file could not be fsynced");
+            }
+            tmp.reset(); // closes the descriptor; the fsync above is what made the bytes durable
+            if (!core::filesystem::move_files(fs, tmp_path, sidecar_path)) {
+                return refuse("the rename over the live sidecar was refused");
+            }
+            // The rename is published. Its own durability is a separate question, and losing it
+            // costs only a restart that reads the PREVIOUS id -- so this reports without
+            // undoing anything, and never removes the sidecar it just wrote.
+            auto dir = core::filesystem::open_file(fs, sidecar_path.parent_path(), core::filesystem::file_flags::READ);
+            if (dir == nullptr || !core::filesystem::file_sync(fs, *dir)) {
+                return core::error_t(core::error_code_t::io_error,
+                                     std::pmr::string{"persist_checkpoint_sidecar: " + sidecar_path.string() +
+                                                          " was written and renamed, but its directory could not be "
+                                                          "fsynced -- a crash may still surface the previous id",
+                                                      resource});
+            }
+            return core::error_t::no_error();
+        }
+    } // namespace
+
     agent_disk_t::unique_future<checkpoint_result_t>
     agent_disk_t::checkpoint_inner(session_id_t /*session*/, wal::id_t current_wal_id, uint64_t compact_watermark) {
         trace(log_, "agent_disk[{}]::checkpoint_inner: {} entries in local slice", pool_idx_, storages_.size());
@@ -2076,29 +2171,25 @@ namespace services::disk {
 
             const auto& otbx_path = entry->otbx_path;
 
-            // Persist sidecar wal_id atomically (tmp + rename). Reached by BOTH branches above:
-            // the sidecar is the durable half of checkpoint_wal_id_, and an entry that skipped
-            // its rewrite advanced that id just the same, so leaving the file behind would put
-            // the two halves out of step for no gain.
-            {
-                auto sidecar_path = otbx_path;
-                sidecar_path += ".wal_id";
-                auto tmp_path = sidecar_path;
-                tmp_path += ".tmp";
-                std::ofstream sidecar(tmp_path, std::ios::binary | std::ios::trunc);
-                if (sidecar.is_open()) {
-                    auto v = static_cast<uint64_t>(current_wal_id);
-                    sidecar.write(reinterpret_cast<const char*>(&v), sizeof(v));
-                    sidecar.close();
-                    std::error_code rename_error;
-                    std::filesystem::rename(tmp_path, sidecar_path, rename_error);
-                    if (rename_error) {
-                        warn(log_,
-                             "agent_disk[{}]::checkpoint_inner sidecar rename failed: {}",
-                             pool_idx_,
-                             rename_error.message());
-                    }
-                }
+            // Persist the sidecar wal_id durably. Reached by BOTH branches above: the sidecar
+            // is the durable half of checkpoint_wal_id_, and an entry that skipped its rewrite
+            // advanced that id just the same, so leaving the file behind would put the two
+            // halves out of step for no gain.
+            if (auto sidecar_err = persist_checkpoint_sidecar(resource(), otbx_path, current_wal_id);
+                sidecar_err.contains_error()) {
+                // NOT SILENT, AND NOT A ROLLBACK EITHER. The header for this round is already
+                // committed inside the .otbx, so the round cannot be taken back here; what the
+                // failure costs is that the DURABLE floor may stay at the previous
+                // checkpoint's id while the in-memory one moved on. A restart would then read
+                // a floor that is too LOW and re-apply the records this round absorbed -- loud
+                // is the most this layer can do about it, and the next successful round
+                // repairs it. The message says which of the two states the file is in; this
+                // line does not guess.
+                error(log_,
+                      "agent_disk[{}]::checkpoint_inner oid={} checkpoint sidecar: {}",
+                      pool_idx_,
+                      static_cast<unsigned>(tbl_oid),
+                      sidecar_err.what.c_str());
             }
 
             min_prev_id = std::min(min_prev_id, entry->table_storage.prev_checkpoint_wal_id());

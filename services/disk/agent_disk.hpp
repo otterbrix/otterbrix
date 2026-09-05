@@ -169,7 +169,12 @@ namespace services::disk {
         // mailbox handlers — safe pre-scheduler-start because nothing else has touched
         // the agent's resource() yet. Both return false on duplicate key.
         //   bootstrap_disk_inner_sync       — load existing .otbx; seeds
-        //     checkpoint_wal_id from the caller-supplied sidecar_wal_id. `catalog_columns`
+        //     checkpoint_wal_id from the caller-supplied sidecar_wal_id, or marks the floor
+        //     UNREADABLE when `sidecar_readable` is false (the sidecar file is there and did
+        //     not yield a wal id — see table_storage_t::checkpoint_wal_id_known(); the id
+        //     argument is then meaningless and ignored). The two are separate parameters
+        //     because there is no wal::id_t that means "unknown": 0 is already the replay
+        //     filter's "never checkpointed, replay everything". `catalog_columns`
         //     is the A7.6 schema overlay for a never-checkpointed file (see
         //     table_storage_t's load ctor); ignored for a checkpointed one. `is_computed`
         //     marks a relkind='g' table (empty catalog schema is legal; dynamic-schema
@@ -182,6 +187,7 @@ namespace services::disk {
         bootstrap_disk_inner_sync(components::catalog::oid_t oid,
                                   const std::filesystem::path& otbx_path,
                                   wal::id_t sidecar_wal_id,
+                                  bool sidecar_readable,
                                   std::vector<components::table::column_definition_t> catalog_columns,
                                   bool is_computed) noexcept;
 

@@ -8,7 +8,8 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    uint64_t manager_disk_t::direct_append_sync(catalog::oid_t table_oid, components::vector::data_chunk_t& data) {
+    core::result_wrapper_t<uint64_t> manager_disk_t::direct_append_sync(catalog::oid_t table_oid,
+                                                                        components::vector::data_chunk_t& data) {
         // Bootstrap / WAL-replay only (pre-scheduler-start). Replay records carry no
         // MVCC txn, so the append commits under transaction_data{0, 0}. The
         // storage_entry_sync borrow is safe in this single-threaded window.
@@ -23,8 +24,23 @@ namespace services::disk {
                 }
             }
         }
-        if (!s || data.size() == 0)
-            return 0;
+        // THE TWO ZEROES THAT USED TO BE ONE. A chunk with no rows asks for nothing and is
+        // the single legitimate no-op on this path — the same one direct_delete_sync keeps for
+        // a record that names no row ids. NO STORAGE FOR THE OID is the opposite: a record of
+        // COMMITTED rows that recovery has nowhere to put, which is what the other three
+        // replay routers already refuse. Both answered 0, and so did a successful append of
+        // the first row of a fresh table, so the sole caller could not have checked this even
+        // if it had tried.
+        if (data.size() == 0) {
+            return uint64_t{0};
+        }
+        if (!s) {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"direct_append_sync: the owning agent holds no storage for oid " +
+                                                      std::to_string(static_cast<unsigned>(table_oid)) +
+                                                      "; the replayed rows have nowhere to land",
+                                                  resource()});
+        }
 
         auto local = rebuild_chunk(resource(), data);
 
@@ -59,15 +75,17 @@ namespace services::disk {
             local.data = std::move(expanded_data);
         }
 
-        // WAL-replay only (txn{0,0}), single-threaded: a write_conflict / out_of_memory
-        // here is a hard recovery fault with no error channel — bind the wrapper and return
-        // 0 on failure (no rows materialized).
+        // WAL-replay only (txn{0,0}), single-threaded. A write_conflict / out_of_memory here
+        // is a hard recovery fault: no rows materialized, and the record is a committed change
+        // recovery declined to restore. It used to come back as 0 — indistinguishable from the
+        // first row of a fresh table — behind a warn line; it travels the wrapper now.
         auto append_r = s->append(local, txn);
         if (append_r.has_error()) {
-            warn(log_,
-                 "manager_disk_t::direct_append_sync: replay append failed for oid={} (rules 2/9)",
-                 static_cast<unsigned>(table_oid));
-            return 0;
+            error(log_,
+                  "manager_disk_t::direct_append_sync: replay append failed for oid={} : {}",
+                  static_cast<unsigned>(table_oid),
+                  append_r.error().what.c_str());
+            return core::error_on(resource(), append_r.error());
         }
         return append_r.value();
     }

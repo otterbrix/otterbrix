@@ -239,6 +239,9 @@ namespace services::disk {
     void table_storage_t::advance_wal_id_without_rewrite(wal::id_t new_wal_id) noexcept {
         prev_checkpoint_wal_id_ = checkpoint_wal_id_;
         checkpoint_wal_id_ = new_wal_id;
+        // The round persists this entry's sidecar too (agent_disk_t::checkpoint_inner reaches
+        // the write from BOTH branches), so a floor that came up unreadable stops being so.
+        checkpoint_wal_id_known_ = true;
     }
 
     bool table_storage_t::storage_degraded() const noexcept {
@@ -367,6 +370,8 @@ namespace services::disk {
         last_checkpoint_failed_ = false;
         prev_checkpoint_wal_id_ = checkpoint_wal_id_;
         checkpoint_wal_id_ = new_wal_id;
+        // A committed round rewrites the sidecar, so a floor loaded as unreadable is known again.
+        checkpoint_wal_id_known_ = true;
         return true;
     }
 

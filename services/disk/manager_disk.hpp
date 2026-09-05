@@ -176,10 +176,36 @@ namespace services::disk {
         void advance_wal_id_without_rewrite(wal::id_t new_wal_id) noexcept;
 
         /// W-TORN: latest committed checkpoint wal_id for this table (0 if never checkpointed).
+        /// Only meaningful while checkpoint_wal_id_known() is true -- see below.
         wal::id_t checkpoint_wal_id() const noexcept { return checkpoint_wal_id_; }
         /// Used by load path to seed checkpoint_wal_id_ from sidecar before WAL replay
         /// decides which records this storage already includes.
-        void set_checkpoint_wal_id(wal::id_t v) noexcept { checkpoint_wal_id_ = v; }
+        void set_checkpoint_wal_id(wal::id_t v) noexcept {
+            checkpoint_wal_id_ = v;
+            checkpoint_wal_id_known_ = true;
+        }
+
+        /// THE THIRD ANSWER THIS FLOOR NEEDS, AND THE ONE A wal::id_t CANNOT CARRY.
+        ///
+        /// 0 is not a spare value here: it is the replay filter's word for "never
+        /// checkpointed, replay every record this table has". A table whose `.otbx.wal_id`
+        /// sidecar EXISTS but could not be read is not that -- answering 0 for it re-applies
+        /// records already absorbed into the checkpointed file. Neither is it a reason to
+        /// refuse the table: the .otbx opened perfectly, the unreadable file is a separate,
+        /// derived one, and refusing a SYSTEM table's open takes the whole database with it
+        /// (bootstrap_one throws and base_spaces has no catch) with nothing inside the process
+        /// able to repair it.
+        ///
+        /// So the entry comes up carrying "the floor is unknown", which
+        /// peek_checkpoint_wal_id_from_disk reports and the replay filter already knows how to
+        /// act on (it drops that table's records, loudly, rather than duplicating them). The
+        /// state is self-healing: the next committed checkpoint writes a real sidecar and
+        /// set_checkpoint_wal_id / advance_wal_id_without_rewrite clear it.
+        [[nodiscard]] bool checkpoint_wal_id_known() const noexcept { return checkpoint_wal_id_known_; }
+        void set_checkpoint_wal_id_unreadable() noexcept {
+            checkpoint_wal_id_ = wal::id_t{0};
+            checkpoint_wal_id_known_ = false;
+        }
         /// W-TORN: previous checkpoint wal_id (the state of the superseded root, i.e. the root the
         /// two-slot header still recovers if the current round's commit is lost); 0 before first overwrite.
         /// Used by checkpoint_all to compute min(prev) for safe WAL truncation.
@@ -263,6 +289,9 @@ namespace services::disk {
         // leaked until something re-derives the drop; nothing is corrupt and nothing is lost.
         std::pmr::vector<uint64_t> pending_released_blocks_;
         wal::id_t checkpoint_wal_id_{0};
+        // A storage built by the CREATE ctor has never been checkpointed and knows it; only a
+        // LOAD whose sidecar could not be read clears this (see checkpoint_wal_id_known()).
+        bool checkpoint_wal_id_known_{true};
         wal::id_t prev_checkpoint_wal_id_{0};
         // See last_checkpoint_failed(). Cleared by a successful checkpoint, so a transient
         // failure costs exactly one un-compacted round.
@@ -600,14 +629,39 @@ namespace services::disk {
                 return false;
             return agents_[idx]->has_active_scan_for_oid(table_oid);
         }
-        // Read the .otbx.wal_id sidecar directly from disk without loading the storage.
-        wal::id_t peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
-                                                   components::catalog::oid_t database_oid) const noexcept;
+        // Read the .otbx.wal_id sidecar directly from disk without loading the storage, or
+        // the reason it could not be read.
+        //
+        // THE WRAPPER IS THE WHOLE POINT. wal::id_t{0} is not a spare value here: it is the
+        // replay filter's word for "this table has never been checkpointed, replay every
+        // record it has". Answering an unreadable sidecar with 0 therefore does not lose a
+        // diagnostic, it re-applies records already absorbed into the checkpointed .otbx.
+        // A value of 0 now means only what it always should have: no sidecar exists, so no
+        // checkpoint ever committed. Every other way of not getting an answer — a short or
+        // zero-length sidecar, an unnamed namespace, no configured path, a loaded entry whose
+        // floor came up unknown — travels the error side.
+        //
+        // "PRESENT BUT SHORT" IS A CRASH IMAGE, and this used to claim the opposite on the
+        // strength of the writer being atomic. It was not until persist_checkpoint_sidecar
+        // (agent_disk.cpp): the previous writer checked neither its write nor its close and
+        // fsynced nothing, so a full device during a checkpoint and a plain
+        // rename-without-fsync each produced a short or zero-length sidecar with no corruption
+        // anywhere. That is why an unreadable sidecar is reported rather than made fatal to
+        // the table's open — see table_storage_t::checkpoint_wal_id_known().
+        core::result_wrapper_t<wal::id_t>
+        peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
+                                         components::catalog::oid_t database_oid) const;
 
         // Load a user-table storage from its .otbx file on demand. Called by WAL replay
         // when it encounters a record for a disk-backed table that hasn't been loaded yet.
-        void load_storage_for_wal_replay_sync(components::catalog::oid_t table_oid,
-                                              components::catalog::oid_t database_oid);
+        //
+        // NO FILE IS no_error(): replay legitimately runs ahead of a table's first checkpoint
+        // and synthesises the storage from the record's own chunk. A FILE THAT DID NOT LOAD is
+        // the error, and the two must not arrive as the same answer — the caller's next move
+        // after "no storage" is to CREATE one at that very path, which over a file that exists
+        // but did not open is how a table that could still be repaired stops being one.
+        [[nodiscard]] core::error_t load_storage_for_wal_replay_sync(components::catalog::oid_t table_oid,
+                                                                     components::catalog::oid_t database_oid);
 
         // Synchronous storage creation for initialization (before schedulers start).
         // Synchronous DISK storage creation (before schedulers start): new .otbx at
@@ -617,11 +671,20 @@ namespace services::disk {
         // replay synthesis reads it via relkind_for_oid_sync (pg_class is final by
         // then); bootstrap and rehydrate pass false (system tables are never
         // computed; rehydrate's scan is filtered to relkind 'r'/'m').
-        void create_storage_disk_sync(components::catalog::oid_t table_oid,
-                                      components::catalog::oid_t database_oid,
-                                      std::vector<components::table::column_definition_t> columns,
-                                      const std::filesystem::path& otbx_path,
-                                      bool is_computed);
+        //
+        // AND IT REPORTS. The agent answers a create with one bool covering two unrelated
+        // outcomes — "this agent already owns the oid" and "the .otbx could not be built at
+        // all" — and this used to read both as the first and trace them as a duplicate. The
+        // manager can tell them apart without changing that contract: after a false, the
+        // owning agent either holds the oid (a legitimate skip, no_error) or does not (the
+        // create failed, io_error). Its callers are recovery walks that go on to append into
+        // whatever came up, so the difference is the difference between a no-op and rows
+        // written nowhere.
+        [[nodiscard]] core::error_t create_storage_disk_sync(components::catalog::oid_t table_oid,
+                                                             components::catalog::oid_t database_oid,
+                                                             std::vector<components::table::column_definition_t> columns,
+                                                             const std::filesystem::path& otbx_path,
+                                                             bool is_computed);
         // System catalog (pg_*) bootstrap. Called from base_spaces during PHASE 1
         // before any actor is spawned. Creates the system-table .otbx files on a fresh
         // start and picks up existing ones on subsequent starts; idempotent w.r.t. the
@@ -653,7 +716,22 @@ namespace services::disk {
         // row storage (views, sequences; computed tables are recovered by WAL
         // replay synthesis, their schema is not in pg_attribute) and any oid
         // already loaded.
-        void rehydrate_missing_user_storages_sync();
+        //
+        // ANSWERS WITH THE NUMBER OF DIVERGENCES IT COULD NOT CLOSE. A table whose pg_attribute
+        // columns do not resolve cannot be rebuilt — a zero-column storage is worse than none,
+        // and refusing the start would repeat on every start over a catalog nothing inside this
+        // process can repair. So the skip is right and stays; what was wrong is that it was
+        // SILENT, in the one walk written specifically to notice this state. The count is the
+        // record: non-zero means the catalog still names tables this engine cannot serve.
+        //
+        // AND THE COUNT ALONE CANNOT SAY IT. Four legs of this walk return before a single
+        // table is examined — no disk agents, an empty config path, pg_class not loaded,
+        // pg_class too short to scan — and a count of 0 from any of them is byte-for-byte the
+        // answer an entirely healthy start gives. Its one production caller reads "> 0", so
+        // the walk not running at all was the quietest possible outcome: the same collapse
+        // this wave was written to remove, re-committed in its own new channel. Those four
+        // travel the error side now; 0 means only "every alive table has storage behind it".
+        [[nodiscard]] core::result_wrapper_t<std::size_t> rehydrate_missing_user_storages_sync();
         // B3c2 — re-derive a column drop whose physical release a crash discarded.
         //
         // B3c1's commit path drops the column from the live table and NAMES its blocks into
@@ -697,20 +775,22 @@ namespace services::disk {
         // resurrecting a phantom storage.
         std::unordered_set<components::catalog::oid_t> alive_user_oids_sync() const;
         // Resolve a single table's pg_class.relkind (single-threaded bootstrap
-        // scan of pg_class cols {0=oid, 3=relkind} on agents_[0]). Returns '\0'
-        // when the catalog does not (yet) know the oid — callers treat that as
-        // "unknown", never as a relkind. B1a: load_storage_disk_sync uses it to
-        // recognise computed (relkind='g') tables, whose catalog schema is
-        // legitimately empty and whose entries keep dynamic-schema semantics.
+        // scan of pg_class cols {0=oid, 3=relkind} on agents_[0]). Answers '\0'
+        // when the catalog does not know the oid — callers read that as "not
+        // computed", which is right for a table pg_class carries no row for.
+        // B1a: load_storage_disk_sync uses it to recognise computed (relkind='g')
+        // tables, whose catalog schema is legitimately empty and whose entries keep
+        // dynamic-schema semantics.
         //
-        // '\0' DELIBERATELY STAYS IN-BAND, decided rather than overlooked. It used to conflate
-        // three things, one of which was "pg_class is not loaded". That one is gone:
-        // bootstrap_system_tables_sync now refuses to start unless every system table came up,
-        // so the `entry == nullptr` leg is unreachable at bootstrap and everything downstream
-        // runs after it. The two survivors are both honest — an empty pg_class on a fresh
-        // database, and "no pg_class row names this oid" — and the sole production consumer
-        // (manager_disk_io.cpp:315) reads '\0' as "not computed", which is right for both.
-        char relkind_for_oid_sync(components::catalog::oid_t table_oid) const;
+        // '\0' STAYS IN BAND FOR "NO SUCH ROW" AND ONLY THAT. It used to also cover "pg_class
+        // is not loaded, or is too short to carry a relkind column", which is not an answer at
+        // all: every consumer turns '\0' into is_computed = false, so a DOCUMENT table
+        // recovered through a path that could not read pg_class comes back as an ordinary
+        // row-storage table with its dynamic-schema semantics silently gone. That leg travels
+        // the wrapper now. It should be unreachable in production — bootstrap_system_tables_sync
+        // refuses to start unless every system table came up, and every consumer runs after it
+        // — and an unreachable state that reports is exactly what makes the claim checkable.
+        core::result_wrapper_t<char> relkind_for_oid_sync(components::catalog::oid_t table_oid) const;
 
         // Resolve a single table's pg_class.relnamespace (same single-threaded bootstrap
         // scan shape, cols {0=oid, 2=relnamespace}). Returns INVALID_OID when the catalog
@@ -972,7 +1052,17 @@ namespace services::disk {
         // tables maintained via operator_computed_field_register_t.
 
         // Synchronous direct replay methods for physical WAL (before schedulers start).
-        uint64_t direct_append_sync(components::catalog::oid_t table_oid, components::vector::data_chunk_t& data);
+        //
+        // The append answers with the START ROW of what it wrote, or the reason it wrote
+        // nothing. The value alone could never carry that: 0 was simultaneously "the owning
+        // agent holds no storage for this oid", "the chunk was empty", "the append was
+        // refused" and "the first row of a fresh table landed at row 0" — so the one caller
+        // that has it discards it, and a record of COMMITTED rows replayed into a table with
+        // no storage disappeared with nothing above the storage layer able to notice. Same
+        // refusal the three routers below already make; an EMPTY chunk stays the one
+        // legitimate no-op and answers 0 without an error.
+        core::result_wrapper_t<uint64_t> direct_append_sync(components::catalog::oid_t table_oid,
+                                                            components::vector::data_chunk_t& data);
         // These three REFUSE rather than no-op when the table has no storage on its owning
         // agent: they run on the WAL-replay path, where a dropped mutation is a journalled
         // change that recovery declined to restore and nothing re-derives later. See

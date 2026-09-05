@@ -222,7 +222,25 @@ namespace otterbrix {
             // load_user_table_storages_sync so on-disk tables (already loaded)
             // are skipped, and before WAL replay so replayed INSERTs land in the
             // recreated storage.
-            disk_ptr->rehydrate_missing_user_storages_sync();
+            auto rehydrated = disk_ptr->rehydrate_missing_user_storages_sync();
+            if (rehydrated.has_error()) {
+                // THE WALK COULD NOT RUN. Distinct from the count below and reported
+                // separately: a walk that examined no table at all used to answer 0, which is
+                // what a start with nothing wrong answers, so the one condition this branch
+                // exists to notice was the one it could not see.
+                error(log_,
+                      "spaces::open: the rehydrate walk did not run, so no catalog/storage divergence was "
+                      "examined: {}",
+                      rehydrated.error().what);
+            } else if (rehydrated.value() > 0) {
+                // Non-fatal by design: none of these can be repaired from inside this process,
+                // and refusing the start would repeat on every start over the same catalog. The
+                // count is the one place a start that came up with tables it cannot serve says
+                // so — each one is already named individually by the walk.
+                error(log_,
+                      "spaces::open: {} alive catalog table(s) came up with no storage behind them",
+                      rehydrated.value());
+            }
         }
         if (disk_ptr) {
             // Pass WAL address: disk uses this to write pg_catalog WAL records inline from
@@ -273,11 +291,53 @@ namespace otterbrix {
             // a sidecar (cp_id == 0, never checkpointed) still replay
             // unconditionally. Cache the per-table sidecar wal_id to avoid
             // one fs read per record.
+            // A THIRD ANSWER, AND IT IS NOT A NUMBER. The probe reports when a table's
+            // checkpoint floor cannot be read at all (a sidecar that exists and does not hold a
+            // wal id). That used to arrive as 0, which this filter reads as "never
+            // checkpointed, replay everything" — the one response guaranteed to re-apply
+            // records the checkpointed .otbx already absorbed. A floor nobody can read is not a
+            // floor of zero: drop the table's records instead, loudly and once. The table is
+            // refused by the loader for the same reason, so there is nowhere to replay into
+            // either way.
             std::unordered_map<components::catalog::oid_t, services::wal::id_t> cp_cache;
-            auto cp_for = [&](components::catalog::oid_t oid) {
+            std::unordered_set<components::catalog::oid_t> cp_unreadable;
+            auto cp_for = [&](components::catalog::oid_t oid) -> services::wal::id_t {
+                if (cp_unreadable.count(oid) != 0) {
+                    return services::wal::id_t{0};
+                }
                 auto [it, inserted] = cp_cache.try_emplace(oid);
-                if (inserted)
-                    it->second = disk_ptr->peek_checkpoint_wal_id_from_disk(oid, ns_for(oid));
+                if (inserted) {
+                    // AND THE ONE "NO ANSWER" THAT IS STILL AN HONEST ZERO IS DECIDED HERE,
+                    // WHERE IT CAN BE. The probe cannot locate a sidecar for a table whose
+                    // namespace the catalog does not name, and it says so rather than
+                    // answering 0. This caller is the one that knows why that happens: this
+                    // pass runs BEFORE the system records replay, so a table created since the
+                    // last checkpoint has its pg_class row only in the WAL. checkpoint_all
+                    // writes pg_class in the same round it writes the table, so such a table
+                    // has no committed checkpoint and therefore no sidecar — every record it
+                    // has must be replayed. The loaded-entry probe still gets first refusal
+                    // (a user .otbx on disk was already loaded by
+                    // load_user_table_storages_sync, and its floor is authoritative), so this
+                    // only covers a table with no storage and no catalog row.
+                    const auto ns_oid = ns_for(oid);
+                    if (ns_oid == components::catalog::INVALID_OID && !disk_ptr->has_storage(oid)) {
+                        it->second = services::wal::id_t{0};
+                        return it->second;
+                    }
+                    auto probed = disk_ptr->peek_checkpoint_wal_id_from_disk(oid, ns_oid);
+                    if (probed.has_error()) {
+                        error(log_,
+                              "spaces::replay: table oid={} has no readable checkpoint floor ({}) — its records are "
+                              "NOT replayed, because replaying them could re-apply rows the checkpointed file "
+                              "already holds",
+                              static_cast<unsigned>(oid),
+                              probed.error().what);
+                        cp_unreadable.insert(oid);
+                        cp_cache.erase(oid);
+                        return services::wal::id_t{0};
+                    }
+                    it->second = probed.value();
+                }
                 return it->second;
             };
             for (auto& record : wal_records) {
@@ -287,6 +347,9 @@ namespace otterbrix {
                     continue;
                 }
                 auto cp_id = cp_for(record.table_oid);
+                if (cp_unreadable.count(record.table_oid) != 0) {
+                    continue;
+                }
                 if (cp_id > services::wal::id_t{0} && record.id <= cp_id) {
                     continue;
                 }
@@ -333,7 +396,23 @@ namespace otterbrix {
                                         // DISK storage from the WAL chunk's column types at
                                         // the standard path — B1a: every table is
                                         // disk-backed, replay synthesis included.
-                                        disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                        // A FILE THAT DID NOT LOAD IS NOT A FILE THAT IS NOT
+                                        // THERE. Both used to leave has_storage() false and
+                                        // send this branch on to CREATE one at the same path —
+                                        // over an .otbx that exists and holds the table's
+                                        // committed rows. The loader reports the difference
+                                        // now; a table whose file refused to open keeps it.
+                                        if (auto load_err =
+                                                disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                            load_err.contains_error()) {
+                                            error(log,
+                                                  "spaces::replay: table oid={} has a file that did not load ({}) — "
+                                                  "records for this table are NOT replayed, and no storage is "
+                                                  "created over it",
+                                                  static_cast<unsigned>(table_oid),
+                                                  load_err.what);
+                                            return;
+                                        }
                                         if (!disk_ptr->has_storage(table_oid)) {
                                             if (ns_oid == components::catalog::INVALID_OID) {
                                                 // Rule 6: the namespace names the directory the
@@ -366,19 +445,55 @@ namespace otterbrix {
                                             // pg_class is final here: system-table records replay
                                             // FIRST and sequentially, user replay is sequential
                                             // too, so the single-threaded relkind scan is safe.
+                                            // A RELKIND THAT COULD NOT BE READ IS NOT 'r'.
+                                            // Synthesising a DOCUMENT table as a regular one
+                                            // gives it a fixed schema it never had, and no
+                                            // later pass re-derives that. pg_class is final
+                                            // here, so this should not happen — and a state
+                                            // that cannot happen is exactly one that must say
+                                            // so rather than be guessed through.
+                                            auto relkind_r = disk_ptr->relkind_for_oid_sync(table_oid);
+                                            if (relkind_r.has_error()) {
+                                                error(log,
+                                                      "spaces::replay: table oid={} has no readable relkind ({}) — "
+                                                      "refusing to synthesise a storage whose kind is a guess; "
+                                                      "records for this table are NOT replayed",
+                                                      static_cast<unsigned>(table_oid),
+                                                      relkind_r.error().what);
+                                                return;
+                                            }
                                             const bool synth_computed =
-                                                disk_ptr->relkind_for_oid_sync(table_oid) ==
-                                                components::catalog::relkind::computed;
-                                            disk_ptr->create_storage_disk_sync(table_oid,
-                                                                               ns_oid,
-                                                                               std::move(cols),
-                                                                               otbx,
-                                                                               synth_computed);
+                                                relkind_r.value() == components::catalog::relkind::computed;
+                                            if (auto synth_err = disk_ptr->create_storage_disk_sync(table_oid,
+                                                                                                    ns_oid,
+                                                                                                    std::move(cols),
+                                                                                                    otbx,
+                                                                                                    synth_computed);
+                                                synth_err.contains_error()) {
+                                                error(log,
+                                                      "spaces::replay: table oid={} could not be synthesised ({}) — "
+                                                      "records for this table are NOT replayed",
+                                                      static_cast<unsigned>(table_oid),
+                                                      synth_err.what);
+                                                return;
+                                            }
                                         }
                                     }
                                     // TODO: load timezone from settings?
                                     for (auto& chunk : r->physical_data) {
-                                        disk_ptr->direct_append_sync(table_oid, chunk);
+                                        // COMMITTED ROWS THAT LANDED NOWHERE USED TO LEAVE NO
+                                        // TRACE AT ALL: the answer was the appended row's start
+                                        // index, which is 0 for a refusal and 0 for the first
+                                        // row of a fresh table, and it was discarded here.
+                                        if (auto append_r = disk_ptr->direct_append_sync(table_oid, chunk);
+                                            append_r.has_error()) {
+                                            error(log,
+                                                  "spaces::replay: {} committed row(s) for table oid={} were not "
+                                                  "restored: {}",
+                                                  chunk.size(),
+                                                  static_cast<unsigned>(table_oid),
+                                                  append_r.error().what);
+                                        }
                                     }
                                 }
                                 break;
@@ -389,7 +504,23 @@ namespace otterbrix {
                                 // it from the schema chunk's column types.
                                 if (!r->physical_data.empty()) {
                                     if (!disk_ptr->has_storage(table_oid)) {
-                                        disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                        // A FILE THAT DID NOT LOAD IS NOT A FILE THAT IS NOT
+                                        // THERE. Both used to leave has_storage() false and
+                                        // send this branch on to CREATE one at the same path —
+                                        // over an .otbx that exists and holds the table's
+                                        // committed rows. The loader reports the difference
+                                        // now; a table whose file refused to open keeps it.
+                                        if (auto load_err =
+                                                disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                            load_err.contains_error()) {
+                                            error(log,
+                                                  "spaces::replay: table oid={} has a file that did not load ({}) — "
+                                                  "records for this table are NOT replayed, and no storage is "
+                                                  "created over it",
+                                                  static_cast<unsigned>(table_oid),
+                                                  load_err.what);
+                                            return;
+                                        }
                                         if (!disk_ptr->has_storage(table_oid)) {
                                             if (ns_oid == components::catalog::INVALID_OID) {
                                                 // Same refusal as the PHYSICAL_INSERT branch: no
@@ -414,14 +545,32 @@ namespace otterbrix {
                                                         std::to_string(static_cast<unsigned>(ns_oid)) /
                                                         std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
                                             std::filesystem::create_directories(otbx.parent_path());
+                                            // Same two refusals as the PHYSICAL_INSERT branch.
+                                            auto relkind_r = disk_ptr->relkind_for_oid_sync(table_oid);
+                                            if (relkind_r.has_error()) {
+                                                error(log,
+                                                      "spaces::replay: table oid={} has no readable relkind ({}) — "
+                                                      "refusing to synthesise a storage whose kind is a guess; "
+                                                      "records for this table are NOT replayed",
+                                                      static_cast<unsigned>(table_oid),
+                                                      relkind_r.error().what);
+                                                return;
+                                            }
                                             const bool synth_computed =
-                                                disk_ptr->relkind_for_oid_sync(table_oid) ==
-                                                components::catalog::relkind::computed;
-                                            disk_ptr->create_storage_disk_sync(table_oid,
-                                                                               ns_oid,
-                                                                               std::move(cols),
-                                                                               otbx,
-                                                                               synth_computed);
+                                                relkind_r.value() == components::catalog::relkind::computed;
+                                            if (auto synth_err = disk_ptr->create_storage_disk_sync(table_oid,
+                                                                                                    ns_oid,
+                                                                                                    std::move(cols),
+                                                                                                    otbx,
+                                                                                                    synth_computed);
+                                                synth_err.contains_error()) {
+                                                error(log,
+                                                      "spaces::replay: table oid={} could not be synthesised ({}) — "
+                                                      "records for this table are NOT replayed",
+                                                      static_cast<unsigned>(table_oid),
+                                                      synth_err.what);
+                                                return;
+                                            }
                                             // create_* already seeded these columns; nothing
                                             // more to add for a freshly-synthesised storage.
                                             break;
@@ -444,7 +593,11 @@ namespace otterbrix {
                                 // the silent version left rows the WAL says are deleted alive
                                 // after recovery, with nothing anywhere to notice.
                                 if (!disk_ptr->has_storage(table_oid)) {
-                                    disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                    if (auto load_err =
+                                            disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                        load_err.contains_error()) {
+                                        error(log, "spaces::replay: {}", load_err.what);
+                                    }
                                 }
                                 if (auto del_err = disk_ptr->direct_delete_sync(table_oid,
                                                                                 r->physical_row_ids,
@@ -458,7 +611,11 @@ namespace otterbrix {
                                 if (!r->physical_data.empty()) {
                                     // Same load-first rule as the DELETE branch above.
                                     if (!disk_ptr->has_storage(table_oid)) {
-                                        disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                        if (auto load_err =
+                                                disk_ptr->load_storage_for_wal_replay_sync(table_oid, ns_oid);
+                                            load_err.contains_error()) {
+                                            error(log, "spaces::replay: {}", load_err.what);
+                                        }
                                     }
                                     // physical_row_ids is flat across the batch; slice it per
                                     // chunk in vector order to match each chunk's rows.

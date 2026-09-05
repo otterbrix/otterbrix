@@ -220,9 +220,12 @@ TEST_CASE("services::disk::d4::resolve_table_collects_columns_by_attrelid") {
 TEST_CASE("services::disk::d4::peek_checkpoint_wal_id_unknown_returns_zero") {
     fixture fx;
     // A table that was never created has no sidecar: peek returns 0.
+    // "No sidecar" is the one state that still answers 0: nothing was read wrong, there was
+    // nothing to read. A sidecar that exists and cannot be read reports instead.
     auto v = fx.manager->peek_checkpoint_wal_id_from_disk(catalog::oid_t{FIRST_USER_OID + 9000},
                                                           well_known_oid::main_database);
-    REQUIRE(v == services::wal::id_t{0});
+    REQUIRE_FALSE(v.has_error());
+    REQUIRE(v.value() == services::wal::id_t{0});
 }
 
 // 10. load_storage_for_wal_replay_sync is a no-op for already-loaded storage (§1.11).
@@ -235,7 +238,10 @@ TEST_CASE("services::disk::d4::load_storage_for_wal_replay_noop_when_loaded") {
     auto rt_oid = test_create_table(fx, ns_oid, "lazy_t", std::move(cols));
 
     // Calling load_storage_for_wal_replay_sync on a table that has no .otbx must not crash.
-    REQUIRE_NOTHROW(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database));
+    // A table with no .otbx is "nothing to read", not "could not read": no error, and the
+    // caller goes on to synthesise the storage from the record's own chunk.
+    REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database)
+                      .contains_error());
 }
 // 11. A7.6: a never-checkpointed .otbx (created, crashed before any checkpoint) loads as a
 // legitimately EMPTY disk table with its schema overlaid from the catalog. Before A7.6 the
@@ -267,7 +273,8 @@ TEST_CASE("services::disk::d4::never_checkpointed_otbx_loads_as_empty_with_catal
     REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
 
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
-    fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database);
+    REQUIRE_FALSE(
+        fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
     // The load succeeded: the young file opened as an empty DISK storage whose columns came
     // from pg_attribute — not a warning, not a skip.
     REQUIRE(fx.manager->has_storage(rt_oid));
@@ -311,7 +318,10 @@ TEST_CASE("services::disk::d4::young_otbx_with_checkpoint_sidecar_is_refused") {
         REQUIRE(sidecar.good());
     }
 
-    fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database);
+    // The refusal is now VISIBLE to the caller, which is the point: replay used to see the
+    // same "no storage" a table with no file gives and go on to CREATE one at this path, over
+    // the very .otbx the contradiction was about.
+    REQUIRE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
     // Refused loudly inside load_storage_disk_sync: no storage may appear for a table whose
     // on-disk state is self-contradictory.
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));

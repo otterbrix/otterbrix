@@ -539,7 +539,7 @@ namespace services::disk {
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
 
         // Bootstrap-only: base_spaces wires the WAL manager's address into every agent
-        // (via manager_disk_t::sync fan-out) before scheduler.start. The CATALOG agent
+        // (via manager_disk_t::set_manager_wal_sync fan-out) before scheduler.start. The CATALOG agent
         // (agent 0) uses it to write physical WAL records for catalog DDL directly
         // (append/delete/update pg_* rows), so that work runs on the agent thread instead
         // of the manager loop. A mailbox handle (not mutable state), safe to copy. Not a

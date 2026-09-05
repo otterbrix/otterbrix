@@ -118,13 +118,6 @@ namespace services::index {
     [[nodiscard]] std::size_t resolve_key_column(const components::index::keys_base_storage_t& keys,
                                                  const components::vector::data_chunk_t& chunk);
 
-    // Bootstrap address bundle for sync() (plain named struct, no std::tuple; mirrors
-    // services::wal::wal_sync_pack_t and manager_disk_t::disk_sync_pack_t). Carries manager_disk_t's
-    // address for post-spawn addressing (scan_segment index population).
-    struct index_sync_pack_t {
-        actor_zeta::address_t disk = actor_zeta::address_t::empty_address();
-    };
-
     class manager_index_t final : public actor_zeta::actor::actor_mixin<manager_index_t> {
     public:
         template<typename T>
@@ -159,8 +152,6 @@ namespace services::index {
         template<typename ReturnType, typename... Args>
         requires(actor_zeta::type_traits::is_unique_future_v<ReturnType>) [[nodiscard]] ReturnType
             enqueue_impl(actor_zeta::actor::address_t sender, actor_zeta::mailbox::message_id cmd, Args&&... args);
-
-        void sync(index_sync_pack_t pack);
 
         // Single-threaded callers only (NOT a mailbox handler): catalog-scan
         // rebuild and, internally, the mark_table_dropped handler.
@@ -521,9 +512,6 @@ namespace services::index {
 
         // Index metadata lives in pg_catalog.pg_index (no separate metadata file).
         core::filesystem::local_file_system_t fs_;
-
-        // Address of manager_disk_t (for scan_segment when populating indexes)
-        actor_zeta::address_t disk_address_ = actor_zeta::address_t::empty_address();
 
         // Target for the on_subscriber_empty(INDEX_KIND) ack; wired pre-start
         // via set_manager_dispatcher_sync.

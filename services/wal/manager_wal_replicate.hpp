@@ -37,17 +37,6 @@ namespace services::wal {
     void reset_auto_checkpoint_rounds() noexcept;
 #endif
 
-    // Bootstrap address bundle for manager_wal_replicate_t::sync (plain named
-    // struct — no std::tuple). Mirrors services::dispatcher::manager_dispatcher_t::
-    // sync_pack. disk and index feed the auto-checkpoint orchestration (flush
-    // indexes -> checkpoint -> truncate); dispatcher is the GC-ack destination.
-    // Namespace-scope (not nested) so callers/tests use services::wal::wal_sync_pack_t.
-    struct wal_sync_pack_t {
-        actor_zeta::address_t disk = actor_zeta::address_t::empty_address();
-        actor_zeta::address_t dispatcher = actor_zeta::address_t::empty_address();
-        actor_zeta::address_t index = actor_zeta::address_t::empty_address();
-    };
-
     class manager_wal_replicate_t final : public actor_zeta::actor::actor_mixin<manager_wal_replicate_t> {
     public:
         template<typename T>
@@ -61,10 +50,21 @@ namespace services::wal {
             actor_zeta::behavior_t behavior{};
         };
 
+        // The disk and index mailboxes are required arguments (address_t is not
+        // default-constructible, so an unnamed one does not compile); both feed the
+        // auto-checkpoint orchestration (flush indexes -> checkpoint -> truncate). A
+        // topology that deliberately runs without one names it
+        // (components::pipeline::no_mailbox()) and the round's empty-address guards then
+        // skip or end it. The dispatcher's mailbox is the single address that cannot be
+        // a constructor argument — the dispatcher is born last and takes THIS manager's
+        // mailbox in its own constructor — so it arrives pre-start through
+        // set_manager_dispatcher_sync below.
         manager_wal_replicate_t(std::pmr::memory_resource* resource,
                                 actor_zeta::scheduler_raw scheduler,
                                 configuration::config_wal config,
-                                log_t& log);
+                                log_t& log,
+                                actor_zeta::address_t disk_address,
+                                actor_zeta::address_t index_address);
         ~manager_wal_replicate_t();
 
         std::pmr::memory_resource* resource() const noexcept;
@@ -72,7 +72,10 @@ namespace services::wal {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
         std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        void sync(wal_sync_pack_t pack);
+        // Bootstrap helper — base_spaces wires the dispatcher address before
+        // scheduler.start; the auto-checkpoint round reads its compact watermark from it.
+        // Empty in the test topologies that run without a dispatcher.
+        void set_manager_dispatcher_sync(actor_zeta::address_t address);
 
         // Contract handlers.
         // See wal_contract for why each of these carries a refusal now.
@@ -212,6 +215,9 @@ namespace services::wal {
         // 10k rows.
         std::atomic<std::uintmax_t> wal_bytes_at_last_checkpoint_{0};
 
+        // disk and index are constructor arguments, never defaults; the dispatcher is
+        // wired pre-start via set_manager_dispatcher_sync (empty until then, and in the
+        // test topologies that never wire one).
         actor_zeta::address_t manager_disk_;
         actor_zeta::address_t manager_dispatcher_;
         actor_zeta::address_t manager_index_;

@@ -65,7 +65,12 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
             c.on = false;
             return c;
         }())
-        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_))
+        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
+                                                                   scheduler_,
+                                                                   wal_config_,
+                                                                   log_,
+                                                                   manager_disk_->address(),
+                                                                   components::pipeline::no_mailbox()))
         // No index manager in this fixture — its absence is named, not defaulted away.
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
                                                                       scheduler_,
@@ -73,11 +78,9 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                                                       manager_wal_->address(),
                                                                       manager_disk_->address(),
                                                                       components::pipeline::no_mailbox())) {
-        manager_wal_->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(manager_disk_->address()),
-                                                          manager_dispatcher_->address(),
-                                                          actor_zeta::address_t::empty_address()});
+        manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         // Pass WAL address — disk's append_pg_catalog_row sends physical_insert to it.
-        manager_disk_->sync(services::disk::manager_disk_t::disk_sync_pack_t{manager_wal_->address()});
+        manager_disk_->set_manager_wal_sync(manager_wal_->address());
 
         // Bootstrap pg_catalog system tables so the disk-side catalog has tables to scan.
         manager_disk_->bootstrap_system_tables_sync();

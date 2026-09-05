@@ -55,12 +55,6 @@ namespace {
             , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config_(disk_path)
             , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
-            , wal_config_([&]() {
-                configuration::config_wal c;
-                c.on = false;
-                return c;
-            }())
-            , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_))
             // A REAL index manager, not empty_address(): with no index actor wired,
             // operator_create_index_backfill used to mark itself executed and report success
             // without registering/creating/backfilling — now refused. Every production topology
@@ -72,17 +66,25 @@ namespace {
                                                                                  disk_config_.bitcask_flush_threshold,
                                                                                  disk_config_.bitcask_segment_record_limit,
                                                                                  disk_config_.btree_flush_threshold))
+            , wal_config_([&]() {
+                configuration::config_wal c;
+                c.on = false;
+                return c;
+            }())
+            , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
+                                                                      scheduler_,
+                                                                      wal_config_,
+                                                                      log_,
+                                                                      manager_disk_->address(),
+                                                                      manager_index_->address()))
             , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
                                                                           scheduler_,
                                                                           log_,
                                                                           manager_wal_->address(),
                                                                           manager_disk_->address(),
                                                                           manager_index_->address())) {
-            manager_wal_->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(manager_disk_->address()),
-                                                              manager_dispatcher_->address(),
-                                                              manager_index_->address()});
-            manager_disk_->sync(services::disk::manager_disk_t::disk_sync_pack_t{manager_wal_->address()});
-            manager_index_->sync(services::index::index_sync_pack_t{manager_disk_->address()});
+            manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
+            manager_disk_->set_manager_wal_sync(manager_wal_->address());
             // The DROP-GC ack path (manager_index → dispatcher) has a destination, as
             // in base_spaces. Sync, pre-scheduler-start.
             manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
@@ -212,9 +214,9 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler_{nullptr};
         configuration::config_disk disk_config_;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
+        std::unique_ptr<services::index::manager_index_t, actor_zeta::pmr::deleter_t> manager_index_;
         configuration::config_wal wal_config_;
         std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_wal_;
-        std::unique_ptr<services::index::manager_index_t, actor_zeta::pmr::deleter_t> manager_index_;
         // Declared after the managers: the dispatcher is spawned with their addresses.
         std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
         std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;

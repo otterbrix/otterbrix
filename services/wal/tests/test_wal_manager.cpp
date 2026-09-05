@@ -6,6 +6,7 @@
 // clang-format on
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/context/context.hpp>
 #include <chrono>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/configuration/configuration.hpp>
@@ -118,12 +119,14 @@ struct test_wal_manager {
             }
             return c;
         }())
-        , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_, scheduler_.get(), config_, log_)) {
+        , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_,
+                                                              scheduler_.get(),
+                                                              config_,
+                                                              log_,
+                                                              components::pipeline::no_mailbox(),
+                                                              components::pipeline::no_mailbox())) {
         std::filesystem::remove_all(path_);
         std::filesystem::create_directories(path_);
-        manager_->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
-                                       actor_zeta::address_t::empty_address(),
-                                       actor_zeta::address_t::empty_address()});
         scheduler_->start();
     }
 
@@ -417,21 +420,20 @@ TEST_CASE("wal_manager::disabled") {
 }
 
 // ===========================================================================
-//  7. manager_sync_addresses
-//     Call sync() with mock addresses. Verify no crash and addresses stored.
+//  7. manager_rewire_dispatcher
+//     Re-run the one remaining pre-start setter. Verify no crash.
 // ===========================================================================
-TEST_CASE("wal_manager::sync_addresses") {
+TEST_CASE("wal_manager::rewire_dispatcher_address") {
     test_wal_manager env(base_mgr_path / "sync_addr");
 
-    // The constructor already called sync() with empty addresses.
-    // Call it again with different empty addresses to confirm idempotency.
+    // The fixture runs without a dispatcher; setting the absent mailbox again
+    // (twice, as a bootstrap retry would) must not disturb the manager.
     if (env.manager_) {
-        REQUIRE_NOTHROW(env.manager_->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
-                                                           actor_zeta::address_t::empty_address(),
-                                                           actor_zeta::address_t::empty_address()}));
+        REQUIRE_NOTHROW(env.manager_->set_manager_dispatcher_sync(components::pipeline::no_mailbox()));
+        REQUIRE_NOTHROW(env.manager_->set_manager_dispatcher_sync(components::pipeline::no_mailbox()));
     }
 
-    // The manager should still be functional after re-sync.
+    // The manager should still be functional after the re-wire.
     auto fut_id = env.send_insert(kTestTableOidA, /*txn_id=*/900, /*row_count=*/2);
     REQUIRE(fut_id.valid());
     auto wal_id = await_value(fut_id);

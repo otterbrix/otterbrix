@@ -537,11 +537,6 @@ namespace services::index {
             pending_void_.end());
     }
 
-    void manager_index_t::sync(index_sync_pack_t pack) {
-        disk_address_ = pack.disk;
-        trace(log_, "manager_index_t::sync: disk_address set");
-    }
-
     void manager_index_t::mark_table_dropped_sync(components::catalog::oid_t oid, uint64_t dropped_at_commit_id) {
         dropped_table_agents_[oid] = dropped_at_commit_id;
     }

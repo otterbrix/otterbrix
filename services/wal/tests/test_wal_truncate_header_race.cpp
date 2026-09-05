@@ -6,6 +6,7 @@
 // clang-format on
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/context/context.hpp>
 
 #include <chrono>
 #include <filesystem>
@@ -164,10 +165,12 @@ namespace {
             , log_(initialization_logger("python", "/tmp/docker_logs/"))
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_(make_config(path, max_segment_size))
-            , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_, scheduler_.get(), config_, log_)) {
-            manager_->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
-                                           actor_zeta::address_t::empty_address(),
-                                           actor_zeta::address_t::empty_address()});
+            , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_,
+                                                                  scheduler_.get(),
+                                                                  config_,
+                                                                  log_,
+                                                                  components::pipeline::no_mailbox(),
+                                                                  components::pipeline::no_mailbox())) {
             scheduler_->start();
         }
 

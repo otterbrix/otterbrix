@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/context/context.hpp>
 
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
@@ -48,8 +49,8 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_wal wal_config;
         configuration::config_disk disk_config;
-        std::unique_ptr<services::wal::manager_wal_replicate_t, actor_zeta::pmr::deleter_t> wal;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> disk;
+        std::unique_ptr<services::wal::manager_wal_replicate_t, actor_zeta::pmr::deleter_t> wal;
 
         explicit recovery_fixture(const std::string& dir, bool bootstrap = true)
             : log(initialization_logger("python", "/tmp/docker_logs/"))
@@ -65,13 +66,15 @@ namespace {
                 c.path = dir;
                 return c;
             }())
-            , wal(actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource, scheduler, wal_config, log))
-            , disk(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            , disk(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log))
+            , wal(actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource,
+                                                                            scheduler,
+                                                                            wal_config,
+                                                                            log,
+                                                                            disk->address(),
+                                                                            components::pipeline::no_mailbox())) {
             std::filesystem::create_directories(dir);
-            wal->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(disk->address()),
-                                                     actor_zeta::address_t::empty_address(),
-                                                     actor_zeta::address_t::empty_address()});
-            disk->sync(services::disk::manager_disk_t::disk_sync_pack_t{wal->address()});
+            disk->set_manager_wal_sync(wal->address());
             if (bootstrap) {
                 disk->bootstrap_system_tables_sync();
             }

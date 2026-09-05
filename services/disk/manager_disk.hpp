@@ -458,13 +458,6 @@ namespace services::disk {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
 
-        // Bootstrap address bundle for sync() (plain named struct — no std::tuple,
-        // mirrors services::wal::wal_sync_pack_t). Carries the WAL manager's address
-        // so the disk manager can address it after spawn.
-        struct disk_sync_pack_t {
-            actor_zeta::address_t wal = actor_zeta::address_t::empty_address();
-        };
-
         struct in_flight_entry_t {
             actor_zeta::mailbox::message_ptr pending_msg{};
             actor_zeta::behavior_t behavior{};
@@ -912,8 +905,6 @@ namespace services::disk {
         requires(actor_zeta::type_traits::is_unique_future_v<ReturnType>) [[nodiscard]] ReturnType
             enqueue_impl(actor_zeta::actor::address_t sender, actor_zeta::mailbox::message_id cmd, Args&&... args);
 
-        void sync(disk_sync_pack_t pack);
-
         // `flush` USED TO SIT HERE AND IS GONE. It was a registered contract method whose body
         // traced and returned: no buffer flushed, no file synced, no entry touched — a name that
         // promised durability and delivered nothing. Durability of a table is checkpoint_all's,
@@ -994,6 +985,14 @@ namespace services::disk {
         /// on_subscriber_empty(DISK_KIND) directly once its dropped_storages_
         /// slice drains (no manager-side mirror).
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
+
+        /// Bootstrap helper — base_spaces wires the WAL address before scheduler.start,
+        /// and the manager fans it out to every agent (the CATALOG agent writes physical
+        /// WAL records for catalog DDL on its own thread). The WAL manager is born after
+        /// the disk manager — its constructor takes the disk mailbox — so this one
+        /// address cannot be a constructor argument here. no_mailbox() when the WAL is
+        /// off; the agents' empty-address guards then skip every WAL write.
+        void set_manager_wal_sync(actor_zeta::address_t address);
 
         // Storage management
         // `is_computed` marks a computed (relkind='g') table. It is derived by the
@@ -1200,7 +1199,6 @@ namespace services::disk {
         // Wakes the loop thread out of its idle sleep when a new message arrives.
         std::condition_variable pump_cv_;
 
-        actor_zeta::address_t manager_wal_ = actor_zeta::address_t::empty_address();
         // Held only to fan the dispatcher address out to every agent at bootstrap;
         // the manager itself never acks or mirrors — each agent emits its own
         // on_subscriber_empty(DISK_KIND) when its dropped_storages_ slice drains.

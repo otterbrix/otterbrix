@@ -54,16 +54,18 @@ namespace services::wal {
     manager_wal_replicate_t::manager_wal_replicate_t(std::pmr::memory_resource* resource,
                                                      actor_zeta::scheduler_raw scheduler,
                                                      configuration::config_wal config,
-                                                     log_t& log)
+                                                     log_t& log,
+                                                     actor_zeta::address_t disk_address,
+                                                     actor_zeta::address_t index_address)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_t>()
         , resource_(resource)
         , scheduler_(scheduler)
         , config_(std::move(config))
         , log_(log.clone())
         , enabled_(config_.on)
-        , manager_disk_(actor_zeta::address_t::empty_address())
+        , manager_disk_(std::move(disk_address))
         , manager_dispatcher_(actor_zeta::address_t::empty_address())
-        , manager_index_(actor_zeta::address_t::empty_address())
+        , manager_index_(std::move(index_address))
         , recovery_error_(core::error_t::no_error()) {
         trace(log_, "manager_wal_replicate start, enabled={}", enabled_);
         if (enabled_ && !config_.path.empty()) {
@@ -320,15 +322,9 @@ namespace services::wal {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // sync: receive disk and dispatcher addresses
-    // -----------------------------------------------------------------------
-
-    void manager_wal_replicate_t::sync(wal_sync_pack_t pack) {
-        manager_disk_ = std::move(pack.disk);
-        manager_dispatcher_ = std::move(pack.dispatcher);
-        manager_index_ = std::move(pack.index);
-        trace(log_, "manager_wal_replicate::sync done");
+    void manager_wal_replicate_t::set_manager_dispatcher_sync(actor_zeta::address_t address) {
+        manager_dispatcher_ = std::move(address);
+        trace(log_, "manager_wal_replicate::set_manager_dispatcher_sync done");
     }
 
     // Retention guard: active CREATE INDEX build registration. Unlocked — see

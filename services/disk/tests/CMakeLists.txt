@@ -16,6 +16,7 @@ set(${PROJECT_NAME}_SOURCES
     test_ddl_methods.cpp
     test_cursor_lifetime.cpp
     test_wal_catalog.cpp
+    test_disk_mailboxes_required.cpp
     test_mvcc_ddl.cpp
     test_error_handling.cpp
     test_recovery.cpp

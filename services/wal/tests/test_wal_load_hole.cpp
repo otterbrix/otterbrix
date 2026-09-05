@@ -6,6 +6,7 @@
 // clang-format on
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/context/context.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -103,10 +104,12 @@ namespace {
             if (max_segment_size != 0) {
                 config_.max_segment_size = max_segment_size;
             }
-            manager_ = actor_zeta::spawn<manager_wal_replicate_t>(&resource_, scheduler_.get(), config_, log_);
-            manager_->sync(wal_sync_pack_t{actor_zeta::address_t::empty_address(),
-                                           actor_zeta::address_t::empty_address(),
-                                           actor_zeta::address_t::empty_address()});
+            manager_ = actor_zeta::spawn<manager_wal_replicate_t>(&resource_,
+                                                                  scheduler_.get(),
+                                                                  config_,
+                                                                  log_,
+                                                                  components::pipeline::no_mailbox(),
+                                                                  components::pipeline::no_mailbox());
             scheduler_->start();
         }
 

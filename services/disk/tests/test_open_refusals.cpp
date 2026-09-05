@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/context/context.hpp>
 
 // actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
 #include <memory>
@@ -1433,12 +1434,14 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
         wal_config.on = true;
 
         open_fixture fx(base);
-        auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
-                                                                                     fx.scheduler,
-                                                                                     wal_config,
-                                                                                     fx.log);
-        wal_manager->sync(services::wal::wal_sync_pack_t{});
-        fx.manager->sync(manager_disk_t::disk_sync_pack_t{wal_manager->address()});
+        auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(
+            &fx.resource,
+            fx.scheduler,
+            wal_config,
+            fx.log,
+            components::pipeline::no_mailbox(),
+            components::pipeline::no_mailbox());
+        fx.manager->set_manager_wal_sync(wal_manager->address());
 
         fx.manager->bootstrap_system_tables_sync();
         REQUIRE(added_at_commit_id_of(fx, attoid) == 0);
@@ -1461,12 +1464,14 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
         wal_config.on = true;
 
         open_fixture fx(base);
-        auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
-                                                                                     fx.scheduler,
-                                                                                     wal_config,
-                                                                                     fx.log);
-        wal_manager->sync(services::wal::wal_sync_pack_t{});
-        fx.manager->sync(manager_disk_t::disk_sync_pack_t{wal_manager->address()});
+        auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(
+            &fx.resource,
+            fx.scheduler,
+            wal_config,
+            fx.log,
+            components::pipeline::no_mailbox(),
+            components::pipeline::no_mailbox());
+        fx.manager->set_manager_wal_sync(wal_manager->address());
 
         fx.manager->bootstrap_system_tables_sync();
         CHECK_FALSE(backfill(fx, {attoid}, 5002).contains_error());

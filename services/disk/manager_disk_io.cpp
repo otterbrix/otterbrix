@@ -6,14 +6,14 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    void manager_disk_t::sync(disk_sync_pack_t pack) {
-        manager_wal_ = pack.wal;
+    void manager_disk_t::set_manager_wal_sync(actor_zeta::address_t address) {
         // Fan the WAL address into every agent so the CATALOG agent can write physical
         // WAL records for catalog DDL on its own thread. Bootstrap-only (single-threaded,
         // agents already spawned in the ctor). No-op when no agents (empty config path).
+        // The manager itself keeps no copy — nothing here ever read one.
         for (auto& agent : agents_) {
             if (agent != nullptr) {
-                agent->set_manager_wal_sync(pack.wal);
+                agent->set_manager_wal_sync(address);
             }
         }
     }

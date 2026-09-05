@@ -97,15 +97,11 @@ namespace otterbrix {
 
         trace(log_, "spaces::PHASE 1 complete - {} WAL records", wal_records.size());
 
-        trace(log_, "spaces::manager_wal start");
-        manager_wal_ = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource,
-                                                                                 scheduler_.get(),
-                                                                                 config.wal,
-                                                                                 log_);
-        auto& wal = *manager_wal_;
-        const auto manager_wal_address = wal.address();
-        trace(log_, "spaces::manager_wal finish");
-
+        // Spawn order is the wiring order: the WAL manager's constructor takes the disk
+        // and index mailboxes, the dispatcher's takes all three. Only two addresses cannot
+        // be constructor arguments and are wired below, pre-scheduler-start: the
+        // dispatcher's (born last) into each manager, and the WAL's into the disk agents
+        // (the disk manager is born before the WAL manager).
         trace(log_, "spaces::manager_disk start");
         manager_disk_ = actor_zeta::spawn<services::disk::manager_disk_t>(&resource,
                                                                           scheduler_.get(),
@@ -128,6 +124,17 @@ namespace otterbrix {
                                                                              config.disk.btree_flush_threshold);
         auto manager_index_address = manager_index_->address();
         trace(log_, "spaces::manager_index finish");
+
+        trace(log_, "spaces::manager_wal start");
+        manager_wal_ = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource,
+                                                                                 scheduler_.get(),
+                                                                                 config.wal,
+                                                                                 log_,
+                                                                                 manager_disk_address,
+                                                                                 manager_index_address);
+        auto& wal = *manager_wal_;
+        const auto manager_wal_address = wal.address();
+        trace(log_, "spaces::manager_wal finish");
 
         trace(log_, "spaces::manager_dispatcher start");
         // The WAL mailbox is deliberately absent when the WAL is off, so every wal-address
@@ -152,15 +159,12 @@ namespace otterbrix {
                                                                       log_);
         trace(log_, "spaces::manager_dispatcher create dispatcher");
 
-        wal.sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(manager_disk_address),
-                                                manager_dispatcher_->address(),
-                                                manager_index_address});
-
-        // Publish the dispatcher address into manager_disk / manager_index so the
-        // GC-ack path (manager_disk → dispatcher → manager_wal truncate) has a
-        // destination. Sync — pre-scheduler-start.
+        // Publish the dispatcher address into every manager: manager_disk / manager_index
+        // for the GC-ack path (manager_disk → dispatcher → manager_wal truncate),
+        // manager_wal for the auto-checkpoint compact watermark. Sync — pre-scheduler-start.
         disk.set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
+        wal.set_manager_dispatcher_sync(manager_dispatcher_->address());
 
         // Bring up the pg_catalog system tables before any DDL/DML can flow through
         // the actor pipeline. bootstrap_system_tables_sync is idempotent per-table:
@@ -199,9 +203,7 @@ namespace otterbrix {
 
         // Pass WAL address: disk uses this to write pg_catalog WAL records inline from
         // append_pg_catalog_row.
-        disk.sync(services::disk::manager_disk_t::disk_sync_pack_t{effective_wal_address});
-
-        manager_index_->sync(services::index::index_sync_pack_t{manager_disk_address});
+        disk.set_manager_wal_sync(effective_wal_address);
 
         // Replay physical WAL records directly to storage (before schedulers start). Group
         // by oid: system-table (oid < FIRST_USER_OID) records are replayed first

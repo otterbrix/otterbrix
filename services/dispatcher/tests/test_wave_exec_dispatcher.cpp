@@ -121,12 +121,6 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
         , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
-        , wal_config_([&]() {
-            configuration::config_wal c;
-            c.on = false;
-            return c;
-        }())
-        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource, scheduler_, wal_config_, log_))
         // A REAL index manager, not empty_address() (see test_variant_e3_differential.cpp):
         // with none wired, operator_create_index_backfill used to report success without
         // creating anything. Production always spawns it (integration/cpp/base_spaces.cpp).
@@ -137,6 +131,19 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
                                                                             disk_config_.bitcask_flush_threshold,
                                                                             disk_config_.bitcask_segment_record_limit,
                                                                             disk_config_.btree_flush_threshold))
+        , wal_config_([&]() {
+            configuration::config_wal c;
+            c.on = false;
+            return c;
+        }())
+        // wire_index=false names the deliberately missing index mailbox here too.
+        , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(
+              resource,
+              scheduler_,
+              wal_config_,
+              log_,
+              manager_disk_->address(),
+              wire_index ? manager_index_->address() : components::pipeline::no_mailbox()))
         // wire_index=false names the deliberately missing index mailbox (the mis-wired seam).
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(
               resource,
@@ -148,13 +155,8 @@ struct wave_fixture : actor_zeta::actor::actor_mixin<wave_fixture> {
               0,
               &services::planner::no_custom_lowering,
               optimizer_pass)) {
-        const auto index_address =
-            wire_index ? manager_index_->address() : components::pipeline::no_mailbox();
-        manager_wal_->sync(services::wal::wal_sync_pack_t{actor_zeta::address_t(manager_disk_->address()),
-                                                          manager_dispatcher_->address(),
-                                                          index_address});
-        manager_disk_->sync(manager_disk_t::disk_sync_pack_t{manager_wal_->address()});
-        manager_index_->sync(services::index::index_sync_pack_t{manager_disk_->address()});
+        manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
+        manager_disk_->set_manager_wal_sync(manager_wal_->address());
         manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->bootstrap_system_tables_sync();
     }
@@ -256,9 +258,9 @@ private:
     core::non_thread_scheduler::scheduler_test_t* scheduler_{nullptr};
     configuration::config_disk disk_config_;
     std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager_disk_;
+    std::unique_ptr<services::index::manager_index_t, actor_zeta::pmr::deleter_t> manager_index_;
     configuration::config_wal wal_config_;
     std::unique_ptr<manager_wal_replicate_t, actor_zeta::pmr::deleter_t> manager_wal_;
-    std::unique_ptr<services::index::manager_index_t, actor_zeta::pmr::deleter_t> manager_index_;
     // Declared after the managers: the dispatcher is spawned with their addresses.
     std::unique_ptr<manager_dispatcher_t, actor_zeta::pmr::deleter_t> manager_dispatcher_;
     std::unique_ptr<std::pmr::monotonic_buffer_resource> parser_arena_;

@@ -53,10 +53,25 @@ namespace services::index {
         // MVCC commit/revert/cleanup. commit_inserts / commit_deletes return
         // core::error_t by the project-wide convention (no_error() = success,
         // contains_error() = failure) so callers can branch on an index-side abort.
-        // Both take a batch of table oids and fold all of their pending disk
-        // operations into a single send-all-then-await-all fan-out; the first
-        // contains_error() across the batch wins (remaining awaits still drain so
-        // no future is dropped, but the first error is what is returned).
+        // Both take a batch of table oids.
+        //
+        // THE TWO ARE NOT MIRRORS, and the asymmetry is a correctness rule rather than an
+        // implementation detail:
+        //
+        //   commit_inserts publishes NOW: it folds every oid's pending disk work into one
+        //     send-all-then-await-all fan-out; the first contains_error() across the batch
+        //     wins (the remaining awaits still drain, so no future is dropped). An index
+        //     that names a row a reader may not see costs a fetch the table then discards.
+        //
+        //   commit_deletes publishes LATER, and touches no store here. Erasing an entry at
+        //     commit time takes the row away from every reader whose snapshot PREDATES the
+        //     commit and still owns it — and an id the index never returns is never fetched
+        //     and never filtered, so a short index answer is a silently wrong result. The
+        //     batch is queued against its commit_id and published by on_horizon_advanced
+        //     once the snapshot floor has passed it. Nothing is left here to fail, so this
+        //     returns no_error(); a failure at publish time is logged there and leaves the
+        //     index a superset, which is the safe direction. See
+        //     manager_index.hpp (deferred_deletes_) for the queue and its price.
         unique_future<core::error_t> commit_inserts(execution_context_t ctx,
                                                     std::pmr::vector<components::catalog::oid_t> table_oids,
                                                     uint64_t commit_id);
@@ -92,7 +107,11 @@ namespace services::index {
         // DDL: index management. index_oid = pg_index.indexrelid — the index's
         // ONLY identity below the planner boundary (rule 16); the name is
         // resolved to it exactly once, at plan time.
-        unique_future<core::result_wrapper_t<uint32_t>> create_index(session_id_t session,
+        // Answers with the reason the index could not be brought up, or no_error(). It
+        // used to answer with a uint32 "index id" -- the index's POSITION in a per-table
+        // list of index objects that no longer exists -- and no caller ever read the
+        // number.
+        unique_future<core::error_t> create_index(session_id_t session,
                                              components::catalog::oid_t table_oid,
                                              components::catalog::oid_t index_oid,
                                              components::index::keys_base_storage_t keys,
@@ -154,8 +173,15 @@ namespace services::index {
         unique_future<std::pmr::vector<components::index::index_description_t>>
         get_indexed_descriptions(session_id_t session, components::catalog::oid_t table_oid);
 
-        // Event-driven GC subscriber. Walks dropped_table_agents_ and
-        // erases routing entries whose dropped_at_commit_id < new_horizon.
+        // Event-driven GC subscriber, draining TWO queues in this order:
+        //   1. dropped_table_agents_ — routing entries (and their agents) whose
+        //      dropped_at_commit_id < new_horizon;
+        //   2. deferred_deletes_ — the committed index erases commit_deletes held back,
+        //      published once commit_id <= new_horizon (a snapshot sitting AT commit_id
+        //      already hides the row, so that is the first horizon at which the erase is
+        //      invisible to every live reader). Second, because step 1 destroys agents.
+        // The on_subscriber_empty(INDEX_KIND) ack is sent only when BOTH are empty — it
+        // switches off the broadcast that is the sole trigger for either.
         unique_future<void> on_horizon_advanced(uint64_t new_horizon);
 
         // Runtime DROP TABLE path: operator_dynamic_cascade_delete records the
@@ -183,9 +209,10 @@ namespace services::index {
         unique_future<void> table_drop_aborted(session_id_t session, uint64_t txn_id);
 
         // CREATE INDEX catchup: operator_create_index_backfill calls this per
-        // matching WAL record to apply a PHYSICAL_{INSERT,DELETE,UPDATE} effect
-        // to the build's in-memory index_engine_t (driving engine_->insert_row /
-        // mark_delete_row, mirroring the DML insert_rows / delete_rows path).
+        // matching WAL record to apply a PHYSICAL_{INSERT,DELETE,UPDATE} effect to the
+        // indexes of the table being built, by staging it into each index agent's bucket
+        // for the CREATE INDEX transaction — the same stage_inserts / stage_deletes path
+        // the DML insert_rows / delete_rows handlers take.
         //   physical_data:      NEW rows for INSERT/UPDATE, empty/null for DELETE.
         //   physical_row_start: WAL row-id base, used when row_ids is empty.
         //   txn_id:             the CREATE INDEX txn, so entries land in the

@@ -68,7 +68,8 @@ namespace services::index {
         // storage cannot be brought up (file/overflow-file open failure, an
         // unreadable or incompatible header). Production code MUST use this: the
         // direct ctor below aborts on the same failures, mirroring
-        // bitcask_index_disk_t::create vs its direct ctor.
+        // bitcask_index_disk_t's deferred-open ctor plus open() vs its
+        // construct-and-open ctor.
         //
         // The failure is a VALUE the whole way down -- open_or_create() returns it, this
         // hands it on, and result_wrapper_t makes a caller confront it before it can
@@ -150,13 +151,9 @@ namespace services::index {
 
         // Rule 14: the callable is a TEMPLATE parameter, not a type-erased `function` wrapper.
         // Nothing here forces erasure -- for_each is not a virtual customization point, so the
-        // callable can simply be deduced. This is the other branch of the reasoning recorded on
-        // components/index/index.hpp's pending_inserts/pending_deletes: there the customization
-        // point IS virtual, the callable therefore could NOT be a template parameter, and the
-        // entries are RETURNED instead of pushed through a callback. Here it is not virtual, so
-        // the callback survives and the erasure goes. The erased form also heap-allocated for the
-        // capturing lambdas both callers pass. The body lives in the header for the same reason
-        // index_engine_t::for_each_pending_disk_insert's does.
+        // callable can simply be deduced, and the erased form heap-allocated for the capturing
+        // lambdas both callers pass. The body lives in the header so the callable stays a
+        // template parameter at every call site.
         //
         // THE ORDER IS PART OF THE CONTRACT, not an implementation detail: buckets ascending,
         // each bucket's primary page before its overflow chain, slots 0..count-1 within a page.

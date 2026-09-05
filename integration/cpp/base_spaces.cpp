@@ -12,7 +12,6 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/index/disk_hash_table.hpp>
-#include <services/index/index_agent_disk.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_reader.hpp>
@@ -563,10 +562,10 @@ namespace otterbrix {
 
         // Must run pre-scheduler-start while single-threaded. committed_txn_ids
         // travels by value into bootstrap_indexes_sync (and from there into each
-        // spawned bitcask agent) — legal during this single-threaded bootstrap
-        // window, no cross-actor sharing.
+        // bitcask agent the index manager raises) — legal during this single-threaded
+        // bootstrap window, no cross-actor sharing.
         if (disk_ptr && manager_index_) {
-            bootstrap_indexes_sync(config.disk, committed_txn_ids);
+            bootstrap_indexes_sync(committed_txn_ids);
         }
 
         scheduler_dispatcher_->start();
@@ -610,12 +609,12 @@ namespace otterbrix {
         paths_.erase(main_path_);
     }
 
-    // Engine pass must precede the pg_index pass: bootstrap_index_sync attaches
-    // to an existing index_engine_t and does not mint one on the fly.
-    // Errors propagate via log+return — scan helpers return empty on internal
-    // failure, bootstrap_index_sync skips malformed rows, no throw escapes.
-    void base_otterbrix_t::bootstrap_indexes_sync(const configuration::config_disk& disk_config,
-                                                  const std::set<std::uint64_t>& committed_txn_ids) {
+    // The table pass must precede the pg_index pass: bootstrap_index_sync attaches to a
+    // table the index manager already knows about and does not register one on the fly.
+    // Errors propagate as VALUES — scan helpers return empty on internal failure,
+    // bootstrap_index_sync returns the reason a row could not be brought up and this loop
+    // logs it and moves on; no throw escapes.
+    void base_otterbrix_t::bootstrap_indexes_sync(const std::set<std::uint64_t>& committed_txn_ids) {
         auto live_tables = manager_disk_->scan_live_table_oids_sync();
         for (auto oid : live_tables) {
             manager_index_->bootstrap_engine_sync(oid);
@@ -634,60 +633,43 @@ namespace otterbrix {
                 continue;
             }
 
-            // Spawn args must match manager_index_t::create_index so the agent is
-            // equivalent to one from the runtime DDL path. The index directory is
-            // ${disk}/${table_oid}/${indexrelid}/ — oid-keyed, never name-keyed.
+            // NOTHING IS SPAWNED HERE ANY MORE. There are two agent classes now, one per
+            // storage family, so "pick a class from pg_index.indtype" became real code —
+            // and a second copy of it at this call site would be a second place to keep in
+            // step with the catalog. The index manager owns that decision
+            // (manager_index_t::spawn_disk_agent) and raises the agent inside
+            // bootstrap_index_sync, from ITS OWN configured thresholds, which is what makes
+            // a bootstrapped index and a runtime-created one the same object.
             //
-            // Nothing is opened HERE any more (C2c, rule 10): the agent opens its own
-            // storage from the same two oids, so there is no handle to create outside it
-            // and hand across. What survives is the DECISION this site makes from the
-            // failure — which now arrives as the VALUE index_agent_disk_t::create returns,
-            // so this site cannot proceed without having looked at it.
+            // What survives at this site is the DECISION taken from the failure: it comes
+            // back as the returned core::error_t, so this loop cannot proceed without
+            // having looked at it.
             //
-            // the WAL committed-txn set, used by the bitcask agent's
-            // txn-log recover gate. Materialised here as a pmr::set on this
-            // instance's resource (the resource the agent and its index store).
-            // A copy of the committed ids per agent — legal value transfer during
-            // the single-threaded bootstrap window.
+            // committed_txn_ids: the WAL committed-txn set, used by the hashed family's
+            // txn-log recover gate. Materialised here as a pmr::set on this instance's
+            // resource (the resource the agent and its index store use). A copy per index —
+            // legal value transfer during the single-threaded bootstrap window.
             std::pmr::set<std::uint64_t> committed_for_agent(committed_txn_ids.begin(),
                                                              committed_txn_ids.end(),
                                                              &resource);
 
-            auto agent_result =
-                services::index::index_agent_disk_t::create(&resource,
-                                                           disk_config.path,
-                                                           row.table_oid,
-                                                           row.oid,
-                                                           row.type,
-                                                           disk_config.bitcask_flush_threshold,
-                                                           disk_config.bitcask_segment_record_limit,
-                                                           disk_config.btree_flush_threshold,
-                                                           log_,
-                                                           std::move(committed_for_agent));
-            if (agent_result.has_error()) {
+            auto wire_error = manager_index_->bootstrap_index_sync(row.table_oid,
+                                                                   row.oid,
+                                                                   row.type,
+                                                                   std::move(row.keys),
+                                                                   std::move(committed_for_agent));
+            if (wire_error.contains_error()) {
                 // Skip the WHOLE index: an index whose storage will not open costs a full
-                // scan, whereas aborting costs the whole engine its start. No agent was
-                // built — nothing registered, no address published, nothing scheduled —
-                // and the table stays readable.
+                // scan, whereas aborting costs the whole engine its start. Nothing was
+                // registered, no address published, nothing scheduled — and the table stays
+                // readable.
                 error(log_,
-                      "bootstrap_indexes_sync: disk storage init failed for index_oid={}: {} — "
-                      "index left unregistered",
+                      "bootstrap_indexes_sync: index_oid={} left unregistered: {}",
                       static_cast<unsigned>(row.oid),
-                      agent_result.error().what);
+                      wire_error.what);
                 ++indexes_skipped_unfinished;
                 continue;
             }
-            // Only reachable past the check above -- result_wrapper_t::value() is what
-            // makes that a compiler-enforced order rather than a convention.
-            auto agent = std::move(agent_result.value());
-            auto agent_addr = agent->address();
-
-            manager_index_->bootstrap_index_sync(row.table_oid,
-                                                 row.oid,
-                                                 row.type,
-                                                 std::move(row.keys),
-                                                 agent_addr,
-                                                 std::move(agent));
             ++indexes_wired;
         }
 
@@ -698,33 +680,21 @@ namespace otterbrix {
             manager_index_->bootstrap_dropped_sync(row.oid, row.delete_id);
         }
 
-        // Rebuild the in-memory index against post-restart storage. CHECKPOINT
-        // renumbers physical row_ids contiguously, but the on-disk btree retains
-        // pre-compact ids, so the bootstrap_index_sync load step seeds the engine
-        // with stale ids. Without this rescan, post-restart equality lookups
-        // return row_ids that no longer map to live rows and collection_t::fetch
-        // silently drops them (SELECT WHERE indexed_col = X returns 0 rows).
-        // Sync — same pre-scheduler-start window as the bootstrap_*_sync calls.
-        for (auto oid : live_tables) {
-            auto chunks = manager_disk_->scan_storage_for_rebuild_sync(oid, &resource);
-            uint64_t row_count = 0;
-            for (const auto& chunk : chunks) {
-                row_count += chunk.size();
-            }
-            if (row_count == 0)
-                continue;
-            auto rebuild_error = manager_index_->bootstrap_repopulate_sync(oid, std::move(chunks), row_count);
-            if (rebuild_error.contains_error()) {
-                // Producer defect in the rebuild feed (scan chunks without physical
-                // row_ids). Bootstrap has no statement to fail, so log LOUDLY; the
-                // engine was not touched (the gate runs before any clearing), so the
-                // rehydrated entries stay as bootstrap_index_sync left them.
-                error(log_,
-                      "spaces::bootstrap_indexes_sync: index rebuild for oid={} failed: {} — index left unrebuilt",
-                      static_cast<unsigned>(oid),
-                      rebuild_error.what);
-            }
-        }
+        // THE POST-RESTART INDEX REBUILD PASS IS GONE FROM HERE, and what it removes is
+        // WORK, not behaviour. It scanned EVERY live table in full and handed the rows to
+        // manager_index_t::bootstrap_repopulate_sync, which — once the last in-memory
+        // index went away — cleared the facades' pending buckets (empty at bootstrap),
+        // re-staged every row into bucket 0, and then committed bucket 0, which for a
+        // disk-backed facade only ERASED it. A provable no-op, paid for with a full scan
+        // of every table on every start.
+        //
+        // WHAT IT WAS SUPPOSED TO FIX IS STILL BROKEN AND IS NOT FIXED HERE: CHECKPOINT
+        // compaction renumbers physical row_ids from 0 while the on-disk index keeps the
+        // pre-compact ones, so a post-restart lookup can name a row id that no longer maps
+        // to a live row (collection_t::fetch drops it). Repairing that means clearing and
+        // rebuilding the AGENT's store, which is a mailbox round trip, and this window
+        // runs before the scheduler starts. It belongs to the runtime repopulate path
+        // (manager_index_t::repopulate_table), not to bootstrap.
 
         trace(log_,
               "spaces::PHASE 4 bootstrap_indexes_sync: {} engines, {} indexes wired "

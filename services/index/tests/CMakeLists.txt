@@ -6,6 +6,12 @@ set(${PROJECT_NAME}_SOURCES
     test_index_disk.cpp
     test_bitcask_index_disk.cpp
     test_disk_hash_table.cpp
+    test_index_agent_lifetime.cpp
+    test_index_agent_dropped_writes.cpp
+    test_index_agent_reaping.cpp
+    test_index_agent_buffer.cpp
+    test_index_registry.cpp
+    test_index_delete_horizon.cpp
 
     # stress tests with sanitizer are incredibly slow
     $<$<NOT:$<BOOL:${ENABLE_ASAN}>>:stress_test_index.cpp>

@@ -18,7 +18,7 @@
 //     checkpoint, not the delete; only a counter can tell the two apart.
 //
 // A profile taken over a sustained delete loop put ~100% of the index agent's samples in
-// remove_many -> btree_index_disk_t::force_flush -> btree_t::flush, which fsynced EVERY leaf of
+// the delete-commit leg -> btree_index_disk_t::force_flush -> btree_t::flush, which fsynced EVERY leaf of
 // the disk B+tree: one deleted row fsynced the whole index. That is where the growth came from.
 //
 // Hidden by default ([.]): it fills a million rows, which no ordinary suite run should pay for.

@@ -11,18 +11,22 @@
 #include <actor-zeta/detail/future.hpp>
 #include <actor-zeta/detail/queue/enqueue_result.hpp>
 
-#include "index_agent_disk.hpp"
+#include "bitcask_index_agent.hpp"
+#include "btree_index_agent.hpp"
+#include "index_agent_contract.hpp"
 #include <atomic>
 #include <boost/lockfree/queue.hpp>
 #include <chrono>
 #include <components/catalog/catalog_codes.hpp>
-#include <components/index/index_engine.hpp>
+#include <components/index/forward.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <condition_variable>
 #include <core/file/local_file_system.hpp>
+#include <limits>
 #include <list>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <unordered_map>
 
@@ -36,14 +40,119 @@ namespace services::index {
     void reset_index_repopulations() noexcept;
 
     // Test-observable count of index reads DISPATCHED TO A DISK AGENT (one per
-    // index_agent_disk_t::read_rows send). It is what separates "the SELECT returned the
+    // index_agent_contract::read_rows send). It is what separates "the SELECT returned the
     // right rows" from "the SELECT returned the right rows FROM THE INDEX ENGINE THIS
     // BRANCH BUILT": a facade that registers, is chosen by the planner, and answers out
     // of some in-memory twin returns exactly the same rows, and no row assertion
     // anywhere can tell the two apart. Zero means every read was answered locally.
     uint64_t index_agent_reads() noexcept;
     void reset_index_agent_reads() noexcept;
+
+    // Test-observable count of CHUNK COLUMN INSPECTIONS performed while matching an index
+    // key to a column. Resolved once per chunk per index this is O(chunks); a regression
+    // back to matching per row shows up as O(rows).
+    uint64_t index_key_column_probes() noexcept;
+    void reset_index_key_column_probes() noexcept;
+
+    // How many COMMITTED DELETE BATCHES are currently held back from the stores (one per
+    // (table, index) per committing transaction — see deferred_deletes_). Process-wide, so
+    // a test that may share the binary with another manager measures a DIFFERENCE.
+    //
+    // It is the only handle on a state that is otherwise invisible: the SQL surface cannot
+    // tell "the entry is still in the index because an older snapshot may want it" from
+    // "the entry is still in the index because the sweep is broken", and a test that waited
+    // on wall-clock time for an erase driven by the horizon would be a flake generator.
+    // It is also the meter for the growth cost named at the declaration: a number that only
+    // climbs is a pinned snapshot, not a leak in the queue.
+    //
+    // NOT reset-able and never read on a decision path: the sweep reads the queue itself.
+    uint64_t index_deferred_deletes() noexcept;
 #endif
+
+    // ONE LIVE INDEX, AND EVERY FACT ABOUT IT THE MANAGER NEEDS.
+    //
+    // This is the whole of what index_engine_t + index_t used to hold above the mailbox,
+    // minus the parts that were never the manager's: the ROWS and the SEARCH are the
+    // agent's (they always were), and the per-transaction BUFFER moved down to the agent
+    // with them, because it is the other half of the same answer.
+    //
+    // What is left is ROUTING, and it is deliberately ONE container. The map below
+    // replaces `engines_` AND `disk_agents_per_oid_` -- two containers that answered the
+    // same question ("what serves this oid") and could therefore disagree, which is the
+    // divergence that took out the key-keyed map a stage earlier: an entry left in one
+    // after a partial teardown outlives the other and nothing reports it.
+    struct index_record_t {
+        // pg_index.indexrelid -- the index's ONLY identity below the planner (rule 16).
+        components::catalog::oid_t index_oid{components::catalog::INVALID_OID};
+        // The key set this index covers. The manager is its SOLE owner: the agent is fed
+        // already-resolved (key value, row id) pairs and never sees a column name, so
+        // there is no second copy to drift from this one.
+        components::index::keys_base_storage_t keys;
+        // Copied from the agent class's static index_type_v / supports_ordered_probe_v at
+        // spawn. They are read HERE, before any send: the type is what
+        // all_indexed_descriptions publishes to the planner, and `ordered` is what turns a
+        // misrouted range predicate into a core::error_t instead of a round trip that ends
+        // in a refusal (or, before the error channel, an abort inside the store).
+        components::logical_plan::index_type type{components::logical_plan::index_type::no_valid};
+        bool ordered{false};
+        // The mailbox this index is reached through. The ONLY handle the manager keeps on
+        // a decision path; ownership lives in the per-family vectors below.
+        actor_zeta::address_t address{actor_zeta::address_t::empty_address()};
+    };
+
+    using index_records_t = std::pmr::vector<index_record_t>;
+
+    // --- Routing lookups over one table's records ---------------------------------
+    //
+    // Free functions over the vector, not members of the manager, so they can be read and
+    // tested without an actor: what they decide is pure.
+
+    // The index registered under this indexrelid, or nullptr.
+    [[nodiscard]] const index_record_t* match_index_relid(const index_records_t& records,
+                                                          components::catalog::oid_t index_oid) noexcept;
+
+    // The index over this key set BUILT BY THIS BACKEND, or nullptr. index_type::no_valid
+    // ("the plan named no preference") matches nothing by construction.
+    [[nodiscard]] const index_record_t* match_index(const index_records_t& records,
+                                                    const components::index::keys_base_storage_t& keys,
+                                                    components::logical_plan::index_type type);
+
+    // UNTYPED lookup: the caller named no backend, so this picks one. Two indexes over the
+    // SAME key set are legal (create_index rejects a duplicate only on the pair
+    // (keys, type)), so the pick is a DECISION -- ORDERED FIRST -- and not an artefact of
+    // registration order. An ordered index answers all six comparison predicates; an
+    // unordered one answers eq and nothing else and a range on it is refused, so handing
+    // back the hashed twin would fail a probe the index beside it could have answered.
+    [[nodiscard]] const index_record_t* match_index(const index_records_t& records,
+                                                    const components::index::keys_base_storage_t& keys);
+
+    // The key sets this table has an index on, as a SET.
+    //
+    // Both consumers ask an EXISTENCE question and nothing else: the planner's
+    // context_storage_t::has_index_on ("is this column indexed at all?") and
+    // enrich_logical_plan's stamp_table_has_indexes ("does this table have any index, so
+    // must DML mirror into it?"). A table carrying an ordered AND a hashed index over one
+    // column has ONE indexed key set, not two, and a bag would invite the next caller to
+    // read the repeat as two different columns. Multiplicity is available, exactly, from
+    // indexed_descriptions below.
+    [[nodiscard]] std::pmr::vector<components::index::keys_base_storage_t>
+    indexed_keys(const index_records_t& records, std::pmr::memory_resource* resource);
+
+    // (key set, backend) per registered index -- what lets the planner tell an ordered
+    // index from a hashed one over the SAME column.
+    [[nodiscard]] std::pmr::vector<components::index::index_description_t>
+    indexed_descriptions(const index_records_t& records, std::pmr::memory_resource* resource);
+
+    // Which chunk column carries `keys`, or key_column_absent when the chunk does not
+    // carry every key column and the index is therefore skipped for it.
+    //
+    // Resolved ONCE per chunk per index: the answer is a property of the chunk's column
+    // layout, not of a row. ALL key columns must be present for the index to apply, but
+    // the value read is the FIRST key's column -- multi-column index keys are still a todo
+    // on the index side.
+    inline constexpr std::size_t key_column_absent = std::numeric_limits<std::size_t>::max();
+    [[nodiscard]] std::size_t resolve_key_column(const components::index::keys_base_storage_t& keys,
+                                                 const components::vector::data_chunk_t& chunk);
 
     // Bootstrap address bundle for sync() (plain named struct — no std::tuple,
     // mirrors services::wal::wal_sync_pack_t and manager_disk_t::disk_sync_pack_t).
@@ -123,45 +232,67 @@ namespace services::index {
         // mutation of the manager's owned structures is safe. They seed the
         // manager from the catalog scan so it starts in steady state.
 
-        // Empty in-memory index_engine_t per live table oid from the catalog scan.
+        // Register the table with the index manager: an EMPTY record list per live table
+        // oid from the catalog scan. Empty is not the same as absent -- absent means the
+        // manager has never heard of the table and CREATE INDEX on it is a bookkeeping
+        // bug, empty means it is known and carries no index yet.
         void bootstrap_engine_sync(components::catalog::oid_t oid);
 
-        // Register one existing on-disk index (per alive pg_index row, keyed by
-        // its indexrelid). The owning disk-agent pointer is passed in (spawn
-        // stays in base_spaces); its address is wired into engines_[oid] +
-        // disk_agents_per_oid_.
+        // Register one existing on-disk index (per alive pg_index row, keyed by its
+        // indexrelid): raise its disk agent and record it in indexes_per_oid_[oid].
         //
-        // No storage handle any more (C2c, rule 10): the agent opens its own backing from
-        // the same (table_oid, index_oid) pair, so there is nothing for the caller to
-        // create and nothing for two owners to hold. An agent only exists at all when
-        // that open succeeded -- index_agent_disk_t::create hands back the reason instead
-        // of an agent otherwise -- so there is no convention for the caller to observe
-        // here, and nothing it can forget to ask.
-        void bootstrap_index_sync(components::catalog::oid_t table_oid,
-                                  components::catalog::oid_t index_oid,
-                                  components::logical_plan::index_type type,
-                                  components::index::keys_base_storage_t keys,
-                                  actor_zeta::address_t disk_agent_addr,
-                                  index_agent_disk_ptr disk_agent_owned);
+        // THE AGENT IS RAISED HERE, not handed in. It used to be spawned by the caller
+        // (base_spaces) and moved in, which put a SECOND site in the codebase that had to
+        // read pg_index.indtype and pick a class from it; with one agent class per family
+        // that choice is real code, and it belongs in the one factory that owns it
+        // (spawn_disk_agent below). The caller now supplies only what the catalog scan
+        // read, and the thresholds come from the manager's own configuration -- which is
+        // also what makes bootstrap and runtime CREATE INDEX raise IDENTICAL agents.
+        //
+        // committed_txn_ids: the WAL-replay set of committed transaction ids, used by the
+        // hashed family's txn-log recover gate. The ordered family ignores it (no log).
+        //
+        // Returns the reason the index could not be brought up -- an unregistered table
+        // (bootstrap order violated), a duplicate row, an unsupported type, or a storage
+        // that would not open. Nothing is registered on any of those paths, so the caller
+        // has nothing to unwind: an index that will not open costs a full scan, whereas
+        // aborting costs the whole engine its start.
+        [[nodiscard]] core::error_t bootstrap_index_sync(components::catalog::oid_t table_oid,
+                                                         components::catalog::oid_t index_oid,
+                                                         components::logical_plan::index_type type,
+                                                         components::index::keys_base_storage_t keys,
+                                                         std::pmr::set<std::uint64_t> committed_txn_ids);
 
         // Restore a dropped-table entry from pg_class.delete_id (alias of
         // mark_table_dropped_sync).
         void bootstrap_dropped_sync(components::catalog::oid_t oid, uint64_t delete_id);
 
-        // Repopulate the in-memory index from a post-restart storage scan.
-        // CHECKPOINT compaction renumbers physical row_ids from 0, but the
-        // on-disk btree keeps pre-compact ids; without this rebuild, equality
-        // lookups return stale row_ids that no longer map to live rows. The
-        // on-disk btree is deliberately left untouched — its stale entries are
-        // harmless (collection_t::fetch skips out-of-bounds row_ids) and DML
-        // refreshes it over time. Entries are keyed by the physical row ids in
-        // chunk.row_ids (the visibility-filtered scan compacts positions, not
-        // ids); a non-empty chunk without them is a producer defect returned as
-        // an error, before any engine state is touched.
-        [[nodiscard]] core::error_t
-        bootstrap_repopulate_sync(components::catalog::oid_t table_oid,
-                                  std::pmr::vector<components::vector::data_chunk_t> chunks,
-                                  uint64_t row_count);
+#ifdef DEV_MODE
+        // Raw, NON-OWNING handles to the disk agents this manager currently owns.
+        //
+        // A test that wants to lay out an interleaving by hand -- "the agent has handled
+        // the drop, the manager has not been resumed yet" -- has to drive the agent's own
+        // mailbox, and an actor_zeta::address_t cannot be resumed. The manager raises its
+        // agents itself now, so it is the only place a test can get one from.
+        //
+        // ONE ACCESSOR PER FAMILY, because there is no common base to hand back and there
+        // deliberately is not going to be one: an agent's handle is typed by its class
+        // everywhere in this file, for the same reason its owner is. Never called on a
+        // decision path.
+        [[nodiscard]] std::pmr::vector<bitcask_index_agent_t*> owned_bitcask_agents_sync();
+        [[nodiscard]] std::pmr::vector<btree_index_agent_t*> owned_btree_agents_sync();
+#endif
+
+        // bootstrap_repopulate_sync IS GONE FROM HERE, and the absence is a removal of
+        // work rather than of behaviour. It existed to rebuild "the in-memory index" from
+        // a full storage scan at every startup, because CHECKPOINT compaction renumbers
+        // physical row_ids while the on-disk index keeps the pre-compact ones. What it
+        // actually did, once the last in-memory index went away, was: clear the facades'
+        // pending buckets (empty at bootstrap), re-stage every row of every table into
+        // bucket 0, and then commit bucket 0 -- which for a disk-backed facade only ERASED
+        // it. A provable no-op, paid for with a full scan of every table on every start.
+        // The stale-row_id problem it names is real and is recorded as unfixed: nothing
+        // rewrites the on-disk index after a compact.
 
         // Collection lifecycle
         unique_future<void> register_collection(session_id_t session, components::catalog::oid_t table_oid);
@@ -193,6 +324,12 @@ namespace services::index {
         unique_future<core::error_t> commit_inserts(execution_context_t ctx,
                                                     std::pmr::vector<components::catalog::oid_t> table_oids,
                                                     uint64_t commit_id);
+        // commit_deletes DOES NOT TOUCH A STORE. It records the batch in
+        // deferred_deletes_ (see there) and marks this manager as a horizon subscriber;
+        // on_horizon_advanced is what finally sends the agents their commit_deletes, once
+        // no live snapshot can still want the rows. It therefore has no IO left to fail and
+        // always answers no_error() -- an erase that fails LATER is logged where it
+        // happens, and it leaves the index a superset, which is the safe direction.
         unique_future<core::error_t> commit_deletes(execution_context_t ctx,
                                                     std::pmr::vector<components::catalog::oid_t> table_oids,
                                                     uint64_t commit_id);
@@ -219,16 +356,21 @@ namespace services::index {
                                                       core::date::timezone_offset_t session_tz);
 
         // DDL: index management
-        // Returns the new index id, or a core::error_t when the index cannot be
-        // brought up (already present, unknown table, unsupported type, or its
-        // on-disk storage failed to open). A disk index is never silently
-        // downgraded to an in-memory one.
-        unique_future<core::result_wrapper_t<uint32_t>> create_index(session_id_t session,
-                                             components::catalog::oid_t table_oid,
-                                             components::catalog::oid_t index_oid,
-                                             components::index::keys_base_storage_t keys,
-                                             components::logical_plan::index_type type,
-                                             core::date::timezone_offset_t session_tz);
+        // Returns the reason the index cannot be brought up (already present, unknown
+        // table, unsupported type, or its on-disk storage failed to open), or no_error().
+        // A disk index is never silently downgraded to an in-memory one.
+        //
+        // It used to hand back a uint32 "index id" -- the index's POSITION in the dead
+        // index_engine_t's list. No caller ever read the number
+        // (operator_create_index_backfill branches on the error half and then records the
+        // pair (table_oid, index_oid)), and an index's identity below the planner is its
+        // indexrelid, which the caller already has. The id died with the list.
+        unique_future<core::error_t> create_index(session_id_t session,
+                                                  components::catalog::oid_t table_oid,
+                                                  components::catalog::oid_t index_oid,
+                                                  components::index::keys_base_storage_t keys,
+                                                  components::logical_plan::index_type type,
+                                                  core::date::timezone_offset_t session_tz);
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
 
@@ -263,11 +405,18 @@ namespace services::index {
         unique_future<std::pmr::vector<components::catalog::oid_t>>
         tables_without_indexes(session_id_t session, std::pmr::vector<components::catalog::oid_t> table_oids);
 
-        // GC subscriber: erases dropped_table_agents_ entries whose
-        // dropped_at_commit_id is below the new snapshot floor. When that map
-        // drains it acks on_subscriber_empty(INDEX_KIND) to manager_dispatcher_,
-        // clearing the selective-broadcast flag so no further on_horizon_advanced
-        // arrives until a new DROP TABLE re-marks the subscriber.
+        // GC subscriber, and TWO queues drain here, in this order:
+        //
+        //   1. dropped_table_agents_ — entries whose dropped_at_commit_id is below the new
+        //      snapshot floor lose their registry entry and their agents (reaped).
+        //   2. deferred_deletes_ — committed erases whose commit_id the floor has now
+        //      reached are finally sent to their agents. Second, because step 1 destroys
+        //      agents: a reaped table's held-back erases are dropped WITH it rather than
+        //      addressed afterwards.
+        //
+        // The ack is sent once BOTH are empty: on_subscriber_empty(INDEX_KIND) clears the
+        // dispatcher's selective-broadcast flag, so acking with erases still queued would
+        // switch off the only signal that can ever publish them.
         unique_future<void> on_horizon_advanced(uint64_t new_horizon);
 
         // CREATE INDEX catchup handler (see index_contract): locates the engine
@@ -320,31 +469,180 @@ namespace services::index {
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
         std::filesystem::path path_db_;
+        // The thresholds every agent this manager raises is built with -- BOTH at
+        // bootstrap and at runtime CREATE INDEX, which is the fix rather than the
+        // description. These three were written by the constructor and then read by
+        // nothing: create_index built its agent from bitcask_index_disk_t::default_* /
+        // btree_index_disk_t::default_* instead, so an operator who configured
+        // `bitcask_segment_record_limit` got it honoured for indexes that existed at
+        // startup and silently ignored for every index created afterwards -- the same
+        // index, in the same database, laid out two different ways depending on when it
+        // was created. spawn_disk_agent below is now the only builder and it reads these.
         uint64_t bitcask_flush_threshold_{1000};
         uint64_t bitcask_segment_record_limit_{100};
         uint64_t btree_flush_threshold_{1000};
 
-        // Per-collection in-memory index engines (keyed by table oid). Sole
-        // owner — no engine state is shared with other actors. Populated by
-        // bootstrap_engine_sync at startup or lazily by register_collection.
-        std::pmr::unordered_map<components::catalog::oid_t, components::index::index_engine_ptr> engines_;
+        // THE REGISTRY: which indexes serve which table, and everything about them the
+        // manager decides on (see index_record_t). ONE container, and that is the point --
+        // it replaces the per-table index_engine_t map AND the per-oid address map that
+        // stood beside it. Two containers answering "what serves this oid" is exactly the
+        // shape that diverges under a partial teardown.
+        //
+        // A PRESENT-BUT-EMPTY entry means "this table is registered and carries no index":
+        // register_collection / bootstrap_engine_sync create it, and create_index refuses
+        // a table with no entry at all rather than minting one, because that is a
+        // bookkeeping bug upstream.
+        std::pmr::unordered_map<components::catalog::oid_t, index_records_t> indexes_per_oid_;
 
         // Dropped-table markers (oid -> dropped_at_commit_id). Populated by
         // mark_table_dropped[_sync]; drained by on_horizon_advanced once the
-        // snapshot floor passes the commit_id, which erases engines_[oid] and
-        // sends terminal drop messages to its disk_agents_per_oid_ entry.
+        // snapshot floor passes the commit_id, which erases indexes_per_oid_[oid] and
+        // sends terminal drop messages to the agents it named.
         std::pmr::unordered_map<components::catalog::oid_t, uint64_t> dropped_table_agents_;
 
-        // Disk persistence actor addresses grouped by table oid; the commit_*
-        // fan-out and on_horizon_advanced GC route through here.
-        std::pmr::unordered_map<components::catalog::oid_t, std::pmr::vector<actor_zeta::address_t>>
-            disk_agents_per_oid_;
+        // ONE COMMITTED DELETE BATCH THAT MAY NOT REACH A STORE YET.
+        //
+        // An index is allowed to name rows a reader must not see -- the table drops those
+        // on the point fetch (C4b, fetch_visibility_t::SNAPSHOT). It is NOT allowed to
+        // withhold an id: a row the index never names is never fetched and never filtered,
+        // so a SHORT index answer is a silently wrong result that nothing downstream can
+        // undo. commit_deletes therefore may not erase an entry while a live snapshot still
+        // owns the row, and a snapshot owns it for exactly as long as its horizon has not
+        // reached the delete's commit_id (row_version_manager: delete_id > snapshot_horizon
+        // keeps the row alive).
+        //
+        // The in-memory index got this for free -- it stamped delete_id = commit_id and let
+        // cleanup_versions(lowest_active) do the erasing. There is no stamp on a disk index
+        // and no in-memory index left to carry one, so the wait is a QUEUE.
+        //
+        // KEYED BY (table_oid, index_oid), NEVER BY THE AGENT'S ADDRESS. The address is
+        // re-resolved out of indexes_per_oid_ at sweep time, so an index dropped between
+        // the commit and the sweep is simply not found instead of being posted to through a
+        // stale handle.
+        //
+        // WHAT IS *NOT* HERE IS THE ROWS. They never left the agent's own pending_deletes_
+        // bucket -- stage_deletes put them there and the agent's commit_deletes is what
+        // publishes and clears it. This queue holds the SCHEDULE only, and the schedule is
+        // computed from two facts nothing below the mailbox has: the commit_id (the manager
+        // is handed it) and the snapshot floor (the manager is the horizon subscriber). One
+        // fact, one owner, on both sides -- the agent is never asked what it is holding and
+        // this manager never holds a copy of it.
+        struct deferred_delete_t {
+            components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
+            components::catalog::oid_t index_oid{components::catalog::INVALID_OID};
+            // Which bucket the agent must publish when the wait is over. The hashed family
+            // also journals under it, which is why it is carried rather than re-derived.
+            uint64_t txn_id{0};
+            // The horizon this batch is waiting for.
+            uint64_t commit_id{0};
+        };
 
-        // Owning pointers to the disk agents, kept alive for the manager's
-        // lifetime so the addresses in disk_agents_per_oid_ stay valid. Reaped
-        // when the owning table is GC'd by on_horizon_advanced. On resource_,
-        // like the three maps above it (rule 8).
-        std::pmr::vector<index_agent_disk_ptr> disk_agents_owned_;
+        // THE PRICE, STATED: this queue is IN MEMORY and has NO CAP. A long-lived snapshot
+        // pins lowest_active, the sweep never fires, and both this vector and the agents'
+        // matching buckets grow for as long as that snapshot is held. That is deliberate
+        // and it is not negotiable downwards: EVICTING an entry means publishing an erase
+        // early, which is precisely the defect this queue exists to remove -- a silently
+        // short index answer -- so there is no cap that is not also a correctness bug.
+        // index_deferred_deletes() above is the meter; a number that only climbs names a
+        // pinned snapshot, not a leak here.
+        //
+        // The crash story is already covered and costs nothing: an entry lost to a restart
+        // leaves the erase unapplied, so the index keeps naming a row the table has
+        // deleted -- a SUPERSET, the safe direction, filtered on the fetch like any other.
+        // (What a restart does NOT fix is the separate, known, unfixed staleness of
+        // post-compact row_ids; this queue neither relies on that being fixed nor makes it
+        // worse -- repopulate_table drops the table's entries before it clears its agents.)
+        //
+        // A VECTOR, not a map: the only two consumers walk ALL of it (the horizon sweep and
+        // a table/index teardown filter), and entries arrive in commit order.
+        std::pmr::vector<deferred_delete_t> deferred_deletes_;
+
+        // Drop the held-back erases of a whole table / of one index, WITHOUT publishing
+        // them. Called wherever the thing they were owed to is being taken away: the agent
+        // is about to be destroyed, its buckets with it, so there is nothing left to
+        // publish and an entry that outlived it would be a lookup into a torn-down record
+        // on the next sweep. Not a fallback -- the erase is genuinely moot once the index
+        // is gone.
+        void forget_deferred_deletes(components::catalog::oid_t table_oid);
+        void forget_deferred_deletes(components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
+
+        // OWNERSHIP, ONE VECTOR PER FAMILY. These keep the agents alive so the addresses
+        // recorded above stay valid, and destroying an entry IS what frees an agent and
+        // closes its store.
+        //
+        // Why two vectors and not one: an owning pointer here is
+        // std::unique_ptr<T, actor_zeta::pmr::deleter_t>, and that deleter returns
+        // sizeof(STATIC T) bytes to the pool (actor-zeta detail/memory.hpp
+        // deallocate_ptr). A single vector would need one static type for both families --
+        // a common base -- and destroying either agent through it would hand the pool the
+        // wrong size. The erasure the manager actually needs is for the WORK, not for the
+        // ownership, and the framework already provides it: every send goes to an
+        // actor_zeta::address_t, which carries its own concrete-typed enqueue thunk. So
+        // the manager knows the family only where it must (raising and freeing), and
+        // nowhere else.
+        //
+        // Reaped -- taken out of these vectors, sent the terminal drop, awaited, destroyed
+        // -- by drop_index, unregister_collection and on_horizon_advanced. On resource_,
+        // like the maps above (rule 8).
+        std::pmr::vector<bitcask_index_agent_ptr> bitcask_agents_owned_;
+        std::pmr::vector<btree_index_agent_ptr> btree_agents_owned_;
+
+        // Disk agents taken OUT of the manager and into a handler's frame, on their way to
+        // destruction. Nothing outside can address them any more, which is the whole
+        // point: the terminal drop is sent only after the owner has been detached, so
+        // nothing can post a request behind it (see drop_index for what happens when
+        // something can). Destroying this struct destroys the agents.
+        struct detached_agents_t {
+            std::pmr::vector<bitcask_index_agent_ptr> bitcask;
+            std::pmr::vector<btree_index_agent_ptr> btree;
+
+            explicit detached_agents_t(std::pmr::memory_resource* resource)
+                : bitcask(resource)
+                , btree(resource) {}
+
+            [[nodiscard]] bool empty() const noexcept { return bitcask.empty() && btree.empty(); }
+        };
+
+        // THE ONE PLACE pg_index.indtype picks a class. Raises the agent for
+        // (table_oid, index_oid), records its owner in the matching vector above, and
+        // hands back the routing facts the registry keeps -- or the reason its store would
+        // not open, as a value. Nothing is recorded on the failure path.
+        //
+        // `type` and `ordered` come OUT rather than in, copied from the chosen class's
+        // static index_type_v / supports_ordered_probe_v: what the catalog asked for and
+        // what the family actually is are not the same word (a composite index is built by
+        // the ordered family and published as `single`), and the registry must carry what
+        // it IS.
+        struct spawned_agent_t {
+            actor_zeta::address_t address;
+            components::logical_plan::index_type type;
+            bool ordered;
+        };
+        [[nodiscard]] core::result_wrapper_t<spawned_agent_t>
+        spawn_disk_agent(components::catalog::oid_t table_oid,
+                         components::catalog::oid_t index_oid,
+                         components::logical_plan::index_type type,
+                         std::pmr::set<std::uint64_t> committed_txn_ids);
+
+        // Take every disk agent of `table_oid` out of the manager: its records leave
+        // indexes_per_oid_ and its owners leave the vectors above. The agents are matched
+        // by asking each one which table it serves, so there is no second map to disagree
+        // with the owners.
+        [[nodiscard]] detached_agents_t detach_table_agents(components::catalog::oid_t table_oid);
+
+        // The same, for ONE index named by its indexrelid (DROP INDEX: the table's sibling
+        // indexes must stay registered, so the record is trimmed out of the vector rather
+        // than the whole entry erased).
+        [[nodiscard]] detached_agents_t detach_index(components::catalog::oid_t table_oid,
+                                                     components::catalog::oid_t index_oid);
+
+        // Send the terminal drop to every detached agent and hand back the replies to
+        // await. Scheduling goes through the pointers this frame holds, because
+        // schedule_agent() searches the manager's vectors and these are no longer in them.
+        // Sends only -- no suspension inside, so the caller keeps the two-phase
+        // send-all-then-await-all shape.
+        [[nodiscard]] std::pmr::vector<unique_future<void>> send_drop_to_detached(detached_agents_t& dying,
+                                                                                  session_id_t session);
 
         // Index metadata lives in pg_catalog.pg_index (no separate metadata file).
         core::filesystem::local_file_system_t fs_;
@@ -389,7 +687,16 @@ namespace services::index {
         auto [msg, future] =
             actor_zeta::detail::make_message<R>(resource(), std::move(sender), cmd, std::forward<Args>(args)...);
 
-        (void) enqueue_impl(std::move(msg));
+        // The delivery result is CHECKED, not cast away (rule 14). This manager's
+        // enqueue_impl is a pure hand-off -- it releases the message into inbox_ and wakes
+        // the loop, and there is no bounded queue to refuse it -- so today it cannot fail.
+        // If it ever does, `future` below is left with no producer and its awaiter waits
+        // forever, which is exactly the failure that must not pass in silence. The
+        // needs-scheduling half is deliberately dropped: this manager runs its own loop
+        // thread and enqueue_impl already woke it.
+        if (enqueue_impl(std::move(msg)).second != actor_zeta::detail::enqueue_result::success) {
+            error(log_, "manager_index_t::enqueue_impl: message refused; its reply will never arrive");
+        }
         return std::move(future);
     }
 

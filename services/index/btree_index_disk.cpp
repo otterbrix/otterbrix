@@ -74,7 +74,8 @@ namespace services::index {
     btree_index_disk_t::btree_index_disk_t(const path_t& path,
                                            std::pmr::memory_resource* resource,
                                            uint64_t flush_threshold)
-        : index_disk_t(resource, flush_threshold)
+        : resource_(resource)
+        , flush_threshold_(flush_threshold)
         , path_(path)
         , fs_(core::filesystem::local_file_system_t())
         , db_(std::make_unique<btree_t>(resource, fs_, path, item_key_getter)) {
@@ -82,10 +83,10 @@ namespace services::index {
     }
 
     // A NULL key is never stored and is never looked up. The invariant, and the reasons
-    // for it, are written down once in components/index/index.cpp ("An index stores
-    // exactly the NON-NULL keys of the live rows"); this is the same rule enforced where
-    // the DISK path can enforce it, because index_t is not the only door into this class
-    // -- the agent's bulk feed and the component tests reach it directly.
+    // for it, are written down once in services/index/index_agent_contract.hpp
+    // (index_key_is_null, "An index stores exactly the NON-NULL keys of the live rows");
+    // this is the same rule enforced where the STORE can enforce it, because the agent is
+    // not the only door into this class -- the backend tests reach it directly.
     //
     // The cost of admitting one is specific here, not abstract: convert() maps a NULL to
     // the NA physical_value, and NA is exactly what numeric_limits<physical_value>::max()
@@ -293,31 +294,10 @@ namespace services::index {
         reset_flush_state();
     }
 
-    namespace {
-        // One message for both legs of the unreachable txn path. Naming the guard that
-        // was supposed to keep the caller away is what makes the failure diagnosable:
-        // the bug is upstream, in whoever skipped has_txn_log().
-        core::error_t no_txn_log_error(std::pmr::memory_resource* resource, const char* leg) {
-            std::pmr::string what{"btree_index_disk_t owns no txn log: ", resource};
-            what.append(leg);
-            what.append(" reached without the has_txn_log() guard");
-            return core::error_t{core::error_code_t::index_create_fail, std::move(what)};
-        }
-    } // namespace
-
-    core::error_t btree_index_disk_t::apply_txn_inserts(uint64_t, const std::vector<std::pair<value_t, size_t>>&) {
-        assert(false && "btree_index_disk_t::apply_txn_inserts reached: it owns no txn log");
-        return no_txn_log_error(resource(), "apply_txn_inserts");
-    }
-
-    core::error_t btree_index_disk_t::apply_txn_deletes(uint64_t, const std::vector<std::pair<value_t, size_t>>&) {
-        assert(false && "btree_index_disk_t::apply_txn_deletes reached: it owns no txn log");
-        return no_txn_log_error(resource(), "apply_txn_deletes");
-    }
-
-    void btree_index_disk_t::set_bulk_mode(bool) {
-        // Intentionally empty; see the declaration. insert_bulk_unchecked /
-        // remove_bulk_unchecked already bypass everything a window would suppress.
-    }
+    // THREE MEMBERS ARE GONE FROM HERE, and the absence is the change. apply_txn_inserts,
+    // apply_txn_deletes and set_bulk_mode existed only because the erased base declared
+    // them: this store owns no transaction log and has no bulk window to open, so all
+    // three were abort-or-nothing stubs that no caller could reach. The routing question
+    // they answered (has_txn_log()) is answered by the type btree_index_agent_t holds.
 
 } // namespace services::index

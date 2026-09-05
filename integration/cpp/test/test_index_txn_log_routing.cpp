@@ -2,13 +2,17 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <services/index/manager_index.hpp>
+
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <thread>
 
 // WHICH BACKEND A WRITE TRAVELS THROUGH, witnessed on disk.
 //
-// index_agent_disk_t::insert_many / remove_many split every committed statement two ways.
+// The index agents' insert_many / remove_many split every committed statement two ways.
 // A backend that owns a durable transaction log journals the whole statement under its
 // txn_id (bitcask, the index_type::hashed backend); a backend that owns none takes the
 // bulk path -- insert_bulk_unchecked per row, then one force_flush (the ordered B+tree,
@@ -84,6 +88,28 @@ namespace {
         return dirs;
     }
 
+    // A COMMITTED DELETE NO LONGER JOURNALS INSIDE THE STATEMENT, and this waits for it.
+    //
+    // Since C5c the erase does not reach any store at commit time: the index would
+    // otherwise stop naming a row that an older reader's snapshot still owns, and a short
+    // index answer is one nothing downstream can undo (see
+    // services/index/manager_index.hpp, deferred_deletes_). commit_deletes queues the
+    // batch and the horizon sweep — a fire-and-forget broadcast from the dispatcher —
+    // publishes it once no live snapshot can want the rows.
+    //
+    // WHAT IS BEING WAITED FOR IS NOT TIME. index_deferred_deletes() is the queue's own
+    // depth; reaching zero means the sweep ran, which is the exact event the journal
+    // assertion below depends on. Nothing here weakens that assertion: the route under
+    // test — a DELETE travelling through apply_txn_deletes and not through the bulk path —
+    // is unchanged, only its schedule is.
+    void await_deferred_index_deletes() {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (services::index::index_deferred_deletes() != 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        REQUIRE(services::index::index_deferred_deletes() == 0);
+    }
+
 } // namespace
 
 TEST_CASE("integration::cpp::test_index_txn_log_routing::hash_journals_btree_does_not") {
@@ -150,6 +176,7 @@ TEST_CASE("integration::cpp::test_index_txn_log_routing::hash_journals_btree_doe
         // the log byte-for-byte unchanged.
         const auto log_before_delete = size_or_zero(txn_log);
         REQUIRE(exec("DELETE FROM r.t WHERE k = 20;")->is_success());
+        await_deferred_index_deletes();
 
         INFO("the hash index must have journalled the DELETE through apply_txn_deletes");
         REQUIRE(size_or_zero(txn_log) > log_before_delete);

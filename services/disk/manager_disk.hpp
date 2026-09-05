@@ -453,7 +453,7 @@ namespace services::disk {
 
     // Index-bootstrap row: one entry per live pg_index row, populated by
     // scan_alive_pg_index_sync() and consumed by base_spaces to spawn
-    // index_agent_disk_t actors. Non-1:1 mappings from pg_index:
+    // index agent actors. Non-1:1 mappings from pg_index:
     //   keys        ← indkey, a CSV of attoids resolved to attnames via pg_attribute.
     //   ready_since ← indisvalid sentinel: 1 if valid, 0 if backfill uncommitted
     //                 (base_spaces skips ready_since==0 as an unfinished build).
@@ -662,14 +662,19 @@ namespace services::disk {
         // them with manager_index_t.
         std::pmr::vector<pg_index_row_t> scan_alive_pg_index_sync() const;
 
-        // Sync full-storage scan for post-bootstrap index rebuild. CHECKPOINT
-        // compaction renumbers physical row_ids contiguously from 0 (see
-        // data_table_t::compact), so pre-compact row_ids persisted in on-disk
-        // index btrees go stale; base_spaces feeds this scan into
-        // manager_index_t::bootstrap_repopulate_sync to rebuild against current
-        // row_ids. Single-threaded bootstrap only. Returns the storage as a batch of
-        // ≤DEFAULT_VECTOR_CAPACITY chunks (empty when the oid is unknown or its storage
-        // is empty).
+        // Sync full-storage scan for post-bootstrap index rebuild. CHECKPOINT compaction
+        // renumbers physical row_ids contiguously from 0 (see data_table_t::compact), so
+        // pre-compact row_ids persisted in on-disk indexes go stale; this hands a table's
+        // live rows back so an index can be rebuilt against current ids. Single-threaded
+        // bootstrap only. Returns the storage as a batch of ≤DEFAULT_VECTOR_CAPACITY
+        // chunks (empty when the oid is unknown or its storage is empty).
+        //
+        // NO CALLER TODAY. base_spaces fed it into manager_index_t's bootstrap rebuild,
+        // and that rebuild was removed once it became provably a no-op (it refilled a
+        // per-transaction buffer and then erased it, having no in-memory index left to
+        // rebuild). Repairing the stale ids for real means clearing and refilling the
+        // index AGENT's store, which is a mailbox round trip and cannot happen in this
+        // pre-scheduler-start window; it belongs to the runtime repopulate path.
         std::pmr::vector<components::vector::data_chunk_t>
         scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid, std::pmr::memory_resource* resource) const;
 

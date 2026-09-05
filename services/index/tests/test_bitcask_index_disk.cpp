@@ -658,10 +658,18 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_throws_on_crc_mismatch"
     }
 
     {
-        auto res =
-            bitcask_index_disk_t::create(path, &resource, test_flush_threshold, 2, std::pmr::set<std::uint64_t>{});
-        REQUIRE(res.has_error());
-        REQUIRE(res.error().type == core::error_code_t::index_create_fail);
+        // Construction does no I/O; open() is the step that meets the corruption and
+        // reports it AS A VALUE. (The construct-and-open ctor aborts on the same input,
+        // which is why this reaches for the deferred one.)
+        bitcask_index_disk_t index(path,
+                                   &resource,
+                                   test_flush_threshold,
+                                   2,
+                                   std::pmr::set<std::uint64_t>{},
+                                   bitcask_index_disk_t::deferred_open_t{});
+        auto open_error = index.open();
+        REQUIRE(open_error.contains_error());
+        REQUIRE(open_error.type == core::error_code_t::index_create_fail);
     }
 
     std::filesystem::copy_file(backup_path, file_path, std::filesystem::copy_options::overwrite_existing);
@@ -722,13 +730,17 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
     }
 
     {
-        auto res = bitcask_index_disk_t::create(path,
-                                                &resource,
-                                                test_flush_threshold,
-                                                test_segment_record_limit,
-                                                std::pmr::set<std::uint64_t>{});
-        REQUIRE(res.has_error());
-        REQUIRE(res.error().type == core::error_code_t::index_create_fail);
+        // Construction does no I/O; open() is the step that meets the corruption and
+        // reports it AS A VALUE.
+        bitcask_index_disk_t index(path,
+                                   &resource,
+                                   test_flush_threshold,
+                                   test_segment_record_limit,
+                                   std::pmr::set<std::uint64_t>{},
+                                   bitcask_index_disk_t::deferred_open_t{});
+        auto open_error = index.open();
+        REQUIRE(open_error.contains_error());
+        REQUIRE(open_error.type == core::error_code_t::index_create_fail);
     }
 
     const auto intact_after_failed_recovery = read_file_bytes(intact_segment);

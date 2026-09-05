@@ -1,10 +1,14 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-#include <components/index/index_engine.hpp>
+#include <services/index/manager_index.hpp>
 #include <string>
 
 // Matching an index key to its column is a property of the CHUNK, not of the row.
+//
+// The counter moved with the code it counts: the resolution used to run inside
+// index_engine_t, which owned the key sets; it runs in manager_index_t now, which is
+// their sole owner since the registry became one record map.
 //
 // Done per row it happens twice per row — once to check the key column is present, once to read
 // the value — and each check walks the chunk's columns comparing a column alias against a freshly
@@ -38,9 +42,9 @@ TEST_CASE("integration::cpp::test_index_key_binding::key_lookup_is_per_chunk_not
     }
     sql += ";";
 
-    components::index::reset_index_key_column_probes();
+    services::index::reset_index_key_column_probes();
     REQUIRE(exec(sql)->is_success());
-    const auto probes = components::index::index_key_column_probes();
+    const auto probes = services::index::index_key_column_probes();
 
     INFO("column inspections while indexing " << kRows << " rows: " << probes);
     // One chunk of 500 rows: a per-chunk resolution inspects a handful of columns, a per-row

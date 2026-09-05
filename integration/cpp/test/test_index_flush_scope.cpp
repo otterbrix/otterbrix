@@ -3,12 +3,14 @@
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <core/b_plus_tree/segment_tree.hpp>
+#include <services/index/manager_index.hpp>
 #include <string>
+#include <thread>
 
 // One changed row must not rewrite the whole index.
 //
 // A disk B+tree index keeps one file per leaf, and btree_index_disk_t::force_flush() — which every
-// INSERT/UPDATE/DELETE reaches through index_agent_disk_t::insert_many / remove_many — walks the
+// INSERT/UPDATE/DELETE reaches through the index agent's insert_many / remove_many — walks the
 // tree from btree_t::flush(). When a leaf is flushed whether or not it changed, the header write,
 // the truncate and the fsync still run, so a statement touching one row pays one fsync per leaf of
 // the whole index: that is a one-row DELETE costing 1.6 s on a million-row indexed table against
@@ -33,6 +35,22 @@ namespace {
             REQUIRE(d->execute_sql(session, sql)->is_success());
         }
     }
+
+    // Since C5c a committed DELETE does not touch the tree inside the statement: the erase
+    // is queued until the snapshot floor reaches its commit id (services/index/
+    // manager_index.hpp, deferred_deletes_), so the leaf flushes it causes land in the
+    // horizon sweep instead. index_deferred_deletes() reaching zero is that sweep having
+    // run — the event the counters below are measuring, not a timeout dressed up as one.
+    // The COST under test is unchanged; only the moment it is paid moved. Spun on yield()
+    // rather than slept on, because the elapsed time below is INSIDE this wait and a
+    // millisecond of sleep would swamp the microseconds being reported.
+    void await_deferred_index_deletes() {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (services::index::index_deferred_deletes() != 0 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        REQUIRE(services::index::index_deferred_deletes() == 0);
+    }
 } // namespace
 
 TEST_CASE("integration::cpp::test_index_flush_scope::one_row_does_not_rewrite_every_leaf", "[.][indexflush]") {
@@ -56,10 +74,12 @@ TEST_CASE("integration::cpp::test_index_flush_scope::one_row_does_not_rewrite_ev
 
     // Warm up: the first statement after CREATE INDEX may still be settling the tree.
     REQUIRE(exec("DELETE FROM f.t WHERE id = 10;")->is_success());
+    await_deferred_index_deletes();
 
     core::b_plus_tree::reset_leaf_flushes();
     const auto start = std::chrono::steady_clock::now();
     REQUIRE(exec("DELETE FROM f.t WHERE id = 20;")->is_success());
+    await_deferred_index_deletes();
     const auto elapsed_us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
     const auto flushes = core::b_plus_tree::leaf_flushes();
     const auto wasted = core::b_plus_tree::leaf_flushes_without_changes();

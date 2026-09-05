@@ -7,14 +7,17 @@
 // An index whose disk storage cannot be opened must not take the engine down at startup.
 //
 // The per-index hash storage (<disk>/<table_oid>/<indexrelid>/hash_index.bin) is opened by the
-// AGENT that owns it, inside bitcask_index_disk_t::create(), which reports by value; it used to
+// AGENT that owns it, inside bitcask_index_disk_t::open(), which reports by value; it used to
 // be opened by bootstrap_indexes_sync and handed in as a shared handle (removed in C2c, rule
-// 10). The DECISION stays where it was: index_agent_disk_t::create() hands bootstrap_indexes_sync
+// 10). The DECISION stays where it was: the agent's create() hands bootstrap_index_sync
 // either an agent or the reason there is none, and on a reason it SKIPS the index entirely —
 // registering nothing, publishing no address, never scheduling it. An index that will not open
-// costs a full scan, whereas aborting costs the whole engine its start. The factory is what
-// makes that possible: the DIRECT constructor asserts and aborts on exactly the failures this
-// path exists to survive (unopenable file, unreadable or incompatible header).
+// costs a full scan, whereas aborting costs the whole engine its start. The construct/open
+// SPLIT is what makes that possible: the agent embeds its store by value and builds it with a
+// ctor that does no I/O, then create() runs open() and returns what it says. The
+// construct-and-open ctor, which asserts and aborts on exactly the failures this path exists
+// to survive (unopenable file, unreadable or incompatible header), is reached only by the
+// backend's own tests.
 //
 // Historically this test could not be made red: pg_index carried no indtype, so after a restart
 // every index came back as `single` and the hashed branch never ran. With indtype persisted the

@@ -161,12 +161,13 @@ TEST_CASE("integration::cpp::test_index_mirror_gate::indexed_table_still_mirrors
 // planner counts on the pair existing — it only routes a range predicate to an index when
 // a NON-hashed index also covers the key.
 //
-// The engine used to answer "which key sets are indexed" out of a map holding ONE slot per
-// key set, beside the list that actually OWNS the indexes. Registering the second index
-// could not write the taken slot, and dropping EITHER index erased it by key — taking the
-// SURVIVOR's registration with it. From that moment the table looked unindexed while still
-// holding a live index: the planner stopped choosing it (this test), DML stopped mirroring
-// into it, and the compact/repopulate gates that read index_engine_t::size() read zero.
+// The index registry used to answer "which key sets are indexed" out of a map holding ONE
+// slot per key set, beside the list that actually OWNS the indexes. Registering the second
+// index could not write the taken slot, and dropping EITHER index erased it by key — taking
+// the SURVIVOR's registration with it. From that moment the table looked unindexed while
+// still holding a live index: the planner stopped choosing it (this test), DML stopped
+// mirroring into it, and the compact/repopulate gates that count the table's indexes read
+// zero.
 // ---------------------------------------------------------------------------
 TEST_CASE("integration::cpp::test_index_mirror_gate::dropping_a_twin_index_leaves_the_survivor_live") {
     auto config = test_create_config("/tmp/otterbrix/integration/test_index_mirror_gate/twin");

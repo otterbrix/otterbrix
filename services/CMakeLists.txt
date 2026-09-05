@@ -35,7 +35,8 @@ set(${PROJECT_NAME}_SOURCES
         index/bitcask_index_disk.cpp
         index/disk_hash_table.cpp
         index/btree_index_disk.cpp
-        index/index_agent_disk.cpp
+        index/bitcask_index_agent.cpp
+        index/btree_index_agent.cpp
         index/manager_index.cpp
 
     # wal

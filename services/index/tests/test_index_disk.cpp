@@ -12,7 +12,6 @@
 using components::types::logical_value_t;
 using services::index::bitcask_index_disk_t;
 using services::index::btree_index_disk_t;
-using services::index::index_disk_t;
 
 std::string padded_string(int i, std::size_t size = 24) {
     auto s = std::to_string(i);
@@ -446,7 +445,7 @@ TEST_CASE("services::index::index_disk::write_path_never_uses_the_default_resour
     index.insert(logical_value_t(&resource, int64_t(4)), size_t(400)); // duplicate key
     index.remove(logical_value_t(&resource, int64_t(4)), size_t(400));
 
-    index_disk_t::result rows(&resource);
+    btree_index_disk_t::result rows(&resource);
     index.find(logical_value_t(&resource, int64_t(4)), rows);
     REQUIRE(rows.size() == 1);
     REQUIRE(rows.front() == 4);
@@ -622,7 +621,7 @@ TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
                              compare_type::lte,
                              compare_type::gt,
                              compare_type::gte}) {
-            index_disk_t::result disk_rows(&resource);
+            btree_index_disk_t::result disk_rows(&resource);
             on_disk.scan_range(compare, v, disk_rows);
 
             INFO("probe=" << probe << " compare=" << static_cast<int>(compare));
@@ -642,7 +641,7 @@ TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
     // The bounds SQL actually needs, spelled out once with literal expectations so the
     // oracle above cannot agree with itself on a wrong answer.
     const auto probe = [&](compare_type compare, int64_t k) {
-        index_disk_t::result res(&resource);
+        btree_index_disk_t::result res(&resource);
         on_disk.scan_range(compare, components::types::logical_value_t(&resource, k), res);
         return sorted(res);
     };

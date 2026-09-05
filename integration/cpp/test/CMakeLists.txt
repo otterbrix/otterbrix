@@ -28,9 +28,11 @@ set( ${PROJECT_NAME}_SOURCES
         test_check_on_update.cpp
         test_index_bootstrap_failure.cpp
         test_index_type_persistence.cpp
+        test_index_threshold_config.cpp
         test_index_txn_log_routing.cpp
         test_index_read_through_agent.cpp
         test_index_fetch_visibility.cpp
+        test_index_delete_horizon.cpp
         test_index_agent_owns_hash_storage.cpp
         test_index_ordered_read_through_agent.cpp
         test_index_rebuild_crash.cpp

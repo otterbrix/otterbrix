@@ -87,7 +87,7 @@ namespace services::index {
         };
 
         std::pmr::string serialize_payload(std::pmr::memory_resource* resource,
-                                           const services::index::index_disk_t::value_t& key,
+                                           const services::index::bitcask_index_disk_t::value_t& key,
                                            const std::pmr::vector<size_t>& rows) {
             std::pmr::string out(resource);
             components::index::codec::append_logical_value(out, key);
@@ -100,7 +100,7 @@ namespace services::index {
 
         void deserialize_payload(std::pmr::memory_resource* resource,
                                  const std::pmr::string& payload,
-                                 services::index::index_disk_t::value_t& key,
+                                 services::index::bitcask_index_disk_t::value_t& key,
                                  std::pmr::vector<size_t>& rows) {
             size_t pos = 0;
             key = components::index::codec::read_logical_value(resource, payload, pos);
@@ -285,91 +285,70 @@ namespace services::index {
         }
     } // namespace
 
-    bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
-                                               std::pmr::memory_resource* resource,
-                                               uint64_t flush_threshold,
-                                               uint64_t segment_record_limit,
-                                               std::pmr::set<std::uint64_t> committed_txn_ids)
-        : index_disk_t(resource, flush_threshold)
-        , path_(path)
-        , hash_index_file_path_(path_ / hash_index_file)
-        , fs_(core::filesystem::local_file_system_t())
-        , segment_record_limit_(segment_record_limit)
-        , task_executor_(std::make_unique<bitcask_task_executor_t>())
-        , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {
-        initialize_storage();
-        if (open_hash_index().contains_error()) {
-            // Direct ctor aborts on an unopenable keydir; only create() tolerates it and
-            // hands the value back. Same split as the CRC check below.
-            assert(false && "bitcask I/O failure: direct ctor could not open the keydir");
-            std::abort();
-        }
-        load_from_disk();
-        if (crc_failure_) {
-            // Direct ctor aborts on corruption; only create() tolerates a CRC
-            // mismatch and turns it into a core::error_t.
-            assert(false && "bitcask I/O failure: direct ctor saw CRC mismatch");
-            std::abort();
-        }
-        open_active_segment();
-        recover_txn_log_unlocked();
-    }
-
-    core::result_wrapper_t<std::unique_ptr<bitcask_index_disk_t>>
-    bitcask_index_disk_t::create(const path_t& path,
-                                 std::pmr::memory_resource* resource,
-                                 uint64_t flush_threshold,
-                                 uint64_t segment_record_limit,
-                                 std::pmr::set<std::uint64_t> committed_txn_ids) {
-        // skip_load ctor does no I/O, so we can run load_from_disk() and check
-        // crc_failure_ before open_active_segment(). committed_txn_ids is stored
-        // by the skip_load ctor so the recover gate is armed before recovery.
-        auto instance = std::unique_ptr<bitcask_index_disk_t>(new bitcask_index_disk_t(path,
-                                                                                       resource,
-                                                                                       flush_threshold,
-                                                                                       segment_record_limit,
-                                                                                       std::move(committed_txn_ids),
-                                                                                       skip_load_tag{}));
-        // The keydir opens HERE, and the reason it could not is this function's return
-        // value rather than a flag on the instance: nothing after it has run, so the
-        // half-built instance is simply dropped and the caller gets the reason instead of
-        // an index over storage that is not there.
-        if (auto open_result = instance->open_hash_index(); open_result.contains_error()) {
-            return open_result;
-        }
-        instance->load_from_disk();
-        if (instance->crc_failure_) {
-            return core::error_t{core::error_code_t::index_create_fail,
-                                 std::pmr::string{"bitcask: CRC mismatch during recovery", resource}};
-        }
-        instance->open_active_segment();
-        instance->recover_txn_log_unlocked();
-        return instance;
-    }
-
+    // NO I/O HAPPENS HERE. Every field is set and nothing is touched on disk, which is
+    // what lets this ctor run inside bitcask_index_agent_t's member initializer list: the
+    // agent holds the store BY VALUE (it cannot be moved in -- mutex_ is immovable), so
+    // construction has to be the step that cannot fail and open() has to be the step that
+    // can.
     bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
                                                uint64_t segment_record_limit,
                                                std::pmr::set<std::uint64_t> committed_txn_ids,
-                                               skip_load_tag)
-        : index_disk_t(resource, flush_threshold)
+                                               deferred_open_t)
+        : resource_(resource)
+        , flush_threshold_(flush_threshold)
         , path_(path)
         , hash_index_file_path_(path_ / hash_index_file)
         , fs_(core::filesystem::local_file_system_t())
         , segment_record_limit_(segment_record_limit)
         , task_executor_(std::make_unique<bitcask_task_executor_t>())
-        , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {
+        , committed_txn_ids_(committed_txn_ids.begin(), committed_txn_ids.end(), resource) {}
+
+    // THE WHOLE OPEN, as a value. The keydir opens here and the reason it could not is
+    // this function's RETURN rather than a flag on the object: nothing after the failing
+    // step has run, so the owner drops the half-built store and hands the reason on
+    // instead of publishing an index over storage that is not there.
+    core::error_t bitcask_index_disk_t::open() {
         initialize_storage();
-        // The factory runs open_hash_index() itself and acts on what it returns, then
-        // load_from_disk + open_active_segment + recover_txn_log_unlocked.
+        if (auto open_result = open_hash_index(); open_result.contains_error()) {
+            return open_result;
+        }
+        load_from_disk();
+        if (crc_failure_) {
+            return core::error_t{core::error_code_t::index_create_fail,
+                                 std::pmr::string{"bitcask: CRC mismatch during recovery", resource_}};
+        }
+        open_active_segment();
+        recover_txn_log_unlocked();
+        return core::error_t::no_error();
     }
 
-    // The keydir file, opened by the store that owns it. Through create() rather than the
-    // aborting direct ctor, because the failures it reports -- an unopenable path, an
-    // unreadable or incompatible header -- are environmental: they must cost the index its
-    // registration, never the engine its start (integration test
-    // test_index_bootstrap_failure).
+    // Construct-and-open, for the backend tests. It aborts on exactly the two failures
+    // open() reports as values, because a constructor has no channel to report them on
+    // (rule 2 forbids the exception that would be the alternative).
+    bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
+                                               std::pmr::memory_resource* resource,
+                                               uint64_t flush_threshold,
+                                               uint64_t segment_record_limit,
+                                               std::pmr::set<std::uint64_t> committed_txn_ids)
+        : bitcask_index_disk_t(path,
+                               resource,
+                               flush_threshold,
+                               segment_record_limit,
+                               std::move(committed_txn_ids),
+                               deferred_open_t{}) {
+        if (open().contains_error()) {
+            assert(false && "bitcask I/O failure: the construct-and-open ctor could not open the store");
+            std::abort();
+        }
+    }
+
+    // The keydir file, opened by the store that owns it. Reached through open() rather
+    // than through a constructor, because the failures it reports -- an unopenable path,
+    // an unreadable or incompatible header -- are environmental: they must cost the index
+    // its registration, never the engine its start (integration test
+    // test_index_bootstrap_failure), and only a function that RETURNS can say so.
     core::error_t bitcask_index_disk_t::open_hash_index() {
         auto storage =
             disk_hash_table_t::create(hash_index_file_path_, disk_hash_table_t::default_bucket_count, resource());
@@ -517,8 +496,8 @@ namespace services::index {
                 }
                 if (static_cast<uint32_t>(calc) != header.crc) {
                     // Segment corruption: flag and return rather than abort, so
-                    // create() can report a core::error_t. The direct ctor checks
-                    // this flag post-load and asserts.
+                    // open() can report a core::error_t. It checks this flag post-load;
+                    // the construct-and-open ctor aborts on what open() then returns.
                     crc_failure_ = true;
                     return;
                 }
@@ -985,7 +964,7 @@ namespace services::index {
         // that the caller's keys are unique. They are not. A non-unique index is the
         // ordinary case, and append_snapshot REPLACES a key's entire row list, so every
         // rebuild feed — repopulate_table, and the txn-0 bulk leg of
-        // index_agent_disk_t::insert_many — collapsed each repeated key down to whichever
+        // the index agent's insert_many — collapsed each repeated key down to whichever
         // row happened to be written last. CHECKPOINT and VACUUM both drive that feed, so
         // a hashed index silently lost its duplicates at the first checkpoint and every
         // restart afterwards answered from the reduced list.
@@ -1095,14 +1074,11 @@ namespace services::index {
         res.insert(res.end(), rows.begin(), rows.end());
     }
 
-    void bitcask_index_disk_t::scan_range(components::expressions::compare_type /*compare*/,
-                                          const value_t& /*value*/,
-                                          result& /*res*/) const {
-        // Unreachable by contract; see the declaration for what keeps callers away and
-        // why the answer is a crash rather than an empty range.
-        assert(false && "bitcask_index_disk_t::scan_range: a hashed store has no ordering to scan");
-        std::abort();
-    }
+    // scan_range IS GONE FROM HERE, and the absence is the change. It existed only
+    // because the erased base declared it pure, and its whole body was an abort: a hashed
+    // store has no ordering to scan. The refusal it stood for now lives one level up, in
+    // bitcask_index_agent_t::read_rows, which is the only caller that could ever ask and
+    // is the only place that can answer with core::error_t instead of a signal.
 
     void bitcask_index_disk_t::merge_immutable_segments() {
         uint64_t frontier_segment_id = 0;

@@ -9,7 +9,7 @@
 // The index TYPE (btree vs hash) must survive a restart.
 //
 // pg_index carries indtype; bootstrap reads it back and hands it to
-// index_agent_disk_t, which picks the on-disk backend from it: index_type::hashed
+// manager_index_t::spawn_disk_agent, which picks the agent family from it: index_type::hashed
 // -> bitcask LSM, everything else -> ordered B+tree. If the type were lost, a
 // `USING hash` index would come back as a btree POINTED AT THE BITCASK DIRECTORY —
 // the same files, a different reader.

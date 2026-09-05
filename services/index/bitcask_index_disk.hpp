@@ -2,7 +2,6 @@
 
 #include "bitcask_task_executor.hpp"
 #include "disk_hash_table.hpp"
-#include "index_disk.hpp"
 
 #include <components/types/logical_value.hpp>
 #include <core/file/file_handle.hpp>
@@ -10,6 +9,7 @@
 #include <core/result_wrapper.hpp>
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -21,76 +21,132 @@
 
 namespace services::index {
 
-    class bitcask_index_disk_t final : public index_disk_t {
+    // THE HASHED STORE. It has no base class and there deliberately is not going to be
+    // one: the erased index_disk_t it used to derive from existed so a single index agent
+    // could hold either family behind one pointer and ASK it at runtime which it was --
+    // does it own a txn log, has it a bulk window, can it answer an ordered probe. There
+    // is one agent class per family now, each holding its store BY VALUE and by this
+    // concrete type, so every one of those questions is answered by the type.
+    //
+    // What the base really owned -- the resource, the flush accounting, the by-value read
+    // shorthands -- is duplicated here and in btree_index_disk_t. That duplication is the
+    // price of not having the coupling, and it is the cheaper half.
+    class bitcask_index_disk_t final {
     public:
+        using value_t = components::types::logical_value_t;
+        using path_t = std::filesystem::path;
+        using result = std::pmr::vector<size_t>;
+
         static constexpr uint64_t default_flush_threshold_{1000};
         static constexpr uint64_t default_segment_record_limit_{10000};
         // Regular (non-merged) segments start at 2; id 0–1 are reserved for merged
         // output so merged data is always replayed before rotated segments.
         static constexpr uint64_t regular_segment_id_start_{2};
 
+        // CONSTRUCTED WHERE IT LIVES. This store is a MEMBER of bitcask_index_agent_t, BY
+        // VALUE: the agent is its sole owner, the type is known statically, and there is
+        // no erased base left to hold it by, so the unique_ptr that used to stand between
+        // the two was indirection and nothing else. It cannot be MOVED into place either
+        // -- the shared_mutex below is immovable and the deleted copy ctor suppresses the
+        // implicit move -- so the agent builds it in its MEMBER INITIALIZER LIST, from
+        // parameters, and the open runs as a separate step afterwards.
+        //
+        // deferred_open_t is that split, spelled in the type: this ctor performs NO I/O,
+        // which is what lets the failures open() meets (an unopenable keydir, a segment
+        // CRC mismatch) be VALUES a caller acts on instead of aborts inside a constructor
+        // that rule 2 forbids from refusing.
+        //
         // committed_txn_ids: WAL-replay set of committed transaction ids. The
         // txn-log recover gate (M1.1) applies a frame only when its txn_id is in
         // this set; uncommitted-txn frames are skipped (their WAL commit marker
         // never landed). A fresh, runtime-created instance passes an EMPTY set —
-        // a fresh dir has no txn-log to gate.
-        //
-        // The keydir file (hash_index.bin) is opened HERE, by the store that owns it --
-        // there is no handle to hand in any more (C2c, rule 10). This ctor aborts when it
-        // cannot be opened; create() below returns the same failure as a value, and that
-        // is the one production uses.
+        // a fresh dir has no txn-log to gate. It is stored HERE, by this ctor, so the gate
+        // is armed before open() runs recovery.
+        struct deferred_open_t {};
+
+        bitcask_index_disk_t(const path_t& path,
+                             std::pmr::memory_resource* resource,
+                             uint64_t flush_threshold,
+                             uint64_t segment_record_limit,
+                             std::pmr::set<std::uint64_t> committed_txn_ids,
+                             deferred_open_t);
+
+        // CONSTRUCT AND OPEN IN ONE STEP, aborting on a failure it has no way to report
+        // (rule 2: a constructor cannot return a value). Production never takes this road
+        // -- it goes through the deferred ctor above plus open() below, because these
+        // failures are environmental and must cost the INDEX its registration, never the
+        // ENGINE its start (integration test test_index_bootstrap_failure). What this is
+        // for is the backend tests, which want a store that is simply open.
         bitcask_index_disk_t(const path_t& path,
                              std::pmr::memory_resource* resource,
                              uint64_t flush_threshold,
                              uint64_t segment_record_limit,
                              std::pmr::set<std::uint64_t> committed_txn_ids);
-        ~bitcask_index_disk_t() override;
+        ~bitcask_index_disk_t();
 
-        // Factory returning the instance, or a core::error_t when on-disk
-        // recovery fails (a segment CRC mismatch, or a keydir file that will not
-        // open -- an unopenable path, an unreadable or incompatible header).
-        // Production code MUST use this: the direct ctor above loads from disk and
-        // aborts on both. committed_txn_ids carries the same recover-gate meaning as
-        // the ctor.
-        [[nodiscard]] static core::result_wrapper_t<std::unique_ptr<bitcask_index_disk_t>>
-        create(const path_t& path,
-               std::pmr::memory_resource* resource,
-               uint64_t flush_threshold,
-               uint64_t segment_record_limit,
-               std::pmr::set<std::uint64_t> committed_txn_ids);
+        bitcask_index_disk_t(const bitcask_index_disk_t&) = delete;
+        bitcask_index_disk_t& operator=(const bitcask_index_disk_t&) = delete;
+
+        // The resource every answer this store produces is built on. A result built
+        // anywhere else is a result built on the process default resource.
+        [[nodiscard]] std::pmr::memory_resource* resource() const noexcept { return resource_; }
+
+        // BRING THE BACKING UP, and say why it could not AS A VALUE: a keydir file
+        // (hash_index.bin) that will not open -- an unopenable path, an unreadable or
+        // incompatible header -- or a segment CRC mismatch during recovery. The keydir is
+        // opened HERE, by the store that owns it; there is no handle to hand in (C2c,
+        // rule 10).
+        //
+        // Called EXACTLY ONCE, immediately after the deferred ctor, by
+        // bitcask_index_agent_t::create() -- which destroys the half-built agent and hands
+        // this error back in its place, so an agent only ever exists over a store that
+        // opened. Nothing is recorded on the object: there is no state-then-ask
+        // convention for an owner to forget.
+        [[nodiscard]] core::error_t open();
 
         using entry_t = std::pair<value_t, size_t>;
         using entries_t = std::pmr::vector<entry_t>;
 
-        void insert(const value_t& key, size_t value) override;
-        void remove(value_t key) override;
-        void remove(const value_t& key, size_t row_id) override;
-        void find(const value_t& value, result& res) const override;
-        // A hashed store has no ordering, so it answers NONE of the ordered contract --
-        // lt / lte / gt / gte / ne, and eq too, which belongs to find(). It fails loudly
-        // instead of returning an empty range: an empty range here is indistinguishable
-        // from "no row carries this key", which is a wrong answer dressed as a fast one.
-        // The guard that keeps callers away is upstream, in manager_index_t, which refuses
-        // a range predicate on an index with no ordering before any read is dispatched.
-        void scan_range(components::expressions::compare_type compare,
-                        const value_t& value,
-                        result& res) const override;
-        // The by-value shorthands are non-virtual base members; without this they would be
-        // hidden by the find() override above.
-        using index_disk_t::find;
+        void insert(const value_t& key, size_t value);
+        void remove(value_t key);
+        void remove(const value_t& key, size_t row_id);
 
-        void drop() override;
-        void clear() override;
-        [[nodiscard]] core::error_t force_flush() override;
+        // THE read, and the ONLY one this family has: equality. A hashed store has no
+        // ordering, so there is no scan_range here to refuse a range predicate loudly --
+        // the refusal moved UP, to bitcask_index_agent_t::read_rows, which is the only
+        // caller that could ever ask and is the one place a caller can be told. What the
+        // erased base forced on this class was a scan_range override that existed solely
+        // to abort; the member is gone with the base.
+        //
+        // find() reads the SNAPSHOT RECORD and unrolls the whole row list: the keydir
+        // keeps one entry per key whose payload field is `rows.back()`, so a reader that
+        // consulted it would silently drop every duplicate.
+        void find(const value_t& value, result& res) const;
+
+        // By-value shorthand, built on resource_. Never on a default-constructed
+        // std::pmr::vector, which is std::pmr::get_default_resource() by consequence --
+        // and insert()/remove() reach it internally, so that would put the process default
+        // resource on the WRITE path.
+        [[nodiscard]] result find(const value_t& value) const {
+            result res(resource_);
+            find(value, res);
+            return res;
+        }
+
+        void drop();
+        // Wipe all stored index data IN PLACE, keeping the backing live and writable:
+        // subsequent insert/remove repopulate cleanly. NOT the terminal drop -- the
+        // files/directory survive (re-initialized empty), the instance stays usable.
+        void clear();
+        // Returns io_error when the data did not reach the disk. The caller must fail the
+        // statement: a discarded failure here means the table and its index disagree, and
+        // nothing downstream would ever notice.
+        [[nodiscard]] core::error_t force_flush();
         void load_entries(entries_t& entries) const;
         void enqueue_task(std::function<void()> task);
-        // bitcask is the backend that owns a durable txn log, so a committed statement
-        // reaches it through apply_txn_* rather than the bulk path. This is the answer
-        // index_agent_disk_t used to obtain with dynamic_cast.
-        [[nodiscard]] bool has_txn_log() const noexcept override { return true; }
         // bitcask-internal rehash-suppression window (pre-existing optimization, opened
-        // around the bulk run in index_agent_disk::insert_many).
-        void set_bulk_mode(bool enabled) override;
+        // around the bulk run in bitcask_index_agent_t::commit_inserts).
+        void set_bulk_mode(bool enabled);
         // M3.5 error channel: the txn-log write path can fail on a file open /
         // write / sync, and surfaces a core::error_t so the manager's commit
         // handler can return an index-side abort instead of taking the whole
@@ -98,14 +154,21 @@ namespace services::index {
         // logic invariants (corrupt magic, bad op_kind) stay asserts in the
         // recovery path.
         [[nodiscard]] core::error_t apply_txn_inserts(uint64_t txn_id,
-                                                      const std::vector<std::pair<value_t, size_t>>& values) override;
+                                                      const std::vector<std::pair<value_t, size_t>>& values);
         [[nodiscard]] core::error_t apply_txn_deletes(uint64_t txn_id,
-                                                      const std::vector<std::pair<value_t, size_t>>& values) override;
-        void insert_bulk_unchecked(const value_t& key, size_t value) override;
+                                                      const std::vector<std::pair<value_t, size_t>>& values);
+        // Bulk-load fast path: skips the per-operation dedup find() and the per-operation
+        // flush; force_flush() persists once at the end.
+        //
+        // WHAT THE CALLER GUARANTEES, precisely: each (key, row_id) PAIR is fed at most
+        // once and, for the remove side, is present. It does NOT guarantee unique KEYS --
+        // a non-unique index is the ordinary case, and every rebuild feed replays a whole
+        // table, repeated keys included.
+        void insert_bulk_unchecked(const value_t& key, size_t value);
         // bitcask remove is already O(1) (hash lookup) and honours bulk mode
         // (flush_if_needed skips while bulk), so the bulk remove is the normal
         // remove path — no per-key find()-scan to avoid (that is a btree concern).
-        void remove_bulk_unchecked(const value_t& key, size_t row_id) override;
+        void remove_bulk_unchecked(const value_t& key, size_t row_id);
 
         // The keydir this store keeps its (key -> record location) entries in. Reachable
         // for tests that pin the keydir's OWN state -- that clear() wipes it in place
@@ -120,8 +183,6 @@ namespace services::index {
             value = 1,
             tombstone = 2
         };
-
-        struct skip_load_tag {};
 
         // The whole encoded key of the record at (segment_id, value_offset) — the answer
         // to the one question a truncated keydir entry cannot answer for itself. Reads
@@ -145,17 +206,6 @@ namespace services::index {
                 return load_hash_key_at_unlocked(log_file_id, log_offset, out_key);
             };
         }
-
-        // Skip-load ctor used by create() — performs no disk I/O so the
-        // factory can stage load_from_disk() and check crc_failure_ before
-        // running the rest of the recovery pipeline. committed_txn_ids is stored
-        // here so the recover gate is armed when create() later runs recovery.
-        bitcask_index_disk_t(const path_t& path,
-                             std::pmr::memory_resource* resource,
-                             uint64_t flush_threshold,
-                             uint64_t segment_record_limit,
-                             std::pmr::set<std::uint64_t> committed_txn_ids,
-                             skip_load_tag);
 
         struct segment_info_t {
             uint64_t id{0};
@@ -203,11 +253,26 @@ namespace services::index {
         void flush_if_needed();
         void force_flush_unlocked();
         void note_write_error(core::error_t err);
-        // Opens the keydir file and says why it could not, as a VALUE: the direct ctor
-        // aborts on that value and create() hands it back. Nothing is recorded on the
-        // object, so no owner has to know to ask afterwards.
+        // Opens the keydir file and says why it could not, as a VALUE: open() hands that
+        // value back and the construct-and-open ctor aborts on it. Nothing is recorded on
+        // the object, so no owner has to know to ask afterwards.
         [[nodiscard]] core::error_t open_hash_index();
 
+        [[nodiscard]] bool should_flush() const noexcept { return ops_since_flush_ >= flush_threshold_; }
+        void mark_operation_dirty() noexcept {
+            dirty_ = true;
+            ++ops_since_flush_;
+        }
+        [[nodiscard]] bool is_dirty() const noexcept { return dirty_; }
+        void reset_flush_state() noexcept {
+            dirty_ = false;
+            ops_since_flush_ = 0;
+        }
+
+        std::pmr::memory_resource* resource_;
+        uint64_t flush_threshold_;
+        bool dirty_{false};
+        uint64_t ops_since_flush_{0};
         std::filesystem::path path_;
         std::filesystem::path hash_index_file_path_;
         std::filesystem::path active_data_file_path_;
@@ -234,19 +299,13 @@ namespace services::index {
         std::unique_ptr<bitcask_task_executor_t> task_executor_;
         // WAL-replay committed transaction ids — the recover gate (M1.1) applies
         // a txn-log frame only when committed_txn_ids_.count(header.txn_id) > 0.
-        // Allocated on resource() (the resource index_disk_t stores). Empty for a
-        // fresh, runtime-created instance (no txn-log to gate).
+        // Allocated on resource_. Empty for a fresh, runtime-created instance
+        // (no txn-log to gate).
         std::pmr::set<std::uint64_t> committed_txn_ids_;
         // Set by load_from_disk when a segment's CRC check fails. The
         // factory checks this flag to convert the failure into a
         // core::error_t; the direct ctor asserts.
         bool crc_failure_{false};
     };
-
-    // The contract, checked where the class is written (see index_disk.hpp): a member
-    // this backend forgot, mistyped, or hid fails HERE and not at the spawn site in
-    // index_agent_disk.cpp.
-    static_assert(index_disk_impl<bitcask_index_disk_t>,
-                  "bitcask_index_disk_t does not satisfy the index_disk_t backend contract");
 
 } // namespace services::index

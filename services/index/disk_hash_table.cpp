@@ -374,12 +374,12 @@ namespace services::index {
         if (open_or_create().contains_error()) {
             // clear() has just DELETED the backing files and is recreating them empty. A
             // failure here leaves a live table with nothing under it, and clear() has no
-            // error channel to say so -- its caller chain (bitcask clear -> the agent's
-            // clear handler -> repopulate) is void the whole way. Terminal, therefore,
-            // exactly like the direct constructor on the same failure. Making it a value
-            // instead would mean widening index_disk_t::clear(), which is a different
-            // change; what it must NOT be is what it was, which was recorded in a member
-            // nobody read.
+            // error channel to say so -- this function and bitcask_index_disk_t::clear()
+            // above it are both void. Terminal, therefore, exactly like the direct
+            // constructor on the same failure. Making it a value would mean widening those
+            // two, which is a different change; what it must NOT be is what it was, which
+            // was recorded in a member nobody read. (The AGENT's clear handler does carry
+            // an error channel now, so the widening has one fewer step left to go.)
             assert(false && "disk_hash_table: clear() could not re-open storage");
             std::abort();
         }

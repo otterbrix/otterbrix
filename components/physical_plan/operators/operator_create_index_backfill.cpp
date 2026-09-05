@@ -2,7 +2,6 @@
 
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/context/context.hpp>
-#include <components/index/index_engine.hpp>
 #include <components/table/column_state.hpp> // complete table_filter_t for the null-filter batched scan
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
@@ -70,13 +69,17 @@ namespace components::operators {
                                            keys_,
                                            index_type_,
                                            ctx->execution_context.timezone_offset);
-        auto id_index_result = co_await std::move(ixf);
+        // create_index answers with a core::error_t and nothing else. It used to hand
+        // back a uint32 "index id" -- the index's POSITION in a per-table list that no
+        // longer exists -- and this call site never read the number: an index's identity
+        // below the planner is its indexrelid, which is right here in index_oid_.
+        auto create_error = co_await std::move(ixf);
 
-        if (id_index_result.has_error()) {
+        if (create_error.contains_error()) {
             // Report the reason the manager gave: flattening every failure to
             // "index already exists" is right for one cause and wrong for the rest,
             // including a disk index whose storage failed to open.
-            set_error(id_index_result.error());
+            set_error(create_error);
             co_return;
         }
 

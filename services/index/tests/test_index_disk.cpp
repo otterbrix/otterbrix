@@ -2,7 +2,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <map>
 #include <components/expressions/forward.hpp>
-#include <components/index/single_field_index.hpp>
 #include <core/date/date_types.hpp>
 #include <core/pmr.hpp>
 #include <memory_resource>
@@ -516,25 +515,28 @@ TEST_CASE("services::index::index_disk::null_key_is_refused") {
 }
 
 // C2a. The ordered facade answers all six value comparisons, and it answers them the way
-// the in-memory index_t does -- which is the oracle every integration test already grades
-// against, since components::index::index_t::search is what a non-disk index scan runs.
+// SQL defines them -- stated here as an EXPLICIT expected set computed from the rows that
+// went in, not as agreement with a second implementation.
 //
-// Before this task the disk facade had exactly three ordered answers and two of the three
-// were the COMPLEMENT of what index_t::search composes from them:
+// It used to grade against components::index::single_field_index_t, the in-memory ordered
+// index, because that class was what a non-disk index scan ran. C6a removed it: every
+// index is disk-backed now, so there is no second implementation left to differ from --
+// and the oracle it leaves behind is stronger, because two implementations can agree on a
+// wrong answer while a literal expected set cannot.
+//
+// Before C2a the disk facade had exactly three ordered answers and two of the three were
+// the COMPLEMENT of what an ordered scan composes from them:
 //
 //   eq   find(v)                       key == v                     agreed
 //   lt   lower_bound(v)                key <  v                     agreed
-//   lte  -- no operation --            index_t walks [cbegin, first > v)
+//   lte  -- no operation --            walks [cbegin, first > v)
 //   gt   upper_bound(v)                key >  v, but DESCENDING
-//   gte  -- no operation --            index_t walks [first >= v, cend)
-//   ne   -- no operation --            index_t walks the whole index minus the eq range
+//   gte  -- no operation --            walks [first >= v, cend)
+//   ne   -- no operation --            walks the whole index minus the eq range
 //
 // so lte, gte and ne could not be asked of it at all, and gt came back reversed.
-TEST_CASE("services::index::index_disk::scan_range_matches_the_in_memory_index") {
+TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
     using components::expressions::compare_type;
-    using components::index::keys_base_storage_t;
-    using components::index::single_field_index_t;
-    using key_t = components::expressions::key_t;
 
     auto resource = core::pmr::otterbrix_resource();
 
@@ -542,7 +544,6 @@ TEST_CASE("services::index::index_disk::scan_range_matches_the_in_memory_index")
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     auto on_disk = btree_index_disk_t(path, &resource);
-    single_field_index_t in_memory(&resource, 501u, keys_base_storage_t{key_t(&resource, "x")});
 
     // Gaps, duplicates and negatives, fed in a scrambled order so nothing about the answer
     // can come from insertion order.
@@ -559,7 +560,6 @@ TEST_CASE("services::index::index_disk::scan_range_matches_the_in_memory_index")
     for (const auto& [k, row] : rows) {
         components::types::logical_value_t v(&resource, k);
         on_disk.insert(v, static_cast<size_t>(row));
-        in_memory.insert(v, row, {});
     }
 
     std::map<int64_t, int64_t> key_of_row;
@@ -572,6 +572,42 @@ TEST_CASE("services::index::index_disk::scan_range_matches_the_in_memory_index")
         out.reserve(container.size());
         for (auto value : container) {
             out.emplace_back(static_cast<int64_t>(value));
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+
+    // THE ORACLE: the rows a predicate selects, read straight off the input above. It says
+    // what SQL says and nothing else -- no index, no tree, no second encoder.
+    const auto expected = [&](compare_type compare, int64_t probe) {
+        std::vector<int64_t> out;
+        for (const auto& [k, row] : rows) {
+            bool hit = false;
+            switch (compare) {
+                case compare_type::eq:
+                    hit = k == probe;
+                    break;
+                case compare_type::ne:
+                    hit = k != probe;
+                    break;
+                case compare_type::lt:
+                    hit = k < probe;
+                    break;
+                case compare_type::lte:
+                    hit = k <= probe;
+                    break;
+                case compare_type::gt:
+                    hit = k > probe;
+                    break;
+                case compare_type::gte:
+                    hit = k >= probe;
+                    break;
+                default:
+                    FAIL("only the six value comparisons reach an index");
+            }
+            if (hit) {
+                out.emplace_back(row);
+            }
         }
         std::sort(out.begin(), out.end());
         return out;
@@ -590,7 +626,7 @@ TEST_CASE("services::index::index_disk::scan_range_matches_the_in_memory_index")
             on_disk.scan_range(compare, v, disk_rows);
 
             INFO("probe=" << probe << " compare=" << static_cast<int>(compare));
-            REQUIRE(sorted(disk_rows) == sorted(in_memory.search(compare, v, {})));
+            REQUIRE(sorted(disk_rows) == expected(compare, probe));
             // Ascending in KEY order on the way out, for every predicate — the row ids
             // themselves are in whatever order the keys put them, which is exactly why
             // the check maps each row back to its key first.

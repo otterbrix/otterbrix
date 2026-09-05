@@ -33,6 +33,10 @@ namespace components::index {
     public:
         explicit index_engine_t(std::pmr::memory_resource* resource);
         auto matching(id_index id) -> index_t::pointer;
+        // UNTYPED lookup: the caller named no backend, so the engine picks one. Two
+        // indexes over the SAME key set are legal (create_index rejects a duplicate only
+        // on the pair (keys, type)), so the pick is a DECISION and is stated in the
+        // implementation -- ordered before unordered -- not left to registration order.
         auto matching(const keys_base_storage_t& query) -> index_t::pointer;
         auto matching(const keys_base_storage_t& query, index_type type) -> index_t::pointer;
         auto matching(const actor_zeta::address_t& address) -> index_t::pointer;
@@ -41,9 +45,17 @@ namespace components::index {
         // catalog::oid_t and id_index are both uint32_t.
         auto matching_relid(catalog::oid_t relid) -> index_t::pointer;
         auto has_index(catalog::oid_t relid) -> bool;
-        auto add_index(const keys_base_storage_t&, index_ptr) -> uint32_t;
+        // The index carries its own key set (index_t::keys_), so it is not passed
+        // alongside: one fact, one place.
+        auto add_index(index_ptr) -> uint32_t;
         auto add_disk_agent(id_index id, actor_zeta::address_t address) -> void;
         auto drop_index(index_t::pointer index) -> void;
+        // How many indexes this engine HOLDS -- counted off the owner, storage_. Not a
+        // count of distinct key sets: two indexes over the same column (an ordered one
+        // and a hashed one) are two indexes, and manager_index_t reads this number to
+        // decide whether the table may be compacted (tables_without_indexes) and whether
+        // it needs its indexes repopulated (all_indexed_oids). Answering "one" there
+        // would let a compact renumber rows underneath a live index.
         auto size() const -> std::size_t;
         std::pmr::memory_resource* resource() noexcept;
 
@@ -78,6 +90,8 @@ namespace components::index {
 
         // indexrelids of every index in engine iteration order.
         auto indexes() -> std::pmr::vector<catalog::oid_t>;
+        // The key sets this engine has an index on, as a SET -- see the implementation
+        // for why the duplicates two same-key indexes would otherwise produce are folded.
         auto all_indexed_keys() const -> std::pmr::vector<keys_base_storage_t>;
         auto all_indexed_descriptions() const -> std::pmr::vector<index_description_t>;
 
@@ -107,16 +121,21 @@ namespace components::index {
         }
 
     private:
-        using comparator_t = std::less<keys_base_storage_t>;
+        // storage_ OWNS the indexes and is the only place that knows how many there are.
+        // There is deliberately no second, key-keyed container beside it: one existed,
+        // held ONE slot per key set, and diverged from the owner the moment a table
+        // carried two indexes over one column -- add_index's emplace silently did nothing
+        // on the taken slot and drop_index's erase-by-key took out the LIVING neighbour's
+        // entry, after which size() read 0 and all_indexed_keys() read empty over a table
+        // that still had an index. Every question that map used to answer is answered
+        // below by a walk of the owner, which cannot disagree with it.
         using base_storage = std::pmr::list<index_ptr>;
 
-        using keys_to_doc_t = std::pmr::map<keys_base_storage_t, index_t::pointer, comparator_t>;
         using index_to_doc_t = std::pmr::unordered_map<id_index, index_t::pointer>;
         using index_to_address_t = std::pmr::map<actor_zeta::address_t, index_t::pointer>;
         using relid_to_index_t = std::pmr::unordered_map<catalog::oid_t, index_t::pointer>;
 
         std::pmr::memory_resource* resource_;
-        keys_to_doc_t mapper_;
         index_to_doc_t index_to_mapper_;
         index_to_address_t index_to_address_;
         relid_to_index_t relid_to_index_;
@@ -133,11 +152,10 @@ namespace components::index {
     template<class Target, class... Args>
     auto make_index(index_engine_ptr& ptr, catalog::oid_t relid, const keys_base_storage_t& keys, Args&&... args)
         -> uint32_t {
-        return ptr->add_index(keys,
-                              core::pmr::make_polymorphic_unique<Target>(ptr->resource(),
-                                                                         relid,
-                                                                         keys,
-                                                                         std::forward<Args>(args)...));
+        return ptr->add_index(core::pmr::make_polymorphic_unique<Target>(ptr->resource(),
+                                                                        relid,
+                                                                        keys,
+                                                                        std::forward<Args>(args)...));
     }
 
     void drop_index(const index_engine_ptr& ptr, index_t::pointer index);

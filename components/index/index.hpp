@@ -86,10 +86,16 @@ namespace components::index {
                 // statement: neither disk_hash_single_field_index_t nor
                 // disk_ordered_single_field_index_t has an in-memory sequence, so
                 // cbegin/cend are terminal on both and no iterator over them can exist.
+                //
+                // Which, since C6a took the two RAM indexes away, leaves NO production
+                // enumerator at all: the `ram_single_field` / `ram_hash_single_field`
+                // pair went out with the classes that were the only things ever to
+                // report them. The one member left names the test fake, and it is kept
+                // rather than collapsed because `kind()` is what abort_unless_same_kind
+                // compares — a comparison with nothing to say is still a comparison that
+                // must not silently succeed.
                 enum class kind_t : uint8_t
                 {
-                    ram_single_field,
-                    ram_hash_single_field,
                     // Not a production backend. The fake index in components/index/test
                     // needs an identity of its own instead of borrowing a real one.
                     test_fake
@@ -228,9 +234,11 @@ namespace components::index {
         // first, which is a transaction failing to see its own write. A hashed index is
         // only ever asked eq, and its implementation says so.
         //
-        // NOT called for an in-memory index: it keeps committed and pending entries in
-        // one structure and answers both from find(). The implementations there say so
-        // loudly rather than inheriting a no-op.
+        // Every surviving index implements this, because every surviving index is
+        // disk-backed (C6a). It used to be the door only the disk facades had: an
+        // in-memory index kept committed and pending entries in one structure and
+        // answered both from find(), and its implementations said so loudly rather than
+        // inheriting a no-op.
         void merge_uncommitted_rows(expressions::compare_type compare,
                                     const value_t& key,
                                     uint64_t txn_id,

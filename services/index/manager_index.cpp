@@ -8,7 +8,6 @@
 #include <algorithm>
 #include <components/index/disk_hash_single_field_index.hpp>
 #include <components/index/disk_ordered_single_field_index.hpp>
-#include <components/index/hash_single_field_index.hpp>
 #include <components/index/index_engine.hpp>
 #include <core/executor.hpp>
 #include <services/dispatcher/dispatcher.hpp>
@@ -469,12 +468,6 @@ namespace services::index {
                 break;
             }
             case components::logical_plan::index_type::hashed: {
-                if (path_db_.empty()) {
-                    id_index = components::index::make_index<components::index::hash_single_field_index_t>(engine,
-                                                                                                           index_oid,
-                                                                                                           keys);
-                    break;
-                }
                 id_index =
                     components::index::make_index<components::index::disk_hash_single_field_index_t>(engine,
                                                                                                      index_oid,
@@ -498,13 +491,14 @@ namespace services::index {
         }
 
         // Wire the index_t to its disk-persistence actor address (mirrors create_index
-        // below). Looked up by INDEXRELID, not by keys: mapper_ is keyed by the key set
-        // alone, so on a table carrying both an ordered and a hashed index over the SAME
-        // column — which the planner expects, since it only routes a range predicate when
-        // a NON-hashed index also covers the key — a keys lookup answers whichever was
-        // registered first and would hand the second index's agent to the first. That is
-        // harmless while both indexes answer from their own memory and fatal once the
-        // address IS the read path: the ordered facade would be reading the bitcask store.
+        // below). Looked up by INDEXRELID, not by keys: a key set does not identify an
+        // index. A table may carry both an ordered and a hashed index over the SAME
+        // column — the planner expects it, since it only routes a range predicate when a
+        // NON-hashed index also covers the key — and a keys lookup answers ONE of them
+        // (index_engine_t::matching prefers the ordered one), so it would hand the hashed
+        // index's agent to the ordered one. That is harmless while both indexes answer
+        // from their own memory and fatal once the address IS the read path: the ordered
+        // facade would be reading the bitcask store.
         if (auto* idx = engine->matching_relid(index_oid); idx) {
             idx->set_disk_agent(disk_agent_addr, address());
             engine->add_disk_agent(id_index, disk_agent_addr);
@@ -598,12 +592,14 @@ namespace services::index {
 
         auto& engine = it->second;
 
-        // Duplicate detection. The engine holds at most ONE index per (keys, type)
-        // — mapper_ is keyed by the key set, and a colliding add_index would
-        // silently half-register the new index. A duplicate CREATE INDEX by NAME
-        // also lands here: the retry allocates a fresh indexrelid, but its keys
-        // collide with the live index. index_create_fail, not already_exists:
-        // test_index pins this code for a duplicate CREATE INDEX.
+        // Duplicate detection. A SECOND index over the same (keys, type) would be a
+        // pure cost — same keys answered by the same backend, maintained twice on
+        // every DML — so the engine holds at most one, and the pair is what makes
+        // `CREATE INDEX ... (k)` beside `CREATE INDEX ... USING hash (k)` legal.
+        // A duplicate CREATE INDEX by NAME also lands here: the retry allocates a
+        // fresh indexrelid, but its (keys, type) collide with the live index.
+        // index_create_fail, not already_exists: test_index pins this code for a
+        // duplicate CREATE INDEX.
         if (engine->has_index(index_oid) || engine->matching(keys, type) != nullptr) {
             co_return core::error_t{core::error_code_t::index_create_fail,
                                     std::pmr::string{"index already exists", resource_}};
@@ -615,28 +611,23 @@ namespace services::index {
                                     std::pmr::string{"unsupported index type", resource_}};
         }
 
-        // A MEMORY-ONLY engine (no path_db_) spawns no agent, so there is no storage to
-        // open and nothing below to run. The two families part company here and only
-        // here: the hashed one has an in-memory implementation to fall back on, while the
-        // ordered one is registered as the disk facade with NO agent wired — its facade
-        // holds neither a handle nor a path, so an empty path changes nothing about
-        // CONSTRUCTING it. What it changes is whether an agent exists, and the read path
-        // refuses to guess about that: search_with_preferred_type fails loudly on a facade
-        // with no agent instead of answering an empty result set.
+        // NO CATALOG DIRECTORY, NO INDEX. Every index this manager can build keeps its
+        // committed rows in a store its own agent opens under path_db_, and every read of
+        // those rows is a message to that agent. With no path there is no store, no agent
+        // and no reachable committed half — so the only honest answer to CREATE INDEX is a
+        // refusal.
+        //
+        // What stood here built one in memory instead and reported success. The statement
+        // asked for an index; the caller got an object holding rows nothing else could see,
+        // that no restart would find and that the read path would later have to guess about.
+        // Rule 6: the failure is LOUD and it happens at the statement, not silently at the
+        // first read.
         if (path_db_.empty()) {
-            const auto id_memory =
-                type == components::logical_plan::index_type::hashed
-                    ? components::index::make_index<components::index::hash_single_field_index_t>(engine,
-                                                                                                  index_oid,
-                                                                                                  keys)
-                    : components::index::make_index<components::index::disk_ordered_single_field_index_t>(engine,
-                                                                                                          index_oid,
-                                                                                                          keys);
-            if (id_memory == components::index::INDEX_ID_UNDEFINED) {
-                co_return core::error_t{core::error_code_t::index_create_fail,
-                                        std::pmr::string{"index could not be constructed", resource_}};
-            }
-            co_return id_memory;
+            co_return core::error_t{
+                core::error_code_t::index_create_fail,
+                std::pmr::string{"index create: this index manager has no on-disk catalog path, and an index "
+                                 "keeps its rows on disk",
+                                 resource_}};
         }
 
         // THE AGENT FIRST, the registration second, and the order is the change. The
@@ -1385,6 +1376,9 @@ namespace services::index {
                                     std::pmr::string{"index search: no index engine for the table oid", resource_}};
         }
 
+        // The plan's PREFERRED backend first (index_type::no_valid — "no preference" —
+        // matches no registered index by construction), then the untyped lookup, whose
+        // ordered-before-unordered priority is declared at index_engine_t::matching.
         auto* index = it->second->matching(keys, preferred_type);
         if (!index) {
             index = components::index::search_index(it->second, keys);

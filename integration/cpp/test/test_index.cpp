@@ -4,7 +4,6 @@
 #include <components/compute/function.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
-#include <components/index/single_field_index.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
@@ -765,7 +764,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
 // CREATE INDEX backfill scans the table via the streaming fetch-next leg, which emits
 // chunks of at most DEFAULT_VECTOR_CAPACITY (1024) rows. A regression that
 // overwrites the scan buffer on each chunk leaves only the last chunk indexed
-// in single_field_index, so equality lookups in the first (rows - 1024) keys
+// in the index, so equality lookups in the first (rows - 1024) keys
 // return 0 rows even though the heap row exists.
 TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capacity") {
     constexpr int kRows = 2000;
@@ -818,7 +817,7 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
         REQUIRE(cur->is_success());
     }
 
-    // single_field_index backfill must cover all chunks, not only the trailing one.
+    // The index backfill must cover all chunks, not only the trailing one.
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kRows);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 504;", 1);
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 976;", 1);
@@ -942,129 +941,6 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
         auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
         REQUIRE(plan);
         CHECK(count_ops_of_type(plan, ops::operator_type::remove) == delete_specs.size());
-    }
-}
-
-// A key that does not cast into an index's locked key domain (stored_type_ locks to the
-// first inserted key) used to be guarded with assert(!casted.has_error()) ONLY, followed
-// by casted.value(): in Release (NDEBUG) a failed cast dereferenced an empty optional —
-// UB, a garbage key, silent index corruption — and in Debug it aborted the whole process
-// on a data-shaped input (e.g. a dynamic-schema column evolving from BIGINT to ARRAY
-// under a single-field index). Such a key must instead have DEFINED semantics: it is
-// OUT-OF-DOMAIN — writes leave it un-indexed (index rebuild on type evolution is the
-// caller's responsibility, per the CREATE INDEX relkind='g' validation contract), and
-// probes order it AFTER every in-domain key (type bracketing), so eq/gt/gte are empty,
-// lt/lte cover the in-domain keys, and every in-domain lookup stays exact.
-TEST_CASE("integration::cpp::test_index::out_of_domain_key_defined_behavior") {
-    INFO("unit: single_field_index_t insert/find/remove with an out-of-domain key");
-    {
-        std::pmr::monotonic_buffer_resource arena;
-        auto* res = &arena;
-        const core::date::timezone_offset_t tz{};
-
-        components::index::keys_base_storage_t keys(res);
-        keys.emplace_back(res, "a");
-        components::index::single_field_index_t index(res, 701u, keys);
-
-        // The first key locks the key domain to BIGINT.
-        index.insert(logical_value_t(res, int64_t{1}), components::index::index_value_t(int64_t{0}), tz);
-        index.insert(logical_value_t(res, int64_t{5}), components::index::index_value_t(int64_t{1}), tz);
-
-        // An ARRAY key does not cast to BIGINT (cast_as errors): out-of-domain.
-        // Pre-fix: assert-abort (Debug) / empty-optional deref (Release UB).
-        auto array_key = logical_value_t::create_array(res,
-                                                       complex_logical_type{logical_type::BIGINT},
-                                                       std::vector<logical_value_t>{logical_value_t(res, int64_t{7})});
-        index.insert(array_key, components::index::index_value_t(int64_t{2}), tz);
-
-        // In-domain lookups stay exact and unaffected.
-        {
-            auto r = index.search(compare_type::eq, logical_value_t(res, int64_t{1}), tz);
-            REQUIRE(r.size() == 1);
-            REQUIRE(r.front() == 0);
-        }
-        {
-            auto r = index.search(compare_type::gt, logical_value_t(res, int64_t{1}), tz);
-            REQUIRE(r.size() == 1);
-            REQUIRE(r.front() == 1);
-        }
-        // Out-of-domain probes: deterministic type-bracketed answers, never an abort.
-        {
-            auto r = index.search(compare_type::eq, array_key, tz);
-            REQUIRE(r.empty());
-        }
-        {
-            auto r = index.search(compare_type::lt, array_key, tz); // every BIGINT key orders before it
-            REQUIRE(r.size() == 2);
-        }
-        {
-            auto r = index.search(compare_type::lte, array_key, tz);
-            REQUIRE(r.size() == 2);
-        }
-        {
-            auto r = index.search(compare_type::gt, array_key, tz);
-            REQUIRE(r.empty());
-        }
-        {
-            auto r = index.search(compare_type::gte, array_key, tz);
-            REQUIRE(r.empty());
-        }
-        // remove with an out-of-domain key is an exact no-op (it was never stored).
-        index.remove(array_key, tz);
-        {
-            auto r = index.search(compare_type::eq, logical_value_t(res, int64_t{5}), tz);
-            REQUIRE(r.size() == 1);
-            REQUIRE(r.front() == 1);
-        }
-    }
-
-    INFO("e2e: dynamic-schema INSERT with an out-of-domain indexed key neither aborts nor corrupts");
-    {
-        auto config = test_create_config("/tmp/otterbrix/integration/test_index/out_of_domain_key");
-        test_clear_directory(config);
-        config.wal.on = false;
-        test_spaces space(config);
-        auto* dispatcher = space.dispatcher();
-        auto exec = [&](const std::string& sql) {
-            auto session = otterbrix::session_id_t();
-            return dispatcher->execute_sql(session, sql);
-        };
-
-        REQUIRE(exec("CREATE DATABASE " + database_name + ";")->is_success());
-        REQUIRE(exec("CREATE TABLE TestDatabase.dyn();")->is_success()); // relkind='g'
-        REQUIRE(exec("INSERT INTO TestDatabase.dyn (a, b) VALUES (1, 10);")->is_success());
-        REQUIRE(exec("CREATE INDEX dyn_a ON TestDatabase.dyn (a);")->is_success());
-        REQUIRE(exec("CREATE INDEX dyn_b ON TestDatabase.dyn (b);")->is_success());
-
-        // Column 'a' evolves to ARRAY: index dyn_a (locked to BIGINT by the backfill)
-        // receives a key its domain can not represent. Pre-fix, reaching the index
-        // maintenance aborted the process. ARRAY literals on relkind='g' tables are a
-        // WARN-stubbed capability elsewhere (dynamic_schema_vector), so a CLEAN
-        // rejection before index maintenance is tolerated the same way here.
-        auto ins = exec("INSERT INTO TestDatabase.dyn (a, b) VALUES (ARRAY[1, 2], 20);");
-        if (!ins->is_success()) {
-            WARN("TODO: ARRAY literal INSERT on a relkind='g' table rejected before index "
-                 "maintenance — out-of-domain e2e leg skipped (unit legs above cover the fix)");
-            return;
-        }
-
-        // Heap intact; index maintenance continued past the out-of-domain key, so the
-        // untouched dyn_b index covers BOTH rows exactly.
-        {
-            auto cur = exec("SELECT * FROM TestDatabase.dyn;");
-            REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
-        }
-        {
-            auto cur = exec("SELECT b FROM TestDatabase.dyn WHERE b = 10;");
-            REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
-        }
-        {
-            auto cur = exec("SELECT b FROM TestDatabase.dyn WHERE b = 20;");
-            REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
-        }
     }
 }
 

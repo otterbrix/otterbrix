@@ -104,3 +104,135 @@ TEST_CASE("integration::cpp::test_index_type_persistence::hash_index_type_surviv
     INFO("no b+tree may take over the hash index directory across a restart");
     CHECK_FALSE(std::filesystem::exists(index_dir / "metadata"));
 }
+
+// The KEY TYPE must survive a restart, and DATE / TIME are where losing it is invisible
+// until it is wrong.
+//
+// A DATE key is physically an INT32 day counter and a TIME key an INT64 microsecond
+// counter; both are written by the binary key codec, which tags the logical type in the
+// stored bytes, and both are probed by services::index::convert(), which must produce the
+// same physical value from the column's own logical type. The catalog is what carries that
+// logical type across a restart: pg_attribute's atttypid for the indexed column, read back
+// at bootstrap and handed to the index agent with the rest of the key description.
+//
+// Lose it and nothing announces itself. An equality probe encoded under the wrong logical
+// tag simply matches nothing, and a RANGE probe is worse than that: it returns a
+// well-formed answer of the wrong rows, because the raw counters still order among
+// themselves. So the witness here is not "the statement succeeded" -- it is that the
+// post-restart index answers ranges and equalities EXACTLY, over rows written on both
+// sides of the restart, with an unindexed twin holding the same data as the oracle.
+namespace {
+
+    std::string type_persistence_plan_text(const components::cursor::cursor_t_ptr& cur) {
+        std::string out;
+        for (std::size_t r = 0; r < cur->size(); ++r) {
+            auto cell = cur->value(0, r);
+            out += std::string(cell.value<std::string_view>());
+            out += '\n';
+        }
+        return out;
+    }
+
+} // namespace
+
+TEST_CASE("integration::cpp::test_index_type_persistence::temporal_key_type_survives_restart") {
+    auto config = test_create_config("/tmp/otterbrix/integration/test_index_type_persistence/temporal_restart");
+    test_clear_directory(config);
+    config.wal.on = true;
+    config.log.level = log_t::level::off;
+
+    // Written BEFORE the restart. The dates and times are deliberately out of order so no
+    // answer below can come from insertion order.
+    const char* before[] = {
+        "(1, DATE '2024-03-15', TIME '12:30:00')",
+        "(2, DATE '2024-01-01', TIME '08:00:00')",
+        "(3, DATE '2024-12-31', TIME '23:59:00')",
+    };
+    // Written AFTER it, interleaved with the values above rather than appended past them,
+    // so a range answer has to mix rows from both sessions to be right.
+    const char* after[] = {
+        "(4, DATE '2024-02-01', TIME '09:15:00')",
+        "(5, DATE '2024-06-30', TIME '18:45:00')",
+    };
+
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        auto exec = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return d->execute_sql(session, sql);
+        };
+        REQUIRE(exec("CREATE DATABASE t;")->is_success());
+        REQUIRE(exec("CREATE TABLE t.ti (id BIGINT, d DATE, tm TIME);")->is_success());
+        // The unindexed twin: same rows, no index. It is the oracle for every count below,
+        // so a wrong answer cannot pass by both sides being wrong the same way.
+        REQUIRE(exec("CREATE TABLE t.tp (id BIGINT, d DATE, tm TIME);")->is_success());
+        REQUIRE(exec("CREATE INDEX i_d ON t.ti (d);")->is_success());
+        REQUIRE(exec("CREATE INDEX i_tm ON t.ti (tm);")->is_success());
+
+        for (const char* row : before) {
+            for (const char* table : {"t.ti", "t.tp"}) {
+                const std::string sql = std::string{"INSERT INTO "} + table + " (id, d, tm) VALUES " + row + ";";
+                INFO(sql);
+                REQUIRE(exec(sql)->is_success());
+            }
+        }
+    }
+
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        auto exec = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return d->execute_sql(session, sql);
+        };
+
+        // Post-restart writes go through the rehydrated index. If the key type came back
+        // wrong these would be encoded under it and the two sessions' keys would not
+        // compare -- which the mixed-range probes below are what catch.
+        for (const char* row : after) {
+            for (const char* table : {"t.ti", "t.tp"}) {
+                const std::string sql = std::string{"INSERT INTO "} + table + " (id, d, tm) VALUES " + row + ";";
+                INFO(sql);
+                REQUIRE(exec(sql)->is_success());
+            }
+        }
+
+        const auto probe = [&](const std::string& predicate, std::size_t expected) {
+            {
+                auto plan = exec("EXPLAIN SELECT id FROM t.ti WHERE " + predicate + ";");
+                REQUIRE(plan->is_success());
+                const auto text = type_persistence_plan_text(plan);
+                INFO("predicate: " << predicate << "\nplan:\n" << text);
+                INFO("a Seq Scan answers out of the heap and would pass with a broken index");
+                REQUIRE(text.find("Index Scan") != std::string::npos);
+            }
+            auto indexed = exec("SELECT id FROM t.ti WHERE " + predicate + ";");
+            REQUIRE(indexed->is_success());
+            auto heap = exec("SELECT id FROM t.tp WHERE " + predicate + ";");
+            REQUIRE(heap->is_success());
+            INFO("predicate: " << predicate << " -- index " << indexed->size() << ", unindexed twin "
+                               << heap->size() << ", expected " << expected);
+            CHECK(heap->size() == expected);
+            CHECK(indexed->size() == expected);
+        };
+
+        // EQUALITY on a row written BEFORE the restart: the key the pre-restart session
+        // encoded and the probe this session encodes must be the same bytes.
+        probe("d = DATE '2024-03-15'", 1);
+        probe("tm = TIME '12:30:00'", 1);
+        // ... and on one written AFTER it.
+        probe("d = DATE '2024-06-30'", 1);
+        probe("tm = TIME '18:45:00'", 1);
+        // A key nothing carries, so the index cannot pass by matching everything.
+        probe("d = DATE '2020-05-05'", 0);
+
+        // RANGES spanning the restart. Each answer mixes rows from both sessions, which is
+        // what a lost key type breaks without failing: 2024-02-01 (after) sorts between
+        // 2024-01-01 and 2024-03-15 (both before).
+        probe("d < DATE '2024-03-15'", 2);  // 2024-01-01, 2024-02-01
+        probe("d >= DATE '2024-03-15'", 3); // 2024-03-15, 2024-06-30, 2024-12-31
+        probe("tm > TIME '09:15:00'", 3);   // 12:30, 18:45, 23:59
+        probe("tm <= TIME '09:15:00'", 2);  // 08:00, 09:15
+    }
+}

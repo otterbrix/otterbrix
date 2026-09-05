@@ -85,16 +85,14 @@ namespace components::index {
 
     index_engine_t::index_engine_t(std::pmr::memory_resource* resource)
         : resource_(resource)
-        , mapper_(resource)
         , index_to_mapper_(resource)
         , index_to_address_(resource)
         , relid_to_index_(resource)
         , storage_(resource) {}
 
-    auto index_engine_t::add_index(const keys_base_storage_t& keys, index_ptr index) -> uint32_t {
+    auto index_engine_t::add_index(index_ptr index) -> uint32_t {
         auto end = storage_.cend();
         auto d = storage_.insert(end, std::move(index));
-        mapper_.emplace(keys, d->get());
         auto new_id = index_to_mapper_.size();
         index_to_mapper_.emplace(new_id, d->get());
         relid_to_index_.emplace(d->get()->oid(), d->get());
@@ -112,7 +110,8 @@ namespace components::index {
         }
         relid_to_index_.erase(index->oid());
         //index_to_mapper_.erase(index.id); //todo
-        mapper_.erase(index->keys_);
+        // Removed BY IDENTITY, never by key set: two indexes may share one, and an
+        // erase-by-key here used to take the surviving sibling's registration with it.
         storage_.erase(std::remove_if(storage_.begin(), storage_.end(), equal), storage_.end());
     }
 
@@ -120,14 +119,36 @@ namespace components::index {
 
     auto index_engine_t::matching(id_index id) -> index_t::pointer { return index_to_mapper_.find(id)->second; }
 
-    auto index_engine_t::size() const -> std::size_t { return mapper_.size(); }
+    auto index_engine_t::size() const -> std::size_t { return storage_.size(); }
 
+    // ORDERED FIRST, and that is a decision, not an artefact of iteration order.
+    //
+    // The one production caller is manager_index_t::search_with_preferred_type, reached
+    // when the plan named no backend (index_type::no_valid) or when the backend it named
+    // is not registered. An ORDERED index answers all six comparison predicates; an
+    // unordered one answers eq and nothing else -- manager_index_t refuses a range on an
+    // index whose supports_ordered_probe() is false, and answers the statement with an
+    // error. So handing back the hashed twin of an ordered index over the same column
+    // would fail a range probe with an index that could have answered it sitting right
+    // beside it in storage_.
+    //
+    // Asked OF the index rather than read off its type enumerator, for the same reason
+    // manager_index_t asks: the answer is a property of the implementation, and a caller
+    // that guesses from the enumerator gets it wrong the day a new backend appears.
     auto index_engine_t::matching(const keys_base_storage_t& query) -> index_t::pointer {
-        auto it = mapper_.find(query);
-        if (it != mapper_.end()) {
-            return it->second;
+        index_t::pointer unordered_match = nullptr;
+        for (const auto& idx : storage_) {
+            if (!idx || idx->keys_ != query) {
+                continue;
+            }
+            if (idx->supports_ordered_probe()) {
+                return idx.get();
+            }
+            if (unordered_match == nullptr) {
+                unordered_match = idx.get();
+            }
         }
-        return nullptr;
+        return unordered_match;
     }
 
     auto index_engine_t::matching(const keys_base_storage_t& query, logical_plan::index_type type) -> index_t::pointer {
@@ -230,10 +251,38 @@ namespace components::index {
         }
     }
 
+    // DEDUPLICATED, deliberately.
+    //
+    // Both consumers ask an EXISTENCE question of this vector and nothing else: the
+    // planner's context_storage_t::has_index_on ("is this column indexed at all?") and
+    // enrich_logical_plan's stamp_table_has_indexes ("does this table have any index, so
+    // must DML mirror into it?"). Neither counts, so a repeat is not wrong for them --
+    // but the vector is published as "which key sets are indexed", and a table carrying
+    // an ordered AND a hashed index over one column has ONE indexed key set, not two. A
+    // bag would invite the next caller to read the repeat as two different columns.
+    // Multiplicity is available, exactly, from all_indexed_descriptions(), which pairs
+    // each key set with the type that distinguishes the duplicates -- so nothing is lost
+    // by folding them here.
+    //
+    // Linear scan over the result: an index count per table is 1-3, and the alternative
+    // is the key-keyed map this whole change removed.
     auto index_engine_t::all_indexed_keys() const -> std::pmr::vector<keys_base_storage_t> {
         std::pmr::vector<keys_base_storage_t> result(resource_);
-        for (const auto& [keys, _] : mapper_) {
-            result.push_back(keys);
+        result.reserve(storage_.size());
+        for (const auto& idx : storage_) {
+            if (!idx) {
+                continue;
+            }
+            bool already_listed = false;
+            for (const auto& listed : result) {
+                if (listed == idx->keys_) {
+                    already_listed = true;
+                    break;
+                }
+            }
+            if (!already_listed) {
+                result.push_back(idx->keys_);
+            }
         }
         return result;
     }

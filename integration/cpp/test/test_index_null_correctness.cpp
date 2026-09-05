@@ -12,7 +12,9 @@
 //               falling into `default: throw`). The throw escapes an actor coroutine whose
 //               unhandled_exception() is empty under NDEBUG, so the insert loop dies mid-batch and
 //               the caller is told it succeeded. Every row after the NULL is missing from the index.
-//   * INVENT  — if the NULL is the FIRST key, single_field_index_t latches stored_type_ = NA, the
+//   * INVENT  — if the NULL is the FIRST key, the ordered in-memory index of the day latched
+//               stored_type_ = NA (that class is gone since C6a; the mode is recorded because it is
+//               what the invariant below was written against), the
 //               cast becomes a no-op, and the b-tree fills with mixed NA/typed keys. operator< then
 //               switches on the left operand's type and returns false for NA, so NA compares
 //               "equivalent" to every value while the values are ordered among themselves — not a

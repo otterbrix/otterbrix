@@ -3,8 +3,6 @@ project(index)
 set(${PROJECT_NAME}_SOURCES
         index.cpp
         index_engine.cpp
-        single_field_index.cpp
-        hash_single_field_index.cpp
         disk_hash_single_field_index.cpp
         disk_ordered_single_field_index.cpp
 )

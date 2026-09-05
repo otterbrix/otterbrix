@@ -5,13 +5,14 @@
 // A faulty_file_handle_t wraps the real database file handle (installed through the
 // DEV_MODE interposer seam in single_file_block_manager_t) and can:
 //   - fail every positional write after the Nth one (fail_after_writes);
-//   - tear one write in half and fail everything after it (torn_at_write);
+//   - tear one write in half and fail everything after it (torn_at_write), on the
+//     positional AND the sequential overload alike;
 //   - fail every read of ONE block location (fail_reads_at_location) — a rotten block, i.e.
 //     the failure a walk of the durable root's metadata chain has to survive;
-//   - simulate kill -9: an undo journal records the pre-image of every positional write
-//     since the last successful sync(); crash_revert() rolls the file back to exactly its
-//     state at the last fsync — the conservative crash semantics (nothing unsynced
-//     survived). After crash_revert() every further I/O on the handle fails.
+//   - simulate kill -9: an undo journal records the pre-image of every write — positional and
+//     sequential alike — since the last successful sync(); crash_revert() rolls the file back
+//     to exactly its state at the last fsync — the conservative crash semantics (nothing
+//     unsynced survived). After crash_revert() every further I/O on the handle fails.
 //
 // No test may lay out files by hand (plan rule for T3); reopening the reverted file — or a
 // filesystem copy of it — under a fresh environment IS the "state after kill".
@@ -98,24 +99,48 @@ namespace otterbrix_test {
             return inner_->write(buffer, nr_bytes, location);
         }
 
-        int64_t write(void* buffer, uint64_t nr_bytes) override {
+        core::filesystem::write_result_t write(void* buffer, uint64_t nr_bytes) override {
             // The block manager and the WAL both write POSITIONALLY, so this overload used
             // to only count and delegate. The bitcask index appends SEQUENTIALLY -- its
-            // record writer and its txn-log writer both take this door -- so the same two
+            // record writer and its txn-log writer both take this door -- so the same
             // knobs answer here. Nothing that used this header before reaches this overload,
             // so nothing that passed before changes.
             //
-            // A short count is the refusal, matching what write(2) reports on a full device
-            // and what every caller of the sequential overload compares against.
+            // THE THIRD KNOB WAS MISSING HERE, and its absence hid the defect this seam is
+            // meant to stage: torn_at_write was honoured only by the POSITIONAL overload, so
+            // the one consumer that appends -- the bitcask index -- could be refused outright
+            // but could never be torn. A torn SEQUENTIAL write is precisely the case in which
+            // bytes land, the descriptor moves, and the answer must still say "refused";
+            // without it, nothing in the suite could ask a caller whether it learns N.
             if (plan_.crashed) {
-                return -1;
+                return core::filesystem::write_result_t::refused(0);
             }
             plan_.writes_seen++;
             if (plan_.fail_after_writes != 0 && plan_.writes_seen > plan_.fail_after_writes) {
-                return -1;
+                return core::filesystem::write_result_t::refused(0);
             }
             if (plan_.fail_writes_from != 0 && plan_.writes_seen >= plan_.fail_writes_from) {
-                return -1;
+                return core::filesystem::write_result_t::refused(0);
+            }
+            // THE JOURNAL COVERS THIS OVERLOAD TOO. crash_revert() promises the file exactly
+            // as it stood at the last fsync, and it keeps that promise in two halves: the
+            // pre-images undo overwrites, the synced-length truncate undoes growth. A
+            // sequential write that APPENDS is covered by the second half alone, which is why
+            // the omission has never fired -- but a sequential write after a seek() into the
+            // middle of the file overwrites, and nothing would have put those bytes back. The
+            // position is the INNER handle's: this wrapper has no descriptor of its own.
+            record_undo(inner_->seek_position(), nr_bytes);
+            if (plan_.torn_at_write != 0 && plan_.writes_seen == plan_.torn_at_write) {
+                // Persist only the first half and report the refusal WITH that count -- the
+                // shape write(2) itself produces when it short-counts and then refuses.
+                const uint64_t half = nr_bytes / 2;
+                core::filesystem::write_result_t landed{};
+                if (half != 0) {
+                    landed = inner_->write(buffer, half);
+                }
+                // Everything after a torn write is lost too.
+                plan_.fail_after_writes = plan_.writes_seen;
+                return core::filesystem::write_result_t::refused(landed.bytes_written);
             }
             return inner_->write(buffer, nr_bytes);
         }

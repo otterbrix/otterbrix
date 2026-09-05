@@ -2,9 +2,12 @@
 
 #include "file_system.hpp"
 #include <components/log/log.hpp>
+#include <algorithm>
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <sys/resource.h>
 #include <unistd.h>
 
 using namespace std;
@@ -179,4 +182,210 @@ TEST_CASE("core::file::filesystem") {
             remove_directory(fs, testing_directory);
         }
     }
+}
+// A PARTIAL WRITE IS NOT A FAILED WRITE, and the difference is the only thing that lets a
+// caller repair itself. The sequential write loop below it (local_file_system.cpp) issues
+// ::write repeatedly; when one of those calls short-counts and the next one refuses, the
+// bytes of the short count ARE on the device and the descriptor HAS moved over them.
+//
+// RLIMIT_FSIZE stages exactly that, with no mock anywhere in the path: the kernel writes up
+// to the limit, returns the short count, and refuses everything after with EFBIG. That is
+// the same shape a full volume produces, and it is reproducible, which ENOSPC is not.
+//
+// SIGXFSZ has to be ignored for the duration or the refusal kills the test binary instead of
+// being reported, and both the limit and the disposition go back before the case returns --
+// the limit is process-wide, so leaking it would fail every later case that writes.
+//
+// AND PROCESS-WIDE IS THE WHOLE CAVEAT, not just a reason to restore. RLIMIT_FSIZE and the
+// SIGXFSZ disposition belong to the PROCESS, not to this handle or this thread: while a guard
+// is armed, EVERY file this binary writes is held to the same ceiling. That is safe here only
+// because this binary is single-threaded and writes nothing but the file under test. Adding a
+// file-backed log sink to it, or a thread that writes while a case runs, would make unrelated
+// code fail inside somebody else's assertion -- so the armed window is kept to the single
+// write it is staging, and no case arms a ceiling it does not need. In particular there is no
+// ceiling of ZERO anywhere below: an outright refusal is staged with a read-only descriptor
+// instead (see the second case), which reaches only that descriptor.
+namespace {
+    struct fsize_limit_guard_t {
+        struct rlimit previous {};
+        struct sigaction previous_action {};
+        bool armed{false};
+
+        explicit fsize_limit_guard_t(rlim_t bytes) {
+            if (::getrlimit(RLIMIT_FSIZE, &previous) != 0) {
+                return;
+            }
+            struct sigaction ignore {};
+            ignore.sa_handler = SIG_IGN;
+            sigemptyset(&ignore.sa_mask);
+            if (::sigaction(SIGXFSZ, &ignore, &previous_action) != 0) {
+                return;
+            }
+            struct rlimit narrowed = previous;
+            narrowed.rlim_cur = bytes;
+            if (::setrlimit(RLIMIT_FSIZE, &narrowed) != 0) {
+                ::sigaction(SIGXFSZ, &previous_action, nullptr);
+                return;
+            }
+            armed = true;
+        }
+
+        ~fsize_limit_guard_t() {
+            if (armed) {
+                ::setrlimit(RLIMIT_FSIZE, &previous);
+                ::sigaction(SIGXFSZ, &previous_action, nullptr);
+            }
+        }
+
+        fsize_limit_guard_t(const fsize_limit_guard_t&) = delete;
+        fsize_limit_guard_t& operator=(const fsize_limit_guard_t&) = delete;
+    };
+} // namespace
+
+// THE WRAPPER'S FORWARDERS ACTUALLY FORWARD, and until this case existed nothing asked.
+//
+// file_system<FSC> holds a backend by PRIVATE inheritance and offers the same free-function
+// surface over it. Every one of those forwarders called ITSELF -- `return read(fs, ...)`
+// inside `read(file_system<FSC>&, ...)`, whose first parameter is the wrapper, so the
+// wrapper is what overload resolution picked -- an unconditional infinite recursion in each
+// of the twenty-three. A template is only diagnosed when it is instantiated and not one of
+// them ever was, so the whole header compiled clean and would have blown the stack on its
+// first real use. This case is what makes "nothing instantiates them" false; the private base
+// is why the fix needs an accessor rather than a cast.
+//
+// It goes end to end through the wrapper alone: open, sequential write, size, seek, read
+// back, unlink. A regression does not fail an assertion here -- it exhausts the stack -- and
+// that is the honest signature of the defect.
+TEST_CASE("core::file::filesystem::the_wrapper_forwards_to_its_backend") {
+    file_system<local_file_system_t> fs{local_file_system_t()};
+    std::error_code ec;
+    std::filesystem::create_directories(testing_directory, ec);
+
+    auto fname = testing_directory;
+    fname /= "wrapper_forwarding";
+    remove_file(fs, fname);
+
+    auto handle =
+        open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE, file_lock_type::NO_LOCK);
+    REQUIRE(handle != nullptr);
+
+    char payload[] = {'w', 'r', 'a', 'p'};
+    const auto written = write(fs, *handle, payload, static_cast<int64_t>(sizeof(payload)));
+    REQUIRE(written.complete);
+    REQUIRE(written.bytes_written == sizeof(payload));
+    REQUIRE(file_size(fs, *handle) == static_cast<int64_t>(sizeof(payload)));
+
+    REQUIRE(seek(fs, *handle, uint64_t{0}));
+    REQUIRE(seek_position(fs, *handle) == 0);
+    char echoed[sizeof(payload)] = {};
+    REQUIRE(read(fs, *handle, echoed, static_cast<int64_t>(sizeof(echoed))) ==
+            static_cast<int64_t>(sizeof(echoed)));
+    REQUIRE(std::equal(std::begin(payload), std::end(payload), std::begin(echoed)));
+
+    handle.reset();
+    REQUIRE(file_exists(fs, fname));
+    REQUIRE(remove_file(fs, fname));
+    REQUIRE_FALSE(file_exists(fs, fname));
+}
+
+TEST_CASE("core::file::filesystem::sequential_write_reports_what_it_wrote") {
+    local_file_system_t fs = local_file_system_t();
+    std::error_code ec;
+    std::filesystem::create_directories(testing_directory, ec);
+
+    auto fname = testing_directory;
+    fname /= "partial_write";
+    remove_file(fs, fname);
+
+    constexpr uint64_t limit = 12;
+    constexpr uint64_t requested = 25;
+    char payload[requested];
+    std::fill(std::begin(payload), std::end(payload), 'A');
+
+    auto handle =
+        open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE, file_lock_type::NO_LOCK);
+    REQUIRE(handle != nullptr);
+
+    write_result_t written{};
+    {
+        fsize_limit_guard_t guard{limit};
+        REQUIRE(guard.armed);
+        written = handle->write(payload, requested);
+    }
+
+    handle->sync();
+
+    // THE INVARIANT, SAID DIRECTLY: what the caller is told is what is on the device. It is
+    // spelled against file_size() rather than against `limit` because `limit` is a property of
+    // the STAGING, not of the contract -- a kernel that refuses an over-limit write whole
+    // instead of short-counting it to the ceiling keeps 0 bytes and satisfies this line
+    // exactly as one that keeps 12 does. The old int64_t answered -1 here -- the refusing
+    // ::write's code, with the accumulated count discarded -- so "nothing landed" and "12 of
+    // 25 landed" were the same answer and neither could be repaired.
+    REQUIRE_FALSE(written.complete);
+    REQUIRE(written.bytes_written == handle->file_size());
+    REQUIRE(written.bytes_written < requested);
+    // partial() is that same fact under its own name, and it is derived rather than asserted
+    // flat for the same reason: a stump exists only if something landed.
+    REQUIRE(written.partial() == (handle->file_size() != 0));
+
+    // The descriptor moved by exactly what landed, which is the other half of the contract:
+    // a caller that rewinds has to rewind to the same place the count names.
+    REQUIRE(handle->seek_position() == written.bytes_written);
+
+    // SENSITIVITY OF THE INJECTION, beside the invariant and not in place of it: on every
+    // kernel this suite runs on, RLIMIT_FSIZE truncates the write to the ceiling rather than
+    // refusing it whole, so this is the partial case and not the empty one. A CHECK, because
+    // it pins the staging: were it to stop holding, the case above would still be testing the
+    // contract, just no longer this half of it.
+    CHECK(written.bytes_written == limit);
+
+    handle.reset();
+    remove_file(fs, fname);
+}
+
+// THE OTHER TWO POINTS OF THE SAME CONTRACT, which an int64_t could not separate at all: a
+// request of zero bytes SUCCEEDS having written nothing, and a refusal that got nowhere FAILS
+// having written nothing. Both are `0` as a count, so the count alone cannot answer -- which
+// is why the answer carries `complete` beside it rather than leaving every call site to
+// re-derive it from a length it may not have kept.
+TEST_CASE("core::file::filesystem::sequential_write_separates_empty_from_refused") {
+    local_file_system_t fs = local_file_system_t();
+    std::error_code ec;
+    std::filesystem::create_directories(testing_directory, ec);
+
+    auto fname = testing_directory;
+    fname /= "empty_write";
+    remove_file(fs, fname);
+
+    auto handle =
+        open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE, file_lock_type::NO_LOCK);
+    REQUIRE(handle != nullptr);
+
+    char nothing = 0;
+    const auto empty = handle->write(&nothing, 0);
+    REQUIRE(empty.complete);
+    REQUIRE(empty.bytes_written == 0);
+    REQUIRE_FALSE(empty.partial());
+
+    // A DESCRIPTOR THAT WILL NOT TAKE A WRITE AT ALL: the very first ::write returns -1 with
+    // nothing short-counted, which is the refusal that got nowhere. Staged on a READ-ONLY
+    // handle rather than under an RLIMIT_FSIZE of zero, and the difference is not stylistic --
+    // a ceiling of zero is a PROCESS-WIDE ban on writing to any file, armed inside a suite
+    // whose other cases and whose logging are one edit away from writing one. A read-only fd
+    // reaches this descriptor and nothing else.
+    char payload[8];
+    std::fill(std::begin(payload), std::end(payload), 'B');
+    auto read_only = open_file(fs, fname, file_flags::READ, file_lock_type::NO_LOCK);
+    REQUIRE(read_only != nullptr);
+    const auto refused = read_only->write(payload, sizeof(payload));
+    REQUIRE_FALSE(refused.complete);
+    REQUIRE(refused.bytes_written == 0);
+    REQUIRE_FALSE(refused.partial());
+    // Nothing reached the file, which is the whole claim: `bytes_written == 0` has to mean it.
+    REQUIRE(read_only->file_size() == 0);
+
+    read_only.reset();
+    handle.reset();
+    remove_file(fs, fname);
 }

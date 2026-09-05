@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
@@ -18,6 +19,38 @@ namespace core::filesystem {
     using path_t = std::filesystem::path;
 
     class local_file_system_t;
+
+    // THE ANSWER OF A SEQUENTIAL WRITE, which an int64_t could not give.
+    //
+    // The old return packed a byte count and an error code into one integer, and the packing
+    // lost the only fact a caller can act on: a write that short-counts and THEN refuses has
+    // already put bytes on the device and already moved the descriptor over them. The count
+    // was accumulated across the loop's iterations and then thrown away in favour of the
+    // failing iteration's own return -- -1 on POSIX, and 0 on Windows, where FSInternalWrite
+    // answers a refusal with an unsigned `DWORD()`. So "nothing was written" and "12 of the
+    // 25 bytes were written" arrived as the same answer -- and a caller that cannot tell them
+    // apart can neither truncate the stump nor rewind to it.
+    //
+    // Both fields are needed, and neither derives from the other:
+    //   - bytes_written is how much REACHED the file and therefore how far the descriptor
+    //     moved. It is meaningful on refusal, which is the whole point;
+    //   - complete says whether the request finished. It cannot be recomputed as
+    //     `bytes_written == requested` at every call site, because a zero-byte request makes
+    //     the full success and the outright refusal both `bytes_written == 0`.
+    //
+    // core::result_wrapper_t is deliberately NOT the vehicle: it holds a value OR an error
+    // (value() asserts !has_error()), so it cannot express "this much landed AND it failed",
+    // which is exactly the state being reported here.
+    struct [[nodiscard]] write_result_t {
+        uint64_t bytes_written{0};
+        bool complete{false};
+
+        // The state that has no name in an int64_t: a stump on disk after a refusal.
+        [[nodiscard]] bool partial() const noexcept { return !complete && bytes_written != 0; }
+
+        static write_result_t done(uint64_t written) noexcept { return write_result_t{written, true}; }
+        static write_result_t refused(uint64_t written) noexcept { return write_result_t{written, false}; }
+    };
 
     enum class file_type_t
     {
@@ -43,7 +76,8 @@ namespace core::filesystem {
         // functions reinterpret_cast the handle to the PLATFORM handle type, so a wrapper
         // must always override and delegate to its wrapped inner handle, never pass itself.
         virtual int64_t read(void* buffer, uint64_t nr_bytes);
-        virtual int64_t write(void* buffer, uint64_t nr_bytes);
+        // SEQUENTIAL WRITE. Returns what landed AND whether it finished -- see write_result_t.
+        virtual write_result_t write(void* buffer, uint64_t nr_bytes);
         virtual bool read(void* buffer, uint64_t nr_bytes, uint64_t location);
         virtual bool write(void* buffer, uint64_t nr_bytes, uint64_t location);
         // SEEK AND ITS QUERY ARE VIRTUAL FOR THE SAME REASON THE READS AND WRITES ARE.

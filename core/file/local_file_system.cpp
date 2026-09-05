@@ -425,20 +425,26 @@ namespace core::filesystem {
         return true;
     }
 
-    int64_t write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes) {
+    write_result_t write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes) {
         int fd = reinterpret_cast<unix_file_handle_t&>(handle).fd;
-        int64_t bytes_written = 0;
+        uint64_t bytes_written = 0;
         while (nr_bytes > 0) {
             auto bytes_to_write = std::min<uint64_t>(uint64_t(std::numeric_limits<int32_t>::max()), uint64_t(nr_bytes));
             int64_t current_bytes_written = ::write(fd, buffer, bytes_to_write);
             if (current_bytes_written <= 0) {
-                return current_bytes_written;
+                // THE COUNT SURVIVES THE REFUSAL. write(2) short-counts before it refuses --
+                // a file-size rlimit, a filling volume and a signal all produce that shape --
+                // and this line used to answer with the refusing call's -1, dropping every
+                // byte the earlier iterations had already put on the device and moved the
+                // descriptor past. The caller was told "nothing", could not tell a stump from
+                // an untouched file, and so could neither truncate it nor rewind to it.
+                return write_result_t::refused(bytes_written);
             }
-            bytes_written += current_bytes_written;
+            bytes_written += static_cast<uint64_t>(current_bytes_written);
             buffer = static_cast<void*>(static_cast<uint8_t*>(buffer) + current_bytes_written);
             nr_bytes -= current_bytes_written;
         }
-        return bytes_written;
+        return write_result_t::done(bytes_written);
     }
 
     int64_t file_size(local_file_system_t&, file_handle_t& handle) {
@@ -777,37 +783,46 @@ namespace core::filesystem {
         return bytes_written;
     }
 
-    static int64_t FSWrite(file_handle_t& handle, HANDLE hFile, void* buffer, int64_t nr_bytes, uint64_t location) {
-        int64_t bytes_written = 0;
+    // Same contract as the POSIX loop above, and it dropped the count too -- by a different
+    // route. FSInternalWrite answers a refusal with `DWORD()`, an UNSIGNED zero, so this loop
+    // returned 0 rather than the -1 its POSIX twin returned; either way the bytes the earlier
+    // iterations had accumulated were discarded, and 0 is the same answer a request that
+    // wrote nothing gives.
+    static write_result_t
+    FSWrite(file_handle_t& handle, HANDLE hFile, void* buffer, int64_t nr_bytes, uint64_t location) {
+        uint64_t bytes_written = 0;
         while (nr_bytes > 0) {
             auto bytes_to_write = std::min<uint64_t>(uint64_t(std::numeric_limits<int32_t>::max()), uint64_t(nr_bytes));
             DWORD current_bytes_written = FSInternalWrite(handle, hFile, buffer, bytes_to_write, location);
             if (current_bytes_written <= 0) {
-                return current_bytes_written;
+                return write_result_t::refused(bytes_written);
             }
             bytes_written += current_bytes_written;
-            buffer = buffer + current_bytes_written;
+            buffer = static_cast<void*>(static_cast<uint8_t*>(buffer) + current_bytes_written);
             location += current_bytes_written;
             nr_bytes -= current_bytes_written;
         }
-        return bytes_written;
+        return write_result_t::done(bytes_written);
     }
 
     bool write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location) {
         HANDLE hFile = reinterpret_cast<windows_file_handle_t&>(handle).fd_;
-        auto bytes_written = FSWrite(handle, hFile, buffer, nr_bytes, location);
-        if (bytes_written != nr_bytes) {
-            return false;
-        }
-        return true;
+        return FSWrite(handle, hFile, buffer, nr_bytes, location).complete;
     }
 
-    int64_t write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes) {
+    write_result_t write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes) {
         HANDLE hFile = reinterpret_cast<windows_file_handle_t&>(handle).fd_;
         auto& pos = reinterpret_cast<windows_file_handle_t&>(handle).position_;
-        auto bytes_written = FSWrite(handle, hFile, buffer, nr_bytes, pos);
-        pos += bytes_written;
-        return bytes_written;
+        auto result = FSWrite(handle, hFile, buffer, nr_bytes, pos);
+        // The tracked position advances by WHAT LANDED. It used to advance by FSWrite's
+        // return, and on a refusal that return was ZERO, not -1: FSInternalWrite's DWORD is
+        // unsigned and its failure value is `DWORD()`. So `pos` did not move at all while the
+        // bytes of the earlier iterations WERE on the device -- the handle's idea of its
+        // place was left BEHIND them, and the next sequential write on that handle overwrote
+        // them. (This overload is positional underneath: `pos` is the only record of where
+        // the file is, so a stale one is a silent overwrite rather than a wrong seek.)
+        pos += result.bytes_written;
+        return result;
     }
 
     int64_t file_size(local_file_system_t&, file_handle_t& handle) {

@@ -50,7 +50,7 @@ namespace core::filesystem {
     bool read(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location);
     int64_t read(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
     bool write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes, uint64_t location);
-    int64_t write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
+    write_result_t write(local_file_system_t&, file_handle_t& handle, void* buffer, int64_t nr_bytes);
 
     int64_t file_size(local_file_system_t&, file_handle_t& handle);
     time_t last_modified_time(local_file_system_t&, file_handle_t& handle);

@@ -265,6 +265,11 @@ namespace services::index {
             uint64_t id{0};
             std::filesystem::path path;
             uint64_t record_count{0};
+            // Where the replay's walk of this segment STOPPED, which is not always its size:
+            // a crash inside write_record leaves bytes the scan cannot read as a record, and
+            // the walk halts in front of them. Filled in by load_from_disk, read for the
+            // ACTIVE segment only (see active_segment_clean_end_).
+            uint64_t scan_end{0};
         };
 
         using row_ids_t = std::pmr::vector<size_t>;
@@ -311,7 +316,7 @@ namespace services::index {
         // disk_hash_table_t::erase carries for the same reason.
         [[nodiscard]] core::result_wrapper_t<bool>
         read_rows_at(uint32_t segment_id, uint64_t value_offset, row_ids_t& rows, value_t* out_key = nullptr) const;
-        std::string key_bytes_for_hash(const value_t& key) const;
+        std::string key_bytes_for_hash(const value_t& key, bool* ok = nullptr) const;
         [[nodiscard]] core::error_t erase_all_refs_for_key(std::string_view key_bytes);
         // Reports a hash-index write failure instead of dropping it: the segment record is already
         // durable at that point, so a lost index entry would leave the key unfindable while the
@@ -346,6 +351,24 @@ namespace services::index {
         // a checkpoint can no longer trim the WAL behind an index that never reached disk.
         [[nodiscard]] core::error_t sync_if_dirty();
         void note_write_error(core::error_t err);
+        // A STUMP THAT COULD NOT BE UNDONE CLOSES THIS STORE FOR WRITING, and these two are
+        // the closing and the closed door.
+        //
+        // discard_partial_record is the repair, and when the repair itself refuses -- the
+        // truncate would not take, the fsync of it would not take -- the half-written record
+        // is STILL at the end of the file and the descriptor is STILL past it. Reporting that
+        // as an ordinary io_failure and carrying on is the silent loss the repair exists to
+        // prevent, only one statement later: the very next append reads seek_position(),
+        // lands BEHIND the stump, and turns it from a tail into an interior frame -- the one
+        // shape load_from_disk cannot tell from a truncated tail, so it stops there and every
+        // record after it leaves the index without a word.
+        //
+        // So the store stops taking records instead. READS are untouched: everything written
+        // before the stump is intact and findable, and the keydir was never pointed at the
+        // record that failed. clear() is the repair door -- it unlinks the segment the stump
+        // is in, which is why it is also the one place the seal is lifted.
+        [[nodiscard]] core::error_t seal_writes(std::string_view reason);
+        [[nodiscard]] core::error_t refuse_if_sealed() const;
         // One door for this store's I/O refusals, so the code and the resource are the same
         // on every one of them -- disk_hash_table_t::io_failure one layer down is the same
         // idea. index_create_fail is the code the index error channel already carries.
@@ -384,10 +407,34 @@ namespace services::index {
         // bulk inserts, the startup rebuild, segment merge). force_flush() hands it to the caller,
         // which is the first point on those paths that can report anything at all.
         core::error_t pending_write_error_{core::error_t::no_error()};
+        // Set by seal_writes, read by refuse_if_sealed, cleared by clear(). See seal_writes.
+        bool writes_sealed_{false};
         uint64_t next_timestamp_{0};
         uint64_t next_segment_id_{regular_segment_id_start_};
         uint64_t active_segment_id_{0};
         uint64_t active_segment_records_{0};
+        // THE UNREADABLE TAIL OF THE ACTIVE SEGMENT, HANDED FROM THE REPLAY TO THE OPEN.
+        //
+        // The write path can undo its own stump (discard_partial_record) because it is still
+        // running; a POWER CUT inside write_record leaves a byte-identical stump with nobody
+        // left to undo it. On the next start load_from_disk walks the segment, stops in front
+        // of those bytes and reports success -- correctly, because at that moment the stump
+        // IS the tail and there is nothing after it. Then open_active_segment used to seek to
+        // file_size(), i.e. PAST the stump, and the first insert after recovery wrote a
+        // well-formed record behind it. From that point the stump is an interior frame, and
+        // the NEXT start reads its bytes together with the head of the record after it as one
+        // header, takes the garbage length for a payload past EOF, takes that for a truncated
+        // tail -- and stops, silently, dropping every record written after the crash.
+        //
+        // So the replay hands over where the records really end and open_active_segment cuts
+        // the file back to it, at the one moment when doing so cannot cost anything: nothing
+        // has been appended yet, so the bytes being removed are exactly the ones no reader
+        // could use. no_tail_to_trim means the replay has nothing to say -- a fresh directory,
+        // a rotation's brand-new segment -- and the file is left alone; it is also what the
+        // field is set back to once a value has been consumed, so a stale one cannot be
+        // applied to a different file.
+        static constexpr uint64_t no_tail_to_trim{UINT64_MAX};
+        uint64_t active_segment_clean_end_{no_tail_to_trim};
         uint64_t segment_record_limit_{default_segment_record_limit_};
         bool bulk_mode_{false};
         bool bulk_rehash_guard_active_{false};

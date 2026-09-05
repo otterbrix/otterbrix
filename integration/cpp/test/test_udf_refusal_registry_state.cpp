@@ -95,7 +95,7 @@ namespace {
         }
 
         bool write(void* b, uint64_t n, uint64_t loc) override { return inner_->write(b, n, loc); }
-        int64_t write(void* b, uint64_t n) override { return inner_->write(b, n); }
+        core::filesystem::write_result_t write(void* b, uint64_t n) override { return inner_->write(b, n); }
         int64_t read(void* b, uint64_t n) override { return inner_->read(b, n); }
         bool sync() override { return inner_->sync(); }
         bool truncate(int64_t new_size) override { return inner_->truncate(new_size); }

@@ -1,4 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
+#include <absl/crc/crc32c.h>
+#include <cstring>
 #include <charconv>
 #include <cstdlib>
 #include <components/index/logical_value_binary_codec.hpp>
@@ -169,6 +171,36 @@ namespace {
         std::vector<std::byte> bytes(static_cast<size_t>(size));
         input.read(reinterpret_cast<char*>(bytes.data()), size);
         return bytes;
+    }
+
+    // A POWER CUT INSIDE write_record, LAID OUT BY HAND, because there is no other way to
+    // reach one. Every stump the live write path produces it also repairs
+    // (discard_partial_record), and the case this stages is precisely the stump NOBODY
+    // repaired: the process was not there any more. The bytes are the store's own record
+    // header -- crc, kind, payload_size, timestamp, as declared in bitcask_index_disk.cpp --
+    // announcing a payload that never followed it, which is byte-for-byte what a crash
+    // between write_record's two writes leaves at the end of the segment. The static_assert
+    // is the tie to that declaration: a layout change there makes this stop compiling rather
+    // than quietly stop staging anything.
+    struct crashed_record_header_t {
+        uint32_t crc{0};
+        uint8_t kind{1};
+        uint64_t payload_size{0};
+        uint64_t timestamp{0};
+    };
+    static_assert(sizeof(crashed_record_header_t) == 24,
+                  "the stump must be the store's record header, byte for byte");
+
+    void append_crashed_record_stump(const std::filesystem::path& segment) {
+        crashed_record_header_t stump{};
+        // More than the whole file will ever hold after it, so the replay reads this record as
+        // one whose payload runs past the end -- a truncated tail, which is what it is.
+        stump.payload_size = 4096;
+        std::ofstream output(segment, std::ios::binary | std::ios::app);
+        REQUIRE(output.good());
+        output.write(reinterpret_cast<const char*>(&stump), sizeof(stump));
+        output.flush();
+        REQUIRE(output.good());
     }
 
     // Put the bytes BACK through the same path. Truncating a file under a live store and
@@ -1703,6 +1735,253 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_record_write_refuses_t
     REQUIRE(rows.front() == 55);
 }
 
+// A TORN APPEND IS NOT A REFUSED APPEND, and until the filesystem layer could say so the
+// difference had nowhere to arrive. write(2) short-counts before it refuses -- a file-size
+// rlimit, a filling volume -- and the sequential write under this store used to answer that
+// with the refusing call's -1, discarding the count it had accumulated. So a record that got
+// half a header onto the segment reported exactly what a record that got nothing reported,
+// and append_snapshot, which is the only code that knows where the record began, had no way
+// to tell that there was anything to undo.
+//
+// What the stump then costs is the WHOLE INDEX, without any crash: the next append asks the
+// descriptor where it is, gets a position past the stump and writes a well-formed record
+// after it, so the stump stops being a tail and becomes an interior frame. load_from_disk
+// walks into it, reads its bytes as a record header, and the CRC check sets crc_failure_ --
+// which open() turns into a refusal of the entire index, over four bytes, on a database that
+// is otherwise intact. A write that ran out of device must not make the database
+// unopenable.
+//
+// The seam stages the tear directly: torn_at_write on the SEQUENTIAL overload persists half
+// the bytes and reports the refusal with that count -- the shape write(2) itself produces.
+TEST_CASE("services::index::bitcask_index_disk::a_torn_record_write_leaves_no_stump_in_the_segment") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_torn_record_write"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        bitcask_fault_scope_t fault;
+        // Segment handles only: CURRENT and the sidecars publish through their own temp
+        // files and must keep working, or the refusal under test is not the one observed.
+        fault.faulty_marker = ".data";
+
+        auto index = make_test_index(path, &resource);
+        index.insert(logical_value_t(&resource, 1l), 11);
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
+        const auto clean_writes = fault.plan.writes_seen;
+        // Sensitivity of the injection, checked in place: the appends go through the seam.
+        REQUIRE(clean_writes > 0);
+
+        const auto segment = latest_bitcask_data_file(path);
+        REQUIRE_FALSE(segment.empty());
+        const auto size_before_tear = std::filesystem::file_size(segment);
+        REQUIRE(size_before_tear > 0);
+
+        // Tear the next sequential write: the record header of the append below.
+        fault.plan.torn_at_write = clean_writes + 1;
+        index.insert(logical_value_t(&resource, 2l), 22);
+        REQUIRE(index.force_flush().contains_error());
+        // The tear ALSO arms fail_after_writes (everything after a torn write is lost), so
+        // both knobs go off before the store is asked to work again.
+        fault.plan.torn_at_write = 0;
+        fault.plan.fail_after_writes = 0;
+
+        // THE STUMP IS GONE. The segment is back to the length it had before the torn
+        // append -- which is only checkable because the layer below now reports how many
+        // bytes landed, and only reachable because append_snapshot knows where they began.
+        REQUIRE(std::filesystem::file_size(segment) == size_before_tear);
+
+        // And the key the torn append was carrying did not enter the keydir.
+        REQUIRE(rows_of(index.find(logical_value_t(&resource, 2l))).empty());
+
+        // The store carries on: this record lands where the stump would have been.
+        index.insert(logical_value_t(&resource, 3l), 33);
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
+    }
+
+    {
+        // Construction does no I/O; open() is the step that would meet the stump and report
+        // it as a value. (The construct-and-open ctor aborts on the same input.)
+        bitcask_index_disk_t index(path,
+                                   &resource,
+                                   test_flush_threshold,
+                                   test_segment_record_limit,
+                                   std::pmr::set<std::uint64_t>{},
+                                   bitcask_index_disk_t::deferred_open_t{});
+        REQUIRE(index.open().type == core::error_code_t::none);
+
+        // WHAT THE STUMP ACTUALLY COSTS, measured rather than assumed. A half-written header
+        // is not read back as corruption: the scan reads its bytes plus the beginning of the
+        // record after it as one header, takes the garbage length it finds there for a
+        // payload that runs past the end of the file, and takes that for a TRUNCATED TAIL --
+        // the one shape it is designed to stop on quietly. So it stops, open() reports
+        // success, and every record written after the stump is simply absent from the index.
+        // Silently, on a database whose bytes are all still there. The row counts are checked
+        // before anything is dereferenced so a regression reports that rather than crashing.
+        const auto first = rows_of(index.find(logical_value_t(&resource, 1l)));
+        REQUIRE(first.size() == 1);
+        REQUIRE(first.front() == 11);
+        const auto after_the_tear = rows_of(index.find(logical_value_t(&resource, 3l)));
+        REQUIRE(after_the_tear.size() == 1);
+        REQUIRE(after_the_tear.front() == 33);
+        // The torn append's own key never entered the keydir: append_snapshot refuses before
+        // it touches it.
+        REQUIRE(rows_of(index.find(logical_value_t(&resource, 2l))).empty());
+    }
+}
+
+// A REPAIR THAT WAS NOT MADE DURABLE IS NOT A REPAIR, and a store that could not make it
+// must stop writing rather than write over what it failed to remove.
+//
+// discard_partial_record undoes a torn record by truncating the segment back to where the
+// record began. The truncate is a metadata change that lives in the page cache until an fsync
+// pushes it; the STUMP is bytes the device already accepted, because a short count is exactly
+// "these bytes landed". So an unsynced truncate is strictly less durable than the damage it
+// undoes, and the window between the refusal and the next force_flush is one in which a crash
+// brings the stump back with nothing anywhere recording that it should not be there.
+//
+// And when the repair itself refuses -- this case fails its fsync -- returning a plain
+// io_failure and carrying on was the same silent loss one statement later: the descriptor is
+// still past the stump, so the NEXT append lands behind it, the stump stops being a tail and
+// becomes an interior frame, and the replay then stops at it and drops every record after it
+// without a word. The store therefore refuses further records until clear() removes the file.
+// Reads are untouched: nothing written before the stump moved.
+TEST_CASE("services::index::bitcask_index_disk::a_repair_that_was_not_made_durable_stops_the_store") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_undurable_repair"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    bitcask_fault_scope_t fault;
+    // Segments only: the keydir and the sidecars publish through their own handles and must
+    // keep working, or the refusal under test is not the one observed.
+    fault.faulty_marker = ".data";
+
+    auto index = make_test_index(path, &resource);
+    index.insert(logical_value_t(&resource, 1l), 11);
+    REQUIRE(index.force_flush().type == core::error_code_t::none);
+    const auto clean_writes = fault.plan.writes_seen;
+    const auto clean_syncs = fault.plan.syncs_seen;
+    // Sensitivity of the injection, checked in place: both the appends and the flushes of
+    // this store go through the seam, so the two knobs below name real calls.
+    REQUIRE(clean_writes > 0);
+    REQUIRE(clean_syncs > 0);
+
+    // Tear the next record AND refuse the fsync that the repair of that tear issues. The
+    // truncate is allowed to succeed: what is staged is precisely a repair that reached the
+    // cache and not the device.
+    fault.plan.torn_at_write = clean_writes + 1;
+    fault.plan.fail_syncs_from = clean_syncs + 1;
+    index.insert(logical_value_t(&resource, 2l), 22);
+
+    // Everything back off: from here the device is healthy again, and what is being observed
+    // is what the STORE decided, not what the seam is still doing.
+    fault.plan.torn_at_write = 0;
+    fault.plan.fail_after_writes = 0;
+    fault.plan.fail_syncs_from = 0;
+
+    // THE APPEND REPORTS THE REPAIR'S FAILURE, not the record's. Before the repair was
+    // fsync'd at all, this said "the snapshot record could not be written" -- true, and
+    // silent about the stump it had left behind in the cache.
+    const auto repair_failure = index.force_flush();
+    REQUIRE(repair_failure.contains_error());
+    REQUIRE(message_mentions(repair_failure, "could not be discarded"));
+
+    // AND THE STORE HAS STOPPED TAKING RECORDS. This is the half that used to be missing: the
+    // io_failure above was the whole of the reaction, so the very next insert appended a
+    // well-formed record behind a stump nothing had removed.
+    index.insert(logical_value_t(&resource, 3l), 33);
+    const auto sealed_refusal = index.force_flush();
+    REQUIRE(sealed_refusal.contains_error());
+    REQUIRE(message_mentions(sealed_refusal, "is not taking writes"));
+    REQUIRE(rows_of(index.find(logical_value_t(&resource, 3l))).empty());
+
+    // Removals are records too, and are refused by the same door.
+    index.remove(logical_value_t(&resource, 1l), 11);
+    REQUIRE(message_mentions(index.force_flush(), "is not taking writes"));
+
+    // READS ARE NOT SEALED. The record written before the tear is untouched, and the key the
+    // torn append carried never entered the keydir.
+    const auto survivor = rows_of(index.find(logical_value_t(&resource, 1l)));
+    REQUIRE(survivor.size() == 1);
+    REQUIRE(survivor.front() == 11);
+    REQUIRE(rows_of(index.find(logical_value_t(&resource, 2l))).empty());
+
+    // clear() is the repair door: it unlinks the segment the stump is in, so the reason for
+    // the seal is gone and the store serves again. Without this the store would refuse for
+    // the rest of the process over a file that no longer exists.
+    REQUIRE(index.clear().type == core::error_code_t::none);
+    index.insert(logical_value_t(&resource, 4l), 44);
+    REQUIRE(index.force_flush().type == core::error_code_t::none);
+    const auto after_clear = rows_of(index.find(logical_value_t(&resource, 4l)));
+    REQUIRE(after_clear.size() == 1);
+    REQUIRE(after_clear.front() == 44);
+}
+
+// THE CRASH HALF OF THE SAME STUMP, which the write-side repair cannot reach.
+//
+// discard_partial_record only runs while the process that tore the record is still alive. A
+// power cut inside write_record leaves a byte-identical stump with nobody left to undo it,
+// and the replay's own handling of it is correct exactly once: at that moment the stump IS
+// the tail, so stopping in front of it loses nothing. Then open_active_segment used to seek
+// to file_size() -- PAST the stump -- and the first insert after the restart wrote a
+// well-formed record behind it.
+//
+// From that point the stump is an INTERIOR frame, and the shape it presents is the one shape
+// the scan cannot tell from a truncated tail: it reads the announced payload as running past
+// the end of the file and stops, quietly, reporting success. Every record written after the
+// crash then leaves the index without a word, on a database whose bytes are all still there.
+// Two restarts is all it takes, and no fault injection is involved in the second one.
+//
+// So the unreadable tail is cut at the one moment when cutting it cannot cost anything: the
+// restart, before a single byte has been appended after it.
+TEST_CASE("services::index::bitcask_index_disk::a_crash_left_stump_does_not_swallow_the_records_after_it") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_crash_left_stump"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = make_test_index(path, &resource);
+        index.insert(logical_value_t(&resource, 1l), 11);
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
+    }
+
+    const auto segment = latest_bitcask_data_file(path);
+    REQUIRE_FALSE(segment.empty());
+    const auto size_before_the_crash = std::filesystem::file_size(segment);
+    REQUIRE(size_before_the_crash > 0);
+    append_crashed_record_stump(segment);
+    REQUIRE(std::filesystem::file_size(segment) > size_before_the_crash);
+
+    {
+        // FIRST RESTART. The stump is the tail, the replay stops in front of it, and open()
+        // reports success -- all of which was already true. What is new is that the tail is
+        // gone by the time this store is ready to append.
+        auto index = make_test_index(path, &resource);
+        REQUIRE(std::filesystem::file_size(segment) == size_before_the_crash);
+
+        index.insert(logical_value_t(&resource, 2l), 22);
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
+    }
+
+    {
+        // SECOND RESTART, and this is where the loss used to happen. The record written after
+        // the crash is either in the index or it is not; nothing about this reopen involves a
+        // fault, a permission or a device.
+        auto index = make_test_index(path, &resource);
+        const auto before_the_crash = rows_of(index.find(logical_value_t(&resource, 1l)));
+        REQUIRE(before_the_crash.size() == 1);
+        REQUIRE(before_the_crash.front() == 11);
+        const auto after_the_crash = rows_of(index.find(logical_value_t(&resource, 2l)));
+        REQUIRE(after_the_crash.size() == 1);
+        REQUIRE(after_the_crash.front() == 22);
+    }
+}
+
 // The comment over recover_txn_log states that index txn-log frames are fsync'd durable
 // BEFORE the WAL commit marker is written -- the whole crash-recovery gate rests on it. All
 // three calls that made it true (two writes and the fsync) were issued and dropped, so the
@@ -2764,4 +3043,83 @@ TEST_CASE("services::index::bitcask_index_disk::clear_reports_the_artifact_it_co
     REQUIRE(rows.front() == 6061);
 
     std::filesystem::remove_all(txn_log);
+}
+
+// A RECORD WHOSE CRC MATCHES BUT WHOSE KEY WILL NOT DECODE.
+//
+// This is the case the CRC check cannot see and the one deserialize_payload used to walk
+// straight through. A segment payload is [key][uint32 count][uint64 row ids]; `pos` walks it,
+// and the key codec leaves `pos` WHERE THE BAD BYTE WAS when it refuses. The count was then
+// read from THE KEY'S OWN BYTES and every row id after it from wherever that landed -- so a
+// key this build cannot decode did not produce "no rows", it produced INVENTED row ids, on
+// the path that opens the database, without a word.
+//
+// BEFORE THIS CHANGE the open below reported no_error and the index came up holding entries
+// nothing ever inserted. AFTER: the rebuild refuses, and open() carries the reason out. This
+// is the same answer the loop already gives for an unknown record KIND -- a well-formed
+// record this build has no reading for -- which is what the tag byte makes this one.
+TEST_CASE("services::index::bitcask_index_disk::a_record_whose_key_will_not_decode_refuses_the_open") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    std::filesystem::path path{"/tmp/index_disk/bitcask_undecodable_key"};
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+
+    {
+        auto index = make_test_index(path, &resource);
+        index.insert(logical_value_t(&resource, 1l), 11);
+        index.insert(logical_value_t(&resource, 2l), 22);
+        REQUIRE(index.force_flush().type == core::error_code_t::none);
+    }
+
+    const auto file_path = latest_bitcask_data_file(path);
+    REQUIRE_FALSE(file_path.empty());
+    const auto backup = read_file_bytes(file_path);
+    REQUIRE(backup.size() > sizeof(crashed_record_header_t));
+
+    {
+        // The FIRST record of the segment, rewritten in place: its key tag byte becomes 200,
+        // which no logical type uses, and the header CRC is recomputed so the record stays
+        // well formed. Without the recompute this would only re-test the CRC path, which
+        // already refuses -- the whole point here is a record the CRC ACCEPTS.
+        auto bytes = backup;
+        crashed_record_header_t header{};
+        std::memcpy(&header, bytes.data(), sizeof(header));
+        const auto payload_offset = sizeof(header);
+        REQUIRE(header.payload_size > 0);
+        REQUIRE(payload_offset + header.payload_size <= bytes.size());
+
+        bytes[payload_offset] = std::byte{200};
+
+        absl::crc32c_t calc = absl::ComputeCrc32c(
+            absl::string_view(reinterpret_cast<const char*>(bytes.data()) + sizeof(header.crc),
+                              sizeof(header) - sizeof(header.crc)));
+        calc = absl::ExtendCrc32c(calc,
+                                  absl::string_view(reinterpret_cast<const char*>(bytes.data()) + payload_offset,
+                                                    static_cast<size_t>(header.payload_size)));
+        const auto fixed_crc = static_cast<uint32_t>(calc);
+        std::memcpy(bytes.data(), &fixed_crc, sizeof(fixed_crc));
+        write_file_bytes(file_path, bytes);
+    }
+
+    {
+        bitcask_index_disk_t index(path,
+                                   &resource,
+                                   test_flush_threshold,
+                                   1000,
+                                   std::pmr::set<std::uint64_t>{},
+                                   bitcask_index_disk_t::deferred_open_t{});
+        auto open_error = index.open();
+        REQUIRE(open_error.contains_error());
+        CHECK(open_error.type == core::error_code_t::index_create_fail);
+    }
+
+    // The bytes back, the store back: the refusal is about the record it could not read, not
+    // a store it wrote off.
+    write_file_bytes(file_path, backup);
+    {
+        auto index = make_test_index(path, &resource);
+        REQUIRE(rows_of(index.find(logical_value_t(&resource, 1l))).size() == 1);
+        REQUIRE(rows_of(index.find(logical_value_t(&resource, 2l))).size() == 1);
+    }
 }

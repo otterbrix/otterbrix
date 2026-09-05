@@ -47,7 +47,7 @@ namespace core::filesystem {
         return ::core::filesystem::read(fs_, *this, buffer, static_cast<int64_t>(nr_bytes), location);
     }
 
-    int64_t file_handle_t::write(void* buffer, uint64_t nr_bytes) {
+    write_result_t file_handle_t::write(void* buffer, uint64_t nr_bytes) {
         return ::core::filesystem::write(fs_, *this, buffer, static_cast<int64_t>(nr_bytes));
     }
 

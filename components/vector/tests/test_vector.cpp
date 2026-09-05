@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <core/pmr.hpp>
 
 #include <components/vector/vector.hpp>
 #include <core/resource_tracer.hpp>
@@ -337,7 +338,7 @@ TEST_CASE("components::vector::vector") {
 
 TEST_CASE("components::vector::nested_null_access") {
     namespace types = components::types;
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     constexpr size_t rows = 16;
     constexpr size_t arr_len = 4;
 

@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <core/pmr.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/context.hpp>
@@ -79,7 +80,7 @@ namespace {
 // does NOT reach: composite (multi-column) keys and SQL NULL-distinct semantics.
 
 TEST_CASE("unique constraint operator: composite key duplicate is caught", "[unique_constraint]") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     // Two columns (a,b) form one UNIQUE constraint. Rows 0 and 2 share (1,9).
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
@@ -100,7 +101,7 @@ TEST_CASE("unique constraint operator: composite key duplicate is caught", "[uni
 }
 
 TEST_CASE("unique constraint operator: composite key with differing second column passes", "[unique_constraint]") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("a");
@@ -118,7 +119,7 @@ TEST_CASE("unique constraint operator: composite key with differing second colum
 }
 
 TEST_CASE("unique constraint operator: NULL keys are treated as distinct", "[unique_constraint]") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     // Two rows both NULL in the unique column: SQL UNIQUE treats NULLs as distinct,
     // so this is NOT a violation.
     std::pmr::vector<types::complex_logical_type> cols(&resource);
@@ -143,7 +144,7 @@ TEST_CASE("unique constraint operator: NULL keys are treated as distinct", "[uni
 //     bucket, so they are ONE key.
 // ---------------------------------------------------------------------------
 TEST_CASE("unique constraint operator: NaN duplicate in a double key is caught", "[unique_constraint]") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::DOUBLE);
     cols.back().set_alias("score");
@@ -157,7 +158,7 @@ TEST_CASE("unique constraint operator: NaN duplicate in a double key is caught",
 }
 
 TEST_CASE("unique constraint operator: 0.0 and -0.0 collide as one double key", "[unique_constraint]") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::DOUBLE);
     cols.back().set_alias("score");
@@ -177,7 +178,7 @@ TEST_CASE("unique constraint operator: 0.0 and -0.0 collide as one double key", 
 // UNRESOLVED row — comparing the wrong cell.
 // ---------------------------------------------------------------------------
 TEST_CASE("cells_equal resolves dictionary indirection like the hash does", "[unique_constraint]") {
-    auto resource = std::pmr::synchronized_pool_resource();
+    auto resource = core::pmr::otterbrix_resource();
 
     // Flat base [10, 20, 30]; dictionary view picks rows {2, 0} -> [30, 10].
     vector::vector_t base(&resource, types::complex_logical_type{types::logical_type::BIGINT}, 3);

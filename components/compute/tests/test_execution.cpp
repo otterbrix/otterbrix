@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/compute/function.hpp>
+#include <core/pmr.hpp>
 
 using namespace components::compute;
 using namespace components::types;
@@ -339,7 +340,7 @@ TEST_CASE("components::compute::row::values") {
 }
 
 TEST_CASE("components::compute::expand::generate_series") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     auto* reg = function_registry_t::get_default();
     function_uid uid = invalid_function_uid;

@@ -19,6 +19,7 @@
 //   * COMPOSITE key: multi-column key-tuples match on the full tuple only.
 
 #include <catch2/catch_test_macros.hpp>
+#include <core/pmr.hpp>
 
 #include <services/disk/agent_disk.hpp>   // services::disk::fk_hash_semijoin
 #include <services/disk/manager_disk.hpp> // services::disk::table_storage_t
@@ -156,7 +157,7 @@ namespace {
 } // namespace
 
 TEST_CASE("services::disk::fk_hash_semijoin::multi_key_single_pass") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     // Parent: id BIGINT (key), tag BIGINT (non-key). Rows (row_ids 0..4): id = 10,20,30,40,20.
     std::vector<column_definition_t> cols;
@@ -207,7 +208,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::multi_key_single_pass") {
 }
 
 TEST_CASE("services::disk::fk_hash_semijoin::heterogeneous_type_int32_vs_int64") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> cols;
     cols.emplace_back("id", logical_type::BIGINT); // stored physical INT64
@@ -251,7 +252,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::heterogeneous_type_int32_vs_int64")
 }
 
 TEST_CASE("services::disk::fk_hash_semijoin::null_key_matches_nothing") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> cols;
     cols.emplace_back("id", logical_type::BIGINT);
@@ -294,7 +295,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::null_key_matches_nothing") {
 }
 
 TEST_CASE("services::disk::fk_hash_semijoin::composite_key") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     std::vector<column_definition_t> cols;
     cols.emplace_back("a", logical_type::BIGINT);

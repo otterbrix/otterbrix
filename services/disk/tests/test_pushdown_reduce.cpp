@@ -19,6 +19,7 @@
 #include <components/compute/tests/pushdown_sum_uid.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <core/pmr.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -300,7 +301,7 @@ TEST_CASE("pushdown_reduce: scalar reduce over a missing slice still emits its o
 // instance the send carries): if a drive consumed the armed spec for good, the re-driven
 // pass would reduce with an inactive husk and return garbage.
 TEST_CASE("pushdown_reduce: a re-driven pushed_reduce_scan ships an ACTIVE spec on every drive") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
 
     components::operators::pushed_reduce_scan scan{&resource,
                                                    log_t{},
@@ -326,7 +327,7 @@ TEST_CASE("pushdown_reduce: a re-driven pushed_reduce_scan ships an ACTIVE spec 
 // a GROUPED aggregate over no rows emits nothing; any arriving row passes through
 // untouched and disarms the synthesis. Pure push/finalize — no actors needed.
 TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row") {
-    std::pmr::synchronized_pool_resource resource;
+    core::pmr::otterbrix_resource resource;
     namespace vec = components::vector;
 
     auto make_types = [&](components::types::logical_type t) {

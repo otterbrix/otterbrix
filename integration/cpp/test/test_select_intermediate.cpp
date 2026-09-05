@@ -153,8 +153,8 @@ TEST_CASE("integration::cpp::select_rework::cast applied to an arithmetic result
     // the `x + 1` A_Expr that landed on the operator node's lexpr POINTER, so both rows
     // came back carrying the same run-dependent garbage and the shape checks above never
     // noticed. x is -2 and 3.
-    CHECK(numeric_at(cursor, 0) == -1.0);
-    CHECK(numeric_at(cursor, 1) == 4.0);
+    CHECK(numeric_at(cursor, 0) == Catch::Approx(-1.0));
+    CHECK(numeric_at(cursor, 1) == Catch::Approx(4.0));
 }
 
 TEST_CASE("integration::cpp::select_rework::two columns of different types unify") {

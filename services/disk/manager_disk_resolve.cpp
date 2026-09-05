@@ -13,22 +13,30 @@ namespace services::disk {
     // scheduler_disk_ threads, avoiding a borrowed-pointer race. transaction_data{}
     // = "see all committed".
 
-    // The three resolve_* readers below flow through this funnel; the C++-side row
+    // The four resolve_* readers below flow through this funnel; the C++-side row
     // filtering stays in each caller (it differs per table: equality on name,
     // name-match collect, enumerate).
-    manager_disk_t::unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+    //
+    // A READ THAT COULD NOT BE PERFORMED IS AN ERROR, NEVER AN EMPTY ANSWER. All three legs
+    // below used to return an empty batch list and a comment called that a fallback "matching
+    // the no-agent / not-owned fallbacks above". An empty batch list is also exactly what "no
+    // matching rows" looks like, so every reader upstream turned an unreadable catalog into a
+    // negative fact about it: no such namespace, no such function, no such cast. Same shape,
+    // same words, as read_chunks_by_key three functions below.
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::scan_table(components::catalog::oid_t table_oid,
                                std::unique_ptr<components::table::table_filter_t> filter,
                                std::vector<std::size_t> projected_cols,
                                components::table::transaction_data txn) {
-        std::pmr::vector<components::vector::data_chunk_t> empty(resource());
         if (agents_.empty()) {
-            co_return empty;
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"scan_table: no disk agents", resource()}};
         }
         const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
         auto& agent = agents_[idx];
         if (agent == nullptr) {
-            co_return empty;
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"scan_table: owning disk agent is null", resource()}};
         }
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                               &agent_disk_t::storage_scan_inner,
@@ -40,24 +48,23 @@ namespace services::disk {
         if (needs_sched) {
             scheduler_disk_->enqueue(agent.get());
         }
-        // Catalog-read funnel: the agent reply carries the scan_error. A buffer-pool OOM on a
-        // catalog scan degrades to an empty batch set here, matching the no-agent / not-owned
-        // fallbacks above (resolve callers already tolerate empty).
-        auto scan_r = co_await std::move(fut);
-        if (scan_r.has_error()) {
-            co_return empty;
-        }
-        co_return std::move(scan_r.value());
+        // The agent reply carries the scan_error (buffer-pool OOM, data_corruption, a block the
+        // device would not give back). Pass it through untouched — the reader that asked is the
+        // one that has to fail, and it needs the reason, not a synthesized one.
+        co_return co_await std::move(fut);
     }
 
-    manager_disk_t::unique_future<resolve_namespace_result_t>
+    manager_disk_t::unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
     manager_disk_t::resolve_namespace(execution_context_t /*ctx*/, std::string name, std::uint64_t /*since_version*/) {
         resolve_namespace_result_t out(resource());
 
-        auto batches = co_await scan_table(pg_namespace_oid_tbl,
-                                           std::unique_ptr<components::table::table_filter_t>{},
-                                           std::vector<std::size_t>{0, 1});
-        for (auto& chunk : batches) {
+        auto batches_r = co_await scan_table(pg_namespace_oid_tbl,
+                                             std::unique_ptr<components::table::table_filter_t>{},
+                                             std::vector<std::size_t>{0, 1});
+        if (batches_r.has_error()) {
+            co_return batches_r.convert_error<resolve_namespace_result_t>();
+        }
+        for (auto& chunk : batches_r.value()) {
             bool stop = false;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(0, i) || chunk.is_null(1, i))
@@ -76,15 +83,18 @@ namespace services::disk {
         co_return out;
     }
 
-    manager_disk_t::unique_future<std::pmr::vector<resolve_function_result_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
     manager_disk_t::resolve_function_by_name(execution_context_t /*ctx*/,
                                              std::string name,
                                              std::uint64_t /*since_version*/) {
         std::pmr::vector<resolve_function_result_t> out(resource());
-        auto batches = co_await scan_table(pg_proc_oid,
-                                           std::unique_ptr<components::table::table_filter_t>{},
-                                           std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6});
-        for (auto& chunk : batches) {
+        auto batches_r = co_await scan_table(pg_proc_oid,
+                                             std::unique_ptr<components::table::table_filter_t>{},
+                                             std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6});
+        if (batches_r.has_error()) {
+            co_return batches_r.convert_error<std::pmr::vector<resolve_function_result_t>>();
+        }
+        for (auto& chunk : batches_r.value()) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (!str_equals(chunk.value(1, i), name))
                     continue;
@@ -108,14 +118,20 @@ namespace services::disk {
         co_return out;
     }
 
-    manager_disk_t::unique_future<components::catalog::oid_t>
+    // INVALID_OID stays the in-band "there is no such cast" INSIDE the wrapper: DROP CAST has
+    // to tell "no pg_cast row exists" (do_not_exists) from "the read failed", and collapsing
+    // the former into an error would destroy exactly that distinction.
+    manager_disk_t::unique_future<core::result_wrapper_t<components::catalog::oid_t>>
     manager_disk_t::find_cast_oid(execution_context_t /*ctx*/,
                                   components::catalog::oid_t source_oid,
                                   components::catalog::oid_t target_oid) {
-        auto batches = co_await scan_table(pg_cast_oid,
-                                           std::unique_ptr<components::table::table_filter_t>{},
-                                           std::vector<std::size_t>{0, 1, 2});
-        for (auto& chunk : batches) {
+        auto batches_r = co_await scan_table(pg_cast_oid,
+                                             std::unique_ptr<components::table::table_filter_t>{},
+                                             std::vector<std::size_t>{0, 1, 2});
+        if (batches_r.has_error()) {
+            co_return batches_r.convert_error<components::catalog::oid_t>();
+        }
+        for (auto& chunk : batches_r.value()) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(1, i) || chunk.is_null(2, i)) {
                     continue;
@@ -130,13 +146,16 @@ namespace services::disk {
         co_return components::catalog::INVALID_OID;
     }
 
-    manager_disk_t::unique_future<std::pmr::vector<std::string>>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>>
     manager_disk_t::list_namespaces(execution_context_t /*ctx*/) {
         std::pmr::vector<std::string> out(resource());
-        auto batches = co_await scan_table(pg_namespace_oid_tbl,
-                                           std::unique_ptr<components::table::table_filter_t>{},
-                                           std::vector<std::size_t>{0, 1});
-        for (auto& chunk : batches) {
+        auto batches_r = co_await scan_table(pg_namespace_oid_tbl,
+                                             std::unique_ptr<components::table::table_filter_t>{},
+                                             std::vector<std::size_t>{0, 1});
+        if (batches_r.has_error()) {
+            co_return batches_r.convert_error<std::pmr::vector<std::string>>();
+        }
+        for (auto& chunk : batches_r.value()) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (!chunk.is_null(1, i)) {
                     out.emplace_back(std::string(chunk.get_value<std::string_view>(1, i)));

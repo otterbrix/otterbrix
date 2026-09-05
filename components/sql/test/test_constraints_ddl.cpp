@@ -193,8 +193,13 @@ TEST_CASE("components::sql::view") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
 
     SECTION("CREATE VIEW") {
-        transform::transformer transformer(&resource);
-        auto stmt = raw_parser(&arena_resource, "CREATE VIEW db.my_view AS SELECT * FROM db.tbl")->lst.front().data;
+        // The statement text is passed in, as every production entry point does.
+        // It used to be omitted here, and the transformer answered by INVENTING a
+        // body ("SELECT *") — which is the whole of defect D1, since the stored body
+        // is re-parsed on every read of the view.
+        const char* sql = "CREATE VIEW db.my_view AS SELECT * FROM db.tbl";
+        transform::transformer transformer(&resource, sql);
+        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -202,6 +207,51 @@ TEST_CASE("components::sql::view") {
         auto node = result.sub_queries.back();
         REQUIRE(node->type() == node_type::create_view_t);
         REQUIRE(result.catalog_resolves.namespaces->entries().size() == 1);
+    }
+
+    SECTION("CREATE VIEW without the statement text is refused, not guessed") {
+        transform::transformer transformer(&resource);
+        auto stmt = raw_parser(&arena_resource, "CREATE VIEW db.my_view AS SELECT * FROM db.tbl")->lst.front().data;
+        auto wrapped = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(wrapped.has_error());
+    }
+
+    SECTION("CREATE VIEW body is the text that was written, whatever the spacing") {
+        // A newline after AS, and `AS(SELECT ...)` with no space: both defeated the
+        // old " AS " substring search, which then fell back to "SELECT *".
+        for (const char* sql : {"CREATE VIEW db.my_view AS\nSELECT id FROM db.tbl WHERE id > 10",
+                                "CREATE VIEW db.my_view AS(SELECT id FROM db.tbl WHERE id > 10)"}) {
+            transform::transformer transformer(&resource, sql);
+            auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+            auto result = ([](auto _w) {
+                REQUIRE_FALSE(_w.has_error());
+                return _w.value();
+            }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
+            auto view_node = boost::static_pointer_cast<node_create_view_t>(result.sub_queries.back());
+            INFO(sql);
+            REQUIRE(view_node->query_sql().find("SELECT id FROM db.tbl WHERE id > 10") != std::string::npos);
+        }
+    }
+
+    SECTION("CREATE VIEW keeps WITH CHECK OPTION out of the stored body") {
+        const char* sql = "CREATE VIEW db.my_view AS SELECT id FROM db.tbl WITH CHECK OPTION";
+        transform::transformer transformer(&resource, sql);
+        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
+        auto view_node = boost::static_pointer_cast<node_create_view_t>(result.sub_queries.back());
+        REQUIRE(view_node->query_sql() == "SELECT id FROM db.tbl");
+    }
+
+    SECTION("CREATE VIEW with a column alias list is refused") {
+        // The aliases rename the body's output columns and are carried nowhere, so
+        // the view would promise names its stored body does not produce.
+        const char* sql = "CREATE VIEW db.my_view (x) AS SELECT id FROM db.tbl";
+        transform::transformer transformer(&resource, sql);
+        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+        REQUIRE(transformer.transform(pg_cell_to_node_cast(stmt)).finalize().has_error());
     }
 
     SECTION("CREATE VIEW with raw_sql extracts query") {
@@ -300,6 +350,69 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
         auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(x > (SELECT 1)))"));
         auto result = transformer.transform(pg_cell_to_node_cast(stmt));
         REQUIRE(result.has_error());
+    }
+
+    // Shapes that DEPARSE cleanly and then cannot be evaluated. Each one used to be
+    // accepted here and compiled to the constant TRUE at DML time, so the constraint
+    // sat in the catalog judging nothing. The whitelist is what the DML-time
+    // recogniser can read, not what the deparser can spell.
+    SECTION("arithmetic in an operand is rejected") {
+        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (a INTEGER, b INTEGER, CHECK(a + b > 0))"));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt));
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("arithmetic in the constant is rejected") {
+        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (a INTEGER, CHECK(a > 1 + 1))"));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt));
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("comparing two columns is rejected") {
+        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (lo INTEGER, hi INTEGER, CHECK(lo <= hi))"));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt));
+        REQUIRE(result.has_error());
+    }
+
+    SECTION("a bare column reference is rejected") {
+        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (flag INTEGER, CHECK(flag))"));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt));
+        REQUIRE(result.has_error());
+    }
+
+    // BETWEEN is not a node kind of its own here: the grammar desugars it into an AND
+    // of two comparisons (gram.y, a_expr BETWEEN), which IS an evaluable shape. Pinned
+    // so the whitelist is not tightened past what the engine can actually enforce.
+    SECTION("BETWEEN desugars into two comparisons and is allowed") {
+        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(x BETWEEN 1 AND 10))"));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
+        auto node = ddl_consumer(result.sub_queries.back());
+        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        REQUIRE(data->constraints().size() == 1);
+        REQUIRE(data->constraints()[0].check_expression == "(x >= 1) AND (x <= 10)");
+    }
+
+    SECTION("IN is rejected") {
+        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (x INTEGER, CHECK(x IN (1, 2)))"));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt));
+        REQUIRE(result.has_error());
+    }
+
+    // A string constant that CONTAINS a comparison operator is still a plain
+    // column-against-constant comparison and must survive.
+    SECTION("an operator inside a string literal is still a comparison") {
+        auto stmt = linitial(raw_parser(&arena_resource, "CREATE TABLE t (s TEXT, CHECK(s = 'a > b'))"));
+        auto result = ([](auto _w) {
+            REQUIRE_FALSE(_w.has_error());
+            return _w.value();
+        }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
+        auto node = ddl_consumer(result.sub_queries.back());
+        auto data = reinterpret_cast<node_create_collection_ptr&>(node);
+        REQUIRE(data->constraints().size() == 1);
+        REQUIRE(data->constraints()[0].check_expression == "s = 'a > b'");
     }
 }
 

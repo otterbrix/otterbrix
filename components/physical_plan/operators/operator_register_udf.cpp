@@ -28,8 +28,10 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_register_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         success_ = false;
         if (!function_) {
-            output_ = nullptr;
-            mark_executed();
+            set_error(
+                core::error_t{core::error_code_t::invalid_parameter,
+                              std::pmr::string{"register_udf: the plan node carries no function payload", resource_}});
+            mark_failed();
             co_return;
         }
 
@@ -46,10 +48,23 @@ namespace components::operators {
                                                    exec_ctx,
                                                    func_name,
                                                    std::uint64_t{0});
-            auto matches = co_await std::move(rfbnf);
-            if (!matches.empty()) {
-                output_ = nullptr;
-                mark_executed();
+            auto matches_r = co_await std::move(rfbnf);
+            if (matches_r.has_error()) {
+                // A pg_proc read that FAILED is not "the name is free". Reporting it as one is
+                // how an unreadable catalog became a duplicate row and a successful statement.
+                set_error(matches_r.error());
+                mark_failed();
+                co_return;
+            }
+            if (!matches_r.value().empty()) {
+                // A pg_proc row with this name already exists in SOME namespace. Name it:
+                // "collision" and "the catalog write failed" are different accidents and the
+                // caller has to be able to tell them apart.
+                set_error(core::error_t{
+                    core::error_code_t::already_exists,
+                    std::pmr::string{"register_udf: a function named '" + func_name + "' already exists in the catalog",
+                                     resource_}});
+                mark_failed();
                 co_return;
             }
         }
@@ -68,8 +83,12 @@ namespace components::operators {
                 return u != components::compute::invalid_function_uid && u == first_uid;
             });
             if (!agree) {
-                output_ = nullptr;
-                mark_executed();
+                set_error(core::error_t{core::error_code_t::function_registry_error,
+                                        std::pmr::string{"register_udf: the executor registries did not agree on a "
+                                                         "single valid uid for '" +
+                                                             func_name + "'",
+                                                         resource_}});
+                mark_failed();
                 co_return;
             }
         }
@@ -84,8 +103,10 @@ namespace components::operators {
             auto res = uids.empty() ? def_reg->add_function(function_->get_copy(resource_))
                                     : def_reg->add_function_with_uid(uids.front(), function_->get_copy(resource_));
             if (res.has_error()) {
-                output_ = nullptr;
-                mark_executed();
+                // The default registry already carries its own typed reason — pass it through
+                // rather than minting a second, vaguer one.
+                set_error(res.error());
+                mark_failed();
                 co_return;
             }
         }
@@ -97,17 +118,29 @@ namespace components::operators {
             {
                 auto [_ln, lnf] =
                     actor_zeta::send(ctx->disk_address, &services::disk::manager_disk_t::list_namespaces, exec_ctx);
-                auto ns_names = co_await std::move(lnf);
-                for (auto& nname : ns_names) {
+                auto ns_names_r = co_await std::move(lnf);
+                if (ns_names_r.has_error()) {
+                    // Losing this lookup does not merely lose a lookup: target_ns would stay
+                    // pg_catalog and the pg_proc row would be written into the WRONG namespace.
+                    set_error(ns_names_r.error());
+                    mark_failed();
+                    co_return;
+                }
+                for (auto& nname : ns_names_r.value()) {
                     if (!nname.empty() && nname != "pg_catalog") {
                         auto [_rn, rnf] = actor_zeta::send(ctx->disk_address,
                                                            &services::disk::manager_disk_t::resolve_namespace,
                                                            exec_ctx,
                                                            std::string(nname),
                                                            std::uint64_t{0});
-                        auto rns = co_await std::move(rnf);
-                        if (rns.found) {
-                            target_ns = rns.oid;
+                        auto rns_r = co_await std::move(rnf);
+                        if (rns_r.has_error()) {
+                            set_error(rns_r.error());
+                            mark_failed();
+                            co_return;
+                        }
+                        if (rns_r.value().found) {
+                            target_ns = rns_r.value().oid;
                             break;
                         }
                     }

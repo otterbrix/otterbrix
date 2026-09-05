@@ -700,6 +700,14 @@ namespace services::disk {
         // "unknown", never as a relkind. B1a: load_storage_disk_sync uses it to
         // recognise computed (relkind='g') tables, whose catalog schema is
         // legitimately empty and whose entries keep dynamic-schema semantics.
+        //
+        // '\0' DELIBERATELY STAYS IN-BAND, decided rather than overlooked. It used to conflate
+        // three things, one of which was "pg_class is not loaded". That one is gone:
+        // bootstrap_system_tables_sync now refuses to start unless every system table came up,
+        // so the `entry == nullptr` leg is unreachable at bootstrap and everything downstream
+        // runs after it. The two survivors are both honest — an empty pg_class on a fresh
+        // database, and "no pg_class row names this oid" — and the sole production consumer
+        // (manager_disk_io.cpp:315) reads '\0' as "not computed", which is right for both.
         char relkind_for_oid_sync(components::catalog::oid_t table_oid) const;
 
         // Resolve a single table's pg_class.relnamespace (same single-threaded bootstrap
@@ -808,28 +816,33 @@ namespace services::disk {
         // on the disk actor thread and returns the found object (or {found=false}).
         // The since_version parameter is kept for message-dispatch compatibility
         // (always ignored — versioning is no longer used).
-        unique_future<resolve_namespace_result_t>
+        //
+        // All four carry core::result_wrapper_t because the SCAN can fail, and "the read
+        // failed" is not "the catalog does not have it". {found=false} / an empty vector /
+        // INVALID_OID stay the honest NEGATIVE answers, inside the wrapper.
+        unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
         resolve_namespace(execution_context_t ctx, std::string name, std::uint64_t since_version);
 
         // Cross-namespace function lookup: returns ALL pg_proc rows whose proname matches
         // `name`, regardless of pronamespace. Used by the UDF admin paths (#41 Path 2/4):
         // register_udf needs to detect cross-namespace conflicts; drop_udf needs to purge
         // every row sharing the name. Admin-scope (register/drop UDF); may return an empty vector.
-        unique_future<std::pmr::vector<resolve_function_result_t>>
+        unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
         resolve_function_by_name(execution_context_t ctx, std::string name, std::uint64_t since_version);
 
         // Bookkeeping lookup (NOT query-time cast resolution — that is the in-memory
         // cast_registry_). Finds the pg_cast row identified by its (castsource,
         // casttarget) pair and returns the cast's own oid (col 0), or INVALID_OID if
         // absent. Admin path only: unregister-cast uses it to find the row to delete.
-        unique_future<components::catalog::oid_t> find_cast_oid(execution_context_t ctx,
-                                                                components::catalog::oid_t source_oid,
-                                                                components::catalog::oid_t target_oid);
+        unique_future<core::result_wrapper_t<components::catalog::oid_t>>
+        find_cast_oid(execution_context_t ctx,
+                      components::catalog::oid_t source_oid,
+                      components::catalog::oid_t target_oid);
 
         // V4 admin-path enumerators. Bypass the per-name cache (cache is per-(name, ns_oid)
         // keyed; enumeration of "all namespaces" / "all tables in ns" cannot be served by
         // it). Used by catalog-resolve enumeration paths and the UDF namespace pick.
-        unique_future<std::pmr::vector<std::string>> list_namespaces(execution_context_t ctx);
+        unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>> list_namespaces(execution_context_t ctx);
 
         // Allocate a batch of fresh OIDs from the disk-local oid_gen_. Called by the
         // dispatcher before invoking planner_t::create_plan for DDL statements, so that
@@ -1285,9 +1298,11 @@ namespace services::disk {
         // Single manager-side scan funnel over the owning agent's
         // storage_scan_inner, so there is ONE place that issues a catalog
         // scan. `filter` null = "see all rows"; `projected_cols` empty = "all
-        // columns"; returns an empty batch vector when there is no owning agent.
-        // txn defaults to transaction_data{} = "see all committed".
-        unique_future<std::pmr::vector<components::vector::data_chunk_t>>
+        // columns"; txn defaults to transaction_data{} = "see all committed".
+        // REFUSES (io_error) when there is no owning agent and passes the agent's
+        // scan error through: an empty batch vector means "no matching rows" and
+        // nothing else.
+        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         scan_table(components::catalog::oid_t table_oid,
                    std::unique_ptr<components::table::table_filter_t> filter,
                    std::vector<std::size_t> projected_cols,

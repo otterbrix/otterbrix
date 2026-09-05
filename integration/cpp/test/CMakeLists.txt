@@ -28,6 +28,10 @@ set( ${PROJECT_NAME}_SOURCES
         test_check_on_update.cpp
         test_index_bootstrap_failure.cpp
         test_catalog_write_refusal.cpp
+        test_catalog_read_refusal.cpp
+        test_oid_alloc_refusal.cpp
+        test_accumulate_refusal.cpp
+        test_wal_write_refusal.cpp
         test_index_flush_refusal.cpp
         test_index_type_persistence.cpp
         test_index_threshold_config.cpp
@@ -53,6 +57,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_fk_arity_mismatch.cpp
         test_fk_omitted_ref_columns.cpp
         test_fk_parent_column_drop.cpp
+        test_fk_default_column.cpp
+        test_check_expr_unenforceable.cpp
         test_inline_constraints.cpp
         test_constraint_unresolvable_target.cpp
         test_text_column_storage.cpp
@@ -75,6 +81,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_like_type_guards.cpp
         test_unary_plus.cpp
         test_multi_database_isolation.cpp
+        test_view_expansion.cpp
         test_list_tables.cpp
         test_index_null_correctness.cpp
         test_aggregate_filter.cpp

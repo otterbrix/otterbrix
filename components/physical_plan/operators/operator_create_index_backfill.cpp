@@ -250,7 +250,24 @@ namespace components::operators {
                                                 &services::wal::manager_wal_replicate_t::load,
                                                 ctx->session,
                                                 catchup_start_wal);
-            auto wal_records = co_await std::move(lf);
+            auto wal_records_result = co_await std::move(lf);
+            if (wal_records_result.has_error()) {
+                // An empty list used to mean both "the catchup has converged" and "a segment
+                // could not be read", so an unreadable segment CONVERGED the loop and the
+                // index was published missing every row that segment described. Release the
+                // retention guard the same way the fetch refusal below does, then fail.
+                if (build_start_registered) {
+                    auto [_u, uf] = actor_zeta::send(ctx->wal_address,
+                                                     &services::wal::manager_wal_replicate_t::unregister_active_build,
+                                                     ctx->session,
+                                                     build_start_wal_position);
+                    co_await std::move(uf);
+                    build_start_registered = false;
+                }
+                set_error(wal_records_result.error());
+                co_return;
+            }
+            auto wal_records = std::move(wal_records_result.value());
 
             if (wal_records.empty()) {
                 converged = true;

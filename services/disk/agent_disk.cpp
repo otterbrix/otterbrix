@@ -711,7 +711,22 @@ namespace services::disk {
                                              actual_count,
                                              txn.transaction_id,
                                              db_oid);
-            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+            auto wal_result = co_await std::move(wf);
+            if (wal_result.has_error()) {
+                // WAL-FIRST means the journal is the promise the materialize below keeps. A
+                // refused PHYSICAL_INSERT used to come back as a wal_id all the same, so the
+                // rows were materialized and reported appended with nothing in the journal to
+                // replay them from. Refuse the append instead — nothing is materialized, so
+                // there is nothing to unwind.
+                error(log_,
+                      "agent_disk[{}]::storage_append_inner: the PHYSICAL_INSERT did not reach the journal for "
+                      "oid={}, the rows are NOT appended: {}",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid),
+                      wal_result.error().what);
+                co_return wal_result.convert_error<std::pair<uint64_t, uint64_t>>();
+            }
+            if (wal_result.value() == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::storage_append_inner: physical_insert WAL returned zero id for oid={}",
                       pool_idx_,
@@ -965,21 +980,21 @@ namespace services::disk {
                              const std::vector<std::size_t>* projected_cols,
                              const components::table::transaction_data& txn) {
         std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
+        // A scan that CANNOT BE PERFORMED is an error, never an empty answer. Both legs below
+        // used to return an empty batch list, which is also what "no matching rows" looks like:
+        // every catalog reader upstream (resolve_namespace / resolve_function_by_name /
+        // find_cast_oid / list_namespaces) then reported a read it never made as a negative
+        // fact about the catalog. Same wording and the same reasoning as
+        // validate_key_col_indices below, which fixed the keyed-read twin of this leg.
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
-            trace(log_,
-                  "agent_disk[{}]::scan_local: oid {} not owned by this agent",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            return batches;
+            return core::error_t{core::error_code_t::missing_table,
+                                 std::pmr::string{"scan: storage is not owned by this agent", resource()}};
         }
         auto& entry = it->second;
         if (entry == nullptr || entry->storage == nullptr) {
-            trace(log_,
-                  "agent_disk[{}]::scan_local: oid {} is a DISK record-only marker",
-                  pool_idx_,
-                  static_cast<unsigned>(table_oid));
-            return batches;
+            return core::error_t{core::error_code_t::missing_table,
+                                 std::pmr::string{"scan: storage is a record-only marker", resource()}};
         }
         // The adapter surfaces any buffer-pool OOM / data_corruption the table-layer scan left
         // in state.table_state.scan_error; propagate it up the wrapper.
@@ -2374,7 +2389,19 @@ namespace services::disk {
                                              static_cast<std::uint64_t>(row.size()),
                                              ctx.txn.transaction_id,
                                              db_oid);
-            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+            auto wal_result = co_await std::move(wf);
+            if (wal_result.has_error()) {
+                // Same shape as the three refusals already travelling this wrapper: a catalog
+                // row whose journal record was refused must not be reported as appended.
+                error(log_,
+                      "agent_disk[{}]::append_pg_catalog_row_inner: the catalog row's WAL record did not reach "
+                      "the journal for oid={}, the row is NOT appended: {}",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid),
+                      wal_result.error().what);
+                co_return wal_result.convert_error<components::pg_catalog_append_range_t>();
+            }
+            if (wal_result.value() == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::append_pg_catalog_row_inner: WAL write returned zero id for oid={}",
                       pool_idx_,
@@ -2543,7 +2570,19 @@ namespace services::disk {
                                              static_cast<std::uint64_t>(row_ids.size()),
                                              ctx.txn.transaction_id,
                                              components::catalog::well_known_oid::main_database);
-            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+            auto wal_result = co_await std::move(wf);
+            if (wal_result.has_error()) {
+                // Reported at error level and not propagated, exactly as the direct_delete_sync
+                // refusal a few lines below is: this handler's contract is unique_future<void>
+                // and has nowhere to put it. Giving delete_pg_catalog_rows a channel of its own
+                // is the same separate change that note already names.
+                error(log_,
+                      "agent_disk[{}]::delete_pg_catalog_rows_inner: the PHYSICAL_DELETE did not reach the "
+                      "journal for oid={}: {}",
+                      pool_idx_,
+                      static_cast<unsigned>(table_oid),
+                      wal_result.error().what);
+            } else if (wal_result.value() == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::delete_pg_catalog_rows_inner: WAL write returned zero id for oid={}",
                       pool_idx_,
@@ -2682,7 +2721,17 @@ namespace services::disk {
                                              static_cast<std::uint64_t>(row_ids.size()),
                                              ctx.txn.transaction_id,
                                              components::catalog::well_known_oid::main_database);
-            if (auto wal_id = co_await std::move(wf); wal_id == wal::id_t{}) {
+            auto wal_result = co_await std::move(wf);
+            if (wal_result.has_error()) {
+                // Same as delete_pg_catalog_rows_inner: unique_future<void> has nowhere to put
+                // it, so it is reported at error level rather than dropped.
+                error(log_,
+                      "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: the PHYSICAL_UPDATE did not "
+                      "reach the journal for attoid={}: {}",
+                      pool_idx_,
+                      static_cast<unsigned>(attoid),
+                      wal_result.error().what);
+            } else if (wal_result.value() == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: WAL write returned zero id "
                       "for attoid={}",

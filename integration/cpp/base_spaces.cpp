@@ -48,6 +48,25 @@ namespace otterbrix {
             }
         }
 
+        // THE REGISTRATION MUST NOT SURVIVE A REFUSAL. Every startup refusal below leaves this
+        // constructor by throwing, so ~base_otterbrix_t never runs and the paths_.erase in it
+        // never happens. A leaked entry makes the SAME directory unopenable for the rest of the
+        // process — the next attempt fails with "otterbrix instance has to have unique
+        // directory", naming neither the real fault nor anything the operator can act on. That
+        // turns a loud, addressable refusal into an unrecoverable one, which is the single
+        // thing a refusal is not allowed to be. Unwinding runs this guard; the last statement
+        // of the constructor disarms it.
+        struct path_registration_guard_t {
+            std::filesystem::path path;
+            bool armed{true};
+            ~path_registration_guard_t() {
+                if (armed) {
+                    std::lock_guard lock(m_);
+                    paths_.erase(path);
+                }
+            }
+        } path_guard{main_path_};
+
         services::wal::id_t last_wal_id{0};
 
         if (!config.disk.path.empty()) {
@@ -66,8 +85,36 @@ namespace otterbrix {
         // survive a crash). Threaded by VALUE through the single-threaded
         // pre-scheduler bootstrap window down to each bitcask agent.
         std::set<std::uint64_t> committed_txn_ids;
-        services::wal::wal_reader_t wal_reader(config.wal, log_);
-        auto wal_records = wal_reader.read_committed_records(last_wal_id, &committed_txn_ids);
+        services::wal::wal_reader_t wal_reader(&resource, config.wal, log_);
+        auto wal_records_result = wal_reader.read_committed_records(last_wal_id, &committed_txn_ids);
+
+        // A SEGMENT THAT WOULD NOT OPEN STOPS STARTUP, and the choice between the three
+        // available answers is settled by what each one leaves behind.
+        //
+        //   - Coming up anyway (the old behaviour) is the one that is NOT recoverable. The
+        //     scan that recovers the id allocator is the same read: manager_wal_replicate_t's
+        //     constructor derives global_id_ from it and wal_worker_t::recover_from_disk
+        //     derives id_ and last_crc_. Records it could not see leave both BELOW ids that
+        //     are already on disk, so the very first write after startup reuses them — and
+        //     then page_lsn ordering, the CRC chain and read_all_records(after_id) are all
+        //     comparing against duplicated ids. Nothing later undoes that.
+        //   - Failing the first statement instead would let the engine open, and opening is
+        //     exactly what allocates and writes.
+        //   - Refusing to start writes nothing, deletes nothing (truncate_before now refuses
+        //     on the same segment rather than unlinking it), and leaves the journal exactly as
+        //     it was. Whatever made the open fail — a permission, a full descriptor table, a
+        //     device error — is addressable, and the next start replays the segment in full.
+        //
+        // This is a refusal, not an abort: it is the same std::runtime_error the two startup
+        // refusals above use, so the embedder catches it and the process survives.
+        if (wal_records_result.has_error()) {
+            error(log_,
+                  "spaces::startup REFUSED , the WAL could not be replayed in full: {}",
+                  wal_records_result.error().what);
+            throw std::runtime_error("WAL replay could not read a segment, refusing to start: " +
+                                     std::string(wal_records_result.error().what.c_str()));
+        }
+        auto wal_records = std::move(wal_records_result.value());
 
         trace(log_, "spaces::PHASE 1 complete - {} WAL records", wal_records.size());
 
@@ -633,6 +680,8 @@ namespace otterbrix {
 
         trace(log_, "spaces::PHASE 3 complete");
         trace(log_, "spaces::spaces() final");
+        // Construction succeeded: the destructor owns the registration from here on.
+        path_guard.armed = false;
     }
 
     log_t& base_otterbrix_t::get_log() { return log_; }

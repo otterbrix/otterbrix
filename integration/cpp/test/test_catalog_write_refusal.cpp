@@ -8,6 +8,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -24,14 +25,25 @@
 // THE INJECTION, and why it lands where it does. The T3 fault seam (fault_injection_file.hpp)
 // wraps the file handle a single_file_block_manager_t opens; the interposer below narrows it
 // to ONE table's directory by path, and the plan is armed BEFORE the engine starts. The
-// header write that create_new_database issues for pg_depend's .otbx therefore fails, the
-// storage is never emplaced, and the CREATE TABLE below meets a catalog table whose owning
-// agent holds no storage — the "oid not owned / empty" leg, reached through a real statement.
+// header write that create_new_database issues for pg_depend's .otbx therefore fails and the
+// storage is never emplaced.
 //
-// pg_depend rather than pg_class on purpose: CREATE TABLE WRITES a pg_depend row and never
-// READS one, so the refusal this case is about is the only thing standing between the
-// statement and success. Break pg_class instead and the resolve ahead of the write fails
-// first, which would make the test green for the wrong reason.
+// WHAT THIS CASE ASSERTS NOW, AND WHY IT CHANGED. It used to let the engine come up over that
+// missing pg_depend and then assert that the CREATE TABLE failed — the "oid not owned / empty"
+// leg reached through a real statement. That start is exactly what the bootstrap refusal (D2)
+// forbids: an engine holding an incomplete pg_catalog over live storage mints fresh oids on
+// top of it at the next DDL. So the same injection is now caught one floor EARLIER, and the
+// statement is never reached because the engine never opens. That is strictly stronger than
+// what this case pinned — the write it was guarding cannot be attempted at all — and the
+// original guarantee (append_pg_catalog_row refuses instead of answering with a zero-count
+// range) is unchanged and still carried by its own error channel.
+//
+// The recoverability half is asserted too, because a refusal that cannot be undone would be a
+// worse defect than the one it replaces: with the fault removed the same directory opens and
+// the same CREATE TABLE succeeds.
+//
+// pg_depend rather than pg_class on purpose: it is the table CREATE TABLE only ever WRITES,
+// so nothing else in the statement path could be blamed for the outcome.
 
 namespace {
 
@@ -67,26 +79,32 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_catalog_write_refusal::create_table_fails_when_a_catalog_row_cannot_be_written") {
-    auto config = test_helpers::make_test_config(
-        "/tmp/otterbrix/integration/test_catalog_write_refusal/create_table",
-        /*wal_on=*/true);
+    const std::filesystem::path dir = "/tmp/otterbrix/integration/test_catalog_write_refusal/create_table";
+    auto config = test_helpers::make_test_config(dir, /*wal_on=*/true);
     config.log.level = log_t::level::off;
 
-    otterbrix_test::fault_plan_t plan;
-    // fail_writes_from is compared with >=, so 1 fails every write on the wrapped handle from
-    // the first one on — including the header write that creates the file.
-    plan.fail_writes_from = 1;
     const auto marker =
         "/" + std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::pg_depend_table)) + "/";
-    one_table_fault_scope_t fault(plan, marker);
 
-    test_spaces space(config);
-    auto* dispatcher = space.dispatcher();
+    {
+        otterbrix_test::fault_plan_t plan;
+        // fail_writes_from is compared with >=, so 1 fails every write on the wrapped handle
+        // from the first one on — including the header write that creates the file.
+        plan.fail_writes_from = 1;
+        one_table_fault_scope_t fault(plan, marker);
 
-    // The database lives in pg_database / pg_namespace, neither of which is interposed.
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE refusal;")->is_success());
+        INFO("an engine whose pg_depend could not be created must not open at all");
+        REQUIRE_THROWS_AS(test_spaces(config), std::runtime_error);
+    }
 
-    auto cur = test_helpers::exec(dispatcher, "CREATE TABLE refusal.t (id bigint);");
-    INFO("a CREATE TABLE whose pg_depend row could not be written must FAIL, not report success");
-    REQUIRE(cur->is_error());
+    // THE REFUSAL IS RECOVERABLE, which is the whole licence for refusing: the fault is gone,
+    // nothing was left behind that blocks a retry, and the statement the case is named after
+    // now runs and succeeds.
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE refusal;")->is_success());
+        auto cur = test_helpers::exec(dispatcher, "CREATE TABLE refusal.t (id bigint);");
+        REQUIRE(cur->is_success());
+    }
 }

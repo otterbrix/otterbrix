@@ -190,8 +190,9 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
                                                     std::uint64_t{0});
         poll_ready(fd2.scheduler, fut);
         auto rr = std::move(fut).take_ready();
-        REQUIRE(rr.found);
-        REQUIRE(rr.oid == ns_oid);
+        REQUIRE_FALSE(rr.has_error());
+        REQUIRE(rr.value().found);
+        REQUIRE(rr.value().oid == ns_oid);
     }
     std::filesystem::remove_all(dir);
 }
@@ -231,7 +232,9 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
                                                      std::string("ns"),
                                                      std::uint64_t{0});
         poll_ready(fd2.scheduler, nfut);
-        auto rns = std::move(nfut).take_ready();
+        auto rns_r = std::move(nfut).take_ready();
+        REQUIRE_FALSE(rns_r.has_error());
+        auto& rns = rns_r.value();
         REQUIRE(rns.found);
 
         auto rt = test_probe::probe_table(fd2, ctx, rns.oid, std::string("tbl"));
@@ -318,7 +321,8 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
                                                     std::uint64_t{0});
         poll_ready(fd2.scheduler, fut);
         auto rns = std::move(fut).take_ready();
-        REQUIRE(rns.found);
+        REQUIRE_FALSE(rns.has_error());
+        REQUIRE(rns.value().found);
     }
     std::filesystem::remove_all(dir);
 }

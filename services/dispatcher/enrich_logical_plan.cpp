@@ -146,6 +146,39 @@ namespace services::dispatcher { namespace {
         return core::error_t::no_error();
     }
 
+    // The column names of the chunk operator_insert hands its parent constraint
+    // operators, in the order they occupy it. push() writes the statement's own
+    // columns first — one per incoming chunk column, which the column bindings name
+    // (they also name the positional `INSERT INTO t VALUES (...)` form, where the
+    // statement itself names none) — and then APPENDS the DEFAULT-expanded columns in
+    // fill-list order. Before validate_schema has built the bindings, the written key
+    // list is that same first run.
+    //
+    // Resolving a foreign key's referencing columns against the statement's key list
+    // alone left every column the statement OMITTED unresolved, and an unresolved
+    // position took operator_fk_check's quietest path: the row qualified for no parent
+    // lookup, the qualifying count stayed 0, and 0 is that operator's success path. So
+    // `pid bigint DEFAULT 42` went in with no parent row 42 anywhere.
+    std::vector<std::string> insert_chunk_column_names(const components::logical_plan::node_insert_t* node) {
+        std::vector<std::string> names;
+        const auto& bindings = node->column_bindings();
+        if (!bindings.empty()) {
+            names.reserve(bindings.size() + node->fill_list().size());
+            for (const auto& binding : bindings) {
+                names.emplace_back(binding.target_name.c_str());
+            }
+        } else {
+            names.reserve(node->key_translation().size() + node->fill_list().size());
+            for (const auto& key : node->key_translation()) {
+                names.emplace_back(key.as_string());
+            }
+        }
+        for (const auto& column : node->fill_list()) {
+            names.emplace_back(column.name.c_str());
+        }
+        return names;
+    }
+
     void enrich_insert_sync(components::logical_plan::node_insert_t* node) {
         // bind_catalog_data already pasted the target's metadata onto the node.
         const auto* md = node->table_metadata();
@@ -450,7 +483,23 @@ namespace services::catalog_resolve {
                 const entry_view_t ry{resolves.type_entry(names.dbname, names.type_name)};
                 // The table this node targets, pasted whole so validation reads
                 // columns / relkind / flags straight off the node.
-                if (rt) {
+                //
+                // A relkind='v' entry is deliberately NOT pasted here. A view has no
+                // storage and no pg_attribute columns, so its oid on a query node means
+                // "scan the view's heap", which is nothing: create_plan_match_ hands back
+                // a bare full_scan as soon as has_table_oid() holds, dropping the body
+                // that view expansion spliced in. Expansion clears the identity of the
+                // reference node itself, but a match_t / sort_t / group_t sitting ABOVE it
+                // still carries the view's NAME, and binding is by name — so without this
+                // the clause node would be re-stamped with the view oid on the next bind.
+                //
+                // Only this general block is guarded. The switch below MUST keep seeing
+                // view entries: `DROP VIEW` reaches the view's oid through
+                // drop_target_kind::view right there.
+                const bool targets_a_view =
+                    rt && rt.resolved_metadata().has_value() &&
+                    rt.resolved_metadata().value().relkind == components::catalog::relkind::view;
+                if (rt && !targets_a_view) {
                     if (rt.table_oid() != components::catalog::INVALID_OID) {
                         n->set_table_oid(rt.table_oid());
                     }
@@ -639,81 +688,6 @@ namespace services::catalog_resolve {
                     q.push(c.get());
             }
         }
-    }
-
-    // --- view expansion helpers ---
-
-    const resolve_entry_t* find_view_entry(const catalog_resolves_t& resolves,
-                                           const components::logical_plan::node_t* root) {
-        using namespace components::logical_plan;
-        if (!root || !resolves.tables) {
-            return nullptr;
-        }
-        // Collect the table names THIS plan reads, so a view belonging to another
-        // sub-query (the entries are plan-wide) is never expanded here.
-        std::queue<const node_t*> q;
-        q.push(root);
-        while (!q.empty()) {
-            const auto* n = q.front();
-            q.pop();
-            const auto names = target_names_of(n);
-            if (!names.relname.empty()) {
-                if (const auto* entry = resolves.table_entry(names.dbname, names.relname)) {
-                    if (entry->table_md.has_value() && entry->table_md->relkind == components::catalog::relkind::view &&
-                        !entry->table_md->view_sql.empty()) {
-                        return entry;
-                    }
-                }
-            }
-            for (const auto& c : n->children()) {
-                if (c) {
-                    q.push(c.get());
-                }
-            }
-        }
-        return nullptr;
-    }
-
-    view_expansion_result_t expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql) {
-        view_expansion_result_t out;
-        std::pmr::monotonic_buffer_resource parser_arena(resource);
-        void* parse_cell = nullptr;
-        try {
-            auto* parsed = raw_parser(&parser_arena, view_sql.c_str());
-            if (!parsed) {
-                out.error = components::cursor::make_cursor(
-                    resource,
-                    core::error_t(core::error_code_t::sql_parse_error,
-                                  std::pmr::string{"view body re-parse returned null", resource}));
-                return out;
-            }
-            parse_cell = linitial(parsed);
-        } catch (const std::exception& ex) {
-            out.error = components::cursor::make_cursor(
-                resource,
-                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{ex.what(), resource}));
-            return out;
-        }
-        if (!parse_cell) {
-            out.error =
-                components::cursor::make_cursor(resource,
-                                                core::error_t(core::error_code_t::sql_parse_error,
-                                                              std::pmr::string{"empty view body parse", resource}));
-            return out;
-        }
-        components::sql::transform::transformer local_transformer(resource, view_sql.c_str());
-        auto tr = local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_cell)).finalize();
-        if (tr.has_error()) {
-            out.error = components::cursor::make_cursor(resource, tr.error());
-            return out;
-        }
-        // Fresh plan with its own catalog lookups (the view body's FROM tables);
-        // they still need a resolve round once merged into the outer plan's.
-        out.had_expansion = true;
-        out.expanded_plan = std::move(tr.value().sub_queries.back());
-        out.expanded_resolves = std::move(tr.value().catalog_resolves);
-        out.expanded_params = std::move(tr.value().parameters);
-        return out;
     }
 
     void register_plan_targets(std::pmr::memory_resource* resource,
@@ -1066,17 +1040,25 @@ namespace services::dispatcher { namespace {
                 // FK + CHECK + UNIQUE/PK gathered by operator_resolve_constraint_t
                 // (direction=outgoing). No catalog probe here — a pure entry read.
                 const auto* md = node->table_metadata();
+                // The DEFAULT fill list FIRST: the foreign-key positions below are
+                // positions in the chunk operator_insert writes, and that chunk carries
+                // the filled columns too.
+                if (md != nullptr) {
+                    if (auto ec = build_insert_fill_list(node, *md); ec.contains_error()) {
+                        co_return ec;
+                    }
+                }
                 const auto* constraints =
                     resolves ? resolves->constraints_for(node->table_oid(), resolve_direction::outgoing) : nullptr;
                 if (constraints) {
                     auto fks = constraints->fks;
                     // Resolve child column names → positions in the INSERT chunk.
-                    const auto& kt = node->key_translation();
+                    const auto chunk_columns = insert_chunk_column_names(node);
                     for (auto& fk : fks) {
                         for (const auto& col_name : fk.child_col_names) {
                             std::size_t pos = std::numeric_limits<std::size_t>::max();
-                            for (std::size_t i = 0; i < kt.size(); ++i) {
-                                if (kt[i].as_string() == col_name) {
+                            for (std::size_t i = 0; i < chunk_columns.size(); ++i) {
+                                if (chunk_columns[i] == col_name) {
                                     pos = i;
                                     break;
                                 }
@@ -1091,11 +1073,6 @@ namespace services::dispatcher { namespace {
                         auto nn = node->not_null_cols();
                         merge_pk_not_null(constraints->pk_columns, nn);
                         node->set_not_null_cols(std::move(nn));
-                    }
-                }
-                if (md != nullptr) {
-                    if (auto ec = build_insert_fill_list(node, *md); ec.contains_error()) {
-                        co_return ec;
                     }
                 }
                 break;

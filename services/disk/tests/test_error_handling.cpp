@@ -91,7 +91,8 @@ namespace {
 TEST_CASE("services::disk::error::resolve_unknown_namespace") {
     fixture fx;
     auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"), std::uint64_t{0});
-    REQUIRE_FALSE(r.found);
+    REQUIRE_FALSE(r.has_error());
+    REQUIRE_FALSE(r.value().found);
 }
 
 // 2. resolve_table with valid namespace_oid but unknown table name returns found=false.
@@ -120,7 +121,8 @@ TEST_CASE("services::disk::error::duplicate_namespace_name_two_rows") {
     REQUIRE(a != b);
     // resolve_namespace returns the first match by scan order — non-deterministic but found.
     auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("dup"), std::uint64_t{0});
-    REQUIRE(r.found);
+    REQUIRE_FALSE(r.has_error());
+    REQUIRE(r.value().found);
 }
 
 // 12. topological_drop_order on an empty seed returns empty vector — caller pushes the seed.
@@ -143,7 +145,8 @@ TEST_CASE("services::disk::error::long_namespace_name_accepted") {
     auto ns_oid = test_create_namespace(fx, long_name);
     REQUIRE(ns_oid >= FIRST_USER_OID);
     auto rs = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), long_name, std::uint64_t{0});
-    REQUIRE(rs.found);
+    REQUIRE_FALSE(rs.has_error());
+    REQUIRE(rs.value().found);
 }
 
 // 14. CREATE NAMESPACE with empty name accepted (no validation at primitive-write layer).

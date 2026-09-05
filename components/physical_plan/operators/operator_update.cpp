@@ -627,11 +627,18 @@ namespace components::operators {
                                                      wal_count,
                                                      ctx->txn.transaction_id,
                                                      db_oid);
-                    auto wal_id = co_await std::move(wf);
+                    auto wal_result = co_await std::move(wf);
+                    if (wal_result.has_error()) {
+                        // The storage_update above already landed, so table and journal now
+                        // disagree: a replay would not re-apply this range. Fail the statement
+                        // so the executor's abort cascade unwinds it, rather than reporting
+                        // rows updated over a record that is not in the journal.
+                        co_return dml_detail::flush_outcome_t{wal_result.error()};
+                    }
                     auto [_df, dff] = actor_zeta::send(ctx->disk_address,
                                                        &services::disk::manager_disk_t::flush,
                                                        ctx->session,
-                                                       wal_id);
+                                                       wal_result.value());
                     ctx->add_pending_disk_future(std::move(dff));
                 }
 

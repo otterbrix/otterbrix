@@ -57,41 +57,11 @@ namespace services::catalog_resolve {
                                const components::logical_plan::node_t* root,
                                components::logical_plan::catalog_resolves_t* resolves);
 
-    // SELECT-time view expansion. Result of expand_view_body():
-    // a fresh logical plan parsed/transformed from the view's body SQL,
-    // ready to be spliced into the outer plan in place of the view
-    // reference. `error` is set (non-null) when re-parse / re-transform
-    // failed; in that case `expanded_plan` is null and the caller must
-    // surface `error` to the user.
-    struct view_expansion_result_t {
-        bool had_expansion{false};
-        components::logical_plan::node_ptr expanded_plan;
-        components::logical_plan::parameter_node_ptr expanded_params;
-        // The view body's own catalog lookups; the caller merges them into the
-        // outer plan's and runs another resolve round for whatever is new.
-        std::optional<components::logical_plan::catalog_resolves_t> expanded_resolves;
-        components::cursor::cursor_t_ptr error;
-    };
-
     // Append every entry of `src` into `dest`. Entries dedupe, so a table both
     // plans reference stays one lookup.
     void merge_catalog_resolves(std::pmr::memory_resource* resource,
                                 components::logical_plan::catalog_resolves_t& dest,
                                 const components::logical_plan::catalog_resolves_t& src);
-
-    // The resolved view (relkind='v', non-empty view_sql) that `root` actually
-    // reads from, or nullptr. Matched against the names `root` references, NOT
-    // taken as "the first view in the plan": the resolve entries are shared by
-    // every sub-query, so a sibling sub-query's view must not be expanded here.
-    const components::logical_plan::resolve_entry_t*
-    find_view_entry(const components::logical_plan::catalog_resolves_t& resolves,
-                    const components::logical_plan::node_t* root);
-
-    // Parse view body SQL and transform it into a fresh logical plan. The
-    // transformer is instantiated per-call (its mutable state lives on the
-    // instance — re-entrant when allocated fresh per call). All allocations
-    // use `resource`.
-    view_expansion_result_t expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql);
 
     // True when any entry still carries no resolved result
     bool has_unresolved_entries(const components::logical_plan::catalog_resolves_t& resolves);

@@ -54,7 +54,14 @@ namespace components::operators {
                                                  services::wal::wal_sync_mode::FULL,
                                                  database_oid_,
                                                  uint64_t{0});
-                co_await std::move(cf);
+                // FULL means "this marker is on the device". The reply used to be discarded,
+                // so a refused append or a failed fsync still let the DDL commit proceed and
+                // report success — a durable commit claimed over a page that never landed.
+                // Nothing has been published at this point, so failing here is a clean abort.
+                if (auto commit_result = co_await std::move(cf); commit_result.has_error()) {
+                    set_error(commit_result.error());
+                    co_return;
+                }
             }
         }
 
@@ -337,7 +344,16 @@ namespace components::operators {
                                              services::wal::wal_sync_mode::FULL,
                                              db_oid,
                                              commit_id_);
-            co_await std::move(wf);
+            // The marker MUST be durable before the ProcArray barrier below, which is the
+            // step that makes this commit reader-visible. Discarding this reply is what let a
+            // failed fsync be followed by the barrier anyway: readers would see a commit that
+            // a crash one instant later would take back. Refuse BEFORE the barrier — the
+            // storage publishes above are already done, but they stay invisible until the
+            // barrier, so stopping here leaves the txn unpublished rather than half-published.
+            if (auto commit_result = co_await std::move(wf); commit_result.has_error()) {
+                set_error(commit_result.error());
+                co_return;
+            }
         }
 
         // ProcArray publish barrier: advances published_horizon_ so subsequent

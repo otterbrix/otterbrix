@@ -8,9 +8,9 @@ namespace services::planner::impl {
 
     components::operators::operator_ptr
     create_plan_create_matview(const context_storage_t& context,
-                               const components::compute::function_registry_t& function_registry,
+                               [[maybe_unused]] const components::compute::function_registry_t& function_registry,
                                const components::logical_plan::node_ptr& node,
-                               const components::logical_plan::storage_parameters* params) {
+                               [[maybe_unused]] const components::logical_plan::storage_parameters* params) {
         using namespace components::logical_plan;
         auto* cm = static_cast<node_create_matview_t*>(node.get());
         if (cm->inferred_columns().empty() || cm->catalog_writes().empty()) {
@@ -18,19 +18,12 @@ namespace services::planner::impl {
             // as "invalid query plan" via the standard executor error path.
             return nullptr;
         }
-        // Recursively compile body_plan (matview's child[0]) through the
-        // standard pipeline. The compiled operator chain produces the data
-        // chunk that operator_create_matview_t will storage_append into the
-        // new matview's heap.
-        auto body_op = create_plan(context,
-                                   function_registry,
-                                   cm->body_plan(),
-                                   components::logical_plan::limit_t::unlimit(),
-                                   params);
-        if (!body_op) {
-            return nullptr;
-        }
-
+        // The body plan is NOT compiled. Only WITH NO DATA reaches here (the
+        // transformer refuses the form that would need populating), so a compiled
+        // body operator would have no consumer — which is exactly what it used to
+        // be: built, handed over, and silenced with a (void) cast. The body still
+        // shapes the matview: enrich derives inferred_columns from it and the
+        // planner writes its SQL into pg_rewrite.
         // Move catalog_writes out of the node into the operator.
         auto writes_vec = const_cast<node_create_matview_t*>(cm)->take_catalog_writes();
         std::vector<components::operators::operator_create_matview_t::catalog_write_t> writes;
@@ -45,8 +38,7 @@ namespace services::planner::impl {
             cm->matview_oid(),
             cm->namespace_oid(),
             std::vector<components::table::column_definition_t>(cm->inferred_columns()),
-            std::move(writes),
-            std::move(body_op)));
+            std::move(writes)));
     }
 
 } // namespace services::planner::impl

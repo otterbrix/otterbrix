@@ -148,7 +148,12 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
             std::this_thread::yield();
         }
         REQUIRE(fut.is_ready());
-        return std::move(fut).take_ready();
+        // The reader carries an error channel now ("the catalog could not be READ" is not "the
+        // catalog does not have it"); no case here expects a failed read, and letting one
+        // through as {found=false} is exactly the confusion the wrapper ended.
+        auto r = std::move(fut).take_ready();
+        REQUIRE_FALSE(r.has_error());
+        return std::move(r.value());
     }
 
     // Resolve a table via the live read_chunks_by_key path (catalog-read oracle).

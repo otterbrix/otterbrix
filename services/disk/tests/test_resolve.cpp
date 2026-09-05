@@ -12,6 +12,8 @@
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
+#include <components/table/test/fault_injection_file.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
@@ -19,6 +21,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <limits>
 #include <thread>
 #include <unistd.h>
 #include <utility>
@@ -103,7 +106,9 @@ namespace {
 // 1. After bootstrap, resolve_namespace finds the well-known "public" namespace.
 TEST_CASE("services::disk::resolve::namespace_finds_bootstrap") {
     fixture fx;
-    auto r = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("public"), std::uint64_t{0});
+    auto rr = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("public"), std::uint64_t{0});
+    REQUIRE_FALSE(rr.has_error());
+    auto& r = rr.value();
     REQUIRE(r.found);
     REQUIRE(r.oid == well_known_oid::public_namespace);
 }
@@ -111,9 +116,10 @@ TEST_CASE("services::disk::resolve::namespace_finds_bootstrap") {
 // 2. resolve_namespace misses on unknown name.
 TEST_CASE("services::disk::resolve::namespace_misses_unknown") {
     fixture fx;
-    auto r =
+    auto rr =
         fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"), std::uint64_t{0});
-    REQUIRE_FALSE(r.found);
+    REQUIRE_FALSE(rr.has_error());
+    REQUIRE_FALSE(rr.value().found);
 }
 
 // 3. After CREATE TABLE, resolve_table finds the new relation + lists its column attoids.
@@ -467,4 +473,178 @@ TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
     REQUIRE(projected[0].value(2, 0).value<std::int64_t>() == full[0].value(2, 0).value<std::int64_t>());
     // The key column survives projection: the filter needs it, so the agent keeps it.
     REQUIRE(projected[0].value(0, 0).value<std::int64_t>() == std::int64_t{7});
+}
+
+// --- D1: THE CATALOG-READ FUNNEL --------------------------------------------------------
+//
+// manager_disk_t::scan_table is the single door every catalog read goes through
+// (manager_disk_resolve.cpp:19) — namespace resolve, function resolve, cast lookup,
+// namespace enumeration. It had three legs that answered a read it COULD NOT PERFORM with an
+// EMPTY batch list: no agents, no owning agent, and a scan that came back with an error. An
+// empty batch list is also what "there are no matching rows" looks like, so every caller read
+// a failed read as a negative answer. The two cases below are the two shapes of that lie,
+// each pinned against CONTENT that is provably on disk.
+namespace {
+
+    // The T3 interposer seam is process-wide and this fixture opens one .otbx per catalog
+    // table, so filter by path: every handle whose path does not carry the marker is returned
+    // unwrapped, i.e. not interposed at all. Same shape as the scope in
+    // services/disk/tests/test_persistence.cpp and integration/cpp/test/test_catalog_write_refusal.cpp.
+    class one_table_fault_scope_t final
+        : public components::table::storage::single_file_block_manager_t::file_handle_interposer_t {
+    public:
+        one_table_fault_scope_t(otterbrix_test::fault_plan_t& plan, std::string path_marker)
+            : plan_(plan)
+            , marker_(std::move(path_marker)) {
+            components::table::storage::single_file_block_manager_t::dev_set_file_interposer(this);
+        }
+        ~one_table_fault_scope_t() override {
+            components::table::storage::single_file_block_manager_t::dev_set_file_interposer(nullptr);
+        }
+
+        std::unique_ptr<core::filesystem::file_handle_t>
+        wrap(std::unique_ptr<core::filesystem::file_handle_t> inner) override {
+            if (inner == nullptr || inner->path().string().find(marker_) == std::string::npos) {
+                return inner;
+            }
+            return std::make_unique<otterbrix_test::faulty_file_handle_t>(std::move(inner), plan_);
+        }
+
+    private:
+        otterbrix_test::fault_plan_t& plan_;
+        std::string marker_;
+    };
+
+    // A manager that can be torn down and reopened over the same directory — the fixture above
+    // wipes its directory in the constructor, so it cannot express a restart.
+    struct reopenable_disk {
+        core::pmr::otterbrix_resource resource;
+        log_t log;
+        core::non_thread_scheduler::scheduler_test_t* scheduler;
+        configuration::config_disk disk_config;
+        std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+
+        explicit reopenable_disk(const std::filesystem::path& path)
+            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
+            , disk_config([&]() {
+                configuration::config_disk c;
+                c.path = path;
+                return c;
+            }())
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
+        ~reopenable_disk() {
+            // Destroy the manager first: its dtor joins the internal loop thread, which may
+            // still enqueue children onto the scheduler.
+            manager.reset();
+            scheduler->stop();
+            delete scheduler;
+        }
+
+        components::execution_context_t ctx() {
+            return components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}};
+        }
+
+        template<typename Fn, typename... Args>
+        auto invoke(Fn fn, Args&&... args) {
+            auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
+            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(future.is_ready());
+            return std::move(future).take_ready();
+        }
+
+        void checkpoint(services::wal::id_t wal_id) {
+            auto [_, cf] = actor_zeta::otterbrix::send(manager->address(),
+                                                       &manager_disk_t::checkpoint_all,
+                                                       session_id_t{},
+                                                       wal_id,
+                                                       std::numeric_limits<uint64_t>::max());
+            for (int i = 0; i < 100000 && !cf.is_ready(); ++i) {
+                scheduler->run(1000);
+                std::this_thread::yield();
+            }
+            REQUIRE(cf.is_ready());
+            // Bind the [[nodiscard]] reply and state something true of it: the sealed WAL
+            // floor is the oldest root any table could still fall back to, so it can never
+            // run ahead of the id this round was told the WAL had reached.
+            auto sealed = std::move(cf).take_ready();
+            REQUIRE(sealed <= wal_id);
+        }
+    };
+
+} // namespace
+
+// D1a. A pg_proc scan that CANNOT BE PERFORMED must not be reported as "no such function".
+//
+// Phase 1 lays down a clean database and CHECKPOINTS it, so the five builtin pg_proc rows
+// live in the FILE and not merely in this process's memory. Phase 2 reopens it with the fault
+// seam installed and the plan still CLEAN — the load reads only the header and the metadata
+// chain, so it succeeds and pg_proc's handle comes back wrapped. Only then is the handle
+// poisoned: from that point every read of pg_proc's data blocks fails, which is exactly a
+// buffer-pool refill that cannot reach the platter.
+TEST_CASE("services::disk::resolve::a_failed_catalog_scan_is_not_no_rows") {
+    const auto dir = std::filesystem::path(resolve_dir() + "_readfail");
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    const auto marker = "/" + std::to_string(static_cast<unsigned>(well_known_oid::pg_proc_table)) + "/";
+
+    {
+        reopenable_disk fd(dir);
+        fd.manager->bootstrap_system_tables_sync();
+        fd.checkpoint(services::wal::id_t{100});
+    }
+
+    otterbrix_test::fault_plan_t plan;
+    one_table_fault_scope_t scope(plan, marker);
+
+    reopenable_disk fd2(dir);
+    fd2.manager->bootstrap_system_tables_sync();
+
+    plan.crashed = true;
+    auto poisoned =
+        fd2.invoke(&manager_disk_t::resolve_function_by_name, fd2.ctx(), std::string("count"), std::uint64_t{0});
+    INFO("a pg_proc scan that failed must not answer 'there is no function named count'");
+    // Before the funnel carried an error channel this was an EMPTY vector, indistinguishable
+    // from the honest negative answer — while the row was on the platter.
+    REQUIRE(poisoned.has_error());
+
+    // The proof that the emptiness was a LIE and not a fact about the catalog: clear the
+    // poison and the same call over the same file answers with the row.
+    plan.crashed = false;
+    auto healthy =
+        fd2.invoke(&manager_disk_t::resolve_function_by_name, fd2.ctx(), std::string("count"), std::uint64_t{0});
+    REQUIRE_FALSE(healthy.has_error());
+    REQUIRE(healthy.value().size() == 1);
+    CHECK(healthy.value()[0].found);
+    CHECK(healthy.value()[0].name == "count");
+
+    std::filesystem::remove_all(dir);
+}
+
+// D1b. The same lie, one floor down and through a different reader: agent_disk_t::scan_local's
+// "this agent does not own the oid" leg. A manager that never bootstrapped owns no pg_cast, so
+// find_cast_oid's scan cannot run at all — and INVALID_OID is the value the caller
+// (operator_unregister_cast, operator_register_cast.cpp:94) reads as "there is no such cast
+// row", which is a statement about the catalog that nobody was in a position to make.
+TEST_CASE("services::disk::resolve::an_unowned_catalog_scan_is_not_no_rows") {
+    const auto dir = std::filesystem::path(resolve_dir() + "_unowned");
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    reopenable_disk fd(dir); // deliberately NOT bootstrapped: no system storage exists
+
+    auto cast_oid = fd.invoke(&manager_disk_t::find_cast_oid,
+                              fd.ctx(),
+                              components::catalog::oid_t{well_known_oid::pg_type_table},
+                              components::catalog::oid_t{well_known_oid::pg_class_table});
+    INFO("a pg_cast scan that could not be performed must not answer 'no such cast'");
+    // Before scan_local refused by type this was INVALID_OID, i.e. "the catalog says no".
+    REQUIRE(cast_oid.has_error());
+    CHECK(cast_oid.error().type == core::error_code_t::missing_table);
+
+    std::filesystem::remove_all(dir);
 }

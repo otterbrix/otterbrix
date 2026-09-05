@@ -211,10 +211,12 @@ TEST_CASE("integration::cpp::test_batch_where") {
     INFO("register UDFs");
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_vec_negate_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())));
+        REQUIRE_FALSE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(dispatcher->register_udf(session, make_vec_negate_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())).contains_error());
     }
 
     INFO("WHERE with row UDF (boolean predicate)");
@@ -341,9 +343,11 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
     INFO("register UDFs");
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())));
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(dispatcher->register_udf(session, make_double_val_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())).contains_error());
     }
 
     INFO("GROUP BY with compute SUM");
@@ -551,9 +555,12 @@ TEST_CASE("integration::cpp::test_batch_join") {
     INFO("register UDFs");
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())));
-        REQUIRE(dispatcher->register_udf(session, make_call_counter_func(dispatcher->resource())));
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_gt_threshold_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_sum_squares_func(dispatcher->resource())).contains_error());
+        REQUIRE_FALSE(
+            dispatcher->register_udf(session, make_call_counter_func(dispatcher->resource())).contains_error());
     }
 
     INFO("join with UDF batch predicate in ON clause");

@@ -949,7 +949,8 @@ TEST_CASE("services::disk::persistence::failed_checkpoint_does_not_advance_wal_i
         fd2.manager->bootstrap_system_tables_sync();
         auto rr =
             fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("ns_one"), std::uint64_t{0});
-        CHECK(rr.found);
+        REQUIRE_FALSE(rr.has_error());
+        CHECK(rr.value().found);
     }
 
     std::filesystem::remove_all(dir);
@@ -1012,7 +1013,8 @@ TEST_CASE("services::disk::persistence::failed_checkpoint_leaves_no_backup_or_qu
         fresh_disk fd2(dir);
         fd2.manager->bootstrap_system_tables_sync();
         auto rr = fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("ns_one"), std::uint64_t{0});
-        CHECK(rr.found);
+        REQUIRE_FALSE(rr.has_error());
+        CHECK(rr.value().found);
         CHECK(dir_listing() == std::vector<std::string>{"table.otbx", "table.otbx.wal_id"});
     }
 

@@ -1,50 +1,30 @@
+#include "view_body_text.hpp"
+
 #include <components/logical_plan/node_create_view.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
-#include <algorithm>
-#include <cctype>
-
 namespace components::sql::transform {
 
-    namespace {
-        // Case-insensitive search for a whole word in a string
-        std::string extract_view_query(const char* sql) {
-            std::string s(sql);
-            // Convert to uppercase for searching
-            std::string upper(s);
-            std::transform(upper.begin(), upper.end(), upper.begin(), [](unsigned char c) { return std::toupper(c); });
-
-            // Find " AS " keyword — marks start of the query
-            auto pos = upper.find(" AS ");
-            if (pos == std::string::npos) {
-                return "SELECT *";
-            }
-
-            // Extract everything after "AS "
-            auto query_start = pos + 4; // skip " AS "
-            auto query = s.substr(query_start);
-
-            // Trim trailing semicolons and whitespace
-            while (!query.empty() && (query.back() == ';' || query.back() == ' ' || query.back() == '\n' ||
-                                      query.back() == '\r' || query.back() == '\t')) {
-                query.pop_back();
-            }
-
-            return query.empty() ? "SELECT *" : query;
-        }
-    } // namespace
-
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_view(ViewStmt& node) {
+        // CREATE VIEW v (x, y) AS ... — the column aliases rename the body's output
+        // columns. They are NOT carried anywhere below this point, so accepting the
+        // form would store a body whose column names differ from the ones the view
+        // promises, and `SELECT x FROM v` would fail with "column not found" once the
+        // body is spliced in. Rule 6: refuse it here rather than half-support it.
+        if (node.aliases != nullptr && list_length(node.aliases) > 0) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"CREATE VIEW with a column alias list is not supported yet", resource_});
+        }
+        // The body is stored verbatim and re-parsed on every read of the view, so it
+        // must be exactly what the user wrote — see view_body_text.hpp for what this
+        // replaces.
+        VALUE_OR_RETURN(auto query_sql,
+                        view_body_text(resource_, raw_sql_, node.query_location, node.query_end_location, "CREATE VIEW"));
+
         auto qn = rangevar_to_qualified_name(node.view);
         const std::string db_for_resolve = qn.dbname;
-
-        std::string query_sql;
-        if (raw_sql_) {
-            query_sql = extract_view_query(raw_sql_);
-        } else {
-            query_sql = "SELECT *";
-        }
 
         auto v = logical_plan::make_node_create_view(resource_,
                                                      core::viewname_t{std::move(qn.relname)},

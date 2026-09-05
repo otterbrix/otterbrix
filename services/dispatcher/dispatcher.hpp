@@ -30,6 +30,7 @@
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/session/session.hpp>
 #include <components/table/transaction_manager.hpp>
+#include <core/result_wrapper.hpp>
 #include <services/collection/executor.hpp>
 #include <services/dispatcher/txn_messages.hpp>
 
@@ -145,24 +146,34 @@ namespace services::dispatcher {
 
         unique_future<components::cursor::cursor_t_ptr> execute_plan(components::session::session_id_t session,
                                                                      components::logical_plan::execution_plan_t plan);
-        unique_future<bool> register_udf(components::session::session_id_t session,
-                                         components::compute::function_ptr function);
-        unique_future<bool> unregister_udf(components::session::session_id_t session,
-                                           std::string function_name,
-                                           std::pmr::vector<components::types::complex_logical_type> inputs);
+
+        // ===== pool-admin API =====
+        // Every entry point below answers core::error_t, never a bare bool. These paths refuse
+        // for reasons that are NOT interchangeable — a name that already exists, an overload
+        // nobody holds, a cast source type the catalog never heard of, a renderer slot out of
+        // range, a catalog write the disk turned down, an executor that would not drop what it
+        // was told to drop — and a `false` erased every one of them, including the TYPED error
+        // executor_t::register_udf already produces. no_error() means the operation happened.
+        unique_future<core::error_t> register_udf(components::session::session_id_t session,
+                                                  components::compute::function_ptr function);
+        unique_future<core::error_t> unregister_udf(components::session::session_id_t session,
+                                                    std::string function_name,
+                                                    std::pmr::vector<components::types::complex_logical_type> inputs);
         // Fan a cast out to (register) / remove it from (unregister) every executor's
-        // cast_registry_, then write / delete the pg_cast row via the operator.
-        unique_future<bool> register_cast(components::session::session_id_t session,
-                                          components::types::complex_logical_type source,
-                                          components::types::complex_logical_type target,
-                                          components::casts::cast_entry entry);
-        unique_future<bool> unregister_cast(components::session::session_id_t session,
-                                            components::types::complex_logical_type source,
-                                            components::types::complex_logical_type target);
+        // cast_registry_, then write / delete the pg_cast row via the operator. The catalog step
+        // runs ONLY after every executor confirmed: an executor that kept applying a cast while
+        // pg_cast said the cast was gone is the divergence these two guard.
+        unique_future<core::error_t> register_cast(components::session::session_id_t session,
+                                                   components::types::complex_logical_type source,
+                                                   components::types::complex_logical_type target,
+                                                   components::casts::cast_entry entry);
+        unique_future<core::error_t> unregister_cast(components::session::session_id_t session,
+                                                     components::types::complex_logical_type source,
+                                                     components::types::complex_logical_type target);
         // Fan a host-supplied EXPLAIN renderer out to every executor, registering it at registry
         // slot `id` (each keeps its own POD fn-pointer copy — no shared state). Pool-admin
         // op, like register_udf. Per-query selection then rides execution_plan_t::explain_render_id.
-        unique_future<bool> set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn);
+        unique_future<core::error_t> set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn);
 
         // ===== txn-state mailbox service =====
         // The ONLY way any other actor (executors, the txn operators running
@@ -188,8 +199,14 @@ namespace services::dispatcher {
         // Park executor-produced ranges on the session's transaction_t
         // (explicit-DML statements and the DDL swap-info merge — one message
         // for both; implicit DML never sends it).
-        unique_future<void> txn_accumulate_msg(components::session::session_id_t session,
-                                               txn_accumulate_payload_t payload);
+        //
+        // Answers core::error_t because the no-active-transaction case has nowhere else to go:
+        // the payload is a whole statement's parked work — base insert and delete ranges, the
+        // storage oids a CREATE brought up and a DROP retired, pg_catalog row ranges,
+        // pg_attribute commit-id backfills — and parking it on a transaction that does not
+        // exist is impossible. It used to be dropped on the floor behind a `void`.
+        unique_future<core::error_t> txn_accumulate_msg(components::session::session_id_t session,
+                                                        txn_accumulate_payload_t payload);
         // Abort: executor error-path (after its local revert cascade) and the
         // read-only release tail.
         unique_future<void> txn_abort_msg(components::session::session_id_t session);

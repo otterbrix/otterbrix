@@ -679,10 +679,12 @@ namespace services::disk {
     private:
         // Non-mailbox committed-scan over an OWNED slice entry (D6: callers on the agent
         // thread — storage_scan_inner and read_chunks_by_keys_inner — read their own
-        // slice directly here, never by self-sending a mailbox message). Returns empty batches
-        // when the oid isn't owned or is a record-only marker. `filter` may be nullptr;
-        // `projected_cols` may be nullptr for all columns. The wrapper carries any buffer-pool
-        // OOM / data_corruption surfaced by the table-layer scan as a value.
+        // slice directly here, never by self-sending a mailbox message). Refuses with
+        // missing_table when the oid isn't owned or is a record-only marker — an empty batch
+        // list is what "no matching rows" looks like, so a scan that could not run must not
+        // borrow that shape (the keyed twin of this rule is validate_key_col_indices).
+        // `filter` may be nullptr; `projected_cols` may be nullptr for all columns. The wrapper
+        // also carries any buffer-pool OOM / data_corruption surfaced by the table-layer scan.
         [[nodiscard]] core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
         scan_local(components::catalog::oid_t table_oid,
                    components::table::table_filter_t* filter,

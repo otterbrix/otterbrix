@@ -90,10 +90,24 @@ namespace components::operators {
                                                exec_ctx,
                                                source_type_oid_,
                                                target_type_oid_);
-            const catalog::oid_t cast_oid = co_await std::move(rcf);
+            auto cast_oid_r = co_await std::move(rcf);
+            if (cast_oid_r.has_error()) {
+                // "the pg_cast read failed" and "there is no such pg_cast row" are different
+                // accidents; the INVALID_OID branch below is only allowed to speak for the
+                // second one.
+                set_error(cast_oid_r.error());
+                mark_failed();
+                co_return;
+            }
+            const catalog::oid_t cast_oid = cast_oid_r.value();
             if (cast_oid == catalog::INVALID_OID) {
-                output_ = nullptr;
-                mark_executed();
+                // "there is no pg_cast row to delete" is a different accident from "the delete
+                // failed", and DROP CAST has to be able to say which one happened.
+                set_error(core::error_t{core::error_code_t::do_not_exists,
+                                        std::pmr::string{"unregister_cast: no pg_cast row exists for this "
+                                                         "(source, target) pair",
+                                                         resource_}});
+                mark_failed();
                 co_return;
             }
 

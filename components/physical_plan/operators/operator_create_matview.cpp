@@ -14,14 +14,12 @@ namespace components::operators {
                                                          components::catalog::oid_t mv_oid,
                                                          components::catalog::oid_t namespace_oid,
                                                          std::vector<table::column_definition_t> columns,
-                                                         std::vector<catalog_write_t> catalog_writes,
-                                                         operator_ptr body_op)
+                                                         std::vector<catalog_write_t> catalog_writes)
         : read_write_operator_t(resource, std::move(log), operator_type::create_collection)
         , mv_oid_(mv_oid)
         , namespace_oid_(namespace_oid)
         , columns_(std::move(columns))
-        , catalog_writes_(std::move(catalog_writes))
-        , body_op_(std::move(body_op)) {}
+        , catalog_writes_(std::move(catalog_writes)) {}
 
     actor_zeta::unique_future<void> operator_create_matview_t::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
@@ -93,12 +91,9 @@ namespace components::operators {
             co_return;
         }
 
-        // Created empty (WITH NO DATA semantics): driving body_op_ here to
-        // populate hits an actor_zeta nested-await bug (full_scan crashes when
-        // driven from inside this operator's outer await). REFRESH MATERIALIZED
-        // VIEW populates later via its own INSERT-SELECT plan. body_op_ holds
-        // the compiled body plan but is intentionally not driven here.
-        (void) body_op_;
+        // Created empty. This operator only ever implements WITH NO DATA — the
+        // transformer refuses the form that would need populating — so there is
+        // nothing left to do here. See operator_create_matview.hpp.
         mark_executed();
     }
 

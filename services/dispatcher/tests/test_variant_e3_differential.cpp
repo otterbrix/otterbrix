@@ -147,7 +147,12 @@ namespace {
                 std::this_thread::yield();
             }
             REQUIRE(fut.is_ready());
-            return std::move(fut).take_ready();
+            // The reader carries an error channel now ("the catalog could not be READ" is not
+            // "the catalog does not have it"); no case here expects a failed read, and letting
+            // one through as {found=false} is exactly the confusion the wrapper ended.
+            auto r = std::move(fut).take_ready();
+            REQUIRE_FALSE(r.has_error());
+            return std::move(r.value());
         }
 
         test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
@@ -162,7 +167,11 @@ namespace {
         void execute_sql(const std::string& query) {
             parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
             auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
-            components::sql::transform::transformer local_transformer(resource_);
+            // The statement text is handed to the transformer, as every production
+            // entry point does (wrapper_dispatcher_t::execute_sql). CREATE VIEW /
+            // CREATE MATERIALIZED VIEW store their body verbatim by slicing it out of
+            // this string; without it the transformer has no body to store and says so.
+            components::sql::transform::transformer local_transformer(resource_, query.c_str());
             auto _wrap =
                 local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
             REQUIRE(!_wrap.has_error());
@@ -629,8 +638,11 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
 
 // CREATE TABLE → CREATE MATERIALIZED VIEW mv AS SELECT ... FROM table. Unlike a
 // view, a matview lands a real physical heap plus a pg_class relkind='m' row and
-// a pg_rewrite ev_action row (WITH NO DATA default, so it is empty until
-// REFRESH). operator_create_matview_t lowers to a composite sequence that aborts
+// a pg_rewrite ev_action row. WITH NO DATA is written out: nothing populates a
+// matview at CREATE time, so the implicit (PostgreSQL default WITH DATA) form is
+// refused rather than silently producing an empty matview — see
+// integration/cpp/test/test_view_expansion.cpp. The proxy below is unchanged.
+// operator_create_matview_t lowers to a composite sequence that aborts
 // the whole CREATE if any step fails. Proxy: cursor success + resolve_table(mv)
 // relkind=='m' + parent still resolvable.
 TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
@@ -652,7 +664,8 @@ TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
         REQUIRE(cur->is_success());
     }
 
-    fx.execute_sql("CREATE MATERIALIZED VIEW ve3_mv.mv AS SELECT col_a FROM ve3_mv.t WHERE col_b > 10;");
+    fx.execute_sql(
+        "CREATE MATERIALIZED VIEW ve3_mv.mv AS SELECT col_a FROM ve3_mv.t WHERE col_b > 10 WITH NO DATA;");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());

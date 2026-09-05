@@ -304,9 +304,19 @@ namespace components::sql::transform {
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
 
-    // Deparse a CHECK constraint raw expression node back to SQL text.
-    // Handles: column refs, integer/float/string constants, comparison operators,
-    // AND/OR/NOT, IS NULL / IS NOT NULL. Returns "" for unsupported node types.
+    // Deparse a CHECK constraint raw expression node back to SQL text, in the ONE
+    // shape the DML-time recogniser (operator_check_constraint) can evaluate:
+    //
+    //     column OP constant   (OP one of  =  <>  <  >  <=  >= )
+    //     column IS [NOT] NULL
+    //     (A) AND (B) / (A) OR (B) / NOT (A) of those
+    //
+    // Anything else is REFUSED here, at the declaration. It has to be refused
+    // somewhere: what the recogniser cannot read it used to compile to the constant
+    // TRUE, so an arithmetic operand or a column-against-column comparison became a
+    // constraint the catalog holds and no row is ever judged by. A rejected
+    // CREATE TABLE / ALTER TABLE costs the user one statement; an unenforced
+    // constraint in the catalog cannot be recovered from at all.
     core::result_wrapper_t<std::string> deparse_check_expr(std::pmr::memory_resource* resource, Node* node);
 
     core::result_wrapper_t<types::complex_logical_type> get_type(std::pmr::memory_resource* resource, TypeName* type);

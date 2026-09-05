@@ -1,6 +1,7 @@
 #include "manager_disk_impl.hpp"
 
 #include <charconv>
+#include <stdexcept>
 
 namespace services::disk {
 
@@ -121,7 +122,29 @@ namespace services::disk {
         const std::filesystem::path sys_dir = config_.path / std::to_string(static_cast<unsigned>(sys_db_oid));
         std::filesystem::create_directories(sys_dir);
 
-        // Helper: load or create a single system table. Returns true if freshly created.
+        // The system tables this bootstrap writes builtin rows into — the only ones for which
+        // "loaded, and empty" is a LOSS rather than a legitimate steady state. Kept next to the
+        // seeding branches below, which are exactly these five.
+        auto has_builtin_seed_rows = [](catalog::oid_t tbl_oid) {
+            return tbl_oid == catalog::well_known_oid::pg_settings_table || tbl_oid == pg_database_oid ||
+                   tbl_oid == pg_namespace_oid_tbl || tbl_oid == pg_type_oid || tbl_oid == pg_proc_oid;
+        };
+
+        // How many rows a system table holds right now, on agents_[0]. Used for the
+        // came-up / was-seeded post-conditions below.
+        auto rows_in_sync = [&](catalog::oid_t tbl_oid) -> std::uint64_t {
+            if (agents_.empty() || agents_[0] == nullptr) {
+                return 0;
+            }
+            const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(tbl_oid);
+            if (entry == nullptr) {
+                return 0;
+            }
+            return const_cast<collection_storage_entry_t*>(entry)->table_storage.table().calculate_size();
+        };
+
+        // Helper: load or create a single system table. Returns true if the table has to be
+        // SEEDED — freshly created, or loaded healthy but empty (see the young-file note below).
         auto bootstrap_one = [&](const components::catalog::system_table_def_t& def) -> bool {
             // The schema array carries the well-known OID for every system table
             // (catalog_oids.hpp), so there is no name lookup and no "unknown table" case.
@@ -132,41 +155,131 @@ namespace services::disk {
                 if (agents_[0]->has_storage_sync(tbl_oid))
                     return false;
             }
+            bool needs_seeding = false;
+            bool took_create_leg = false;
+            const auto otbx = sys_dir / std::to_string(static_cast<unsigned>(tbl_oid)) / "table.otbx";
             {
-                auto coll_dir = sys_dir / std::to_string(static_cast<unsigned>(tbl_oid));
-                std::filesystem::create_directories(coll_dir);
-                auto otbx = coll_dir / "table.otbx";
+                std::filesystem::create_directories(otbx.parent_path());
                 if (std::filesystem::exists(otbx)) {
                     trace(log_,
                           "manager_disk_t::bootstrap_system_tables_sync loading : {} oid={}",
                           std::string(def.name),
                           static_cast<unsigned>(tbl_oid));
-                    // load_storage_disk_sync returns an error instead of throwing on the terminal
-                    // corrupt/refused case: this open/bootstrap chain must not throw (base_spaces
-                    // drives it pre-scheduler-start). The error is logged; the table is left
-                    // unloaded (file byte-identical) and a later resolve / WAL replay surfaces
-                    // the absence cleanly.
+                    // WHY THIS THROWS, AND WHY THE "MUST NOT THROW" ABOVE IT DOES NOT APPLY.
+                    // load_storage_disk_sync reports rather than throws because the load ctor
+                    // runs on the agent thread inside bootstrap_create_disk_inner_sync, which is
+                    // noexcept (manager_disk.hpp:93-95) — a throw from THERE terminates. The
+                    // throw below is from this lambda's own frame, on the bootstrap thread,
+                    // after that call has returned, and hundreds of lines before
+                    // scheduler_*->start() (base_spaces.cpp:651-653). It is the same
+                    // std::runtime_error the two existing startup refusals in base_spaces use
+                    // (:47, :56, :95): loud, and catchable by the embedder.
+                    //
+                    // AND WHY IT REFUSES AT ALL. Leaving the table unloaded and returning "not
+                    // freshly created" ALSO skipped the seeding branch, so the engine came up
+                    // with an EMPTY pg_catalog over live storage and the next DDL minted fresh
+                    // oids on top of it (restore_oid_generator_sync skips a table it cannot see,
+                    // so the frontier drops below oids that exist). An empty catalog over live
+                    // data is worse than a start that did not happen: the refusal writes and
+                    // deletes nothing, and a repeat start with the cause removed succeeds.
+                    //
                     // A7.6: the builtin schema is the catalog for a system table — it is what
                     // create would have used, and it is the overlay a never-checkpointed
                     // (crash-before-first-checkpoint) .otbx opens empty with.
                     if (auto err = load_storage_disk_sync(tbl_oid, sys_db_oid, otbx, def.columns);
                         err.contains_error()) {
-                        warn(log_,
-                             "bootstrap_system_tables_sync: failed to load system table {} oid={} : {}",
-                             std::string(def.name),
-                             static_cast<unsigned>(tbl_oid),
-                             err.what.c_str());
+                        error(log_,
+                              "bootstrap REFUSED , system table {} oid={} could not be opened: {}",
+                              std::string(def.name),
+                              static_cast<unsigned>(tbl_oid),
+                              err.what.c_str());
+                        throw std::runtime_error(
+                            "a pg_catalog system table could not be opened, refusing to start: " +
+                            std::string(err.what.c_str()));
                     }
-                    return false; // loaded (or failed-and-logged), not freshly created
+                    // THE SILENT TWIN. A crash between "the .otbx was created" and "its first
+                    // checkpoint committed" leaves a proven-young file: it opens HEALTHY and
+                    // EMPTY (A7.6 overlays the builtin schema). That used to return "not freshly
+                    // created", so every seeding branch was skipped and the catalog stayed empty
+                    // with no error anywhere. It is NOT a refusal case — the file is fine, and a
+                    // refusal would repeat on every start, which is the one outcome this whole
+                    // change exists to avoid. Treat it as freshly created and let the seeding run.
+                    //
+                    // ONLY FOR THE TABLES THAT OWN BUILTIN ROWS. For every other pg_* table an
+                    // empty load is the normal steady state of a database where nothing of that
+                    // kind was created, and calling it "fresh" would put it in freshly_created
+                    // and rewrite it on EVERY start — which is not merely wasteful, it breaks
+                    // bootstrap idempotence (the .otbx grows a checkpoint per restart).
+                    // NAMED SIDE EFFECT, ACCEPTED: if a user deleted the builtin pg_proc rows
+                    // (operator_unregister_udf can), a restart puts them back.
+                    needs_seeding = has_builtin_seed_rows(tbl_oid) && rows_in_sync(tbl_oid) == 0;
+                } else {
+                    trace(log_,
+                          "manager_disk_t::bootstrap_system_tables_sync creating disk : {} oid={}",
+                          std::string(def.name),
+                          static_cast<unsigned>(tbl_oid));
+                    // System tables are never computed (relkind='g' is user-table-only).
+                    create_storage_disk_sync(tbl_oid, sys_db_oid, def.columns, otbx, /*is_computed=*/false);
+                    took_create_leg = true;
+                    needs_seeding = true;
                 }
-                trace(log_,
-                      "manager_disk_t::bootstrap_system_tables_sync creating disk : {} oid={}",
-                      std::string(def.name),
-                      static_cast<unsigned>(tbl_oid));
-                // System tables are never computed (relkind='g' is user-table-only).
-                create_storage_disk_sync(tbl_oid, sys_db_oid, def.columns, otbx, /*is_computed=*/false);
             }
-            return true; // freshly created
+            // ONE shared post-condition over BOTH legs. create_storage_disk_sync returns void
+            // and swallows construction_failed() (agent_disk.cpp:151-160, reachable with a
+            // device that refuses the very first write); bootstrap_disk_inner_sync collapses
+            // three outcomes into one bool (agent_disk.cpp:130-142); and load_storage_disk_sync
+            // ignores transfer_to_agent's result (manager_disk_io.cpp:447). All three end the
+            // same way — no storage for this oid — and this is the one place that can see it.
+            if (agents_.empty() || agents_[0] == nullptr || !agents_[0]->has_storage_sync(tbl_oid)) {
+                // A REFUSAL MUST BE RETRYABLE, so it may not leave behind the one thing that
+                // would block the retry. A create that failed on its very first write still
+                // leaves the file the OPEN created: zero bytes, no header, no root. On the next
+                // start that file takes the LOAD leg and is refused as "not a database" — so a
+                // transient device error would have turned into a database nobody can open
+                // again. Removing it destroys no evidence (it never held a byte, this call made
+                // it seconds ago, and the log line below names it); a file that already existed
+                // when this call started took the load leg and is never touched here.
+                if (took_create_leg) {
+                    std::error_code ec;
+                    if (std::filesystem::exists(otbx, ec) && std::filesystem::file_size(otbx, ec) == 0 && !ec) {
+                        std::filesystem::remove(otbx, ec);
+                    }
+                }
+                error(log_,
+                      "bootstrap REFUSED , system table {} oid={} did not come up (path {})",
+                      std::string(def.name),
+                      static_cast<unsigned>(tbl_oid),
+                      otbx.string());
+                throw std::runtime_error("a pg_catalog system table did not come up, refusing to start: " +
+                                         std::string(def.name));
+            }
+            return needs_seeding;
+        };
+
+        // THE BOUNDARY, AND IT IS HONOURED BELOW. Refuse only where a repeat start with the
+        // cause removed SUCCEEDS. So: no throw on a failed CHECKPOINT of a freshly created
+        // system table (that would leave a never-checkpointed .otbx which loads empty forever
+        // and would then refuse forever), and no throw on a successful EMPTY load (seeded
+        // above instead).
+
+        // direct_append_sync answers with the appended row's START ROW, not a count
+        // (table_storage_adapter_t::append; manager_disk_storage.cpp:11-27, :63-71), and it
+        // returns 0 both for the FIRST row of a fresh table and for a failed append — so its
+        // answer cannot tell success from failure at any of the five bootstrap call sites, and
+        // all five discard it. The post-condition is therefore stated on the TABLE: a system
+        // table this bootstrap seeded must hold exactly the rows it wrote.
+        auto require_seeded = [&](catalog::oid_t tbl_oid, std::string_view tbl_name, std::uint64_t expected) {
+            const auto seeded = rows_in_sync(tbl_oid);
+            if (seeded != expected) {
+                error(log_,
+                      "bootstrap REFUSED , system table {} oid={} kept {} of the {} builtin rows it was seeded with",
+                      std::string(tbl_name),
+                      static_cast<unsigned>(tbl_oid),
+                      seeded,
+                      expected);
+                throw std::runtime_error("a pg_catalog system table could not be seeded, refusing to start: " +
+                                         std::string(tbl_name));
+            }
         };
 
         std::unordered_set<catalog::oid_t> freshly_created;
@@ -181,6 +294,7 @@ namespace services::disk {
                     chunk.set_value(1, 0, std::string_view("UTC"));
                 });
                 direct_append_sync(catalog::well_known_oid::pg_settings_table, row);
+                require_seeded(catalog::well_known_oid::pg_settings_table, settings_def->name, 1);
             }
             auto tz_name = read_setting_sync("TimeZone");
             if (!tz_name.empty()) {
@@ -238,23 +352,28 @@ namespace services::disk {
                     chunk.set_value(1, 0, db.name);
                 });
                 direct_append_sync(pg_database_oid, row);
+                require_seeded(pg_database_oid, def->name, 1);
             }
         }
 
         if (freshly_created.count(pg_namespace_oid_tbl)) {
             if (auto* def = catalog::find_system_table(pg_namespace_oid_tbl)) {
+                std::uint64_t written = 0;
                 for (const auto& nrow : builtin_namespace_rows()) {
                     auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto*) {
                         chunk.set_value(0, 0, nrow.oid);
                         chunk.set_value(1, 0, nrow.name);
                     });
                     direct_append_sync(pg_namespace_oid_tbl, row);
+                    ++written;
                 }
+                require_seeded(pg_namespace_oid_tbl, def->name, written);
             }
         }
 
         if (freshly_created.count(pg_type_oid)) {
             if (auto* def = catalog::find_system_table(pg_type_oid)) {
+                std::uint64_t written = 0;
                 for (const auto& trow : builtin_type_rows()) {
                     auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto*) {
                         chunk.set_value(0, 0, trow.oid);
@@ -262,12 +381,15 @@ namespace services::disk {
                         chunk.set_value(2, 0, pg_catalog_ns_oid);
                     });
                     direct_append_sync(pg_type_oid, row);
+                    ++written;
                 }
+                require_seeded(pg_type_oid, def->name, written);
             }
         }
 
         if (freshly_created.count(pg_proc_oid)) {
             if (auto* def = catalog::find_system_table(pg_proc_oid)) {
+                std::uint64_t written = 0;
                 for (const auto& frow : builtin_proc_rows()) {
                     auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto*) {
                         chunk.set_value(0, 0, frow.oid);
@@ -275,7 +397,9 @@ namespace services::disk {
                         chunk.set_value(2, 0, pg_catalog_ns_oid);
                     });
                     direct_append_sync(pg_proc_oid, row);
+                    ++written;
                 }
+                require_seeded(pg_proc_oid, def->name, written);
             }
         }
 

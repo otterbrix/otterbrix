@@ -3,6 +3,7 @@
 #include <components/base/collection_full_name.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
+#include <core/result_wrapper.hpp>
 #include <services/disk/manager_disk.hpp>
 
 #include <cstdint>
@@ -47,8 +48,11 @@ namespace components::operators {
             }
         }
         if (!exists) {
-            output_ = nullptr;
-            mark_executed();
+            set_error(core::error_t{core::error_code_t::unrecognized_function,
+                                    std::pmr::string{"unregister_udf: no overload of '" + function_name_ +
+                                                         "' matching this signature is registered",
+                                                     resource_}});
+            mark_failed();
             co_return;
         }
 
@@ -66,7 +70,15 @@ namespace components::operators {
                                                    exec_ctx,
                                                    function_name_,
                                                    std::uint64_t{0});
-            auto matches = co_await std::move(rfbnf);
+            auto matches_r = co_await std::move(rfbnf);
+            if (matches_r.has_error()) {
+                // A pg_proc read that FAILED is not "there are no rows to purge": acting on it
+                // would leave the catalog rows behind while reporting the drop as done.
+                set_error(matches_r.error());
+                mark_failed();
+                co_return;
+            }
+            auto& matches = matches_r.value();
             constexpr components::catalog::oid_t pg_proc_coll = components::catalog::well_known_oid::pg_proc_table;
             constexpr components::catalog::oid_t pg_depend_coll = components::catalog::well_known_oid::pg_depend_table;
             // Collect every (table, col, oid) delete across all matches into one

@@ -535,9 +535,15 @@ TEST_CASE("integration::cpp::test_jsonb_support::view_over_navigation") {
     CHECK(i64_set(cur, "ab") == std::set<int64_t>{10, 30, 50});
     CHECK(is_null(cur, "ab", 3));
 
-    // NOTE: a narrowed projection over the view is ignored — "SELECT ab FROM jp.v"
-    // still returns both columns. That is a view bug, not a jsonb one (it happens
-    // for views over plain tables too), so it is only recorded, not pinned here.
+    // A narrowed projection over the view USED TO be ignored — "SELECT ab FROM
+    // jp.v" came back with both columns, because view expansion replaced the whole
+    // plan with the view body. It no longer does; the general case is pinned in
+    // integration/cpp/test/test_view_expansion.cpp, and here it is checked once
+    // over a navigated column, which is what this file is about.
+    auto narrowed = exec(d, "SELECT ab FROM jp.v;");
+    REQUIRE(narrowed->is_success());
+    CHECK(aliases(narrowed) == std::set<std::string>{"ab"});
+    CHECK(narrowed->size() == 4);
 }
 
 // [I] INSERT ... SELECT lands each projected value in its target column. The

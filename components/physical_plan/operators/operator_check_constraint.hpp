@@ -68,7 +68,12 @@ namespace components::operators {
         // Fixed-ARRAY columns (NOT NULL, no DEFAULT) and their declared sizes: a value
         // shorter than the size cannot be padded and is rejected with an error.
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;
-        // (name, SQL text) as stored in pg_constraint.conexpr — compiled in validate_().
+        // (name, SQL text) as stored in pg_constraint.conexpr — compiled in validate_()
+        // into `column OP constant` / `column IS [NOT] NULL` leaves under AND/OR/NOT.
+        // Text outside those shapes FAILS the statement: compiling it to TRUE (which is
+        // what used to happen) is a constraint the user declared and nothing enforces.
+        // The DDL path refuses those shapes at the declaration (deparse_check_expr), so
+        // this is the last line of defence for text that arrived by another route.
         std::vector<std::pair<std::string, std::string>> check_exprs_;
         // Literals the compiled CHECKs reference, bound as the parameters their graphs read.
         types::parameter_map_t check_params_{resource_};

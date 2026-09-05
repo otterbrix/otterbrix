@@ -160,7 +160,8 @@ TEST_CASE("services::disk::pg_depend::function_cascades_with_namespace") {
     REQUIRE(ns_oid >= FIRST_USER_OID);
     disk_test_helpers::test_drop_namespace(fx, ns_oid);
     auto rr = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("ns_e"), std::uint64_t{0});
-    REQUIRE_FALSE(rr.found);
+    REQUIRE_FALSE(rr.has_error());
+    REQUIRE_FALSE(rr.value().found);
 }
 
 // 6. ddl_drop_type RESTRICT goes through (no dependents on a freshly-created standalone type).

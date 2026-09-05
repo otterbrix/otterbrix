@@ -13,6 +13,7 @@
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
+#include <core/pmr.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/record.hpp>
@@ -118,8 +119,11 @@ namespace {
         configuration::config_wal c;
         c.path = dir;
         c.on = true;
-        services::wal::wal_reader_t reader(c, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        core::pmr::otterbrix_resource reader_resource;
+        services::wal::wal_reader_t reader(&reader_resource, c, log);
+        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        REQUIRE_FALSE(records_result.has_error());
+        auto& records = records_result.value();
         std::size_t n = 0;
         for (auto& r : records) {
             if (r.is_physical() && r.table_oid != components::catalog::INVALID_OID &&
@@ -134,8 +138,11 @@ namespace {
         configuration::config_wal c;
         c.path = dir;
         c.on = true;
-        services::wal::wal_reader_t reader(c, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        core::pmr::otterbrix_resource reader_resource;
+        services::wal::wal_reader_t reader(&reader_resource, c, log);
+        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        REQUIRE_FALSE(records_result.has_error());
+        auto& records = records_result.value();
         std::size_t n = 0;
         for (auto& r : records) {
             if (r.is_physical() && r.table_oid == target_oid)
@@ -156,8 +163,11 @@ namespace {
         configuration::config_wal c;
         c.path = dir;
         c.on = true;
-        services::wal::wal_reader_t reader(c, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        core::pmr::otterbrix_resource reader_resource;
+        services::wal::wal_reader_t reader(&reader_resource, c, log);
+        auto records_result = reader.read_committed_records(services::wal::id_t{0});
+        REQUIRE_FALSE(records_result.has_error());
+        auto& records = records_result.value();
         std::vector<phys_rec_t> seq;
         for (auto& r : records) {
             if (r.is_physical() && r.table_oid != components::catalog::INVALID_OID &&
@@ -332,8 +342,11 @@ TEST_CASE("services::disk::wal_catalog::all_records_under_pg_catalog_database") 
     configuration::config_wal c;
     c.path = dir;
     c.on = true;
-    services::wal::wal_reader_t reader(c, log);
-    auto records = reader.read_committed_records(services::wal::id_t{0});
+    core::pmr::otterbrix_resource reader_resource;
+    services::wal::wal_reader_t reader(&reader_resource, c, log);
+    auto records_result = reader.read_committed_records(services::wal::id_t{0});
+    REQUIRE_FALSE(records_result.has_error());
+    auto& records = records_result.value();
     bool seen_any = false;
     for (auto& r : records) {
         if (!r.is_physical())
@@ -452,7 +465,12 @@ TEST_CASE("services::disk::wal_catalog::agent0_catalog_wal_ordering") {
         fx.invoke(&manager_disk_t::delete_pg_catalog_rows, auto_ctx(), pg_depend, std::int64_t{1}, dep_objid);
 
         // (3) append a pg_index row — a DIFFERENT catalog, after the delete.
-        auto idx_row = catalog::build_pg_index_row(&fx.resource, idx_oid, idx_oid, std::string("0"), true, components::catalog::indtype::single);
+        auto idx_row = catalog::build_pg_index_row(&fx.resource,
+                                                   idx_oid,
+                                                   idx_oid,
+                                                   std::string("0"),
+                                                   true,
+                                                   components::catalog::indtype::single);
         appends_local.push_back(disk_test_helpers::append_ok(
             fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(idx_row))));
 
@@ -490,7 +508,12 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const catalog::oid_t idx_oid = oids[0];
 
-        auto idx_row = catalog::build_pg_index_row(&fx.resource, idx_oid, idx_oid, std::string("0"), true, components::catalog::indtype::single);
+        auto idx_row = catalog::build_pg_index_row(&fx.resource,
+                                                   idx_oid,
+                                                   idx_oid,
+                                                   std::string("0"),
+                                                   true,
+                                                   components::catalog::indtype::single);
         auto rng = disk_test_helpers::append_ok(
             fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_index, std::move(idx_row)));
         std::vector<components::pg_catalog_append_range_t> appends_local;

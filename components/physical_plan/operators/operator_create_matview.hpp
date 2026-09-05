@@ -8,21 +8,29 @@
 
 namespace components::operators {
 
-    // Composite physical operator for CREATE MATERIALIZED VIEW (relkind='m').
+    // Composite physical operator for CREATE MATERIALIZED VIEW ... WITH NO DATA
+    // (relkind='m').
     //
     // Performs all matview creation steps atomically in a single async coroutine:
     //   1. Create physical heap storage for the matview.
     //   2. Register the matview with the index manager.
     //   3. Write pg_class + pg_attribute + pg_rewrite + pg_depend rows.
-    //   4. Drive body_op_ (compiled body SELECT plan) to completion, gathering
-    //      its output chunk.
-    //   5. Append the body's rows into the matview's heap (mirror of
-    //      operator_insert: storage_append + WAL + index forwarding).
+    //
+    // It does NOT populate the matview, and it no longer pretends it might. It used
+    // to take the compiled body plan as `body_op` and then never drive it, silenced
+    // with `(void) body_op_;` — so the steps 4 and 5 this comment described (drive
+    // the body, append its rows) never existed. Driving a scan from inside this
+    // operator's own await hits an actor_zeta nested-await failure, and the
+    // alternative — lowering CREATE to sequence_t(create, insert) — needs an insert
+    // whose column bindings are stamped by validate/enrich, both of which run BEFORE
+    // the planner mints the matview's oid and against a relation that does not exist
+    // yet. Rather than keep a dead parameter that reads like a feature, the form
+    // that needs population (the implicit WITH DATA) is refused in the transformer
+    // (components/sql/transformer/impl/transform_matview.cpp).
     //
     // Pipeline-canonical: dispatched as a single logical_plan node
     // (create_matview_t) → planner stamps catalog_writes + mv_oid →
-    // physical_plan_generator builds this operator with body_op_ compiled via
-    // the standard create_plan recursion. No re-parsing in dispatcher, no
+    // physical_plan_generator builds this operator. No re-parsing in dispatcher, no
     // follow-up plan dispatches.
     class operator_create_matview_t final : public read_write_operator_t {
     public:
@@ -33,14 +41,12 @@ namespace components::operators {
                                   components::catalog::oid_t mv_oid,
                                   components::catalog::oid_t namespace_oid,
                                   std::vector<table::column_definition_t> columns,
-                                  std::vector<catalog_write_t> catalog_writes,
-                                  operator_ptr body_op);
+                                  std::vector<catalog_write_t> catalog_writes);
 
         // Sourceless SINK leaf (no left-chain data source): the executor admits it
         // as a streaming sink-root and drives await_async_and_resume via the
-        // bottom-up needs_async_finalize pass. The compiled body_op_ is run INSIDE
-        // await_async_and_resume (via ctx->runner), not as a chain child, so the
-        // operator stays a sourceless leaf. push()/finalize() inherit no-op defaults.
+        // bottom-up needs_async_finalize pass. push()/finalize() inherit no-op
+        // defaults.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
@@ -50,7 +56,6 @@ namespace components::operators {
         components::catalog::oid_t namespace_oid_;
         std::vector<table::column_definition_t> columns_;
         std::vector<catalog_write_t> catalog_writes_;
-        operator_ptr body_op_;
     };
 
 } // namespace components::operators

@@ -105,7 +105,9 @@ namespace {
 TEST_CASE("services::disk::mvcc::auto_commit_create_namespace_visible") {
     fixture fx;
     disk_test_helpers::test_create_namespace(fx, std::string("ns_a"));
-    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_a"), std::uint64_t{0});
+    auto rr = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_a"), std::uint64_t{0});
+    REQUIRE_FALSE(rr.has_error());
+    auto& r = rr.value();
     REQUIRE(r.found);
 }
 
@@ -128,9 +130,10 @@ TEST_CASE("services::disk::mvcc::uncommitted_insert_invisible_to_other_sessions"
         // Intentionally no MVCC swap (no storage_publish_commits call).
     }
     // auto_ctx() uses transaction_id=0, so it must NOT see the uncommitted row.
-    auto r =
-        fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_uncommitted"), std::uint64_t{0});
-    REQUIRE_FALSE(r.found);
+    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_uncommitted"),
+                       std::uint64_t{0});
+    REQUIRE_FALSE(r.has_error());
+    REQUIRE_FALSE(r.value().found);
 }
 
 // 3. DROP TABLE at txn=0 (auto-commit) immediately hides the row.
@@ -212,10 +215,12 @@ TEST_CASE("services::disk::mvcc::resolve_includes_uncommitted_deletes") {
     }
 
     auto kept = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("kept_ns"), std::uint64_t{0});
-    REQUIRE(kept.found);
+    REQUIRE_FALSE(kept.has_error());
+    REQUIRE(kept.value().found);
     auto dropped =
         fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("dropped_ns"), std::uint64_t{0});
-    REQUIRE(dropped.found);
+    REQUIRE_FALSE(dropped.has_error());
+    REQUIRE(dropped.value().found);
 }
 
 // version_monotonic test deleted: catalog_version_ infrastructure removed.

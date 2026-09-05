@@ -213,7 +213,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
     INFO("host customization: set_explain_renderer swaps output, SQL unchanged");
     {
         // Register the fake at slot 0 — the default slot a plain EXPLAIN (render_id == 0) selects.
-        REQUIRE(dispatcher->set_explain_renderer(0, &fake_render));
+        REQUIRE_FALSE(dispatcher->set_explain_renderer(0, &fake_render).contains_error());
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;");
         REQUIRE(cur->is_success());
@@ -382,8 +382,8 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
     }
 
     // Register two DISTINCT host renderers into slots 1 and 2; slot 0 stays the built-in postgres.
-    REQUIRE(dispatcher->set_explain_renderer(1, &fake_render));
-    REQUIRE(dispatcher->set_explain_renderer(2, &fake_render_2));
+    REQUIRE_FALSE(dispatcher->set_explain_renderer(1, &fake_render).contains_error());
+    REQUIRE_FALSE(dispatcher->set_explain_renderer(2, &fake_render_2).contains_error());
 
     INFO("per-query selection: id 1 -> fake, id 0 -> postgres default");
     {
@@ -441,7 +441,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
 
     INFO("EXPLAIN ANALYZE via a custom renderer sees analyze == true");
     {
-        REQUIRE(dispatcher->set_explain_renderer(3, &fake_render_analyze));
+        REQUIRE_FALSE(dispatcher->set_explain_renderer(3, &fake_render_analyze).contains_error());
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN ANALYZE SELECT * FROM TestDatabase.orders;", 3);
         REQUIRE(cur->is_success());
@@ -486,17 +486,19 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
     {
         // A bogus huge id must return false (bounded) — never resize the per-executor registry to
         // gigabytes of fill (which, with exceptions disabled, would abort the process).
-        REQUIRE_FALSE(dispatcher->set_explain_renderer(4000000000u, &fake_render));
+        REQUIRE(dispatcher->set_explain_renderer(4000000000u, &fake_render).contains_error());
     }
 
     INFO("a null renderer is rejected (reported failure, not silent success)");
-    { REQUIRE_FALSE(dispatcher->set_explain_renderer(5, nullptr)); }
+    {
+        REQUIRE(dispatcher->set_explain_renderer(5, nullptr).contains_error());
+    }
 
     INFO("out-of-range render_id resolves to slot 0 — the host's default, not the built-in");
     {
         // Host overwrites the default slot 0 with its own renderer; an out-of-range query id must
         // resolve to THAT slot-0 default (not the hardcoded built-in postgres).
-        REQUIRE(dispatcher->set_explain_renderer(0, &fake_render_2)); // slot 0 = FAKE-SPARK
+        REQUIRE_FALSE(dispatcher->set_explain_renderer(0, &fake_render_2).contains_error()); // slot 0 = FAKE-SPARK
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", 999);
         REQUIRE(cur->is_success());
@@ -509,7 +511,7 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
     {
         // slot 1 = FAKE-RENDERER; slot 0 was overwritten to FAKE-SPARK above. No bound parameters are
         // needed — the point is that this entry point stamps render_id like execute_sql does.
-        REQUIRE(dispatcher->set_explain_renderer(1, &fake_render));
+        REQUIRE_FALSE(dispatcher->set_explain_renderer(1, &fake_render).contains_error());
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql_with_params(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", {}, 1);
         REQUIRE(cur->is_success());
@@ -785,8 +787,7 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
 // stamped merged path and folds into each side's full_scan (a pushable
 // `column OP constant` becomes a Seq Scan predicate, so NO "Filter" node remains).
 TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
-    auto config =
-        test_helpers::make_test_config("/tmp/test_explain/join_shared_col", true);
+    auto config = test_helpers::make_test_config("/tmp/test_explain/join_shared_col", true);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -863,8 +864,7 @@ namespace {
 } // namespace
 
 TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation") {
-    auto config =
-        test_helpers::make_test_config("/tmp/test_explain/transitive_equi", false);
+    auto config = test_helpers::make_test_config("/tmp/test_explain/transitive_equi", false);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 

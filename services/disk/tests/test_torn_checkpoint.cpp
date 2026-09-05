@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -360,9 +361,17 @@ TEST_CASE("services::disk::torn::torn_write_mid_round_recovers_root_n_without_ar
 
 // 5. A stray sidecar in the engine-owned `table.otbx.*` namespace — exactly what a build
 // predating A7.5 leaves behind as its whole-file backup / quarantine files — is a LOUD
-// refusal on the real load path, and nothing is touched: the .otbx stays byte-identical,
-// the stray is neither deleted nor renamed, and the refusal is per-table (the rest of the
-// bootstrap still loads). Removing the stray makes the same file load again.
+// refusal on the real load path, and nothing is touched: the .otbx stays byte-identical and
+// the stray is neither deleted nor renamed. Removing the stray makes the same file load again.
+//
+// THE REFUSAL IS NOW THE WHOLE START, NOT ONE TABLE. This case used to assert the opposite:
+// that the bootstrap came up with the victim table simply absent. That is precisely the
+// behaviour D2 inverted — an engine that opens with a pg_* table missing has an EMPTY catalog
+// over live storage, and the next DDL mints fresh oids on top of it. A start that did not
+// happen is recoverable; a catalog that silently lost a table is not. Everything else this
+// case pins is unchanged and still true: the refusal writes nothing, deletes nothing, and
+// preserves the operator's evidence — and the final block proves recoverability by removing
+// the stray and starting again.
 TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_untouched") {
     namespace catalog = components::catalog;
     cleanup_torn_dir();
@@ -412,9 +421,14 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
         const auto stray_bytes_before = slurp_file(stray);
         {
             torn_manager_t m(dir);
-            m.manager->bootstrap_system_tables_sync();
+            REQUIRE_THROWS_AS(m.manager->bootstrap_system_tables_sync(), std::runtime_error);
             CHECK_FALSE(m.manager->has_storage(catalog::oid_t{victim_oid}));
-            CHECK(m.manager->has_storage(catalog::oid_t{other_oid}));
+            // A STOP, not a teardown: the tables bootstrapped BEFORE the victim are up and
+            // untouched, the ones after it were never opened. pg_settings is bootstrapped
+            // first of all (it holds the timezone every later seed reads); pg_class follows
+            // pg_namespace in all_system_tables() order, so the refusal reaches it first.
+            CHECK(m.manager->has_storage(catalog::well_known_oid::pg_settings_table));
+            CHECK_FALSE(m.manager->has_storage(catalog::oid_t{other_oid}));
         }
         CHECK(slurp_file(victim_otbx) == otbx_bytes_before); // byte-identical, not just "no error"
         REQUIRE(std::filesystem::exists(stray));             // evidence is preserved

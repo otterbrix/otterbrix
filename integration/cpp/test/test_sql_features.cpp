@@ -4660,9 +4660,10 @@ TEST_CASE("integration::cpp::test_sql_features::comma_join") {
 
 // CREATE VIEW e2e — verifies SELECT * FROM v expands through the pipeline.
 // Pass 1 stamps view_sql on the resolve_table metadata (from pg_rewrite.ev_action),
-// Phase 1.5 in the dispatcher re-parses + transforms the body and splices the
-// sub-plan in. First iteration handles top-level `SELECT * FROM v` only — see
-// docs/pr496-followups.md #1 for composition-on-top-of-view followup.
+// then the executor re-parses + transforms the body and SPLICES it under the
+// reference node (components/planner/view_expansion.hpp). Composition on top of a
+// view — outer WHERE / narrowed projection / aggregate / join — is covered by
+// test_view_expansion.cpp; this case stays the plain `SELECT * FROM v` smoke test.
 TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
     auto config = test_create_config("/tmp/test_sql_features/create_view_e2e");
     test_clear_directory(config);
@@ -4693,12 +4694,17 @@ TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
 // CREATE MATERIALIZED VIEW e2e — verifies the matview is a real physical
 // table (relkind='m') with pg_class+pg_attribute+pg_rewrite rows, created
 // through the pipeline-canonical path (logical_plan → planner → composite
-// operator_create_matview_t → executor → disk). First-iteration semantics
-// follow PostgreSQL's `WITH NO DATA` default — initial population from body
-// SELECT is deferred to REFRESH MATERIALIZED VIEW (followup #2). After CREATE,
-// the matview exists as an empty table; `SELECT * FROM mv` returns 0 rows
-// without view expansion (relkind='m' falls through to the regular scan
-// pipeline via operator_resolve_table else-branch).
+// operator_create_matview_t → executor → disk). After CREATE, the matview
+// exists as an empty table; `SELECT * FROM mv` returns 0 rows without view
+// expansion (relkind='m' falls through to the regular scan pipeline via
+// operator_resolve_table else-branch).
+//
+// WITH NO DATA is now WRITTEN OUT. It was implicit here, and the comment claimed
+// PostgreSQL defaults to it — PostgreSQL defaults to WITH DATA. Nothing populates
+// a matview at CREATE time and REFRESH is not lowered, so the implicit form is
+// now refused instead of quietly producing an empty matview (see
+// test_view_expansion::matview_without_no_data_is_refused). The assertions below
+// are unchanged: this case is about the physical table and its catalog rows.
 TEST_CASE("integration::cpp::test_sql_features::create_matview_e2e") {
     auto config = test_create_config("/tmp/test_sql_features/create_matview_e2e");
     test_clear_directory(config);
@@ -4717,13 +4723,13 @@ TEST_CASE("integration::cpp::test_sql_features::create_matview_e2e") {
     REQUIRE(dispatcher
                 ->execute_sql(session,
                               "CREATE MATERIALIZED VIEW TestDatabase.mv AS "
-                              "SELECT col_a FROM TestDatabase.t WHERE col_b > 10")
+                              "SELECT col_a FROM TestDatabase.t WHERE col_b > 10 WITH NO DATA")
                 ->is_success());
 
     INFO("SELECT * FROM mv reads the matview's empty heap (WITH NO DATA semantics)");
     auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.mv");
     REQUIRE(cur->is_success());
-    REQUIRE(cur->size() == 0); // empty until REFRESH populates (followup #2)
+    REQUIRE(cur->size() == 0); // WITH NO DATA was asked for, so empty is the answer
 }
 
 // PostgreSQL CREATE DATABASE / CREATE TABLE IF NOT EXISTS — second CREATE on the same

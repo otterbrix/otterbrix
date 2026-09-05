@@ -447,11 +447,19 @@ namespace components::operators {
                                                      count,
                                                      ctx->txn.transaction_id,
                                                      db_oid);
-                    auto wal_id = co_await std::move(wf);
+                    auto wal_result = co_await std::move(wf);
+                    if (wal_result.has_error()) {
+                        // WAL-FIRST: the journal record is what makes the storage mark below
+                        // replayable. A refused record used to come back as a wal_id anyway,
+                        // so the rows were marked deleted with nothing in the journal to
+                        // replay — and the flush was then asked to advance to an id that does
+                        // not exist. Fail the statement BEFORE the storage mark.
+                        co_return dml_detail::flush_outcome_t{wal_result.error(), false, 0, 0};
+                    }
                     auto [_df2, dff] = actor_zeta::send(ctx->disk_address,
                                                         &services::disk::manager_disk_t::flush,
                                                         ctx->session,
-                                                        wal_id);
+                                                        wal_result.value());
                     ctx->add_pending_disk_future(std::move(dff));
                 }
 

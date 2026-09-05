@@ -7,6 +7,7 @@
 #include <array>
 #include <charconv>
 #include <fast_float/fast_float.h>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -62,23 +63,29 @@ namespace components::operators {
         // a CHECK came to admit a row whose stored value it had never seen.)
 
         // Parse a literal constant string into a logical_value_t without a type hint.
-        types::logical_value_t parse_const(std::pmr::memory_resource* r, std::string_view s) {
+        // The WHOLE text must be one literal: a partial parse used to answer with what
+        // it managed to read and nothing said so, which turned `a > 1 + 1` into `a > 1`
+        // and `lo <= hi` into `lo <= 0` — a different constraint than the declared one,
+        // enforced silently. Nothing consumable => nullopt, and the caller refuses.
+        std::optional<types::logical_value_t> parse_const(std::pmr::memory_resource* r, std::string_view s) {
             if (s.size() >= 2 && s.front() == '\'' && s.back() == '\'')
                 return types::logical_value_t(r, std::string(s.substr(1, s.size() - 2)));
             if (s.find('.') != std::string_view::npos) {
                 double v{};
                 auto [ptr, ec] = fast_float::from_chars(s.data(), s.data() + s.size(), v);
-                if (ec == std::errc{})
+                if (ec == std::errc{} && ptr == s.data() + s.size())
                     return types::logical_value_t(r, v);
+                return std::nullopt;
             }
             bool neg = !s.empty() && s[0] == '-';
             auto str = neg ? s.substr(1) : s;
+            if (str.empty())
+                return std::nullopt;
             uint64_t u{};
             auto [ptr, ec] = std::from_chars(str.data(), str.data() + str.size(), u);
-            int64_t v{};
-            if (ec == std::errc{})
-                v = neg ? -static_cast<int64_t>(u) : static_cast<int64_t>(u);
-            return types::logical_value_t(r, v);
+            if (ec != std::errc{} || ptr != str.data() + str.size())
+                return std::nullopt;
+            return types::logical_value_t(r, neg ? -static_cast<int64_t>(u) : static_cast<int64_t>(u));
         }
 
         std::string_view trim(std::string_view s) {
@@ -106,29 +113,87 @@ namespace components::operators {
             return s;
         }
 
+        // Find `needle` in `expr` at TOP level: not inside a single-quoted string
+        // constant and not nested in parentheses. Scanning without that distinction is
+        // how `name = 'a > b'` came to be read as a comparison on " > ": the operator
+        // INSIDE the literal was taken for the predicate's own, the left side
+        // ("name = 'a") matched no column, and the whole CHECK compiled to TRUE.
+        size_t find_top_level(std::string_view expr, std::string_view needle) {
+            int depth = 0;
+            bool in_quotes = false;
+            for (size_t i = 0; i < expr.size(); ++i) {
+                const char c = expr[i];
+                if (c == '\'') {
+                    in_quotes = !in_quotes;
+                    continue;
+                }
+                if (in_quotes) {
+                    continue;
+                }
+                if (c == '(') {
+                    ++depth;
+                    continue;
+                }
+                if (c == ')') {
+                    if (depth > 0) {
+                        --depth;
+                    }
+                    continue;
+                }
+                if (depth == 0 && expr.compare(i, needle.size(), needle) == 0) {
+                    return i;
+                }
+            }
+            return std::string_view::npos;
+        }
+
         struct check_build_context {
             const vector::data_chunk_t* chunk;
             core::date::timezone_offset_t session_tz;
             types::parameter_map_t* params;
             uint64_t next_id;
+            // Names the constraint in every refusal below.
+            std::string_view constraint_name;
         };
 
-        expressions::expression_ptr
+        // A CHECK whose text this recogniser cannot read is a constraint that would be
+        // enforced by NOTHING. It used to compile to the constant TRUE and say nothing;
+        // the declaration path (deparse_check_expr) now refuses these shapes, and this is
+        // the last line of defence for a text that reached the catalog by another route.
+        core::error_t unevaluable(std::pmr::memory_resource* r,
+                                  const check_build_context& ctx,
+                                  std::string_view expr,
+                                  const std::string& why) {
+            std::string what = "CHECK constraint \"";
+            what.append(ctx.constraint_name);
+            what += "\" cannot be evaluated: ";
+            what += why;
+            what += " in \"";
+            what.append(expr);
+            what += "\"";
+            return core::error_t{core::error_code_t::invalid_constraint, std::pmr::string{std::move(what), r}};
+        }
+
+        core::result_wrapper_t<expressions::expression_ptr>
         build_check_expression(std::pmr::memory_resource* r, std::string_view expr, check_build_context& ctx);
 
-        expressions::expression_ptr
+        core::result_wrapper_t<expressions::expression_ptr>
         build_check_expression(std::pmr::memory_resource* r, std::string_view expr, check_build_context& ctx) {
             using CT = expressions::compare_type;
             expr = trim(expr);
 
             if (expr.empty())
-                return constant_leaf(r, true);
+                return unevaluable(r, ctx, expr, "the expression is empty");
 
             // NOT (...)
             if (expr.size() > 5 && expr.substr(0, 5) == "NOT (") {
+                auto inner = build_check_expression(r, strip_outer(expr.substr(4)), ctx);
+                if (inner.has_error()) {
+                    return inner;
+                }
                 auto combined = expressions::make_compare_union_expression(r, CT::union_not);
-                combined->append_child(build_check_expression(r, strip_outer(expr.substr(4)), ctx));
-                return combined;
+                combined->append_child(std::move(inner.value()));
+                return expressions::expression_ptr{std::move(combined)};
             }
 
             // Paren-led: find matching ')' then check for AND/OR after.
@@ -148,27 +213,34 @@ namespace components::operators {
                 }
                 if (close != std::string_view::npos) {
                     std::string_view after = trim(expr.substr(close + 1));
-                    if (after.size() >= 4 && after.substr(0, 4) == "AND ") {
-                        auto combined = expressions::make_compare_union_expression(r, CT::union_and);
-                        combined->append_child(build_check_expression(r, expr.substr(1, close - 1), ctx));
-                        combined->append_child(build_check_expression(r, strip_outer(after.substr(4)), ctx));
-                        return combined;
-                    }
-                    if (after.size() >= 3 && after.substr(0, 3) == "OR ") {
-                        auto combined = expressions::make_compare_union_expression(r, CT::union_or);
-                        combined->append_child(build_check_expression(r, expr.substr(1, close - 1), ctx));
-                        combined->append_child(build_check_expression(r, strip_outer(after.substr(3)), ctx));
-                        return combined;
+                    const bool is_and = after.size() >= 4 && after.substr(0, 4) == "AND ";
+                    const bool is_or = after.size() >= 3 && after.substr(0, 3) == "OR ";
+                    if (is_and || is_or) {
+                        auto left = build_check_expression(r, expr.substr(1, close - 1), ctx);
+                        if (left.has_error()) {
+                            return left;
+                        }
+                        auto right = build_check_expression(r, strip_outer(after.substr(is_and ? 4 : 3)), ctx);
+                        if (right.has_error()) {
+                            return right;
+                        }
+                        auto combined =
+                            expressions::make_compare_union_expression(r, is_and ? CT::union_and : CT::union_or);
+                        combined->append_child(std::move(left.value()));
+                        combined->append_child(std::move(right.value()));
+                        return expressions::expression_ptr{std::move(combined)};
                     }
                     if (close == expr.size() - 1)
                         return build_check_expression(r, expr.substr(1, close - 1), ctx);
                 }
             }
 
-            // IS NOT NULL / IS NULL
+            // IS NOT NULL / IS NULL. Matched at TOP level so a string constant that ENDS
+            // in " IS NULL" is not mistaken for the test itself.
             constexpr std::string_view kIsNotNull = " IS NOT NULL";
             constexpr std::string_view kIsNull = " IS NULL";
-            if (expr.size() > kIsNotNull.size() && expr.substr(expr.size() - kIsNotNull.size()) == kIsNotNull) {
+            if (expr.size() > kIsNotNull.size() &&
+                find_top_level(expr, kIsNotNull) == expr.size() - kIsNotNull.size()) {
                 auto col = std::string(trim(expr.substr(0, expr.size() - kIsNotNull.size())));
                 // Every table column is IN the row by the time this runs: an INSERT that
                 // omitted one had it expanded (to its DEFAULT, or NULL) before the append.
@@ -176,7 +248,7 @@ namespace components::operators {
                 // to no column of this write-set, and a CHECK says nothing about it.
                 auto ordinal = find_col_index(*ctx.chunk, col);
                 if (!ordinal.has_value()) {
-                    return constant_leaf(r, true);
+                    return expressions::expression_ptr{constant_leaf(r, true)};
                 }
                 // IS NOT NULL is not an operator of its own — it is a negated is_null, which is
                 // exactly how the graph builder wants to see it.
@@ -185,19 +257,19 @@ namespace components::operators {
                                                                            CT::is_null,
                                                                            column_operand(r, *ordinal),
                                                                            expressions::param_storage{}));
-                return negated;
+                return expressions::expression_ptr{std::move(negated)};
             }
-            if (expr.size() > kIsNull.size() && expr.substr(expr.size() - kIsNull.size()) == kIsNull) {
+            if (expr.size() > kIsNull.size() && find_top_level(expr, kIsNull) == expr.size() - kIsNull.size()) {
                 auto col = std::string(trim(expr.substr(0, expr.size() - kIsNull.size())));
                 // Mirror of IS NOT NULL: the column is in the row, so read it.
                 auto ordinal = find_col_index(*ctx.chunk, col);
                 if (!ordinal.has_value()) {
-                    return constant_leaf(r, true);
+                    return expressions::expression_ptr{constant_leaf(r, true)};
                 }
-                return expressions::make_compare_expression(r,
-                                                            CT::is_null,
-                                                            column_operand(r, *ordinal),
-                                                            expressions::param_storage{});
+                return expressions::expression_ptr{expressions::make_compare_expression(r,
+                                                                                        CT::is_null,
+                                                                                        column_operand(r, *ordinal),
+                                                                                        expressions::param_storage{})};
             }
 
             // Binary comparison: try operators longest-first to avoid ambiguous matches.
@@ -208,7 +280,7 @@ namespace components::operators {
                 needle += ' ';
                 needle += op;
                 needle += ' ';
-                auto pos = expr.find(needle);
+                auto pos = find_top_level(expr, needle);
                 if (pos == std::string_view::npos)
                     continue;
 
@@ -222,7 +294,16 @@ namespace components::operators {
                 bool col_is_rhs = is_const(lhs);
 
                 auto col_name = std::string(col_is_rhs ? rhs : lhs);
-                auto const_val = parse_const(r, col_is_rhs ? lhs : rhs);
+                const auto const_text = col_is_rhs ? lhs : rhs;
+                auto const_val = parse_const(r, const_text);
+                if (!const_val.has_value()) {
+                    // Not a literal at all: another column (`lo <= hi`), or arithmetic
+                    // (`a > 1 + 1`). Both used to be read as the number this parser could
+                    // scavenge from the text — 0 and 1 respectively — so the row was judged
+                    // against a bound nobody wrote.
+                    return unevaluable(r, ctx, expr, std::string{"\""} + std::string{const_text} +
+                                                         "\" is not a constant");
+                }
 
                 // (An `apply` lambda used to fold a compare_t into this operator's answer,
                 // for the one caller that decided an ABSENT column's comparison against the
@@ -231,7 +312,7 @@ namespace components::operators {
                 if (!ordinal.has_value()) {
                     // Not a column of this write-set (see the IS NOT NULL arm): a CHECK over
                     // it has nothing to compare.
-                    return constant_leaf(r, true);
+                    return expressions::expression_ptr{constant_leaf(r, true)};
                 }
 
                 const auto compare_type_of = [&op]() {
@@ -249,24 +330,31 @@ namespace components::operators {
                 };
 
                 bool convertible = true;
-                auto literal = constant_operand(const_val,
+                auto literal = constant_operand(*const_val,
                                                 ctx.chunk->data[*ordinal].type(),
                                                 ctx.session_tz,
                                                 ctx.params,
                                                 &ctx.next_id,
                                                 &convertible);
                 if (!convertible) {
-                    // The literal does not fit the column's type, so the CHECK can say nothing
-                    // about the value — the same answer the unrecognised-expression case gives.
-                    return constant_leaf(r, true);
+                    // The literal does not fit the column's type, so there is no comparison
+                    // to make. Passing the row was the same silence as the unrecognised case:
+                    // the constraint the user declared judged nothing.
+                    return unevaluable(r,
+                                       ctx,
+                                       expr,
+                                       std::string{"\""} + std::string{const_text} +
+                                           "\" does not convert to the type of column \"" + col_name + "\"");
                 }
                 auto column = column_operand(r, *ordinal);
-                return col_is_rhs ? expressions::make_compare_expression(r, compare_type_of(), literal, column)
-                                  : expressions::make_compare_expression(r, compare_type_of(), column, literal);
+                return expressions::expression_ptr{
+                    col_is_rhs ? expressions::make_compare_expression(r, compare_type_of(), literal, column)
+                               : expressions::make_compare_expression(r, compare_type_of(), column, literal)};
             }
 
-            // Unrecognised expression — pass.
-            return constant_leaf(r, true);
+            // Unrecognised expression. It used to compile to the constant TRUE, which is
+            // how a declared constraint came to be enforced by nothing at all.
+            return unevaluable(r, ctx, expr, "the expression is not a comparison this engine can evaluate");
         }
 
     } // anonymous namespace
@@ -327,11 +415,20 @@ namespace components::operators {
             check_build_context build_ctx{schema_chunk,
                                           graph_context.timezone_offset,
                                           &check_params_,
-                                          0};
+                                          0,
+                                          std::string_view{}};
             checks.reserve(check_exprs_.size());
             for (const auto& entry : check_exprs_) {
                 compiled_check_t compiled;
-                auto tree = build_check_expression(resource_, entry.second, build_ctx);
+                build_ctx.constraint_name = entry.first;
+                auto tree_r = build_check_expression(resource_, entry.second, build_ctx);
+                if (tree_r.has_error()) {
+                    // A constraint the engine cannot read is not a constraint that permits
+                    // everything: it fails the statement that would have been judged by it.
+                    set_error(tree_r.error());
+                    return;
+                }
+                auto tree = std::move(tree_r.value());
                 compiled.condition = expressions::classify_condition(tree);
                 if (compiled.condition == expressions::condition_kind::computed) {
                     auto types = schema_chunk->types();

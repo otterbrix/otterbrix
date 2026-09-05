@@ -756,8 +756,28 @@ namespace components::planner {
 
     auto planner_t::create_plan(std::pmr::memory_resource* resource,
                                 logical_plan::node_ptr node,
-                                catalog::oid_batch_t oid_batch) -> logical_plan::node_ptr {
-        return walk_ddl(resource, std::move(node), oid_batch);
+                                std::vector<catalog::oid_t> oids,
+                                std::size_t need) -> core::result_wrapper_t<logical_plan::node_ptr> {
+        auto batch = catalog::oid_batch_t::make(resource, std::move(oids), need);
+        if (batch.has_error()) {
+            return batch.error();
+        }
+        auto& oid_batch = batch.value();
+        auto rewritten = walk_ddl(resource, std::move(node), oid_batch);
+        // The rewrite asked for more OIDs than `need` — i.e. compute_oid_demand and the
+        // rewrite_* functions have drifted apart. Everything built above this line was
+        // stamped from a batch that ran out, so parts of it carry INVALID_OID; refuse the
+        // statement and drop the tree. `rewritten` dies with this return: the caller gets an
+        // error, never a plan.
+        if (oid_batch.overrun()) {
+            return core::error_t{
+                core::error_code_t::create_physical_plan_error,
+                std::pmr::string{"DDL rewrite consumed more OIDs than the statement asked for "
+                                 "(compute_oid_demand and the rewrite disagree); the statement is refused "
+                                 "rather than written with an invalid catalog identity",
+                                 resource}};
+        }
+        return rewritten;
     }
 
     std::size_t compute_oid_demand(const logical_plan::node_t* node) {

@@ -1067,92 +1067,171 @@ namespace components::sql::transform {
         return result;
     }
 
+    namespace {
+
+        // The refusal every shape below shares. `what` names the construct that was
+        // written; the tail names what CAN be written instead.
+        core::error_t unevaluable_check(std::pmr::memory_resource* resource, const std::string& what) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"CHECK constraint contains " + what +
+                                                      "; allowed: a column compared (= <> < > <= >=) with a "
+                                                      "constant, IS NULL / IS NOT NULL, and AND/OR/NOT of those",
+                                                  resource});
+        }
+
+        // OPERAND position: exactly a column reference or a literal constant — the two
+        // things the DML-time recogniser can address. `is_column` reports which of the
+        // two was found, because a comparison it can evaluate needs one of each.
+        core::result_wrapper_t<std::string>
+        deparse_check_operand(std::pmr::memory_resource* resource, Node* node, bool* is_column) {
+            *is_column = false;
+            if (!node) {
+                return unevaluable_check(resource, "a comparison with a missing operand");
+            }
+            switch (nodeTag(node)) {
+                case T_ColumnRef: {
+                    auto* cr = pg_ptr_cast<ColumnRef>(node);
+                    if (!cr->fields || cr->fields->lst.empty()) {
+                        return unevaluable_check(resource, "a column reference with no name");
+                    }
+                    // Use only the last field (unqualified column name)
+                    *is_column = true;
+                    return std::string(strVal(cr->fields->lst.back().data));
+                }
+                case T_A_Const: {
+                    auto* ac = pg_ptr_cast<A_Const>(node);
+                    switch (nodeTag(&ac->val)) {
+                        case T_Integer:
+                            return std::to_string(intVal(&ac->val));
+                        case T_Float:
+                            return std::string(strVal(&ac->val));
+                        case T_String:
+                            return "'" + std::string(strVal(&ac->val)) + "'";
+                        default:
+                            return unevaluable_check(resource,
+                                                     "a constant of unsupported type " +
+                                                         node_tag_to_string(nodeTag(&ac->val)));
+                    }
+                }
+                default:
+                    // An arithmetic sub-expression lands here (`a + b > 0`), and it is the
+                    // reason this position is restricted at all: the recogniser reads the
+                    // whole left side as ONE column name, finds no such column, and compiles
+                    // the constraint to TRUE.
+                    return unevaluable_check(resource,
+                                             "unsupported expression type " + node_tag_to_string(nodeTag(node)) +
+                                                 " where a column or a constant is required");
+            }
+        }
+
+        bool is_comparison_operator(std::string_view op) {
+            return op == "=" || op == "<>" || op == "<" || op == ">" || op == "<=" || op == ">=";
+        }
+
+    } // namespace
+
     core::result_wrapper_t<std::string> deparse_check_expr(std::pmr::memory_resource* resource, Node* node) {
         if (!node) {
             return "";
         }
         switch (nodeTag(node)) {
-            case T_ColumnRef: {
-                auto* cr = pg_ptr_cast<ColumnRef>(node);
-                if (!cr->fields || cr->fields->lst.empty()) {
-                    return "";
-                }
-                // Use only the last field (unqualified column name)
-                return std::string(strVal(cr->fields->lst.back().data));
-            }
-            case T_A_Const: {
-                auto* ac = pg_ptr_cast<A_Const>(node);
-                switch (nodeTag(&ac->val)) {
-                    case T_Integer:
-                        return std::to_string(intVal(&ac->val));
-                    case T_Float:
-                        return std::string(strVal(&ac->val));
-                    case T_String:
-                        return "'" + std::string(strVal(&ac->val)) + "'";
-                    default:
-                        return "";
-                }
-            }
+            case T_ColumnRef:
+                // A bare column in a CONDITION position (`CHECK (flag)`). The recogniser
+                // has no comparison to build from it and passed every row.
+                return unevaluable_check(resource, "a bare column reference where a condition is required");
+            case T_A_Const:
+                // Likewise a bare constant (`CHECK (1)`): it judges no column.
+                return unevaluable_check(resource, "a bare constant where a condition is required");
             case T_A_Expr: {
                 auto* e = pg_ptr_cast<A_Expr>(node);
                 if (e->kind == AEXPR_OP && e->name && !e->name->lst.empty()) {
                     std::string op = std::string(strVal(e->name->lst.front().data));
-                    auto left = deparse_check_expr(resource, e->lexpr);
-                    if (left.has_error() || left.value().empty()) {
+                    if (!is_comparison_operator(op)) {
+                        return unevaluable_check(resource, "the operator \"" + op + "\" in a condition position");
+                    }
+                    bool left_is_column = false;
+                    bool right_is_column = false;
+                    auto left = deparse_check_operand(resource, e->lexpr, &left_is_column);
+                    if (left.has_error()) {
                         return left;
                     }
-                    auto right = deparse_check_expr(resource, e->rexpr);
-                    if (right.has_error() || right.value().empty()) {
+                    auto right = deparse_check_operand(resource, e->rexpr, &right_is_column);
+                    if (right.has_error()) {
                         return right;
+                    }
+                    if (left_is_column == right_is_column) {
+                        // Column against column, or constant against constant. The first
+                        // cannot be evaluated (the recogniser reads the second column NAME
+                        // as the constant 0 and enforces something else entirely); the
+                        // second judges no column at all.
+                        return unevaluable_check(resource,
+                                                 left_is_column ? "a comparison of two columns"
+                                                                : "a comparison of two constants");
                     }
                     return std::move(left.value()) + " " + op + " " + std::move(right.value());
                 }
                 if (e->kind == AEXPR_AND || e->kind == AEXPR_OR) {
                     std::string sep = (e->kind == AEXPR_AND) ? " AND " : " OR ";
                     auto left = deparse_check_expr(resource, e->lexpr);
-                    if (left.has_error() || left.value().empty()) {
+                    if (left.has_error()) {
                         return left;
                     }
                     auto right = deparse_check_expr(resource, e->rexpr);
-                    if (right.has_error() || right.value().empty()) {
+                    if (right.has_error()) {
                         return right;
+                    }
+                    if (left.value().empty() || right.value().empty()) {
+                        return unevaluable_check(resource, "an AND/OR with a missing side");
                     }
                     return "(" + std::move(left.value()) + ")" + sep + "(" + std::move(right.value()) + ")";
                 }
                 if (e->kind == AEXPR_NOT) {
                     // Unary NOT in A_Expr form: the operand is rexpr (lexpr is null). Emit the same
-                    // "NOT (...)" shape that the BoolExpr NOT branch produces so build_check_predicate
-                    // recognises it.
+                    // "NOT (...)" shape that the BoolExpr NOT branch produces so the DML-time
+                    // recogniser reads it back.
                     auto inner = deparse_check_expr(resource, e->rexpr);
-                    if (inner.has_error() || inner.value().empty()) {
+                    if (inner.has_error()) {
                         return inner;
+                    }
+                    if (inner.value().empty()) {
+                        return unevaluable_check(resource, "a NOT with no operand");
                     }
                     return "NOT (" + std::move(inner.value()) + ")";
                 }
-                return "";
+                // IN / BETWEEN / LIKE / DISTINCT FROM and the rest of the A_Expr kinds.
+                // They used to deparse to "" — which the callers read as "unsupported",
+                // but only because every caller happened to test for it. Name the kind.
+                return unevaluable_check(resource, "the expression kind " + expr_kind_to_string(e->kind));
             }
             case T_BoolExpr: {
                 auto* b = pg_ptr_cast<BoolExpr>(node);
                 if (!b->args || b->args->lst.empty()) {
-                    return "";
+                    return unevaluable_check(resource, "an AND/OR/NOT with no operands");
                 }
                 if (b->boolop == NOT_EXPR) {
                     auto inner = deparse_check_expr(resource, pg_ptr_cast<Node>(b->args->lst.front().data));
                     if (inner.has_error()) {
                         return inner;
                     }
-                    return inner.value().empty() ? "" : "NOT (" + std::move(inner.value()) + ")";
+                    if (inner.value().empty()) {
+                        return unevaluable_check(resource, "a NOT with no operand");
+                    }
+                    return "NOT (" + std::move(inner.value()) + ")";
                 }
                 std::string sep = (b->boolop == AND_EXPR) ? " AND " : " OR ";
                 std::string result;
                 for (auto& cell : b->args->lst) {
                     auto part = deparse_check_expr(resource, pg_ptr_cast<Node>(cell.data));
-                    if (part.has_error() || part.value().empty()) {
+                    if (part.has_error()) {
                         return part;
                     }
-                    // TODO?
-                    // result here is always empty?
-                    // and separator is not required?
+                    if (part.value().empty()) {
+                        return unevaluable_check(resource, "an AND/OR with a missing side");
+                    }
+                    // Every operand is parenthesised and separated: the DML-time recogniser
+                    // splits on a top-level ") AND (" / ") OR (", so a flat n-ary BoolExpr
+                    // (`a AND b AND c` arrives as ONE node with three args) has to come back
+                    // as that shape, not as a bare concatenation.
                     if (!result.empty()) {
                         result += sep;
                     }
@@ -1162,20 +1241,21 @@ namespace components::sql::transform {
             }
             case T_NullTest: {
                 auto* nt = pg_ptr_cast<NullTest>(node);
-                auto arg = deparse_check_expr(resource, pg_ptr_cast<Node>(nt->arg));
-                if (arg.has_error() || arg.value().empty()) {
+                bool arg_is_column = false;
+                auto arg = deparse_check_operand(resource, pg_ptr_cast<Node>(nt->arg), &arg_is_column);
+                if (arg.has_error()) {
                     return arg;
+                }
+                if (!arg_is_column) {
+                    // `5 IS NULL` names no column, so the recogniser finds none and passes
+                    // every row. There is no row-dependent question here to enforce.
+                    return unevaluable_check(resource, "an IS NULL / IS NOT NULL on something other than a column");
                 }
                 return std::move(arg.value()) + (nt->nulltesttype == IS_NULL ? " IS NULL" : " IS NOT NULL");
             }
             default:
-                return core::error_t(
-                    core::error_code_t::sql_parse_error,
-                    std::pmr::string{"CHECK constraint contains unsupported expression type " +
-                                         node_tag_to_string(nodeTag(node)) +
-                                         "; allowed: column references, constants, comparison/arithmetic operators, "
-                                         "AND/OR/NOT, IS NULL/IS NOT NULL",
-                                     resource});
+                return unevaluable_check(resource,
+                                         "unsupported expression type " + node_tag_to_string(nodeTag(node)));
         }
     }
 

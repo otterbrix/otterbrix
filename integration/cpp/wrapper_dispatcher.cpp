@@ -50,7 +50,7 @@ namespace otterbrix {
     }
 
     auto wrapper_dispatcher_t::register_udf(const session_id_t& session, components::compute::function_ptr function)
-        -> bool {
+        -> core::error_t {
         trace(log_,
               "wrapper_dispatcher_t::register_udf session: {}, function name : {} ",
               session.data(),
@@ -62,7 +62,8 @@ namespace otterbrix {
         return wait_future(future);
     }
 
-    auto wrapper_dispatcher_t::set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn) -> bool {
+    auto wrapper_dispatcher_t::set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn)
+        -> core::error_t {
         // Host→dispatcher half of the renderer send; the dispatcher→executor fan-out lives in
         // dispatcher.cpp — keep the two send sites in step.
         auto [_, future] =
@@ -76,7 +77,7 @@ namespace otterbrix {
     auto wrapper_dispatcher_t::unregister_udf(const session_id_t& session,
                                               const std::string& function_name,
                                               const std::pmr::vector<components::types::complex_logical_type>& inputs)
-        -> bool {
+        -> core::error_t {
         trace(log_,
               "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
               session.data(),
@@ -92,7 +93,7 @@ namespace otterbrix {
     auto wrapper_dispatcher_t::register_cast(const session_id_t& session,
                                              const components::types::complex_logical_type& source,
                                              const components::types::complex_logical_type& target,
-                                             components::casts::cast_entry entry) -> bool {
+                                             components::casts::cast_entry entry) -> core::error_t {
         trace(log_, "wrapper_dispatcher_t::register_cast session: {}", session.data());
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                        &services::dispatcher::manager_dispatcher_t::register_cast,
@@ -105,7 +106,7 @@ namespace otterbrix {
 
     auto wrapper_dispatcher_t::unregister_cast(const session_id_t& session,
                                                const components::types::complex_logical_type& source,
-                                               const components::types::complex_logical_type& target) -> bool {
+                                               const components::types::complex_logical_type& target) -> core::error_t {
         trace(log_, "wrapper_dispatcher_t::unregister_cast session: {}", session.data());
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                        &services::dispatcher::manager_dispatcher_t::unregister_cast,

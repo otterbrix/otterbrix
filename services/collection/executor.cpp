@@ -51,6 +51,7 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_transaction.hpp>
 #include <components/planner/optimizer.hpp>
+#include <components/planner/view_expansion.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/dispatcher/enrich_logical_plan.hpp>
 #include <services/dispatcher/resolve_type.hpp>
@@ -70,11 +71,15 @@ namespace services::collection::executor {
         std::atomic<uint64_t> g_streaming_pipeline_runs{0};
         std::atomic<uint64_t> g_dml_appends_reverted{0};
         std::atomic<uint64_t> g_dml_flush_count{0};
+        oid_alloc_interposer_t* g_oid_alloc_interposer = nullptr;
     } // namespace
 
     uint64_t streaming_pipeline_runs() noexcept { return g_streaming_pipeline_runs.load(std::memory_order_relaxed); }
     uint64_t dml_appends_reverted() noexcept { return g_dml_appends_reverted.load(std::memory_order_relaxed); }
     uint64_t dml_flush_count() noexcept { return g_dml_flush_count.load(std::memory_order_relaxed); }
+
+    void dev_set_oid_alloc_interposer(oid_alloc_interposer_t* interposer) { g_oid_alloc_interposer = interposer; }
+    oid_alloc_interposer_t* dev_oid_alloc_interposer() { return g_oid_alloc_interposer; }
 #endif
 
     // ---- behavior/dispatch_traits sync check ----
@@ -721,58 +726,88 @@ namespace services::collection::executor {
                 // sub-query tree, so nothing downstream has to skip past them.
             }
         }
-        // SELECT-time view expansion + fresh-resolve sub-execute. After resolve
-        // stamped view_sql on the table entry of a relkind=='v' target, re-parse +
-        // re-transform the view body and splice the resulting sub-plan in place.
-        // Current scope: only top-level passthrough plans (`SELECT * FROM v`) — the
-        // entire logical_plan is replaced with the sub-plan. Elaborate compositions
-        // (extra filters/projections/joins on top of v) are not yet handled.
+        // SELECT-time view expansion.
         //
-        // The sub-plan's fresh resolves run via `co_await this->execute_plan`,
-        // safe by the same reasoning as the outer resolve loop.
+        // The catalog resolve pass above stamped `view_sql` (pg_rewrite.ev_action) on
+        // the table entry of every relkind='v' target. Each reference to such a view is
+        // now replaced by the view's body, SPLICED IN UNDER THE REFERENCE NODE so that
+        // everything built above it — the outer WHERE, the projection, an aggregate, a
+        // join — survives. See components/planner/view_expansion.hpp; the mechanics and
+        // the reasons live there, this loop only sequences them and supplies the async
+        // resolve round the pure pass cannot do.
+        //
+        // This used to be `plan.sub_queries.back() = std::move(expanded_plan)` — the
+        // whole outer plan discarded and the bare view body returned as a successful
+        // answer to a query nobody asked.
+        //
+        // The loop repeats because a view body may itself read a view: each pass
+        // splices one level, and the newly added references only become visible after
+        // their own resolve round has stamped their view_sql.
         if (plan.sub_queries.back()) {
-            if (const auto* view_entry =
-                    services::catalog_resolve::find_view_entry(plan.catalog_resolves, plan.sub_queries.back().get())) {
-                auto exp = services::catalog_resolve::expand_view_body(resource(), view_entry->table_md->view_sql);
-                if (exp.error) {
-                    trace(log_, "executor::execute_plan_full: view expansion failed");
-                    co_return execute_result_t{std::move(exp.error)};
+            auto* root = plan.sub_queries.back().get();
+            if (auto dml_err = components::planner::reject_view_dml_target(plan.catalog_resolves, root);
+                dml_err.contains_error()) {
+                co_return execute_result_t{make_cursor(resource(), std::move(dml_err))};
+            }
+            for (std::size_t depth = 0;; ++depth) {
+                auto refs = components::planner::collect_view_references(resource(), plan.catalog_resolves, root);
+                if (refs.empty()) {
+                    break;
                 }
-                if (exp.had_expansion && exp.expanded_plan) {
-                    // Full plan replacement — outer is treated as a trivial
-                    // passthrough. Preserving outer projections / filters
-                    // (splice sub-plan as child of outer consumer) is not yet
-                    // handled.
-                    plan.sub_queries.back() = std::move(exp.expanded_plan);
-                    // The view body brought its own catalog lookups; merge them in.
-                    if (exp.expanded_resolves) {
+                if (depth >= components::planner::max_view_expansion_depth) {
+                    co_return execute_result_t{make_cursor(
+                        resource(),
+                        core::error_t(core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"view expansion nesting limit exceeded", resource()}))};
+                }
+                // Snapshot every reference's body SQL BEFORE touching the resolves.
+                // merge_catalog_resolves APPENDS to the entries vector, which
+                // reallocates it — and `refs` holds pointers INTO that vector. Reading
+                // the second reference's entry after the first merge would be a
+                // use-after-free.
+                std::pmr::vector<std::string> body_sqls{resource()};
+                body_sqls.reserve(refs.size());
+                for (const auto& ref : refs) {
+                    body_sqls.push_back(ref.entry->table_md->view_sql);
+                }
+                for (std::size_t i = 0; i < refs.size(); ++i) {
+                    auto& ref = refs[i];
+                    // Every reference gets its OWN parse+transform of the body: the
+                    // spliced nodes carry per-reference state and pushdown appends into
+                    // them, so a shared subtree would be corrupted by the second use.
+                    auto body = components::planner::expand_view_body(resource(), body_sqls[i]);
+                    if (body.error.contains_error()) {
+                        trace(log_, "executor::execute_plan_full: view expansion failed: {}", body.error.what);
+                        co_return execute_result_t{make_cursor(resource(), std::move(body.error))};
+                    }
+                    // Re-register the body's constants under fresh ids BEFORE the splice:
+                    // both plans number from 0, so reusing the ids would let the outer
+                    // query's constant overwrite the body's predicate.
+                    components::planner::renumber_body_parameters(resource(),
+                                                                  body.plan.get(),
+                                                                  body.params,
+                                                                  plan.parameters);
+                    if (auto err = components::planner::splice_view_body(ref.node, std::move(body.plan));
+                        err.contains_error()) {
+                        co_return execute_result_t{make_cursor(resource(), std::move(err))};
+                    }
+                    // The body brought its own catalog lookups; merge them in.
+                    if (body.resolves) {
                         services::dispatcher::merge_catalog_resolves(resource(),
                                                                      plan.catalog_resolves,
-                                                                     *exp.expanded_resolves);
+                                                                     *body.resolves);
                     }
-
-                    // Merge the sub-plan's parameter bindings into `parameters`
-                    // so downstream operators see view-body constants (e.g.
-                    // `col_b > 10`). Safe against id collision because the outer
-                    // plan is a trivial passthrough SELECT * with no constants.
-                    // (raw storage_parameters here → add_parameter free fn.)
-                    if (exp.expanded_params) {
-                        for (const auto& [pid, val] : exp.expanded_params->parameters().parameters) {
-                            plan.parameters->set_parameter(pid, val);
-                        }
-                    }
-
-                    // === Resolve the entries the view body added ===
-                    if (services::catalog_resolve::has_unresolved_entries(plan.catalog_resolves)) {
-                        std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
-                        collect_resolve_nodes(plan.catalog_resolves, resolve_nodes);
-                        auto pass2_result = co_await run_resolve_subplan(this, std::move(resolve_nodes));
-                        if (pass2_result.cursor->is_error()) {
-                            trace(log_,
-                                  "executor::execute_plan_full: view sub-plan resolve failed: {}",
-                                  pass2_result.cursor->get_error().what);
-                            co_return execute_result_t{std::move(pass2_result.cursor)};
-                        }
+                }
+                // === Resolve the entries the view bodies added ===
+                if (services::catalog_resolve::has_unresolved_entries(plan.catalog_resolves)) {
+                    std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
+                    collect_resolve_nodes(plan.catalog_resolves, resolve_nodes);
+                    auto pass2_result = co_await run_resolve_subplan(this, std::move(resolve_nodes));
+                    if (pass2_result.cursor->is_error()) {
+                        trace(log_,
+                              "executor::execute_plan_full: view sub-plan resolve failed: {}",
+                              pass2_result.cursor->get_error().what);
+                        co_return execute_result_t{std::move(pass2_result.cursor)};
                     }
                 }
             }
@@ -1385,10 +1420,19 @@ namespace services::collection::executor {
             // via self->resource() — the [this] capture is not visible to the
             // coroutine frame allocator, and without `self` extract_resource_or_abort
             // fires.
+            //
+            // IT ANSWERS WITH AN ERROR CHANNEL, NOT WITH AN EMPTY VECTOR. Both of the
+            // failures below used to `co_return std::vector<oid_t>{}`, which the caller
+            // could not tell apart from a successful round: it assigned the empty vector
+            // into the batch and the DDL rewrite read past its end (assert-only guard —
+            // gone under NDEBUG), stamping pg_class / pg_attribute / pg_depend with a
+            // garbage identity that then outlived the process. Rule 6: the refusal is
+            // loud, and the drive error travels verbatim rather than being flattened.
             auto allocate_oids_inline =
                 [this, session, &context_storage](
                     [[maybe_unused]] executor_t* self,
-                    std::size_t count) -> executor_t::unique_future<std::vector<components::catalog::oid_t>> {
+                    std::size_t count) -> executor_t::unique_future<
+                    core::result_wrapper_t<std::vector<components::catalog::oid_t>>> {
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
                 components::compute::function_registry_t local_fn_registry{resource()};
                 services::context_storage_t cstor{resource(),
@@ -1400,7 +1444,11 @@ namespace services::collection::executor {
                                                          components::logical_plan::limit_t::unlimit(),
                                                          /*params=*/nullptr);
                 if (!op) {
-                    co_return std::vector<components::catalog::oid_t>{};
+                    co_return core::result_wrapper_t<std::vector<components::catalog::oid_t>>{
+                        core::error_t{core::error_code_t::create_physical_plan_error,
+                                      std::pmr::string{"OID allocation round: no physical plan for "
+                                                       "node_allocate_oids_t",
+                                                       resource()}}};
                 }
                 op->set_as_root();
                 components::logical_plan::storage_parameters local_params(resource());
@@ -1419,13 +1467,21 @@ namespace services::collection::executor {
                 // stamp) via the executor's bottom-up async-finalize pass.
                 auto drive_err = co_await drive_subplan_(op, &pctx);
                 if (drive_err.contains_error()) {
-                    co_return std::vector<components::catalog::oid_t>{};
+                    co_return core::result_wrapper_t<std::vector<components::catalog::oid_t>>{std::move(drive_err)};
                 }
                 if (pctx.has_pending_disk_futures()) {
                     auto futures = pctx.take_pending_disk_futures();
                     for (auto& f : futures) co_await std::move(f);
                 }
-                co_return node->oids();
+                auto allocated = node->oids();
+#ifdef DEV_MODE
+                // The one consultation of the OID-allocation fault seam (see
+                // executor.hpp). Off unless a test armed it.
+                if (auto* interposer = dev_oid_alloc_interposer(); interposer != nullptr) {
+                    allocated = interposer->substitute(count, std::move(allocated));
+                }
+#endif
+                co_return core::result_wrapper_t<std::vector<components::catalog::oid_t>>{std::move(allocated)};
             };
 
             using components::catalog::relkind::computed;
@@ -1544,14 +1600,33 @@ namespace services::collection::executor {
                     }
                 }
 
+                // `need == 0` is a normal DDL shape, not a degenerate one: DROP, ALTER
+                // TABLE and a CREATE MATERIALIZED VIEW whose schema derivation produced no
+                // inferred columns rewrite without consuming an OID. Those run NO allocation
+                // round at all and hand the planner an empty batch, which it accepts.
                 const std::size_t need = components::planner::compute_oid_demand(eff);
-                components::catalog::oid_batch_t oid_batch;
+                std::vector<components::catalog::oid_t> allocated_oids;
                 if (need > 0) {
-                    oid_batch.oids = co_await allocate_oids_inline(this, need);
+                    auto allocated = co_await allocate_oids_inline(this, need);
+                    if (allocated.has_error()) {
+                        // The allocation round refused. Refuse the statement: the alternative
+                        // is a catalog row stamped with an identity nothing allocated.
+                        co_return execute_result_t{make_cursor(resource(), allocated.error())};
+                    }
+                    allocated_oids = std::move(allocated.value());
                 }
                 components::planner::planner_t ddl_planner;
-                plan.sub_queries.back() =
-                    ddl_planner.create_plan(resource(), std::move(plan.sub_queries.back()), std::move(oid_batch));
+                // The size check against `need` lives inside create_plan (oid_batch_t::make),
+                // so it cannot be skipped by handing over a batch nobody compared: this call
+                // has no batch to hand over.
+                auto rewritten = ddl_planner.create_plan(resource(),
+                                                        std::move(plan.sub_queries.back()),
+                                                        std::move(allocated_oids),
+                                                        need);
+                if (rewritten.has_error()) {
+                    co_return execute_result_t{make_cursor(resource(), rewritten.error())};
+                }
+                plan.sub_queries.back() = std::move(rewritten.value());
 
                 // CREATE INDEX: capture indexed table oid + index oid NOW — the
                 // plan is move-consumed by the execute_plan delegate below, so the
@@ -1821,7 +1896,34 @@ namespace services::collection::executor {
                                                        &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
                                                        session,
                                                        std::move(payload));
-                    co_await std::move(acf);
+                    // READ the refusal. transaction_inactive means the session has
+                    // no transaction_t, so this whole statement's ranges were
+                    // parked NOWHERE: the rows the operators physically appended
+                    // will never be published by the commit below and never be
+                    // aborted by anyone else. Swallowing this answer is what let a
+                    // statement report success over work that vanished.
+                    auto accumulate_err = co_await std::move(acf);
+                    if (accumulate_err.contains_error()) {
+                        exec_result.cursor = make_cursor(resource(), std::move(accumulate_err));
+                        // The revert is NOT a no-op here, despite the payload
+                        // build above: base_appends / base_deletes were COPIED out
+                        // of dml_appends / dml_deletes (both loops read them by
+                        // const-ref and rebuild the range structs field by field),
+                        // so exec_result still holds this statement's base ranges
+                        // and revert_failed_txn really does un-append the heap
+                        // rows, un-stamp the delete marks and drop the pending
+                        // index mirrors. Only its pg_catalog half is empty —
+                        // pg_catalog_appends / pg_catalog_delete_tables WERE moved
+                        // into the payload just above.
+                        // Its closing txn_abort_msg is a proven no-op on this
+                        // path: transaction_inactive is raised exactly when
+                        // find_transaction() found no entry in transaction_manager
+                        // active_, and abort() returns early on that same lookup
+                        // (transaction_manager.cpp). It costs one message and
+                        // keeps the failed-statement tail single-shaped, so it is
+                        // left in rather than special-cased.
+                        co_await revert_failed_txn(this, exec_result);
+                    }
                 }
                 exec_result.dml_appends.clear();
                 exec_result.dml_deletes.clear();
@@ -1832,7 +1934,14 @@ namespace services::collection::executor {
                 exec_result.created_storage_oids.clear();
                 exec_result.created_indexes.clear();
 
-                if (!session_ctx.is_explicit) {
+                // The cursor is re-read HERE and not inherited from the
+                // is_success() at the top of this block: a refused accumulate
+                // turned that success into an error a few lines ago, and
+                // committing anyway would run the pipeline over a transaction_t
+                // that holds nothing — the empty-COMMIT leg, which publishes
+                // no rows and still reports success. That is the exact silent
+                // loss the refusal channel exists to stop.
+                if (!session_ctx.is_explicit && exec_result.cursor->is_success()) {
                     // Autocommit: implicit COMMIT through the SAME operator
                     // pipeline SQL COMMIT uses.
                     auto commit_result = co_await run_commit_pipeline_(session,
@@ -1899,7 +2008,32 @@ namespace services::collection::executor {
                                                    &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
                                                    session,
                                                    std::move(payload));
-                co_await std::move(acf);
+                // READ the refusal — same channel, same meaning as the DML tail:
+                // nothing was parked, so the ddl-commit below would drain an
+                // empty transaction_t and publish nothing while reporting
+                // success over a catalog that does not describe what the
+                // statement claims to have created or dropped.
+                //
+                // revert_failed_txn is deliberately NOT called here, and not out
+                // of tidiness: it would have nothing right to do and one wrong
+                // thing to do. Its catalog fold is empty — pg_catalog_appends,
+                // pg_catalog_delete_tables, the backfills and the created /
+                // dropped oid sets were ALL std::move-d into the payload a few
+                // lines above (unlike the DML tail, which copies its base
+                // ranges). Its base fold, meanwhile, would reach for dml_appends
+                // / dml_deletes, which on this path carry the CREATE INDEX
+                // backfill ranges that the comment below documents as
+                // ALREADY-COMMITTED rows kept out of the commit on purpose;
+                // handing them to storage_revert_appends would un-append
+                // committed rows. Its closing txn_abort_msg is the same proven
+                // no-op as on the DML tail (transaction_inactive is raised on the
+                // very lookup abort() returns early on), and no txn is left
+                // pinned either way. What DOES need undoing on this path — the
+                // CREATE INDEX engine — is handled by undo_create_index below.
+                auto accumulate_err = co_await std::move(acf);
+                if (accumulate_err.contains_error()) {
+                    exec_result.cursor = make_cursor(resource(), std::move(accumulate_err));
+                }
                 exec_result.pg_catalog_appends.clear();
                 exec_result.pg_catalog_delete_tables.clear();
                 exec_result.pg_attribute_commit_id_backfills.clear();
@@ -1921,9 +2055,10 @@ namespace services::collection::executor {
 
             // CREATE INDEX failure undo. Reverts the pg_index row append
             // (gates index visibility) and tears down the engine+agent via
-            // manager_index_t::drop_index. Invoked from BOTH the commit failure
-            // and the inline index-commit failure below — a single closure keeps
-            // the two paths identical. drop_index tolerates an unknown engine,
+            // manager_index_t::drop_index. Invoked from ALL THREE failure points
+            // of this tail — the refused accumulate above, the commit failure and
+            // the inline index-commit failure below — a single closure keeps the
+            // paths identical. drop_index tolerates an unknown engine,
             // so it is safe even when the backfill never reached the engine. The
             // pg_index range was snapshotted before the accumulate move above;
             // the leftover pg_class / pg_depend rows are left to GC (they no
@@ -1955,6 +2090,18 @@ namespace services::collection::executor {
                 co_return;
             };
 
+            // A refused accumulate is the ONLY thing that can have turned the
+            // cursor to an error between the is_success() gate at the top of this
+            // tail and here, and it leaves a CREATE INDEX in exactly the state a
+            // failed commit does: the pg_index row will never be published and
+            // the engine was backfilled for nothing. Worse than idle — the
+            // half-built engine stays registered with manager_index_t and
+            // captures later point lookups on the table, answering them from its
+            // never-committed entries. Send it the same way.
+            if (exec_result.cursor->is_error() && original_type == node_type::create_index_t) {
+                co_await undo_create_index(this, create_index_table_oid, create_index_oid);
+            }
+
             // DDL inside an explicit BEGIN..COMMIT DEFERS its publish to the
             // SQL COMMIT — accumulate above already parked the catalog rows +
             // created/dropped artifacts on transaction_t, and the COMMIT
@@ -1974,7 +2121,12 @@ namespace services::collection::executor {
             // COMMIT is a deferred follow-up. The created_index IS parked on
             // transaction_t regardless, so an explicit-txn ABORT drops the
             // half-built index via operator_abort_transaction.
-            if (!session_ctx.is_explicit) {
+            //
+            // The cursor is re-read in the gate (see the DML tail): the
+            // is_success() that opened this tail was evaluated before the
+            // accumulate answered, so a refused park would otherwise still reach
+            // the commit and publish a transaction that holds nothing.
+            if (!session_ctx.is_explicit && exec_result.cursor->is_success()) {
                 auto commit_result = co_await run_commit_pipeline_(session,
                                                                    resolve_txn,
                                                                    session_ctx.session_tz,

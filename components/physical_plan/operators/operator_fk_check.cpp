@@ -56,15 +56,33 @@ namespace components::operators {
             co_return;
         }
 
-        // An unresolved key column position voids a row's check, but it still counts as
-        // NULL for the MATCH policy below — so a MATCH FULL key that is partially absent
-        // (or partially NULL) is rejected before the row is skipped (constant per FK).
-        bool has_absent = indices.empty();
-        for (auto idx : indices) {
-            if (idx == absent) {
-                has_absent = true;
-                break;
+        // EVERY REFERENCING COLUMN MUST HAVE A POSITION IN THE WRITTEN ROW. This is a
+        // different defect from the arity mismatch above — the two lists can agree in
+        // length and still name a column this write-set does not expose — and it used to
+        // take the operator's QUIETEST path: an unresolved position meant the row
+        // qualified for no parent lookup, so every row was skipped, the qualifying count
+        // stayed 0, and 0 is this operator's SUCCESS path. An INSERT/UPDATE was then
+        // accepted with its foreign key checked against nothing at all. There is no
+        // reading of an absent column that is a check, so refuse and name the column.
+        // (Constant per FK: the positions are the same for every row.)
+        if (indices.empty()) {
+            set_error(core::error_t{
+                core::error_code_t::invalid_constraint,
+                std::pmr::string{"FK constraint: no referencing column resolved to a position in the written row",
+                                 resource_}});
+            mark_failed();
+            co_return;
+        }
+        for (std::size_t i = 0; i < indices.size(); ++i) {
+            if (indices[i] != absent) {
+                continue;
             }
+            std::pmr::string what{"FK constraint: referencing column \"", resource_};
+            what.append(i < fk_.child_col_names.size() ? fk_.child_col_names[i].c_str() : "?");
+            what.append("\" has no position in the written row");
+            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+            mark_failed();
+            co_return;
         }
 
         // Parent key column names are the same for every row; hoist them once.
@@ -87,15 +105,31 @@ namespace components::operators {
         uint64_t qcount = 0;
 
         for (const auto& chunk : in_chunks) {
+            // The positions come from the plan; the chunk is what was written. A position
+            // past the end of this chunk would be read as a cell, so check it once per
+            // chunk rather than trusting the two to agree.
+            if (chunk.size() > 0) {
+                for (std::size_t i = 0; i < indices.size(); ++i) {
+                    if (indices[i] < chunk.column_count()) {
+                        continue;
+                    }
+                    std::pmr::string what{"FK constraint: referencing column \"", resource_};
+                    what.append(i < fk_.child_col_names.size() ? fk_.child_col_names[i].c_str() : "?");
+                    what.append("\" is outside the written row");
+                    set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                    mark_failed();
+                    co_return;
+                }
+            }
             components::vector::indexing_vector_t selection(resource_, chunk.size() == 0 ? 1 : chunk.size());
             uint64_t chunk_count = 0;
             for (uint64_t row = 0; row < chunk.size(); ++row) {
                 bool any_null = false;
                 bool all_null = true;
                 for (std::size_t i = 0; i < indices.size(); ++i) {
-                    const auto idx = indices[i];
-                    const bool is_null = (idx == absent || !chunk.data[idx].validity().row_is_valid(row));
-                    if (is_null)
+                    // Every position resolved (guarded above), so the validity bit of the
+                    // written cell is the whole question.
+                    if (!chunk.data[indices[i]].validity().row_is_valid(row))
                         any_null = true;
                     else
                         all_null = false;
@@ -116,11 +150,6 @@ namespace components::operators {
                     if (any_null)
                         continue;
                 }
-
-                // Passed the MATCH policy but a key column is unresolved: nothing to look
-                // up in the parent, so the row qualifies for no scan key.
-                if (has_absent)
-                    continue;
 
                 selection.set_index(chunk_count, row);
                 ++chunk_count;

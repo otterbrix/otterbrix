@@ -72,7 +72,14 @@ namespace components::operators {
                                                &services::wal::manager_wal_replicate_t::truncate_before,
                                                ctx->session,
                                                checkpoint_wal_id);
-            co_await std::move(wtf);
+            // THE STATEMENT IS THE CHANNEL, same as the index flush in step 1. A truncate that
+            // refused means a segment could not be read — the WAL is not in the state this
+            // CHECKPOINT reports, so say so instead of returning success over it.
+            if (auto truncate_error = co_await std::move(wtf); truncate_error.contains_error()) {
+                set_error(truncate_error);
+                mark_failed();
+                co_return;
+            }
         }
 
         // Index rebuild. This MUST run AFTER checkpoint_all: checkpoint_inner

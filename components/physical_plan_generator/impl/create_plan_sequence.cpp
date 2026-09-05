@@ -53,7 +53,6 @@ namespace services::planner::impl {
                                                                         cc->table_oid(),
                                                                         cc->namespace_oid(),
                                                                         cc->column_definitions(),
-                                                                        cc->is_disk_storage(),
                                                                         std::move(writes)));
         }
 
@@ -80,7 +79,6 @@ namespace services::planner::impl {
             auto backfill_op =
                 boost::intrusive_ptr(new components::operators::operator_create_index_backfill_t(context.resource,
                                                                                                  context.log.clone(),
-                                                                                                 ci->name(),
                                                                                                  ci->type(),
                                                                                                  ci->keys(),
                                                                                                  ci->table_oid(),
@@ -108,7 +106,7 @@ namespace services::planner::impl {
             return boost::intrusive_ptr(new components::operators::operator_drop_index_t(context.resource,
                                                                                          context.log.clone(),
                                                                                          di->table_oid(),
-                                                                                         di->runtime_index_name(),
+                                                                                         di->index_oid(),
                                                                                          std::move(deletes)));
         }
 

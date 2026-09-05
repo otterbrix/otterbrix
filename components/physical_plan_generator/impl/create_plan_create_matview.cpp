@@ -45,7 +45,6 @@ namespace services::planner::impl {
             cm->matview_oid(),
             cm->namespace_oid(),
             std::vector<components::table::column_definition_t>(cm->inferred_columns()),
-            /*is_disk_storage=*/true,
             std::move(writes),
             std::move(body_op)));
     }

@@ -218,7 +218,6 @@ namespace components::planner {
                                                              std::string{},
                                                              cc->relname(),
                                                              cc->column_definitions(),
-                                                             cc->is_disk_storage(),
                                                              ns_oid,
                                                              oid_batch,
                                                              rk);
@@ -360,7 +359,6 @@ namespace components::planner {
                                                              /*dbname=*/std::string{},
                                                              cm->matviewname(),
                                                              cols,
-                                                             /*is_disk_storage=*/true,
                                                              ns_oid,
                                                              oid_batch,
                                                              catalog::relkind::materialized_view);
@@ -434,7 +432,6 @@ namespace components::planner {
                                                             db_name,
                                                             std::string(ct->type().type_name()),
                                                             field_cols,
-                                                            /*is_disk_storage=*/false,
                                                             target_ns,
                                                             oid_batch,
                                                             catalog::relkind::composite_type);
@@ -491,8 +488,13 @@ namespace components::planner {
                 return seq;
             }
 
-            auto writes =
-                catalog::build_create_index_writes(r, ci->name(), ns_oid, table_oid, index_oid, ci->column_attoids());
+            auto writes = catalog::build_create_index_writes(r,
+                                                             ci->name(),
+                                                             ns_oid,
+                                                             table_oid,
+                                                             index_oid,
+                                                             ci->column_attoids(),
+                                                             logical_plan::index_type_to_indtype_code(ci->type()));
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes) {

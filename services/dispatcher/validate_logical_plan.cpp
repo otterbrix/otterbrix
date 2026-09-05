@@ -17,6 +17,7 @@
 #include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
+#include <components/index/logical_value_binary_codec.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -4092,10 +4093,32 @@ namespace services::dispatcher {
                     }
                 }
                 auto& keys = idx_node->keys();
+                // Key-type gate. The key encoders sit far below this statement, inside actor
+                // coroutines with no error channel: a key type they cannot represent is an
+                // abort (Debug) or a silently NA-collapsed key serving wrong rows (NDEBUG).
+                // So the statement is refused HERE, before it executes — no unrepresentable
+                // key can ever reach an encoder from user data, backfill included. The
+                // accepted set lives in ONE place, next to the encoders it mirrors:
+                // components::index::codec::is_representable_index_key_type.
+                const bool ordered_index =
+                    idx_node->type() != components::logical_plan::index_type::hashed;
                 for (auto& key : keys) {
                     auto key_res = impl::validate_key(resource, key, table_schema, table_schema, true);
                     if (key_res.has_error()) {
                         return key_res.convert_error<named_schema>();
+                    }
+                    const auto& key_type = key_res.value().front().type;
+                    if (!components::index::codec::is_representable_index_key_type(key_type.type(),
+                                                                                   ordered_index)) {
+                        std::string message = "CREATE INDEX: key '" + key.as_string() + "' has type " +
+                                              describe_type(key_type) +
+                                              ", which the index key encoders cannot represent";
+                        if (ordered_index &&
+                            key_type.type() == components::types::logical_type::DECIMAL) {
+                            message += " in an ordered index (USING hash carries DECIMAL)";
+                        }
+                        return core::error_t{core::error_code_t::index_create_fail,
+                                             std::pmr::string{message.c_str(), resource}};
                     }
                 }
                 return named_schema{resource};

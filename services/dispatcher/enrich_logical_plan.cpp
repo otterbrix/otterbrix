@@ -379,13 +379,12 @@ namespace services::catalog_resolve {
                                     if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
                                         d->set_table_oid(rt->table_oid());
                                     }
+                                    // Name → indexrelid resolution happens HERE, once, at the
+                                    // planner boundary (rule 16): everything below carries only
+                                    // the oid. rt_index resolves the index's pg_class entry, so
+                                    // its table_oid slot holds the index relation's own oid.
                                     if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
                                         d->set_index_oid(rt_index->table_oid());
-                                    }
-                                    // Stamp the runtime name used by manager_index_t::drop_index
-                                    // (the index actor keys engine entries by (table_oid, name)).
-                                    if (rt_index) {
-                                        d->set_runtime_index_name(rt_index->relname());
                                     }
                                     break;
                                 }
@@ -1064,10 +1063,10 @@ namespace services::dispatcher {
         if (collections_ctx && index_address != actor_zeta::address_t::empty_address()) {
             // Two-phase: per-table get_indexed_keys + get_indexed_descriptions
             // are independent across tables, so send both queries for every
-            // table first, then await and consume. collections_ctx fields are
-            // overwritten per table (last table wins, as before), so the
-            // await order must match the send order; awaiting in the same loop
-            // index sequence preserves that.
+            // table first, then await and consume. Future i belongs to
+            // queried_oids[i] (both pushed by the same loop iteration), so the
+            // consume loops below walk the same index sequence the send loop
+            // produced.
             std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::index::keys_base_storage_t>>>
                 keys_futures(resource);
             std::pmr::vector<actor_zeta::unique_future<std::pmr::vector<components::index::index_description_t>>>
@@ -1087,22 +1086,22 @@ namespace services::dispatcher {
                                                    tbl_oid);
                 desc_futures.push_back(std::move(idf));
             }
-            // Stamp "does this table have an index" onto every node targeting that table, by
-            // OID — not from collections_ctx->indexed_keys, which is overwritten per table
-            // (last table wins). A multi-table statement would otherwise judge its DML target
-            // by another table's index set.
-            std::size_t oid_pos = 0;
-            for (auto& ikf : keys_futures) {
-                auto keys = co_await std::move(ikf);
-                const bool has_indexes = !keys.empty();
-                if (oid_pos < queried_oids.size()) {
-                    catalog_resolve::stamp_table_has_indexes(root.get(), queried_oids[oid_pos], has_indexes);
-                }
-                ++oid_pos;
-                collections_ctx->indexed_keys = std::move(keys);
+            // Consume PER OID: file each table's key set / descriptions under its
+            // own collections_ctx->table_indexes entry — the planner's index
+            // accessors (has_index_on / preferred_index_type_for_compare) are
+            // oid-keyed, so every scan of a multi-table statement is judged by
+            // ITS table's indexes, never by another table's. Also stamp "does
+            // this table have an index" onto every node targeting that table:
+            // the stamp is what the DML operators (insert/update/delete) read at
+            // execution time, where context_storage is out of reach.
+            for (std::size_t i = 0; i < keys_futures.size(); ++i) {
+                auto keys = co_await std::move(keys_futures[i]);
+                catalog_resolve::stamp_table_has_indexes(root.get(), queried_oids[i], !keys.empty());
+                collections_ctx->index_info_slot(queried_oids[i]).keys = std::move(keys);
             }
-            for (auto& idf : desc_futures) {
-                collections_ctx->indexed_descriptions = co_await std::move(idf);
+            for (std::size_t i = 0; i < desc_futures.size(); ++i) {
+                auto descriptions = co_await std::move(desc_futures[i]);
+                collections_ctx->index_info_slot(queried_oids[i]).descriptions = std::move(descriptions);
             }
         }
         co_return core::error_t::no_error();

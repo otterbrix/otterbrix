@@ -835,12 +835,13 @@ TEST_CASE("optimizer::mirror_compare_symmetric") {
 TEST_CASE("optimizer::has_index_on_positive") {
     auto resource = core::pmr::otterbrix_resource();
     services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
+    constexpr auto table_oid = components::catalog::oid_t{701};
 
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "age"));
-    ctx.indexed_keys.push_back(std::move(keys));
+    ctx.index_info_slot(table_oid).keys.push_back(std::move(keys));
 
-    REQUIRE(ctx.has_index_on(key(&resource, "age")) == true);
+    REQUIRE(ctx.has_index_on(table_oid, key(&resource, "age")) == true);
 }
 
 // ================================================================
@@ -849,12 +850,13 @@ TEST_CASE("optimizer::has_index_on_positive") {
 TEST_CASE("optimizer::has_index_on_negative") {
     auto resource = core::pmr::otterbrix_resource();
     services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
+    constexpr auto table_oid = components::catalog::oid_t{702};
 
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "age"));
-    ctx.indexed_keys.push_back(std::move(keys));
+    ctx.index_info_slot(table_oid).keys.push_back(std::move(keys));
 
-    REQUIRE(ctx.has_index_on(key(&resource, "name")) == false);
+    REQUIRE(ctx.has_index_on(table_oid, key(&resource, "name")) == false);
 }
 
 // ================================================================
@@ -863,23 +865,25 @@ TEST_CASE("optimizer::has_index_on_negative") {
 TEST_CASE("optimizer::has_index_on_multi_field_skip") {
     auto resource = core::pmr::otterbrix_resource();
     services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
+    constexpr auto table_oid = components::catalog::oid_t{703};
 
     components::logical_plan::keys_base_storage_t keys(&resource);
     keys.push_back(key(&resource, "a"));
     keys.push_back(key(&resource, "b"));
-    ctx.indexed_keys.push_back(std::move(keys));
+    ctx.index_info_slot(table_oid).keys.push_back(std::move(keys));
 
-    REQUIRE(ctx.has_index_on(key(&resource, "a")) == false);
+    REQUIRE(ctx.has_index_on(table_oid, key(&resource, "a")) == false);
 }
 
 // ================================================================
-// T30. has_index_on: empty indexed_keys
+// T30. has_index_on: no table_indexes entry for the oid
 // ================================================================
 TEST_CASE("optimizer::has_index_on_empty") {
     auto resource = core::pmr::otterbrix_resource();
     services::context_storage_t ctx(&resource, log_t{}, core::date::timezone_offset_t{});
+    constexpr auto table_oid = components::catalog::oid_t{704};
 
-    REQUIRE(ctx.has_index_on(key(&resource, "any")) == false);
+    REQUIRE(ctx.has_index_on(table_oid, key(&resource, "any")) == false);
 }
 
 // ================================================================
@@ -934,18 +938,20 @@ static services::context_storage_t make_context_with_oid(std::pmr::memory_resour
 
 static void add_single_field_index(services::context_storage_t& ctx,
                                    std::pmr::memory_resource* resource,
+                                   components::catalog::oid_t table_oid,
                                    const char* field,
                                    components::logical_plan::index_type type) {
+    auto& info = ctx.index_info_slot(table_oid);
     components::logical_plan::keys_base_storage_t keys(resource);
     keys.push_back(key(resource, field));
-    ctx.indexed_keys.push_back(keys);
+    info.keys.push_back(keys);
 
     components::index::index_description_t desc{
         components::logical_plan::keys_base_storage_t(resource),
         type,
     };
     desc.keys.push_back(key(resource, field));
-    ctx.indexed_descriptions.push_back(std::move(desc));
+    info.descriptions.push_back(std::move(desc));
 }
 
 TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
@@ -955,7 +961,7 @@ TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
     constexpr auto table_oid = components::catalog::oid_t{777};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::hashed);
+    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::hashed);
 
     auto node = make_node_match(&resource,
                                 core::dbname_t{database_name},
@@ -977,7 +983,7 @@ TEST_CASE("create_plan_match::range_uses_index_scan_single_preferred") {
     constexpr auto table_oid = components::catalog::oid_t{778};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::single);
+    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::single);
 
     auto node = make_node_match(&resource,
                                 core::dbname_t{database_name},
@@ -999,7 +1005,7 @@ TEST_CASE("create_plan_match::range_with_only_hashed_falls_back_to_full_scan") {
     constexpr auto table_oid = components::catalog::oid_t{779};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::hashed);
+    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::hashed);
 
     auto node = make_node_match(&resource,
                                 core::dbname_t{database_name},
@@ -1018,7 +1024,7 @@ TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan")
     constexpr auto table_oid = components::catalog::oid_t{780};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::single);
+    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::single);
 
     auto node = make_node_match(&resource,
                                 core::dbname_t{database_name},
@@ -1039,7 +1045,7 @@ TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
     constexpr auto table_oid = components::catalog::oid_t{781};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
-    add_single_field_index(ctx, &resource, "age", components::logical_plan::index_type::single);
+    add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::single);
 
     auto union_expr = make_compare_union_expression(&resource, compare_type::union_and);
     union_expr->append_child(make_compare_expression(&resource, compare_type::gte, key(&resource, "age"), pid));

@@ -27,10 +27,12 @@ namespace components::table {
         uint64_t lowest_active_start_time() const;
         bool has_active_transactions() const;
 
-        // Oldest snapshot_horizon among active transactions (published_horizon_
-        // when none are active). Commit-id value space — feeds the DROP-GC
-        // horizon broadcast whose sweep compares dropped_at_commit_id (also
-        // commit-id space after the dropped-committed remap) against it.
+        // Horizon broadcast to the DROP-GC / deferred-index-delete sweeps.
+        // Commit-id value space, so the agents' `dropped_at_commit_id < horizon`
+        // and `entry->commit_id <= horizon` sweeps compare like with like.
+        // Same value as compact_watermark() — both ask "what is visible to
+        // EVERY snapshot, present and future"; the two names are kept because
+        // they carry different consumer contracts.
         uint64_t lowest_active_snapshot_horizon() const;
 
         // Visible-to-all horizon for data_table_t::compact(): every commit_id at
@@ -93,6 +95,12 @@ namespace components::table {
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
     private:
+        // The ONE computation of "visible to all": the greatest commit_id that
+        // every live snapshot AND every future snapshot already sees. Requires
+        // lock_ to be held by the caller (it does not take it — lock_ is not
+        // recursive). Both public horizon readers are thin wrappers over this.
+        uint64_t visible_to_all_locked() const;
+
         std::pmr::memory_resource* resource_;
         std::atomic<uint64_t> next_transaction_id_{TRANSACTION_ID_START};
         std::atomic<uint64_t> current_timestamp_{1};

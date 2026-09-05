@@ -1,7 +1,6 @@
 #include "transaction_manager.hpp"
 
-#include <limits>
-#include <stdexcept>
+#include <algorithm>
 
 namespace components::table {
 
@@ -139,40 +138,46 @@ namespace components::table {
 
     uint64_t transaction_manager_t::lowest_active_snapshot_horizon() const {
         std::lock_guard guard(lock_);
-        if (active_.empty()) {
-            // Empty active_ returns published_horizon_, NOT an in-flight
-            // commit id. A commit that ALLOCATED a commit_id but has not yet
-            // published sits in in_flight_commits_ (commit() inserts it; publish()
-            // erases it and only THEN bumps published_horizon_). With active_ empty
-            // this function therefore returns published_horizon_ < that pending
-            // commit_id. That cannot reclaim the pending txn's own tombstones early:
-            //   * the DROP-GC remap (operator_commit_transaction) stamps the
-            //     tombstones' dropped_at == commit_id and runs PRE-publish;
-            //   * the agents' sweep keeps a tombstone only while
-            //     dropped_at == commit_id < horizon;
-            //   * horizon only reaches commit_id AFTER this same txn's publish()
-            //     (which is co_awaited AFTER the remap).
-            // So during the pre-publish window horizon < commit_id, the sweep's
-            // strict `<` fails, and the txn's fresh tombstones survive until its
-            // own publish makes the rows visible. No early-reclaim race exists.
-            return published_horizon_.load(std::memory_order_acquire);
-        }
-        // Oldest commit-id horizon any live snapshot can still read below.
-        // Same value space as commit_id / published_horizon_ — used by the
-        // DROP-GC broadcast so the agents' `dropped_at_commit_id < horizon`
-        // sweep compares like with like.
-        uint64_t lowest = std::numeric_limits<uint64_t>::max();
-        for (const auto& [key, txn] : active_) {
-            const auto h = txn->data().snapshot_horizon;
-            if (h < lowest) {
-                lowest = h;
-            }
-        }
-        return lowest;
+        // BOTH public names answer the SAME question — see visible_to_all_locked().
+        //
+        // This used to compute its own, weaker answer: published_horizon_ when
+        // active_ was empty, otherwise the min over snapshot_horizon alone. Both
+        // branches ignored in_flight_commits_, and the old safety argument here
+        // proved only a special case — that a COMMITTING txn cannot reclaim its OWN
+        // tombstones early (its remap runs pre-publish, so the horizon reaches its
+        // id only after it). It was blind to ANOTHER, SMALLER commit-id still in
+        // flight: publish() keeps the MAXIMUM ever published, while commit()
+        // pipelines finish in any order, so published_horizon_ routinely sits ABOVE
+        // an unpublished id. A snapshot taken in that window carries the smaller id
+        // in in_flight_snapshot and still reads its rows, while this broadcast had
+        // already licensed the index sweep to erase their entries — the index then
+        // answers a subset of the table, silently.
+        //
+        // Ordering is imposed on READING the horizon, not on publish(): no commit
+        // waits for another, so no mutual exclusion is introduced (rule 12).
+        //
+        // Two names are kept because they carry different CONSUMER contracts —
+        // DROP tombstone reclaim vs. version-history collapse — not two sources of
+        // truth (rule 16 is about the single computation below, not a single name).
+        return visible_to_all_locked();
     }
 
     uint64_t transaction_manager_t::compact_watermark() const {
         std::lock_guard guard(lock_);
+        return visible_to_all_locked();
+    }
+
+    // Callers hold lock_. It is NOT recursive: the two public wrappers above each
+    // take it exactly once and call in here, so no path locks twice and no new edge
+    // is added to the lock order.
+    //
+    // MONOTONE IN THE SAFE DIRECTION — the property dispatcher.cpp's
+    // `new_lowest > last_broadcast_horizon_` gate rests on. Each of the three terms
+    // only ever rises: published_horizon_ never decreases (publish() CASes upward);
+    // min(in_flight_commits_) never decreases, because ids are handed out strictly
+    // increasing and publish() always removes one of the already-issued ids; and an
+    // active txn's contribution only disappears (raising the min) when it ends.
+    uint64_t transaction_manager_t::visible_to_all_locked() const {
         uint64_t watermark = published_horizon_.load(std::memory_order_relaxed);
         // Committed-but-unpublished ids: every snapshot taken from now on carries
         // them in in_flight_snapshot, so nothing at/above the lowest one is

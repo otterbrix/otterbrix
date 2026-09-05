@@ -211,3 +211,69 @@ TEST_CASE("components::table::transaction_manager::append_tracking") {
     auto cid = mgr.commit(session);
     mgr.publish(cid);
 }
+
+// OUT-OF-ORDER PUBLISH WINDOW. commit() hands out commit-ids in increasing order
+// but publish() runs at the END of each commit pipeline (after WAL fsync +
+// storage_publish_*), so the pipelines finish in ANY order. publish() itself only
+// keeps the MAXIMUM ever published. Therefore a SMALLER commit-id can still sit in
+// in_flight_commits_ while published_horizon_ has already moved past it.
+//
+// lowest_active_snapshot_horizon() is the DROP-GC / deferred-index-delete broadcast
+// (services/dispatcher/dispatcher.cpp:447 is its only production caller). Both of
+// its branches ignored in_flight_commits_ entirely:
+//   * active_ empty  -> published_horizon_, i.e. c2 here;
+//   * active_ non-empty -> min over snapshot_horizon only, never looking at the
+//     per-txn in_flight_snapshot, i.e. c2 here as well.
+// Either way it broadcast a horizon that had ALREADY PASSED the still-unpublished
+// c1. A snapshot taken in that same window carries c1 in in_flight_snapshot and so
+// still SEES c1's rows, while the index sweep (services/index/manager_index.cpp,
+// `entry->commit_id <= new_horizon`) was already cleared to erase their index
+// entries. The index then answers a strict SUBSET of the table: a silent wrong
+// answer, no error raised.
+//
+// The window is laid out by hand with three public calls — no threads, no sleeps,
+// no timing. commit(s1), commit(s2), publish(c2) IS the window.
+TEST_CASE("components::table::transaction_manager::out_of_order_publish_floor") {
+    using namespace components::table;
+    using namespace components::session;
+
+    transaction_manager_t mgr(std::pmr::new_delete_resource());
+
+    auto s1 = session_id_t::generate_uid();
+    auto s2 = session_id_t::generate_uid();
+    mgr.begin_transaction(s1);
+    mgr.begin_transaction(s2);
+
+    const auto c1 = mgr.commit(s1); // in_flight { c1 }
+    const auto c2 = mgr.commit(s2); // in_flight { c1, c2 }
+    REQUIRE(c2 > c1);
+
+    // The LATER commit finishes its pipeline FIRST. c1 is still in flight.
+    mgr.publish(c2);
+
+    // Branch 1: active_ is empty.
+    REQUIRE_FALSE(mgr.has_active_transactions());
+    // Nothing at or above c1 is visible-to-all: c1 is unpublished, so every
+    // snapshot from now on carries it in in_flight_snapshot and hides its rows.
+    // Broadcasting anything >= c1 licenses an erase of rows that are still read.
+    REQUIRE(mgr.lowest_active_snapshot_horizon() < c1);
+
+    // Branch 2: active_ is NOT empty. A reader begun inside the window.
+    auto s3 = session_id_t::generate_uid();
+    auto& reader = mgr.begin_transaction(s3);
+
+    // GUARD AGAINST "FIX THE READER" (variant (c) of the fork). The SNAPSHOT
+    // horizon must stay at the freshly published c2: begin_transaction captures
+    // (horizon, in-flight set) atomically and the visibility filter applies the
+    // pair honestly, so the reader is already correct. Clamping the SNAPSHOT
+    // instead would break read-committed in a user-visible way — a session opened
+    // AFTER a commit was acknowledged would stop seeing it. This line goes red the
+    // day anyone tries it.
+    REQUIRE(reader.data().snapshot_horizon == c2);
+
+    // Same floor with a live snapshot present: the reader itself is entitled to
+    // read below c1, so the broadcast must stay below c1 too.
+    REQUIRE(mgr.lowest_active_snapshot_horizon() < c1);
+
+    mgr.abort(s3);
+}

@@ -1435,3 +1435,79 @@ TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history")
         REQUIRE(result == nullptr);
     }
 }
+
+// SILENT WRONG ANSWER: the index sweep floor inside an out-of-order publish window.
+//
+// Two commits overlap. s_del DELETEs row 0, commits (c_del allocated, the delete is
+// already storage-stamped) and is still mid-pipeline — publish() pending. s_oth
+// commits AND publishes with a LARGER id, so published_horizon_ jumps to c_oth
+// while c_del is still in in_flight_commits_.
+//
+// A reader begun in that window carries c_del in in_flight_snapshot, so it must
+// still see row 0 — and the full scan below proves it does. But the value
+// broadcast by lowest_active_snapshot_horizon() had already reached c_oth >= c_del,
+// and the deferred index-delete sweep in services/index/manager_index.cpp reaps on
+// `entry->commit_id <= new_horizon` (copied verbatim from that predicate; it is the
+// only consumer of this broadcast, reached via services/dispatcher/dispatcher.cpp:447).
+// So the index entry for row 0 was already cleared for erasure while the table still
+// hands the row back. Index answers a SUBSET of the table, with no error raised.
+//
+// The check is the honest half available from components/table: the full scan
+// establishes what the snapshot is ENTITLED to read, and the broadcast establishes
+// what the index has been PERMITTED to erase. The two must not overlap. The
+// end-to-end form with a real manager_index_t belongs in
+// services/index/tests/test_index_delete_horizon.cpp (another wave's directory).
+TEST_CASE("components::table::mvcc::index_sweep_floor_in_publish_window") {
+    test_env env;
+    auto table = make_int_table(env);
+    transaction_manager_t mgr(&env.resource);
+
+    // Baseline rows 0..9: committed, published, stamped.
+    auto s1 = components::session::session_id_t::generate_uid();
+    auto& txn1 = mgr.begin_transaction(s1);
+    append_rows_txn(*table, env, 0, 10, txn1.data());
+    auto c1 = mgr.commit(s1);
+    mgr.publish(c1);
+    table->commit_append(c1, 0, 10);
+
+    // The DELETE commits: c_del is allocated and the tombstone is stamped with it,
+    // but publish() has NOT run (WAL fsync / storage_publish_* still in flight).
+    auto s_del = components::session::session_id_t::generate_uid();
+    auto& txn_del = mgr.begin_transaction(s_del);
+    auto txn_del_id = txn_del.data().transaction_id;
+    delete_row0_txn(*table, env, txn_del_id);
+    auto c_del = mgr.commit(s_del);
+    table->commit_all_deletes(txn_del_id, c_del);
+
+    // An UNRELATED commit finishes its whole pipeline inside that window. Its id is
+    // larger, so publish() drags published_horizon_ PAST the still-in-flight c_del.
+    auto s_oth = components::session::session_id_t::generate_uid();
+    mgr.begin_transaction(s_oth);
+    auto c_oth = mgr.commit(s_oth);
+    REQUIRE(c_oth > c_del);
+    mgr.publish(c_oth);
+
+    // Reader begun in the window: snapshot_horizon == c_oth, in_flight { c_del }.
+    auto s_read = components::session::session_id_t::generate_uid();
+    auto& reader = mgr.begin_transaction(s_read);
+
+    // WHAT THE SNAPSHOT MAY READ. Row 0 is alive for it: the tombstone's c_del is
+    // in its in_flight_snapshot, so use_inserted_version rejects the delete marker.
+    REQUIRE(scan_values_txn(*table, env, reader.data()) == make_range(0, 9));
+
+    // WHAT THE INDEX HAS BEEN CLEARED TO ERASE. Same predicate as
+    // services/index/manager_index.cpp's deferred-delete sweep: an entry whose
+    // commit_id <= the broadcast horizon is erased. c_del must NOT qualify while a
+    // live snapshot still reads the row.
+    const auto broadcast = mgr.lowest_active_snapshot_horizon();
+    REQUIRE_FALSE(c_del <= broadcast);
+
+    // Close the window; the floor may then advance past c_del.
+    mgr.abort(s_read);
+    mgr.publish(c_del);
+    auto s_after = components::session::session_id_t::generate_uid();
+    auto& after = mgr.begin_transaction(s_after);
+    REQUIRE(scan_values_txn(*table, env, after.data()) == make_range(1, 9));
+    mgr.abort(s_after);
+    REQUIRE(c_del <= mgr.lowest_active_snapshot_horizon());
+}

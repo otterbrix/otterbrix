@@ -323,10 +323,10 @@ namespace services::disk {
         new_data.copy(local, 0);
         // Must return the actual result, not no_error(): the adapter's own refusal check is
         // an assert that NDEBUG deletes, so this is the only channel that reaches the caller.
-        // The passkey mint: agent_disk_t is the sole friend of the token (update_passkey.hpp),
-        // and both entitled legs — WAL replay and the pg_attribute commit-id stamp — call
-        // through this function.
-        return entry->storage->update(components::table::nontransactional_update_access_t{}, ids_vec, local);
+        // Both entitled legs of the non-transactional in-place update — WAL replay and the
+        // pg_attribute commit-id stamp — call through this function
+        // (test_nontransactional_update_contract.cpp pins the semantics).
+        return entry->storage->update(ids_vec, local);
     }
 
     core::error_t agent_disk_t::direct_add_column_sync(components::catalog::oid_t table_oid,
@@ -511,6 +511,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_open_scan_hold_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_open_scan_hold_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_compact_epoch_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_compact_epoch_inner, msg);
                 break;
             }
             default:
@@ -1049,7 +1053,8 @@ namespace services::disk {
                                       std::vector<size_t> projected_cols,
                                       components::table::transaction_data txn,
                                       components::table::fetch_visibility_t visibility,
-                                      int64_t limit) {
+                                      int64_t limit,
+                                      uint64_t expected_compact_epoch) {
         std::pmr::vector<components::vector::data_chunk_t> out{resource()};
         // Asking for no rows is not a refusal, whatever the oid — the same split the
         // delete and append legs make.
@@ -1067,6 +1072,21 @@ namespace services::disk {
             std::pmr::string what{"storage_fetch: table oid has no materialized storage: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+        }
+        // Stale-index refusal (loud, rules 2/6): ids stamped with an older epoch were minted
+        // before a compact renumbered this table — between a checkpoint round's two phases, where
+        // the index still holds pre-compact ids. Applying them would answer a stranger row
+        // (measured: id exactly one slide away) or nothing at all. Checked HERE, in the same
+        // handler invocation that reads the windows below, with no co_await in between: compact()
+        // only ever runs inside another message on this same mailbox, so the epoch cannot move
+        // between this comparison and the last window read.
+        if (expected_compact_epoch != k_fetch_epoch_unchecked &&
+            expected_compact_epoch != entry->table_storage.table().compact_epoch()) {
+            std::pmr::string what{"storage_fetch: the index answer is stale — the table was compacted "
+                                  "(row ids renumbered) after the index was built and before its rebuild "
+                                  "finished; retry the statement",
+                                  resource()};
+            co_return core::error_t{core::error_code_t::stale_index, std::move(what)};
         }
         auto types = entry->storage->types();
         // Fetch in ≤DEFAULT_VECTOR_CAPACITY windows so each produced chunk is born within
@@ -1641,6 +1661,20 @@ namespace services::disk {
               static_cast<unsigned>(table_oid),
               hold_id);
         co_return hold_id;
+    }
+
+    // The entry's current compact epoch (see disk_contract::storage_compact_epoch). Read by
+    // index builders BEFORE the scan that feeds the index; the fetch-side comparison in
+    // storage_fetch_inner is what the stamp arms.
+    agent_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
+    agent_disk_t::storage_compact_epoch_inner(session_id_t /*session*/, components::catalog::oid_t table_oid) {
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            std::pmr::string what{"storage_compact_epoch: table oid is not owned by this disk agent: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+        }
+        co_return it->second->table_storage.table().compact_epoch();
     }
 
     // AGGREGATE-PUSHDOWN REDUCE — the DEDICATED protocol leg. Runs the whole

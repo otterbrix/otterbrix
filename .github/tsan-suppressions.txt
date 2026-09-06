@@ -1,0 +1,6 @@
+# ThreadSanitizer suppressions, consumed by CI via TSAN_OPTIONS=suppressions=...
+# Put here ONLY verified false positives, e.g. reports whose both stacks lie entirely
+# inside the actor-zeta runtime (its lock-free queues synchronize in ways TSan cannot
+# see through). Format: one "race:<symbol-or-file-substring>" per line, with a short
+# justification comment above each entry.
+# Real otterbrix races must stay OUT of this file and stay visible in CI.

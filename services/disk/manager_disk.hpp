@@ -1044,6 +1044,10 @@ namespace services::disk {
         // storage_open_scan_hold_inner. Released with storage_close_cursor.
         unique_future<core::result_wrapper_t<uint64_t>> storage_open_scan_hold(session_id_t session,
                                                                                components::catalog::oid_t table_oid);
+        // Current compact epoch of the table (see disk_contract::storage_compact_epoch):
+        // transparent router to the owning agent's storage_compact_epoch_inner.
+        unique_future<core::result_wrapper_t<uint64_t>> storage_compact_epoch(session_id_t session,
+                                                                              components::catalog::oid_t table_oid);
         // Aggregate-pushdown REDUCE: transparent router to the owning agent's
         // storage_reduce_inner — one reply carrying ALL final aggregated rows (see
         // disk_contract for the protocol + the single-owner invariant).
@@ -1064,6 +1068,9 @@ namespace services::disk {
         // `limit` is the POST-VISIBILITY row cap (-1 == uncapped) the index scan pushes down,
         // the counterpart of storage_fetch_next_batch's post-filter matched-row cap.
         // See the contract note on disk_contract::storage_fetch.
+        // `expected_compact_epoch` (no default, same rule as `visibility`): the epoch the row ids
+        // were minted against, or k_fetch_epoch_unchecked for ids the caller minted itself. See
+        // the contract note on disk_contract::storage_fetch.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
@@ -1072,7 +1079,8 @@ namespace services::disk {
                       std::vector<size_t> projected_cols,
                       components::table::transaction_data txn,
                       components::table::fetch_visibility_t visibility,
-                      int64_t limit);
+                      int64_t limit,
+                      uint64_t expected_compact_epoch);
         // Appends every chunk in order. Appends within one txn are contiguous, so the
         // result is the single coalesced range [range_start, range_start + total_count).
         // Reply wraps (start_row, count) so a write_conflict / out_of_memory from the
@@ -1161,7 +1169,8 @@ namespace services::disk {
                                                        &manager_disk_t::storage_drop_aborted,
                                                        // Appended LAST — positional msg ids (see
                                                        // disk_contract::dispatch_traits).
-                                                       &manager_disk_t::storage_open_scan_hold>;
+                                                       &manager_disk_t::storage_open_scan_hold,
+                                                       &manager_disk_t::storage_compact_epoch>;
 
     private:
         // Returns no_error() on success. Returns data_corruption/io_error — instead of throwing —
@@ -1208,7 +1217,6 @@ namespace services::disk {
         // Held only to fan the dispatcher address out to every agent at bootstrap;
         // the manager itself never acks or mirrors — each agent emits its own
         // on_subscriber_empty(DISK_KIND) when its dropped_storages_ slice drains.
-        actor_zeta::address_t manager_dispatcher_{actor_zeta::address_t::empty_address()};
         log_t log_;
         configuration::config_disk config_;
         // Storage ownership shape (manager has NO storages_ map — pure router):

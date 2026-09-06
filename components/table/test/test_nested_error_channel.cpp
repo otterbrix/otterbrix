@@ -249,7 +249,7 @@ TEST_CASE("nested column: an in-place LIST update cannot change the list length,
         upd.set_cardinality(1);
         upd.set_value(0, 0, list_value(env, {11, 21}));
         auto state = built.table->initialize_update({});
-        auto updated = built.table->update(nontransactional_update_access_t::for_test(), *state, row_ids, upd);
+        auto updated = built.table->update(*state, row_ids, upd);
         REQUIRE_FALSE(updated.has_error());
     }
 
@@ -257,7 +257,7 @@ TEST_CASE("nested column: an in-place LIST update cannot change the list length,
     upd.set_cardinality(1);
     upd.set_value(0, 0, list_value(env, {1, 2, 3}));
     auto state = built.table->initialize_update({});
-    auto updated = built.table->update(nontransactional_update_access_t::for_test(), *state, row_ids, upd);
+    auto updated = built.table->update(*state, row_ids, upd);
     REQUIRE(updated.has_error());
     REQUIRE(updated.error().type == core::error_code_t::unimplemented_yet);
 }
@@ -452,7 +452,7 @@ TEST_CASE("column scan: an index-build scan over a column with updates refuses")
         upd.set_cardinality(1);
         upd.set_value(0, 0, int64_t{77});
         auto state = built.table->initialize_update({});
-        REQUIRE_FALSE(built.table->update(nontransactional_update_access_t::for_test(), *state, row_ids, upd).has_error());
+        REQUIRE_FALSE(built.table->update(*state, row_ids, upd).has_error());
     }
 
     table_scan_state scan_state(&env.resource);

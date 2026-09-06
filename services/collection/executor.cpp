@@ -1564,7 +1564,7 @@ namespace services::collection::executor {
             // INSERT relkind='g' wrap — wraps INSERT into
             // sequence_t(insert, computed_field_register) so
             // pg_computed_column rows are appended inside the DML txn.
-            if (original_type == node_type::insert_t && disk_address_ != actor_zeta::address_t::empty_address()) {
+            if (original_type == node_type::insert_t) {
                 components::catalog::oid_t resolved_tbl_oid = components::catalog::INVALID_OID;
                 bool is_computing = false;
                 auto* effective_insert_node = plan.sub_queries.back().get();
@@ -1928,7 +1928,7 @@ namespace services::collection::executor {
                 revert_ranges.push_back(std::move(pgc));
             }
             exec_result.pg_catalog_appends.clear();
-            if (!revert_ranges.empty() && disk_address_ != actor_zeta::address_t::empty_address()) {
+            if (!revert_ranges.empty()) {
                 components::execution_context_t pgc_ctx{session, resolve_txn, {}};
                 auto [_pa, paf] = actor_zeta::otterbrix::send(disk_address_,
                                                               &services::disk::manager_disk_t::storage_revert_appends,
@@ -1984,8 +1984,7 @@ namespace services::collection::executor {
             // the row can never be deleted again. Unions base + catalog heaps — pg_catalog
             // tables have no index engines but still need it.
             if (resolve_txn.transaction_id != 0 &&
-                (!exec_result.dml_deletes.empty() || !exec_result.pg_catalog_delete_tables.empty()) &&
-                disk_address_ != actor_zeta::address_t::empty_address()) {
+                (!exec_result.dml_deletes.empty() || !exec_result.pg_catalog_delete_tables.empty())) {
                 std::set<components::catalog::oid_t> revert_set{exec_result.pg_catalog_delete_tables.begin(),
                                                                 exec_result.pg_catalog_delete_tables.end()};
                 for (const auto& del : exec_result.dml_deletes) {
@@ -2185,7 +2184,7 @@ namespace services::collection::executor {
                     [[maybe_unused]] executor_t* self,
                     components::catalog::oid_t table_oid,
                     components::catalog::oid_t index_oid) -> executor_t::unique_future<void> {
-                if (has_create_index_pg_index_range && disk_address_ != actor_zeta::address_t::empty_address()) {
+                if (has_create_index_pg_index_range) {
                     std::vector<components::pg_catalog_append_range_t> revert_ranges;
                     revert_ranges.push_back(create_index_pg_index_range);
                     components::execution_context_t rv_ctx{session, resolve_txn, {}};
@@ -2978,8 +2977,7 @@ namespace services::collection::executor {
             // RAW and staged through the ordinary mirror door; the stores dedup a repeated
             // (key, row id) pair. See index_contract::unmirrored_ranges.
             if (!pipeline_context.dml_appends.empty() &&
-                index_address_ != actor_zeta::address_t::empty_address() &&
-                disk_address_ != actor_zeta::address_t::empty_address()) {
+                index_address_ != actor_zeta::address_t::empty_address()) {
                 auto reconcile = [this, session, &pipeline_context](std::pmr::memory_resource* res)
                     -> actor_zeta::unique_future<core::error_t> {
                     std::pmr::unordered_map<components::catalog::oid_t,
@@ -3020,7 +3018,10 @@ namespace services::collection::executor {
                                                             std::vector<size_t>{},
                                                             components::table::transaction_data{},
                                                             components::table::fetch_visibility_t::RAW,
-                                                            /*limit=*/int64_t{-1});
+                                                            /*limit=*/int64_t{-1},
+                                                            // This txn's own appended gap range, not an
+                                                            // index answer.
+                                                            services::disk::k_fetch_epoch_unchecked);
                             auto rows_r = co_await std::move(ff);
                             if (rows_r.has_error()) {
                                 co_return rows_r.error();

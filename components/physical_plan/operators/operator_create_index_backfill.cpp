@@ -61,6 +61,25 @@ namespace components::operators {
                                                       table_oid_);
         co_await std::move(rcf);
 
+        // The table's compact epoch, read STRICTLY BEFORE the RAW backfill read below stamps the
+        // new index (same before-the-scan rule as the checkpoint rebuild driver): a compact
+        // interleaving capture and read can only leave the stamp too LOW — reads refuse until
+        // the next rebuild re-stamps — never fresh over stale ids. 0 when no disk is wired
+        // (then there is no backfill read and no storage_fetch to enforce anything).
+        uint64_t built_compact_epoch = 0;
+        if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
+            auto [_ce, cef] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::storage_compact_epoch,
+                                                          ctx->session,
+                                                          table_oid_);
+            auto epoch_r = co_await std::move(cef);
+            if (epoch_r.has_error()) {
+                set_error(epoch_r.error());
+                co_return;
+            }
+            built_compact_epoch = epoch_r.value();
+        }
+
         // REGISTRATION IS THE MIRROR BOUNDARY. From the moment this message is processed, every
         // DML statement's post-append reconciliation with manager_index sees the building index
         // and stages its rows; every append that predates it lies inside the RAW read below
@@ -72,7 +91,8 @@ namespace components::operators {
                                                       index_oid_,
                                                       keys_,
                                                       index_type_,
-                                                      ctx->execution_context.timezone_offset);
+                                                      ctx->execution_context.timezone_offset,
+                                                      built_compact_epoch);
         // create_index answers with a core::error_t only; the index's identity below the planner is
         // index_oid_, already known here.
         auto create_error = co_await std::move(ixf);
@@ -189,7 +209,10 @@ namespace components::operators {
                                                               std::vector<size_t>{}, // all columns
                                                               components::table::transaction_data{},
                                                               components::table::fetch_visibility_t::RAW,
-                                                              /*limit=*/int64_t{-1});
+                                                              /*limit=*/int64_t{-1},
+                                                              // Positions minted in-loop under the held pin
+                                                              // cursor above, not an index answer.
+                                                              services::disk::k_fetch_epoch_unchecked);
                 auto fetch_result = co_await std::move(fbf);
                 if (fetch_result.has_error()) {
                     scan_error = fetch_result.error();

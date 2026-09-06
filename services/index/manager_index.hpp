@@ -79,6 +79,12 @@ namespace services::index {
         bool ordered{false};
         // Mailbox this index is reached through; ownership lives in the per-family vectors below.
         actor_zeta::address_t address{actor_zeta::address_t::empty_address()};
+        // data_table_t::compact_epoch() this index's rows were built against. Set by the builder
+        // (create_index's backfill capture, repopulate_table on rebuild success) from a value it
+        // read BEFORE its table scan, so a compact interleaving the build leaves the stamp too
+        // LOW — a refusal at storage_fetch, never a wrong row. 0 at bootstrap: both the table's
+        // counter and this stamp restart at 0 together (compaction is runtime-only).
+        uint64_t built_compact_epoch{0};
     };
 
     using index_records_t = std::pmr::vector<index_record_t>;
@@ -284,7 +290,8 @@ namespace services::index {
                                                       components::catalog::oid_t table_oid,
                                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
                                                       uint64_t row_count,
-                                                      core::date::timezone_offset_t session_tz);
+                                                      core::date::timezone_offset_t session_tz,
+                                                      uint64_t built_compact_epoch);
 
         // DDL: returns the reason the index could not open, or no_error(); never silently
         // downgrades to in-memory. No "index id" returned -- identity below the planner is the
@@ -294,13 +301,15 @@ namespace services::index {
                                                   components::catalog::oid_t index_oid,
                                                   components::index::keys_base_storage_t keys,
                                                   components::logical_plan::index_type type,
-                                                  core::date::timezone_offset_t session_tz);
+                                                  core::date::timezone_offset_t session_tz,
+                                                  uint64_t built_compact_epoch);
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
 
         // Query (txn-aware). See the contract for what the wrapper distinguishes; in
-        // short, an EMPTY vector now means "no row matches" and nothing else.
-        unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
+        // short, an EMPTY id set now means "no row matches" and nothing else. The reply pairs
+        // the ids with the record's built_compact_epoch (index_search_result_t).
+        unique_future<core::result_wrapper_t<index_search_result_t>>
         search(session_id_t session,
                components::catalog::oid_t table_oid,
                components::index::keys_base_storage_t keys,
@@ -310,7 +319,7 @@ namespace services::index {
                uint64_t txn_id,
                core::date::timezone_offset_t session_tz);
 
-        unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
+        unique_future<core::result_wrapper_t<index_search_result_t>>
         search_with_preferred_type(session_id_t session,
                                    components::catalog::oid_t table_oid,
                                    components::index::keys_base_storage_t keys,

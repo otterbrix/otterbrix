@@ -38,18 +38,6 @@ namespace components::operators {
     // ids. source_next calls this exactly once (the first call), so the search + windowing logic
     // lives in ONE place.
     actor_zeta::unique_future<core::error_t> index_scan::open_index_window(pipeline::context_t* ctx) {
-        if (ctx->index_address == actor_zeta::address_t::empty_address()) {
-            // An index_scan is built ONLY when the planner proved an index exists (can_use_index); an unwired
-            // index service is that invariant broken. Refuse rather than hand back an empty window, which
-            // would be indistinguishable from "no row matches the predicate".
-            pos_ = 0;
-            end_ = 0;
-            co_return core::error_t{core::error_code_t::index_not_exists,
-                                    std::pmr::string{"index_scan: no index service is wired into this topology; "
-                                                     "a planned index_scan cannot be answered",
-                                                     resource_}};
-        }
-
         // Search index for matching row IDs (txn-aware visibility). One-shot: the whole matched
         // set comes back in this single future.
         auto [_s, sf] = preferred_index_type_ == logical_plan::index_type::no_valid
@@ -82,7 +70,8 @@ namespace components::operators {
             end_ = 0;
             co_return matched.error();
         }
-        row_ids_vec_ = std::move(matched.value());
+        row_ids_vec_ = std::move(matched.value().row_ids);
+        built_compact_epoch_ = matched.value().built_compact_epoch;
 
         // The whole matched set is the fetch window -- the read-cap is deliberately NOT applied here: the
         // index answer is a SUPERSET (the fetch below still drops invisible rows), so cutting to `limit`
@@ -122,7 +111,11 @@ namespace components::operators {
                                                     // POST-VISIBILITY row cap. -1 == uncapped; otherwise the
                                                     // agent hands back exactly this many visible rows (fewer
                                                     // if the window runs out first) and reads no further.
-                                                    limit_.head_cap());
+                                                    limit_.head_cap(),
+                                                    // The epoch the ids were minted against: the agent refuses
+                                                    // them loudly (stale_index) when a compact renumbered the
+                                                    // table after the index answered.
+                                                    built_compact_epoch_);
         co_return co_await std::move(ff);
     }
 
@@ -162,6 +155,23 @@ namespace components::operators {
 
         if (!opened_) {
             opened_ = true;
+            // Checked BEFORE the hold below, because it sends: a topology with no index service has
+            // no disk address either, and otterbrix::send aborts on an empty one in every build.
+            // Nothing is minted by this check, so it does not weaken the hold-before-search order.
+            // An index_scan is built ONLY when the planner proved an index exists (can_use_index),
+            // so an unwired index service is that invariant broken. Refuse rather than hand back an
+            // empty window, which would be indistinguishable from "no row matches the predicate".
+            if (ctx->index_address == actor_zeta::address_t::empty_address()) {
+                pos_ = 0;
+                end_ = 0;
+                core::error_t unwired{core::error_code_t::index_not_exists,
+                                      std::pmr::string{"index_scan: no index service is wired into this topology; "
+                                                       "a planned index_scan cannot be answered",
+                                                       resource_}};
+                set_error(unwired);
+                mark_failed();
+                co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(unwired));
+            }
             // Compact-hold FIRST, search second: the hold defers checkpoint_inner's compact on
             // this oid (same gate an open fetch-next cursor holds), so the absolute row ids the
             // search is about to mint stay valid across the hops below. Minted after the search

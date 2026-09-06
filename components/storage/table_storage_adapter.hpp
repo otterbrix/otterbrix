@@ -273,15 +273,11 @@ namespace components::storage {
         // silent trim does. The materialized part is written unconditionally; the answer names
         // what could not be restored. Returns error_t, not void, so this can't be swallowed by
         // an NDEBUG-only assert and reported as "restored".
-        [[nodiscard]] core::error_t update(table::nontransactional_update_access_t access,
-                                           vector::vector_t& row_ids,
-                                           vector::data_chunk_t& data) override {
+        [[nodiscard]] core::error_t update(vector::vector_t& row_ids, vector::data_chunk_t& data) override {
             core::error_t lost = trim_unmaterialized_payload_for_replay(data);
             const auto requested = data.size();
             auto update_state = table_.initialize_update({});
-            // The access token is FORWARDED, never minted here: the adapter carries the
-            // caller's entitlement down, it does not grant one.
-            auto upd_r = table_.update(access, *update_state, row_ids, data);
+            auto upd_r = table_.update(*update_state, row_ids, data);
             if (upd_r.has_error()) {
                 return core::error_on(resource_, upd_r.error());
             }

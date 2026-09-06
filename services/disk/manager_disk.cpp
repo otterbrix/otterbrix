@@ -75,6 +75,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_drop_aborted>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_open_scan_hold>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_compact_epoch>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -693,6 +694,10 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_open_scan_hold, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_compact_epoch>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_compact_epoch, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_reduce>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_reduce, msg);
                 break;
@@ -838,9 +843,8 @@ namespace services::disk {
     }
 
     void manager_disk_t::set_manager_dispatcher_sync(actor_zeta::address_t address) {
-        // Bootstrap-only (pre-scheduler-start), single-threaded — no locking.
-        manager_dispatcher_ = address;
-
+        // Bootstrap-only (pre-scheduler-start), single-threaded — no locking. The manager keeps
+        // no copy: it never sends to the dispatcher itself, only the agents do.
         // Fan the address (a mailbox handle, safe to copy) to every agent so each
         // on_horizon_advanced_inner can ack on_subscriber_empty(DISK_KIND) itself.
         for (auto& agent_ptr : agents_) {

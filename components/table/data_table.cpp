@@ -79,7 +79,10 @@ namespace components::table {
 
     data_table_t::data_table_t(data_table_t& parent, column_definition_t& new_column)
         : resource_(parent.resource_)
-        , is_root_(true) {
+        , is_root_(true)
+        // The successor shares the parent's rows and renumbers nothing, so the epoch carries
+        // over — resetting it would make every index of this table refuse until the next rebuild.
+        , compact_epoch_(parent.compact_epoch_) {
         for (auto& column_def : parent.column_definitions_) {
             column_definitions_.emplace_back(column_def);
         }
@@ -104,7 +107,9 @@ namespace components::table {
 
     data_table_t::data_table_t(data_table_t& parent, uint64_t removed_column)
         : resource_(parent.resource_)
-        , is_root_(true) {
+        , is_root_(true)
+        // Same carry-over as the ADD COLUMN successor above.
+        , compact_epoch_(parent.compact_epoch_) {
         for (auto& column_def : parent.column_definitions_) {
             column_definitions_.emplace_back(column_def);
         }
@@ -328,6 +333,10 @@ namespace components::table {
                 block_manager.unregister_block(block_id);
             }
         }
+        // The swap above may have renumbered row ids; every index answer stamped with the old
+        // epoch is refused at storage_fetch from here on. The total==0 early return above stays
+        // un-counted on purpose: nothing was swapped, no id moved.
+        ++compact_epoch_;
         return true;
     }
 
@@ -603,8 +612,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<std::pair<int64_t, uint64_t>>
-    data_table_t::update(nontransactional_update_access_t /*access*/,
-                         table_update_state&,
+    data_table_t::update(table_update_state&,
                          vector::vector_t& row_ids,
                          // const std::vector<uint64_t>& column_ids,
                          vector::data_chunk_t& data) {

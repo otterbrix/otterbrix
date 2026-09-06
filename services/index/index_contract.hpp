@@ -30,6 +30,16 @@ namespace services::index {
         uint64_t row_count{0};
     };
 
+    // The whole answer of search / search_with_preferred_type. The ids ride TOGETHER with the
+    // compact epoch the answering index was built against (index_record_t::built_compact_epoch,
+    // captured before the read_rows send — never re-asked after, so a rebuild interleaving the
+    // await can only make the stamp too LOW, a refusal and not a lie). storage_fetch compares
+    // the stamp against the table's current epoch at apply time and refuses stale ids loudly.
+    struct index_search_result_t {
+        std::pmr::vector<int64_t> row_ids;
+        uint64_t built_compact_epoch{0};
+    };
+
     struct index_contract {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
@@ -95,20 +105,27 @@ namespace services::index {
         // wrong-row) and re-inserts every row keyed by its physical id from chunk.row_ids, not
         // position -- compaction shifts positions but not ids. Errors before clearing if a
         // non-empty chunk carries no row_ids (producer defect).
+        // `built_compact_epoch`: the table's compact epoch the caller read BEFORE the scan that
+        // produced `chunks` (index_rebuild_driver). Stamped on every rebuilt record on success;
+        // search replies carry it and storage_fetch enforces it.
         unique_future<core::error_t> repopulate_table(session_id_t session,
                                                       components::catalog::oid_t table_oid,
                                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
                                                       uint64_t row_count,
-                                                      core::date::timezone_offset_t session_tz);
+                                                      core::date::timezone_offset_t session_tz,
+                                                      uint64_t built_compact_epoch);
 
         // DDL: index management. index_oid = pg_index.indexrelid, the index's only identity
         // below the planner boundary; no separate "index id" is returned.
+        // `built_compact_epoch`: read by the backfill operator BEFORE its RAW read of the table
+        // (same before-the-scan rule as repopulate_table), 0 when no disk is wired.
         unique_future<core::error_t> create_index(session_id_t session,
                                              components::catalog::oid_t table_oid,
                                              components::catalog::oid_t index_oid,
                                              components::index::keys_base_storage_t keys,
                                              components::logical_plan::index_type type,
-                                             core::date::timezone_offset_t session_tz);
+                                             core::date::timezone_offset_t session_tz,
+                                             uint64_t built_compact_epoch);
         unique_future<void>
         drop_index(session_id_t session, components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
 
@@ -116,7 +133,9 @@ namespace services::index {
         // no engine for the oid, no matching index, and a real empty match. Now only a real match
         // (possibly empty) returns as data; the other cases, plus a failed disk read, are errors.
         // Not covered: index_scan's own empty-address early return, which never sends this message.
-        unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
+        // The reply pairs the ids with the answering index's built compact epoch — see
+        // index_search_result_t.
+        unique_future<core::result_wrapper_t<index_search_result_t>>
         search(session_id_t session,
                components::catalog::oid_t table_oid,
                components::index::keys_base_storage_t keys,
@@ -126,7 +145,7 @@ namespace services::index {
                uint64_t txn_id,
                core::date::timezone_offset_t session_tz);
         // Query (txn-aware)
-        unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
+        unique_future<core::result_wrapper_t<index_search_result_t>>
         search_with_preferred_type(session_id_t session,
                                    components::catalog::oid_t table_oid,
                                    components::index::keys_base_storage_t keys,

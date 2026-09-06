@@ -186,7 +186,8 @@ TEST_CASE("services::index::manager::a multi-column key set is refused, not narr
                                      kIndexOid + 1,
                                      keys_of(&resource, {"id", "name"}),
                                      components::logical_plan::index_type::single,
-                                     core::date::timezone_offset_t{});
+                                     core::date::timezone_offset_t{},
+                                     /*built_compact_epoch=*/0);
     REQUIRE(fut.is_ready());
     REQUIRE(std::move(fut).take_ready().contains_error());
 

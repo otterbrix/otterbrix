@@ -298,6 +298,9 @@ namespace services::disk {
         //   be SHORTER than its window; RAW keeps every row regardless (CREATE INDEX backfill
         //   reads deleted rows on purpose). `limit` caps AFTER the visibility drop, not on the id
         //   count — applying it to ids would spend budget on rows the reader never gets.
+        //   `expected_compact_epoch` != k_fetch_epoch_unchecked is compared against the entry's
+        //   current compact epoch in THIS handler, before the first window is read — the check
+        //   and the application share one mailbox message, so no compact can land between them.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_fetch_inner(components::catalog::oid_t table_oid,
                             components::vector::vector_t row_ids,
@@ -305,7 +308,8 @@ namespace services::disk {
                             std::vector<size_t> projected_cols,
                             components::table::transaction_data txn,
                             components::table::fetch_visibility_t visibility,
-                            int64_t limit);
+                            int64_t limit,
+                            uint64_t expected_compact_epoch);
 
         // Read-path handlers (scan_batched / fetch_next_batch / types / total_rows). Not-owned
         // OIDs refuse; see the note above the mutation handlers.
@@ -350,6 +354,11 @@ namespace services::disk {
         //   would read as protection.
         unique_future<core::result_wrapper_t<uint64_t>>
         storage_open_scan_hold_inner(session_id_t session, components::catalog::oid_t table_oid);
+
+        // storage_compact_epoch_inner — the entry's current data_table_t::compact_epoch()
+        //   (see disk_contract::storage_compact_epoch). A not-owned oid REFUSES.
+        unique_future<core::result_wrapper_t<uint64_t>>
+        storage_compact_epoch_inner(session_id_t session, components::catalog::oid_t table_oid);
 
         // storage_reduce_inner — aggregate-pushdown REDUCE: runs GROUP BY over this agent's OWN
         //   slice, replies ALL final aggregated rows in ONE reply (bounded by #groups, no
@@ -614,7 +623,8 @@ namespace services::disk {
                                                             &agent_disk_t::note_column_identity_inner,
                                                             &agent_disk_t::create_storage_disk_inner,
                                                             // Appended LAST — positional msg ids.
-                                                            &agent_disk_t::storage_open_scan_hold_inner>;
+                                                            &agent_disk_t::storage_open_scan_hold_inner,
+                                                            &agent_disk_t::storage_compact_epoch_inner>;
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 

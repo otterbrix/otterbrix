@@ -1,0 +1,52 @@
+name: ubuntu 22.04 thread sanitizer
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+
+jobs:
+  run:
+    name: Run
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip curl gnupg apt-transport-https flex bison
+
+      - name: conan installation and configuration
+        run: |
+          pip install conan==2.15.0
+          conan profile detect --force
+          conan remote add otterbrix http://conan.otterbrix.com
+
+      - name: download dependencies
+        run: |
+          mkdir build && cd build
+          cp ../conanfile.py .
+          conan install . --build missing -s build_type=Release -s compiler.cppstd=20
+
+      # TSan runtime aborts with "unexpected memory mapping" under high-entropy ASLR
+      - name: Reduce ASLR entropy for TSan
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: build
+        env:
+          CC: gcc
+        run: |
+          cd build
+          cmake  -G Ninja -DCMAKE_TOOLCHAIN_FILE=./build/Release/generators/conan_toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DDEV_MODE=ON -DEXAMPLE=ON -DENABLE_TSAN=ON ..
+          cmake --build .
+
+      - name: Test
+        env:
+          TSAN_OPTIONS: suppressions=${{ github.workspace }}/.github/tsan-suppressions.txt history_size=7 second_deadlock_stack=1
+        run: |
+          cd build
+          ctest -C Release -V --output-on-failure

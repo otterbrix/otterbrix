@@ -49,6 +49,26 @@ namespace services::index {
         }
 
         for (const auto table_oid : indexed_oids) {
+            // The table's compact epoch, read STRICTLY BEFORE the scan below. A compact
+            // interleaving capture and scan (a second checkpoint round racing this one) leaves
+            // the stamp too LOW — every read on the oid then refuses until that round's own
+            // rebuild re-stamps, which is the safe side; captured after the scan the same race
+            // would stamp fresh over stale ids, the exact lie the stamp exists to refuse.
+            std::uint64_t built_epoch = 0;
+            {
+                auto [_ce, cef] = actor_zeta::otterbrix::send(disk_address,
+                                                              &services::disk::manager_disk_t::storage_compact_epoch,
+                                                              session,
+                                                              table_oid);
+                auto epoch_r = co_await std::move(cef);
+                if (epoch_r.has_error()) {
+                    // Same reasoning as the total-rows refusal below: an INDEXED oid names a
+                    // table that must have a storage; a rebuild stamped with a guess would
+                    // either lie or permanently refuse.
+                    co_return epoch_r.error();
+                }
+                built_epoch = epoch_r.value();
+            }
             std::uint64_t total = 0;
             {
                 auto [_tr, trf] = actor_zeta::otterbrix::send(disk_address,
@@ -118,7 +138,8 @@ namespace services::index {
                                                           table_oid,
                                                           std::move(scan_data),
                                                           total,
-                                                          session_tz);
+                                                          session_tz,
+                                                          built_epoch);
             auto repopulate_error = co_await std::move(rpf);
             if (repopulate_error.contains_error()) {
                 // A producer defect (scan chunks without physical row_ids) or a refused write.

@@ -127,7 +127,14 @@ namespace {
         std::size_t disagreements = 0;
         for (const auto key : probes) {
             auto cur = exec(d, "SELECT id FROM adb.t WHERE k = " + std::to_string(key) + ";");
-            REQUIRE(cur->is_success());
+            if (cur->is_error()) {
+                // Loud-refusal contract: a stale index no longer answers a pre-compact stranger
+                // id — it refuses with stale_index. That refusal IS a disagreement with the
+                // table (the index does not currently match it), which is exactly what this
+                // helper counts. A healthy, rebuilt index answers every probe and reaches 0.
+                ++disagreements;
+                continue;
+            }
             const auto expected = truth.find(key);
             if (expected == truth.end()) {
                 if (cur->size() != 0) {

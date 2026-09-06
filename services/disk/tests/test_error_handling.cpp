@@ -381,7 +381,8 @@ TEST_CASE("services::disk::error::fetch_refusal_is_not_an_empty_result") {
                            std::vector<size_t>{},
                            with_open_snapshot(0, 0),
                            components::table::fetch_visibility_t::SNAPSHOT,
-                           /*limit=*/std::int64_t{-1});
+                           /*limit=*/std::int64_t{-1},
+                           k_fetch_epoch_unchecked);
         REQUIRE_FALSE(r.has_error());
         std::uint64_t rows = 0;
         for (const auto& chunk : r.value()) {
@@ -400,7 +401,8 @@ TEST_CASE("services::disk::error::fetch_refusal_is_not_an_empty_result") {
                            std::vector<size_t>{},
                            with_open_snapshot(0, 0),
                            components::table::fetch_visibility_t::SNAPSHOT,
-                           /*limit=*/std::int64_t{-1});
+                           /*limit=*/std::int64_t{-1},
+                           k_fetch_epoch_unchecked);
         REQUIRE_FALSE(r.has_error());
         REQUIRE(r.value().empty());
     }
@@ -415,7 +417,8 @@ TEST_CASE("services::disk::error::fetch_refusal_is_not_an_empty_result") {
                            std::vector<size_t>{},
                            with_open_snapshot(0, 0),
                            components::table::fetch_visibility_t::SNAPSHOT,
-                           /*limit=*/std::int64_t{-1});
+                           /*limit=*/std::int64_t{-1},
+                           k_fetch_epoch_unchecked);
         REQUIRE(r.has_error());
     }
 }
@@ -628,7 +631,8 @@ TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_
                            std::vector<size_t>{},
                            with_open_snapshot(88, 0),
                            components::table::fetch_visibility_t::SNAPSHOT,
-                           limit);
+                           limit,
+                           k_fetch_epoch_unchecked);
         REQUIRE_FALSE(r.has_error());
         std::vector<std::int64_t> values;
         for (const auto& chunk : r.value()) {
@@ -707,7 +711,8 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
                      std::vector<size_t>{},
                      with_open_snapshot(0, 0),
                      components::table::fetch_visibility_t::SNAPSHOT,
-                     std::int64_t{-1})
+                     std::int64_t{-1},
+                     k_fetch_epoch_unchecked)
                     .has_error());
         REQUIRE(call(&manager_disk_t::storage_fetch_next_batch,
                      session_id_t{},

@@ -473,7 +473,7 @@ namespace services::dispatcher {
             // above lands, silently unlinks files a live snapshot can still read.
             auto sweep_broadcast =
                 core::maintenance::pipeline_bypass<core::maintenance::bypass_site::horizon_gc_sweep>([&] {
-                    if (disk_has_dropped_ && disk_address_ != actor_zeta::address_t::empty_address()) {
+                    if (disk_has_dropped_) {
                         // Fire-and-forget (acked via on_subscriber_empty). Parking on
                         // pending_void_ is bookkeeping only — dropping the future would be
                         // equally memory-safe.

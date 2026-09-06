@@ -131,6 +131,10 @@ namespace components::operators {
         size_t pos_{0};
         size_t end_{0};
         std::pmr::vector<int64_t> row_ids_vec_{resource_};
+        // Rode in on the search reply beside row_ids_vec_ (index_search_result_t): the compact
+        // epoch the answering index was built against. Handed to storage_fetch, which refuses
+        // the ids loudly when the table was compacted after the index was built.
+        uint64_t built_compact_epoch_{0};
         std::pmr::vector<types::complex_logical_type> guard_types_{resource_};
         // Buffered fetched batches: the single whole-window storage_fetch returns the disk-batched
         // chunks here; source_next emits them one-per-call.

@@ -3,6 +3,7 @@
 #include <actor-zeta/actor/address.hpp>
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
+#include <limits>
 #include <optional>
 #include <set>
 #include <utility>
@@ -56,6 +57,11 @@ namespace services::disk {
             : batch(std::move(b))
             , cursor_id(id) {}
     };
+
+    // storage_fetch's "these ids did not come from an index answer" sentinel — see the
+    // expected_compact_epoch note on disk_contract::storage_fetch. The real epoch is a small
+    // counter starting at 0 every process start, so the max value can never collide with it.
+    inline constexpr uint64_t k_fetch_epoch_unchecked = std::numeric_limits<uint64_t>::max();
 
     struct disk_contract {
         template<typename T>
@@ -273,6 +279,15 @@ namespace services::disk {
         // invisible ones. Measured: without this, a LIMIT 7 over
         // integration/cpp/test/test_index_scan_limit_cap.cpp answered with 0 rows. -1 = uncapped;
         // no default.
+        // `expected_compact_epoch` is the data_table_t::compact_epoch() the row ids were minted
+        // against. The agent compares it against the entry's CURRENT epoch in the same handler
+        // invocation that applies the ids — no co_await sits between the check and the fetch, and
+        // compact() only ever runs in another message on the same mailbox, so no id can be
+        // renumbered between them. A mismatch REFUSES with stale_index: an index answer that
+        // crossed a compact must fail loudly, not read a renumbered stranger row (or nothing).
+        // k_fetch_epoch_unchecked skips the check — it names PROVENANCE, not a fallback: pass it
+        // only when the caller minted the ids itself in-statement (its own append range, its own
+        // scan under a held cursor), where no index snapshot is involved.
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         // projected_cols holds storage chunk indices; EMPTY means every column, matching
         // storage_fetch_next_batch above. Columns outside the set keep their ordinal slot and come
@@ -284,7 +299,8 @@ namespace services::disk {
                       std::vector<size_t> projected_cols,
                       components::table::transaction_data txn,
                       components::table::fetch_visibility_t visibility,
-                      int64_t limit);
+                      int64_t limit,
+                      uint64_t expected_compact_epoch);
 
         // Reply wraps (start_row, count) so a write_conflict/out_of_memory reaches
         // operator_insert as a value, on the same channel as the routing refusal. An empty
@@ -371,6 +387,14 @@ namespace services::disk {
         // un-marking the DROP so on_horizon_advanced never reclaims the still-live .otbx.
         actor_zeta::unique_future<void> storage_drop_aborted(session_id_t session, uint64_t txn_id);
 
+        // The table's CURRENT data_table_t::compact_epoch(). Read by index builders (the
+        // checkpoint rebuild driver, CREATE INDEX backfill) STRICTLY BEFORE the scan that feeds
+        // the index, so a compact interleaving the build can only leave the stamp too LOW —
+        // which storage_fetch turns into a loud stale_index refusal, never a wrong row. An
+        // unowned oid REFUSES: an index must not be stamped with a number about nothing.
+        actor_zeta::unique_future<core::result_wrapper_t<uint64_t>>
+        storage_compact_epoch(session_id_t session, components::catalog::oid_t table_oid);
+
         using dispatch_traits = actor_zeta::dispatch_traits<&disk_contract::checkpoint_all,
                                                             &disk_contract::vacuum_all,
                                                             &disk_contract::maybe_cleanup_many,
@@ -416,7 +440,8 @@ namespace services::disk {
                                                             // Appended LAST: msg ids are positional
                                                             // (find_method_index), insertion above
                                                             // would renumber every later method.
-                                                            &disk_contract::storage_open_scan_hold>;
+                                                            &disk_contract::storage_open_scan_hold,
+                                                            &disk_contract::storage_compact_epoch>;
 
         disk_contract() = delete;
     };

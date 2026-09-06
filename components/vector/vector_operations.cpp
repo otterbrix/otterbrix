@@ -1075,6 +1075,23 @@ namespace components::vector::vector_ops {
     template<typename T>
     inline constexpr bool cast_is_signed_v = std::is_signed_v<T> || std::is_same_v<T, types::int128_t>;
 
+    // Building an absl 128-bit from a NARROW UNSIGNED limit lets the promotion pick the
+    // int128(int) overload over int128(unsigned int), which gcc refuses (-Wsign-promo).
+    // Widening first makes the overload exact. The 128-bit types are not integral, so they
+    // pass through untouched.
+    template<typename T>
+    constexpr auto widen_narrow_limit(T v) noexcept {
+        if constexpr (std::is_integral_v<T> && sizeof(T) < sizeof(int)) {
+            if constexpr (std::is_signed_v<T>) {
+                return static_cast<int>(v);
+            } else {
+                return static_cast<unsigned int>(v);
+            }
+        } else {
+            return v;
+        }
+    }
+
     // Does `value` fit DstType without silent truncation? A bool TARGET is a deliberate
     // truthiness mapping (non-zero -> true), not a truncation, so it always "fits"; every
     // other narrowing pair is range-checked. Floating targets are checked against their
@@ -1115,8 +1132,8 @@ namespace components::vector::vector_ops {
             if constexpr (sizeof(DstType) >= sizeof(SrcType)) {
                 return true;
             } else {
-                return value >= static_cast<SrcType>(std::numeric_limits<DstType>::min()) &&
-                       value <= static_cast<SrcType>(std::numeric_limits<DstType>::max());
+                return value >= static_cast<SrcType>(widen_narrow_limit(std::numeric_limits<DstType>::min())) &&
+                       value <= static_cast<SrcType>(widen_narrow_limit(std::numeric_limits<DstType>::max()));
             }
         } else if constexpr (cast_is_signed_v<SrcType>) {
             // signed -> unsigned
@@ -1126,14 +1143,14 @@ namespace components::vector::vector_ops {
             if constexpr (sizeof(DstType) >= sizeof(SrcType)) {
                 return true;
             } else {
-                return value <= static_cast<SrcType>(std::numeric_limits<DstType>::max());
+                return value <= static_cast<SrcType>(widen_narrow_limit(std::numeric_limits<DstType>::max()));
             }
         } else {
             // unsigned -> signed
             if constexpr (sizeof(DstType) > sizeof(SrcType)) {
                 return true;
             } else {
-                return value <= static_cast<SrcType>(std::numeric_limits<DstType>::max());
+                return value <= static_cast<SrcType>(widen_narrow_limit(std::numeric_limits<DstType>::max()));
             }
         }
     }

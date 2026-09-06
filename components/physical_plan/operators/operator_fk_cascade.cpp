@@ -268,7 +268,10 @@ namespace components::operators {
                                                 ctx->txn,
                                                 components::table::fetch_visibility_t::SNAPSHOT,
                                                 // No cap — every child row must be transformed.
-                                                /*limit=*/int64_t{-1});
+                                                /*limit=*/int64_t{-1},
+                                                // Ids from this statement's own child scan, not an
+                                                // index answer.
+                                                services::disk::k_fetch_epoch_unchecked);
                 auto fetched_r = co_await std::move(ffut); // vector of ≤CAP chunks
                 if (fetched_r.has_error()) {
                     // Must abort on a failed read — applying the transform to empty cells would corrupt rows.

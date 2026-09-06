@@ -322,6 +322,28 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
+    manager_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
+    manager_disk_t::storage_compact_epoch(session_id_t session, catalog::oid_t table_oid) {
+        // Transparent router; an epoch that has NOWHERE to come from is an error, not a zero —
+        // an index stamped with a made-up number would pass the fetch check it exists to arm.
+        if (agents_.empty()) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"storage_compact_epoch: no disk agents", resource()}};
+        }
+        const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+        auto& agent = agents_[pool_idx];
+        if (agent == nullptr) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"storage_compact_epoch: owning disk agent is null", resource()}};
+        }
+        auto [needs_sched, fut] =
+            actor_zeta::otterbrix::send(agent->address(), &agent_disk_t::storage_compact_epoch_inner, session, table_oid);
+        if (needs_sched) {
+            scheduler_disk_->enqueue(agent.get());
+        }
+        co_return co_await std::move(fut);
+    }
+
     manager_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
     manager_disk_t::storage_fetch_next_batch(session_id_t session,
                                              catalog::oid_t table_oid,
@@ -401,7 +423,8 @@ namespace services::disk {
                                   std::vector<size_t> projected_cols,
                                   components::table::transaction_data txn,
                                   components::table::fetch_visibility_t visibility,
-                                  int64_t limit) {
+                                  int64_t limit,
+                                  uint64_t expected_compact_epoch) {
         // Nothing asked, nothing fetched — same as storage_delete_rows: an empty request needs no route.
         if (count == 0) {
             co_return std::pmr::vector<components::vector::data_chunk_t>(resource());
@@ -424,7 +447,8 @@ namespace services::disk {
                                                               std::move(projected_cols),
                                                               std::move(txn),
                                                               visibility,
-                                                              limit);
+                                                              limit,
+                                                              expected_compact_epoch);
         if (needs_sched) {
             scheduler_disk_->enqueue(agent.get());
         }

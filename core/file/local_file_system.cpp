@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <sys/stat.h>
 
 #include <dirent.h>

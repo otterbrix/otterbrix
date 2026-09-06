@@ -5,7 +5,6 @@
 #include "collection.hpp"
 #include "storage/metadata_reader.hpp"
 #include "storage/metadata_writer.hpp"
-#include "update_passkey.hpp"
 
 namespace components::table {
 
@@ -104,12 +103,11 @@ namespace components::table {
         // publishes immediately with no version chain and no undo
         // (components/table/update_segment.hpp; test_storage_update_rollback.cpp measures it).
         // The txn-carrying UPDATE a statement runs is delete-stamp + append instead
-        // (table_storage_adapter.hpp). The passkey is the gate: only the entitled callers can
-        // mint one (update_passkey.hpp), so a third caller without their no-rollback/no-race
-        // guarantee does not compile.
+        // (table_storage_adapter.hpp). Entitled callers: WAL replay (pre-scheduler) and the
+        // pg_attribute commit-id stamp, both via agent_disk_t::direct_update_sync;
+        // test_nontransactional_update_contract.cpp pins the semantics.
         [[nodiscard]] core::result_wrapper_t<std::pair<int64_t, uint64_t>>
-        update(nontransactional_update_access_t access,
-               table_update_state& state,
+        update(table_update_state& state,
                vector::vector_t& row_ids,
                // const std::vector<uint64_t>& column_ids,
                vector::data_chunk_t& data);
@@ -193,6 +191,13 @@ namespace components::table {
         // compacted (or empty) and safe to checkpoint without version metadata.
         bool compact(uint64_t compact_watermark);
 
+        // Counts every compact() that actually swapped row_groups_ (row ids MAY have been
+        // renumbered). An index answer is stamped with the value this read at build time;
+        // storage_fetch refuses ids whose stamp no longer matches. Bumped INSIDE compact()
+        // so no call site can forget; carried across the ALTER successor constructors, which
+        // share the parent's rows and renumber nothing.
+        [[nodiscard]] uint64_t compact_epoch() const noexcept { return compact_epoch_; }
+
         // The checkpoint chain returns out_of_memory when a column flush pin fails;
         // true on success.
         [[nodiscard]] core::result_wrapper_t<bool> checkpoint(storage::metadata_writer_t& writer);
@@ -261,6 +266,10 @@ namespace components::table {
         // modified_since_checkpoint(). Starts true: a table that was BUILT has never been
         // written, and only load_from_disk (built out of the file itself) may say otherwise.
         bool modified_since_checkpoint_{true};
+        // See compact_epoch(). Starts at 0 every process start, together with every index's
+        // built stamp (compaction happens only at runtime, inside checkpoint rounds). Same
+        // single-actor ownership as row_groups_, so a plain integer.
+        uint64_t compact_epoch_{0};
         std::string name_;
     };
 

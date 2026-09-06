@@ -14,6 +14,17 @@
 
 namespace components::operators {
 
+#ifdef DEV_MODE
+    namespace {
+        checkpoint_repopulate_gate_t* g_checkpoint_repopulate_gate = nullptr;
+    } // namespace
+
+    void dev_set_checkpoint_repopulate_gate(checkpoint_repopulate_gate_t* gate) {
+        g_checkpoint_repopulate_gate = gate;
+    }
+    checkpoint_repopulate_gate_t* dev_checkpoint_repopulate_gate() { return g_checkpoint_repopulate_gate; }
+#endif
+
     operator_checkpoint_t::operator_checkpoint_t(std::pmr::memory_resource* resource, log_t log)
         : read_write_operator_t(resource, std::move(log), operator_type::checkpoint) {}
 
@@ -66,6 +77,25 @@ namespace components::operators {
                                                           compact_watermark);
             checkpoint_wal_id = co_await std::move(cpf);
         }
+
+#ifdef DEV_MODE
+        // Measurement seam (see the header): park the round between the compaction above and the
+        // index rebuild below. Non-blocking — one no-op cross-actor round-trip per poll parks this
+        // coroutine without pinning an actor thread, so a reader from another session can land
+        // inside the window.
+        while (auto* gate = dev_checkpoint_repopulate_gate()) {
+            if (!gate->hold()) {
+                break;
+            }
+            if (ctx->wal_address == actor_zeta::address_t::empty_address()) {
+                break;
+            }
+            auto [_gp, gpf] = actor_zeta::otterbrix::send(ctx->wal_address,
+                                                          &services::wal::manager_wal_replicate_t::current_wal_id,
+                                                          ctx->session);
+            [[maybe_unused]] const services::wal::id_t ping = co_await std::move(gpf);
+        }
+#endif
 
         // Must run after checkpoint_all (compact() renumbers row ids the indexes still hold pre-compact) and
         // before the truncate below, its point of no return. The rebuild_marker_path_ guard armed in step 1

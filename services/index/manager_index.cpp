@@ -676,11 +676,14 @@ namespace services::index {
         const auto agent = spawned.value();
 
         // `it` is still valid: spawn_disk_agent touches the owner vectors, never this map.
+        // built_compact_epoch 0: the table's counter also restarts at 0 with the process, and
+        // the on-disk index was written against the on-disk table (checkpoint rebuilds first).
         it->second.push_back(index_record_t{index_oid,
                                             std::move(keys),
                                             agent.type,
                                             agent.ordered,
-                                            agent.address});
+                                            agent.address,
+                                            /*built_compact_epoch=*/0});
 
         // Deliberately not rehydrated: that would build a second btree_t over the same
         // directory the agent's store already has open, from the manager's own thread.
@@ -916,7 +919,8 @@ namespace services::index {
         // Unused since the btree replay below it was removed: nothing in CREATE INDEX
         // interprets a key any more. It stays in the signature because it is part of
         // index_contract::create_index, which every caller sends.
-        core::date::timezone_offset_t /*session_tz*/) {
+        core::date::timezone_offset_t /*session_tz*/,
+        uint64_t built_compact_epoch) {
         trace(log_,
               "manager_index_t::create_index: index_oid={} on oid={}",
               static_cast<unsigned>(index_oid),
@@ -987,7 +991,8 @@ namespace services::index {
                                             std::move(keys),
                                             agent.type,
                                             agent.ordered,
-                                            agent.address});
+                                            agent.address,
+                                            built_compact_epoch});
 
         // No btree replay into an in-memory twin — see the note in bootstrap_index_sync.
         // Whatever a pre-existing store at this oid pair holds is already loaded by the
@@ -1523,7 +1528,8 @@ namespace services::index {
                                       components::catalog::oid_t table_oid,
                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
                                       uint64_t row_count,
-                                      core::date::timezone_offset_t /*session_tz*/) {
+                                      core::date::timezone_offset_t /*session_tz*/,
+                                      uint64_t built_compact_epoch) {
 #ifdef DEV_MODE
         g_index_repopulations.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -1625,6 +1631,18 @@ namespace services::index {
             co_return first_error;
         }
 
+        // Stamp ONLY on success, and only now: every agent acked its commit, so any search sent
+        // from here on (FIFO per agent mailbox) reads the rebuilt store — the stamp can never
+        // pair with pre-rebuild ids. Stamped on failure it would bless a cleared-or-partial
+        // store. Re-found rather than through `it`: a neighbouring handler can erase the table
+        // from the registry while the awaits above were suspended.
+        auto stamped = indexes_per_oid_.find(table_oid);
+        if (stamped != indexes_per_oid_.end()) {
+            for (auto& record : stamped->second) {
+                record.built_compact_epoch = built_compact_epoch;
+            }
+        }
+
         // ONLY NOW IS THE GUARD DROPPED FOR THIS TABLE. Every agent published and force_flushed
         // (both families end commit_inserts with one), so the durable index now names the durable
         // table. Dropped for THESE index oids alone: a sibling index an earlier start declined to
@@ -1647,7 +1665,7 @@ namespace services::index {
 
     // --- Txn-aware Query ---
 
-    manager_index_t::unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
+    manager_index_t::unique_future<core::result_wrapper_t<index_search_result_t>>
     manager_index_t::search_with_preferred_type(session_id_t session,
                                                 components::catalog::oid_t table_oid,
                                                 components::index::keys_base_storage_t keys,
@@ -1695,7 +1713,7 @@ namespace services::index {
         // (index_key_is_null), called rather than re-derived — the agents call the same
         // function on the other side of the mailbox.
         if (index_key_is_null(value)) {
-            co_return std::pmr::vector<int64_t>(resource_);
+            co_return index_search_result_t{std::pmr::vector<int64_t>(resource_), record->built_compact_epoch};
         }
 
         // AN INDEX WITH NO ORDERING CAN ANSWER EQUALITY AND NOTHING ELSE. The planner enforces that
@@ -1713,6 +1731,12 @@ namespace services::index {
         }
 
         auto agent_addr = record->address;
+        // Captured BEFORE the send, off the same record the routing decision used — the record
+        // can be destroyed while this coroutine is suspended (see the note below), and re-reading
+        // the stamp AFTER the await could pair a rebuilt stamp with pre-rebuild ids. Captured
+        // this early the pairing can only err LOW (a rebuild landing mid-await makes the reply's
+        // ids fresh but the stamp old), which storage_fetch turns into a refusal, never a lie.
+        const uint64_t built_epoch = record->built_compact_epoch;
 #ifdef DEV_MODE
         g_index_agent_reads.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -1740,10 +1764,10 @@ namespace services::index {
         }
         // A SUPERSET filter, deliberately, not a visibility one: which committed rows a
         // reader may SEE is the table's decision, and storage_fetch applies it.
-        co_return std::move(agent_result.value());
+        co_return index_search_result_t{std::move(agent_result.value()), built_epoch};
     }
 
-    manager_index_t::unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
+    manager_index_t::unique_future<core::result_wrapper_t<index_search_result_t>>
     manager_index_t::search(session_id_t session,
                             components::catalog::oid_t table_oid,
                             components::index::keys_base_storage_t keys,

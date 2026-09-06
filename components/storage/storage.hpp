@@ -9,7 +9,6 @@
 #include <components/table/column_definition.hpp>
 #include <components/table/column_state.hpp>
 #include <components/table/row_version_manager.hpp>
-#include <components/table/update_passkey.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector.hpp>
@@ -151,11 +150,7 @@ namespace components::storage {
         // Recover-then-report: the materialized part of the payload is written even on
         // failure; no_error means the WHOLE payload landed. The txn overload instead refuses
         // up front, before anything is journalled.
-        // Passkey-gated: no undo and no conflict detection below (see update_passkey.hpp), so
-        // only a caller that can mint the access token compiles.
-        [[nodiscard]] virtual core::error_t update(table::nontransactional_update_access_t access,
-                                                   vector::vector_t& row_ids,
-                                                   vector::data_chunk_t& data) = 0;
+        [[nodiscard]] virtual core::error_t update(vector::vector_t& row_ids, vector::data_chunk_t& data) = 0;
         // Returns write_conflict / out_of_memory from the table-layer update; on success
         // {start_row, affected-row count}. No default body: forwarding to the replay overload
         // could only fake a {0, 0} count.

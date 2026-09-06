@@ -239,7 +239,10 @@ namespace components::operators {
                                                                 components::table::fetch_visibility_t::SNAPSHOT,
                                                                 // Reads back exactly the rows just
                                                                 // appended — nothing to cap.
-                                                                /*limit=*/int64_t{-1});
+                                                                /*limit=*/int64_t{-1},
+                                                                // This txn's own just-appended range,
+                                                                // not an index answer.
+                                                                services::disk::k_fetch_epoch_unchecked);
                     auto segments_r = co_await std::move(sf);
                     if (segments_r.has_error()) {
                         // A failed re-read must fail the statement — RETURNING built from silently empty cells

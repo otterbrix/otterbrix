@@ -38,7 +38,7 @@ namespace services::dispatcher {
                 components::logical_plan::node_ptr root,
                 components::execution_context_t ctx,
                 const components::logical_plan::catalog_resolves_t* resolves,
-                actor_zeta::address_t index_address = actor_zeta::address_t::empty_address(),
+                actor_zeta::address_t index_address,
                 services::context_storage_t* collections_ctx = nullptr);
 
 } // namespace services::dispatcher

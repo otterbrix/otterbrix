@@ -272,11 +272,22 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
         REQUIRE(text.find("Index Scan") != std::string::npos);
     }
     {
-        auto cur = exec(auto_indexed_query());
+        // Loud-refusal contract: while a compacting auto-round's index rebuild is still in
+        // flight the indexed read is REFUSED (stale_index), not answered with the pre-compact
+        // stranger id it used to return. Under this test's back-to-back auto rounds a probe can
+        // land in that window, so retry the documented remedy ("retry the statement") until a
+        // round has settled — then the answer must be the survivor, NEVER a stranger.
+        components::cursor::cursor_t_ptr cur;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        do {
+            cur = exec(auto_indexed_query());
+            if (cur->is_success()) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        } while (std::chrono::steady_clock::now() < deadline);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        // A stale entry names a pre-compact id, and the row that moved into it comes back
-        // instead — id 100000 for a query on row 3000's key.
         CHECK(cur->value(0, 0).value<int64_t>() == kSurvivorId);
     }
 

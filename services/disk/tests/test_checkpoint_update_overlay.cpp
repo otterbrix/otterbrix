@@ -98,7 +98,7 @@ namespace {
         vector_t ids(res, complex_logical_type(logical_type::BIGINT), 1);
         ids.set_value(0, row_id);
         auto state = table.initialize_update({});
-        auto updated = table.update(*state, ids, chunk);
+        auto updated = table.update(components::table::nontransactional_update_access_t::for_test(), *state, ids, chunk);
         REQUIRE_FALSE(updated.has_error());
         REQUIRE(updated.value().second == 1);
     }

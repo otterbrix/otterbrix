@@ -603,7 +603,8 @@ namespace components::table {
     }
 
     core::result_wrapper_t<std::pair<int64_t, uint64_t>>
-    data_table_t::update(table_update_state&,
+    data_table_t::update(nontransactional_update_access_t /*access*/,
+                         table_update_state&,
                          vector::vector_t& row_ids,
                          // const std::vector<uint64_t>& column_ids,
                          vector::data_chunk_t& data) {

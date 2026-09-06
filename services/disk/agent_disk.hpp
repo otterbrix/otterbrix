@@ -343,6 +343,14 @@ namespace services::disk {
                                                        components::catalog::oid_t table_oid,
                                                        uint64_t cursor_id);
 
+        // storage_open_scan_hold_inner — mint a position-less active_scans_ entry so
+        //   checkpoint_inner defers compact() on this oid while a reader's absolute row ids are
+        //   in flight between actors (see disk_contract::storage_open_scan_hold). Released by
+        //   storage_close_cursor_inner. A not-owned oid REFUSES — a granted hold on nothing
+        //   would read as protection.
+        unique_future<core::result_wrapper_t<uint64_t>>
+        storage_open_scan_hold_inner(session_id_t session, components::catalog::oid_t table_oid);
+
         // storage_reduce_inner — aggregate-pushdown REDUCE: runs GROUP BY over this agent's OWN
         //   slice, replies ALL final aggregated rows in ONE reply (bounded by #groups, no
         //   cursor). A not-owned/record-only oid REFUSES rather than reducing over empty input —
@@ -604,7 +612,9 @@ namespace services::disk {
                                                             &agent_disk_t::rename_storage_column_inner,
                                                             &agent_disk_t::mark_storage_dropped_many_inner,
                                                             &agent_disk_t::note_column_identity_inner,
-                                                            &agent_disk_t::create_storage_disk_inner>;
+                                                            &agent_disk_t::create_storage_disk_inner,
+                                                            // Appended LAST — positional msg ids.
+                                                            &agent_disk_t::storage_open_scan_hold_inner>;
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 

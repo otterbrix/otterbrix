@@ -5,6 +5,14 @@
 
 namespace components::operators {
 
+#ifdef DEV_MODE
+    namespace {
+        index_fetch_gate_t* g_index_fetch_gate = nullptr;
+    } // namespace
+    void dev_set_index_fetch_gate(index_fetch_gate_t* gate) { g_index_fetch_gate = gate; }
+    index_fetch_gate_t* dev_index_fetch_gate() { return g_index_fetch_gate; }
+#endif
+
     index_scan::index_scan(std::pmr::memory_resource* resource,
                            log_t log,
                            components::catalog::oid_t table_oid,
@@ -118,6 +126,23 @@ namespace components::operators {
         co_return co_await std::move(ff);
     }
 
+    actor_zeta::unique_future<void> index_scan::release_cursor(pipeline::context_t* ctx) {
+        // Nothing held: never opened, or already released right after the window fetch.
+        if (hold_id_ == 0) {
+            co_return;
+        }
+        const uint64_t id = hold_id_;
+        // Clear FIRST so a re-entry cannot double-send (same discipline as full_scan).
+        hold_id_ = 0;
+        auto [_c, cf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::storage_close_cursor,
+                                                    ctx->session,
+                                                    table_oid_,
+                                                    id);
+        co_await std::move(cf);
+        co_return;
+    }
+
     // --- Push-based streaming pipeline source (buffered batch point-fetch) ----------------------
     // FIRST call: open_index_window (await #1: the one-shot index search) + cache schema (await #2:
     //   storage_types) + ONE storage_fetch over the whole [pos_, end_) window (await #3). The disk
@@ -137,6 +162,25 @@ namespace components::operators {
 
         if (!opened_) {
             opened_ = true;
+            // Compact-hold FIRST, search second: the hold defers checkpoint_inner's compact on
+            // this oid (same gate an open fetch-next cursor holds), so the absolute row ids the
+            // search is about to mint stay valid across the hops below. Minted after the search
+            // they can be renumbered before the hold even lands. A hold that cannot be opened is
+            // a refusal on the same channel as an unanswerable search — proceeding unheld would
+            // silently re-open the wrong-row window this hold exists to close.
+            if (hold_id_ == 0) {
+                auto [_h, hf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::storage_open_scan_hold,
+                                                            ctx->session,
+                                                            table_oid_);
+                auto hold_r = co_await std::move(hf);
+                if (hold_r.has_error()) {
+                    set_error(hold_r.error());
+                    mark_failed();
+                    co_return hold_r.convert_error<vector::data_chunk_t>();
+                }
+                hold_id_ = hold_r.value();
+            }
             if (auto search_error = co_await open_index_window(ctx); search_error.contains_error()) {
                 // Same channel the window fetch below uses: the source reports the
                 // failure instead of draining to zero rows, which would look exactly
@@ -163,7 +207,31 @@ namespace components::operators {
         // ≤ DEFAULT_VECTOR_CAPACITY chunks buffered in batch_. Subsequent calls just drain the buffer.
         if (!fetched_) {
             fetched_ = true;
+#ifdef DEV_MODE
+            // Test seam (test_index_scan_compact_race): hold with the matched absolute row ids in
+            // hand, before the storage_fetch that applies them. Non-blocking — one no-op
+            // cross-actor round-trip per poll parks this coroutine without pinning an actor
+            // thread, so a checkpoint from another session can land inside the window.
+            while (auto* gate = dev_index_fetch_gate()) {
+                if (!gate->hold(table_oid_)) {
+                    break;
+                }
+                auto [_g, gf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::storage_total_rows,
+                                                            ctx->session,
+                                                            table_oid_);
+                auto ping = co_await std::move(gf);
+                if (ping.has_error()) {
+                    break;
+                }
+            }
+#endif
             auto batch_r = co_await fetch_matched_window(ctx);
+            // The ids are applied (or dead): release the compact-hold NOW, not at drain — the
+            // buffered batches below need no position stability, and holding through the pump
+            // would defer checkpoints for the whole emit phase. The executor's
+            // release_source_cursor covers the paths that error out before this line.
+            co_await release_cursor(ctx);
             if (batch_r.has_error()) {
                 // Surface a failed point-fetch through the error channel (same convention as full_scan)
                 // instead of emitting silently empty rows.

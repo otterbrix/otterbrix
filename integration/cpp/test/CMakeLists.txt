@@ -62,6 +62,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_dml_dictionary_rowids.cpp
         test_persistence_gaps.cpp
         test_delete_floor_resurrection.cpp
+        test_index_scan_compact_race.cpp
         test_drop_under_cursor.cpp
         test_wal_storage_namespace_dirs.cpp
         test_null_persistence.cpp

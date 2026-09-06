@@ -330,14 +330,6 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::write_physical_add_column, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::register_active_build>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::register_active_build, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::unregister_active_build>: {
-                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::unregister_active_build, msg);
-                break;
-            }
             default:
                 break;
         }
@@ -346,52 +338,6 @@ namespace services::wal {
     void manager_wal_replicate_t::set_manager_dispatcher_sync(actor_zeta::address_t address) {
         manager_dispatcher_ = std::move(address);
         trace(log_, "manager_wal_replicate::set_manager_dispatcher_sync done");
-    }
-
-    // Retention guard: active CREATE INDEX build registration. Unlocked — see
-    // the single-threaded assumption documented on the declarations.
-
-    void manager_wal_replicate_t::register_active_build_sync(wal::id_t build_start_wal_position) {
-        active_build_start_positions_.emplace(build_start_wal_position);
-        trace(log_,
-              "manager_wal_replicate::register_active_build_sync wal_id={} active_builds={}",
-              build_start_wal_position,
-              active_build_start_positions_.size());
-    }
-
-    void manager_wal_replicate_t::unregister_active_build_sync(wal::id_t build_start_wal_position) {
-        // Invariant: every unregister matches a prior register; a mismatch is an
-        // Logged, not aborted: this path is fed by messages from ANOTHER actor, so aborting here
-        // turns a bookkeeping bug into a process death. The multiset erases exactly ONE entry
-        // (never every entry at the value), so an unmatched unregister erases nothing at all.
-        auto it = active_build_start_positions_.find(build_start_wal_position);
-        if (it == active_build_start_positions_.end()) {
-            error(log_,
-                  "manager_wal_replicate::unregister_active_build_sync wal_id={} has NO matching register , "
-                  "ignored — a create-index lifecycle bug, and the retention set is left as it stands",
-                  build_start_wal_position);
-            return;
-        }
-        active_build_start_positions_.erase(it);
-        trace(log_,
-              "manager_wal_replicate::unregister_active_build_sync wal_id={} active_builds={}",
-              build_start_wal_position,
-              active_build_start_positions_.size());
-    }
-
-    // Mailbox twins of the _sync helpers (see declarations). The body runs on
-    // the manager's thread, so it may call the sync helper directly.
-
-    manager_wal_replicate_t::unique_future<void>
-    manager_wal_replicate_t::register_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
-        register_active_build_sync(build_start_wal_position);
-        co_return;
-    }
-
-    manager_wal_replicate_t::unique_future<void>
-    manager_wal_replicate_t::unregister_active_build(session_id_t /*session*/, wal::id_t build_start_wal_position) {
-        unregister_active_build_sync(build_start_wal_position);
-        co_return;
     }
 
     // -----------------------------------------------------------------------
@@ -592,19 +538,6 @@ namespace services::wal {
             co_return recovery_error_;
         }
 
-        // Clamp to min(active_build_start_positions_) so an in-flight CREATE
-        // INDEX backfill catchup still finds its records. Empty => no clamp.
-        if (!active_build_start_positions_.empty()) {
-            auto earliest = *active_build_start_positions_.begin();
-            if (earliest < checkpoint_wal_id) {
-                trace(log_,
-                      "manager_wal_replicate::truncate_before clamped from {} to {} due to active build retention",
-                      checkpoint_wal_id,
-                      earliest);
-                checkpoint_wal_id = earliest;
-            }
-        }
-
         // Send to ALL workers. Every future is drained before the first refusal is taken:
         // abandoning one leaves a reply addressed to a frame that has already finished.
         core::error_t first_refusal = core::error_t::no_error();
@@ -751,8 +684,7 @@ namespace services::wal {
 
         // (d) Truncate WAL below the checkpoint boundary. We are already on the WAL
         //     actor, so invoke truncate_before's body directly (co_await the member
-        //     coroutine) instead of self-sending another message — the clamp to
-        //     active CREATE INDEX build retention runs inside it.
+        //     coroutine) instead of self-sending another message.
         if (checkpoint_wal_id > wal::id_t{0}) {
             // Logged, not propagated, for the same reason (a) and (c2) are: nothing above this
             // frame is a statement that could carry it. A refused truncate leaves the segments

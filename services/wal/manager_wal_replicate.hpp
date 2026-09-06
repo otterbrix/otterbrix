@@ -147,12 +147,6 @@ namespace services::wal {
                                   uint64_t txn_id,
                                   components::catalog::oid_t database_oid);
 
-        // Mailbox twins of the _sync helpers for callers that run inside an
-        // actor (e.g. operator_create_index_backfill in the executor) and so
-        // cannot make sync inter-actor calls. Same active_build_start_positions_ set.
-        unique_future<void> register_active_build(session_id_t session, wal::id_t build_start_wal_position);
-        unique_future<void> unregister_active_build(session_id_t session, wal::id_t build_start_wal_position);
-
         using dispatch_traits = actor_zeta::implements<wal_contract,
                                                        &manager_wal_replicate_t::load,
                                                        &manager_wal_replicate_t::commit_txn,
@@ -162,9 +156,7 @@ namespace services::wal {
                                                        &manager_wal_replicate_t::write_physical_insert,
                                                        &manager_wal_replicate_t::write_physical_delete,
                                                        &manager_wal_replicate_t::write_physical_update,
-                                                       &manager_wal_replicate_t::write_physical_add_column,
-                                                       &manager_wal_replicate_t::register_active_build,
-                                                       &manager_wal_replicate_t::unregister_active_build>;
+                                                       &manager_wal_replicate_t::write_physical_add_column>;
 
         // Global WAL ID counter — shared across all per-database workers.
         wal::id_t next_wal_id();
@@ -193,15 +185,6 @@ namespace services::wal {
 
         // Compute total WAL directory bytes by scanning segment files.
         std::uintmax_t total_wal_bytes() const noexcept;
-
-        // Retention guard helpers. operator_create_index registers its
-        // build_start_wal_position before backfill and unregisters on publish or
-        // failure. Sync (not mailbox handlers) because the operator pipeline
-        // calls them directly, outside the mailbox. This is safe only while that
-        // pipeline runs single-threaded relative to the wal dispatcher; multi-DB
-        // would force these onto the mailbox.
-        void register_active_build_sync(wal::id_t build_start_wal_position);
-        void unregister_active_build_sync(wal::id_t build_start_wal_position);
 
     private:
         // Workers keyed by database_oid; today every record routes to the
@@ -245,16 +228,6 @@ namespace services::wal {
         // manager refuses every write, every commit and every truncate rather than issuing an
         // id it cannot vouch for.
         core::error_t recovery_error_;
-
-        // Retention guard: build_start_wal_position of every in-flight CREATE
-        // INDEX backfill. truncate_before clamps to min(this set) so concurrent
-        // catchup never misses a truncated record. Empty => no clamp.
-        //
-        // A MULTISET, load-bearing: two concurrent builds can legitimately start at the SAME wal
-        // position. A deduplicating set once collapsed those into one entry, so the first
-        // unregister released the clamp the second build still needed, and the second unregister
-        // found nothing to erase and aborted the process.
-        std::pmr::multiset<wal::id_t> active_build_start_positions_{resource_};
 
         // Parks the fire-and-forget future of the commit_txn -> run_auto_checkpoint
         // self-send. The loop drains ready entries (poll_auto_checkpoint_). Mirrors

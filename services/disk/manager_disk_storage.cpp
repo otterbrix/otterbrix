@@ -300,6 +300,28 @@ namespace services::disk {
         co_return;
     }
 
+    manager_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
+    manager_disk_t::storage_open_scan_hold(session_id_t session, catalog::oid_t table_oid) {
+        // Transparent router; unlike storage_close_cursor a hold that has NOWHERE to land is an
+        // error, not a no-op — the caller is about to trust its row ids to it.
+        if (agents_.empty()) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"storage_open_scan_hold: no disk agents", resource()}};
+        }
+        const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
+        auto& agent = agents_[pool_idx];
+        if (agent == nullptr) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"storage_open_scan_hold: owning disk agent is null", resource()}};
+        }
+        auto [needs_sched, fut] =
+            actor_zeta::otterbrix::send(agent->address(), &agent_disk_t::storage_open_scan_hold_inner, session, table_oid);
+        if (needs_sched) {
+            scheduler_disk_->enqueue(agent.get());
+        }
+        co_return co_await std::move(fut);
+    }
+
     manager_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
     manager_disk_t::storage_fetch_next_batch(session_id_t session,
                                              catalog::oid_t table_oid,

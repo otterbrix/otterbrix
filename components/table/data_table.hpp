@@ -5,6 +5,7 @@
 #include "collection.hpp"
 #include "storage/metadata_reader.hpp"
 #include "storage/metadata_writer.hpp"
+#include "update_passkey.hpp"
 
 namespace components::table {
 
@@ -103,12 +104,12 @@ namespace components::table {
         // publishes immediately with no version chain and no undo
         // (components/table/update_segment.hpp; test_storage_update_rollback.cpp measures it).
         // The txn-carrying UPDATE a statement runs is delete-stamp + append instead
-        // (table_storage_adapter.hpp). Safe only because both production callers (WAL replay,
-        // pre-scheduler; the pg_attribute commit-id stamp, below the durable commit marker) can
-        // neither roll back nor race a second writer on the same row — a THIRD caller without
-        // that guarantee would make this reachable again with no diagnostic anywhere.
+        // (table_storage_adapter.hpp). The passkey is the gate: only the entitled callers can
+        // mint one (update_passkey.hpp), so a third caller without their no-rollback/no-race
+        // guarantee does not compile.
         [[nodiscard]] core::result_wrapper_t<std::pair<int64_t, uint64_t>>
-        update(table_update_state& state,
+        update(nontransactional_update_access_t access,
+               table_update_state& state,
                vector::vector_t& row_ids,
                // const std::vector<uint64_t>& column_ids,
                vector::data_chunk_t& data);

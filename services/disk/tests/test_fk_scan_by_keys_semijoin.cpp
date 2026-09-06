@@ -92,7 +92,12 @@ namespace {
         core::result_wrapper_t<uint64_t> append(data_chunk_t& d, transaction_data txn) override {
             return inner_.append(d, txn);
         }
-        core::error_t update(vector_t& ids, data_chunk_t& d) override { return inner_.update(ids, d); }
+        core::error_t update(components::table::nontransactional_update_access_t access,
+                             vector_t& ids,
+                             data_chunk_t& d) override {
+            // Forwarded, not minted: the decorator carries the caller's entitlement through.
+            return inner_.update(access, ids, d);
+        }
         core::result_wrapper_t<std::pair<int64_t, uint64_t>>
         update(vector_t& ids, data_chunk_t& d, transaction_data txn) override { return inner_.update(ids, d, txn); }
         uint64_t delete_rows(vector_t& ids, uint64_t c) override { return inner_.delete_rows(ids, c); }

@@ -9,6 +9,23 @@
 
 namespace components::operators {
 
+#ifdef DEV_MODE
+    // Deterministic hold between the one-shot index search and the storage_fetch that applies
+    // its absolute row ids, the interleaving seam of test_index_scan_compact_race. The window a
+    // concurrent compacting checkpoint renumbers those ids in only exists between the two
+    // cross-actor awaits; a timing repro hits it rarely, so this gate turns the window into a
+    // held door. Plain virtual (no std::function), process-wide, DEV_MODE-only; the operator
+    // polls it by ONE no-op cross-actor round-trip per ask, so no actor thread ever blocks
+    // while it holds (same shape as delete_wal_apply_gate_t / services::disk::scan_advance_gate_t).
+    struct index_fetch_gate_t {
+        virtual ~index_fetch_gate_t() = default;
+        // true = keep holding this fetch; false = let it proceed.
+        virtual bool hold(components::catalog::oid_t table_oid) = 0;
+    };
+    void dev_set_index_fetch_gate(index_fetch_gate_t* gate); // nullptr = off
+    index_fetch_gate_t* dev_index_fetch_gate();
+#endif
+
     class index_scan final : public read_only_operator_t {
     public:
         index_scan(std::pmr::memory_resource* resource,
@@ -37,8 +54,21 @@ namespace components::operators {
         [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
         source_next(pipeline::context_t* ctx) override;
 
+        // Compact-hold discipline. The matched absolute row ids cross TWO actor hops (index
+        // search -> storage_fetch); a compact between them renumbers every survivor, and the
+        // stale positions pass the visibility filter as plain committed rows — the scan then
+        // answers a different row (proven: test_index_scan_compact_race, id 2500 for id 1500).
+        // So the first source_next opens a storage_open_scan_hold BEFORE the search — deferring
+        // checkpoint_inner's compact on this oid exactly as an open fetch-next cursor does — and
+        // releases it the moment the fetch has the rows. The executor's release_source_cursor
+        // covers every early exit (error mid-pump, satisfied LIMIT, abandoned sub-plan).
+        [[nodiscard]] bool holds_open_cursor() const noexcept override { return hold_id_ != 0; }
+        [[nodiscard]] actor_zeta::unique_future<void> release_cursor(pipeline::context_t* ctx) override;
+
         // Rewind the windowed point-fetch cursor so a re-driven sub-plan re-runs the
         // one-shot index search from scratch (recursive-CTE recursive term, per iteration).
+        // hold_id_ is deliberately NOT reset: a drained run already released it (hold_id_ == 0),
+        // and zeroing a still-open one would leak the agent-side entry, gating compact forever.
         void reset_pipeline_state() noexcept override {
             opened_ = false;
             fetched_ = false;
@@ -95,6 +125,9 @@ namespace components::operators {
         bool fetched_{false};
         bool drained_{false};
         bool emitted_any_{false};
+        // Agent-minted compact-hold id (0 = none held). Opened before the index search,
+        // released right after the window fetch / by release_cursor on early exits.
+        uint64_t hold_id_{0};
         size_t pos_{0};
         size_t end_{0};
         std::pmr::vector<int64_t> row_ids_vec_{resource_};

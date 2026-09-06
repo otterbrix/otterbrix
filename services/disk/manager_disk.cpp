@@ -74,6 +74,7 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::mark_storage_dropped_many>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_dropped_committed>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_drop_aborted>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_open_scan_hold>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -686,6 +687,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_close_cursor>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_close_cursor, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_open_scan_hold>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_open_scan_hold, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_reduce>: {

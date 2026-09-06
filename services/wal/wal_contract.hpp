@@ -82,13 +82,6 @@ namespace services::wal {
                                   uint64_t txn_id,
                                   components::catalog::oid_t database_oid);
 
-        // Retention guard for CREATE INDEX backfill. The build registers its
-        // start wal_position before backfill and unregisters on success/fail;
-        // truncate_before clamps to min(active set) so the catchup loop never
-        // observes truncated records.
-        actor_zeta::unique_future<void> register_active_build(session_id_t session, id_t build_start_wal_position);
-        actor_zeta::unique_future<void> unregister_active_build(session_id_t session, id_t build_start_wal_position);
-
         using dispatch_traits = actor_zeta::dispatch_traits<&wal_contract::load,
                                                             &wal_contract::commit_txn,
                                                             &wal_contract::truncate_before,
@@ -97,9 +90,7 @@ namespace services::wal {
                                                             &wal_contract::write_physical_insert,
                                                             &wal_contract::write_physical_delete,
                                                             &wal_contract::write_physical_update,
-                                                            &wal_contract::write_physical_add_column,
-                                                            &wal_contract::register_active_build,
-                                                            &wal_contract::unregister_active_build>;
+                                                            &wal_contract::write_physical_add_column>;
 
         wal_contract() = delete;
     };

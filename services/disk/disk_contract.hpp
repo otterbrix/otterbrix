@@ -250,6 +250,16 @@ namespace services::disk {
         // compact() on that oid. Idempotent: an unknown/already-drained cursor is a no-op.
         actor_zeta::unique_future<void>
         storage_close_cursor(session_id_t session, components::catalog::oid_t table_oid, uint64_t cursor_id);
+        // Compact-hold for a read whose absolute row ids cross actor hops before storage_fetch
+        // applies them (index_scan: index search on one actor, fetch on another). Registers a
+        // position-less active_scans_ entry so checkpoint_inner defers compact() on this oid —
+        // the same gate an open fetch-next cursor holds — and replies the minted hold id.
+        // Released with storage_close_cursor. Opened BEFORE the ids are minted, or a compact
+        // between mint and apply silently renumbers them (test_index_scan_compact_race: the
+        // stale position passed the visibility filter and answered a row 1000 ids away). An
+        // unowned oid REFUSES: a granted hold on nothing would read as protection.
+        actor_zeta::unique_future<core::result_wrapper_t<uint64_t>>
+        storage_open_scan_hold(session_id_t session, components::catalog::oid_t table_oid);
         // Wraps buffer-pool OOM/data_corruption as a value, AND the routing refusal: an unowned
         // oid must not come back looking like a point fetch whose rows are all invisible to
         // `txn`. count==0 stays a success with no chunks, for any oid.
@@ -402,7 +412,11 @@ namespace services::disk {
                                                             &disk_contract::on_horizon_advanced,
                                                             &disk_contract::mark_storage_dropped_many,
                                                             &disk_contract::storage_dropped_committed,
-                                                            &disk_contract::storage_drop_aborted>;
+                                                            &disk_contract::storage_drop_aborted,
+                                                            // Appended LAST: msg ids are positional
+                                                            // (find_method_index), insertion above
+                                                            // would renumber every later method.
+                                                            &disk_contract::storage_open_scan_hold>;
 
         disk_contract() = delete;
     };

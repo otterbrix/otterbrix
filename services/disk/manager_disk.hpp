@@ -1040,6 +1040,10 @@ namespace services::disk {
         unique_future<void> storage_close_cursor(session_id_t session,
                                                  components::catalog::oid_t table_oid,
                                                  uint64_t cursor_id);
+        // Compact-hold open (see disk_contract): transparent router to the owning agent's
+        // storage_open_scan_hold_inner. Released with storage_close_cursor.
+        unique_future<core::result_wrapper_t<uint64_t>> storage_open_scan_hold(session_id_t session,
+                                                                               components::catalog::oid_t table_oid);
         // Aggregate-pushdown REDUCE: transparent router to the owning agent's
         // storage_reduce_inner — one reply carrying ALL final aggregated rows (see
         // disk_contract for the protocol + the single-owner invariant).
@@ -1154,7 +1158,10 @@ namespace services::disk {
                                                        &manager_disk_t::on_horizon_advanced,
                                                        &manager_disk_t::mark_storage_dropped_many,
                                                        &manager_disk_t::storage_dropped_committed,
-                                                       &manager_disk_t::storage_drop_aborted>;
+                                                       &manager_disk_t::storage_drop_aborted,
+                                                       // Appended LAST — positional msg ids (see
+                                                       // disk_contract::dispatch_traits).
+                                                       &manager_disk_t::storage_open_scan_hold>;
 
     private:
         // Returns no_error() on success. Returns data_corruption/io_error — instead of throwing —

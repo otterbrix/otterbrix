@@ -323,7 +323,10 @@ namespace services::disk {
         new_data.copy(local, 0);
         // Must return the actual result, not no_error(): the adapter's own refusal check is
         // an assert that NDEBUG deletes, so this is the only channel that reaches the caller.
-        return entry->storage->update(ids_vec, local);
+        // The passkey mint: agent_disk_t is the sole friend of the token (update_passkey.hpp),
+        // and both entitled legs — WAL replay and the pg_attribute commit-id stamp — call
+        // through this function.
+        return entry->storage->update(components::table::nontransactional_update_access_t{}, ids_vec, local);
     }
 
     core::error_t agent_disk_t::direct_add_column_sync(components::catalog::oid_t table_oid,
@@ -504,6 +507,10 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::create_storage_disk_inner>: {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::create_storage_disk_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_open_scan_hold_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_open_scan_hold_inner, msg);
                 break;
             }
             default:
@@ -1605,6 +1612,35 @@ namespace services::disk {
         // paths erase the entry themselves), so this reports nothing and cannot fail.
         active_scans_.erase(cursor_id);
         co_return;
+    }
+
+    // Mint a position-less compact-hold entry (see the header). It rides active_scans_ so
+    // has_active_scan_for_oid gates checkpoint_inner's compact with the machinery cursors
+    // already use, and storage_close_cursor_inner releases it unchanged. Never ADVANCEd:
+    // an accidental fetch-next on this id replies drained (the unknown-cursor path, after
+    // the entry's 0-position is exhausted immediately).
+    agent_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
+    agent_disk_t::storage_open_scan_hold_inner(session_id_t session, components::catalog::oid_t table_oid) {
+        auto it = storages_.find(table_oid);
+        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+            std::pmr::string what{"storage_open_scan_hold: table oid is not owned by this disk agent: ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+        }
+        active_scan_t hold{};
+        hold.table_oid = table_oid;
+        // Same (session, counter) mint as storage_fetch_next_batch_inner's OPEN.
+        const uint64_t counter = next_scan_cursor_id_++;
+        const uint64_t minted = (session.data() << 20) ^ counter;
+        const uint64_t hold_id =
+            (minted == 0 || active_scans_.find(minted) != active_scans_.end()) ? counter : minted;
+        active_scans_.try_emplace(hold_id, std::move(hold));
+        trace(log_,
+              "agent_disk[{}]::storage_open_scan_hold_inner: oid={} hold={}",
+              pool_idx_,
+              static_cast<unsigned>(table_oid),
+              hold_id);
+        co_return hold_id;
     }
 
     // AGGREGATE-PUSHDOWN REDUCE — the DEDICATED protocol leg. Runs the whole

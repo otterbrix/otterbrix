@@ -81,7 +81,7 @@ namespace {
         payload.data[0].set_value(0, logical_value_t(&env.resource, new_value));
         payload.set_cardinality(1);
         auto state = table.initialize_update({});
-        return table.update(*state, row_ids, payload);
+        return table.update(nontransactional_update_access_t::for_test(), *state, row_ids, payload);
     }
 
     // Same answer as services/disk/table_storage_t::has_pending_update_overlay folds over.

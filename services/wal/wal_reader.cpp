@@ -34,7 +34,7 @@ namespace services::wal {
 
         if (!std::filesystem::exists(config_.path)) {
             trace(log_, "wal_reader::read_committed_records , WAL path does not exist : {}", config_.path.string());
-            return std::move(merged);
+            return merged;
         }
 
         for (const auto& entry : std::filesystem::directory_iterator(config_.path)) {
@@ -71,7 +71,7 @@ namespace services::wal {
         std::sort(merged.begin(), merged.end(), [](const record_t& a, const record_t& b) { return a.id < b.id; });
 
         trace(log_, "wal_reader::read_committed_records , total committed records : {}", merged.size());
-        return std::move(merged);
+        return merged;
     }
 
     // -----------------------------------------------------------------------
@@ -179,7 +179,7 @@ namespace services::wal {
                 }
             }
         }
-        return std::move(committed);
+        return committed;
     }
 
 } // namespace services::wal

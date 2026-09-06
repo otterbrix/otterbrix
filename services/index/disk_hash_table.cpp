@@ -146,7 +146,7 @@ namespace services::index {
         if (auto open_result = instance->open_or_create(); open_result.contains_error()) {
             return open_result;
         }
-        return std::move(instance);
+        return instance;
     }
 
     disk_hash_table_t::~disk_hash_table_t() {

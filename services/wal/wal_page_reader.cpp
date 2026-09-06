@@ -141,7 +141,7 @@ namespace services::wal {
         std::vector<record_t> records;
         size_t count = page_count();
         if (count == 0) {
-            return std::move(records);
+            return records;
         }
 
         auto* resource = resource_;
@@ -280,7 +280,7 @@ namespace services::wal {
             }
         }
 
-        return std::move(records);
+        return records;
     }
 
 } // namespace services::wal

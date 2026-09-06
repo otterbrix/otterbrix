@@ -52,7 +52,8 @@ namespace components::table::storage {
             // The byte is DISK-FED and semantically unknown to this reader; the CRC cannot
             // catch it (a new writer wrote it deliberately). Refuse the load loudly instead
             // of scanning the stream as raw fixed-size bytes.
-            auto message = "column pointer names compression byte " + std::to_string(compression_byte) +
+            auto message = "column pointer names compression byte " +
+                           std::to_string(static_cast<unsigned>(compression_byte)) +
                            ", which this reader does not implement";
             reader.latch_corruption(message.c_str());
             return result;

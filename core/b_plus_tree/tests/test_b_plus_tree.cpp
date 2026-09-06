@@ -1807,7 +1807,7 @@ TEST_CASE("core::b_plus_tree::a_flipped_bit_in_a_block_is_refused_not_served") {
     const auto bytes = slurp(fs, fname);
     size_t surviving_markers = 0;
     for (size_t off = segment_tree_t::header_size; off + sizeof(marker) <= bytes.size(); off++) {
-        surviving_markers += read_unaligned<uint64_t>(bytes.data() + off) == marker ? 1 : 0;
+        surviving_markers += read_unaligned<uint64_t>(bytes.data() + off) == marker ? 1u : 0u;
     }
     INFO("markers still recognisable in the leaf file");
     CHECK(surviving_markers >= items - 1); // the flipped one is no longer a marker
@@ -2038,7 +2038,7 @@ TEST_CASE("core::b_plus_tree::a_failed_eviction_write_does_not_drop_the_block") 
         reopened.lazy_load();
         size_t missing = 0;
         for (uint64_t i = 0; i < accepted; i++) {
-            missing += reopened.contains_index(segment_tree_t::index_t(i)) ? 0 : 1;
+            missing += reopened.contains_index(segment_tree_t::index_t(i)) ? 0u : 1u;
         }
         INFO("accepted keys that did not survive the restart, out of " << accepted);
         CHECK(missing == 0);
@@ -2168,7 +2168,7 @@ TEST_CASE("core::b_plus_tree::a_corrupt_leaf_still_opens_answers_and_drops") {
         const auto bytes = slurp(fs, victim);
         size_t surviving_markers = 0;
         for (size_t off = segment_tree_t::header_size; off + sizeof(marker) <= bytes.size(); off++) {
-            surviving_markers += read_unaligned<uint64_t>(bytes.data() + off) == marker ? 1 : 0;
+            surviving_markers += read_unaligned<uint64_t>(bytes.data() + off) == marker ? 1u : 0u;
         }
         INFO("markers still recognisable in the poisoned leaf file");
         CHECK(surviving_markers > 0);
@@ -2438,7 +2438,7 @@ TEST_CASE("core::b_plus_tree::split_does_not_carve_up_a_block_it_could_not_read"
         CHECK(healthy.load_failure() == load_failure_t::none);
         size_t found = 0;
         for (uint64_t i = 0; i < kItems; i++) {
-            found += healthy.contains_index(segment_tree_t::index_t(i)) ? 1 : 0;
+            found += healthy.contains_index(segment_tree_t::index_t(i)) ? 1u : 0u;
         }
         INFO("keys recoverable from the leaf file after the refused split");
         CHECK(found == kItems);

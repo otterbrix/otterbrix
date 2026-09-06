@@ -1166,7 +1166,7 @@ namespace services::index {
 
         // Tracks the transition, not the state: the flag is cleared only by this manager's own ack.
         const bool was_empty = deferred_deletes_.empty();
-        const auto queued_before = deferred_deletes_.size();
+        [[maybe_unused]] const auto queued_before = deferred_deletes_.size();
 
         for (auto table_oid : table_oids) {
             auto it = indexes_per_oid_.find(table_oid);
@@ -1196,7 +1196,7 @@ namespace services::index {
     }
 
     void manager_index_t::forget_deferred_deletes(components::catalog::oid_t table_oid) {
-        const auto queued_before = deferred_deletes_.size();
+        [[maybe_unused]] const auto queued_before = deferred_deletes_.size();
         deferred_deletes_.erase(std::remove_if(deferred_deletes_.begin(),
                                                deferred_deletes_.end(),
                                                [table_oid](const deferred_delete_t& entry) {
@@ -1210,7 +1210,7 @@ namespace services::index {
 
     void manager_index_t::forget_deferred_deletes(components::catalog::oid_t table_oid,
                                                   components::catalog::oid_t index_oid) {
-        const auto queued_before = deferred_deletes_.size();
+        [[maybe_unused]] const auto queued_before = deferred_deletes_.size();
         deferred_deletes_.erase(std::remove_if(deferred_deletes_.begin(),
                                                deferred_deletes_.end(),
                                                [table_oid, index_oid](const deferred_delete_t& entry) {
@@ -1790,7 +1790,7 @@ namespace services::index {
         std::pmr::vector<unique_future<core::error_t>> delete_futures(resource_);
         // The entry travels beside its future: a refused erase is put back after the await.
         std::pmr::vector<deferred_delete_t> swept_entries(resource_);
-        const auto queued_before_sweep = deferred_deletes_.size();
+        [[maybe_unused]] const auto queued_before_sweep = deferred_deletes_.size();
         for (auto entry = deferred_deletes_.begin(); entry != deferred_deletes_.end();) {
             if (entry->commit_id > new_horizon) {
                 ++entry;

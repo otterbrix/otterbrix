@@ -26,8 +26,12 @@ namespace components::types {
         requires(!core::IsBufferLike<T>) explicit physical_value(T value)
             : type_(physical_value::get_type_<T>()) {
             if constexpr (sizeof(T) == 16) {
-                std::memcpy(&data_, &value, sizeof(data_));
-                std::memcpy(&data_hi_, reinterpret_cast<const char*>(&value) + sizeof(data_), sizeof(data_hi_));
+                // absl::int128 is a CLASS with private words, so its halves come from its own
+                // API. Splitting it by memcpy assumed low-word-first and is what gcc refuses
+                // (-Wclass-memaccess); the bit pattern here is identical on any endianness.
+                const uint128_t bits = static_cast<uint128_t>(value);
+                data_ = absl::Uint128Low64(bits);
+                data_hi_ = absl::Uint128High64(bits);
             } else {
                 std::memcpy(&data_, &value, sizeof(value));
             }

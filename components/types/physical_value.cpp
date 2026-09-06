@@ -193,11 +193,13 @@ namespace components::types {
         auto as_int128 = [](const physical_value& v) -> int128_t {
             switch (v.type_) {
                 case physical_type::UINT8:
-                    return int128_t(v.value<physical_type::UINT8>());
+                    // uint32_t, not the raw byte: promotion would pick int over unsigned int
+                    // and gcc refuses that choice (-Wsign-promo). Value-preserving.
+                    return int128_t(static_cast<uint32_t>(v.value<physical_type::UINT8>()));
                 case physical_type::INT8:
                     return int128_t(v.value<physical_type::INT8>());
                 case physical_type::UINT16:
-                    return int128_t(v.value<physical_type::UINT16>());
+                    return int128_t(static_cast<uint32_t>(v.value<physical_type::UINT16>()));
                 case physical_type::INT16:
                     return int128_t(v.value<physical_type::INT16>());
                 case physical_type::UINT32:
@@ -337,18 +339,12 @@ namespace components::types {
 
     int128_t physical_value::value_(std::integral_constant<physical_type, physical_type::INT128>) const noexcept {
         assert(type_ == physical_type::INT128);
-        int128_t out;
-        std::memcpy(&out, &data_, sizeof(data_));
-        std::memcpy(reinterpret_cast<char*>(&out) + sizeof(data_), &data_hi_, sizeof(data_hi_));
-        return out;
+        return static_cast<int128_t>(absl::MakeUint128(data_hi_, data_));
     }
 
     uint128_t physical_value::value_(std::integral_constant<physical_type, physical_type::UINT128>) const noexcept {
         assert(type_ == physical_type::UINT128);
-        uint128_t out;
-        std::memcpy(&out, &data_, sizeof(data_));
-        std::memcpy(reinterpret_cast<char*>(&out) + sizeof(data_), &data_hi_, sizeof(data_hi_));
-        return out;
+        return absl::MakeUint128(data_hi_, data_);
     }
 
     std::string_view

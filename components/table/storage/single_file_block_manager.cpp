@@ -632,8 +632,10 @@ namespace components::table::storage {
     //     releasable = issued_since_root_ - {ids live in the block registry}
     // free_block_id is reached from exactly two places (metadata_manager_t::allocate_handle/reserve
     // and partial_block_manager_t::get_block_allocation), and of those only
-    // transition_segment_to_disk registers what it allocated, so the three kinds above fall on the
-    // releasable side and the live tree's blocks never do.
+    // transition_segment_to_disk registers what it allocated -- its STRING leg's big-string
+    // overflow blocks included, via the adopted segment state's register_block -- so the three
+    // kinds above fall on the releasable side and the live tree's blocks never do
+    // (test_string_write_through gate H pins the overflow half).
     // reusable_ AND NOT pending_free_: pending_free_ means "the DURABLE root still names it", false
     // here by construction (promote_durable_root empties issued_since_root_ the instant a root
     // becomes durable), and it drains only on a committed header — the one event this path exists

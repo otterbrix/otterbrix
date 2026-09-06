@@ -1,29 +1,22 @@
-// A CREATE INDEX whose WAL catchup refused must leave nothing the planner can use.
+// The CREATE INDEX build does not read the journal.
 //
-// operator_create_index_backfill_t registers the index engine with manager_index_t
-// (create_index) BEFORE it backfills it, and the engine's registration -- not
-// pg_index.indisvalid -- is what create_plan_match consults: get_indexed_keys reports the
-// key, can_use_index says yes, and full_scan is replaced by index_scan.
+// It used to: after the snapshot scan, a WAL catchup replayed physical records to pick up
+// concurrently committed rows, so an unreadable WAL segment had to FAIL the build (an empty
+// load reply would have silently published an index missing every row that segment described).
+// The build now feeds itself from a RAW read of every physical row plus the DML mirror /
+// post-append reconciliation — the journal is not consulted, so a journal that cannot be
+// opened is not the build's problem.
 //
-// So every exit AFTER that registration has to take the engine back out, and the executor
-// does not: all three undo_create_index calls sit inside the
-// `needs_ddl_txn && cursor->is_success()` block of executor_t::execute_plan_full, covering
-// failures AFTER the operator succeeded (accumulate, commit, inline index-commit). A failure
-// of the operator itself lands in the `else if (... is_error())` branch, which calls only
-// revert_failed_txn -- reverting the catalog appends and the pending index entries, and
-// leaving the engine registered and empty. The result is not a slow query but a WRONG
-// ANSWER: the next equality predicate on the indexed column plans as an index_scan over an
-// engine whose entries were just reverted, and the table answers with nothing.
-//
-// The catchup's refusal is produced deterministically by the WAL's own DEV_MODE seam
+// The WAL-open refusal is produced deterministically by the WAL's own DEV_MODE seam
 // (services/wal/wal_page.hpp): a segment file that will not open makes
-// wal_page_reader_t::read_all_records refuse, which makes wal_worker_t::load refuse, which
-// is the branch operator_create_index_backfill.cpp takes on a refused catchup. It's armed
-// only around the CREATE INDEX, so the seeding traffic above it is untouched.
+// wal_page_reader_t::read_all_records refuse. It's armed only around the CREATE INDEX, so
+// the seeding traffic above it is untouched — and since the current segment is already open,
+// the build's own catalog writes keep landing.
 //
-// Content-level witness for the wal_worker_t::load hole work: the unit proofs are in
-// services/wal/tests/test_wal_load_hole.cpp and assert on id sets; this one asserts on the
-// rows a table answers with afterwards.
+// What this pins:
+//   * the CREATE INDEX SUCCEEDS with the journal unopenable — the build reads no segment;
+//   * the TABLE answers in full afterwards — the build touched no base row;
+//   * the built index is the one doing the answering (Index Scan) and answers in full.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -43,7 +36,7 @@ namespace {
 
     // Process-wide seam, scoped by this object and narrowed to WAL segment files by path.
     // Starts switched OFF: the seeding traffic must reach the journal, so that the only
-    // thing the refusal can be about is the catchup read.
+    // thing the arming can affect is the build's (absent) journal read.
     class wal_open_refusal_t final : public services::wal::wal_file_interposer_t {
     public:
         wal_open_refusal_t() { services::wal::dev_set_wal_file_interposer(this); }
@@ -67,9 +60,18 @@ namespace {
     constexpr int kGroups = 2;
     constexpr unsigned kInGroup0 = kRowCount / kGroups;
 
+    std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
+        std::string out;
+        for (std::size_t r = 0; r < cur->size(); ++r) {
+            out += std::string(cur->value(0, r).value<std::string_view>());
+            out += '\n';
+        }
+        return out;
+    }
+
 } // namespace
 
-TEST_CASE("integration::cpp::create_index_catchup_refusal::a_refused_catchup_leaves_the_table_answering_in_full") {
+TEST_CASE("integration::cpp::create_index_catchup_refusal::the_build_does_not_read_the_journal") {
     auto config = make_test_config(integration_fixture_path("test_create_index_catchup_refusal/refused"),
                                    /*wal_on=*/true);
     config.log.level = log_t::level::off;
@@ -80,7 +82,9 @@ TEST_CASE("integration::cpp::create_index_catchup_refusal::a_refused_catchup_lea
     auto* dispatcher = space.dispatcher();
 
     REQUIRE(exec(dispatcher, "CREATE DATABASE CatchupDb;")->is_success());
-    REQUIRE(exec(dispatcher, "CREATE TABLE CatchupDb.t (id bigint, grp int, val bigint);")->is_success());
+    // grp is bigint, not int: the Index Scan assertion below needs the literal's type to
+    // match the key's, or the planner keeps the heap and the probe proves nothing.
+    REQUIRE(exec(dispatcher, "CREATE TABLE CatchupDb.t (id bigint, grp bigint, val bigint);")->is_success());
     {
         auto cur = seed_rows(dispatcher, "CatchupDb.t", "id, grp, val", kRowCount, [](unsigned i) {
             std::stringstream s;
@@ -99,37 +103,44 @@ TEST_CASE("integration::cpp::create_index_catchup_refusal::a_refused_catchup_lea
         REQUIRE(cur->size() == kInGroup0);
     }
 
-    // Arm only now.
+    // Arm only now: from here no WAL segment file can be opened.
     fault.refuse_open_marker = "wal_";
 
-    auto create = exec(dispatcher, "CREATE INDEX idx_grp ON CatchupDb.t (grp);");
-    INFO("a CREATE INDEX whose WAL catchup could not be read must FAIL rather than publish "
-         "an index built from whatever the journal happened to hand back");
-    REQUIRE(create->is_error());
+    {
+        auto create = exec(dispatcher, "CREATE INDEX idx_grp ON CatchupDb.t (grp);");
+        INFO("a build that consulted the journal would refuse here; this one must not: "
+             << (create->is_error() ? create->get_error().what.c_str() : "no error"));
+        REQUIRE(create->is_success());
+    }
 
-    // Disarm: everything below is about the state the failed statement left behind, not
-    // about the journal.
+    // Disarm: everything below is about the state the statement left behind.
     fault.refuse_open_marker.clear();
 
-    INFO("the refusal the statement reported: " << create->get_error().what.c_str());
-
-    // THE TABLE FIRST. A failed CREATE INDEX must not have touched a single base row.
+    // THE TABLE FIRST. The build must not have touched a single base row.
     {
         auto cur = exec(dispatcher, "SELECT id, grp, val FROM CatchupDb.t;");
-        INFO("unfiltered SELECT after the failed CREATE INDEX: "
-             << (cur->is_error() ? cur->get_error().what.c_str() : "no error") << " , rows "
-             << (cur->is_error() ? 0 : cur->size()) << " , expected " << kRowCount);
+        INFO("unfiltered SELECT after the build: " << (cur->is_error() ? cur->get_error().what.c_str() : "no error")
+                                                   << " , rows " << (cur->is_error() ? 0 : cur->size())
+                                                   << " , expected " << kRowCount);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kRowCount);
     }
 
-    // THE ANSWER, NOT THE STATUS. The index does not exist as far as the user is concerned,
-    // so the table must answer exactly as it did before the failed statement.
+    // THE ANSWER, THROUGH THE INDEX. Prove the index is the one reading, then that it
+    // answers exactly what the table held before the build.
+    {
+        auto plan = exec(dispatcher, "EXPLAIN SELECT id FROM CatchupDb.t WHERE grp = 0;");
+        REQUIRE(plan->is_success());
+        const auto text = plan_text(plan);
+        INFO("plan:\n" << text);
+        INFO("a Seq Scan here would answer out of the heap and prove nothing about the build");
+        REQUIRE(text.find("Index Scan") != std::string::npos);
+    }
     {
         auto cur = exec(dispatcher, "SELECT id, grp, val FROM CatchupDb.t WHERE grp = 0;");
-        INFO("SELECT after the failed CREATE INDEX: "
-             << (cur->is_error() ? cur->get_error().what.c_str() : "no error") << " , rows "
-             << (cur->is_error() ? 0 : cur->size()) << " , expected " << kInGroup0);
+        INFO("SELECT through the built index: " << (cur->is_error() ? cur->get_error().what.c_str() : "no error")
+                                                << " , rows " << (cur->is_error() ? 0 : cur->size()) << " , expected "
+                                                << kInGroup0);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kInGroup0);
     }
@@ -140,18 +151,11 @@ TEST_CASE("integration::cpp::create_index_catchup_refusal::a_refused_catchup_lea
         REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount / kGroups));
     }
 
-    // And the statement must be retryable: nothing of the failed build may be left claiming
-    // the name or the table.
-    {
-        auto retry = exec(dispatcher, "CREATE INDEX idx_grp ON CatchupDb.t (grp);");
-        INFO("retry after the journal recovered: "
-             << (retry->is_error() ? retry->get_error().what.c_str() : "no error"));
-        REQUIRE(retry->is_success());
-    }
+    // Rows written AFTER the build, with the journal healthy again, must reach the index too.
+    REQUIRE(exec(dispatcher, "INSERT INTO CatchupDb.t (id, grp, val) VALUES (1000, 0, 10000);")->is_success());
     {
         auto cur = exec(dispatcher, "SELECT id, grp, val FROM CatchupDb.t WHERE grp = 0;");
-        INFO("SELECT through the rebuilt index");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kInGroup0);
+        REQUIRE(cur->size() == kInGroup0 + 1);
     }
 }

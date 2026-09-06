@@ -92,6 +92,14 @@ namespace services::wal {
                 }
                 trace(log_, "manager_wal_replicate: recovering database_oid={}", static_cast<unsigned>(db_oid));
 
+                // A database journal directory holds wal_<oid>_NNNNNN segment files; a storage
+                // namespace directory (table storage shares this root:
+                // ${wal_root}/${relnamespace}/${table_oid}/table.otbx) holds only table
+                // subdirectories. Both are named after an oid, so the NAME cannot tell them apart —
+                // the STRUCTURE can. Only a directory that actually carries a segment gets a worker
+                // (set below); the alternative once raised a journal for every namespace oid.
+                bool has_wal_segment = false;
+
                 // Scan segments to find max wal_id (via reader, no actor messaging).
                 for (const auto& seg : std::filesystem::directory_iterator(entry.path())) {
                     if (!seg.is_regular_file()) {
@@ -104,6 +112,7 @@ namespace services::wal {
                     if (seg_name.size() < 4 || seg_name.compare(0, 4, "wal_") != 0) {
                         continue;
                     }
+                    has_wal_segment = true;
 
                     wal_page_reader_t reader(resource_, seg.path());
                     if (!reader.is_open()) {
@@ -136,6 +145,18 @@ namespace services::wal {
                 }
                 if (recovery_error_.contains_error()) {
                     break;
+                }
+
+                if (!has_wal_segment) {
+                    // A storage namespace directory, not a database journal (see above). Spawning a
+                    // worker here would raise a journal for a database that does not exist. A real but
+                    // empty database directory carries no ids to recover either and gets its worker on
+                    // demand at the first commit, so skipping a segment-less directory is always safe.
+                    trace(log_,
+                          "manager_wal_replicate: '{}' under the WAL root holds no wal segment — a storage "
+                          "namespace directory, not a database; no worker spawned",
+                          db_dir_name);
+                    continue;
                 }
 
                 get_or_create_worker(db_oid);

@@ -290,6 +290,7 @@ namespace services::index {
         , dropped_table_agents_(resource)
         , deferred_deletes_(resource)
         , catchup_failures_(resource)
+        , mirrored_ranges_(resource)
         , bitcask_agents_owned_(resource)
         , btree_agents_owned_(resource)
         , pending_void_(resource) {
@@ -450,6 +451,10 @@ namespace services::index {
             }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::update_rows>: {
                 co_await actor_zeta::dispatch(this, &manager_index_t::update_rows, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_index_t, &manager_index_t::unmirrored_ranges>: {
+                co_await actor_zeta::dispatch(this, &manager_index_t::unmirrored_ranges, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_index_t, &manager_index_t::commit_inserts>: {
@@ -1056,6 +1061,14 @@ namespace services::index {
         if (it == indexes_per_oid_.end())
             co_return core::error_t::no_error();
 
+        // The mirror ledger: unmirrored_ranges subtracts a statement's appends against this.
+        // Recorded before the fan-out — the sends below are awaited within this same handler,
+        // so a later ask (same mailbox) always sees the record.
+        if (!it->second.empty()) {
+            auto& per_oid = mirrored_ranges_.try_emplace(txn_id).first->second;
+            per_oid.try_emplace(table_oid).first->second.push_back(index_row_range_t{start_row_id, count});
+        }
+
         std::pmr::vector<unique_future<core::error_t>> futures(resource_);
         futures.reserve(it->second.size());
         for (const auto& record : it->second) {
@@ -1149,6 +1162,13 @@ namespace services::index {
         if (it == indexes_per_oid_.end())
             co_return core::error_t::no_error();
 
+        // Same ledger as insert_rows, for the NEW-row append half of the update.
+        if (!it->second.empty()) {
+            auto& per_oid = mirrored_ranges_.try_emplace(txn_id).first->second;
+            per_oid.try_emplace(table_oid).first->second.push_back(
+                index_row_range_t{static_cast<uint64_t>(new_start_row_id), row_ids.size()});
+        }
+
         std::pmr::vector<unique_future<core::error_t>> futures(resource_);
         futures.reserve(it->second.size() * 2);
         for (const auto& record : it->second) {
@@ -1191,6 +1211,58 @@ namespace services::index {
             }
         }
         co_return first_error;
+    }
+
+    // Post-append reconciliation ask (see index_contract). Runs after every append of the asking
+    // statement, which is what makes the empty answer safe: no index here now means any later
+    // build registers (and only then captures its RAW coverage bound) after these rows landed.
+    manager_index_t::unique_future<std::pmr::vector<index_row_range_t>>
+    manager_index_t::unmirrored_ranges(execution_context_t ctx,
+                                       components::catalog::oid_t table_oid,
+                                       std::pmr::vector<index_row_range_t> ranges) {
+        std::pmr::vector<index_row_range_t> missing(resource_);
+        auto it = indexes_per_oid_.find(table_oid);
+        if (it == indexes_per_oid_.end() || it->second.empty()) {
+            co_return missing;
+        }
+
+        // The transaction's mirrored intervals over this table, as sorted [start, end) pairs.
+        std::pmr::vector<std::pair<uint64_t, uint64_t>> covered(resource_);
+        if (auto ledger = mirrored_ranges_.find(ctx.txn.transaction_id); ledger != mirrored_ranges_.end()) {
+            if (auto per_oid = ledger->second.find(table_oid); per_oid != ledger->second.end()) {
+                covered.reserve(per_oid->second.size());
+                for (const auto& r : per_oid->second) {
+                    covered.emplace_back(r.row_start, r.row_start + r.row_count);
+                }
+            }
+        }
+        std::sort(covered.begin(), covered.end());
+
+        // Interval subtraction, row-exact. Over-answering would still be correct (the stores
+        // dedup a repeated (key, row id) pair) but would re-stage what the mirror already did.
+        for (const auto& q : ranges) {
+            uint64_t pos = q.row_start;
+            const uint64_t end = q.row_start + q.row_count;
+            for (const auto& [cs, ce] : covered) {
+                if (ce <= pos) {
+                    continue;
+                }
+                if (cs >= end) {
+                    break;
+                }
+                if (cs > pos) {
+                    missing.push_back(index_row_range_t{pos, cs - pos});
+                }
+                pos = std::max(pos, ce);
+                if (pos >= end) {
+                    break;
+                }
+            }
+            if (pos < end) {
+                missing.push_back(index_row_range_t{pos, end - pos});
+            }
+        }
+        co_return missing;
     }
 
     // --- MVCC commit/revert/cleanup ---
@@ -1244,6 +1316,10 @@ namespace services::index {
                 first_error = std::move(err);
             }
         }
+        // The transaction is spent; its mirror ledger with it. Bucket 0 mirrors
+        // publish_buckets: any commit publishes the direct-write bucket too.
+        mirrored_ranges_.erase(txn_id);
+        mirrored_ranges_.erase(uint64_t{0});
         // NO POST-AWAIT FLIP, and nothing to re-look-up by oid after the fan-out. The agent
         // clears its own bucket as part of publishing it, in its own thread, so there is no
         // manager-side state here that a neighbouring handler could invalidate across the await.
@@ -1343,10 +1419,16 @@ namespace services::index {
     manager_index_t::unique_future<void> manager_index_t::revert_insert(execution_context_t ctx,
                                                                         components::catalog::oid_t table_oid) {
         auto txn_id = ctx.txn.transaction_id;
-        // The abort is where a recorded catchup refusal is finally spent: the transaction it
-        // poisoned is being unwound, so a NEW transaction under the same id can never exist to
-        // be haunted by it.
+        // The abort is where a recorded backfill-staging refusal is finally spent: the
+        // transaction it poisoned is being unwound, so a NEW transaction under the same id can
+        // never exist to be haunted by it. The mirror ledger's entry for this table goes with it.
         catchup_failures_.erase(txn_id);
+        if (auto ledger = mirrored_ranges_.find(txn_id); ledger != mirrored_ranges_.end()) {
+            ledger->second.erase(table_oid);
+            if (ledger->second.empty()) {
+                mirrored_ranges_.erase(ledger);
+            }
+        }
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end())
             co_return;
@@ -1498,7 +1580,7 @@ namespace services::index {
             }
             // Each row is keyed by the PHYSICAL row id the scan stamped into
             // chunk.row_ids. The rebuild stream is visibility-filtered
-            // (storage_fetch_next_batch under the statement's snapshot), so it compacts
+            // (storage_fetch_next_batch under the all-committed snapshot), so it compacts
             // POSITIONS while ids keep their gaps whenever compact() was refused (an open
             // snapshot or an active scan cursor on this oid) — counting positions would
             // point every post-tombstone key one row low.

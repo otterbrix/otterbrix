@@ -50,6 +50,15 @@ namespace services::wal {
             actor_zeta::behavior_t behavior{};
         };
 
+#ifdef DEV_MODE
+        // Test-observable count of spawned per-database WAL workers. A storage namespace
+        // directory shares the WAL root and is named after an oid, so it used to be mistaken
+        // for a database and get a worker of its own; this is how test_wal_storage_namespace_dirs
+        // catches that. Read after construction, before any traffic that could spawn a worker
+        // on demand, so wal_actors_ is stable.
+        std::size_t active_worker_count() const noexcept { return wal_actors_.size(); }
+#endif
+
         // The disk and index mailboxes are required arguments (address_t is not
         // default-constructible, so an unnamed one does not compile); both feed the
         // auto-checkpoint orchestration (flush indexes -> checkpoint -> truncate). A

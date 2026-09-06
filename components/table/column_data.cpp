@@ -626,18 +626,15 @@ namespace components::table {
         if (segment->compression() != compression::compression_type::UNCOMPRESSED) {
             return true;
         }
-        // Re-pointable iff the segment's payload is a self-contained raw block at offset 0 that round-trips
-        // through a byte copy: fixed-width physical types AND validity bitmaps (BIT). STRING carries overflow
-        // blocks / a dictionary in segment_state; STRUCT/ARRAY/LIST keep their payload in child columns -- those
-        // stay managed. BIT is included: a validity bitmap is a raw block at offset 0, and a disk-backed
-        // validity segment reloads its bitmap from the file like any other block (the 0xFF-initialize in the
-        // column_segment_t ctor only fires for INVALID_BLOCK transient segments, not for a registered disk
-        // block).
+        // STRUCT/ARRAY/LIST keep their payload in child columns and INVALID owns no storage:
+        // nothing to re-point. Everything else transitions -- fixed-width types and validity
+        // bitmaps (BIT) round-trip through a raw byte copy of their used prefix; STRING goes
+        // through the checkpoint's own serializer below, because its payload is NOT a prefix
+        // (the dictionary grows down from the END of the allocation) and its big-string
+        // markers name TRANSIENT overflow blocks that die with the process.
         const auto phys = segment->type.to_physical_type();
-        const bool is_raw_copyable = (phys != types::physical_type::STRING && phys != types::physical_type::INVALID &&
-                                      phys != types::physical_type::STRUCT && phys != types::physical_type::ARRAY &&
-                                      phys != types::physical_type::LIST);
-        if (!is_raw_copyable) {
+        if (phys == types::physical_type::INVALID || phys == types::physical_type::STRUCT ||
+            phys == types::physical_type::ARRAY || phys == types::physical_type::LIST) {
             return true;
         }
 
@@ -660,6 +657,75 @@ namespace components::table {
         const bool has_stats = segment->segment_statistics().has_stats();
         base_statistics_t seg_stats =
             has_stats ? segment->segment_statistics() : base_statistics_t(resource_, type_.type());
+
+        // STRING: not a raw prefix copy. Re-serialize through the CHECKPOINT's own pipeline --
+        // compact the dictionary against the offset array, move every big-string payload from its
+        // transient overflow block into a real file block and rewrite the markers -- so the
+        // transitioned image is byte-identical to a checkpoint copy of this segment, and the next
+        // round NAMES this block instead of re-copying it (flush_segment's final-form branch).
+        if (phys == types::physical_type::STRING) {
+            std::pmr::vector<std::byte> rewritten(alloc_segment_size, std::byte{0}, resource_);
+            {
+                // Pin scope mirrors the fixed-size leg below: released before the swap, or the
+                // handle would dangle once the old segment's block is freed.
+                auto pinned = block_manager_.buffer_manager.pin(segment->block);
+                if (pinned.has_error()) {
+                    return pinned.convert_error<bool>();
+                }
+                std::memcpy(rewritten.data(), pinned.value().ptr() + block_offset, alloc_segment_size);
+            }
+            auto compacted = segment->compact_string_dictionary(rewritten.data(), alloc_segment_size, seg_count);
+            if (compacted.has_error()) {
+                return compacted.convert_error<bool>(); // data_corruption
+            }
+            const uint64_t tight_size = compacted.value();
+            std::vector<uint64_t> overflow_ids;
+            if (segment->references_string_overflow(rewritten.data(), tight_size, seg_count)) {
+                auto persisted =
+                    segment->persist_string_overflow(rewritten.data(), tight_size, seg_count, pbm, overflow_ids);
+                if (persisted.has_error()) {
+                    return persisted; // out_of_memory / data_corruption
+                }
+            }
+            const auto string_alloc = pbm.get_block_allocation(tight_size);
+            pbm.write_to_block(string_alloc.block_id, string_alloc.offset_in_block, rewritten.data(), tight_size);
+            auto string_block_handle = block_manager_.register_block(string_alloc.block_id);
+            // The adopted image's markers now name real FILE blocks, resolvable only through the
+            // segment state's registered handles. The reload constructor registers them (exactly
+            // as initialize_column does) and holds them registry-alive -- which is what keeps
+            // roll_back_uncommitted_round from handing a live overflow block to the next
+            // allocation after a failed round (test_string_write_through gate H).
+            std::unique_ptr<column_segment_state> overflow_state;
+            if (!overflow_ids.empty()) {
+                overflow_state = std::make_unique<column_segment_state>();
+                overflow_state->blocks = std::move(overflow_ids);
+            }
+            auto disk_segment = std::make_unique<column_segment_t>(string_block_handle,
+                                                                   type_,
+                                                                   seg_start,
+                                                                   seg_count,
+                                                                   static_cast<uint32_t>(string_alloc.block_id),
+                                                                   string_alloc.offset_in_block,
+                                                                   tight_size,
+                                                                   std::move(overflow_state));
+            if (disk_segment->has_construction_error()) {
+                // Unreachable while persist_string_overflow dedupes its list, but swallowing it
+                // would adopt a segment whose markers cannot resolve.
+                return core::error_t(disk_segment->construction_error());
+            }
+            disk_segment->set_compression(compression::compression_type::UNCOMPRESSED);
+            if (has_stats) {
+                disk_segment->set_segment_statistics(std::move(seg_stats));
+            }
+#ifdef DEV_MODE
+            g_segment_transitions.fetch_add(1, std::memory_order_relaxed);
+            if (segment->block && segment->block->readers() > 0) {
+                g_transitions_with_live_pin.fetch_add(1, std::memory_order_relaxed);
+            }
+#endif
+            data_.replace_segment_at_index(l, segment_index, std::move(disk_segment));
+            return true;
+        }
 
         // The transient segment was allocated for a WHOLE block (segment_size() == block_size) but is filled with
         // only `seg_count` rows. Packing must place the USED payload, not the full allocated block, or every

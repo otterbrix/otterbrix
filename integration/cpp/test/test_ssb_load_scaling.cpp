@@ -217,6 +217,9 @@ namespace {
         const std::filesystem::path source =
             std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" /
             "data" / "ssb" / "lineorder.tbl";
+        if (!std::filesystem::exists(source)) {
+            SKIP("benchmark/data/ssb/lineorder.tbl is missing; fetch it with benchmark/download_data.sh");
+        }
         std::ifstream file(source);
         REQUIRE(file.is_open());
         std::string header;
@@ -342,7 +345,9 @@ TEST_CASE("integration::cpp::test_ssb_load_scaling::explicit_checkpoint_does_not
     const std::filesystem::path source =
         std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path() / "benchmark" / "data" /
         "ssb" / "lineorder.tbl";
-    REQUIRE(std::filesystem::exists(source));
+    if (!std::filesystem::exists(source)) {
+        SKIP("benchmark/data/ssb/lineorder.tbl is missing; fetch it with benchmark/download_data.sh");
+    }
 
     auto config = test_create_config(integration_fixture_path("test_ssb/explicit_checkpoint"));
     test_clear_directory(config);

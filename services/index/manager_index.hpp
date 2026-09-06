@@ -246,6 +246,13 @@ namespace services::index {
                                                  std::pmr::vector<int64_t> row_ids,
                                                  int64_t new_start_row_id);
 
+        // Post-append reconciliation ask (see index_contract): the appended sub-ranges the
+        // transaction's mirror sends did not stage, empty when the table has no index.
+        unique_future<std::pmr::vector<index_row_range_t>>
+        unmirrored_ranges(execution_context_t ctx,
+                          components::catalog::oid_t table_oid,
+                          std::pmr::vector<index_row_range_t> ranges);
+
         // MVCC commit/revert/cleanup. commit_* return core::error_t (no_error() = success); the
         // bitcask write path is assert+abort terminal today, so success is currently the only
         // value returned. The batch form sends every oid's fan-out then awaits all, returning the
@@ -352,6 +359,7 @@ namespace services::index {
                                                        &manager_index_t::insert_rows,
                                                        &manager_index_t::delete_rows,
                                                        &manager_index_t::update_rows,
+                                                       &manager_index_t::unmirrored_ranges,
                                                        &manager_index_t::commit_inserts,
                                                        &manager_index_t::commit_deletes,
                                                        &manager_index_t::revert_insert,
@@ -416,12 +424,22 @@ namespace services::index {
         // Lost on restart it just leaves a superset, filtered at fetch like any other row.
         std::pmr::vector<deferred_delete_t> deferred_deletes_;
 
-        // CREATE INDEX catchup refusals, keyed by the build's transaction. apply_wal_record_for_index
-        // returns void, so a refusal is recorded here and checked at commit_inserts, which refuses
-        // the whole commit BEFORE any agent publishes. Cleared only via the abort mirrors
-        // revert_insert/revert_delete; a retried commit refuses again. First failure wins per
-        // transaction.
+        // CREATE INDEX backfill-staging refusals, keyed by the build's transaction.
+        // apply_wal_record_for_index returns void, so a refusal is recorded here and checked at
+        // commit_inserts, which refuses the whole commit BEFORE any agent publishes. Cleared only
+        // via the abort mirrors revert_insert/revert_delete; a retried commit refuses again.
+        // First failure wins per transaction.
         std::pmr::unordered_map<uint64_t, core::error_t> catchup_failures_;
+
+        // THE MIRROR LEDGER: appended row ranges each live transaction's insert_rows/update_rows
+        // sends have staged, per table — what unmirrored_ranges subtracts a statement's appends
+        // against. Recorded only when the table has at least one index (an unindexed table keeps
+        // no ledger; a later build's RAW read covers its rows). Erased at commit_inserts and
+        // revert_insert.
+        std::pmr::unordered_map<
+            uint64_t,
+            std::pmr::unordered_map<components::catalog::oid_t, std::pmr::vector<index_row_range_t>>>
+            mirrored_ranges_;
 
         // Durable marker for the gap between committing a compacted table and rebuilding its
         // indexes to the new row ids -- a kill -9 inside that gap must survive the restart, and no

@@ -409,9 +409,10 @@ TEST_CASE("checkpoint_in_place: PROBE steady-state garbage per round", "[inplace
         remove_file(path);
     }
 
-    // B: the residual — string segments born in THIS process stay managed (the write-through
-    // transition excludes STRING), so a same-process round still copies every one of them and
-    // the free list keeps one superseded generation of the strings until a restart or compact.
+    // B: same-process string rounds. Historically the residual: STRING was excluded from the
+    // write-through, so a same-process round re-copied every string segment (one superseded
+    // generation per round). The transition now re-points STRING too, so this probe measures
+    // the settled per-delta cost (gates in test_string_write_through.cpp pin it).
     {
         const auto path = inplace_db_path("probe_sameproc");
         remove_file(path);

@@ -142,14 +142,13 @@ namespace services::disk {
         co_return wal::id_t{0};
     }
 
-    manager_disk_t::unique_future<uint64_t> manager_disk_t::vacuum_all(session_id_t session,
-                                                                       uint64_t lowest_active_start_time) {
+    manager_disk_t::unique_future<void> manager_disk_t::vacuum_all(session_id_t session,
+                                                                   uint64_t lowest_active_start_time) {
         trace(log_, "manager_disk_t::vacuum_all , session : {}", session.data());
 
-        // Per-agent vacuum_inner runs the canonical cleanup_versions. It answers how many of
-        // ITS storages it renumbered; this hop only sums the slices, because the set of
-        // storages is partitioned across the agents and nothing here knows a slice's contents.
-        std::pmr::vector<unique_future<uint64_t>> agent_futures{resource()};
+        // Per-agent vacuum_inner runs the canonical cleanup_versions over that agent's own slice;
+        // the set of storages is partitioned across the agents.
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent_ptr->address(),
@@ -162,13 +161,12 @@ namespace services::disk {
             agent_futures.emplace_back(std::move(fut));
         }
 
-        uint64_t renumbered = 0;
         for (auto& f : agent_futures) {
-            renumbered += co_await std::move(f);
+            co_await std::move(f);
         }
 
-        trace(log_, "manager_disk_t::vacuum_all complete , renumbered storages : {}", renumbered);
-        co_return renumbered;
+        trace(log_, "manager_disk_t::vacuum_all complete");
+        co_return;
     }
 
     manager_disk_t::unique_future<void>

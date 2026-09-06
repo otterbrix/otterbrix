@@ -23,6 +23,13 @@ namespace services::index {
     using transaction_data = components::table::transaction_data;
     using execution_context_t = components::execution_context_t;
 
+    // One contiguous run of physical row ids: [row_start, row_start + row_count).
+    // The unit unmirrored_ranges speaks in, both directions.
+    struct index_row_range_t {
+        uint64_t row_start{0};
+        uint64_t row_count{0};
+    };
+
     struct index_contract {
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
@@ -49,6 +56,23 @@ namespace services::index {
                                                  std::pmr::vector<components::vector::data_chunk_t> new_data,
                                                  std::pmr::vector<int64_t> row_ids,
                                                  int64_t new_start_row_id);
+
+        // Post-append reconciliation for a DML statement's appended row ranges. The manager
+        // is the one place that knows the LIVE index set (a building index registers here
+        // before its RAW read captures a coverage bound), so this is where "must these rows
+        // be staged?" is decided — the plan-time table_has_indexes stamp can be stale.
+        //
+        // Answers the sub-ranges of `ranges` that (a) belong to a table with at least one
+        // index and (b) no insert_rows/update_rows mirror send of transaction ctx.txn has
+        // recorded. EMPTY means nothing to do: either the table has no index — then any
+        // later build's RAW read covers these rows, because registration precedes the
+        // coverage bound and the ask runs after the append — or the mirror already staged
+        // them. The caller fetches the answered rows RAW and stages them via insert_rows;
+        // a double-staged (key, row id) pair is deduplicated by the stores.
+        unique_future<std::pmr::vector<index_row_range_t>>
+        unmirrored_ranges(execution_context_t ctx,
+                          components::catalog::oid_t table_oid,
+                          std::pmr::vector<index_row_range_t> ranges);
 
         // Not mirrors: commit_inserts publishes now (fan-out, first error wins). commit_deletes
         // defers to on_horizon_advanced -- erasing before the snapshot floor passes would hide a
@@ -185,6 +209,7 @@ namespace services::index {
                                                             &index_contract::insert_rows,
                                                             &index_contract::delete_rows,
                                                             &index_contract::update_rows,
+                                                            &index_contract::unmirrored_ranges,
                                                             &index_contract::commit_inserts,
                                                             &index_contract::commit_deletes,
                                                             &index_contract::revert_insert,

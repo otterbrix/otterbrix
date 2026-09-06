@@ -689,9 +689,9 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
     columns.emplace_back("payload", logical_type::STRING_LITERAL);
     auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "compact_loud");
 
-    // Append ONE big-string row, keeping the payload segment pointer for the marker surgery
-    // below — the append state itself is scoped out before the checkpoint re-points blocks.
-    column_segment_t* payload_segment = nullptr;
+    // Append ONE big-string row. No segment pointer is kept: the checkpoint's re-point
+    // replaces the live STRING segment object (write-through), so a pointer captured here
+    // would dangle by the time the marker surgery below runs.
     {
         auto types = table->copy_types();
         data_chunk_t chunk(&env.resource, types, 1);
@@ -703,8 +703,7 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
         REQUIRE_FALSE(table->initialize_append(state).has_error());
         REQUIRE_FALSE(table->append(chunk, state).has_error());
         REQUIRE(state.append_state.states != nullptr);
-        payload_segment = state.append_state.states[1].current;
-        REQUIRE(payload_segment != nullptr);
+        REQUIRE(state.append_state.states[1].current != nullptr);
         table->finalize_append(state, transaction_data{0, 0});
     }
 
@@ -726,13 +725,39 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
         REQUIRE(values[0] == big);
     }
 
-    // Corrupt the marker so the rebuild scan fails. The live segment (a single row, so not
-    // write-through re-pointed) is still in the transient domain — name an unregistered
-    // transient block.
-    overwrite_only_overflow_marker(env,
-                                   *payload_segment,
-                                   /*new_block_id=*/tstorage::MAXIMUM_BLOCK + 424242,
-                                   /*expect_transient=*/true);
+    // Corrupt the marker so the rebuild scan fails. The checkpoint re-pointed the live
+    // segment onto a real file block and rewrote its marker into the ON-DISK domain, so the
+    // surgery reaches it through the live segment's block coordinates and names an
+    // unregistered on-disk block. Same layout contract as overwrite_only_overflow_marker.
+    {
+        uint32_t seg_block_id = 0;
+        uint64_t seg_block_offset = 0;
+        bool found = false;
+        for (auto& info : table->get_column_segment_info()) {
+            if (info.column_path == "[1]" && info.segment_type == "PERSISTENT") {
+                seg_block_id = info.block_id;
+                seg_block_offset = info.block_offset;
+                found = true;
+            }
+        }
+        REQUIRE(found);
+        auto handle = bm.register_block(seg_block_id);
+        auto pinned = env.buffer_manager.pin(handle);
+        REQUIRE_FALSE(pinned.has_error());
+        auto* base = pinned.value().ptr() + seg_block_offset;
+        uint32_t dict_size = 0;
+        uint32_t dict_end = 0;
+        std::memcpy(&dict_size, base, sizeof(uint32_t));
+        std::memcpy(&dict_end, base + sizeof(uint32_t), sizeof(uint32_t));
+        REQUIRE(dict_size == 16); // exactly one big string == exactly one 16-byte marker
+        auto* marker = base + dict_end - dict_size;
+        uint64_t named_block = 0;
+        std::memcpy(&named_block, marker, sizeof(uint64_t));
+        REQUIRE(named_block < tstorage::MAXIMUM_BLOCK); // rewritten into the on-disk domain
+        const uint64_t bogus_on_disk = 4242;
+        REQUIRE(named_block != bogus_on_disk);
+        std::memcpy(marker, &bogus_on_disk, sizeof(uint64_t));
+    }
 
     const uint64_t rows_before = table->calculate_size();
     const uint64_t total_before = bm.total_blocks();

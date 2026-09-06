@@ -13,6 +13,21 @@ namespace components::operators {
     // index key columns, RETURNING columns and FK-cascade key columns. Row ids travel
     // in chunk.row_ids, not in a column, so a plain DELETE needs no data column at all.
     uint64_t delete_scanned_columns() noexcept;
+
+    // Deterministic hold right after a DELETE's WAL record becomes durable, the interleaving
+    // seam of test_delete_floor_resurrection. The window a concurrent checkpoint used to
+    // advance this table's durable WAL floor past a delete not yet applied only exists between
+    // the delete's journal write and its storage mark; a timing repro hits it rarely, so this
+    // gate turns the window into a held door. Plain virtual (no std::function), process-wide,
+    // DEV_MODE-only; the operator polls it by ONE no-op cross-actor round-trip per ask, so no
+    // actor thread ever blocks while it holds (same shape as services::disk::scan_advance_gate_t).
+    struct delete_wal_apply_gate_t {
+        virtual ~delete_wal_apply_gate_t() = default;
+        // true = keep holding this delete; false = let it proceed.
+        virtual bool hold(components::catalog::oid_t table_oid) = 0;
+    };
+    void dev_set_delete_wal_apply_gate(delete_wal_apply_gate_t* gate); // nullptr = off
+    delete_wal_apply_gate_t* dev_delete_wal_apply_gate();
 #endif
 
     class operator_delete final : public read_write_operator_t {

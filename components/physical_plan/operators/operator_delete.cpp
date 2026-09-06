@@ -16,8 +16,11 @@ namespace components::operators {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_delete_scanned_columns{0};
+        delete_wal_apply_gate_t* g_delete_wal_apply_gate = nullptr;
     } // namespace
     uint64_t delete_scanned_columns() noexcept { return g_delete_scanned_columns.load(std::memory_order_relaxed); }
+    void dev_set_delete_wal_apply_gate(delete_wal_apply_gate_t* gate) { g_delete_wal_apply_gate = gate; }
+    delete_wal_apply_gate_t* dev_delete_wal_apply_gate() { return g_delete_wal_apply_gate; }
 #endif
 
     operator_delete::operator_delete(std::pmr::memory_resource* resource,
@@ -387,8 +390,8 @@ namespace components::operators {
             co_return;
         }
 
-        // Flush the buffered matched-id slice, if any. The divergent DELETE storage op (WAL-first
-        // physical_delete, storage_delete_rows, then index mirror) lives in coroutine `op`; record_flush()
+        // Flush the buffered matched-id slice, if any. The DELETE storage op (storage_delete_rows,
+        // then WAL physical_delete, then index mirror) lives in coroutine `op`; record_flush()
         // does the common post-storage bookkeeping. DELETE writes its own WAL (unlike INSERT, where the disk
         // agent owns it) and appends nothing.
         if (modified_ && modified_->size() > 0) {
@@ -407,9 +410,36 @@ namespace components::operators {
                 auto& ids = modified_->ids();
                 const size_t modified_size = modified_->size();
 
-                // 1. WAL-FIRST: physical_delete before the storage mark, so a crash between replays the delete.
-                //    row_ids are fully known upfront (unlike INSERT, whose count depends on dedup), so this
-                //    uses the same ordering as delete_pg_catalog_rows_inner.
+                // 1. STORAGE FIRST, then WAL — the apply-then-journal order operator_update uses, and
+                //    the order the checkpoint floor depends on: a mutation's WAL id is allocated only
+                //    AFTER the mutation is applied. WAL-first here left a window where the record's id
+                //    counted into the checkpoint boundary while the table still looked UNCHANGED, so a
+                //    checkpoint racing the window advanced this table's durable WAL floor past a delete
+                //    that was never folded into the .otbx, and a restart then skipped it
+                //    (test_delete_floor_resurrection). Storage-first closes it: no WAL id exists while the
+                //    delete is unapplied, and once one exists the table carries the pending stamp, so the
+                //    checkpoint DEFERS instead of advancing.
+                vector_t row_ids(res, types::logical_type::BIGINT, modified_size);
+                for (size_t i = 0; i < modified_size; i++) {
+                    row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
+                }
+                auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::storage_delete_rows,
+                                                            exec_ctx,
+                                                            table_oid_,
+                                                            std::move(row_ids),
+                                                            static_cast<uint64_t>(modified_size));
+                // Count isn't checked — it's legitimately below modified_size when a row already carries
+                // a delete stamp from this same transaction.
+                auto deleted_r = co_await std::move(df);
+                if (deleted_r.has_error()) {
+                    co_return dml_detail::flush_outcome_t{deleted_r.error(), false, 0, 0};
+                }
+
+                // 2. WAL physical_delete, AFTER the storage mark. A refused record leaves the rows stamped
+                //    in memory with nothing journalled — fail the flush; the delete marker the caller
+                //    records before its own error check makes the abort tail un-stamp them, so no committed
+                //    delete ever lacks its journal record.
                 if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
                     std::pmr::vector<int64_t> wal_row_ids(res);
                     wal_row_ids.reserve(modified_size);
@@ -429,32 +459,31 @@ namespace components::operators {
                                                     db_oid);
                     auto wal_result = co_await std::move(wf);
                     if (wal_result.has_error()) {
-                        // A refused WAL record answered as a wal_id anyway would mark the rows deleted with
-                        // nothing in the journal to replay — fail before the storage mark.
                         co_return dml_detail::flush_outcome_t{wal_result.error(), false, 0, 0};
                     }
                     // manager_disk_t::flush here was a no-op (traced and returned without flushing); table
                     // durability is checkpoint_all's, driven by the WAL manager's checkpoint round.
                 }
 
-                // 2. storage_delete_rows — mark the rows deleted under this txn (MVCC).
-                vector_t row_ids(res, types::logical_type::BIGINT, modified_size);
-                for (size_t i = 0; i < modified_size; i++) {
-                    row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
+#ifdef DEV_MODE
+                // Test seam (test_delete_floor_resurrection): hold immediately after the delete's WAL
+                // record is durable. Non-blocking — one no-op cross-actor round-trip per poll parks this
+                // coroutine without pinning an actor thread. Storage-first above means the table is already
+                // stamped here, so a checkpoint racing this hold defers it rather than advancing its floor.
+                while (auto* gate = dev_delete_wal_apply_gate()) {
+                    if (!gate->hold(table_oid_)) {
+                        break;
+                    }
+                    auto [_g, gf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                               &services::disk::manager_disk_t::storage_total_rows,
+                                                               ctx->session,
+                                                               table_oid_);
+                    auto ping = co_await std::move(gf);
+                    if (ping.has_error()) {
+                        break;
+                    }
                 }
-                auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                            &services::disk::manager_disk_t::storage_delete_rows,
-                                                            exec_ctx,
-                                                            table_oid_,
-                                                            std::move(row_ids),
-                                                            static_cast<uint64_t>(modified_size));
-                // WAL physical_delete is already written; a refused storage mark would leave replay deleting
-                // rows the live storage still shows. Count isn't checked — it's legitimately below
-                // modified_size when a row already carries a delete stamp from this same transaction.
-                auto deleted_r = co_await std::move(df);
-                if (deleted_r.has_error()) {
-                    co_return dml_detail::flush_outcome_t{deleted_r.error(), false, 0, 0};
-                }
+#endif
 
                 // 3. Mirror to index (old data). BOTH paths stage the MATCHED old rows +
                 //    their absolute ids into index_old_chunks_/index_old_row_ids_: the

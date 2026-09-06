@@ -1393,11 +1393,21 @@ namespace services::disk {
             co_return make_drained(cursor_id);
         }
 
-        // Re-resolve the storage (a concurrent DROP between fetches drains the cursor).
+        // Re-resolve the storage. A concurrent DROP erased the entry between two fetches of a KNOWN
+        // cursor (cit was found above): the rows still to come are gone, so the only honest answer is
+        // a loud error, not the drained sentinel — that reads as "end of table" and handed the reader
+        // a truncated prefix as SUCCESS. This is distinct from an UNKNOWN cursor (handled above, where
+        // cit == end drains legitimately: the cursor was closed or already exhausted). NOT PG parity:
+        // PG's DROP takes ACCESS EXCLUSIVE and the reader either finishes or the NEXT statement fails,
+        // never mid-read — but we have no lock to wait on (a held mailbox deadlocks), so a loud error
+        // is the best achievable without one, and strictly better than a silent short answer.
         auto storage_it = storages_.find(table_oid);
         if (storage_it == storages_.end() || storage_it->second == nullptr || storage_it->second->storage == nullptr) {
             active_scans_.erase(cit);
-            co_return make_drained(cursor_id);
+            std::pmr::string what{"storage_fetch_next_batch: the table was dropped under an open cursor: ",
+                                  resource()};
+            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+            co_return core::error_t{core::error_code_t::table_dropped, std::move(what)};
         }
         auto* storage = storage_it->second->storage.get();
 
@@ -2728,13 +2738,9 @@ namespace services::disk {
         co_return checkpoint_result_t{min_prev_id, deferred, rewritten, advanced};
     }
 
-    agent_disk_t::unique_future<uint64_t> agent_disk_t::vacuum_inner(session_id_t /*session*/,
-                                                                     uint64_t lowest_active_start_time) {
+    agent_disk_t::unique_future<void> agent_disk_t::vacuum_inner(session_id_t /*session*/,
+                                                                 uint64_t lowest_active_start_time) {
         trace(log_, "agent_disk[{}]::vacuum_inner: {} entries in local slice", pool_idx_, storages_.size());
-        // How many entries this pass RENUMBERED — see the header: it is the answer the caller
-        // rebuilds indexes on, and it is counted at the line where a renumbering would be
-        // performed rather than inferred anywhere above.
-        uint64_t renumbered = 0;
         for (auto& slot : storages_) {
             auto& entry = slot.second;
             if (entry == nullptr) {
@@ -2743,8 +2749,8 @@ namespace services::disk {
             auto& table = entry->table_storage.table();
             // In-memory MVCC version-chain GC, and the whole of what VACUUM does per entry.
             // Touches no block manager and costs no blocks.
-            // Nothing is compacted here, and THIS is the line where a compact — and `++renumbered`
-            // beside it — would stand. See the long note at maybe_cleanup_inner: under the split
+            // Nothing is compacted here, and THIS is the line where a compact would stand. See
+            // the long note at maybe_cleanup_inner: under the split
             // free pool a compact without a committed header cannot return space, only spend it,
             // even on an entry with nothing dead in it. Compaction belongs to the checkpoint
             // round, the only place that can commit the release.
@@ -2752,11 +2758,10 @@ namespace services::disk {
             // hope: row_group_collection_t::cleanup_versions -> row_version_manager_t::
             // cleanup_append only ever REPLACES a chunk_info inside vector_info_. No row moves, no
             // row group is rebuilt, and data_table_t::modified_since_checkpoint_ is deliberately
-            // left alone by it for the same reason. So `renumbered` stays 0 and the VACUUM
-            // statement owes no index rebuild.
+            // left alone by it for the same reason, so the VACUUM statement owes no index rebuild.
             table.cleanup_versions(lowest_active_start_time);
         }
-        co_return renumbered;
+        co_return;
     }
 
     agent_disk_t::unique_future<void> agent_disk_t::maybe_cleanup_inner(components::catalog::oid_t table_oid,

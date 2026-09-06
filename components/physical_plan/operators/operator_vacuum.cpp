@@ -8,7 +8,6 @@
 #include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
-#include <services/index/index_rebuild_driver.hpp>
 #include <services/index/manager_index.hpp>
 
 #include <algorithm>
@@ -29,15 +28,13 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_vacuum_t::await_async_and_resume(pipeline::context_t* ctx) {
         const std::uint64_t lowest = ctx->lowest_active_start_time;
 
-        // vacuum_all answers how many storages it renumbered — the fact that decides whether the rebuild below
-        // runs. No compact watermark is fetched: vacuum_inner does not compact, so nothing here would read it.
-        std::uint64_t renumbered_storages = 0;
+        // No compact watermark is fetched: vacuum_inner does not compact, so nothing here would read it.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             auto [_v, vf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                         &services::disk::manager_disk_t::vacuum_all,
                                                         ctx->session,
                                                         lowest);
-            renumbered_storages = co_await std::move(vf);
+            co_await std::move(vf);
         }
 
         if (ctx->index_address != actor_zeta::address_t::empty_address()) {
@@ -48,28 +45,10 @@ namespace components::operators {
             co_await std::move(cvf);
         }
 
-        // A full index rebuild is owed only for a renumbering; only data_table_t::compact() renumbers, and
-        // VACUUM never reaches it, so renumbered_storages > 0 only guards a future change on that route.
-        // Does NOT arm manager_index_t::rebuild_marker_path_ (flush_all_indexes does, for the compacting
-        // orchestrations) — safe only because VACUUM opens no compact window today; if it ever does, the arm
-        // must move above the vacuum_all call, not here.
-        if (renumbered_storages > 0) {
-            auto rebuild_error =
-                co_await services::index::repopulate_indexes_after_compaction(resource_,
-                                                                              ctx->disk_address,
-                                                                              ctx->index_address,
-                                                                              ctx->session,
-                                                                              ctx->txn,
-                                                                              ctx->execution_context.timezone_offset);
-            if (rebuild_error.contains_error()) {
-                // A producer defect in the rebuild feed (scan chunks without physical row_ids)
-                // or a refused scan: fail the VACUUM statement loudly rather than leave behind
-                // an index that lies.
-                set_error(rebuild_error);
-                mark_failed();
-                co_return;
-            }
-        }
+        // No index rebuild here: nothing on this route moves a physical row id. Teaching VACUUM to
+        // compact must bring the rebuild back TOGETHER with arming manager_index_t::rebuild_marker_path_
+        // (flush_all_indexes arms it for the compacting orchestrations), ABOVE the vacuum_all call --
+        // a rebuild without that marker leaves a crash mid-rebuild undetectable at restart.
 
         // The rest of this operator is the pg_computed_column GC, which needs the DISK actor
         // and not the index one — so it is gated on the disk address, not on the index one.

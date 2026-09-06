@@ -921,10 +921,9 @@ namespace services::disk {
         // a no-op, and checkpoint_inner then skips that entry for the round.
         unique_future<wal::id_t>
         checkpoint_all(session_id_t session, wal::id_t current_wal_id, uint64_t compact_watermark);
-        // Answers how many storages this VACUUM RENUMBERED — see agent_disk_t::vacuum_inner,
-        // which produces the count where a renumbering would happen. The VACUUM statement
-        // rebuilds indexes only on a non-zero answer, instead of assuming one.
-        unique_future<uint64_t> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
+        // Fans cleanup_versions out to every agent. Renumbers nothing — see
+        // agent_disk_t::vacuum_inner — so the VACUUM statement owes no index rebuild.
+        unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
         // Batched GC-threshold check + compact. Routes each table_oid to its owning
         // agent's maybe_cleanup_inner with the shared compact_watermark, grouped per
         // agent and dispatched two-phase (send all, then await all).

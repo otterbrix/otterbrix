@@ -12,6 +12,34 @@
 
 namespace services::index {
 
+    class committed_rows_snapshot_t;
+
+    // The one constructor of committed_rows_snapshot_t. Not a "see everything" wildcard:
+    // transaction_version_operator::use_inserted_version reads exactly three fields, pinned here:
+    //   * transaction_id 0      -- no self-writes to admit;
+    //   * snapshot_horizon      -- one below TRANSACTION_ID_START, so committed rows pass case 3
+    //                              and uncommitted ones are already refused by case 2;
+    //   * in_flight_snapshot {} -- nothing committed-but-unpublished held back.
+    [[nodiscard]] committed_rows_snapshot_t committed_rows_snapshot() noexcept;
+
+    // The snapshot the rebuild scan reads under: "every committed row, no uncommitted one".
+    // A distinct type rather than a raw transaction_data: repopulate_table clears every store
+    // before the refill, so a scan under a STATEMENT snapshot (ctx->txn) silently drops from
+    // the index every row a neighbour committed after that snapshot's horizon (pinned by
+    // test_checkpoint_rebuild_snapshot.cpp). Only committed_rows_snapshot() can construct one,
+    // so a caller holding ctx->txn does not compile.
+    class committed_rows_snapshot_t {
+    public:
+        [[nodiscard]] const components::table::transaction_data& txn() const noexcept { return txn_; }
+
+    private:
+        explicit committed_rows_snapshot_t(components::table::transaction_data txn) noexcept
+            : txn_(std::move(txn)) {}
+        friend committed_rows_snapshot_t committed_rows_snapshot() noexcept;
+
+        components::table::transaction_data txn_;
+    };
+
     // The one driver for "the tables were just compacted, rebuild their indexes".
     //
     // data_table_t::compact renumbers every surviving row to start at row id 0, and a physical
@@ -50,25 +78,15 @@ namespace services::index {
     // Drained-or-released, never abandoned: a live fetch-next cursor gates compact() on its oid,
     // so a leaked one would wedge the very table the next round needs to reclaim.
     //
-    // `txn` is the snapshot the rebuild scan reads under: "every committed row, no uncommitted
-    // one" (see committed_rows_snapshot() below), since an index answers a superset and never
-    // filters by visibility. Returns the first error any leg reported -- returned rather than
-    // logged, since only the caller knows whether a stale index fails a statement or a round.
+    // `snapshot` is what the rebuild scan reads under, since an index answers a superset and
+    // never filters by visibility. Returns the first error any leg reported -- returned rather
+    // than logged, since only the caller knows whether a stale index fails a statement or a round.
     [[nodiscard]] actor_zeta::unique_future<core::error_t>
     repopulate_indexes_after_compaction(std::pmr::memory_resource* resource,
                                         actor_zeta::actor::address_t disk_address,
                                         actor_zeta::actor::address_t index_address,
                                         components::session::session_id_t session,
-                                        components::table::transaction_data txn,
+                                        committed_rows_snapshot_t snapshot,
                                         core::date::timezone_offset_t session_tz);
-
-    // The snapshot for a rebuild with no transaction of its own (the WAL auto-checkpoint). Not a
-    // "see everything" wildcard: transaction_version_operator::use_inserted_version reads exactly
-    // three fields, pinned here:
-    //   * transaction_id 0      -- no self-writes to admit;
-    //   * snapshot_horizon      -- one below TRANSACTION_ID_START, so committed rows pass case 3
-    //                              and uncommitted ones are already refused by case 2;
-    //   * in_flight_snapshot {} -- nothing committed-but-unpublished held back.
-    [[nodiscard]] components::table::transaction_data committed_rows_snapshot() noexcept;
 
 } // namespace services::index

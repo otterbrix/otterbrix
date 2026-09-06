@@ -41,6 +41,10 @@ set(${PROJECT_NAME}_SOURCES
         test_update_overlay_predicate.cpp
         test_column_identity_restamp.cpp
         test_predicate_fetch_state.cpp
+        test_string_write_through.cpp
+        test_compression_byte_validation.cpp
+        test_construction_error_move.cpp
+        test_nontransactional_update_contract.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

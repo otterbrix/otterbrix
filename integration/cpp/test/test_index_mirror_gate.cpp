@@ -15,20 +15,24 @@ static std::string mirror_gate_plan_text(const components::cursor::cursor_t_ptr&
     return out;
 }
 
-// A table with no indexes must not pay for index maintenance -- and must still answer.
+// A table with no indexes must not pay a CHUNK COPY for index maintenance -- and must still
+// answer. That copy is what this test guards: a mirror send deep-copies the whole flushed
+// chunk and ships it across a mailbox, so for an unindexed table there must be ZERO mirror
+// sends. (It once was every table's tax: the gate was "does an index manager exist", true in
+// every configuration because register_collection creates an engine per table.)
 //
-// The gate was `ctx->index_address != empty_address()` -- "does an index manager exist" -- which
-// is true for every table in every configuration, because register_collection creates an engine
-// per table whether or not any index was ever declared. So every INSERT deep-copied its whole
-// chunk a second time, shipped it across a mailbox, and the index manager walked the rows
-// against an empty index list.
+// The mirror itself is NOT gated by plan-time knowledge alone: the enrich-time stamp only
+// decides whether the operator ships chunks eagerly. Whether the rows must reach an index at
+// all is decided AFTER the append against manager_index's live registry (the executor's
+// post-append reconciliation, see index_contract::unmirrored_ranges) — and that ask carries
+// row RANGES, never a chunk, so the no-copy property here survives it.
 //
 // The plan shape matters as much as the count: since every index is disk-backed (no in-memory
 // index exists), a table with no index on this key must plan a Seq Scan — an Index Scan over an
 // unindexed key would hit manager_index_t's index_not_exists, or answer nothing. Counting
 // mirror sends alone can't tell those apart, since a plan that never reaches an index sends
 // nothing either way.
-TEST_CASE("integration::cpp::test_index_mirror_gate::table_without_indexes_skips_the_index") {
+TEST_CASE("integration::cpp::test_index_mirror_gate::table_without_indexes_pays_no_chunk_copy") {
     auto config = test_create_config(integration_fixture_path("test_index_mirror_gate/plain"));
     test_clear_directory(config);
     config.wal.on = false;

@@ -58,8 +58,12 @@ set( ${PROJECT_NAME}_SOURCES
         test_maintenance_wiring_refusal.cpp
         test_ddl_commit_marker_after_drain.cpp
         test_index_rebuild_live_snapshot.cpp
+        test_checkpoint_rebuild_snapshot.cpp
         test_dml_dictionary_rowids.cpp
         test_persistence_gaps.cpp
+        test_delete_floor_resurrection.cpp
+        test_drop_under_cursor.cpp
+        test_wal_storage_namespace_dirs.cpp
         test_null_persistence.cpp
         test_struct_null_field_read.cpp
         test_pump_hops.cpp
@@ -107,6 +111,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_unique_constraint_operator.cpp
         test_create_index_backfill_batched.cpp
         test_create_index_catchup_refusal.cpp
+        test_create_index_inflight_dml.cpp
         test_create_index_backfill_addressing.cpp
         test_index_stale_marker_crash.cpp
         test_correctness_bugs.cpp

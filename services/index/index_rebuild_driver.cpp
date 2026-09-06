@@ -12,7 +12,7 @@
 
 namespace services::index {
 
-    components::table::transaction_data committed_rows_snapshot() noexcept {
+    committed_rows_snapshot_t committed_rows_snapshot() noexcept {
         components::table::transaction_data txn;
         txn.transaction_id = 0;
         // Below every PENDING txn id and at or above every commit id: transaction_version_operator's
@@ -22,7 +22,7 @@ namespace services::index {
         constexpr uint64_t all_commit_ids = components::table::TRANSACTION_ID_START - 1;
         txn.start_time = all_commit_ids;
         txn.snapshot_horizon = all_commit_ids;
-        return txn;
+        return committed_rows_snapshot_t{std::move(txn)};
     }
 
     actor_zeta::unique_future<core::error_t>
@@ -30,7 +30,7 @@ namespace services::index {
                                         actor_zeta::actor::address_t disk_address,
                                         actor_zeta::actor::address_t index_address,
                                         components::session::session_id_t session,
-                                        components::table::transaction_data txn,
+                                        committed_rows_snapshot_t snapshot,
                                         core::date::timezone_offset_t session_tz) {
         // Both addresses or nothing: a topology missing either has no rebuild to do, and a loop
         // that sent scans to an empty disk address would believe it rebuilt the index while
@@ -85,7 +85,7 @@ namespace services::index {
                                                     std::unique_ptr<components::table::table_filter_t>(nullptr),
                                                     /*limit=*/int64_t{-1},
                                                     std::vector<size_t>{},
-                                                    txn);
+                                                    snapshot.txn());
                     auto scan_r = co_await std::move(ssf);
                     if (scan_r.has_error()) {
                         scan_error = scan_r.error();

@@ -45,6 +45,11 @@ namespace components::table::storage {
         bool has_error() const { return error_.contains_error(); }
         const core::error_t& error() const { return error_; }
 
+        // A VALUE-domain refusal found by a deserializer: the stream read fine, the content
+        // cannot be trusted (e.g. a compression byte no reader implements). Latches into the
+        // same sticky data_corruption channel; first error wins, later reads become no-ops.
+        void latch_corruption(const char* what);
+
     private:
         void follow_chain();
 

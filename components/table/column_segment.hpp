@@ -155,8 +155,8 @@ namespace components::table {
         std::unique_ptr<compressed_segment_state> segment_state_;
         base_statistics_t segment_statistics_;
         compression::compression_type compression_{compression::compression_type::UNCOMPRESSED};
-        // See has_construction_error(). Not moved by the move constructors on purpose: a
-        // segment is only ever moved AFTER initialize_column has read this.
+        // See has_construction_error(). State like any other: the move constructors carry it
+        // (test_construction_error_move.cpp pins that a latched error survives a move).
         core::error_t construction_error_{core::error_t::no_error()};
     };
 

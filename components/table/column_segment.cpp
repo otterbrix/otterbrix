@@ -159,6 +159,18 @@ namespace components::table {
             return core::error_t(core::error_code_t::unimplemented_yet, std::move(message));
         }
 
+        // A segment stamped with a compression this reader does not implement: reading its
+        // bytes as raw values would be silent corruption (the BITPACKING trap). Reported as
+        // data_corruption on the caller's channel, never an abort — reachable from a SELECT.
+        core::error_t unreadable_compression_error(column_segment_t& segment, const char* what) {
+            std::pmr::string message(segment.block->block_manager.buffer_manager.resource());
+            message.append(what);
+            message.append(": segment is stamped with compression byte ");
+            message.append(std::to_string(static_cast<int>(segment.compression())).c_str());
+            message.append(", which this reader does not implement");
+            return core::error_t(core::error_code_t::data_corruption, std::move(message));
+        }
+
         // Resolve the block a big-string marker points at. id >= MAXIMUM_BLOCK is a TRANSIENT
         // block (state.overflow_blocks); id < MAXIMUM_BLOCK is a real FILE block, registered on
         // reload from the persisted list. An unregistered id in either domain is corruption, not
@@ -1161,7 +1173,8 @@ namespace components::table {
         , offset_(other.offset_)
         , segment_size_(other.segment_size_)
         , segment_state_(std::move(other.segment_state_))
-        , segment_statistics_(std::move(other.segment_statistics_)) {
+        , segment_statistics_(std::move(other.segment_statistics_))
+        , construction_error_(std::move(other.construction_error_)) {
         assert(!block || segment_size_ <= block_manager().block_size());
     }
 
@@ -1174,7 +1187,8 @@ namespace components::table {
         , offset_(other.offset_)
         , segment_size_(other.segment_size_)
         , segment_state_(std::move(other.segment_state_))
-        , segment_statistics_(std::move(other.segment_statistics_)) {
+        , segment_statistics_(std::move(other.segment_statistics_))
+        , construction_error_(std::move(other.construction_error_)) {
         assert(!block || segment_size_ <= block_manager().block_size());
     }
 
@@ -1387,17 +1401,26 @@ namespace components::table {
                                      int64_t row_id,
                                      vector::vector_t& result,
                                      uint64_t result_idx) {
-        if (compression_ == compression::compression_type::CONSTANT) {
-            impl::constant_fetch_row(*this, state, result, result_idx);
-            return;
-        }
-        if (compression_ == compression::compression_type::RLE) {
-            impl::rle_fetch_row(*this, state, static_cast<int64_t>(row_id - start), result, result_idx);
-            return;
-        }
-        if (compression_ == compression::compression_type::DICTIONARY) {
-            impl::dict_fetch_row(*this, state, static_cast<int64_t>(row_id - start), result, result_idx);
-            return;
+        // No default: on purpose — a new compression_type does not compile (-Wswitch) until
+        // this dispatch decides how to read it; an unreadable stamp refuses loudly instead of
+        // falling through to the raw legs below.
+        switch (compression_) {
+            case compression::compression_type::CONSTANT:
+                impl::constant_fetch_row(*this, state, result, result_idx);
+                return;
+            case compression::compression_type::RLE:
+                impl::rle_fetch_row(*this, state, static_cast<int64_t>(row_id - start), result, result_idx);
+                return;
+            case compression::compression_type::DICTIONARY:
+                impl::dict_fetch_row(*this, state, static_cast<int64_t>(row_id - start), result, result_idx);
+                return;
+            case compression::compression_type::UNCOMPRESSED:
+                break; // raw dispatch by physical type below
+            case compression::compression_type::INVALID:
+            case compression::compression_type::BITPACKING:
+            case compression::compression_type::VALIDITY_UNCOMPRESSED:
+                state.fetch_error = impl::unreadable_compression_error(*this, "column_segment_t::fetch_row");
+                return;
         }
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
@@ -1699,17 +1722,24 @@ namespace components::table {
     }
 
     void column_segment_t::scan(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {
-        if (compression_ == compression::compression_type::CONSTANT) {
-            impl::constant_scan_entire(*this, state, scan_count, result);
-            return;
-        }
-        if (compression_ == compression::compression_type::RLE) {
-            impl::rle_scan_entire(*this, state, scan_count, result);
-            return;
-        }
-        if (compression_ == compression::compression_type::DICTIONARY) {
-            impl::dict_scan_entire(*this, state, scan_count, result);
-            return;
+        // Same structural closure as fetch_row: no default:, unreadable stamps refuse.
+        switch (compression_) {
+            case compression::compression_type::CONSTANT:
+                impl::constant_scan_entire(*this, state, scan_count, result);
+                return;
+            case compression::compression_type::RLE:
+                impl::rle_scan_entire(*this, state, scan_count, result);
+                return;
+            case compression::compression_type::DICTIONARY:
+                impl::dict_scan_entire(*this, state, scan_count, result);
+                return;
+            case compression::compression_type::UNCOMPRESSED:
+                break;
+            case compression::compression_type::INVALID:
+            case compression::compression_type::BITPACKING:
+            case compression::compression_type::VALIDITY_UNCOMPRESSED:
+                state.scan_error = impl::unreadable_compression_error(*this, "column_segment_t::scan");
+                return;
         }
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:
@@ -1768,17 +1798,24 @@ namespace components::table {
                                         uint64_t scan_count,
                                         vector::vector_t& result,
                                         uint64_t result_offset) {
-        if (compression_ == compression::compression_type::CONSTANT) {
-            impl::constant_scan_partial(*this, state, scan_count, result, result_offset);
-            return;
-        }
-        if (compression_ == compression::compression_type::RLE) {
-            impl::rle_scan_partial(*this, state, scan_count, result, result_offset);
-            return;
-        }
-        if (compression_ == compression::compression_type::DICTIONARY) {
-            impl::dict_scan_partial(*this, state, scan_count, result, result_offset);
-            return;
+        // Same structural closure as fetch_row: no default:, unreadable stamps refuse.
+        switch (compression_) {
+            case compression::compression_type::CONSTANT:
+                impl::constant_scan_partial(*this, state, scan_count, result, result_offset);
+                return;
+            case compression::compression_type::RLE:
+                impl::rle_scan_partial(*this, state, scan_count, result, result_offset);
+                return;
+            case compression::compression_type::DICTIONARY:
+                impl::dict_scan_partial(*this, state, scan_count, result, result_offset);
+                return;
+            case compression::compression_type::UNCOMPRESSED:
+                break;
+            case compression::compression_type::INVALID:
+            case compression::compression_type::BITPACKING:
+            case compression::compression_type::VALIDITY_UNCOMPRESSED:
+                state.scan_error = impl::unreadable_compression_error(*this, "column_segment_t::scan_partial");
+                return;
         }
         switch (type.to_physical_type()) {
             case types::physical_type::BOOL:

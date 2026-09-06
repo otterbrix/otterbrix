@@ -71,12 +71,21 @@ namespace services::collection::executor {
         std::atomic<uint64_t> g_streaming_pipeline_runs{0};
         std::atomic<uint64_t> g_dml_appends_reverted{0};
         std::atomic<uint64_t> g_dml_flush_count{0};
+        std::atomic<uint64_t> g_index_reconcile_staged_ranges{0};
+        // Pre-drive seam: called with the session's data() before every sub-plan drive, on the
+        // executor's own thread — a test hook that blocks here holds the statement between its
+        // (already finished) planning and its first append. Plain function pointer on purpose.
+        std::atomic<void (*)(uint64_t)> g_dml_pre_drive_hook{nullptr};
         oid_alloc_interposer_t* g_oid_alloc_interposer = nullptr;
     } // namespace
 
     uint64_t streaming_pipeline_runs() noexcept { return g_streaming_pipeline_runs.load(std::memory_order_relaxed); }
     uint64_t dml_appends_reverted() noexcept { return g_dml_appends_reverted.load(std::memory_order_relaxed); }
     uint64_t dml_flush_count() noexcept { return g_dml_flush_count.load(std::memory_order_relaxed); }
+    uint64_t index_reconcile_staged_ranges() noexcept {
+        return g_index_reconcile_staged_ranges.load(std::memory_order_relaxed);
+    }
+    void dev_set_dml_pre_drive_hook(void (*hook)(uint64_t)) noexcept { g_dml_pre_drive_hook.store(hook); }
 
     void dev_set_oid_alloc_interposer(oid_alloc_interposer_t* interposer) { g_oid_alloc_interposer = interposer; }
     oid_alloc_interposer_t* dev_oid_alloc_interposer() { return g_oid_alloc_interposer; }
@@ -2935,6 +2944,19 @@ namespace services::collection::executor {
             // (drive_subplan_ -> execute_pipeline). On success `plan` is executed with
             // output_ set; the switch below reads plan->output().
             {
+#ifdef DEV_MODE
+                // DML sub-plans only: a session's earlier catalog-resolve sub-plans run through
+                // this same seam, and freezing one of those would hold the statement BEFORE its
+                // enrich instead of between planning and the first append.
+                if (auto* hook = g_dml_pre_drive_hook.load()) {
+                    const auto root_type = plan->type();
+                    if (root_type == components::operators::operator_type::insert ||
+                        root_type == components::operators::operator_type::update ||
+                        root_type == components::operators::operator_type::remove) {
+                        hook(session.data());
+                    }
+                }
+#endif
                 auto drive_err = co_await drive_subplan_(plan, &pipeline_context);
                 if (drive_err.contains_error()) {
                     // Constraint-error (or any operator-error) path: the DML child may
@@ -2943,6 +2965,91 @@ namespace services::collection::executor {
                     // the physical append (see lift_dml_ranges).
                     lift_dml_ranges();
                     cursor = make_cursor(resource(), std::move(drive_err));
+                    break;
+                }
+            }
+
+            // Post-append reconciliation of the statement's freshly appended rows with the LIVE
+            // index set. The plan's enrich-time table_has_indexes stamp can predate a concurrent
+            // CREATE INDEX, in which case the DML operators mirrored nothing — manager_index is
+            // the one place that knows, and asking it strictly AFTER the appends is what closes
+            // the window: an empty answer proves any later build registers (and only then
+            // captures its RAW coverage bound) after these rows landed. Named rows are fetched
+            // RAW and staged through the ordinary mirror door; the stores dedup a repeated
+            // (key, row id) pair. See index_contract::unmirrored_ranges.
+            if (!pipeline_context.dml_appends.empty() &&
+                index_address_ != actor_zeta::address_t::empty_address() &&
+                disk_address_ != actor_zeta::address_t::empty_address()) {
+                auto reconcile = [this, session, &pipeline_context](std::pmr::memory_resource* res)
+                    -> actor_zeta::unique_future<core::error_t> {
+                    std::pmr::unordered_map<components::catalog::oid_t,
+                                            std::pmr::vector<services::index::index_row_range_t>>
+                        by_oid(res);
+                    for (const auto& app : pipeline_context.dml_appends) {
+                        by_oid.try_emplace(app.table_oid)
+                            .first->second.push_back(services::index::index_row_range_t{
+                                static_cast<uint64_t>(app.row_start),
+                                app.row_count});
+                    }
+                    for (auto& [oid, ranges] : by_oid) {
+                        components::execution_context_t exec_ctx{session,
+                                                                 pipeline_context.txn,
+                                                                 pipeline_context.execution_context.timezone_offset,
+                                                                 oid};
+                        auto [_q, qf] =
+                            actor_zeta::otterbrix::send(index_address_,
+                                                        &services::index::manager_index_t::unmirrored_ranges,
+                                                        exec_ctx,
+                                                        oid,
+                                                        std::move(ranges));
+                        auto missing = co_await std::move(qf);
+                        for (const auto& gap : missing) {
+                            components::vector::vector_t fetch_ids(res,
+                                                                   components::types::logical_type::BIGINT,
+                                                                   gap.row_count);
+                            for (uint64_t k = 0; k < gap.row_count; ++k) {
+                                fetch_ids.data<int64_t>()[k] = static_cast<int64_t>(gap.row_start + k);
+                            }
+                            auto [_f, ff] =
+                                actor_zeta::otterbrix::send(disk_address_,
+                                                            &services::disk::manager_disk_t::storage_fetch,
+                                                            session,
+                                                            oid,
+                                                            std::move(fetch_ids),
+                                                            gap.row_count,
+                                                            std::vector<size_t>{},
+                                                            components::table::transaction_data{},
+                                                            components::table::fetch_visibility_t::RAW,
+                                                            /*limit=*/int64_t{-1});
+                            auto rows_r = co_await std::move(ff);
+                            if (rows_r.has_error()) {
+                                co_return rows_r.error();
+                            }
+                            auto [_s, sf] =
+                                actor_zeta::otterbrix::send(index_address_,
+                                                            &services::index::manager_index_t::insert_rows,
+                                                            exec_ctx,
+                                                            oid,
+                                                            std::move(rows_r.value()),
+                                                            gap.row_start,
+                                                            gap.row_count);
+                            auto stage_err = co_await std::move(sf);
+                            if (stage_err.contains_error()) {
+                                co_return stage_err;
+                            }
+#ifdef DEV_MODE
+                            g_index_reconcile_staged_ranges.fetch_add(1, std::memory_order_relaxed);
+#endif
+                        }
+                    }
+                    co_return core::error_t::no_error();
+                };
+                auto reconcile_err = co_await reconcile(resource());
+                if (reconcile_err.contains_error()) {
+                    // The rows are in the table and not in the index: fail the statement so the
+                    // abort tail reverts the appends instead of publishing the disagreement.
+                    lift_dml_ranges();
+                    cursor = make_cursor(resource(), std::move(reconcile_err));
                     break;
                 }
             }

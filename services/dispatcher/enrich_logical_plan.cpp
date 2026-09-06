@@ -1611,7 +1611,10 @@ namespace services::dispatcher {
             // Consume PER OID: the planner's index accessors are oid-keyed, so each table's
             // key set files under its own table_indexes entry. Also stamp "has an index" on
             // every node targeting that table — DML operators read the stamp at execution
-            // time, where context_storage is out of reach.
+            // time, where context_storage is out of reach. The stamp only gates the EAGER
+            // chunk-shipping mirror; a stamp gone stale against a concurrent CREATE INDEX is
+            // corrected after the append by the executor's reconciliation with manager_index
+            // (index_contract::unmirrored_ranges).
             for (std::size_t i = 0; i < keys_futures.size(); ++i) {
                 auto keys = co_await std::move(keys_futures[i]);
                 catalog_resolve::stamp_table_has_indexes(root.get(), queried_oids[i], !keys.empty());

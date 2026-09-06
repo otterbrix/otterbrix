@@ -205,9 +205,9 @@ namespace components::table {
         // Final-form cases, i.e. where the copy would be byte-identical to what is already there:
         //   * a compressed image (CONSTANT/RLE/DICTIONARY): only a committed checkpoint produces
         //     one, so it is final by construction;
-        //   * a disk-backed STRING image: only initialize_column produces disk-backed STRING
-        //     segments (the write-through transition excludes them), so the dictionary is already
-        //     compacted and every big-string payload already persisted — its overflow list is
+        //   * a disk-backed STRING image: both producers (initialize_column on reload, and the
+        //     write-through transition, which runs this checkpoint's own serializer) leave the
+        //     dictionary compacted and every big-string payload persisted — its overflow list is
         //     re-emitted with the pointer, or the reloaded markers would resolve to nothing;
         //   * an uncompressed image the analysis below would not even look at (validity bitmaps,
         //     single-tuple segments): raw bytes, copied verbatim today.

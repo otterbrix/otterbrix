@@ -71,14 +71,17 @@ namespace components::operators {
         // before the truncate below, its point of no return. The rebuild_marker_path_ guard armed in step 1
         // covers a mid-rebuild crash: a restart that finds it still armed declines to wire those indexes.
         // repopulate_indexes_after_compaction is the ONE shared driver — also used by auto-checkpoint and
-        // VACUUM — so this ordering can't drift between them.
+        // VACUUM. It scans under the all-committed snapshot, NOT ctx->txn: this statement's snapshot can
+        // predate a neighbour's commit, and the clear-then-refill rebuild would silently drop that row
+        // from the index (test_checkpoint_rebuild_snapshot.cpp). The driver's parameter type accepts only
+        // committed_rows_snapshot(), so no caller can hand it a statement snapshot and compile.
         {
             auto rebuild_error =
                 co_await services::index::repopulate_indexes_after_compaction(resource_,
                                                                               ctx->disk_address,
                                                                               ctx->index_address,
                                                                               ctx->session,
-                                                                              ctx->txn,
+                                                                              services::index::committed_rows_snapshot(),
                                                                               ctx->execution_context.timezone_offset);
             if (rebuild_error.contains_error()) {
                 // Fail the CHECKPOINT loudly rather than leave behind a lying index, and leave the

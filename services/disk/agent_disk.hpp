@@ -411,10 +411,10 @@ namespace services::disk {
 
         // vacuum_inner — cleanup_versions per entry; does NOT compact (a compact without a
         //   committed checkpoint header cannot return space under the split free pool, only
-        //   spend it — see the long note at maybe_cleanup_inner's definition). Returns the
-        //   number of storages whose physical row ids this call MOVED (0 today, since nothing
-        //   is compacted) — callers must rebuild an index only if this count is nonzero.
-        unique_future<uint64_t> vacuum_inner(session_id_t session, uint64_t lowest_active_start_time);
+        //   spend it — see the long note at maybe_cleanup_inner's definition). Moves no row, so
+        //   a caller owes no index rebuild: only data_table_t::compact() renumbers, and that
+        //   belongs to the checkpoint round.
+        unique_future<void> vacuum_inner(session_id_t session, uint64_t lowest_active_start_time);
 
         // maybe_cleanup_inner — single-OID target. Compacts NOTHING (see vacuum_inner); kept as
         //   a handler because operator_commit_transaction still sends it per touched oid.

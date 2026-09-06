@@ -1,9 +1,31 @@
 #include "data_pointer.hpp"
 
+#include <string>
+
 #include "metadata_reader.hpp"
 #include "metadata_writer.hpp"
 
 namespace components::table::storage {
+
+    namespace {
+        // Exhaustive on purpose (no default:): a new compression_type refuses to compile here
+        // (-Wswitch) until its author decides whether the READ side implements it. Green build
+        // + green tests with an unreadable byte silently scanning as raw is the trap this closes.
+        bool read_side_implements(compression::compression_type compression) {
+            switch (compression) {
+                case compression::compression_type::UNCOMPRESSED:
+                case compression::compression_type::CONSTANT:
+                case compression::compression_type::RLE:
+                case compression::compression_type::DICTIONARY:
+                    return true;
+                case compression::compression_type::INVALID:
+                case compression::compression_type::BITPACKING:
+                case compression::compression_type::VALIDITY_UNCOMPRESSED:
+                    return false;
+            }
+            return false; // a byte outside the enum entirely (disk-fed, CRC-valid garbage)
+        }
+    } // namespace
 
     void data_pointer_t::serialize(metadata_writer_t& writer) const {
         writer.write<uint64_t>(row_start);
@@ -24,7 +46,18 @@ namespace components::table::storage {
         result.tuple_count = reader.read<uint64_t>();
         result.block_pointer.block_id = reader.read<uint64_t>();
         result.block_pointer.offset = reader.read<uint32_t>();
-        result.compression = static_cast<compression::compression_type>(reader.read<uint8_t>());
+        const auto compression_byte = reader.read<uint8_t>();
+        const auto compression = static_cast<compression::compression_type>(compression_byte);
+        if (!reader.has_error() && !read_side_implements(compression)) {
+            // The byte is DISK-FED and semantically unknown to this reader; the CRC cannot
+            // catch it (a new writer wrote it deliberately). Refuse the load loudly instead
+            // of scanning the stream as raw fixed-size bytes.
+            auto message = "column pointer names compression byte " + std::to_string(compression_byte) +
+                           ", which this reader does not implement";
+            reader.latch_corruption(message.c_str());
+            return result;
+        }
+        result.compression = compression;
         result.segment_size = reader.read<uint64_t>();
         auto overflow_count = reader.read<uint32_t>();
         if (reader.has_error()) { // a corrupt count must not size the vector below

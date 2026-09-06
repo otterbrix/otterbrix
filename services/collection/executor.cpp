@@ -34,14 +34,8 @@
 #include <components/logical_plan/node_set_timezone.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
-// The executor only sees the base operator_t: each operator's DML I/O
-// intercept lives in its own await_async_and_resume, not here. The commit
-// pipeline's commit_id comes back via pipeline::context_t::committed_id.
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <core/executor.hpp>
-// catalog-resolve helpers (services::catalog_resolve) let the executor drive
-// resolve without a dispatcher dependency. Defined in
-// services/dispatcher/enrich_logical_plan.cpp, already linked into the library.
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -62,19 +56,13 @@ using namespace components::cursor;
 
 namespace services::collection::executor {
 
-    // Test-observable streaming-path counter (see executor.hpp). Bumped once per
-    // execute_pipeline() entry; relaxed because it is an instrumentation read, not a
-    // happens-before edge. DEV_MODE-only: production binaries carry nothing (the
-    // integration test target compiles with -DDEV_MODE).
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_streaming_pipeline_runs{0};
         std::atomic<uint64_t> g_dml_appends_reverted{0};
         std::atomic<uint64_t> g_dml_flush_count{0};
         std::atomic<uint64_t> g_index_reconcile_staged_ranges{0};
-        // Pre-drive seam: called with the session's data() before every sub-plan drive, on the
-        // executor's own thread — a test hook that blocks here holds the statement between its
-        // (already finished) planning and its first append. Plain function pointer on purpose.
+        // A test hook that blocks here holds the statement between planning and its first append.
         std::atomic<void (*)(uint64_t)> g_dml_pre_drive_hook{nullptr};
         oid_alloc_interposer_t* g_oid_alloc_interposer = nullptr;
     } // namespace
@@ -91,10 +79,7 @@ namespace services::collection::executor {
     oid_alloc_interposer_t* dev_oid_alloc_interposer() { return g_oid_alloc_interposer; }
 #endif
 
-    // ---- behavior/dispatch_traits sync check ----
-    // Ensures behavior() handles every method registered in dispatch_traits
-    // (positional msg_id: a missed case = silent message loss). When adding a
-    // method: dispatch_traits entry + behavior() case + kBehaviorHandledIds.
+    // Ensures behavior() handles every dispatch_traits method — a missed case is a silent message loss.
     namespace {
         template<typename MethodList>
         struct behavior_expected_ids_t;
@@ -141,7 +126,6 @@ namespace services::collection::executor {
     } // namespace
 
     namespace {
-        // EXPLAIN ANALYZE row tally: sum row counts across a chunk vector.
         inline uint64_t count_rows(const components::operators::chunks_vector_t& chunks) noexcept {
             uint64_t rows = 0;
             for (const auto& c : chunks) {
@@ -150,9 +134,6 @@ namespace services::collection::executor {
             return rows;
         }
 
-        // EXPLAIN ANALYZE stopwatch: samples steady_clock only when `on` (zero cost off the ANALYZE
-        // path). elapsed() is read only under an `if (analyze)` guard at each call site, which also
-        // keeps count_rows off the normal (non-analyze) hot path.
         struct analyze_scope {
             std::chrono::steady_clock::time_point t0;
             explicit analyze_scope(bool on) noexcept
@@ -162,14 +143,6 @@ namespace services::collection::executor {
             }
         };
 
-        // Build-side selection: collect the EFFECTIVE child table oids of
-        // every INNER hash join in the optimized plan tree. execute_plan_full
-        // fetches each oid's live row count so create_plan_join can put the
-        // smaller table on the hash build side. Recurses the whole tree because
-        // q2-q4 lower to several stacked joins. A child that is not a single
-        // (possibly filter-wrapped) base table (nested join / subquery ->
-        // INVALID_OID) is dropped here, so it is never sent to disk. Duplicate
-        // oids collapse in the set.
         void collect_inner_hash_join_oids(const components::logical_plan::node_ptr& node,
                                           std::pmr::set<components::catalog::oid_t>& out) {
             if (!node) {
@@ -201,8 +174,7 @@ namespace services::collection::executor {
                    services::context_storage_t&& context_storage)
         : sub_plans(std::move(sub_plans))
         , parameters(parameters)
-        // Moved, not copied: a pmr container's copy ctor doesn't propagate the allocator,
-        // so copying context_storage_ would silently rebind its containers off the query's arena.
+        // Moved, not copied — a pmr copy ctor doesn't propagate the allocator, silently rebinding off the arena.
         , context_storage_(std::move(context_storage)) {}
 
     executor_t::executor_t(std::pmr::memory_resource* resource,
@@ -270,11 +242,8 @@ namespace services::collection::executor {
         }
     }
 
-    // No-op mailbox handler whose ONLY purpose is to exist as a poke target:
-    // the dispatcher's lost-wakeup watchdog PUSHes it into a stale executor's
-    // mailbox to unblock a reader_blocked actor whose awaited future is ready
-    // (docs/actor-zeta-lost-wakeup.md). Remove together with the watchdog once
-    // the framework fix lands.
+    // Poke target only, for the dispatcher's lost-wakeup watchdog (docs/actor-zeta-lost-wakeup.md);
+    // remove with it.
     executor_t::unique_future<void> executor_t::poke_msg() { co_return; }
 
     auto executor_t::make_type() const noexcept -> const char* { return "executor"; }
@@ -290,21 +259,12 @@ namespace services::collection::executor {
 
         using namespace components::logical_plan;
 
-        // Pure operator-pipeline run. The txn lifecycle (begin / commit /
-        // abort / accumulate) is owned entirely by execute_plan_full's tail;
-        // this function lowers the plan, drives the operators, and returns the
-        // cursor plus the raw range accumulators.
         components::table::transaction_data txn_data = txn;
 
-        // With the transformer wrap, logical_plan may be
-        // sequence_t(catalog_resolve_*, ..., <consumer>). The limit_t node
-        // lives as a child of the consumer, not on the wrapping sequence_t.
-        // Skip the catalog_resolve_* prefix first (it never carries a limit),
-        // then fall back to iterating the raw children for non-DML plans.
+        // limit_t lives under the consumer, not the wrapping sequence_t (which never carries a limit).
         auto limit = components::logical_plan::limit_t::unlimit();
         auto* limit_lookup_node = plan.sub_queries.back().get();
         if (limit_lookup_node && limit_lookup_node->type() == components::logical_plan::node_type::sequence_t) {
-            // Find first non-resolve child as the limit-carrying consumer.
             auto is_catalog_resolve = [](components::logical_plan::node_type t) {
                 return t == components::logical_plan::node_type::catalog_resolve_t;
             };
@@ -321,14 +281,8 @@ namespace services::collection::executor {
             }
         }
 
-        // Plan generators read parameter values through context_storage (e.g.
-        // create_plan_match probes context.parameters to gate parameterised
-        // index scans). Point it at THIS frame's `parameters` local: the
-        // pointer is consumed only at plan-build time (inside create_plan),
-        // before the move into plan_data below.
+        // Points at this frame's `parameters` local, consumed only at plan-build time before the move into plan_data.
         context_storage.parameters = &plan.parameters->parameters();
-        // Host-injected: create_plan reads this at its extension arm to lower a
-        // node_extension leaf through the host operator (ctor chain -> executor).
         context_storage.create_plan_rule = create_plan_rule_;
         components::operators::operator_ptr node = planner::create_plan(context_storage,
                                                                         function_registry_,
@@ -337,8 +291,7 @@ namespace services::collection::executor {
                                                                         &plan.parameters->parameters());
 
         if (!node) {
-            // Surface the error via cursor so execute_plan_full's tail routes
-            // through abort.
+            // Surface the error via cursor so execute_plan_full's tail routes through abort.
             co_return execute_result_t{make_cursor(resource(),
                                                    core::error_t(core::error_code_t::create_physical_plan_error,
                                                                  std::pmr::string{"invalid query plan", resource()}))};
@@ -346,37 +299,26 @@ namespace services::collection::executor {
 
         node->set_as_root();
 
-        // === EXPLAIN / EXPLAIN ANALYZE ===
-        // Stable handle to the physical root before traverse_plan_ moves `node`: operator left_/
-        // right_ are frozen after create_plan, so explain_root walks the exact instances the
-        // pipeline drives (and, for ANALYZE, the counters they accumulate). Snapshot oid->name now,
-        // BEFORE context_storage is moved into traverse_plan_ below.
+        // Stable handle to the root before traverse_plan_ moves `node` (left_/right_ freeze after create_plan).
         components::operators::operator_ptr explain_root =
             plan.explain != components::logical_plan::explain_type::none ? node : nullptr;
         explain_name_map_t explain_names{resource()};
         const bool explain_analyze = plan.explain == components::logical_plan::explain_type::analyze;
         if (explain_root && explain_analyze) {
-            // ANALYZE builds the IR AFTER context_storage is moved into traverse_plan_ below, so it must
-            // snapshot oid->name now while the catalog is still alive. Plan-only skips this pass — its
-            // single builder walk resolves scan names straight from the still-live catalog (see below).
+            // ANALYZE must snapshot oid->name now, before context_storage moves into traverse_plan_ below.
             explain_name_collector nc{context_storage, explain_names};
             explain_root->explain(nc.sink());
         }
         if (plan.explain == components::logical_plan::explain_type::plan) {
-            // Plan-only EXPLAIN: build the physical tree's IR WITHOUT executing. context_storage is still
-            // alive, so the builder resolves scan names from the live catalog (no collector).
             if (plan.explain_capture_ir) {
-                // A flattened sub-query captured for the main query's InitPlan section: return its IR
-                // (structure only, no ANALYZE stats). No render, no execution — the cursor is unused by
-                // the caller (it reads captured_explain_ir) but must be a success cursor.
+                // Returns IR only; the cursor is unused by the caller but must still report success.
                 explain_ir_builder b{resource(), explain_names, &context_storage};
                 explain_root->explain(b.sink());
                 execute_result_t out{make_cursor(resource())};
                 out.captured_explain_ir = b.release();
                 co_return std::move(out);
             }
-            // Main plan: render the tree, hanging each flattened sub-query's captured IR as an InitPlan
-            // (structure only) — like PostgreSQL's plain EXPLAIN.
+            // Hangs each captured sub-query IR as an InitPlan, like PostgreSQL's plain EXPLAIN.
             co_return execute_result_t{render_explain_(explain_root,
                                                        explain_names,
                                                        &context_storage,
@@ -390,13 +332,7 @@ namespace services::collection::executor {
 
         auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data, lowest_active_start_time);
 
-        // EXPLAIN ANALYZE: the query just ran with instrumentation. Two sub-cases:
-        //   * capture (a flattened sub-plan, explain_capture_ir): build the IR and carry it back in
-        //     captured_explain_ir, but KEEP the data cursor — the sub-query loop still compacts it.
-        //   * main plan: substitute the rendered plan (+ any captured sub-plan InitPlans) for the data
-        //     cursor (only on success — an error stays an error cursor so the tail aborts).
-        // The pipeline left the counters on explain_root's instances; build the IR post-exec now.
-        // context_storage is gone (moved above), so pass nullptr — the builder reads the snapshot.
+        // Capture mode keeps the data cursor for the sub-query loop; context_storage is gone, so pass nullptr.
         std::optional<explain_plan_node> captured_ir;
         if (explain_analyze && result.cursor->is_success()) {
             if (plan.explain_capture_ir) {
@@ -413,13 +349,7 @@ namespace services::collection::executor {
             }
         }
 
-        // Raw pipeline result. Three cases, distinguished by the vector state
-        // and resolved by execute_plan_full's accumulate/commit tail:
-        //   * non-DML (DDL, SELECT): dml_* empty (pg_catalog_* populated for DDL).
-        //   * DML success: vectors populated; the tail accumulates them onto
-        //     transaction_t and (autocommit) runs the commit pipeline.
-        //   * DML error: dml_appends / pg_catalog_appends still carry the
-        //     not-yet-published ranges so the tail's abort cascade reverts them.
+        // dml_*/pg_catalog_* vector state distinguishes non-DML / DML-success / DML-error for the tail below.
         execute_result_t out{std::move(result.cursor),
                              std::move(result.pg_catalog_appends),
                              std::move(result.pg_catalog_delete_tables),
@@ -441,22 +371,17 @@ namespace services::collection::executor {
                                 uint32_t render_id,
                                 bool analyze,
                                 std::pmr::vector<explain_plan_node> captured_subplans) {
-        // cs != nullptr (plan-only): resolve scan names from the live catalog. cs == nullptr (ANALYZE,
-        // after context_storage was moved): read the pre-collected `names` snapshot.
+        // cs is non-null only for plan-only EXPLAIN (live catalog); ANALYZE passes nullptr and reads `names`.
         explain_ir_builder b{resource(), names, cs};
         explain_root->explain(b.sink());
         explain_plan_node root = b.release();
-        // Hang each flattened sub-query's captured IR on the main root as an InitPlan. PG attaches
-        // InitPlans at the topmost node of the query level; otterbrix runs every flattened sub-query
-        // top-level (executor loop), so they are siblings here. Each node's subplan_returns ($M) was
-        // stamped in the loop. All nodes share this executor's resource() — no pmr re-anchor.
+        // otterbrix runs every flattened sub-query top-level, so captured IRs are siblings here, not nested InitPlans.
         for (auto& sp : captured_subplans) {
             root.subplans.push_back(std::move(sp));
         }
         const auto render = resolve_explain_renderer_(render_id);
         if (render_id != 0 && !explain_slot_registered_(render_id)) {
-            // Resolving to slot 0 is intended (see test_explain.cpp's out-of-range cases),
-            // but an unregistered render_id must be logged above trace level.
+            // Resolving to slot 0 is intended (see test_explain.cpp); an unregistered render_id is still logged.
             error(log_,
                   "executor::explain: render_id {} is not registered on this executor — rendering with the "
                   "default (slot 0)",
@@ -468,11 +393,7 @@ namespace services::collection::executor {
     executor_t::unique_future<execute_result_t>
     executor_t::execute_plan_full(components::session::session_id_t session,
                                   components::logical_plan::execution_plan_t plan) {
-        // Full per-query pipeline: session-context fetch, optimize, resolve
-        // wrap, catalog resolve, view splice, validate, enrich, planner
-        // rewrites, operator pipeline, then the DML/DDL commit (or abort)
-        // tail. The dispatcher only routes; ALL txn-state access goes through
-        // its txn_*_msg mailbox handlers.
+        // Full per-query pipeline: resolve, view splice, validate, enrich, planner rewrite, run, commit/abort tail.
         using node_type = components::logical_plan::node_type;
         using components::logical_plan::node_aggregate_t;
         using components::logical_plan::node_catalog_resolve_t;
@@ -484,18 +405,9 @@ namespace services::collection::executor {
         using components::logical_plan::node_t;
         using components::logical_plan::resolve_kind;
 
-        // === Sub-query pre-execution (front-to-back) ===
-        // The transformer flattens every nested sub-query into plan.sub_queries,
-        // ordered so dependencies run first; sub_queries.back() is the main
-        // query. Each non-final sub-query is run through this same full pipeline
-        // (recursively, as a single-query plan that SHARES the parameter node),
-        // its result compacted to a scalar/list via the mapping's compacter, and
-        // bound as a parameter the later sub-queries / the main query reference
-        // by id. Sharing the node is why execute_plan copies (not drains) the
-        // parameters: each binding must survive into the next plan.
-        // Plan-only EXPLAIN builds each sub-query's physical plan and captures its IR without
-        // executing it (PostgreSQL: plain EXPLAIN runs no sub-plans); EXPLAIN ANALYZE captures
-        // the executed IR with per-operator stats; normal execution captures nothing.
+        // sub_queries is dependencies-first (back()=main query); execute_plan copies (not drains)
+        // parameters since the node is shared. Plan-only EXPLAIN captures each sub-query's IR
+        // without executing; ANALYZE captures the executed IR.
         const bool run_sub_queries = plan.explain != components::logical_plan::explain_type::plan;
         const bool plan_only = plan.explain == components::logical_plan::explain_type::plan;
         const bool capture_ir = plan.explain == components::logical_plan::explain_type::analyze;
@@ -512,11 +424,9 @@ namespace services::collection::executor {
             }
             components::logical_plan::execution_plan_t sub_plan{resource(), plan.sub_queries[i], plan.parameters};
             if (plan_only) {
-                // Build the sub-query's physical plan + IR, NO execution (returned via captured_explain_ir).
                 sub_plan.explain = components::logical_plan::explain_type::plan;
                 sub_plan.explain_capture_ir = true;
             } else if (capture_ir) {
-                // Instrument the sub-plan and make it BUILD its IR (kept alongside the data cursor).
                 sub_plan.explain = components::logical_plan::explain_type::analyze;
                 sub_plan.explain_capture_ir = true;
             }
@@ -526,7 +436,6 @@ namespace services::collection::executor {
             }
             const auto& mapping = plan.sub_query_results[i];
 
-            // set result type, so next query will be able to use it for it's validation
             if (plan.sub_queries[i]->has_output_types()) {
                 const auto& column_type = plan.sub_queries[i]->output_types().front();
                 plan.parameters->set_parameter(
@@ -535,20 +444,12 @@ namespace services::collection::executor {
                         ? components::types::logical_value_t{resource(), column_type}
                         : components::types::logical_value_t::create_array(resource(), column_type, {}));
             }
-            // PostgreSQL: the argument of WHERE / HAVING must be type boolean. For a bare
-            // boolean-context scalar sub-query (`WHERE (SELECT ...)` / `HAVING (SELECT ...)`)
-            // reject a non-boolean STATIC output type here — otherwise a numeric scalar would
-            // silently coerce to bool (`(SELECT 1)` -> 0 rows, `(SELECT 0)` -> all rows). This
-            // is a data-independent check on the sub-plan's resolved schema (stamped by the
-            // recursive execute_plan_full's validate above — the SINGLE canonical type source),
-            // so it runs BEFORE the plan-only continue: EXPLAIN of the bad query errors too, as
-            // in PostgreSQL. NA (a zero-row / NULL scalar, whose static type is BOOLEAN for a
-            // bool column anyway) is accepted — it selects nothing, not a type error.
+            // PostgreSQL: WHERE/HAVING must be boolean, or a numeric scalar sub-query would
+            // silently coerce (`(SELECT 1)` -> 0 rows); a static schema check, so it runs even
+            // under plan-only EXPLAIN.
             if (mapping.boolean_required) {
                 const auto& sub_node = plan.sub_queries[i];
-                // A dynamic-schema sub-query with no columns (e.g. `WHERE (SELECT * FROM
-                // <computed table with no registered columns>)`) leaves the node unstamped;
-                // refuse loudly instead of the old NDEBUG-compiled-away assert.
+                // A dynamic-schema sub-query with no columns leaves the node unstamped; refuse, don't assert.
                 if (!sub_node->has_output_types()) {
                     co_return execute_result_t{make_cursor(
                         resource(),
@@ -568,13 +469,10 @@ namespace services::collection::executor {
                 }
             }
             if ((capture_ir || plan_only) && sub_result.captured_explain_ir.has_value()) {
-                // Stamp the sub-plan's returned param slot ($M) and buffer it for the main-root attach.
                 sub_result.captured_explain_ir->subplan_returns = static_cast<uint32_t>(mapping.id);
                 captured_subplans.push_back(std::move(*sub_result.captured_explain_ir));
             }
             if (plan_only) {
-                // Plan-only EXPLAIN: no execution ran — there is no data cursor to
-                // compact or param to bind.
                 continue;
             }
             trace(log_,
@@ -593,12 +491,8 @@ namespace services::collection::executor {
                 co_return execute_result_t{make_cursor(resource(), compacted.error())};
             }
             if (mapping.array_equality && compacted.value().is_null()) {
-                // A 0-row `col = ARRAY(SELECT ...)`: bind a typed EMPTY array {} (not the NA-null sentinel
-                // that IN / ANY / ALL rely on) so length-aware equality compares against a real empty
-                // array. The element type is the sub-query's schema-derived output type (stamped by its
-                // own validation in the recursive execute_plan_full above).
+                // A 0-row `col = ARRAY(...)`: bind a typed EMPTY array, not the NA-null sentinel IN/ANY/ALL rely on.
                 const auto& sub_node = plan.sub_queries[i];
-                // Same unstamped-schema hole as the boolean_required guard above.
                 if (!sub_node->has_output_types()) {
                     co_return execute_result_t{make_cursor(
                         resource(),
@@ -615,15 +509,8 @@ namespace services::collection::executor {
             plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
         }
 
-        // One round-trip gives the executor everything session-scoped: the
-        // (idempotently begun) txn snapshot shared by resolve and the operator
-        // pipeline, the session timezone, the explicit-txn flag, and the
-        // VACUUM gate value. begin_transaction is idempotent per session, so
-        // a DML statement inside an explicit BEGIN joins the existing txn.
-        // Move-construct from the awaited value; do NOT default-construct +
-        // assign — that element-copies the snapshot into a
-        // null_memory_resource-anchored pmr vector and aborts (bad_alloc)
-        // under concurrent transactions.
+        // One round-trip fetches everything session-scoped (txn snapshot, timezone, explicit-txn
+        // flag, VACUUM gate); move-construct, don't default-construct+assign (bad_alloc risk).
         auto [_tb, tbf] =
             actor_zeta::otterbrix::send(parent_address_,
                                         &services::dispatcher::manager_dispatcher_t::txn_begin_session_msg,
@@ -636,37 +523,25 @@ namespace services::collection::executor {
               session_ctx.is_explicit,
               session.data());
 
-        // Capture the pre-rewrite effective root type: it drives the DDL/DML
-        // branch dispatch, the txn-kind decision, and the pass2 rewrite gates
-        // below (the planner wraps/replaces nodes destructively later).
         const node_type original_type = [&] {
             auto* r = plan.sub_queries.back().get();
             return r ? r->type() : node_type::unused;
         }();
 
-        // SET TIMEZONE: capture the name before the planner consumes the node;
-        // surfaced back to the dispatcher via execute_result_t.applied_timezone
-        // once the operator pipeline confirms pg_settings was persisted.
+        // Captured before the planner consumes the node; surfaced via execute_result_t.applied_timezone.
         std::pmr::string pending_set_tz_name{resource()};
         if (original_type == node_type::set_timezone_t) {
             auto* tz_node = static_cast<components::logical_plan::node_set_timezone_t*>(plan.sub_queries.back().get());
             pending_set_tz_name.assign(tz_node->timezone_name().c_str(), tz_node->timezone_name().size());
         }
 
-        // The optimizer does not run here, before resolve — it runs as a single pass
-        // after the planner rewrite (see components::planner::optimize below).
+        // The optimizer runs once, after the planner rewrite (see components::planner::optimize below), not here.
 
-        // Top-up: register a lookup for every target the tree names
         services::dispatcher::register_plan_targets(resource(), plan.sub_queries.back().get(), &plan.catalog_resolves);
 
-        // Executor-owned plan context. session_tz arrives from the dispatcher
-        // (the sole owner of default_tz_cat_) in the session-context bundle.
         services::context_storage_t context_storage(resource(), log_.clone(), session_ctx.session_tz);
 
-        // Which commit tail runs after the pipeline. DDL needs a real txn so a
-        // mid-DDL crash → WAL replay rolls back partially-written pg_catalog
-        // records; DML drives the per-range publish (or accumulate) tail. The
-        // txn itself was already begun by txn_begin_session_msg above.
+        // DDL needs a real txn (WAL replay rolls back partial writes on crash); DML drives the publish/accumulate tail.
         const bool needs_ddl_txn =
             original_type == node_type::create_collection_t || original_type == node_type::create_constraint_t ||
             original_type == node_type::create_sequence_t || original_type == node_type::create_view_t ||
@@ -674,26 +549,17 @@ namespace services::collection::executor {
             original_type == node_type::create_index_t || original_type == node_type::drop_t ||
             original_type == node_type::create_database_t || original_type == node_type::alter_table_t ||
             original_type == node_type::create_matview_t;
-        // Plan-only EXPLAIN of DML must no-op: gate needs_dml_txn off so it takes the read-only
-        // path instead of running an empty commit (WAL marker + ProcArray barrier). EXPLAIN
-        // ANALYZE keeps needs_dml_txn true.
+        // Plan-only EXPLAIN of DML gates needs_dml_txn off, taking the read-only path instead of an empty commit.
         const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
         const bool needs_dml_txn =
             !is_plan_only_explain && (original_type == node_type::insert_t || original_type == node_type::update_t ||
                                       original_type == node_type::delete_t);
-        // SET TIMEZONE / VACUUM ride the same DML tail (accumulate + commit/revert), not DDL's;
-        // kept as a separate bool rather than folded into needs_dml_txn so dml_* naming stays
-        // literally about INSERT/UPDATE/DELETE.
+        // SET TIMEZONE/VACUUM ride the DML tail but stay a separate bool so dml_* naming stays literally DML.
         const bool needs_commit_txn =
             original_type == node_type::set_timezone_t || original_type == node_type::vacuum_t;
 
-        // co_await (not a sync send): resolve operators only send async messages, no shared
-        // state. resolve_txn is forwarded here and into the final execute_plan so both share
-        // one MVCC snapshot.
-        // Shared by the outer resolve pass and view-expansion re-resolve. operator_resolve_*_t
-        // holds raw pointers into the SAME parent-tree nodes, stamping OIDs in place — takes
-        // `self` because the coroutine frame allocator reads the PMR resource from arguments,
-        // not a [this] capture.
+        // co_await, not a sync send: resolve operators only send async messages, sharing resolve_txn's MVCC
+        // snapshot. Takes `self` so the coroutine frame allocator can read the PMR resource.
         auto run_resolve_subplan = [this, session, resolve_txn, &session_ctx, &context_storage, &plan](
                                        [[maybe_unused]] executor_t* self,
                                        std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes)
@@ -707,8 +573,7 @@ namespace services::collection::executor {
             services::context_storage_t cstor{resource(),
                                               log_.clone(),
                                               context_storage.execution_context.timezone_offset};
-            // The constraint resolve operator reaches its table through an index into
-            // the TABLES node's entries, so lowering it needs the whole set
+            // The constraint resolve operator indexes into the TABLES node's entries, so it needs the whole set.
             cstor.catalog_resolves = &plan.catalog_resolves;
             co_return co_await this->execute_plan(session,
                                                   components::logical_plan::execution_plan_t{resource(), root, params},
@@ -718,7 +583,6 @@ namespace services::collection::executor {
                                                   std::pmr::vector<explain_plan_node>{resource()});
         };
 
-        // The plan's catalog lookups, in dependency order
         auto collect_resolve_nodes = [](const components::logical_plan::catalog_resolves_t& resolves,
                                         std::pmr::vector<components::logical_plan::node_ptr>& out) {
             for (const auto* slot :
@@ -740,14 +604,10 @@ namespace services::collection::executor {
                           pass1_result.cursor->get_error().what);
                     co_return execute_result_t{std::move(pass1_result.cursor)};
                 }
-                // The resolve nodes live on plan.catalog_resolves, never inside a
-                // sub-query tree, so nothing downstream has to skip past them.
             }
         }
-        // SELECT-time view expansion: each relkind='v' reference is spliced in UNDER its
-        // reference node (see components/planner/view_expansion.hpp for the mechanics), not by
-        // replacing the whole plan — that would discard the outer WHERE/projection/join. The
-        // loop repeats because a spliced view body may itself reference a view.
+        // Each relkind='v' reference is spliced in UNDER its reference node (see view_expansion.hpp), not by
+        // replacing the whole plan; loops since a spliced body may itself reference a view.
         if (plan.sub_queries.back()) {
             auto* root = plan.sub_queries.back().get();
             if (auto dml_err = components::planner::reject_view_dml_target(plan.catalog_resolves, root);
@@ -765,8 +625,7 @@ namespace services::collection::executor {
                         core::error_t(core::error_code_t::sql_parse_error,
                                       std::pmr::string{"view expansion nesting limit exceeded", resource()}))};
                 }
-                // Snapshot body SQL before merge_catalog_resolves reallocates its entries
-                // vector: `refs` holds pointers into it (use-after-free otherwise).
+                // Snapshot body SQL first — merge_catalog_resolves reallocates entries; `refs` points into it.
                 std::pmr::vector<std::string> body_sqls{resource()};
                 body_sqls.reserve(refs.size());
                 for (const auto& ref : refs) {
@@ -774,15 +633,13 @@ namespace services::collection::executor {
                 }
                 for (std::size_t i = 0; i < refs.size(); ++i) {
                     auto& ref = refs[i];
-                    // Each reference gets its own parse+transform: a shared subtree would
-                    // be corrupted by the second splice's pushdown appends.
+                    // Each reference gets its own parse+transform — a shared subtree would be corrupted.
                     auto body = components::planner::expand_view_body(resource(), body_sqls[i]);
                     if (body.error.contains_error()) {
                         trace(log_, "executor::execute_plan_full: view expansion failed: {}", body.error.what);
                         co_return execute_result_t{make_cursor(resource(), std::move(body.error))};
                     }
-                    // Renumber body parameters before splicing: both plans number from 0,
-                    // so reusing ids would let the outer query's constant overwrite the body's.
+                    // Renumber body parameters before splicing — both plans number from 0, so ids would collide.
                     components::planner::renumber_body_parameters(resource(),
                                                                   body.plan.get(),
                                                                   body.params,
@@ -797,7 +654,6 @@ namespace services::collection::executor {
                                                                      *body.resolves);
                     }
                 }
-                // === Resolve the entries the view bodies added ===
                 if (services::catalog_resolve::has_unresolved_entries(plan.catalog_resolves)) {
                     std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
                     collect_resolve_nodes(plan.catalog_resolves, resolve_nodes);
@@ -811,12 +667,9 @@ namespace services::collection::executor {
                 }
             }
         }
-        // Paste every resolved OID and table metadata onto the plan
         if (plan.sub_queries.back()) {
             services::dispatcher::bind_catalog_data(plan.sub_queries.back().get(), plan.catalog_resolves);
         }
-        // The plan generators read the resolved entries when lowering the resolve
-        // nodes themselves (create_plan_resolve_constraint needs the tables node).
         context_storage.catalog_resolves = &plan.catalog_resolves;
 
         using components::catalog::table_id;
@@ -826,13 +679,7 @@ namespace services::collection::executor {
         using components::logical_plan::node_create_type_t;
         using components::types::logical_type;
 
-        // Register/unregister cast: resolve + validate ONLY. Catalog-resolve above
-        // turned any UDT source/target names into real types via dispatcher_idx; a
-        // type that is neither built-in nor a registered UDT stays UNKNOWN and is
-        // rejected here. The registry fan-out and the pg_cast write are driven by
-        // the dispatcher AFTER this returns (registry first, then catalog), so this
-        // pass touches neither — it only resolves, validates, and hands the resolved
-        // (source, target) back on execute_result_t.
+        // Resolve + validate only — the registry fan-out and pg_cast write happen later in the dispatcher.
         if (original_type == node_type::register_cast_t || original_type == node_type::unregister_cast_t) {
             auto* root = plan.sub_queries.back().get();
             components::types::complex_logical_type src;
@@ -872,8 +719,6 @@ namespace services::collection::executor {
             co_return ok;
         }
 
-        // Build qualified_name_t from the effective consumer node; nodes
-        // Every consumer names its own target, so this reads the node directly.
         auto build_id_cfn = [](const components::logical_plan::node_t* n) -> qualified_name_t {
             using components::logical_plan::node_alter_table_t;
             using components::logical_plan::node_create_database_t;
@@ -893,7 +738,6 @@ namespace services::collection::executor {
                                             static_cast<const std::string&>(d->relname())};
                 }
                 case node_type::alter_column_t:
-                    // Planner-generated; it carries table_oid, not names.
                     return {};
                 case node_type::alter_table_t: {
                     auto* d = static_cast<const node_alter_table_t*>(n);
@@ -944,11 +788,9 @@ namespace services::collection::executor {
                     using components::logical_plan::drop_target_kind;
                     using components::logical_plan::node_drop_t;
                     auto* d = static_cast<const node_drop_t*>(n);
-                    // DROP TYPE keys on the type name, not a (db, rel) pair.
                     if (d->kind() == drop_target_kind::type) {
                         return {};
                     }
-                    // DROP DATABASE keys only on the namespace; no relation name.
                     if (d->kind() == drop_target_kind::database) {
                         return qualified_name_t{d->dbname(), std::string{}};
                     }
@@ -964,12 +806,8 @@ namespace services::collection::executor {
             }
         };
 
-        // Build identification name from the effective consumer node, not
-        // the (potentially transformer-wrapping) sequence_t.
         table_id id(resource(), build_id_cfn(plan.sub_queries.back().get()));
         cursor_t_ptr error;
-        // Existence checks read from the explicit dispatcher_idx populated
-        // above (mirrors the dispatcher's pre-execute pass).
         switch (original_type) {
             case node_type::create_database_t:
                 if (!services::dispatcher::check_namespace_exists(resource(), &plan.catalog_resolves, id)
@@ -1037,8 +875,7 @@ namespace services::collection::executor {
                             }
                         }
                     }
-                    // Refuse here what the durable form refuses: a CREATE TABLE that fails
-                    // is recoverable, a checkpoint/startup that fails with data_corruption is not.
+                    // Refuses what the durable form refuses — CREATE TABLE can fail; startup corruption can't.
                     if (!error) {
                         for (const auto& col_def : n->column_definitions()) {
                             if (auto type_err =
@@ -1118,9 +955,7 @@ namespace services::collection::executor {
                         break;
                     }
                 }
-                // Fields are inlined, so a chain of `CREATE TYPE t_n AS (a t_{n-1})` grows
-                // nesting depth one level per statement; refuse the statement that crosses
-                // the durable form's depth limit instead of failing at the next startup.
+                // Fields are inlined, so nested CREATE TYPE grows depth per statement; refuse here, not at startup.
                 if (auto type_err = services::dispatcher::gate_persistable_type(resource(),
                                                                                 "type '" + n->type().type_name() + "'",
                                                                                 n->type());
@@ -1142,9 +977,7 @@ namespace services::collection::executor {
                             err.contains_error()) {
                             error = make_cursor(resource(), err);
                         } else if (components::catalog::is_catalog_table(drop_node->namespace_oid())) {
-                            // Built-in namespaces (pg_catalog and friends) are seeded at
-                            // bootstrap and nothing can recreate them; PostgreSQL refuses
-                            // dropping pg_catalog because the database system requires it.
+                            // Built-in namespaces are seeded at bootstrap; PostgreSQL refuses dropping pg_catalog too.
                             error = make_cursor(
                                 resource(),
                                 core::error_t{core::error_code_t::sql_parse_error,
@@ -1154,15 +987,12 @@ namespace services::collection::executor {
                         }
                         break;
                     case drop_target_kind::collection:
-                        // Authoritative existence check via the plan-tree resolve idx.
                         if (auto err =
                                 services::dispatcher::check_collection_exists(resource(), &plan.catalog_resolves, id);
                             err.contains_error()) {
                             error = make_cursor(resource(), err);
                         } else if (components::catalog::is_catalog_table(drop_node->table_oid())) {
-                            // Same rule as the DML validation arms: DDL never reaches a
-                            // system catalog. Dropping pg_class takes every relation's
-                            // name with it while their storage stays behind.
+                            // Same rule as the DML arms — DDL never touches a system catalog (orphans storage).
                             error = make_cursor(
                                 resource(),
                                 core::error_t{core::error_code_t::sql_parse_error,
@@ -1170,7 +1000,6 @@ namespace services::collection::executor {
                         }
                         break;
                     case drop_target_kind::type: {
-                        // DROP TYPE keeps the type name in the node's target-name slot.
                         const std::string& type_name = drop_node->relname();
                         const std::string default_path[] = {"public", "pg_catalog"};
                         std::span<const std::string> str_path(default_path);
@@ -1186,11 +1015,9 @@ namespace services::collection::executor {
                     case drop_target_kind::sequence:
                     case drop_target_kind::view:
                     case drop_target_kind::macro:
-                        // No table schema to validate.
                         break;
                     case drop_target_kind::index: {
-                        // DROP INDEX is the one drop kind that still runs
-                        // validate_types + validate_schema (the others skip both).
+                        // DROP INDEX is the one drop kind that still runs validate_types + validate_schema.
                         auto vt_err = services::dispatcher::validate_types(resource(),
                                                                            &plan.catalog_resolves,
                                                                            plan.sub_queries.back().get(),
@@ -1219,28 +1046,19 @@ namespace services::collection::executor {
             case node_type::set_timezone_t:
             case node_type::checkpoint_t:
             case node_type::vacuum_t:
-            // SQL BEGIN/COMMIT/ROLLBACK are leaf control nodes exactly like
-            // checkpoint/vacuum: no table schema to validate. Without this
-            // case it falls into the default branch and validate_schema's
-            // default arm assert(false)s on the unknown node type.
+            // Leaf control nodes like checkpoint/vacuum — omitting this hits validate_schema's default assert(false).
             case node_type::transaction_t:
             case node_type::create_sequence_t:
             case node_type::create_view_t:
             case node_type::create_macro_t:
                 break;
             case node_type::alter_table_t: {
-                // Only refusal point for ADD COLUMN's type: the catalog write
-                // (catalog::encode_type_spec) has no error channel, and the binary codec that
-                // would refuse runs after SUCCESS is reported. Walks every subcommand, not just
-                // the first. DEFAULT is cast later, not here — subcommands() returns a const
-                // reference (see "ALTER TABLE: DEFAULT coercion" below); that cast and the
-                // attdefspec binary codec's data_corruption check are not duplicates of this or
-                // of each other, each guards a different moment.
+                // Only refusal point for ADD COLUMN's type — the catalog write has no error channel and the binary
+                // codec that would refuse runs after SUCCESS is reported (DEFAULT is cast separately, see below).
                 const auto* alter_node =
                     static_cast<const components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
                 if (components::catalog::is_catalog_table(alter_node->table_oid())) {
-                    // System catalog shape is fixed at bootstrap; altering it from SQL
-                    // desynchronizes every reader that addresses columns by position.
+                    // System catalog shape is fixed at bootstrap; altering it desyncs positional column readers.
                     error = make_cursor(
                         resource(),
                         core::error_t{core::error_code_t::sql_parse_error,
@@ -1269,10 +1087,7 @@ namespace services::collection::executor {
                 }
                 if (!error && !id.database().empty()) {
                     auto* cstr = static_cast<node_create_constraint_t*>(plan.sub_queries.back().get());
-                    // UNIQUE / PRIMARY KEY must stay in this gate along with FK/CHECK: a
-                    // dynamic-schema (relkind='g') table has no pg_attribute attoids to put in
-                    // pg_constraint.conkey, and left out, operator_resolve_constraint silently
-                    // drops the unresolvable group — a declared key would enforce nothing.
+                    // UNIQUE/PRIMARY KEY stay in this gate with FK/CHECK — dynamic-schema has no stable attoids.
                     const bool key_kind =
                         cstr->kind() == constraint_kind::unique || cstr->kind() == constraint_kind::primary_key;
                     if (cstr->kind() == constraint_kind::foreign_key || cstr->kind() == constraint_kind::check ||
@@ -1318,8 +1133,7 @@ namespace services::collection::executor {
                                                   "schema first.",
                                                   resource()}});
                         }
-                        // CHECK expression is not a part of the query, and requires its own pass
-                        // to fill in casts, functions and other runtime data
+                        // CHECK expression needs its own pass to fill in casts, functions and other runtime data.
                         if (!error && cstr->kind() == constraint_kind::check) {
                             services::dispatcher::validation::validation_context_t validation_context{
                                 resource(),
@@ -1339,8 +1153,7 @@ namespace services::collection::executor {
                 break;
             }
             case node_type::create_index_t: {
-                // Same family as the DROP/ALTER arms above: DDL never reaches a system
-                // catalog. An index over pg_class would shadow every later catalog write.
+                // Same family as DROP/ALTER above — an index over pg_class would shadow every later catalog write.
                 const auto* index_node = static_cast<const components::logical_plan::node_create_index_t*>(
                     plan.sub_queries.back().get());
                 if (components::catalog::is_catalog_table(index_node->table_oid())) {
@@ -1362,11 +1175,7 @@ namespace services::collection::executor {
                 if (vt_err.contains_error()) {
                     error = make_cursor(resource(), vt_err);
                 } else {
-                    // A NULL/0-row scalar sub-query is bound as untyped NA-null, which the projection
-                    // resolver would reject; give it a concrete type from the sub-query's schema in a
-                    // VALIDATION-ONLY param copy (the runtime param stays NA-null so operator_select
-                    // projects a typed NULL). Mirrors the LATERAL correlation override; the copy is
-                    // built lazily, only once a parameter actually needs it.
+                    // A NULL/0-row scalar sub-query binds as NA-null; give it a type in a VALIDATION-ONLY param copy.
                     const auto& bound_params = plan.parameters->parameters();
                     components::logical_plan::storage_parameters validate_params(resource());
                     bool overridden = false;
@@ -1409,31 +1218,15 @@ namespace services::collection::executor {
             co_return execute_result_t{std::move(error)};
         }
 
-        // A DDL statement inside an explicit BEGIN..COMMIT accumulates its catalog
-        // rows + created/dropped artifacts onto the session's transaction_t (just
-        // like DML) and DEFERS its publish to the SQL COMMIT. Same-txn visibility
-        // of the new catalog rows is the MVCC self-write rule (catalog rows carry
-        // insert_id == transaction_id, visible to their own txn). The deferral is
-        // gated in the DDL commit tail below: run_commit_pipeline_ runs only when
-        // !session_ctx.is_explicit; accumulate stays unconditional.
+        // A DDL statement inside explicit BEGIN..COMMIT accumulates like DML and defers publish to the SQL COMMIT.
 
-        // CREATE INDEX: table oid captured at rewrite time since the plan tree is
-        // move-consumed by execute_plan before the backfill-commit tail runs. Index oid
-        // (pg_index.indexrelid) captured too so a failure can drop the engine+agent
-        // (manager_index_t::drop_index) without re-probing the consumed tree; the pg_index
-        // row itself reverts via the statement's pg_catalog appends.
+        // CREATE INDEX: table oid captured at rewrite time (the plan tree is move-consumed before the backfill
+        // tail runs); index oid captured too so a failure can drop the engine+agent without re-probing.
         components::catalog::oid_t create_index_table_oid = components::catalog::INVALID_OID;
         components::catalog::oid_t create_index_oid = components::catalog::INVALID_OID;
 
-        // Destructive rewrites. enrich_plan / planner.create_plan are NOT
-        // idempotent — in particular create_plan wraps insert/update/delete in
-        // check_constraint_t / fk_check_t, and running it twice re-wraps on top
-        // of the previous wrap (broken plan). The executor is the ONLY side
-        // running these passes (the dispatcher routes the raw plan straight here).
-        // The optimizer does not run here — it runs as one pass after the
-        // planner rewrite, just before the execute_plan delegate.
+        // enrich_plan/create_plan aren't idempotent (re-running re-wraps DML); only the executor runs them.
         {
-            // ctx carries resolve_txn so enrich sees the same MVCC snapshot.
             components::execution_context_t enrich_ctx{session,
                                                        resolve_txn,
                                                        context_storage.execution_context.timezone_offset};
@@ -1448,8 +1241,6 @@ namespace services::collection::executor {
                 trace(log_, "executor::execute_plan_full: enrich error: {}", enrich_err.what);
                 co_return execute_result_t{make_cursor(resource(), std::move(enrich_err))};
             }
-            // Enrich has just parsed the target's CHECK predicates out of the catalog. Resolve them
-            // against the table they guard before the planner hands them to a constraint operator
             {
                 services::dispatcher::validation::validation_context_t constraint_context{
                     resource(),
@@ -1464,20 +1255,11 @@ namespace services::collection::executor {
                     co_return execute_result_t{make_cursor(resource(), std::move(bind_err))};
                 }
             }
-            // Logical plan rewrite: insert constraint wrapper nodes driven
-            // by enriched fields.
             components::planner::planner_t planner;
             plan.sub_queries.back() = planner.create_plan(resource(), std::move(plan.sub_queries.back()));
 
-            // Re-populate context_storage's known_oids / table_metadata from the
-            // just-stamped plan tree. The dispatcher captured these BEFORE this
-            // executor's resolve ran, so table_oid_dependencies was empty for
-            // SELECT WHERE plans that depend on resolve-stamped table_oids on
-            // aggregate_t / match_t. Now that the executor owns resolve, this
-            // re-capture is mandatory: without it create_plan_match's
-            // has_table_oid(table_oid) returns false, falls through to a bare
-            // operator_match with no scan child, and SEGFAULTs in
-            // operator_select::evaluate (chunk.cols=0 → out-of-bounds chunk.data[0]).
+            // Re-populate known_oids/table_metadata from the freshly-stamped tree (captured before the executor's
+            // own resolve ran) — without it, create_plan_match SEGFAULTs on a scan-less match.
             {
                 auto dependency_oids = plan.sub_queries.back()->table_oid_dependencies();
                 for (auto oid : dependency_oids) {
@@ -1492,14 +1274,8 @@ namespace services::collection::executor {
                 }
             }
 
-            // DDL OID-batch allocation: goes through the pipeline-routed node_allocate_oids_t
-            // leaf (operator_allocate_oids sends to disk_address — no txn state). Takes `self`
-            // as first arg so the coroutine frame allocator can read the PMR resource via
-            // self->resource() — a [this] capture is invisible to it, and omitting `self`
-            // aborts in extract_resource_or_abort.
-            // Must not `co_return {}` on failure: an empty vector reads as a successful empty
-            // round, and the DDL rewrite would stamp pg_class/pg_attribute/pg_depend with a
-            // garbage identity that outlives the process.
+            // DDL OID-batch allocation via node_allocate_oids_t; `self` for the same reason as run_resolve_subplan.
+            // Must not `co_return {}` on failure — that reads as success and stamps a garbage identity.
             auto allocate_oids_inline =
                 [this, session, &context_storage](
                     [[maybe_unused]] executor_t* self,
@@ -1534,11 +1310,7 @@ namespace services::collection::executor {
                                                      wal_address_};
                 pctx.txn = components::table::transaction_data{0, 0};
                 op->prepare();
-                // operator_allocate_oids_t is a sourceless sink (role()==sink,
-                // needs_async_finalize()==true): drive it through the SAME streaming
-                // seam every other sub-plan uses — execute_pipeline drives its
-                // await_async_and_resume (the allocate_oids_batch round-trip + node
-                // stamp) via the executor's bottom-up async-finalize pass.
+                // operator_allocate_oids_t is a sourceless sink; drive it through the same seam as other sub-plans.
                 auto drive_err = co_await drive_subplan_(op, &pctx);
                 if (drive_err.contains_error()) {
                     co_return core::result_wrapper_t<std::vector<components::catalog::oid_t>>{std::move(drive_err)};
@@ -1549,8 +1321,7 @@ namespace services::collection::executor {
                 }
                 auto allocated = node->oids();
 #ifdef DEV_MODE
-                // The one consultation of the OID-allocation fault seam (see
-                // executor.hpp). Off unless a test armed it.
+                // The one consultation of the OID-allocation fault seam (see executor.hpp); off unless a test armed it.
                 if (auto* interposer = dev_oid_alloc_interposer(); interposer != nullptr) {
                     allocated = interposer->substitute(count, std::move(allocated));
                 }
@@ -1561,9 +1332,7 @@ namespace services::collection::executor {
             using components::catalog::relkind::computed;
             using components::logical_plan::node_sequence_t;
 
-            // INSERT relkind='g' wrap — wraps INSERT into
-            // sequence_t(insert, computed_field_register) so
-            // pg_computed_column rows are appended inside the DML txn.
+            // Wraps INSERT into sequence_t(insert, computed_field_register) so pg_computed_column rows append in-txn.
             if (original_type == node_type::insert_t) {
                 components::catalog::oid_t resolved_tbl_oid = components::catalog::INVALID_OID;
                 bool is_computing = false;
@@ -1600,11 +1369,7 @@ namespace services::collection::executor {
                             }
                             break;
                         }
-                        // INSERT ... SELECT has no data_t child; the SELECT's output chunk is pushed
-                        // straight into operator_insert, and validate_schema skips renaming on a
-                        // computed target, so storage gets exactly the SELECT's stamped schema
-                        // (alias+type). Register that here — collecting only from VALUES chunks left
-                        // pg_computed_column empty, and DROP COLUMN then refused a column SELECT * could see.
+                        // INSERT ... SELECT has no data_t child; register the SELECT's schema, not just VALUES chunks.
                         if (registered_cols.empty()) {
                             const components::logical_plan::node_t* select_child = nullptr;
                             for (const auto& child : effective_insert->children()) {
@@ -1615,10 +1380,7 @@ namespace services::collection::executor {
                             }
                             if (select_child) {
                                 if (!select_child->has_output_types()) {
-                                    // A source whose schema the validator could not resolve
-                                    // (e.g. a scan of another column-less computed table):
-                                    // registering nothing would re-open the storage/catalog
-                                    // divergence, so the statement is refused instead.
+                                    // A source whose schema can't be resolved: registering nothing reopens divergence.
                                     co_return execute_result_t{make_cursor(
                                         resource(),
                                         core::error_t{
@@ -1646,10 +1408,7 @@ namespace services::collection::executor {
                         }
                     }
 
-                    // node_alter_column_t(op=add, computed=true) carrying the
-                    // INSERT-chunk columns in registered_cols; create_plan routes
-                    // it to operator_computed_field_register_t. dbname/relname are
-                    // not set — the register operator only reads table_oid + columns.
+                    // node_alter_column_t(op=add, computed=true) carries registered_cols to computed_field_register.
                     auto register_node = components::logical_plan::make_node_alter_column(
                         resource(),
                         components::logical_plan::alter_column_op::add);
@@ -1664,9 +1423,7 @@ namespace services::collection::executor {
                 }
             }
 
-            // DDL OID-batch allocation + planner rewrite — one path for all DDL kinds. Per-kind
-            // OID count lives in planner::compute_oid_demand (single source of truth, mirrors
-            // walk_ddl's consumption), so it isn't duplicated here.
+            // DDL OID-batch allocation + planner rewrite — one path for all kinds (count from compute_oid_demand).
             auto is_ddl_oid_rewrite = [](node_type t) {
                 switch (t) {
                     case node_type::create_collection_t:
@@ -1685,8 +1442,7 @@ namespace services::collection::executor {
                         return false;
                 }
             };
-            // DROP INDEX rewrites even without a disk actor; every other DDL kind
-            // needs disk (OID alloc + catalog writes route through disk_address_).
+            // DROP INDEX rewrites even without a disk actor; every other DDL kind needs disk for OID alloc.
             const bool has_disk = disk_address_ != actor_zeta::address_t::empty_address();
             const bool is_drop_index = [&] {
                 if (original_type != node_type::drop_t) {
@@ -1699,7 +1455,6 @@ namespace services::collection::executor {
             if (is_ddl_oid_rewrite(original_type) && (is_drop_index || has_disk)) {
                 auto* eff = plan.sub_queries.back().get();
 
-                // CREATE CONSTRAINT: reject an empty/invalid CHECK before allocating an OID.
                 if (original_type == node_type::create_constraint_t) {
                     auto* cstr = static_cast<node_create_constraint_t*>(eff);
                     if (cstr->kind() == constraint_kind::check && cstr->check_expression_sql().empty()) {
@@ -1715,22 +1470,18 @@ namespace services::collection::executor {
                     }
                 }
 
-                // need == 0 is a normal DDL shape (DROP, ALTER TABLE, a schema-less CREATE
-                // MATERIALIZED VIEW): no allocation round runs; the planner accepts an empty batch.
+                // need == 0 is a normal DDL shape (DROP, ALTER, schema-less MATVIEW) — no allocation round runs.
                 const std::size_t need = components::planner::compute_oid_demand(eff);
                 std::vector<components::catalog::oid_t> allocated_oids;
                 if (need > 0) {
                     auto allocated = co_await allocate_oids_inline(this, need);
                     if (allocated.has_error()) {
-                        // The allocation round refused. Refuse the statement: the alternative
-                        // is a catalog row stamped with an identity nothing allocated.
+                        // Refuse the statement — else a catalog row is stamped with an identity nothing allocated.
                         co_return execute_result_t{make_cursor(resource(), allocated.error())};
                     }
                     allocated_oids = std::move(allocated.value());
                 }
                 components::planner::planner_t ddl_planner;
-                // The need-vs-batch size check lives inside create_plan (oid_batch_t::make);
-                // this call has no separate batch to skip it with.
                 auto rewritten = ddl_planner.create_plan(resource(),
                                                         std::move(plan.sub_queries.back()),
                                                         std::move(allocated_oids),
@@ -1740,11 +1491,7 @@ namespace services::collection::executor {
                 }
                 plan.sub_queries.back() = std::move(rewritten.value());
 
-                // CREATE INDEX: capture indexed table oid + index oid NOW — the
-                // plan is move-consumed by the execute_plan delegate below, so the
-                // backfill/undo tail can no longer probe the tree. The trailing
-                // create_index_t (last child of the rewritten sequence_t) carries
-                // the pg_index row oid (set by rewrite_create_index).
+                // CREATE INDEX: capture indexed table oid + index oid NOW — the plan is move-consumed below.
                 if (original_type == node_type::create_index_t) {
                     if (auto* eff2 = plan.sub_queries.back().get(); eff2 && !eff2->children().empty()) {
                         auto* back = eff2->children().back().get();
@@ -1755,19 +1502,10 @@ namespace services::collection::executor {
                         }
                     }
                 }
-                // ALTER TABLE: re-enrich — the planner stamps fresh attoids on
-                // rename / computed_field_unregister primitives that didn't exist
-                // before it ran. resolve_txn so enrich's pg_computed_column scan
-                // sees the INSERT-time register rows committed under that txn.
+                // ALTER TABLE: re-enrich — the planner stamps fresh attoids on primitives that didn't exist before.
                 else if (original_type == node_type::alter_table_t) {
-                    // ALTER TABLE: DEFAULT coercion — the ALTER half of what convert_column_defaults
-                    // already does for CREATE TABLE (see the alter_table_t case above, which casts
-                    // the TYPE). Runs here, not there, because only after the DDL rewrite does each
-                    // ADD COLUMN exist as its own writable node_alter_column_t (subcommands() above
-                    // returns a const reference). GATHER, CONVERT, THEN WRITE BACK, in that order: a
-                    // refusal must leave the tree exactly as found, or a half-converted DEFAULT would
-                    // be a tree no error message describes. Columns are gathered into a plain
-                    // std::vector, not pmr — convert_column_defaults' parameter type.
+                    // ALTER TABLE's half of the DEFAULT coercion CREATE TABLE already does; deferred here since only
+                    // after the DDL rewrite does each ADD COLUMN exist as its own node — never half-converted.
                     {
                         std::pmr::vector<components::logical_plan::node_t*> pending{resource()};
                         std::pmr::vector<components::logical_plan::node_alter_column_t*> add_nodes{resource()};
@@ -1782,10 +1520,7 @@ namespace services::collection::executor {
                             if (pending_node->type() == node_type::alter_column_t) {
                                 auto* alter_column =
                                     static_cast<components::logical_plan::node_alter_column_t*>(pending_node);
-                                // op=add is the only clause with a column_ (rename/drop just name an
-                                // existing column), and computed=true add carries registered_cols_
-                                // instead, never a DEFAULT — so has_default_value() selects exactly
-                                // the clauses a cast can apply to.
+                                // op=add is the only clause with a column_, so has_default_value() picks castable ones.
                                 if (alter_column->op() == components::logical_plan::alter_column_op::add &&
                                     alter_column->column().has_default_value()) {
                                     add_nodes.push_back(alter_column);
@@ -1811,9 +1546,7 @@ namespace services::collection::executor {
                             }
                         }
                     }
-                    // The DDL rewrite created NEW consumer nodes (rename /
-                    // computed_field_unregister), so they need their own bind +
-                    // enrich against the same resolved entries.
+                    // The DDL rewrite created NEW consumer nodes (rename/unregister); bind+enrich them too.
                     components::execution_context_t enriched_ctx{session,
                                                                  resolve_txn,
                                                                  context_storage.execution_context.timezone_offset};
@@ -1831,11 +1564,7 @@ namespace services::collection::executor {
                 }
             }
         }
-        // Unresolved-ALTER guard: a plan whose literal root is still alter_table_t after the
-        // rewrites means rewrite_alter_table bailed (table_oid unresolved). An empty SUCCESS
-        // cursor would tell the client the ALTER applied while nothing happened; refuse, naming
-        // the table, like CREATE INDEX / DROP INDEX on an unresolved target. Wrapped plans
-        // (sequence_t root) keep the normal error path.
+        // Unresolved-ALTER guard: a literal alter_table_t root after rewrites means table_oid was unresolved.
         if (original_type == node_type::alter_table_t && plan.sub_queries.back() &&
             plan.sub_queries.back()->type() == node_type::alter_table_t) {
             const auto* alter_node =
@@ -1852,15 +1581,11 @@ namespace services::collection::executor {
                 make_cursor(resource(), core::error_t{core::error_code_t::table_not_exists, std::move(msg)})};
         }
 
-        // Single optimizer pass, after every planner rewrite (DML constraint-wrap + DDL
-        // lowering) so key.side()/key.path() and table OIDs are already stamped: const-fold +
-        // pushdown_filter + hash-join selection, a no-op on DDL sequences.
-        // pushdown_aggregate decides purely by plan shape; its only gate is a CAPABILITY
-        // precondition (an owning agent must exist) — in-memory mode has no agent to push to,
-        // so pushable aggregates stay coordinator-side there. Not a fallback, a precondition.
+        // Single optimizer pass, after every planner rewrite, so key.side()/key.path() and table OIDs are stamped:
+        // const-fold + pushdown_filter + hash-join selection; pushdown_aggregate needs an owning
+        // agent to push to — a precondition, not a fallback.
         const bool can_push_to_agent = disk_address_ != actor_zeta::address_t::empty_address();
-        // optimizer_pass_ must be forwarded into optimize below — merely storing it
-        // would silently ignore the host-injected rewrite on every query.
+        // optimizer_pass_ must be forwarded here — merely storing it would silently ignore the host-injected rewrite.
         plan.sub_queries.back() = components::planner::optimize(resource(),
                                                                 std::move(plan.sub_queries.back()),
                                                                 plan.parameters.get(),
@@ -1868,11 +1593,7 @@ namespace services::collection::executor {
                                                                 can_push_to_agent,
                                                                 optimizer_pass_);
 
-        // Build-side selection: fetch live row counts for INNER hash join child tables so
-        // create_plan_join can put the smaller side on the hash build. Gated on
-        // can_push_to_agent; the pool-as-store disk manager exists even with disk off, so
-        // in-memory mode fetches counts too. The sequential co_await loop is safe (actor-zeta
-        // inter-await guard); a wrong/absent count only picks a slower-but-correct plan.
+        // Build-side selection: fetch live row counts for INNER hash join children to pick the build side.
         if (can_push_to_agent) {
             std::pmr::set<components::catalog::oid_t> inner_hash_join_oids{resource()};
             collect_inner_hash_join_oids(plan.sub_queries.back(), inner_hash_join_oids);
@@ -1882,8 +1603,7 @@ namespace services::collection::executor {
                                                               session,
                                                               oid);
                 auto rows_r = co_await std::move(trf);
-                // A HINT: a refused count must not be recorded as 0 — 0 is a real row count,
-                // and the join would orient itself on a number nobody actually read.
+                // A refused count must not be recorded as 0 — 0 is a real row count too.
                 if (!rows_r.has_error()) {
                     context_storage.row_counts[oid] = rows_r.value();
                 }
@@ -1891,8 +1611,6 @@ namespace services::collection::executor {
         }
 
         trace(log_, "executor::execute_plan_full: delegating to execute_plan, session: {}", session.data());
-        // Operator-pipeline run, forwarding resolve_txn so the operator path
-        // sees the same MVCC snapshot the resolves did.
         auto exec_result = co_await execute_plan(session,
                                                  plan,
                                                  std::move(context_storage),
@@ -1900,27 +1618,16 @@ namespace services::collection::executor {
                                                  session_ctx.lowest_active_start_time,
                                                  std::move(captured_subplans));
 
-        // Shared failure-revert — undo this statement's storage appends +
-        // index mirrors and abort the txn. Identical for the DML and DDL failure
-        // paths. Takes `self` so the coroutine frame allocator
-        // finds the PMR resource — the [this] capture is not visible to
-        // promise_type::operator new (same pattern as allocate_oids_inline).
+        // Shared failure-revert, identical for DML and DDL failure paths (self-param pattern as allocate_oids_inline).
         auto revert_failed_txn = [this, session, resolve_txn, &session_ctx](
                                      [[maybe_unused]] executor_t* self,
                                      execute_result_t& exec_result) -> executor_t::unique_future<void> {
-            // Storage revert: fold DML append ranges + pg_catalog append ranges
-            // into a single storage_revert_appends (each range carries its own
-            // table_oid; the handler routes per-range).
             std::vector<components::pg_catalog_append_range_t> revert_ranges;
             revert_ranges.reserve(exec_result.dml_appends.size() + exec_result.pg_catalog_appends.size());
             for (const auto& app : exec_result.dml_appends) {
                 revert_ranges.push_back(
                     components::pg_catalog_append_range_t{app.table_oid, app.row_start, app.row_count});
 #ifdef DEV_MODE
-                // Test-observability: count each base-table DML append range we
-                // physically revert here. A constraint (CHECK/FK) that errors AFTER
-                // the DML appended its rows must reach this point with a non-empty
-                // dml_appends so the leaked physical slot is reverted (see header).
                 g_dml_appends_reverted.fetch_add(1, std::memory_order_relaxed);
 #endif
             }
@@ -1937,14 +1644,9 @@ namespace services::collection::executor {
                 co_await std::move(paf);
             }
 
-            // Heap delete-mark un-stamp happens ONCE, below: that base+catalog union block is a
-            // strict superset of dml_deletes alone, so a narrower revert here would be
-            // redundant — an extra disk round-trip on every failed DML with deletes.
+            // Heap delete-mark un-stamp happens ONCE, below (a strict superset of dml_deletes alone).
 
-            // Index revert, two-phase (send-all then await-all), deduped per
-            // table_oid. revert_insert ← pending index INSERT bucket (dml_appends);
-            // revert_delete ← pending index DELETE bucket (dml_deletes). Both are
-            // keyed per (table_oid, txn) and idempotent across duplicate oids.
+            // Index revert, two-phase (send-all then await-all), deduped per table_oid and idempotent.
             if (index_address_ != actor_zeta::address_t::empty_address()) {
                 std::pmr::set<components::catalog::oid_t> revert_insert_oids{resource()};
                 for (const auto& app : exec_result.dml_appends) {
@@ -1977,12 +1679,8 @@ namespace services::collection::executor {
                 }
             }
 
-            // The ONE storage_revert_deletes of this revert (mirrors operator_abort_transaction).
-            // A DELETE/UPDATE stamps MVCC delete marks BEFORE a constraint check can fail;
-            // chunk_vector_info::delete_rows skips an already-stamped slot, so without the
-            // un-stamp the next UPDATE's delete-half silently no-ops (duplicating the row) and
-            // the row can never be deleted again. Unions base + catalog heaps — pg_catalog
-            // tables have no index engines but still need it.
+            // The ONE storage_revert_deletes of this revert (mirrors operator_abort_transaction) — without it, the
+            // next UPDATE's delete silently no-ops.
             if (resolve_txn.transaction_id != 0 &&
                 (!exec_result.dml_deletes.empty() || !exec_result.pg_catalog_delete_tables.empty())) {
                 std::set<components::catalog::oid_t> revert_set{exec_result.pg_catalog_delete_tables.begin(),
@@ -2009,15 +1707,7 @@ namespace services::collection::executor {
             exec_result.dml_deletes.clear();
         };
 
-        // ===== DML commit / accumulate tail =====
-        // ONE publish channel for everything: every successful DML statement
-        // parks its ranges on the dispatcher-owned transaction_t
-        // (txn_accumulate_msg), and the publish itself is ALWAYS
-        // operator_commit_transaction_t — run right here for autocommit
-        // (PostgreSQL model: autocommit = implicit COMMIT), or later by the
-        // SQL COMMIT statement for explicit txns. The operator drains, batch-
-        // publishes storage, commits the index mirrors per table, writes the
-        // WAL marker and crosses the ProcArray barrier — in that order.
+        // One publish channel: parks ranges on transaction_t, then publishes here (autocommit) or at SQL COMMIT.
         if (needs_dml_txn || needs_commit_txn) {
             if (exec_result.cursor->is_success()) {
                 services::dispatcher::txn_accumulate_payload_t payload;
@@ -2033,10 +1723,6 @@ namespace services::collection::executor {
                 payload.pg_catalog_appends = std::move(exec_result.pg_catalog_appends);
                 payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
                 payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
-                // DROP storage-scrub oids and CREATE storage/index oids (all
-                // empty on the DML/SET-TZ/VACUUM path — none of these tears down
-                // or brings up a storage/index — but shipped for symmetry with
-                // the DDL tail; payload.empty() already accounts for them).
                 payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
                 payload.created_storage_oids = std::move(exec_result.created_storage_oids);
                 payload.created_indexes = std::move(exec_result.created_indexes);
@@ -2052,20 +1738,11 @@ namespace services::collection::executor {
                                                     &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
                                                     session,
                                                     std::move(payload));
-                    // READ the refusal: transaction_inactive means the session had no transaction_t,
-                    // so this statement's ranges were parked NOWHERE — the physically appended rows
-                    // would never be published and never be aborted. Swallowing this let a
-                    // statement report success over work that vanished.
+                    // transaction_inactive means the ranges were parked NOWHERE — swallowing it fakes success.
                     auto accumulate_err = co_await std::move(acf);
                     if (accumulate_err.contains_error()) {
                         exec_result.cursor = make_cursor(resource(), std::move(accumulate_err));
-                        // NOT a no-op despite the payload build above: base_appends/base_deletes
-                        // were copied out of dml_appends/dml_deletes (not moved), so exec_result
-                        // still holds them and this really does un-append the rows, un-stamp
-                        // deletes and drop pending index mirrors — only its pg_catalog half is
-                        // empty (that WAS moved into payload). Its closing txn_abort_msg is a
-                        // proven no-op here (transaction_inactive means abort() finds no active
-                        // entry) but keeps the failed-statement tail single-shaped.
+                        // NOT a no-op: base_appends/base_deletes were copied (not moved), so this un-appends the rows.
                         co_await revert_failed_txn(this, exec_result);
                     }
                 }
@@ -2078,13 +1755,8 @@ namespace services::collection::executor {
                 exec_result.created_storage_oids.clear();
                 exec_result.created_indexes.clear();
 
-                // Re-read HERE, not inherited from the is_success() at the top: a refused
-                // accumulate turned that success into an error above, and committing anyway
-                // would run an empty-COMMIT over a transaction_t that holds nothing — publishing
-                // no rows while still reporting success.
+                // Re-read HERE: a refused accumulate turned success into an error above; committing publishes nothing.
                 if (!session_ctx.is_explicit && exec_result.cursor->is_success()) {
-                    // Autocommit: implicit COMMIT through the SAME operator
-                    // pipeline SQL COMMIT uses.
                     auto commit_result = co_await run_commit_pipeline_(session,
                                                                        resolve_txn,
                                                                        session_ctx.session_tz,
@@ -2095,23 +1767,12 @@ namespace services::collection::executor {
                     }
                 }
             } else {
-                // Failed DML statement: revert this statement's local ranges and
-                // abort the txn (also ends a failed statement's explicit txn).
                 co_await revert_failed_txn(this, exec_result);
             }
         }
 
-        // ===== DDL commit tail =====
-        // The accumulated pg_catalog swap-info rides to the dispatcher's
-        // transaction_t first (ONE accumulate message, base fields empty), then
-        // the ddl-commit operator drains it back via txn_commit_drain_msg and
-        // publishes in order: flush barrier, WAL, commit, publish.
         if (needs_ddl_txn && exec_result.cursor->is_success()) {
-            // CREATE INDEX failure-undo prep: snapshot the pg_index row's append range BEFORE it
-            // moves into the accumulate payload below — the commit drains pg_catalog_appends
-            // back from transaction_t, so exec_result loses it on failure. Only pg_index gates
-            // index visibility, so only it gets reverted; leftover pg_class/pg_depend rows are
-            // left to GC.
+            // CREATE INDEX failure-undo prep: snapshot pg_index's append range before it moves into the payload below.
             components::pg_catalog_append_range_t create_index_pg_index_range{};
             bool has_create_index_pg_index_range = false;
             if (original_type == node_type::create_index_t) {
@@ -2132,13 +1793,8 @@ namespace services::collection::executor {
                 payload.pg_catalog_appends = std::move(exec_result.pg_catalog_appends);
                 payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
                 payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
-                // DROP storage-scrub oids: the commit operator's DROP-GC remap
-                // keys off this drained set, independent of ddl-commit mode.
                 payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
-                // CREATE storage/index oids: parked on transaction_t so an explicit-txn COMMIT
-                // publishes them and an ABORT drops the still-uncommitted artifacts; autocommit
-                // publishes them inline via run_commit_pipeline_ below, so accumulate is just
-                // the transit step either way.
+                // CREATE storage/index oids: parked on transaction_t so COMMIT publishes and ABORT drops them.
                 payload.created_storage_oids = std::move(exec_result.created_storage_oids);
                 payload.created_indexes = std::move(exec_result.created_indexes);
                 auto [_ac, acf] =
@@ -2146,12 +1802,7 @@ namespace services::collection::executor {
                                                 &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
                                                 session,
                                                 std::move(payload));
-                // READ the refusal — same channel as the DML tail. revert_failed_txn is
-                // deliberately NOT called here: its catalog fold is empty (everything was moved
-                // into payload above, unlike the DML tail which copies), and its base fold would
-                // reach for dml_appends, which here holds the CREATE INDEX backfill's
-                // ALREADY-COMMITTED rows — reverting those would un-append committed data. What
-                // needs undoing (the index engine) is handled by undo_create_index below.
+                // READ the refusal here too; revert_failed_txn is NOT called (its base fold would touch backfill rows).
                 auto accumulate_err = co_await std::move(acf);
                 if (accumulate_err.contains_error()) {
                     exec_result.cursor = make_cursor(resource(), std::move(accumulate_err));
@@ -2164,21 +1815,11 @@ namespace services::collection::executor {
                 exec_result.created_indexes.clear();
             }
 
-            // DDL commit through the SAME pipeline DML and SQL COMMIT use (ddl-commit mode:
-            // flush barrier + WAL(cid=0) prefix + drain + batch publishes + WAL + publish).
-            // dml_appends from the CREATE INDEX backfill are deliberately NOT accumulated —
-            // routing them through the operator would re-commit already-committed rows
-            // (whole-vector constant_info assert risk); the index-only commit below covers them
-            // via the commit_id back-channel.
+            // DDL commit through the SAME pipeline as DML/SQL COMMIT; backfill dml_appends are NOT accumulated.
             exec_result.dml_appends.clear();
             exec_result.dml_deletes.clear();
 
-            // CREATE INDEX failure undo: reverts the pg_index row append (gates visibility) and
-            // tears down the engine+agent via manager_index_t::drop_index. Invoked from ALL
-            // THREE failure points of this tail (refused accumulate, commit failure, inline
-            // index-commit failure) through one closure so the paths stay identical; drop_index
-            // tolerates an unknown engine, so it's safe even if the backfill never reached it.
-            // pg_class/pg_depend rows are left to GC.
+            // CREATE INDEX failure undo: reverts the pg_index append and drops the engine+agent from one closure.
             auto undo_create_index =
                 [this, session, resolve_txn, &create_index_pg_index_range, &has_create_index_pg_index_range](
                     [[maybe_unused]] executor_t* self,
@@ -2207,30 +1848,13 @@ namespace services::collection::executor {
                 co_return;
             };
 
-            // A refused accumulate is the only thing that can have turned the cursor to an error
-            // since the top-of-tail is_success() gate, leaving CREATE INDEX exactly like a
-            // failed commit: pg_index never publishes and the engine was backfilled for nothing
-            // — worse than idle, since the half-built engine stays registered and answers later
-            // lookups from never-committed entries.
+            // A refused accumulate leaves CREATE INDEX like a failed commit — the half-built engine stays registered.
             if (exec_result.cursor->is_error() && original_type == node_type::create_index_t) {
                 co_await undo_create_index(this, create_index_table_oid, create_index_oid);
             }
 
-            // DDL inside an explicit BEGIN..COMMIT DEFERS its publish to the SQL COMMIT —
-            // accumulate above already parked the rows, and the COMMIT statement's own
-            // operator_commit_transaction_t publishes them. Running run_commit_pipeline_ here
-            // would publish mid-txn (other sessions would see the new rows before COMMIT), so
-            // gate the whole commit block on !is_explicit; accumulate stays unconditional.
-            // Inline CREATE INDEX index-commit below is AUTOCOMMIT-ONLY (this !is_explicit guard,
-            // and commit_result.commit_id == 0 for a deferred txn). An explicit-txn CREATE INDEX
-            // leaves its backfilled entries PENDING — the SQL COMMIT operator's commit_inserts
-            // keys off base_appends, empty here — so explicit-txn CREATE INDEX visibility at
-            // COMMIT is a deferred follow-up; an ABORT still drops the half-built index via
-            // operator_abort_transaction (created_index is parked on transaction_t regardless).
-            // The cursor is re-read in the gate (see the DML tail): the is_success()
-            // that opened this tail was evaluated before the accumulate answered, so a
-            // refused park would otherwise still reach the commit and publish a
-            // transaction that holds nothing.
+            // DDL inside explicit BEGIN..COMMIT defers publish to SQL COMMIT; the inline CREATE INDEX commit below
+            // is autocommit-only too (an explicit-txn CREATE INDEX leaves entries PENDING until COMMIT).
             if (!session_ctx.is_explicit && exec_result.cursor->is_success()) {
                 auto commit_result = co_await run_commit_pipeline_(session,
                                                                    resolve_txn,
@@ -2239,17 +1863,12 @@ namespace services::collection::executor {
                                                                    /*ddl_mode=*/true);
                 if (commit_result.cursor->is_error()) {
                     exec_result.cursor = std::move(commit_result.cursor);
-                    // A CREATE INDEX whose commit failed never published the
-                    // pg_index row nor brought up a usable engine — undo both.
+                    // A CREATE INDEX commit failure published no pg_index and built no usable engine — undo both.
                     if (original_type == node_type::create_index_t) {
                         co_await undo_create_index(this, create_index_table_oid, create_index_oid);
                     }
                 }
-                // Inline CREATE INDEX backfill index-commit (index ONLY — see
-                // above). The indexed table oid was captured at rewrite time; the
-                // commit_id arrives via the operator's ctx back-channel.
-                // commit_result.commit_id is 0 in deferred (explicit) mode, so
-                // this block is naturally autocommit-only even inside this guard.
+                // Inline CREATE INDEX backfill index-commit (index only); commit_id==0 in deferred mode is autocommit.
                 if (commit_result.commit_id > 0 && original_type == node_type::create_index_t &&
                     index_address_ != actor_zeta::address_t::empty_address()) {
                     trace(log_,
@@ -2258,8 +1877,6 @@ namespace services::collection::executor {
                           commit_result.commit_id);
                     if (create_index_table_oid != components::catalog::INVALID_OID) {
                         components::execution_context_t swap_ctx{session, resolve_txn, {}};
-                        // The CREATE INDEX path commits exactly one table, so pass
-                        // a one-element oid vector to the batch commit_inserts.
                         std::pmr::vector<components::catalog::oid_t> commit_oids{resource()};
                         commit_oids.push_back(create_index_table_oid);
                         auto [_ci, cif] = actor_zeta::otterbrix::send(index_address_,
@@ -2267,10 +1884,7 @@ namespace services::collection::executor {
                                                                       swap_ctx,
                                                                       std::move(commit_oids),
                                                                       commit_result.commit_id);
-                        // A bitcask write failure here arrives AFTER the storage
-                        // commit already published the pg_index row. Revert the
-                        // pg_index row and drop the engine+agent so no half-built
-                        // index lingers.
+                        // A bitcask failure arrives AFTER pg_index publishes — revert it, drop the engine+agent.
                         auto ci_result = co_await std::move(cif);
                         if (ci_result.contains_error()) {
                             exec_result.cursor = make_cursor(resource(), ci_result);
@@ -2280,12 +1894,7 @@ namespace services::collection::executor {
                 }
             }
         } else if (needs_ddl_txn && exec_result.cursor->is_error()) {
-            // ===== DDL failure branch =====
-            // A failed DDL statement must not leave its txn orphaned (pinning lowest_active
-            // forever); mirror the failed-DML revert path. Verified boundary: the FAILING
-            // fragment's own appends never reach exec_result (the operator failed before
-            // execute_sub_plan_'s lift), so only EARLIER-completed fragments carry ranges here —
-            // exactly the ones that need reverting.
+            // A failed DDL statement must not leave its txn orphaned; only earlier-completed fragments carry ranges.
             trace(log_,
                   "executor::execute_plan_full: DDL failed — reverting txn {}, session: {}",
                   resolve_txn.transaction_id,
@@ -2294,24 +1903,14 @@ namespace services::collection::executor {
             co_await revert_failed_txn(this, exec_result);
         }
 
-        // SET TIMEZONE — the operator pipeline persisted the ('TimeZone', name)
-        // row to pg_settings. Surface the name so the dispatcher refreshes its
-        // solely-owned default_tz_cat_.
+        // SET TIMEZONE: surface the name so the dispatcher refreshes its solely-owned default_tz_cat_.
         if (original_type == node_type::set_timezone_t && exec_result.cursor->is_success() &&
             !pending_set_tz_name.empty()) {
             exec_result.applied_timezone.assign(pending_set_tz_name.data(), pending_set_tz_name.size());
         }
 
-        // ===== read-only txn release =====
-        // A plan that neither commits nor accumulates would otherwise leave the
-        // resolve-scope txn active forever, pinning lowest_active (and thereby
-        // starving the DROP-GC horizon). Release it. Exclusions:
-        //   - explicit txns (a SELECT inside BEGIN..COMMIT must not abort it);
-        //   - BEGIN itself (the operator just marked the txn explicit);
-        //   - COMMIT/ROLLBACK (their operators already ended the txn);
-        //   - needs_commit_txn plans (SET TIMEZONE / VACUUM): their pg_catalog
-        //     writes were accumulated and committed by the DML tail above, so
-        //     aborting here would discard the very rows they persisted.
+        // Release the resolve-scope txn here or it pins lowest_active forever — except inside an explicit txn,
+        // BEGIN/COMMIT/ROLLBACK, or a needs_commit_txn plan (already committed above).
         const bool releases_resolve_txn = !needs_ddl_txn && !needs_dml_txn && !needs_commit_txn &&
                                           !session_ctx.is_explicit && original_type != node_type::transaction_t;
         if (releases_resolve_txn) {
@@ -2377,14 +1976,10 @@ namespace services::collection::executor {
     }
 
     executor_t::unique_future<bool> executor_t::set_explain_renderer(uint32_t id, explain_render_fn fn) {
-        // Register the host-supplied renderer into THIS executor's own registry at slot `id` (a POD
-        // fn-pointer, no shared state). Reject a null renderer or an out-of-range id with `false` —
-        // never report success while installing nothing, and never grow the registry unboundedly on a
-        // huge host id (that would allocate gigabytes and, with exceptions disabled, abort the process).
+        // Rejects a null renderer or out-of-range id with `false` rather than grow the registry unboundedly.
         if (fn == nullptr || id >= kExplainRendererSlotLimit) {
             co_return false;
         }
-        // Grow with the default renderer so any skipped slot resolves to the built-in postgres.
         if (explain_renderers_.size() <= id) {
             explain_renderers_.resize(static_cast<std::size_t>(id) + 1, &render_postgres);
         }
@@ -2425,52 +2020,26 @@ namespace services::collection::executor {
 #ifdef DEV_MODE
         g_streaming_pipeline_runs.fetch_add(1, std::memory_order_relaxed);
 #endif
-        // Linearize the left-chain into pipeline order: chain[0] = source ... chain.back() = root.
         std::pmr::vector<ops::operator_t*> chain{resource()};
         for (ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
             chain.push_back(op);
         }
         std::reverse(chain.begin(), chain.end());
 
-        // EXPLAIN ANALYZE flag for this invocation (zero clock sampling when off).
         const bool analyze = ctx->analyze;
 
-        // Everything below the bottom-most NOT-yet-executed operator is a materialized sub-plan:
-        // traverse_plan_ splits a join's build/probe sides into their own sub-plans, run (and
-        // mark_executed) before this one; re-driving such an operator's source_next would read
-        // an already-drained cursor. So drive source_next only when this pipeline owns its scan
-        // source (chain bottom); otherwise stream from that operator's materialized output_. A
-        // materialized sub-plan marks only its ROOT executed, leaving its drained SOURCE
-        // un-executed — so executed operators are NOT a contiguous bottom prefix (chain[k]
-        // executed, chain[k-1] not). Take the boundary as the operator just ABOVE the TOPMOST
-        // executed op; a bottom-scan-owned pipeline leaves start == 0.
+        // Everything below the bottom-most not-yet-executed op is already-run; the boundary sits above it.
         std::size_t start = 0;
         for (std::size_t i = 0; i < chain.size(); ++i) {
             if (chain[i]->is_executed()) {
                 start = i + 1;
             }
         }
-        // SOURCELESS SINK BOTTOM: a DDL/txn/catalog-read operator (create_collection,
-        // set_timezone, begin_transaction, resolve_*, ...) OR a producing recursive_cte
-        // lowers to a sink whose chain bottom has no left child — no scan source.
-        // The streaming executor admits the single-leaf shape, a multi-node all-sink
-        // chain (CREATE INDEX = backfill->metadata; a multi-resolve front-pass =
-        // resolve_table->resolve_namespace), AND a PRODUCING bottom with streaming/sink
-        // ancestors (top-level WITH RECURSIVE = [select -> sort -> match ->
-        // recursive_cte]). For ALL of them the bottom sink's entire effect lives in
-        // its await_async_and_resume (a cross-actor commit and/or the fixpoint that
-        // PRODUCES output_), which the dedicated block below drives FIRST — so chain[0]
-        // is handled there, not in the [op_start, end) FLUSH/async-finalize passes.
-        // op_start therefore becomes 1 for this shape (the ANCESTOR range chain[1..]):
-        // the bottom's produced rows are pumped UP through those ancestors, which are
-        // then FLUSHed + async-finalized bottom-up. (chain[0]->role()==source is the
-        // normal pumped case; a NOT-executed non-source bottom is the sourceless sink.)
+        // A chain whose bottom has no left child is a sourceless sink — its effect lives in await_async_and_resume.
         const bool sourceless_sink_root = start == 0 && chain.front()->role() != ops::pipeline_role::source;
         const std::size_t op_start = sourceless_sink_root ? 1 : ((start == 0) ? 1 : start);
 
-        // EXPLAIN ANALYZE loops: bump ONLY the ops this invocation drives — chain.front() when it
-        // owns the source / sourceless bottom (start==0), plus chain[op_start..). Not chain[0..start-1]
-        // (already-materialized boundary + its drained source), or a single-pass join shows loops=2.
+        // Bump only the ops this invocation drives, not the already-materialized boundary range.
         if (analyze) {
             if (start == 0) {
                 chain.front()->bump_analyze_loop();
@@ -2480,13 +2049,7 @@ namespace services::collection::executor {
             }
         }
 
-        // A producing sourceless bottom (recursive_cte) whose ancestors are REAL query
-        // operators (sort/select/match) must stream its rows UP through them. The
-        // discriminator is "not all-sink": if EVERY op on the chain is a sink it is an
-        // independent-producer metadata chain (resolve/ddl/create-index) that must NOT
-        // pump (its sink ancestors don't override push()); any streaming op on the chain
-        // means a real pipeline whose ancestors consume the bottom's rows. Only consulted
-        // for the sourceless_sink_root shape.
+        // A producing sourceless bottom streams rows up through real query operators, not an all-sink metadata chain.
         bool pumpable_ancestors = false;
         if (sourceless_sink_root) {
             pumpable_ancestors = chain.front()->produces_query_rows();
@@ -2502,9 +2065,6 @@ namespace services::collection::executor {
 
         ops::chunks_vector_t output{resource()};
 
-        // Push one batch up through chain[op_start..]: a streaming op transforms its input
-        // into the next stage; a sink op folds it into bounded state and emits nothing.
-        // Chunks that survive the top of a pure-streaming pipeline are collected as output.
         auto pump_one = [&](components::vector::data_chunk_t&& batch) -> core::error_t {
             ops::chunks_vector_t stage{resource()};
             stage.push_back(std::move(batch));
@@ -2528,14 +2088,7 @@ namespace services::collection::executor {
             return core::error_t::no_error();
         };
 
-        // DML flush bounding. Locate the first async-finalize (DML) sink in the
-        // driven range [op_start, end); when the config threshold is set, the
-        // mid-pump gate below flushes it INCREMENTALLY once it buffers >= threshold
-        // rows, keeping peak memory bounded. A SECOND async-finalize sink above it
-        // (a parent constraint) must accumulate its input across those partial
-        // flushes — signalled to the operators via ctx->dml_has_parent_constraint.
-        // dml_idx is a pure LOCAL (never parked on ctx). threshold==0 ⇒ the gate
-        // never fires (mid-flush disabled).
+        // Locates the first async-finalize (DML) sink; the mid-pump gate flushes it past dml_flush_row_threshold_.
         std::size_t dml_idx = chain.size();
         for (std::size_t i = op_start; i < chain.size(); ++i) {
             if (chain[i]->needs_async_finalize()) {
@@ -2552,15 +2105,8 @@ namespace services::collection::executor {
         }
         ctx->dml_has_parent_constraint = parent_constraint;
 
-        // PUMP.
         if (sourceless_sink_root) {
-            // No source at the bottom: the bottom sink (chain[0]) produces / commits
-            // its entire effect in await_async_and_resume, which MUST run BEFORE we
-            // pump its rows up. (A bare DDL/txn leaf, an all-sink CREATE INDEX chain,
-            // and a producing recursive_cte all share this: their work is the await,
-            // not a push-fed finalize.) Drive it here, deepest-first — exactly the
-            // commit the executor's bottom-up async-finalize pass drives — so the
-            // FLUSH/async-finalize passes below operate only on the ANCESTORS.
+            // The bottom sink's entire effect lives in await_async_and_resume, driven here before its rows pump up.
             const analyze_scope front_scope{analyze};
             if (chain.front()->needs_async_finalize()) {
                 co_await chain.front()->await_async_and_resume(ctx);
@@ -2568,40 +2114,19 @@ namespace services::collection::executor {
                     co_return core::result_wrapper_t<ops::chunks_vector_t>(chain.front()->get_error());
                 }
             }
-            // EXPLAIN ANALYZE: the producing bottom (e.g. a recursive_cte fixpoint) is driven ONLY here
-            // — never via a push()/finalize record site — so without this its plan line would read
-            // rows=0 / actual time=0.000ms regardless of what it produced. Time only the production.
+            // The producing bottom is driven only here — without it, its EXPLAIN ANALYZE line reads rows=0.
             if (analyze) {
                 chain.front()->record_analyze(chain.front()->output() ? count_rows(chain.front()->output()->chunks())
                                                                       : 0,
                                               front_scope.elapsed());
             }
-            // Stream any rows the bottom PRODUCED (recursive_cte's fixpoint output_) UP
-            // through the ancestors chain[1..] (e.g. sort -> select, or match -> sort ->
-            // select). COPY (not move) the chunks: output_ is a shared intrusive_ptr
-            // operator_data the bottom still owns (and run_subplan's caller may re-read).
-            // Gate on `pumpable_ancestors` (the chain is NOT all-sink): a producing
-            // bottom under REAL query operators (sort/select/match — all override push())
-            // pumps its rows up. An ALL-SINK sourceless chain (CREATE INDEX =
-            // backfill->metadata; a multi-resolve front-pass = resolve_table->
-            // resolve_namespace) is different: each level is an INDEPENDENT producing
-            // metadata sink that sets its OWN output_ in its own await and does NOT
-            // override push() — pumping the bottom's rows into them would hit the default
-            // "not a streaming/sink op" push error. For that shape we pump nothing; the
-            // FLUSH/async-finalize passes below drive each ancestor sink's own await
-            // bottom-up (the original all-sink behavior), and drive_subplan_ reads the
-            // ROOT's output_. (A pure-commit DDL/txn leaf has no ancestors, so
-            // op_start == chain.size() and this is skipped regardless.)
+            // Streams the bottom's produced rows up, copying since output_ is shared; an all-sink chain pumps nothing.
             if (pumpable_ancestors && chain.front()->output()) {
                 for (const auto& c : chain.front()->output()->chunks()) {
                     auto err = pump_one(c.partial_copy(resource(), 0, c.size()));
                     if (err.contains_error()) {
                         co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
                     }
-                    // Same mid-pump flush gate as the scan-source and materialized-input
-                    // branches: a DML sink fed by a PRODUCING bottom (recursive_cte
-                    // fixpoint output) must honor dml_flush_row_threshold too, or it
-                    // buffers the entire produced row set.
                     if (auto flush_err = co_await maybe_mid_flush(chain, dml_idx, ctx); flush_err.contains_error()) {
                         co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(flush_err));
                     }
@@ -2609,13 +2134,7 @@ namespace services::collection::executor {
             }
         } else if (start == 0) {
             ops::operator_t* source = chain.front();
-            // A source that stops early (error mid-pump, satisfied LIMIT, abandoned sub-plan)
-            // leaves its agent-side fetch-next cursor open forever, permanently gating
-            // compact() on that table. Every exit from this loop goes through release_cursor
-            // (idempotent, a no-op if already drained).
-            // `resource()` is passed as a PARAMETER, not captured: the coroutine's promise reads
-            // its frame allocator from the arguments, and an argless coroutine lambda aborts
-            // (extract_resource_or_abort).
+            // A source that stops early leaves its agent-side cursor open forever; every exit releases it (idempotent).
             auto release_source_cursor = [&](std::pmr::memory_resource*) -> actor_zeta::unique_future<void> {
                 if (source->holds_open_cursor()) {
                     co_await source->release_cursor(ctx);
@@ -2648,15 +2167,9 @@ namespace services::collection::executor {
                     co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(flush_err));
                 }
             }
-            // Normal exit (drain sentinel or an early break): the drained case already erased
-            // the cursor agent-side, so this only fires for a break that left one open.
             co_await release_source_cursor(resource());
         } else if (chain[start - 1]->output()) {
-            // Materialized input: stream the already-executed operator's output_ chunks through the
-            // remaining (un-executed) operators. COPY (not move) the chunks — this operator's
-            // output_ is a shared (intrusive_ptr) operator_data that may be read again elsewhere
-            // (e.g. a recursive CTE working set, or a build side reused across iterations), so
-            // moving its chunks out would empty it for the other reader.
+            // Streams an already-executed operator's output_ through the rest, copying since it may be shared.
             for (const auto& c : chain[start - 1]->output()->chunks()) {
                 auto err = pump_one(c.partial_copy(resource(), 0, c.size()));
                 if (err.contains_error()) {
@@ -2668,11 +2181,7 @@ namespace services::collection::executor {
             }
         }
 
-        // FLUSH: drain sink state bottom-up. A sink (group/agg/sort) emits its accumulated
-        // result here; that result must still flow through the operators ABOVE it in the chain
-        // (e.g. a projection on top of GROUP BY), so each finalized chunk is pushed through
-        // chain[i+1..]. A downstream sink absorbs it (and emits later when its own turn comes,
-        // since i < j is processed first). Streaming operators finalize to a no-op.
+        // FLUSH drains sink state bottom-up — a finalized result still flows through chain[i+1..].
         for (std::size_t i = op_start; i < chain.size(); ++i) {
             ops::chunks_vector_t fin{resource()};
             const analyze_scope scope{analyze};
@@ -2706,22 +2215,8 @@ namespace services::collection::executor {
             }
         }
 
-        // Async-finalize commit, BOTTOM-UP. The pump fed each sink's input via
-        // push(); now drive every operator whose finalize is an asynchronous
-        // cross-actor commit (DML: WAL->storage->index->swap-info). push()/finalize()
-        // are synchronous, so each commit runs HERE in the executor's coroutine
-        // (which owns the cross-actor await), exactly as the legacy await loop does
-        // for the materialize path. await_async_and_resume sets the operator's
-        // output_ (RETURNING / affected-row count) and marks it executed.
-        // Iterate only the operators THIS pipeline drove ([op_start, end)), DEEPEST-FIRST:
-        // chain[op_start] is deepest, chain.back() the root, so ascending index == bottom-up.
-        // Several async ops may exist (a spillable sink under a DML sink, a constraint above a
-        // DML); each is awaited in order, first error stops the loop. For a sourceless sink
-        // bottom, chain[0] was already driven in the PUMP block above, so op_start==1 covers
-        // only its ancestors — still bottom-up overall.
-        // This is the FINAL flush: any mid-pump partial flushes above ran with
-        // dml_flush_is_final=false; restore the default so the DML sink's await
-        // knows to close out (final index/swap-info, RETURNING count, executed).
+        // Drives every operator whose finalize is an async cross-actor commit, synchronously here, deepest-first;
+        // dml_flush_is_final is restored to true — earlier mid-pump flushes ran with it false.
         ctx->dml_flush_is_final = true;
         for (std::size_t i = op_start; i < chain.size(); ++i) {
             ops::operator_t* op = chain[i];
@@ -2745,10 +2240,7 @@ namespace services::collection::executor {
     executor_t::maybe_mid_flush(std::pmr::vector<components::operators::operator_t*>& chain,
                                 std::size_t dml_idx,
                                 components::pipeline::context_t* ctx) {
-        // Mid-pump flush gate: co_await OUTSIDE the synchronous pump_one lambda (a
-        // lambda cannot co_await). NON-final flush — the sink stays open for the
-        // remaining batches. MEMBER coroutine so `this` supplies the frame
-        // memory_resource; holds EXACTLY ONE co_await => lost-wakeup-safe.
+        // co_await must live outside the synchronous pump_one lambda; exactly one co_await keeps it lost-wakeup-safe.
         if (dml_flush_row_threshold_ != 0 && dml_idx < chain.size() &&
             chain[dml_idx]->buffered_rows() >= dml_flush_row_threshold_) {
             ctx->dml_flush_is_final = false;
@@ -2766,13 +2258,7 @@ namespace services::collection::executor {
     executor_t::unique_future<core::error_t>
     executor_t::materialize_build_sides_(components::operators::operator_ptr root,
                                          components::pipeline::context_t* ctx) {
-        // Walk the LEFT chain (the streaming spine). For each operator that has a RIGHT
-        // (build) child not yet executed, drive that whole right subtree to completion
-        // FIRST — it is itself a sub-plan (its own build sides materialized recursively
-        // by the drive_subplan_ call below) — so the streaming join can read its
-        // materialized output_ when it builds the hash table. Already-executed right
-        // subtrees (the normal traverse_plan_-split flow) short-circuit, so this is a
-        // no-op outside the run_subplan-without-split case (recursive-CTE term).
+        // Walks the left chain; for each un-executed RIGHT (build) child, materializes it first for the hash table.
         namespace ops = components::operators;
         for (ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
             auto right = op->right();
@@ -2789,14 +2275,7 @@ namespace services::collection::executor {
 
     executor_t::unique_future<core::error_t> executor_t::drive_subplan_(components::operators::operator_ptr root,
                                                                         components::pipeline::context_t* ctx) {
-        // THE single drive seam, shared by execute_sub_plan_ and run_subplan (no
-        // duplication). The caller has already prepared `root`. EVERY reachable plan
-        // streams through execute_pipeline (bounded memory): the producing-sourceless-
-        // sink-bottom shape is supported, so the legacy materialized execution path is
-        // gone. Build sides (join RIGHT children) must be materialized before the pump:
-        // the top-level flow gets them from traverse_plan_'s sub-plan split; a single-
-        // root run_subplan (recursive-CTE term) does not, so materialize them here. No-op
-        // when already executed (the split flow).
+        // Single drive seam for execute_sub_plan_ and run_subplan; materializes build sides for run_subplan.
         auto build_err = co_await materialize_build_sides_(root, ctx);
         if (build_err.contains_error()) {
             co_return build_err;
@@ -2809,7 +2288,6 @@ namespace services::collection::executor {
             root->set_output(components::operators::make_operator_data(resource(), std::move(piped.value())));
             root->mark_executed();
         }
-        // Detect errors set asynchronously in operators (e.g. fk_cascade root with RESTRICT).
         if (root->has_error()) {
             co_return root->get_error();
         }
@@ -2818,11 +2296,7 @@ namespace services::collection::executor {
 
     executor_t::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
     executor_t::run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
-        // subplan_runner_t entry point: run a prepared child sub-plan to completion
-        // through the shared drive seam and hand back its output chunks. Invoked
-        // INTRA-actor by an operator via ctx->runner; runs inside this executor
-        // actor's own coroutine (operators are not actors), so the cross-actor
-        // awaits inside drive_subplan_ are owned by the executor and lost-wakeup-safe.
+        // subplan_runner_t entry point, invoked intra-actor, so awaits in drive_subplan_ stay lost-wakeup-safe.
         namespace ops = components::operators;
         if (!root) {
             co_return core::result_wrapper_t<ops::chunks_vector_t>(
@@ -2834,10 +2308,7 @@ namespace services::collection::executor {
         if (err.contains_error()) {
             co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
         }
-        // Copy (not move) the chunks out of output_: the root operator owns its
-        // output_ (a shared intrusive_ptr operator_data) and may be read again by
-        // the caller, so draining it would corrupt that reader. A drained sub-plan
-        // with no output_ returns an empty vector.
+        // Copy (not move) the chunks out of output_ — the root operator owns it and may be read again.
         ops::chunks_vector_t out{resource()};
         if (root->output()) {
             const auto& chunks = root->output()->chunks();
@@ -2868,9 +2339,7 @@ namespace services::collection::executor {
                 break;
             }
 
-            // sender = parent_address_ (the dispatcher): the txn operators
-            // (begin/commit/abort) and the DROP-GC mark reach the dispatcher's
-            // mailbox handlers via ctx->current_message_sender.
+            // sender = parent_address_: txn operators and the DROP-GC mark reach it via ctx->current_message_sender.
             components::pipeline::context_t pipeline_context{session,
                                                              address(),
                                                              parent_address_,
@@ -2881,35 +2350,15 @@ namespace services::collection::executor {
                                                              wal_address_};
             pipeline_context.txn = txn;
             pipeline_context.execution_context = plan_data.context_storage_.execution_context;
-            // VACUUM/MVCC GC threshold. operator_vacuum_t reads this to gate
-            // manager_disk_t::vacuum_all + manager_index_t::cleanup_all_versions.
-            // The value arrives with the session context fetched at plan start.
+            // VACUUM/MVCC GC threshold, arriving with the session context fetched at plan start.
             pipeline_context.lowest_active_start_time = lowest_active_start_time;
-            // Publish ourselves as the sub-plan runner: an operator that needs to
-            // run a child sub-plan through this SAME streaming executor reaches us
-            // via ctx->runner->run_subplan (intra-actor; see subplan_runner_t).
+            // Publish ourselves as the sub-plan runner (ctx->runner->run_subplan, intra-actor).
             pipeline_context.runner = this;
-            // EXPLAIN ANALYZE: enable per-operator instrumentation in execute_pipeline.
             pipeline_context.analyze = plan_data.analyze;
 
-            // Prepare the operator tree (connects children in aggregation, etc.)
             plan->prepare();
 
-            // Lift the BASE-table + FK-cascade DML append/delete ranges the DML
-            // operators recorded in their await_async_and_resume. Factored out of the
-            // success-path lift block below so the CONSTRAINT-ERROR path can lift them
-            // too: a CHECK/fk_check operator sits ABOVE the DML and is driven AFTER it
-            // (bottom-up async-finalize), so by the time it errors the DML has already
-            // done its WAL-first storage_append and stamped these ranges. If we break
-            // out of the loop without lifting them, exec_result.dml_appends is empty and
-            // the failed-statement abort tail (revert_failed_txn / operator_abort_
-            // transaction) has NOTHING to revert — the physically-appended (uncommitted)
-            // row LINGERS (invisible via MVCC, but a real storage leak: row_group.count
-            // stays bumped, the slot is never reclaimed). Lifting here on BOTH paths
-            // hands the recorded range to the abort tail so storage_revert_appends ->
-            // row_group_t::revert_append truncates the slot back. Idempotent: it
-            // drains and clears both range lists, so the success-path block below
-            // (which lifts the rest) never double-counts.
+            // Factored out so the CONSTRAINT-ERROR path can lift these ranges too, else the appended row leaks.
             auto lift_dml_ranges = [&pipeline_context, &result_tracking]() {
                 for (const auto& app : pipeline_context.dml_appends) {
                     result_tracking.dml_appends.push_back({app.table_oid, app.row_start, app.row_count});
@@ -2917,16 +2366,7 @@ namespace services::collection::executor {
                 for (const auto& del : pipeline_context.dml_deletes) {
                     result_tracking.dml_deletes.push_back({del.table_oid, del.txn_id});
                 }
-                // Catalog appends/deletes made by an EARLIER operator of a failed fragment need the
-                // same lift. A two-operator DDL chain (CREATE INDEX = metadata + backfill; the ALTER
-                // chain likewise) shares ONE pipeline_context, so when the trailing operator fails the
-                // metadata operator's pg_class/pg_index/pg_depend appends sit here unlifted — the abort
-                // tail would then leave them PHYSICALLY appended (pending under the aborted txn:
-                // MVCC-invisible to snapshots, but the row is really there, so a write-point uniqueness
-                // check sees it and the retry of the same statement is refused over a name nothing
-                // published). Lifting them hands the ranges to revert_failed_txn, whose
-                // storage_revert_appends truncates the slots. All still pending here (the fragment's
-                // commit runs later in the tail), so reverting is always safe on this path.
+                // Catalog appends from an EARLIER operator in the same fragment need the same lift (shared context).
                 for (auto& app : pipeline_context.pg_catalog_appends) {
                     result_tracking.pg_catalog_appends.push_back(std::move(app));
                 }
@@ -2939,14 +2379,9 @@ namespace services::collection::executor {
                 pipeline_context.pg_catalog_delete_tables.clear();
             };
 
-            // Drive the sub-plan to completion through the shared streaming seam
-            // (drive_subplan_ -> execute_pipeline). On success `plan` is executed with
-            // output_ set; the switch below reads plan->output().
             {
 #ifdef DEV_MODE
-                // DML sub-plans only: a session's earlier catalog-resolve sub-plans run through
-                // this same seam, and freezing one of those would hold the statement BEFORE its
-                // enrich instead of between planning and the first append.
+                // DML sub-plans only — freezing an earlier catalog-resolve sub-plan holds the statement too early.
                 if (auto* hook = g_dml_pre_drive_hook.load()) {
                     const auto root_type = plan->type();
                     if (root_type == components::operators::operator_type::insert ||
@@ -2958,24 +2393,14 @@ namespace services::collection::executor {
 #endif
                 auto drive_err = co_await drive_subplan_(plan, &pipeline_context);
                 if (drive_err.contains_error()) {
-                    // Constraint-error (or any operator-error) path: the DML child may
-                    // have already appended + stamped its range before the operator
-                    // above it failed. Lift the recorded range so the abort tail reverts
-                    // the physical append (see lift_dml_ranges).
+                    // Constraint-error path: the DML child may have appended before the operator above it failed.
                     lift_dml_ranges();
                     cursor = make_cursor(resource(), std::move(drive_err));
                     break;
                 }
             }
 
-            // Post-append reconciliation of the statement's freshly appended rows with the LIVE
-            // index set. The plan's enrich-time table_has_indexes stamp can predate a concurrent
-            // CREATE INDEX, in which case the DML operators mirrored nothing — manager_index is
-            // the one place that knows, and asking it strictly AFTER the appends is what closes
-            // the window: an empty answer proves any later build registers (and only then
-            // captures its RAW coverage bound) after these rows landed. Named rows are fetched
-            // RAW and staged through the ordinary mirror door; the stores dedup a repeated
-            // (key, row id) pair. See index_contract::unmirrored_ranges.
+            // Post-append reconciliation against the LIVE index: a concurrent CREATE INDEX can predate this stamp.
             if (!pipeline_context.dml_appends.empty() &&
                 index_address_ != actor_zeta::address_t::empty_address()) {
                 auto reconcile = [this, session, &pipeline_context](std::pmr::memory_resource* res)
@@ -3047,8 +2472,7 @@ namespace services::collection::executor {
                 };
                 auto reconcile_err = co_await reconcile(resource());
                 if (reconcile_err.contains_error()) {
-                    // The rows are in the table and not in the index: fail the statement so the
-                    // abort tail reverts the appends instead of publishing the disagreement.
+                    // Rows are in the table but not the index — fail so the abort tail reverts the appends.
                     lift_dml_ranges();
                     cursor = make_cursor(resource(), std::move(reconcile_err));
                     break;
@@ -3106,9 +2530,7 @@ namespace services::collection::executor {
             }
 
             if (cursor->is_error()) {
-                // Same reasoning as the drive-error break above: lift any DML range the
-                // operators recorded before this cursor-level error so the abort tail
-                // reverts the physical append. Idempotent (drains the dml_* slots).
+                // Same reasoning as the drive-error break above (idempotent).
                 lift_dml_ranges();
                 break;
             }
@@ -3120,20 +2542,13 @@ namespace services::collection::executor {
                 }
             }
 
-            // Lift pg_catalog swap info from this fragment's pipeline
-            // context into the per-call sub_plan_result_t accumulated across
-            // sub-plan iterations. execute_plan then forwards them into the
-            // returned execute_result_t for the dispatcher to aggregate onto
-            // transaction_t.
             for (auto& a : pipeline_context.pg_catalog_appends) {
                 result_tracking.pg_catalog_appends.push_back(std::move(a));
             }
             for (auto& d : pipeline_context.pg_catalog_delete_tables) {
                 result_tracking.pg_catalog_delete_tables.insert(std::move(d));
             }
-            // backfill markers emitted by ALTER COLUMN ADD/DROP/RENAME so they
-            // propagate alongside pg_catalog_appends down to transaction_t /
-            // operator_commit_transaction.
+            // backfill markers from ALTER COLUMN ADD/DROP/RENAME propagate alongside pg_catalog_appends.
             for (auto& bf : pipeline_context.pg_attribute_commit_id_backfills) {
                 result_tracking.pg_attribute_commit_id_backfills.push_back(bf);
             }
@@ -3141,28 +2556,12 @@ namespace services::collection::executor {
             pipeline_context.pg_catalog_delete_tables.clear();
             pipeline_context.pg_attribute_commit_id_backfills.clear();
 
-            // Lift the BASE-table + FK-cascade DML append/delete ranges recorded by
-            // operator_insert / _delete / _update / _fk_cascade inside their
-            // await_async_and_resume. Shared with the constraint-error path above (see
-            // lift_dml_ranges): push a range per sub-plan rather than overwriting, so FK
-            // cascade across >=2 tables keeps every child's publish (dml_append_range_t).
+            // Lifts BASE-table + FK-cascade DML ranges, pushed per sub-plan so an FK cascade keeps every child's range.
             lift_dml_ranges();
-            // Lift the DROP storage-scrub oids: cascade-delete operators record
-            // every storage whose backing files they tore down. Accumulate (not
-            // overwrite) so a multi-table DROP keeps every dropped oid; the
-            // accumulate tail ships them in txn_accumulate_payload_t so the
-            // commit operator's DROP-GC remap keys off the drained set.
             for (auto oid : pipeline_context.dropped_storage_oids) {
                 result_tracking.dropped_storage_oids.push_back(oid);
             }
             pipeline_context.dropped_storage_oids.clear();
-            // Lift the CREATE back-channel: operator_create_collection /
-            // operator_create_matview record each new storage oid, and
-            // operator_create_index_backfill each new {table_oid, name}.
-            // Accumulate (not overwrite) so a multi-statement DDL sequence keeps
-            // every created artifact; the accumulate tail ships them in
-            // txn_accumulate_payload_t so COMMIT publishes them and ABORT drops
-            // the still-uncommitted ones. Mirror of the dropped_storage_oids lift.
             for (auto oid : pipeline_context.created_storage_oids) {
                 result_tracking.created_storage_oids.push_back(oid);
             }
@@ -3171,13 +2570,10 @@ namespace services::collection::executor {
                 result_tracking.created_indexes.push_back(std::move(index));
             }
             pipeline_context.created_indexes.clear();
-            // Commit back-channel: operator_commit_transaction_t recorded the
-            // commit_id it drained.
             if (pipeline_context.committed_id != 0) {
                 result_tracking.commit_id = pipeline_context.committed_id;
             }
-            // (The single-slot dml_* fields + cascade vectors were already drained and
-            // zeroed by lift_dml_ranges() above.)
+            // (dml_* fields + cascade vectors were already drained and zeroed by lift_dml_ranges() above.)
 
             plan_data.sub_plans.pop();
         }
@@ -3193,17 +2589,12 @@ namespace services::collection::executor {
                                      core::date::timezone_offset_t session_tz,
                                      uint64_t lowest_active_start_time,
                                      bool ddl_mode) {
-        // ONE commit publisher for autocommit DML, DDL and SQL COMMIT: the
-        // node lowers to operator_commit_transaction_t, which drains the
-        // dispatcher-owned transaction_t (txn_commit_drain_msg), batch-
-        // publishes storage, commits the index mirrors per table, writes the
-        // WAL marker and crosses the ProcArray barrier (txn_publish_msg).
+        // One commit publisher for autocommit DML, DDL, SQL COMMIT — drains, publishes storage, mirrors, WAL.
         auto commit_node =
             components::logical_plan::make_node_transaction(resource(),
                                                             components::logical_plan::transaction_op::commit);
         if (ddl_mode) {
-            // DDL mode prepends the flush durability barrier + WAL(cid=0)
-            // record inside the operator.
+            // DDL mode prepends the flush durability barrier + WAL(cid=0) record inside the operator.
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
             commit_node->set_is_ddl_commit(true);
             commit_node->set_txn_id(txn.transaction_id);

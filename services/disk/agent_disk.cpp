@@ -1,14 +1,14 @@
 #include "agent_disk.hpp"
-#include "inline_scan.hpp" // services::disk::detail::inline_scan (catalog DDL on the agent)
+#include "inline_scan.hpp"
 #include "manager_disk.hpp"
-#include <algorithm>                                       // std::min
-#include <components/catalog/helpers.hpp>                  // pg_*_col ordinals (name-uniqueness gate)
-#include <components/catalog/system_table_schemas.hpp>     // encode_type_spec (type names in refusals)
-#include <components/logical_plan/node_group.hpp>          // node_group_t::set_pushdown (re-lowering guard)
+#include <algorithm>
+#include <components/catalog/helpers.hpp>
+#include <components/catalog/system_table_schemas.hpp>
+#include <components/logical_plan/node_group.hpp>
 #include <components/physical_plan/operators/operator_hash_group.hpp>
-#include <components/physical_plan/operators/scan/transfer_scan.hpp> // source-swap leaf accessors
-#include <components/physical_plan_generator/create_plan.hpp> // create_plan + function_registry + context_storage_t
-#include <components/vector/cell_equal.hpp>                   // components::vector::cells_equal (typed FK hash-verify)
+#include <components/physical_plan/operators/scan/transfer_scan.hpp>
+#include <components/physical_plan_generator/create_plan.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <core/file/local_file_system.hpp>
 #include <services/dispatcher/dispatcher.hpp>
@@ -47,10 +47,7 @@ namespace services::disk {
 
     using namespace core::filesystem;
 
-    // Test-observable counter of ROWS shipped in the last aggregate-pushdown reduce reply
-    // (see agent_disk.hpp). Bumped by the sum of data_chunk_t::size() over the reduced
-    // chunks right before they cross the mailbox; tests reset it, run one aggregate,
-    // then assert the count is TINY vs. the scanned input. DEV_MODE-only.
+    // Rows shipped in the last aggregate-pushdown reduce reply; tests assert it stays tiny.
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_pushdown_reply_rows{0};
@@ -93,7 +90,6 @@ namespace services::disk {
         return storages_.find(oid) != storages_.end();
     }
 
-    // Borrowed pointer — see header. nullptr when the OID isn't owned.
     const collection_storage_entry_t* agent_disk_t::storage_entry_sync(components::catalog::oid_t oid) const noexcept {
         auto it = storages_.find(oid);
         if (it == storages_.end()) {
@@ -109,9 +105,7 @@ namespace services::disk {
         bool sidecar_readable,
         std::vector<components::table::column_definition_t> catalog_columns,
         bool is_computed) noexcept {
-        // Probe BEFORE constructing the SFBM: on a duplicate key we must not even
-        // open the .otbx, because open-then-close would release the live entry's
-        // WRITE_LOCK (per-process posix lock).
+        // Probed before construction: open-then-close on a duplicate would release the live entry's WRITE_LOCK.
         if (storages_.find(oid) != storages_.end()) {
             trace(log_,
                   "agent_disk_t::bootstrap_disk_inner_sync: agent[{}] oid {} already in slice — drop "
@@ -128,12 +122,9 @@ namespace services::disk {
               otbx_path.string(),
               static_cast<uint64_t>(sidecar_wal_id),
               sidecar_readable);
-        // Copied, not moved: also feeds the oid-set diff below that re-derives the
-        // catalog/storage gap on every lazy load (only pg_catalog.* is resident post-bootstrap).
+        // Copied, not moved: adopt_catalog_columns below reads it again.
         auto entry = std::make_unique<collection_storage_entry_t>(resource(), otbx_path, catalog_columns, is_computed);
-        // The DISK load ctor records io_error/data_corruption instead of throwing (this helper is noexcept
-        // and reachable on the agent thread). Drop a failed-construction entry so we never emplace a
-        // half-loaded storage; the manager-side probe has already refused an unopenable file before this.
+        // The load ctor records io_error instead of throwing; drop a half-constructed entry.
         if (entry->table_storage.construction_failed()) {
             warn(log_,
                  "agent_disk_t::bootstrap_disk_inner_sync: agent[{}] load oid={} path={} failed: {}",
@@ -144,8 +135,7 @@ namespace services::disk {
             return false;
         }
         if (!sidecar_readable) {
-            // Sidecar present but unreadable: default 0 would misread as "never checkpointed,
-            // replay everything", so the entry carries "unknown" instead.
+            // A default 0 would misread as "never checkpointed, replay everything", so carry "unknown".
             entry->table_storage.set_checkpoint_wal_id_unreadable();
         } else if (sidecar_wal_id > wal::id_t{0}) {
             entry->table_storage.set_checkpoint_wal_id(sidecar_wal_id);
@@ -173,9 +163,6 @@ namespace services::disk {
               static_cast<unsigned>(oid),
               otbx_path.string());
         auto entry = std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path, is_computed);
-        // The DISK create ctor records io_error instead of throwing (this helper is noexcept and runs on
-        // the agent thread via create_storage_disk_inner). Drop a failed-construction entry rather than
-        // emplacing a storage with a null table_/block_manager_.
         if (entry->table_storage.construction_failed()) {
             warn(log_,
                  "agent_disk_t::bootstrap_create_disk_inner_sync: agent[{}] create oid={} path={} failed: {}",
@@ -188,15 +175,11 @@ namespace services::disk {
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
-    // Runtime CREATE handler; false on duplicate key (see bootstrap_create_disk_inner_sync).
     agent_disk_t::unique_future<bool>
     agent_disk_t::create_storage_disk_inner(components::catalog::oid_t oid,
                                             std::vector<components::table::column_definition_t> columns,
                                             std::filesystem::path otbx_path,
                                             bool is_computed) {
-        // create_directories runs on the AGENT thread (manager builds nothing). The SFBM
-        // is then constructed by bootstrap_create_disk_inner_sync, which holds the
-        // exclusive posix WRITE_LOCK on the .otbx — agent-only, so no construction race.
         std::error_code ec;
         std::filesystem::create_directories(otbx_path.parent_path(), ec);
         if (ec) {
@@ -217,9 +200,7 @@ namespace services::disk {
         co_return ok;
     }
 
-    // Shared refusal for the WAL-replay helpers below: manager_disk_t routes by
-    // pool_idx_for_oid, so an absent entry here means the owner has no storage — not a
-    // routing miss — and the journalled mutation must not be silently dropped.
+    // An absent entry means no storage, not a routing miss (routed by pool_idx_for_oid) — refuse, don't no-op.
     core::error_t agent_disk_t::no_replay_storage_error(const char* who, components::catalog::oid_t table_oid) {
         std::pmr::string msg{"agent_disk::", resource()};
         msg += std::pmr::string{who, resource()};
@@ -229,20 +210,14 @@ namespace services::disk {
         return core::error_t{core::error_code_t::io_error, std::move(msg)};
     }
 
-    // WAL-replay direct_* helpers (see header). Mutation logic is intentionally
-    // minimal: schema-adoption / column-expansion / type-promotion run upstream in
-    // the mailbox body, and replay records arrive pre-aligned with the table schema,
-    // so a direct delete/update against the entry's storage adapter is correct.
+    // Replay records arrive pre-aligned with the table schema, so these direct_* helpers skip schema adoption.
     core::error_t agent_disk_t::direct_delete_sync(components::catalog::oid_t table_oid,
                                                    const std::pmr::vector<int64_t>& row_ids,
                                                    uint64_t count,
                                                    const components::table::transaction_data& txn) {
         if (row_ids.empty() && count == 0) {
-            // The one legitimate no-op: the record names no rows AND counts none.
             return core::error_t::no_error();
         }
-        // count and row_ids travel separately and can disagree: a count above row_ids.size()
-        // would read uninitialised cells, a lower one would silently drop deletes.
         if (static_cast<uint64_t>(row_ids.size()) != count) {
             std::pmr::string what{"agent_disk::direct_delete_sync: the record counts ", resource()};
             what.append(std::to_string(count).c_str());
@@ -265,8 +240,6 @@ namespace services::disk {
         for (uint64_t i = 0; i < count; i++) {
             ids_vec.set_value(i, row_ids[i]);
         }
-        // delete_rows's return is the count actually stamped; fewer than requested must
-        // refuse rather than report success while rows the journal calls dead stay alive.
         const uint64_t deleted = entry->storage->delete_rows(ids_vec, count, txn.transaction_id);
         if (deleted != count) {
             std::pmr::string what{"agent_disk::direct_delete_sync: the storage deleted ", resource()};
@@ -285,13 +258,9 @@ namespace services::disk {
                                                    const std::pmr::vector<int64_t>& row_ids,
                                                    components::vector::data_chunk_t& new_data) {
         if (row_ids.empty() && new_data.size() == 0) {
-            // Legitimate no-op only when both are empty; an empty id list under a non-empty
-            // chunk falls to the mismatch check below instead of reporting success.
             return core::error_t::no_error();
         }
-        // row_ids pair with chunk rows by position and nothing below re-checks it:
-        // data_table_t::update reads data.size() entries from the id vector, so fewer ids
-        // than rows reads past the end and more ids than rows silently drops the surplus.
+        // data_table_t::update reads data.size() ids unchecked: fewer reads past the end, more drops the surplus.
         if (row_ids.size() != static_cast<std::size_t>(new_data.size())) {
             std::pmr::string what{"agent_disk::direct_update_sync: the record carries ", resource()};
             what.append(std::to_string(new_data.size()).c_str());
@@ -315,17 +284,10 @@ namespace services::disk {
         for (uint64_t i = 0; i < count; i++) {
             ids_vec.set_value(i, row_ids[i]);
         }
-        // new_data is on the WAL-replay resource; the storage is on this agent's.
-        // update() slices zero-copy refs into the chunk, so deep-copy onto resource()
-        // first — else validity_mask_t::operator= asserts resource_ == other.resource_
-        // on Debug builds. See docs/wal-recovery-pmr-mismatch.md.
+        // new_data is on the WAL-replay resource: deep-copy onto resource() first, or operator= asserts on Debug.
         components::vector::data_chunk_t local(resource(), new_data.types(), new_data.size());
         new_data.copy(local, 0);
-        // Must return the actual result, not no_error(): the adapter's own refusal check is
-        // an assert that NDEBUG deletes, so this is the only channel that reaches the caller.
-        // Both entitled legs of the non-transactional in-place update — WAL replay and the
-        // pg_attribute commit-id stamp — call through this function
-        // (test_nontransactional_update_contract.cpp pins the semantics).
+        // The adapter's own refusal check is an assert NDEBUG deletes, so this is the only channel to the caller.
         return entry->storage->update(ids_vec, local);
     }
 
@@ -337,9 +299,7 @@ namespace services::disk {
         }
         auto& entry = it->second;
         auto* s = entry->storage.get();
-        // Idempotent: added only if absent. A relkind='g' table keys presence on (name, type),
-        // not name alone — it owns one physical column per type variant (mirrors stage 1b of
-        // storage_append_inner).
+        // A relkind='g' table owns one physical column per type variant, so presence keys on (name, type).
         const bool is_computed_table = entry->is_computed;
         for (uint64_t col = 0; col < schema_chunk.column_count(); ++col) {
             const auto ctype = schema_chunk.data[col].type();
@@ -359,8 +319,6 @@ namespace services::disk {
             }
             components::table::column_definition_t def(name, ctype);
             // Must read the parked DEFAULT before take_column_identity — that call consumes it.
-            // add_column backfills predating rows with this default (row_group_t::add_column).
-            // attoid 0 means unpublished (relkind='g': bootstrap reconciliation never walks it).
             if (const auto* published = entry->find_unmaterialized(name); published != nullptr) {
                 def.set_default_value(published->default_value_opt());
             }
@@ -522,16 +480,12 @@ namespace services::disk {
         }
     }
 
-    // Mutation fanout targets. The agent re-checks ownership independently of the manager's
-    // router and REFUSES on a miss rather than no-op, so it isn't mistaken for (0, 0)-empty.
-
     agent_disk_t::unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
     agent_disk_t::storage_append_inner(execution_context_t ctx,
                                        components::catalog::oid_t table_oid,
                                        std::unique_ptr<components::vector::data_chunk_t> data) {
         const auto txn = ctx.txn;
-        // Nothing to write is not a refusal: an empty request has an empty answer, and the
-        // whole pipeline below would be a no-op anyway.
+        // An empty request is a success, not a refusal.
         if (!data || data->size() == 0) {
             co_return std::make_pair(uint64_t{0}, uint64_t{0});
         }
@@ -554,28 +508,16 @@ namespace services::disk {
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
 
-        // WAL-FIRST append: preprocess -> WAL co_await -> materialize runs as one mailbox
-        // handler; cooperative_actor does not pop the next message while suspended on the WAL
-        // future (cooperative_actor::resume_impl), so no other same-oid append can interleave.
-        // Columns added by the dynamic-schema-growth stage (1b) are recorded here so a
-        // PHYSICAL_ADD_COLUMN WAL record is emitted BEFORE the PHYSICAL_INSERT, keeping
-        // schema-then-rows order on replay.
+        // No same-oid append can interleave: cooperative_actor won't pop the next message mid-await.
         std::vector<components::table::column_definition_t> wal_added_columns;
 
-        // Full preprocessing pipeline (stages 1-5 below) runs on the owning agent so
-        // its reads and the final write are mailbox-serialized with every same-oid access.
         const bool is_computed_table = entry->is_computed;
 
-        // 1. Schema adoption
         if (!s->has_schema() && data->column_count() > 0) {
             s->adopt_schema(data->types());
         }
 
-        // 1b. Dynamic schema growth, on EVERY table (no mode gate — .otbx is the only substrate):
-        // covers both relkind='g' per-document columns and a regular table's ALTER ADD COLUMN,
-        // which materializes its storage column on the first INSERT that carries it (ALTER
-        // writes only pg_attribute). Trigger: alias mismatch at differing width = growth;
-        // equal width = positional rename, handled by column expansion below.
+        // Dynamic schema growth: a 'g' per-document column, or an ALTER ADD COLUMN materializing on first INSERT.
         if (s->has_schema() && data->column_count() > 0 &&
             (is_computed_table || data->column_count() != s->columns().size())) {
             std::vector<components::table::column_definition_t> new_columns;
@@ -600,18 +542,14 @@ namespace services::disk {
             }
             if (!new_columns.empty()) {
                 for (auto& col : new_columns) {
-                    // Read the parked DEFAULT before take_column_identity — that call consumes
-                    // it, and add_column backfills predating rows with this same constant.
+                    // Read the parked DEFAULT before take_column_identity — that call consumes it.
                     if (const auto* published = entry->find_unmaterialized(col.name()); published != nullptr) {
                         col.set_default_value(published->default_value_opt());
                     }
                     col.set_attoid(entry->take_column_identity(col.name()));
                     entry->add_column(col, resource());
-                    // Record for the PHYSICAL_ADD_COLUMN WAL record written below.
                     wal_added_columns.push_back(col);
                 }
-                // A null adapter after the rebuild is a broken entry, not an empty append —
-                // answering (0,0) here would be indistinguishable from success.
                 s = entry->storage.get();
                 if (!s) {
                     std::pmr::string what{"storage_append: the adapter rebuild after schema growth left no "
@@ -623,7 +561,6 @@ namespace services::disk {
             }
         }
 
-        // 2. Column expansion
         const auto& table_columns = s->columns();
         if (!table_columns.empty() && data->column_count() > 0) {
             std::pmr::vector<components::types::complex_logical_type> full_types(resource());
@@ -633,20 +570,14 @@ namespace services::disk {
 
             std::vector<components::vector::vector_t> expanded_data;
             expanded_data.reserve(table_columns.size());
-            // Matching is BY NAME only, deliberately no positional fallback — a mismatched
-            // name must stay unmatched, not pick up a neighbour's data at the same ordinal.
-            // Unmatched columns are filled NULL; DEFAULTs are applied above the journal in
-            // operator_insert, not here (load_from_disk rebuilds column defs without defaults).
+            // By name only, no positional fallback — a mismatched name stays NULL, never a neighbour's data.
             for (size_t t = 0; t < table_columns.size(); t++) {
                 bool found = false;
                 for (uint64_t col = 0; col < data->column_count(); col++) {
                     if (data->data[col].type().has_alias() &&
                         data->data[col].type().alias() == table_columns[t].name() &&
                         (!is_computed_table || data->data[col].type().type() == table_columns[t].type().type())) {
-                        // Name-matching is blind to PARAMETERIZATION: without this check a
-                        // DECIMAL(12,4) chunk silently moves into a DECIMAL(10,2) column,
-                        // misreading every later scan by the scale difference (also covers
-                        // LIST child types, ARRAY sizes, ENUM entries). Refused before WAL/materialize.
+                        // Blind to parameterization: an unchecked DECIMAL(12,4) chunk could land in a (10,2) column.
                         const auto& incoming_type = data->data[col].type();
                         const auto& stored_type = table_columns[t].type();
                         if (incoming_type != stored_type) {
@@ -678,8 +609,7 @@ namespace services::disk {
             data->data = std::move(expanded_data);
         }
 
-        // 2b. NOT NULL enforcement is a REFUSAL, not (0,0): that pair is also the legitimate
-        //     empty-batch answer, and the manager's per-chunk loop reads it as "continue".
+        // A refusal, not (0, 0): that pair is also the legitimate empty-batch answer.
         if (!table_columns.empty()) {
             for (size_t col = 0; col < table_columns.size() && col < data->column_count(); col++) {
                 if (table_columns[col].is_not_null()) {
@@ -697,32 +627,20 @@ namespace services::disk {
             }
         }
 
-        // (There is deliberately NO row-content dedup here. Dropping rows whose `_id` value
-        // already exists costs a full table scan per batch, loses rows silently, and masks a
-        // declared UNIQUE/PK on a column named `_id` by filtering the duplicate before the
-        // constraint operator's existing-row scan can see it. Uniqueness has exactly one
-        // implementation: operator_unique_constraint_t over declared constraints.)
+        // No `_id` dedup here: uniqueness has exactly one implementation, operator_unique_constraint_t.
 
-        // 5. WAL-first: allocate the start_row WITHOUT materializing, write WAL,
-        //    then materialize. total_rows() is the next append position (the standard
-        //    append computes the same value). No other same-oid handler runs between
-        //    this read and the s->append below (mailbox-atomic handler), so the value
-        //    is stable.
+        // WAL-first: reserve start_row, journal, then materialize; mailbox-atomicity keeps it stable meanwhile.
         const auto actual_count = data->size();
         const uint64_t start_row = s->total_rows();
 
-        // 5a. WAL records (WAL-first), only for a real transaction. Replay filters
-        //     uncommitted txns, so a txn_id==0 (legacy / replay) append writes no WAL.
+        // A txn_id == 0 (replay) append writes no WAL — replay filters uncommitted txns.
         if (txn.transaction_id != 0 && manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
             const auto db_oid = (ctx.database_oid != components::catalog::INVALID_OID)
                                     ? ctx.database_oid
                                     : components::catalog::well_known_oid::main_database;
 
-            // 5a-i. Schema-growth record, sent before PHYSICAL_INSERT so replay re-adds the
-            //       column first. Future is kept, NOT co_awaited here: a second sequential
-            //       suspending cross-actor await on this coroutine is the cooperative_actor
-            //       lost-wakeup (docs/actor-zeta-lost-wakeup.md). Drained at 5a-iii instead,
-            //       once the FIFO WAL worker has necessarily already completed it.
+            // Sent before PHYSICAL_INSERT so replay re-adds the column first; NOT awaited here — a second
+            // suspending cross-actor await in one handler is the cooperative_actor lost-wakeup.
             unique_future<core::result_wrapper_t<wal::id_t>> add_column_future;
             if (!wal_added_columns.empty()) {
                 std::pmr::vector<components::types::complex_logical_type> col_types(resource());
@@ -745,10 +663,7 @@ namespace services::disk {
                 add_column_future = std::move(scf);
             }
 
-            // 5a-ii. PHYSICAL_INSERT with the reserved start_row + count (CREATE INDEX
-            //        backfill uses start_row as the row-id base, so it must match the
-            //        materialized start below). This is the one co_await in this handler
-            //        that can suspend (see 5a-i/5a-iii).
+            // CREATE INDEX backfill uses start_row as the row-id base, so it must match the materialized start.
             components::vector::data_chunk_t wal_chunk(resource(), data->types(), data->size());
             data->copy(wal_chunk, 0);
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
@@ -764,9 +679,6 @@ namespace services::disk {
                                                         db_oid);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
-                // A refused PHYSICAL_INSERT must refuse the append: nothing is materialized
-                // yet, so there is nothing to unwind, but rows must not be reported appended
-                // with no journal record to replay them from.
                 error(log_,
                       "agent_disk[{}]::storage_append_inner: the PHYSICAL_INSERT did not reach the journal for "
                       "oid={}, the rows are NOT appended: {}",
@@ -782,9 +694,7 @@ namespace services::disk {
                       static_cast<unsigned>(table_oid));
             }
 
-            // 5a-iii. Drain the ADD_COLUMN future (see 5a-i): already completed by now (same
-            //         FIFO WAL worker), so this await cannot suspend. A refusal here aborts
-            //         the txn before anything is materialized.
+            // The FIFO WAL worker already completed the ADD_COLUMN future, so this await cannot suspend.
             if (add_column_future.valid()) {
                 auto add_column_result = co_await std::move(add_column_future);
                 if (add_column_result.has_error()) {
@@ -806,10 +716,7 @@ namespace services::disk {
             }
         }
 
-        // 5b. Materialize. A plain synchronous call (no co_await), so reading its
-        //     write_conflict/out_of_memory result adds no second suspension point (see 5a-i
-        //     on why that matters). transaction_data{0, 0} is passed explicitly rather than
-        //     forwarding `txn`, because a direct write can carry a non-zero start_time.
+        // transaction_data{0, 0}, not `txn`: a direct write can carry a non-zero start_time.
         auto append_r =
             s->append(*data, txn.transaction_id != 0 ? txn : components::table::transaction_data{0, 0});
         if (append_r.has_error()) {
@@ -820,14 +727,7 @@ namespace services::disk {
             co_return append_r.convert_error<std::pair<uint64_t, uint64_t>>();
         }
         const uint64_t materialized_start = append_r.value();
-        // Checked, not asserted: NDEBUG deletes asserts, and a release build used to answer
-        // with `materialized_start` — a base the WAL record does not name — with no one told.
-        // The two must be equal (mailbox-atomic: no other same-oid handler runs between the
-        // start_row reservation and this append). On mismatch the rows are reverted here
-        // because nothing else will: the caller can no longer unwind them (operator_insert
-        // already returned an error) and a direct-write append stamps rows committed
-        // immediately. data_corruption, not io_error: no file operation failed, a
-        // row-addressing invariant did.
+        // Checked, not asserted (NDEBUG deletes asserts) — nothing else reverts rows once operator_insert returns.
         if (materialized_start != start_row) {
             error(log_,
                   "agent_disk[{}]::storage_append_inner: oid={} reserved start_row {} for the journal but the "
@@ -851,10 +751,7 @@ namespace services::disk {
     }
 
     namespace {
-        // Absent entry here is not a routing miss (manager routes by pool_idx_for_oid before
-        // forwarding) — it means the owner has no storage, and the caller's ranges/marks would
-        // otherwise vanish silently. Handlers return unique_future<void> (callers can only
-        // log), so this logs at error level and bumps the DEV_MODE tally.
+        // The handlers return unique_future<void>, so an error log plus DEV_MODE tally is the only error channel.
         void report_publish_revert_miss(log_t& log,
                                         std::size_t pool_idx,
                                         const char* leg,
@@ -874,8 +771,6 @@ namespace services::disk {
     agent_disk_t::unique_future<void>
     agent_disk_t::storage_publish_commits_inner(uint64_t commit_id,
                                                 std::pmr::vector<components::pg_catalog_append_range_t> ranges) {
-        // MVCC visibility flip. An empty range is a legitimate no-op; an oid the owner has
-        // no storage for is a miss and reports (see report_publish_revert_miss).
         for (const auto& r : ranges) {
             if (r.count == 0) {
                 continue;
@@ -899,10 +794,7 @@ namespace services::disk {
     agent_disk_t::storage_publish_deletes_inner(uint64_t txn_id,
                                                 uint64_t commit_id,
                                                 std::pmr::vector<components::catalog::oid_t> tables) {
-        // A DIRECT WRITE owes no publish: its deletes are stamped with an
-        // immediately-committed version id when they land (row_group_t::delete_rows,
-        // is_txn == false), so there is no pending stamp to find. Not a "legacy fast path" —
-        // the branch must stay. See components::table::DIRECT_WRITE_TXN_ID.
+        // A direct write's deletes stamp committed instantly, so there's no pending stamp to publish here.
         if (components::table::is_direct_write_txn(txn_id)) {
             co_return;
         }
@@ -924,11 +816,7 @@ namespace services::disk {
 
     agent_disk_t::unique_future<void>
     agent_disk_t::storage_revert_deletes_inner(uint64_t txn_id, std::pmr::vector<components::catalog::oid_t> tables) {
-        // Abort-path twin of storage_publish_deletes_inner: un-stamp this txn's
-        // pending delete marks back to NOT_DELETED_ID instead of committing them.
-        // A DIRECT WRITE is irrevocable by construction — its deletes commit the instant they
-        // land — so there is nothing to un-stamp; revert_all_deletes(0) would hit the literal
-        // 0 the store never writes. See components::table::DIRECT_WRITE_TXN_ID.
+        // Nothing to un-stamp for a direct write; revert_all_deletes(0) would match a literal 0 never written.
         if (components::table::is_direct_write_txn(txn_id)) {
             co_return;
         }
@@ -975,8 +863,6 @@ namespace services::disk {
                                        components::vector::vector_t row_ids,
                                        std::unique_ptr<components::vector::data_chunk_t> data,
                                        components::table::transaction_data txn) {
-        // Same split as storage_append_inner: an empty request is a success, a missing
-        // storage is a refusal.
         if (!data || data->size() == 0) {
             co_return std::pair<int64_t, uint64_t>{0, 0};
         }
@@ -997,15 +883,7 @@ namespace services::disk {
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
-        // No preprocessing here, and not because the manager did it: manager_disk_t::storage_update
-        // (manager_disk_storage.cpp) is a pure router and touches no schema. The alignment happens
-        // one level DOWN, inside the call below — table_storage_adapter_t::update runs
-        // trim_unmaterialized_payload (components/storage/table_storage_adapter.hpp), which drops
-        // the trailing catalog-only columns when they are all NULL and REFUSES with
-        // unimplemented_yet when one carries a value, because materializing a new column is the
-        // append path's stage-1b job (it owns the PHYSICAL_ADD_COLUMN record that keeps replay in
-        // schema-then-rows order) and this handler has no such stage. The wrapper carries that
-        // refusal, and any write_conflict / out_of_memory, as a value.
+        // No preprocessing: trim_unmaterialized_payload drops all-NULL tail columns and refuses a non-NULL one.
         co_return entry->storage->update(row_ids, *data, txn);
     }
 
@@ -1014,11 +892,6 @@ namespace services::disk {
                                             components::vector::vector_t row_ids,
                                             uint64_t count,
                                             components::table::transaction_data txn) {
-        // Nothing asked, nothing marked. An empty request has an empty answer and is not a
-        // refusal — unlike the three legs below, which are a delete that DID NOT HAPPEN and
-        // must not answer 0: that is also what a perfectly healthy delete of already-stamped
-        // rows returns, so no caller could tell the two apart. See the header: the count counts,
-        // the wrapper refuses.
         if (count == 0) {
             co_return std::uint64_t{0};
         }
@@ -1056,8 +929,6 @@ namespace services::disk {
                                       int64_t limit,
                                       uint64_t expected_compact_epoch) {
         std::pmr::vector<components::vector::data_chunk_t> out{resource()};
-        // Asking for no rows is not a refusal, whatever the oid — the same split the
-        // delete and append legs make.
         if (count == 0) {
             co_return std::move(out);
         }
@@ -1073,13 +944,7 @@ namespace services::disk {
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
-        // Stale-index refusal (loud, rules 2/6): ids stamped with an older epoch were minted
-        // before a compact renumbered this table — between a checkpoint round's two phases, where
-        // the index still holds pre-compact ids. Applying them would answer a stranger row
-        // (measured: id exactly one slide away) or nothing at all. Checked HERE, in the same
-        // handler invocation that reads the windows below, with no co_await in between: compact()
-        // only ever runs inside another message on this same mailbox, so the epoch cannot move
-        // between this comparison and the last window read.
+        // Ids from an older epoch answer a stranger row (measured: one slide away) after a compact renumbers.
         if (expected_compact_epoch != k_fetch_epoch_unchecked &&
             expected_compact_epoch != entry->table_storage.table().compact_epoch()) {
             std::pmr::string what{"storage_fetch: the index answer is stale — the table was compacted "
@@ -1089,15 +954,7 @@ namespace services::disk {
             co_return core::error_t{core::error_code_t::stale_index, std::move(what)};
         }
         auto types = entry->storage->types();
-        // Fetch in ≤DEFAULT_VECTOR_CAPACITY windows so each produced chunk is born within
-        // the capacity bound — no oversized chunk is ever materialized.
-        // `limit` is spent HERE, on rows the fetch actually produced, and never on the ids it
-        // was handed. Under SNAPSHOT the fetch below drops every row `txn` may not see, so a
-        // window of 1024 ids can yield anything from 0 to 1024 rows; a budget deducted from
-        // the id count would run out on rows the reader never receives and answer a LIMIT
-        // with fewer rows than it asked for. Spending it on produced rows also lets the loop
-        // STOP: once the budget is met, the remaining windows are not read at all, which is
-        // the whole point of pushing the cap down here instead of truncating upstream.
+        // The budget is spent on produced rows, not ids — visibility can shrink a window to any size.
         const bool capped = limit >= 0;
         const uint64_t budget = capped ? static_cast<uint64_t>(limit) : 0;
         uint64_t produced = 0;
@@ -1112,19 +969,13 @@ namespace services::disk {
             components::vector::data_chunk_t chunk(resource(), types, n);
             auto fetch_r = entry->storage->fetch(chunk, window_ids, n, projected_cols, txn, visibility);
             if (fetch_r.has_error()) {
-                // First window error aborts the whole batch: the reply must never
-                // pair "success" with a chunk whose string cells were left empty
-                // by a failed overflow-block read.
+                // A partial reply would pair success with chunks a failed overflow-block read left empty.
                 co_return fetch_r.convert_error<std::pmr::vector<components::vector::data_chunk_t>>();
             }
-            // The row_ids are NOT stamped from the REQUEST here: the answer can be shorter than
-            // the question, because the producer drops rows this txn may not see and rows that
-            // name no row group at all. collection_t::fetch stamps the ids of the rows it
-            // actually gathered, and the guard below is on that pairing.
+            // row_ids come from collection_t::fetch (rows actually gathered), not the request.
             assert(chunk.size() <= n && "storage_fetch_inner: a window produced more rows than it was asked for");
             if (capped && produced + chunk.size() > budget) {
-                // Truncation, not selection: set_cardinality keeps the chunk's FIRST rows and
-                // their stamped row_ids, so the capped reply stays a prefix of the uncapped one.
+                // set_cardinality keeps the first rows, so the capped reply is a prefix.
                 chunk.set_cardinality(budget - produced);
             }
             produced += chunk.size();
@@ -1142,11 +993,7 @@ namespace services::disk {
                              const std::vector<std::size_t>* projected_cols,
                              const components::table::transaction_data& txn) {
         std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
-        // A scan that CANNOT BE PERFORMED is an error, never an empty answer: an empty batch
-        // list is also what "no matching rows" looks like, so every catalog reader upstream
-        // (resolve_namespace / resolve_function_by_name / find_cast_oid / list_namespaces) would
-        // report a read it never made as a negative fact about the catalog. Same reasoning as
-        // validate_key_col_indices below, the keyed-read twin of this leg.
+        // An unperformable scan is an error, not an empty batch — that's also what "no matching rows" looks like.
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
             return core::error_t{core::error_code_t::missing_table,
@@ -1157,8 +1004,6 @@ namespace services::disk {
             return core::error_t{core::error_code_t::missing_table,
                                  std::pmr::string{"scan: storage is a record-only marker", resource()}};
         }
-        // The adapter surfaces any buffer-pool OOM / data_corruption the table-layer scan left
-        // in state.table_state.scan_error; propagate it up the wrapper.
         auto scan_r = entry->storage->scan_batched(batches, filter, limit, projected_cols, txn);
         if (scan_r.has_error()) {
             return scan_r.convert_error<std::pmr::vector<components::vector::data_chunk_t>>();
@@ -1166,9 +1011,7 @@ namespace services::disk {
         return batches;
     }
 
-    // Thin mailbox wrapper over scan_local (same-actor callers use the local
-    // helper directly; this exists for the manager→agent mailbox route). The reply carries the
-    // scan_error; the manager funnel / operators read has_error() before .value().
+    // Mailbox wrapper over scan_local; same-actor callers use the helper directly.
     agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     agent_disk_t::storage_scan_inner(components::catalog::oid_t table_oid,
                                      std::unique_ptr<components::table::table_filter_t> filter,
@@ -1179,15 +1022,7 @@ namespace services::disk {
         co_return scan_local(table_oid, filter.get(), limit, projected_ptr, txn);
     }
 
-    // Shared bounded streaming-scan skeleton for the send-free agent-local reducers
-    // (aggregate-pushdown REDUCE + fk_hash_semijoin). Owns the position + fetch loop:
-    // re-seek from row 0, read ONE batch at a time (applying `filter` + `projected`), and
-    // invoke `fn(batch)` per NON-empty batch until the slice drains. `fn` is a TEMPLATE
-    // callable (R14 — NOT std::function) returning core::error_t, so a per-batch failure
-    // (e.g. group.push) stops the loop and propagates. A fetch_next_batch error stops the
-    // loop and returns that error; a clean drain (empty batch) returns no_error(). Peak
-    // memory is one batch — nothing pinned survives the round-trip. NOT [[nodiscard]]:
-    // fk_hash_semijoin intentionally discards the error to return a PARTIAL result.
+    // An empty batch means end-of-scan: fetch_next_batch walks past fully-filtered vectors internally.
     template<typename PerBatch>
     static core::error_t for_each_storage_batch(components::storage::storage_t& storage,
                                                 components::storage::scan_position_t& scan_position,
@@ -1222,18 +1057,7 @@ namespace services::disk {
         return core::error_t::no_error();
     }
 
-    // Agent-side aggregate-pushdown REDUCE. Builds the operator_group DIRECTLY from the POD (no
-    // create_plan / node tree) and drives it over one owned `storage` slice ENTIRELY LOCALLY
-    // (send-free): a bounded storage_t::fetch_next_batch loop applies the shipped WHERE `filter` +
-    // `projected_cols`, folding each batch into the group, and finalize() materializes the FINAL
-    // aggregated rows (one per group). Peak memory is one batch + the bounded group table — the
-    // same streaming discipline as fk_hash_semijoin. `txn` is the caller's real snapshot so the
-    // reduce sees read-your-own-writes (never a zero txn{0,0}). A fetch / push / finalize failure
-    // surfaces as an error_t on the result wrapper — DISTINCT from a legitimately-empty result —
-    // never thrown across the mailbox (R2), so a scalar-aggregate error is not mistaken for a
-    // drained (no-row) reply. An empty slice, `storage` == NULL included (not-owned / record-only),
-    // reduces over an EMPTY input: operator_group's empty-input finalize still emits a scalar
-    // aggregate's mandatory single row (typed via output_types), a GROUP BY emits nothing.
+    // Builds operator_group directly from the POD, send-free, with `txn` as the caller's real snapshot.
     static core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
     reduce_pushed_aggregate(std::pmr::memory_resource* resource,
                             log_t log,
@@ -1247,14 +1071,11 @@ namespace services::disk {
         namespace ops = components::operators;
         std::pmr::vector<components::vector::data_chunk_t> out{resource};
 
-        // (1) Agent-local function registry (the agent has none of the executor's state). The
-        //     optimizer refused any UDF (is_udf_uid), so every builtin func_uid resolves here.
+        // The optimizer refused any UDF, so every func_uid resolves in the default registry.
         components::compute::function_registry_t reg{resource};
         components::compute::register_default_functions(reg);
 
-        // (2) Rebuild the operator_group from the POD: plain-column keys + builtin
-        //     SUM/COUNT/MIN/MAX/AVG (COUNT(*) == empty arg path). No HAVING / DISTINCT / computed
-        //     columns (the optimizer never stamps those).
+        // No HAVING / DISTINCT / computed columns — the optimizer never stamps those.
         ops::operator_hash_group_t group{resource, log.clone()};
         for (const auto& gk : spec.group_keys) {
             ops::group_key_t key{resource};
@@ -1272,15 +1093,7 @@ namespace services::disk {
         group.set_input_types(spec.input_types);
         group.set_output_types(spec.output_types);
 
-        // (3) Pipeline context for group.push/finalize. Build IN PLACE (its move-ctor DROPS
-        //     txn/function_registry — NEVER move it). No parameters/session_tz are needed: the
-        //     WHERE is already baked into `filter`, and builtin SUM/COUNT/... read neither.
-        //     THIS CONTEXT IS DELIBERATELY UNWIRED: the three no_mailbox() arguments below leave
-        //     it with only address_ (self) and the txn. Sound for exactly one reason — the single
-        //     operator driven here is operator_hash_group_t, whose push/finalize send nothing
-        //     (step 4 says "send-free" and means it). Swap in an operator that sends, or grow one
-        //     inside hash_group, and this stops being sound; the send would announce itself,
-        //     since actor_zeta::otterbrix::send refuses an empty target in Debug and Release alike.
+        // Built in place (move-ctor drops txn/function_registry); no_mailbox() is safe: push/finalize send nothing.
         components::logical_plan::storage_parameters params{resource};
         components::pipeline::context_t ctx{session,
                                             self_address,
@@ -1292,11 +1105,6 @@ namespace services::disk {
                                             components::pipeline::no_mailbox()};
         ctx.txn = txn;
 
-        // (4) Send-free streaming drive: re-seek + read ONE batch from `storage` (applying the
-        //     WHERE filter + projection), fold it into the group, repeat. fetch_next_batch walks
-        //     past fully-filtered vectors internally, so an empty batch means end-of-scan. A
-        //     NULL storage (not-owned / record-only slice) is an empty input: skip straight to
-        //     the finalize, which still emits the scalar empty-slice row.
         if (storage != nullptr) {
             const std::vector<std::size_t>* projected_ptr = projected_cols.empty() ? nullptr : &projected_cols;
             components::storage::scan_position_t pos{};
@@ -1314,20 +1122,13 @@ namespace services::disk {
             }
         }
 
-        // (5) Finalize into the reply chunks (single owner finalizes — identity passthrough).
         if (auto err = group.finalize(&ctx, out); err.contains_error()) {
             return err;
         }
         return out;
     }
 
-    // Streaming fetch-next scan source. POSITION-ONLY index-resume: the cursor
-    // in active_scans_ stores ONLY the absolute resume position + the scan params; every fetch
-    // re-seeks a TRANSIENT scan state from that position (storage_t::fetch_next_batch), reads ONE
-    // batch, advances the stored position, and lets the pins destruct — so peak scan memory is one
-    // batch and ZERO pins survive this round-trip. cursor_id==0 OPENs (minting a (session,counter)
-    // id, capping the matched-row head at offset+limit); non-zero ADVANCEs the same cursor. The
-    // cursor is GC'd (erased) the moment it drains or hits the matched-row limit.
+    // cursor_id == 0 opens (mints an id), non-zero advances; only the resume position is stored, no pin survives.
     agent_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
     agent_disk_t::storage_fetch_next_batch_inner(session_id_t session,
                                                  components::catalog::oid_t table_oid,
@@ -1336,9 +1137,7 @@ namespace services::disk {
                                                  int64_t limit,
                                                  std::vector<size_t> projected_cols,
                                                  components::table::transaction_data txn) {
-        // Drained sentinel: an EMPTY chunk (cardinality 0). The executor breaks on size 0 and never
-        // pushes it, so the schema is irrelevant (the source operator carries its own projected
-        // empty-guard).
+        // The executor breaks on size 0 and never pushes the drained sentinel, so its schema is irrelevant.
         auto make_drained = [this](uint64_t reply_cursor_id) -> fetch_batch_t {
             auto empty = std::make_unique<components::vector::data_chunk_t>(
                 resource(),
@@ -1348,10 +1147,7 @@ namespace services::disk {
             return fetch_batch_t{std::move(empty), reply_cursor_id};
         };
 
-        // Column identities in the exact order the storage's types() presents them: physical
-        // columns first, then the published-but-unmaterialized tail (the same alignment
-        // table_storage_adapter_t::types() produces). Snapshot at OPEN, re-collected each
-        // ADVANCE for the identity check below.
+        // Physical columns first, then the unmaterialized tail — the same order types() presents.
         auto collect_identity = [](collection_storage_entry_t& entry,
                                    std::vector<active_scan_t::open_column_t>& out) {
             const auto& physical = entry.table_storage.table().columns();
@@ -1366,10 +1162,6 @@ namespace services::disk {
         };
 
         if (cursor_id == 0) {
-            // OPEN: resolve the owned slice entry and snapshot the source-row bound. A not-owned /
-            // record-only oid replies a drained sentinel (no cursor minted), mirroring the
-            // whole-vector path's empty reply. (A pushed-aggregate REDUCE rides the dedicated
-            // storage_reduce path — this handler is a raw scan only.)
             auto it = storages_.find(table_oid);
             if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
                 std::pmr::string what{"storage_fetch_next_batch: no materialized storage to open a scan on: ",
@@ -1379,26 +1171,19 @@ namespace services::disk {
             }
             active_scan_t scan{};
             scan.table_oid = table_oid;
-            // Raw scan cursor: position-only, re-seeks per fetch. `limit` is the (offset+limit)
-            // head cap the source pushed down; with a filter it is a POST-filter matched-row
-            // cap (the legacy scan_batched applied it post-hoc), so it bounds matched rows
-            // handed out, never source rows scanned.
+            // `limit` is the (offset+limit) head cap; with a filter it caps matched rows, never rows scanned.
             scan.pos.next_row = 0;
             scan.pos.max_row = static_cast<int64_t>(it->second->storage->total_rows());
             scan.filter = std::move(filter);
             scan.projected_cols = std::move(projected_cols);
             scan.txn = txn;
             scan.matched_limit = limit;
-            // OPEN-time schema snapshot: the shape this cursor's replies keep for its whole
-            // life, and the identity every later fetch re-resolves columns against.
             {
                 const auto open_types = it->second->storage->types();
                 scan.open_types.assign(open_types.begin(), open_types.end());
                 collect_identity(*it->second, scan.open_columns);
             }
-            // Mint cursor id = (session, agent counter): the session disambiguates across
-            // queries, the agent-local counter across concurrent cursors of one session. Fall back
-            // to the bare counter on the (vanishingly unlikely) reserved-0 / collision.
+            // The session disambiguates across queries, the counter across cursors; falls back on 0/collision.
             const uint64_t counter = next_scan_cursor_id_++;
             const uint64_t minted = (session.data() << 20) ^ counter;
             cursor_id = (minted == 0 || active_scans_.find(minted) != active_scans_.end()) ? counter : minted;
@@ -1408,26 +1193,17 @@ namespace services::disk {
 
         auto cit = active_scans_.find(cursor_id);
         if (cit == active_scans_.end()) {
-            // Unknown / already-drained cursor.
             co_return make_drained(cursor_id);
         }
         auto& scan = cit->second;
 
-        // Position exhausted or matched-row limit already met: GC and reply drained.
         if (scan.pos.drained ||
             (scan.matched_limit >= 0 && scan.matched_emitted >= static_cast<uint64_t>(scan.matched_limit))) {
             active_scans_.erase(cit);
             co_return make_drained(cursor_id);
         }
 
-        // Re-resolve the storage. A concurrent DROP erased the entry between two fetches of a KNOWN
-        // cursor (cit was found above): the rows still to come are gone, so the only honest answer is
-        // a loud error, not the drained sentinel — that reads as "end of table" and handed the reader
-        // a truncated prefix as SUCCESS. This is distinct from an UNKNOWN cursor (handled above, where
-        // cit == end drains legitimately: the cursor was closed or already exhausted). NOT PG parity:
-        // PG's DROP takes ACCESS EXCLUSIVE and the reader either finishes or the NEXT statement fails,
-        // never mid-read — but we have no lock to wait on (a held mailbox deadlocks), so a loud error
-        // is the best achievable without one, and strictly better than a silent short answer.
+        // A DROP between two fetches must refuse loudly, not hand back a truncated prefix as the drained sentinel.
         auto storage_it = storages_.find(table_oid);
         if (storage_it == storages_.end() || storage_it->second == nullptr || storage_it->second->storage == nullptr) {
             active_scans_.erase(cit);
@@ -1438,19 +1214,8 @@ namespace services::disk {
         }
         auto* storage = storage_it->second->storage.get();
 
-        // Schema-identity check against the OPEN-time snapshot. The cursor's projection and
-        // pushed-down filter were bound POSITIONALLY at open, and a committed ALTER (or a
-        // computed table's schema growth) rebuilds the storage BETWEEN two fetches of the same
-        // cursor — after which the stored positions name DIFFERENT columns. Re-applying them
-        // blindly served the neighbour column of the same rows as a SUCCESS (observed:
-        // SELECT b answered with c's values from the first post-DDL batch on). The fast path
-        // below is a per-column (attoid, name, type) compare; on a change the fetch reads by
-        // COLUMN IDENTITY and answers in the OPEN-time shape, refusing loudly only when the
-        // data the cursor promised is physically gone or its filter cannot survive the move.
+        // Bound positionally at open; an ALTER between fetches can rename those, so a change reads by identity.
         auto all_types = storage->types();
-        // Allocation-free fast-path compare (the common case is "nothing changed"): walk the
-        // live physical + unmaterialized columns in the snapshot's own order without copying
-        // a single name.
         const bool schema_unchanged = [&] {
             const auto& physical = storage_it->second->table_storage.table().columns();
             const auto& unmaterialized = storage_it->second->unmaterialized_columns;
@@ -1483,9 +1248,7 @@ namespace services::disk {
                 return core::error_t{core::error_code_t::schema_error, std::move(msg)};
             };
 
-            // Match every OPEN column to its CURRENT ordinal by identity: attoid when both
-            // sides carry one (survives a RENAME), else (name, type) — unique even across a
-            // computed table's same-named type variants. `gone` = no current home.
+            // Identity is attoid when both sides carry one (survives RENAME), else (name, type); `gone` = no home.
             const size_t gone = current_columns.size();
             std::vector<size_t> open_to_current(scan.open_columns.size(), gone);
             for (size_t o = 0; o < scan.open_columns.size(); ++o) {
@@ -1516,10 +1279,7 @@ namespace services::disk {
                 open_to_current[o] = found;
             }
 
-            // The pushed-down filter binds OPEN ordinals inside its execution graph, where
-            // nothing can remap them; it stays valid only when every open column still sits at
-            // its open ordinal with its open type (a pure tail-append). Any shift or loss and
-            // it would silently test the wrong columns — refuse instead.
+            // The filter binds open ordinals inside its graph, so any positional shift tests the wrong columns.
             if (scan.filter != nullptr) {
                 for (size_t o = 0; o < open_to_current.size(); ++o) {
                     if (open_to_current[o] != o) {
@@ -1528,8 +1288,6 @@ namespace services::disk {
                 }
             }
 
-            // The open slots this cursor hands upstream (its projection; empty == every open
-            // column), each remapped to the column's current home.
             reslot.reserve(scan.projected_cols.empty() ? scan.open_columns.size() : scan.projected_cols.size());
             remapped_projected.reserve(reslot.capacity());
             auto need_slot = [&](size_t slot) -> bool {
@@ -1555,11 +1313,7 @@ namespace services::disk {
             }
         }
 
-        // Construct the projected output chunk, then re-seek + read ONE batch from the stored
-        // position. fetch_next_batch builds a transient scan state, pins only one batch's segments,
-        // and releases them before returning — nothing pinned survives this handler. On the
-        // identity-remap leg the chunk is CURRENT-shaped (the storage fills slots by its own
-        // ordinals) and is re-slotted into the OPEN-time shape after the read.
+        // On the identity-remap leg the chunk is current-shaped, then re-slotted into the open shape after read.
         const std::vector<size_t>* projected_ptr =
             schema_unchanged ? (scan.projected_cols.empty() ? nullptr : &scan.projected_cols) : &remapped_projected;
         auto batch =
@@ -1577,8 +1331,6 @@ namespace services::disk {
             co_return fetch_r.convert_error<fetch_batch_t>();
         }
 
-        // Enforce the post-filter matched-row limit across batches: trim the boundary batch to the
-        // remaining budget and stop advancing once it is spent.
         if (scan.matched_limit >= 0) {
             const uint64_t budget = static_cast<uint64_t>(scan.matched_limit) - scan.matched_emitted;
             if (batch->size() >= budget) {
@@ -1589,16 +1341,12 @@ namespace services::disk {
         scan.matched_emitted += batch->size();
 
         if (batch->size() == 0) {
-            // No rows this round (drained, or a boundary batch trimmed to 0): GC and reply drained.
             active_scans_.erase(cit);
             co_return make_drained(cursor_id);
         }
 
         if (!schema_unchanged) {
-            // Re-slot the fetched vectors into the OPEN-time shape: the plan above this cursor
-            // addresses reply chunks by the ordinals it was planned with, and every earlier
-            // batch already crossed the mailbox in that shape. reference() shares the fetched
-            // buffers, so this is per-column pointer work, not a copy.
+            // reference() shares the fetched buffers — per-column pointer work, not a copy.
             std::pmr::vector<components::types::complex_logical_type> open_types{resource()};
             open_types.assign(scan.open_types.begin(), scan.open_types.end());
             auto reshaped =
@@ -1619,26 +1367,17 @@ namespace services::disk {
         co_return fetch_batch_t{std::move(batch), cursor_id};
     }
 
-    // Release a cursor abandoned before it drained. Nothing else erases the entry — the drain
-    // paths above only fire when the source keeps pulling — so without this leg a source that
-    // stops early (error mid-pump, satisfied LIMIT, dropped sub-plan) leaves the entry alive for
-    // the life of the process, and a live entry permanently gates compact() on its oid.
+    // Nothing else erases an abandoned cursor's entry, and a live entry permanently gates compact() on its oid.
     agent_disk_t::unique_future<void> agent_disk_t::storage_close_cursor_inner(session_id_t /*session*/,
                                                                                components::catalog::oid_t table_oid,
                                                                                uint64_t cursor_id) {
         trace(log_, "agent_disk[{}]::storage_close_cursor_inner: oid={} cursor={}", pool_idx_,
               static_cast<unsigned>(table_oid), cursor_id);
-        // Idempotent by construction: an unknown id is already the desired state (the drain
-        // paths erase the entry themselves), so this reports nothing and cannot fail.
         active_scans_.erase(cursor_id);
         co_return;
     }
 
-    // Mint a position-less compact-hold entry (see the header). It rides active_scans_ so
-    // has_active_scan_for_oid gates checkpoint_inner's compact with the machinery cursors
-    // already use, and storage_close_cursor_inner releases it unchanged. Never ADVANCEd:
-    // an accidental fetch-next on this id replies drained (the unknown-cursor path, after
-    // the entry's 0-position is exhausted immediately).
+    // Rides active_scans_ so the checkpoint's compact gate and close_cursor treat it as a cursor.
     agent_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
     agent_disk_t::storage_open_scan_hold_inner(session_id_t session, components::catalog::oid_t table_oid) {
         auto it = storages_.find(table_oid);
@@ -1663,9 +1402,7 @@ namespace services::disk {
         co_return hold_id;
     }
 
-    // The entry's current compact epoch (see disk_contract::storage_compact_epoch). Read by
-    // index builders BEFORE the scan that feeds the index; the fetch-side comparison in
-    // storage_fetch_inner is what the stamp arms.
+    // Read by index builders before the index-feeding scan; arms storage_fetch_inner's epoch check.
     agent_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
     agent_disk_t::storage_compact_epoch_inner(session_id_t /*session*/, components::catalog::oid_t table_oid) {
         auto it = storages_.find(table_oid);
@@ -1677,17 +1414,7 @@ namespace services::disk {
         co_return it->second->table_storage.table().compact_epoch();
     }
 
-    // AGGREGATE-PUSHDOWN REDUCE — the DEDICATED protocol leg. Runs the whole
-    // GROUP BY over this agent's OWN slice (send-free, synchronous: reduce_pushed_aggregate
-    // rebuilds the operator_group from the POD and applies the shipped WHERE
-    // `filter` + `projected_cols`), and replies ALL final aggregated rows in ONE reply —
-    // the result is bounded by #groups, so no cursor is minted and the raw-scan protocol
-    // stays a pure scan. A not-owned / record-only oid reduces over the EMPTY input: the
-    // group's empty-input finalize still emits a scalar aggregate's single (COUNT=0 /
-    // NULL) row, typed via spec.output_types. SINGLE-OWNER INVARIANT: these are FINAL
-    // rows (not partials) — valid only while ONE agent owns the whole table; sharded
-    // slices would need partial states + a real coordinator merge (operator_group_merge
-    // is the socket for that).
+    // Replies final rows, not partials — valid only while one agent owns the whole table.
     agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     agent_disk_t::storage_reduce_inner(session_id_t session,
                                        components::catalog::oid_t table_oid,
@@ -1697,10 +1424,7 @@ namespace services::disk {
                                        components::operators::pushed_aggregate_spec_t spec) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            // NOT an empty fold. The scalar aggregate's empty-input finalize would emit a
-            // single COUNT=0 / SUM=NULL row here, indistinguishable from the row a real
-            // empty table produces — a statement about a table, made by a read that reached
-            // no storage. An empty OWNED slice still folds to that row below.
+            // Not an empty fold: a scalar empty-input row would claim facts about a table never reached.
             std::pmr::string what{"storage_reduce: no materialized storage to reduce over: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
@@ -1714,17 +1438,11 @@ namespace services::disk {
                                                  projected_cols,
                                                  txn,
                                                  spec);
-        // A real reduce error (fetch / push / finalize) rides the wrapper as an error_t —
-        // DISTINCT from a legitimately-empty GROUP BY result — so a scalar-aggregate
-        // failure surfaces instead of masquerading as an empty reply. No throw across the
-        // mailbox (R2).
         if (reduced_r.has_error()) {
             co_return reduced_r;
         }
 #ifdef DEV_MODE
-        // Record EXACTLY the rows that will cross the agent->coordinator mailbox: the sum
-        // over the reduced chunks (1 for a scalar aggregate, one per group for a GROUP BY)
-        // — never the raw scanned rows. See pushdown_reply_rows().
+        // The rows that cross the mailbox — never the raw scanned rows.
         {
             uint64_t reply_rows = 0;
             for (const auto& c : reduced_r.value()) {
@@ -1736,17 +1454,8 @@ namespace services::disk {
         co_return reduced_r;
     }
 
-    // STREAMING SINGLE-PASS HASH SEMI-JOIN. Given the input key-tuple set
-    // (`keys`, column j == key_col_indices[j]-th stored column, row i == key-tuple i) and one
-    // owned `storage`, return result[i] = the row_ids of every table row whose key columns
-    // equal key-tuple i (one bucket per input key, input order; empty when nothing matches).
-    // Builds ONE typed hash of the key set, then STREAMS the table exactly once
-    // (storage.fetch_next_batch, projected to the key columns), probing each streamed row
-    // against the hash and bucketing its row_id into every matching key — one scan pass per
-    // call (i.e. per <=1024-key input chunk the FK operators send), NOT one per key, so
-    // O(table_rows + nkeys) instead of O(nkeys * table_rows). No logical_value_t round-trip
-    // (R1): typed data_chunk_t::hash + the NULL-aware typed verify
-    // components::vector::cells_equal, shared with GROUP BY / HASH JOIN / UNIQUE.
+    // result[i] = row_ids matching key-tuple i (input order, empty bucket on no match); one streamed pass
+    // per call regardless of key count — O(table_rows + nkeys), not O(nkeys * table_rows).
     core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>
     fk_hash_semijoin(std::pmr::memory_resource* resource,
                      components::storage::storage_t& storage,
@@ -1759,18 +1468,10 @@ namespace services::disk {
         for (std::uint64_t i = 0; i < nkeys; ++i) {
             result.emplace_back();
         }
-        // Zero keys is not a failure: an empty request has an empty answer, and the
-        // one-bucket-per-key invariant still holds at size 0.
         if (nkeys == 0) {
             return result;
         }
-        // ARITY GUARD. A key chunk whose column count disagrees with the resolved key columns —
-        // or an empty key column set — describes a semi-join that CANNOT BE EVALUATED, and must
-        // not answer with one EMPTY BUCKET PER KEY: an empty bucket is the affirmative answer
-        // "nothing in this table references that key", which ON DELETE CASCADE / RESTRICT read
-        // as "this parent has no children", letting the parent row go while its children stay
-        // behind referencing nothing. The shape of an unevaluable request is an error, never an
-        // all-miss answer — the same rule read_chunks_by_keys_inner states for its own key arity.
+        // Unevaluable must refuse, not answer all-miss — empty buckets affirm "no children" to CASCADE/RESTRICT.
         if (key_col_indices.empty()) {
             return core::error_t{core::error_code_t::invalid_parameter,
                                  std::pmr::string{"fk semi-join: no key columns given", resource}};
@@ -1783,12 +1484,7 @@ namespace services::disk {
 
         const auto& cols = storage.columns();
 
-        // PHYSICAL-TYPE NORMALIZATION. FK equality must coerce cross-type keys (INT-width,
-        // INT<->FLOAT — constant_filter_t::compare<T>, column_state.hpp), but a raw typed hash
-        // does NOT coerce — so cast each input key column to its STORED key column's physical
-        // type before hashing; both sides then hash identically. (Temporal cross-UNIT FKs —
-        // DATE(days) <-> TIMESTAMP(µs) — are out of scope for this raw cast; an FK column
-        // normally shares the referenced column's exact type.)
+        // A raw typed hash does not coerce, so each key column is cast to the stored type first.
         std::pmr::vector<components::types::complex_logical_type> stored_key_types{resource};
         stored_key_types.reserve(key_col_indices.size());
         for (auto ci : key_col_indices) {
@@ -1796,59 +1492,20 @@ namespace services::disk {
         }
         components::vector::data_chunk_t norm_keys(resource, stored_key_types, nkeys);
         norm_keys.set_cardinality(nkeys);
-        // A KEY CELL WITH NO EXACT IMAGE IN THE STORED COLUMN'S DOMAIN IS A MISS, NOT A REFUSAL
-        // AND NOT A DIFFERENT PROBE. The stored column physically cannot hold such a value, so NO
-        // row can be equal to it: the evaluable answer is an empty bucket — the same answer a NULL
-        // key cell already gets. This is not the arity guard's situation: there the request CANNOT
-        // BE EVALUATED and an empty bucket would be a lie; here it is evaluated and the answer is
-        // genuinely "nothing".
-        // Two ways a cell leaves the domain:
-        //   * OUT OF RANGE. cast_vector range-checks per element, so INT64 70000 -> INT16 does not
-        //     truncate to 4464 and false-match — but it answers conversion_failure for the whole
-        //     call, which would abort the statement AND the in-domain keys batched with it. On the
-        //     parent side (operator_fk_cascade) that fails a DELETE whose parent key provably has
-        //     no children.
-        //   * NOT EXACTLY REPRESENTABLE. The range check covers MAGNITUDE only: cast_value_fits
-        //     answers true for floating -> integral whenever the magnitude fits, and the cast then
-        //     truncates the fraction. DOUBLE 1.5 against a BIGINT key column normalized to 1 and
-        //     hashed equal to a stored 1 — the same false FK match by the other door. The verify
-        //     below cannot catch it: it compares the ALREADY normalized key, so both sides read 1.
-        // The one rule that covers both: normalize a cell only if it round-trips EXACTLY through
-        // the stored type. Per row, because the two outcomes differ per row and a vector-wide cast
-        // can only speak for the whole column. Only the cross-physical-type columns pay for it (an
-        // FK column normally shares the referenced column's type).
+        // A key cell outside the stored domain is a miss, not a refusal — a vector-wide cast would abort the
+        // in-domain keys batched with it, and magnitude-only range checks miss cases like DOUBLE 1.5 -> 1.
         std::pmr::vector<std::uint8_t> domain_miss(nkeys, std::uint8_t{0}, resource);
         for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
             auto& src = keys.data[j];
             if (src.get_vector_type() != components::vector::vector_type::FLAT) {
                 src.flatten(nkeys);
             }
-            // THE BULK LEG'S CONDITION IS THE CALLEE'S PRECONDITION, NOT THE WEAKER PHYSICAL ONE.
-            // vector_ops::copy asserts LOGICAL equality (vector_operations.cpp, the 6-argument
-            // overload), so a pair that agrees only PHYSICALLY — DATE and INTEGER are both INT32,
-            // TIME/TIMESTAMP/BIGINT/DECIMAL are all INT64 — used to enter here and split by build
-            // type: SIGABRT on the assert under Debug, a raw bit copy under NDEBUG. No FK
-            // type-compatibility check exists at DDL time, so `FOREIGN KEY (d DATE) REFERENCES
-            // parent (id INTEGER)` reaches this line from ordinary SQL and killed the process on
-            // the child's first INSERT (integration test
-            // test_sql_features::fk_cross_logical_same_physical_key_is_answered).
-            // Such a pair now falls through to the per-row leg below, which is the leg that
-            // already owns cross-type keys: it settles the pair once on a null probe and then
-            // admits a cell only if it round-trips EXACTLY. The bulk leg keeps the identical-type
-            // case, which is every FK in practice.
+            // vector_ops::copy asserts logical equality, so a physically-matching pair (DATE/INTEGER) needs per-row.
             if (src.type() == stored_key_types[j]) {
                 components::vector::vector_ops::copy(src, norm_keys.data[j], nkeys, 0, 0);
                 continue;
             }
-            // SETTLE THE TYPE PAIR ONCE, BEFORE ANY ROW IS JUDGED. cast_vector reports
-            // "string casts are not supported" and "physical type is not castable" through
-            // the SAME conversion_failure code as an out-of-range VALUE, so the per-row
-            // handling below cannot tell an unevaluable pair from a domain miss on the error
-            // alone — and collapsing the first into an empty bucket would be the arity guard's
-            // catastrophe: ON DELETE CASCADE / RESTRICT read an empty bucket as "this parent
-            // has no children" and let the parent go while its children stay behind.
-            // The probe is a single ALL-NULL row: the numeric callback examines no value for
-            // an invalid row, so a refusal here can only be about the TYPES.
+            // An all-NULL probe settles an uncastable type pair once, since cast_vector reports it like a bad value.
             {
                 components::vector::vector_t null_probe(resource, src.type(), 1);
                 null_probe.set_null(0, true);
@@ -1871,10 +1528,7 @@ namespace services::disk {
                     norm_keys.data[j].set_null(i, true);
                     continue;
                 }
-                // THE ROUND TRIP IS THE TEST. Casting back into the key's own type and
-                // comparing with the original is what separates "the stored column can hold
-                // this exact value" from "the cast produced some other value that happens to
-                // fit" — the fraction case answers the first cast without an error.
+                // A fraction like 1.5->1 forward-casts without error, so only the round trip catches it.
                 auto back = components::vector::vector_ops::cast_vector(resource, fwd.value(), src.type(), 1);
                 if (back.has_error() || !components::vector::cells_equal(back.value(), 0, one_src, 0)) {
                     domain_miss[i] = 1;
@@ -1885,16 +1539,7 @@ namespace services::disk {
             }
         }
 
-        // Typed hash index: tuple-hash -> input key indices. Two kinds of input tuple are
-        // left OUT of the index, and both then answer with an empty bucket:
-        //   * a tuple with a NULL key cell — a NULL foreign key references nothing, matching
-        //     the callers' MATCH null-skip;
-        //   * a tuple carrying a domain miss — a cell with no exact image in the stored key
-        //     column's type (see the normalization above).
-        // Nullness is read from the ORIGINAL keys chunk because that chunk is the semantic
-        // source of the tuples; the normalized chunk agrees on it (validity travels per row
-        // through both the copy and the cast leg) and additionally carries the domain misses,
-        // which domain_miss names separately so the two facts stay distinguishable.
+        // A NULL key cell or a domain miss stays out of the index and answers an empty bucket.
         components::vector::vector_t key_hash_vec(resource, components::types::logical_type::UBIGINT, nkeys);
         std::vector<std::uint64_t> norm_col_ids(key_col_indices.size());
         for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
@@ -1920,16 +1565,11 @@ namespace services::disk {
             key_index[key_hashes[i]].push_back(i);
         }
 
-        // STREAM the table ONCE, projecting to the key columns in KEY ORDER so both sides' hash
-        // col-ids align. fetch_next_batch re-seeks a TRANSIENT scan from pos each call, so peak
-        // memory is one batch and nothing pinned survives — the same streaming source the agent
-        // drives for the fetch-next scan.
+        // Streams the table once in key order so both sides' hash col-ids align; peak memory is one batch.
         std::vector<std::size_t> projected_cols(key_col_indices.begin(), key_col_indices.end());
         std::vector<std::uint64_t> scan_col_ids(key_col_indices.begin(), key_col_indices.end());
         components::storage::scan_position_t pos{};
-        // A fetch failure stops the scan and would leave the remaining buckets empty. That
-        // shape is indistinguishable from "these keys matched nothing", which is precisely
-        // the answer that makes an FK or UNIQUE check pass — so it is returned as an error.
+        // A fetch failure is returned as an error, not an empty scan — that shape would pass an FK/UNIQUE check.
         auto scan_error = for_each_storage_batch(
             storage,
             pos,
@@ -1966,9 +1606,7 @@ namespace services::disk {
                     if (it_h == key_index.end()) {
                         continue;
                     }
-                    // Verify every hash-colliding input key against this row (typed, no coercion —
-                    // both sides are already in the stored physical type) and bucket the row_id into
-                    // each matching key (duplicate input keys each collect the row).
+                    // Verifies every hash-colliding key (typed, no coercion) and buckets the row_id per match.
                     for (std::uint64_t cand : it_h->second) {
                         bool match = true;
                         for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
@@ -1993,14 +1631,8 @@ namespace services::disk {
         return result;
     }
 
-    // Resolve the key-column NAMES to storage column indices against an owned slice entry.
-    // Fills out_indices in name order and returns no_error() on success.
-    // Every failure here means the read CANNOT BE PERFORMED — a different fact from "the key
-    // matched nothing", and one that must not be collapsed into an empty result: that is how a
-    // corrupt or misrouted catalog read surfaces to the user as "Database does not exist". The
-    // causes are kept distinct because they are: a misrouted oid is ours, an unknown column
-    // name is the caller's.
-    // Shared by scan_by_keys_inner and read_chunks_by_keys_inner.
+    // A failure here must not collapse into an empty result, or a misrouted/corrupt read surfaces as
+    // "Database does not exist".
     static core::error_t resolve_key_col_indices(const collection_storage_entry_t* entry,
                                                  const std::pmr::vector<std::string>& key_col_names,
                                                  std::pmr::vector<std::uint64_t>& out_indices,
@@ -2033,11 +1665,7 @@ namespace services::disk {
         return core::error_t::no_error();
     }
 
-    // Validate storage column ORDINALS for a keyed catalog read. The catalog reads address
-    // columns by position (components/catalog/helpers.hpp), so no name crosses the mailbox;
-    // what makes a position an identity is catalog::system_schemas::column_order_is_pinned.
-    // Bounds are still checked: a stale constant must fail loudly, not silently read a
-    // neighbouring column.
+    // The catalog reads columns by position, not name — bounds are still checked so a stale index fails loudly.
     static core::error_t validate_key_col_indices(const collection_storage_entry_t* entry,
                                                   const std::pmr::vector<std::uint64_t>& key_col_indices,
                                                   std::pmr::memory_resource* resource) {
@@ -2064,15 +1692,9 @@ namespace services::disk {
                                      std::pmr::vector<std::string> key_col_names,
                                      components::vector::data_chunk_t keys,
                                      components::table::transaction_data txn) {
-        // result[i] = row_ids matching keys[i]; one (possibly empty) entry per key,
-        // preserving input order. Name→index resolution runs once for the whole batch,
-        // then the whole key set is answered by ONE streamed hash semi-join pass
-        // (fk_hash_semijoin), not one filtered scan per key.
         std::pmr::vector<std::pmr::vector<std::int64_t>> result{resource()};
         result.reserve(keys.size());
 
-        // Resolve the key column NAMES to storage indices once (same column set for every key).
-        // A read that cannot be performed is an error, never an empty answer.
         auto it = storages_.find(table_oid);
         const collection_storage_entry_t* entry = (it == storages_.end()) ? nullptr : it->second.get();
         std::pmr::vector<std::uint64_t> key_col_indices{resource()};
@@ -2081,10 +1703,7 @@ namespace services::disk {
             co_return resolved;
         }
 
-        // Delegate the actual match to the streaming SINGLE-PASS hash semi-join: ONE streamed
-        // pass over the table per call, regardless of key count. The helper is a free function
-        // so it can be driven directly by a counting storage in unit tests; scan_by_keys_inner
-        // is the sole production caller (single path, R6).
+        // fk_hash_semijoin is a free function so tests can drive it via a counting storage; sole caller (R6).
         co_return fk_hash_semijoin(resource(), *entry->storage, key_col_indices, keys, txn);
     }
 
@@ -2094,10 +1713,7 @@ namespace services::disk {
                                            components::vector::data_chunk_t keys,
                                            std::pmr::vector<std::uint64_t> projected_cols,
                                            components::table::transaction_data txn) {
-        // Single key-tuple: `keys` already carries exactly one row, so it IS the 1-row
-        // batch view the plural read_chunks_by_keys_inner expects. Delegate to it inline
-        // on this same agent thread (its whole body stays off the mailbox) and unwrap the
-        // single entry.
+        // `keys` already IS the 1-row batch read_chunks_by_keys_inner expects; this co_await is a local call.
         std::pmr::vector<components::vector::data_chunk_t> empty{resource()};
         auto r = co_await read_chunks_by_keys_inner(table_oid,
                                                     std::move(key_col_indices),
@@ -2117,10 +1733,7 @@ namespace services::disk {
                                             components::vector::data_chunk_t keys,
                                             std::pmr::vector<std::uint64_t> projected_cols,
                                             components::table::transaction_data txn) {
-        // result[i] = matched chunks for key-tuple i; one (possibly empty) entry per key,
-        // preserving input order. Key columns arrive as storage ORDINALS, so there is no name
-        // resolution here at all; the whole batch is served by one scan_local call on this
-        // agent thread (no self-send).
+        // Key columns arrive as storage ORDINALS (no name resolution), served by one scan_local call, no self-send.
         std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> result{resource()};
         result.reserve(keys.size());
 
@@ -2130,26 +1743,16 @@ namespace services::disk {
             co_return valid;
         }
 
-        // Columnar keys: column j == key_col_indices[j], row i == key-tuple i. Arity is uniform
-        // across the chunk, so a mismatch (chunk column count != key columns) is an error, not an
-        // empty answer. Each filter constant is the single
-        // materialization of a key cell (keys.value(ki, i)): the filter API requires a
-        // logical_value_t, so this is the irreducible floor — no row-major keys cross the mailbox.
+        // Columnar keys (column j == key_col_indices[j]); each filter constant materializes one key cell,
+        // since the filter API requires a logical_value_t — no row-major keys cross the mailbox.
         const std::uint64_t nkeys = keys.size();
         if (keys.column_count() != key_col_indices.size()) {
             co_return core::error_t{
                 core::error_code_t::invalid_parameter,
                 std::pmr::string{"keyed read: key chunk arity does not match key columns", resource()}};
         }
-        // ONE pass for the whole batch. The key tuple becomes the same thing a pushed WHERE is —
-        // `col == k0 AND col == k1 ...` as a graph with the key cells bound as parameters — and the
-        // batch becomes the OR of those tuples, so N keys cost ONE scan instead of N.
-        // No pruning is lost by this: check_zonemap_segments (row_group.cpp) unconditionally
-        // returns true while a filter is only a graph, so a per-key "filtered scan" also read
-        // the whole table and merely selected rows afterwards.
-        // Attribution back to individual keys runs the SAME engine the scan itself uses
-        // (expressions::run_graph, as in row_group_t::filter_indexing), not a hand-rolled cell
-        // comparison, so a row lands in exactly the buckets its own predicate accepts.
+        // The key tuple becomes a pushed-WHERE graph, and the batch filter is the OR of those tuples, so N
+        // keys cost ONE scan; attribution reruns the same run_graph engine the scan itself uses.
         namespace expr = components::expressions;
         const std::size_t narity = key_col_indices.size();
 
@@ -2169,8 +1772,7 @@ namespace services::disk {
                                                  core::parameter_id_t{param_id});
         };
 
-        // Per-key filters: needed for attribution, and for nkeys == 1 the single one IS the scan
-        // filter (the OR of one tuple is that tuple).
+        // Per-key filters exist for attribution; for nkeys==1 the single one IS the scan filter.
         std::pmr::vector<std::unique_ptr<components::table::table_filter_t>> key_filters{resource()};
         key_filters.reserve(nkeys);
         components::types::parameter_map_t all_parameters{resource()};
@@ -2226,15 +1828,11 @@ namespace services::disk {
                                                                               expr::condition_kind::computed);
         }
 
-        // No row limit (-1). A scan_error here is a real io_error / data_corruption from a failed
-        // block pin, never "this key matched nothing".
+        // No row limit; a scan_error here is a real io_error, never "this key matched nothing".
 #ifdef DEV_MODE
         g_catalog_key_scans.fetch_add(1, std::memory_order_relaxed);
 #endif
-        // Projection comes from the CALLER: only it knows which columns it reads. An empty set
-        // means "all columns" (full_scan's contract) and is what a caller that cannot enumerate
-        // its set passes. Non-projected columns stay ordinal-stable placeholders, so a caller
-        // that projects too narrowly reads an empty column instead of a value.
+        // An empty projection means "all columns"; non-projected columns stay ordinal-stable placeholders.
         std::vector<std::size_t> scan_projection(projected_cols.begin(), projected_cols.end());
         // The key columns are read by the filter itself, so they must survive the projection.
         for (const auto key_col : key_col_indices) {
@@ -2254,8 +1852,7 @@ namespace services::disk {
         auto matched = std::move(scan_r.value());
 
         if (nkeys == 1) {
-            // The scan filter WAS key 0's predicate, so every returned row is key 0's. Running the
-            // same predicate again would return the same rows at the cost of another evaluation.
+            // The scan filter WAS key 0's predicate, so re-running it would just repeat the same evaluation.
             result[0] = std::move(matched);
             co_return std::move(result);
         }
@@ -2265,8 +1862,7 @@ namespace services::disk {
             if (rows == 0) {
                 continue;
             }
-            // Hoisted: data_chunk_t::types() copies a complex_logical_type per column, and each
-            // copy heap-allocates its alias. Once per chunk, not once per key.
+            // Hoisted out of the per-key loop: types() copies+heap-allocates an alias per column.
             const auto chunk_types = chunk.types();
             for (std::uint64_t i = 0; i < nkeys; ++i) {
                 auto decided = expr::run_graph(key_filters[i]->graph.get(),
@@ -2289,10 +1885,7 @@ namespace services::disk {
                 if (count == 0) {
                     continue;
                 }
-                // Built with the SAME projection as the scan. Full-width instead would allocate
-                // a buffer for a column the scan never materialized, and the copy silently skips
-                // a placeholder source — the caller would then read a zero-filled, non-NULL cell
-                // where the contract promises a placeholder.
+                // Reuses the scan's own projection — full width would read an unmaterialized column as zero.
                 components::vector::data_chunk_t out =
                     scan_projection.empty()
                         ? components::vector::data_chunk_t{resource(), chunk_types, count}
@@ -2311,9 +1904,7 @@ namespace services::disk {
         co_return std::move(result);
     }
 
-    // There is no manager fallback behind these two accessors — the manager is a pure router —
-    // so a missing storage has to REFUSE: an empty type list and a zero row count are also what
-    // a real storage legitimately answers.
+    // No manager fallback: a missing storage must REFUSE, since a real storage can legitimately answer empty/zero.
     agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>>
     agent_disk_t::storage_types_inner(components::catalog::oid_t table_oid) {
         auto it = storages_.find(table_oid);
@@ -2348,39 +1939,8 @@ namespace services::disk {
         co_return entry->storage->total_rows();
     }
 
-    // THE CHECKPOINT SIDECAR WRITER, IN FOUR PIECES — the contract is the sequence, so it is
-    // stated once here and each function below carries only its own step.
-    // DURABLY PUBLISH A TABLE'S CHECKPOINT SIDECAR, or leave the one already there untouched.
-    // There is no third outcome, and that is the whole contract: every reader of a
-    // `.otbx.wal_id` decides what to replay from it, so a file that is neither the old id nor the
-    // new one is a state none of them can honestly interpret.
-    // Without the full sequence two ROUTINE paths produce a short or zero-length sidecar with no
-    // corruption anywhere: a full device or an I/O error during a checkpoint (no crash at all),
-    // and the classic rename-without-fsync, whose crash image is a zero-length file under the new
-    // name. The steps, in the order the guarantee needs:
-    //   * the bytes are counted (write_result_t reports both how much landed and whether it
-    //     finished -- a full device short-counts rather than refusing outright);
-    //   * the temp is fsynced BEFORE the rename, so the rename can never publish a name over data
-    //     that has not reached the device -- the step whose absence made the zero-length crash
-    //     image possible;
-    //   * on ANY failure before the rename the temp is removed and the rename is not attempted,
-    //     so the sidecar already on disk is left byte-identical;
-    //   * the directory is fsynced after the rename, so the rename itself survives a crash. Its
-    //     failure is a WARNING and not a refusal: the id is already published and the worst a
-    //     crash can then show is the PREVIOUS sidecar, a state readers understand.
-    // close() is not checked because this filesystem layer's close() returns void; the fsync
-    // above it is the check a checked close would have stood in for.
-    // AND THE SEQUENCE IS SPLIT AT THE ROUND'S COMMIT POINT. Everything up to and including the
-    // staging fsync is stage_checkpoint_sidecar and runs BEFORE the entry commits anything; only
-    // the rename (publish_checkpoint_sidecar) and the directory fsync
-    // (sync_checkpoint_sidecar_directory) run after. A checkpoint's atomic point is write_header's
-    // own fsync, so a failure after it cannot be taken back: the .otbx would hold round N while
-    // the DURABLE floor still named N-1, and a restart would re-apply every record the round
-    // absorbed. Running the whole sidecar write there put ENOSPC, EIO and a refused create inside
-    // that window -- none of which needs a crash. Staged first, those become an ordinary deferral
-    // with nothing committed. What remains after the commit point is the rename alone, and closing
-    // THAT needs the wal id inside database_header_t (one atomic point instead of two files),
-    // which is a format change and not this file's to make.
+    // Checkpoint sidecar publish, split at the round's commit point: staging (write+fsync) runs before
+    // write_header commits; rename+directory fsync run after, since a crash mid-write risks a zero-length sidecar.
     namespace {
         std::filesystem::path checkpoint_sidecar_path(const std::filesystem::path& otbx_path) {
             auto p = otbx_path;
@@ -2394,10 +1954,6 @@ namespace services::disk {
             return p;
         }
 
-        // STEP ONE: put the successor id on the device under the staging name, published to
-        // nobody. Removes any stump a previously refused round left, creates the temp fresh,
-        // counts the bytes, fsyncs it. Every failure leg removes the temp, so a refusal leaves
-        // the live sidecar byte-identical and no new name next to it.
         [[nodiscard]] core::error_t stage_checkpoint_sidecar(std::pmr::memory_resource* resource,
                                                             const std::filesystem::path& otbx_path,
                                                             wal::id_t wal_id) {
@@ -2438,15 +1994,8 @@ namespace services::disk {
             return core::error_t::no_error();
         }
 
-        // Drop the staged bytes without publishing them. Called on every path that stages and
-        // then decides not to commit the entry after all, so a deferred table does not leave its
-        // successor id lying in the staging file.
-        // The std::error_code is read and reported, not swallowed: a staging file that CANNOT be
-        // removed is not harmless. stage_checkpoint_sidecar's own stale-tmp remove hits the same
-        // obstacle next round, so the entry stops being able to stage at all — it defers with
-        // nothing committed, round after round, and its WAL records are never released. That is
-        // recoverable and it is not this function's to fix, but it must be visible; the removal
-        // itself stays advisory, because a name nothing reads cannot make the round wrong.
+        // Drops the staged bytes on a not-committing path; the remove error is reported, not swallowed — a
+        // stale tmp would make stage_checkpoint_sidecar defer this entry forever.
         void discard_staged_checkpoint_sidecar(log_t& log,
                                                std::size_t pool_idx,
                                                const std::filesystem::path& otbx_path) {
@@ -2463,9 +2012,6 @@ namespace services::disk {
             }
         }
 
-        // The second half, part one: rename the staged bytes over the live name. This runs AFTER
-        // the entry's commit point, so its failure cannot be undone -- see the note above for
-        // what that costs and what would be needed to remove the last of it.
         [[nodiscard]] core::error_t publish_checkpoint_sidecar(std::pmr::memory_resource* resource,
                                                               const std::filesystem::path& otbx_path) {
             const auto sidecar_path = checkpoint_sidecar_path(otbx_path);
@@ -2484,13 +2030,8 @@ namespace services::disk {
             return core::error_t::no_error();
         }
 
-        // The second half, part two, AND A DIFFERENT OUTCOME FROM THE ONE ABOVE — which is the
-        // whole reason it is a separate function. When the rename is refused the durable floor
-        // is SPLIT: the .otbx names this round's root and the sidecar still names the previous
-        // id, so a restart re-applies records the round already absorbed. When only this fsync
-        // is refused the id IS published; what is in doubt is whether it survives a crash, and
-        // the worst a crash can then show is the previous id. Reporting both through one error
-        // made the caller say "the durable floor may be split" about a floor that is not.
+        // Kept separate from publish: a refused rename SPLITS the durable floor, while a refused directory
+        // fsync only risks surfacing the previous id on crash — a much milder failure.
         [[nodiscard]] core::error_t sync_checkpoint_sidecar_directory(std::pmr::memory_resource* resource,
                                                                      const std::filesystem::path& otbx_path) {
             const auto sidecar_path = checkpoint_sidecar_path(otbx_path);
@@ -2510,22 +2051,8 @@ namespace services::disk {
     agent_disk_t::unique_future<checkpoint_result_t>
     agent_disk_t::checkpoint_inner(session_id_t /*session*/, wal::id_t current_wal_id, uint64_t compact_watermark) {
         trace(log_, "agent_disk[{}]::checkpoint_inner: {} entries in local slice", pool_idx_, storages_.size());
-        // Per DISK entry, crash-safe checkpoint sequence (order matters):
-        //   the free refusals first (degraded storage, an open cursor, version stamps above the
-        //   watermark) — each of them ends the entry's round without touching the device — then
-        //   STAGE the .wal_id sidecar (tmp + fsync, nothing published), then compact, then
-        //   checkpoint(wal_id) — whose header write IS the atomic commit point under shadow
-        //   paging; no external backup copy is taken — then PUBLISH the sidecar (rename +
-        //   directory fsync). The staging sits between the free refusals and the first thing
-        //   that commits: everything which can fail on a full or failing device fails while the
-        //   entry can still be deferred with nothing committed, and only the rename is left on
-        //   the far side of the commit point.
-        //   Tally min(prev_checkpoint_wal_id_) for the manager's
-        //   cross-agent std::min. Null entries are skipped.
-        // An entry that is UNCHANGED since its durable root skips the compact and the rewrite —
-        //   and nothing else. It still advances its wal-id chain, still writes its sidecar and
-        //   still contributes to the min, so the round's WAL floor does not depend on which
-        //   entries had work to do. See the gate below.
+        // Order matters: free refusals exit before the device is touched, then stage, compact, checkpoint's
+        // header commit — only the sidecar rename/fsync run after that point.
 #ifdef DEV_MODE
         g_table_checkpoints.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -2542,14 +2069,7 @@ namespace services::disk {
                 continue;
             }
 
-            // Degraded-storage gate, FIRST. The block manager latched a write/fsync that never
-            // reached the device, or a free list proven corrupt. Both latches are sticky and
-            // both make write_header refuse to commit — so this entry can no longer produce a
-            // durable root, and every round spent trying costs a full extra copy of the table
-            // inside the .otbx (the released blocks stay quarantined because promotion only
-            // happens on a committed header). Defer the entry, feed its UNCHANGED
-            // prev_checkpoint_wal_id into the min so the WAL keeps every record this table
-            // still needs, and say so loudly once per round.
+            // A degraded block store makes write_header always refuse, so the entry defers instead of compacting.
             if (entry->table_storage.storage_degraded()) {
                 warn(log_,
                      "agent_disk[{}]::checkpoint_inner oid={} block storage is degraded (a write/fsync did "
@@ -2562,13 +2082,8 @@ namespace services::disk {
                 continue;
             }
 
-            // Cursor gate: defer the WHOLE round for this oid while a streaming fetch-next
-            // cursor is open on it — its stored absolute position indexes the un-swapped
-            // collection, so the atomic row_groups_ swap a compact performs would shift rows out
-            // from under it. The entry is NOT checkpointed either (the `continue` below
-            // skips it): it keeps its old file and sidecar, and feeds its UNCHANGED
-            // prev_checkpoint_wal_id into the min so the WAL keeps every record it would need
-            // for replay. A later round compacts and checkpoints it once the cursor drains.
+            // An open cursor's absolute position would shift under a compact's atomic swap, so the whole
+            // entry defers until it drains.
             if (has_active_scan_for_oid(tbl_oid)) {
                 trace(log_,
                       "agent_disk[{}]::checkpoint_inner oid={} has an active scan cursor — deferring the whole entry "
@@ -2580,51 +2095,13 @@ namespace services::disk {
                 continue;
             }
 
-            // UNCHANGED-TABLE GATE, and the only one here that is not a refusal. Nothing has
-            // touched this entry since the header naming its current root committed, so a rebuild
-            // would produce the same table in different blocks: compact() allocates a fresh copy
-            // of every surviving row (it rebuilds unconditionally — there is no "nothing to do"
-            // early exit, and even a table with no dead row pays the full copy), checkpoint()
-            // writes it out behind two fsyncs, and the outgoing tree goes to the free list.
-            // Measured: on 100 tables of 100 rows an EMPTY round cost 205.7 ms against 124.4 ms
-            // for the round that had actually written all of them.
-            // This is NOT a deferral and the entry does NOT leave the round: it advances its
-            // wal-id chain exactly as a rewrite would have (prev <- current, current <- this
-            // round's id), persists its sidecar through the same code below, and feeds its
-            // prev_checkpoint_wal_id into the min at the bottom of the loop. That is load-bearing:
-            // the WAL floor is min(prev) over EVERY entry, and an entry that stopped contributing
-            // — or contributed a prev frozen at the last round that happened to write it — would
-            // either drop the floor to whatever the rest report or pin it forever, and
-            // truncate_before acts on that number. Both halves of the advance are literally true
-            // of an unchanged table; the argument is on
-            // table_storage_t::advance_wal_id_without_rewrite.
-            // What counts as changed is table_storage_t::needs_checkpoint's business. The gate
-            // sits AFTER the two refusals above so that a degraded or cursor-held entry keeps its
-            // own, more conservative treatment.
+            // compact() always fully rebuilds (measured: an empty round over 100 tables cost 205.7ms vs
+            // 124.4ms rewritten), so an unchanged entry skips it but still feeds the round's min WAL floor.
             const bool unchanged = !entry->table_storage.needs_checkpoint();
             bool skip_compact_this_round = false;
             if (!unchanged) {
-                // Failed-round gate: the previous checkpoint attempt on this entry failed. Retry
-                // the checkpoint below — a transient error must be able to recover — but do NOT
-                // rebuild first. A compact whose header never commits cannot return space under
-                // the split free pool, only spend it: the rebuilt tree is allocated by extending
-                // the file (reusable_ refills only on a committed header) and the outgoing tree
-                // lands in pending_free_ where nothing can reach it. Without this gate a
-                // persistent write error at the header offset — which deliberately does not latch,
-                // so storage_degraded() stays false — costs a full copy of the table every round,
-                // forever, with every health indicator reporting the file healthy.
-                // AND THE ONE THING THAT OUTRANKS THAT SPACE. The rebuild is not only
-                // maintenance: it is the ONLY thing that folds a committed-update overlay
-                // (column_data_t::updates_, written by the WAL-replay PHYSICAL_UPDATE path)
-                // into the segments a checkpoint serializes. Skipping it with an overlay
-                // outstanding used to write the PRE-update bytes and report success, and the
-                // sidecar below then advanced past the journal record that was the only
-                // remaining copy of the value — a silent rollback at the next start. Today
-                // column_data_checkpointer_t::checkpoint refuses that write, so skipping the
-                // rebuild here would not save the copy anyway: it would only turn a table with
-                // a replayed update into an entry that can never checkpoint again. So the gate
-                // asks the entry first; the question costs a walk of the column segments and is
-                // asked only on this path (see table_storage_t::has_pending_update_overlay).
+                // Skips the rebuild (compact() can't reclaim space until its header commits, so a persistent
+                // write error would cost a full copy every round) unless a pending update overlay needs it.
                 skip_compact_this_round =
                     entry->table_storage.last_checkpoint_failed() && !entry->table_storage.has_pending_update_overlay();
                 if (skip_compact_this_round) {
@@ -2642,22 +2119,8 @@ namespace services::disk {
                          static_cast<unsigned>(tbl_oid));
                 }
 
-                // MVCC GATE, ASKED OF THE ENTRY AND NOT ONLY OF compact().
-                // A version stamp above the watermark means an active snapshot or an in-flight
-                // commit still needs the history: a pending txn id (an uncommitted write, or a
-                // positional commit_append still to come), or a commit id some older snapshot
-                // must not see yet. A .otbx carries NO version metadata — every row in it reads
-                // back as plain committed — so a round that writes such a table resurrects
-                // uncommitted or deleted rows at the next start.
-                // compact() gates ITSELF on exactly this predicate, and while every round
-                // compacted, asking compact() was asking the gate. The failed-round retry above
-                // does not compact, and there the gate was not asked AT ALL: an uncommitted
-                // append landing between a failed round and its retry was checkpointed as
-                // committed data. So the question is put to the entry directly, on both paths.
-                // Asked BEFORE the sidecar is staged, because this is the round's most ordinary
-                // deferral (under sustained writes it is the usual answer) and it must stay free:
-                // the entry keeps its file, its ids and its WAL records, and a later round takes
-                // it once the stamps age below the watermark.
+                // A version stamp above the watermark means the row can't be baked in yet (a .otbx carries no
+                // version metadata); asked here directly since the failed-round retry above skips compact() entirely.
                 if (entry->table_storage.has_versions_above(compact_watermark)) {
                     trace(log_,
                           "agent_disk[{}]::checkpoint_inner oid={} has version stamps above watermark {} — "
@@ -2671,24 +2134,8 @@ namespace services::disk {
                 }
             }
 
-            // STAGE THE SIDECAR — AFTER EVERY GATE THAT CAN STILL DEFER FOR FREE, AND BEFORE THE
-            // FIRST THING THIS ENTRY COMMITS.
-            // Both branches below reach a point of no return — the header write inside
-            // table_storage_t::checkpoint for a rewritten entry, advance_wal_id_without_rewrite
-            // for an unchanged one — and both advance checkpoint_wal_id_, whose DURABLE half is
-            // this sidecar. Written afterwards, a sidecar that could not be created left the two
-            // halves out of step with no way back: the .otbx at this round's root while the
-            // durable floor still named the previous one, so a restart re-applies every record
-            // the round absorbed. It took no crash to get there, only a full device or a refused
-            // create.
-            // Staged here, that whole class is an ordinary deferral with nothing committed: the
-            // entry keeps its file, its ids and its WAL records, and a later round retries. What
-            // is left after the commit point is the rename alone (publish_checkpoint_sidecar).
-            // THE POSITION IS THE COST, TOO. This is create + write + fsync + (on a deferral)
-            // unlink, per entry per round; the gates above it are the ones that answer "not this
-            // round" routinely — a held cursor, a table with live version stamps — and they now
-            // answer before the device is touched. Below it sits only compact(), which cannot
-            // defer for free anyway (it has already rebuilt by the time it can fail).
+            // Staged after every free-deferral gate, before the round commits: a failure here is an ordinary
+            // deferral instead of splitting checkpoint_wal_id_'s two halves; only compact() sits after it.
             if (auto staged = stage_checkpoint_sidecar(resource(), entry->otbx_path, current_wal_id);
                 staged.contains_error()) {
                 warn(log_,
@@ -2711,10 +2158,7 @@ namespace services::disk {
                 entry->table_storage.advance_wal_id_without_rewrite(current_wal_id);
                 ++advanced;
             } else {
-                // The rebuild itself. Its MVCC precondition was settled above; what can still
-                // refuse it here is the rebuild running out of room or its scan failing —
-                // compact() reports both as false and leaves the collection untouched. Defer the
-                // entry and discard the staged sidecar, same as the checkpoint failure below.
+                // compact() reports a full-disk or scan failure as false, leaving the collection untouched.
                 if (!skip_compact_this_round && !entry->table_storage.table().compact(compact_watermark)) {
                     trace(log_,
                           "agent_disk[{}]::checkpoint_inner oid={} could not be rebuilt (the scan or the "
@@ -2732,20 +2176,8 @@ namespace services::disk {
                       pool_idx_,
                       static_cast<unsigned>(tbl_oid));
 
-                // No external backup copy is taken before the round: shadow paging is the crash
-                // protection. The round writes only fresh blocks (the split free pool keeps every
-                // block the durable root names off-limits), the header write is the atomic commit
-                // point (two-slot root), and a failed round's allocations are rolled back — so on
-                // any failure below the durable root N is still on the device, intact, inside the
-                // .otbx itself.
-                // checkpoint(wal_id) returns out_of_memory on a column flush pin failure, and
-                // unimplemented_yet when a column still carries an update overlay the rebuild did
-                // not fold; either way it aborts BEFORE the header swap and leaves the wal_id
-                // fields unchanged. On error, defer this entry to a later round (same as the
-                // gates above): DISCARD the staged sidecar so its unpublished successor id does
-                // not sit next to a file that never moved, and feed the unchanged
-                // prev_checkpoint_wal_id into the min() so the WAL keeps this table's replay
-                // records.
+                // No external backup copy: shadow paging plus a failed round's rollback keep the durable root
+                // intact; checkpoint(wal_id) aborts before the header swap, leaving wal_id fields unchanged.
                 auto cp_r = entry->table_storage.checkpoint(current_wal_id);
                 if (cp_r.has_error()) {
                     warn(log_,
@@ -2762,23 +2194,9 @@ namespace services::disk {
             }
             const auto& otbx_path = entry->otbx_path;
 
-            // PUBLISH the sidecar wal_id staged before the commit point above. Reached by BOTH
-            // branches: the sidecar is the durable half of checkpoint_wal_id_, and an entry that
-            // skipped its rewrite advanced that id just the same, so leaving the file behind would
-            // put the two halves out of step for no gain.
+            // Reached by both branches: an unchanged entry advanced checkpoint_wal_id_, so its sidecar must publish.
             if (auto rename_err = publish_checkpoint_sidecar(resource(), otbx_path); rename_err.contains_error()) {
-                // NOT SILENT, AND NOT A ROLLBACK EITHER. The header for this round is already
-                // committed inside the .otbx, so the round cannot be taken back here; what a
-                // refused RENAME costs is that the DURABLE floor stays at the previous
-                // checkpoint's id while the in-memory one moved on. A restart then reads a floor
-                // that is too LOW and re-applies the records this round absorbed -- loud is the
-                // most this layer can do about it, and the next successful round repairs it.
-                // WHAT IS STILL IN THIS WINDOW, precisely: the rename, and nothing else. The
-                // bytes are already on the device (staged and fsynced before the commit point),
-                // so the ENOSPC / EIO / refused-create class that used to land here now lands as
-                // a deferral with nothing committed. Closing the last of it means putting the wal
-                // id INSIDE database_header_t -- one atomic point instead of two files -- which
-                // changes the file format and the header checksum.
+                // Not a rollback: the header is committed, so a refused rename just leaves the durable floor too low.
                 error(log_,
                       "agent_disk[{}]::checkpoint_inner oid={} checkpoint sidecar: {}",
                       pool_idx_,
@@ -2786,12 +2204,7 @@ namespace services::disk {
                       rename_err.what.c_str());
             } else if (auto dir_err = sync_checkpoint_sidecar_directory(resource(), otbx_path);
                        dir_err.contains_error()) {
-                // A DIFFERENT OUTCOME, AND IT IS NOT A SPLIT FLOOR. The new id IS published --
-                // every reader that opens this table now reads it. Only its survival of a crash
-                // is unproven, and the worst such a crash can surface is the PREVIOUS id, which
-                // is a floor that is too low: replay re-applies records already absorbed, which
-                // costs work and not correctness. warn, not error, because nothing here is
-                // wrong right now.
+                // warn, not error: the id is already published, worst case a crash surfaces the previous one.
                 warn(log_,
                      "agent_disk[{}]::checkpoint_inner oid={} checkpoint sidecar: {}",
                      pool_idx_,
@@ -2817,18 +2230,8 @@ namespace services::disk {
                 continue;
             }
             auto& table = entry->table_storage.table();
-            // In-memory MVCC version-chain GC, and the whole of what VACUUM does per entry.
-            // Touches no block manager and costs no blocks.
-            // Nothing is compacted here, and THIS is the line where a compact would stand. See
-            // the long note at maybe_cleanup_inner: under the split
-            // free pool a compact without a committed header cannot return space, only spend it,
-            // even on an entry with nothing dead in it. Compaction belongs to the checkpoint
-            // round, the only place that can commit the release.
-            // cleanup_versions cannot renumber, and that is a property of what it reaches, not a
-            // hope: row_group_collection_t::cleanup_versions -> row_version_manager_t::
-            // cleanup_append only ever REPLACES a chunk_info inside vector_info_. No row moves, no
-            // row group is rebuilt, and data_table_t::modified_since_checkpoint_ is deliberately
-            // left alone by it for the same reason, so the VACUUM statement owes no index rebuild.
+            // Pure in-memory MVCC version-chain GC (see maybe_cleanup_inner for why no compaction here).
+            // cleanup_versions cannot renumber rows, so VACUUM owes no index rebuild.
             table.cleanup_versions(lowest_active_start_time);
         }
         co_return;
@@ -2853,43 +2256,10 @@ namespace services::disk {
             co_return;
         }
 
-        // WHY NOTHING IS COMPACTED OUTSIDE A CHECKPOINT ROUND.
-        // The free pool is split: mark_as_free files a released id into pending_free_, which
-        // drains into reusable_ in exactly ONE place — promote_durable_root, reached only once a
-        // header naming the NEW root is on the device — and free_block_id draws only from
-        // reusable_. So a compact() that is not followed by a committed header cannot RETURN
-        // space; it can only SPEND it: data_table_t::compact rebuilds the live tree through
-        // transition_to_disk -> partial_block_manager_t::get_block_allocation -> free_block_id (an
-        // empty reusable_ means "extend the file") and files the outgoing tree where nothing can
-        // reach it. Measured: +2.9 MB per VACUUM call on an unchanged 12k-row table.
-        // So this call site, and vacuum_inner, do NOT compact. Compaction of a DISK-backed table
-        // is one indivisible unit with the checkpoint that commits it, and exactly one place
-        // performs that unit — agent_disk_t::checkpoint_inner, which already calls compact()
-        // immediately before checkpointing every DISK entry. Doing half of it anywhere else is all
-        // cost.
-        // WHY NOT "checkpoint after compacting" here. It would be WRONG without the WAL
-        // bookkeeping: the `.otbx.wal_id` sidecar is what recovery uses to skip records already
-        // absorbed into the durable root (integration/cpp/base_spaces.cpp: `record.id <= cp_id` ->
-        // skip), so committing a root that contains rows NEWER than the sidecar claims, without
-        // advancing it, makes recovery replay those rows a SECOND time — duplicated rows, strictly
-        // worse than a file that is merely too big — and advancing the sidecar needs the current
-        // WAL id, which neither this handler nor vacuum_inner has. And it would be wrong HERE
-        // regardless: maybe_cleanup rides the COMMIT fan-out (operator_commit_transaction ->
-        // maybe_cleanup_many), and turning a commit into a checkpoint — a full-table rewrite and
-        // two fsyncs — is not a trade the write path can make.
-        // WHAT VACUUM STILL IS: cleanup_versions (in-memory version-chain GC) and the index and
-        // pg_computed_column GC / index repopulate owned by operator_vacuum_t. Its effect on the
-        // file is DEFERRED to the next checkpoint round instead of being immediate and negative.
-        // "DEFERRED, NOT LOST" IS MEASURED, not argued from the call graph — it is the one claim
-        // the decision above rests on. A counter on every exit of checkpoint_inner, over the whole
-        // integration suite: 13053 DISK entry-rounds, 12962 compacts performed, and no entry ever
-        // finished a round still carrying a dead row. The four skip paths are all DEFERRALS, and
-        // rare: cursor gate 7 (4 dead rows, next round takes them), MVCC watermark 84 (monotone,
-        // so a later round always clears it), failed-round 0 (last_checkpoint_failed_ clears on the
-        // next success, so it costs one round), degraded 0 (sticky — but a degraded file can no
-        // longer commit ANY root, so its reclaim was already unreachable here too). The end-to-end
-        // reading is in test_s3_cleanup_scaling: with the checkpoint compact disabled the durable
-        // root keeps 700000 rows where 149988 are live.
+        // Compaction stays out of both this call and vacuum_inner: a compact() not immediately followed by a
+        // committed header can only SPEND space — measured: +2.9 MB per VACUUM on an unchanged 12k-row table.
+        // Deferred to checkpoint_inner, not lost — measured: 13053 DISK rounds performed 12962 compacts, and
+        // test_s3_cleanup_scaling shows 700000 rows kept where only 149988 are live with compact disabled.
         trace(log_,
               "agent_disk[{}]::maybe_cleanup_inner: oid={} — compaction belongs to the checkpoint round that "
               "can commit the release",
@@ -2898,9 +2268,7 @@ namespace services::disk {
         co_return;
     }
 
-    // GC pass over dropped_storages_ (see header). The kept-vector rebuild avoids
-    // iterator-invalidation on partial erase; every filesystem::remove uses the
-    // std::error_code overload — exceptions FORBIDDEN.
+    // GC pass over dropped_storages_ (see header); rebuilds into `kept` to avoid iterator-invalidation.
     agent_disk_t::unique_future<void> agent_disk_t::on_horizon_advanced_inner(uint64_t new_horizon) {
         trace(log_,
               "agent_disk[{}]::on_horizon_advanced_inner: horizon={}, {} dropped entries in local slice",
@@ -2931,15 +2299,8 @@ namespace services::disk {
                               sec.message());
                     }
                 }
-                // AND THE PER-OID DIRECTORY, exactly as the runtime DROP path does
-                // (drop_storage_one_local). Every file the engine owns under it has just been
-                // named above, so an empty directory is what is left; leaving it behind made a
-                // dropped table's oid outlive the table in the layout, and the transactional
-                // DROP and the immediate DROP disagree about the same tree.
-                // The non-recursive remove is the point: it fails, harmlessly, on a directory
-                // that still holds something this engine did not put there, and that is the one
-                // case where the directory must stay. std::filesystem::remove does not set the
-                // code for an absent path, so an entry whose file was already gone is silent.
+                // Mirrors the runtime DROP path. Non-recursive on purpose: it harmlessly fails if something
+                // this engine didn't put there is still inside.
                 std::error_code dec;
                 std::filesystem::remove(entry.path.parent_path(), dec);
                 if (dec) {
@@ -2955,9 +2316,7 @@ namespace services::disk {
         }
         dropped_storages_ = std::move(kept);
 
-        // Once the slice drains, ack on_subscriber_empty so the dispatcher clears
-        // disk_has_dropped_ and stops broadcasting. Gated on != empty_address() so
-        // test fixtures without a dispatcher pass cleanly.
+        // Acks on_subscriber_empty once the slice drains; gated on != empty_address() for dispatcher-less tests.
         if (dropped_storages_.empty() && manager_dispatcher_addr_ != actor_zeta::address_t::empty_address()) {
             // DISK_KIND matches the dispatcher's subscriber-kind enum.
             constexpr uint8_t DISK_KIND = 1;
@@ -2969,10 +2328,7 @@ namespace services::disk {
         co_return;
     }
 
-    // DROP-GC value-space remap (see header). Rewrites every dropped_storages_ entry
-    // whose dropped_at_commit_id still equals the txn_id placeholder into commit-id
-    // space, so the on_horizon_advanced sweep (which compares against a commit-id
-    // horizon) can eventually reclaim it.
+    // Rewrites entries still keyed by txn_id into commit-id space, so the horizon sweep can reclaim them.
     agent_disk_t::unique_future<void> agent_disk_t::storage_dropped_committed_inner(uint64_t txn_id,
                                                                                     uint64_t commit_id) {
         for (auto& entry : dropped_storages_) {
@@ -2989,10 +2345,7 @@ namespace services::disk {
         co_return;
     }
 
-    // DROP-rollback un-mark (see header). The abort mirror of
-    // storage_dropped_committed_inner: instead of remapping a GC entry's value into
-    // commit-id space, it ERASES every dropped_storages_ entry still carrying the
-    // txn_id placeholder, un-marking the DROP so the still-live .otbx survives.
+    // Abort mirror: erases entries still keyed by txn_id instead of remapping, un-marking the DROP.
     agent_disk_t::unique_future<void> agent_disk_t::storage_drop_aborted_inner(uint64_t txn_id) {
         for (auto it = dropped_storages_.begin(); it != dropped_storages_.end();) {
             if (it->dropped_at_commit_id == txn_id) {
@@ -3017,8 +2370,7 @@ namespace services::disk {
     // See header. Bootstrap-only; after scheduler.start the address is read-only.
     void agent_disk_t::set_manager_wal_sync(actor_zeta::address_t address) { manager_wal_addr_ = std::move(address); }
 
-    // GC-slice push-back (see header). Called pre-scheduler-start by base_spaces
-    // catalog rebuild and at runtime by mark_storage_dropped_many_inner.
+    // GC-slice push-back (see header); called pre-scheduler-start and at runtime by mark_storage_dropped_many_inner.
     void agent_disk_t::register_dropped_storage_inner_sync(components::catalog::oid_t oid,
                                                            uint64_t dropped_at_commit_id,
                                                            std::filesystem::path path,
@@ -3027,18 +2379,9 @@ namespace services::disk {
             dropped_storage_entry_t{oid, dropped_at_commit_id, std::move(path), std::move(sidecar_paths)});
     }
 
-    // Canonical erase + .otbx removal (see header). Idempotent on a missing key;
-    // the erase drops the unique_ptr, closing the file_handle_t once. The mailbox
-    // serializes this against the only other slice writers (bootstrap pre-start;
-    // runtime storage_*_inner handlers only read).
-    // Canonical single-oid erase + .otbx removal. Used by drop_storage_many_inner,
-    // which loops it over its oid slice. Synchronous (no co_await) — the caller runs
-    // on the agent thread.
+    // Idempotent on a missing key; synchronous (no co_await), looped by drop_storage_many_inner.
     void agent_disk_t::drop_storage_one_local(components::catalog::oid_t oid) {
-        // Read otbx_path BEFORE the erase, while the unique_ptr is still live. An empty path (a
-        // failed construction that was dropped) skips the remove block. Remove sequence: .otbx +
-        // .wal_id sidecar + per-oid directory, all via std::error_code overloads — exceptions
-        // FORBIDDEN.
+        // Read otbx_path before the erase, while the unique_ptr is live; removes use std::error_code, no exceptions.
         std::filesystem::path otbx_path;
         if (auto it = storages_.find(oid); it != storages_.end()) {
             if (it->second != nullptr) {
@@ -3047,9 +2390,7 @@ namespace services::disk {
         }
         const auto erased = storages_.erase(oid);
         if (erased == 0) {
-            // Trace, not warn: drop_storage_many over-routes idempotently, so this
-            // path is hit for a truly-missing / not-owned OID — benign (idempotent
-            // DROP).
+            // Trace, not warn: drop_storage_many over-routes idempotently, so a missing oid here is benign.
             trace(log_,
                   "agent_disk[{}]::drop_storage_one_local: oid {} not in local slice (no-op)",
                   pool_idx_,
@@ -3061,27 +2402,18 @@ namespace services::disk {
                   static_cast<unsigned>(oid));
         }
         if (!otbx_path.empty()) {
-            // Remove .otbx + sidecars + per-oid directory now. A surviving .otbx
-            // would let a restart synthesise a phantom storage on WAL replay and let
-            // a re-CREATE TABLE collide with the recycled oid. (The on_horizon GC
-            // sweep is only the secondary net; this is the primary cleanup.)
+            // A surviving .otbx would let a restart synthesise a phantom storage and collide with the recycled oid.
             std::error_code ec;
             std::filesystem::remove(otbx_path, ec);
             std::filesystem::remove(checkpoint_sidecar_path(otbx_path), ec);
-            // AND THE STAGING FILE, which is the OTHER name this engine owns here. A crash
-            // between stage_checkpoint_sidecar's fsync and publish_checkpoint_sidecar's rename
-            // legitimately leaves `<table>.otbx.wal_id.tmp` behind — verify_otbx_sidecars says so
-            // by name, which is exactly why nothing else cleans it up. Left here it survives the
-            // DROP, and because the directory is then not empty the remove below fails and the
-            // whole per-oid directory outlives the table it belonged to.
+            // A crash mid-checkpoint can legitimately leave `<table>.otbx.wal_id.tmp` behind; left here it
+            // would strand the whole per-oid directory.
             std::filesystem::remove(checkpoint_sidecar_staging_path(otbx_path), ec);
             std::filesystem::remove(otbx_path.parent_path(), ec);
         }
     }
 
-    // Batched DROP: one message per agent carries that agent's whole oid slice
-    // (manager partitioned by pool_idx_for_oid). Loops the canonical singular erase;
-    // each oid is idempotent on a missing key, so an over-routed oid is a no-op.
+    // One message per agent carries its whole oid slice; each oid is idempotent, so an over-routed one is a no-op.
     agent_disk_t::unique_future<void>
     agent_disk_t::drop_storage_many_inner(std::pmr::vector<components::catalog::oid_t> oids) {
         for (auto oid : oids) {
@@ -3090,21 +2422,11 @@ namespace services::disk {
         co_return;
     }
 
-    // ---------------------------------------------------------------------------
-    // Catalog DDL handlers (Track A). These moved off the manager loop: the catalog
-    // scan + mutation now run on this (CATALOG / agent-0) thread against the agent's
-    // OWN slice, so the manager no longer borrows the agent's storage_entry across
-    // the actor boundary. WAL goes through manager_wal_addr_ (actor_zeta::otterbrix::send +
-    // co_await; the WAL manager self-schedules, so NO scheduler_disk_->enqueue here).
-    // ---------------------------------------------------------------------------
+    // Runs on this (CATALOG/agent-0) thread so the manager never borrows a storage_entry across the actor boundary.
 
     namespace {
-        // Name-key layout of the catalog tables whose rows CARRY an object's name.
-        // The executor's *_already_exists checks read the statement's resolve SNAPSHOT,
-        // which cannot see another session's uncommitted row — two CREATEs of one name
-        // from two transactions both pass that check. The gate below re-asks the question
-        // at the WRITE point, on this (CATALOG) agent, where the mailbox makes
-        // check-and-append atomic and the answer is deterministic.
+        // The resolve-time *_already_exists check can't see another session's uncommitted row, so this gate
+        // re-asks it atomically at the WRITE point.
         struct catalog_name_key_t {
             uint64_t name_col;
             int64_t ns_col; // -1 — the table has no namespace column
@@ -3146,12 +2468,8 @@ namespace services::disk {
             }
         }
 
-        // A physically present row occupies its name unless its delete stamp frees it:
-        // a committed delete (id below TRANSACTION_ID_START) or this transaction's own
-        // pending delete (same-txn DROP + CREATE of one name stays legal). Another
-        // transaction's PENDING delete does NOT free the name — were it allowed and the
-        // dropper aborted, two live rows would share the name again; refusing is the
-        // non-blocking analogue of waiting out the dropper's lock.
+        // A name is freed by a committed delete or this same transaction's own pending delete, but not by
+        // another transaction's pending delete — its abort would else leave two live rows sharing the name.
         bool name_freed_by_delete(uint64_t delete_stamp, uint64_t writer_txn_id) {
             if (delete_stamp == components::table::NOT_DELETED_ID) {
                 return false;
@@ -3162,10 +2480,7 @@ namespace services::disk {
             return writer_txn_id != 0 && delete_stamp == writer_txn_id;
         }
 
-        // The write-point uniqueness check: scan EVERY physical row of the catalog table
-        // (RAW fetch — snapshot visibility is exactly what this gate must not trust) and
-        // refuse the incoming row when a live same-name row exists. Small tables by
-        // construction (pg_class / pg_namespace / pg_type), so the full pass is cheap.
+        // Scans every physical row via RAW fetch (snapshot visibility is what this gate must not trust).
         core::error_t catalog_name_conflict(std::pmr::memory_resource* resource,
                                             collection_storage_entry_t& entry,
                                             components::catalog::oid_t table_oid,
@@ -3176,9 +2491,7 @@ namespace services::disk {
             if (def == nullptr) {
                 return core::error_t::no_error();
             }
-            // Locate the incoming row's name (and namespace) columns: builder rows arrive
-            // full-width (positional), reduced rows are alias-keyed like the append leg's
-            // own column expansion.
+            // Builder rows arrive full-width (positional); reduced rows are alias-keyed.
             int64_t in_name_col = -1;
             int64_t in_ns_col = -1;
             if (row.column_count() == def->columns.size()) {
@@ -3236,8 +2549,8 @@ namespace services::disk {
                                                         txn,
                                                         components::table::fetch_visibility_t::RAW);
                     if (fetch_r.has_error()) {
-                        // An unreadable catalog page means the question was NOT answered;
-                        // appending anyway would be the very blind write this gate removes.
+                        // An unreadable catalog page means the question was NOT answered — appending would be
+                        // a blind write.
                         return fetch_r.error();
                     }
                     const auto* got_ids = chunk.row_ids.data<int64_t>();
@@ -3269,23 +2582,13 @@ namespace services::disk {
         }
     } // namespace
 
-    // Crash-safe pg_catalog row append: the WAL physical_insert is written first so a crash before
-    // the storage update can be replayed on restart, then storage is updated on this agent's own
-    // slice. The preprocessing applies only schema adoption + alias-keyed column expansion +
-    // numeric/string cast rather than the heavier storage_append_inner pipeline, which adds NOT
-    // NULL rejection and broader is_convertable_to casting that the catalog-append path never
-    // applied — so this lighter path keeps WAL-time semantics faithful. Neither path substitutes
-    // DEFAULTs: they are expanded above the journal, in operator_insert, and ddl_metadata_builder
-    // hands storage a ready-made pg_catalog tuple.
+    // WAL physical_insert is written first so a crash before the storage update can be replayed. Preprocessing
+    // here is deliberately lighter than storage_append_inner's (no NOT NULL/casting), to keep WAL-time semantics.
     agent_disk_t::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>
     agent_disk_t::append_pg_catalog_row_inner(execution_context_t ctx,
                                               components::catalog::oid_t table_oid,
                                               components::vector::data_chunk_t row) {
-        // Name-uniqueness gate, BEFORE the WAL leg: a refused row must reach neither the
-        // journal nor storage. Runs only for the name-carrying catalog tables; sits above
-        // every CREATE (TABLE / DATABASE / TYPE / INDEX / VIEW / MATVIEW / SEQUENCE / MACRO)
-        // because they all funnel their pg_class / pg_namespace / pg_type rows through this
-        // handler. WAL replay does not travel this path, so recovery is never refused here.
+        // Runs before the WAL leg so a refused row reaches neither journal nor storage; WAL replay skips this path.
         if (row.size() != 0) {
             if (const auto* key = catalog_name_key_for(table_oid)) {
                 auto it_gate = storages_.find(table_oid);
@@ -3314,8 +2617,7 @@ namespace services::disk {
             }
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
             wal_chunks.emplace_back(std::move(wal_chunk));
-            // pg_catalog writes route to main_database (ctx.database_oid is always
-            // INVALID_OID for catalog writes).
+            // pg_catalog writes route to main_database (ctx.database_oid is always INVALID_OID here).
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
             auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
                                                         &wal::manager_wal_replicate_t::write_physical_insert,
@@ -3328,8 +2630,7 @@ namespace services::disk {
                                                         db_oid);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
-                // Same shape as the three refusals already travelling this wrapper: a catalog
-                // row whose journal record was refused must not be reported as appended.
+                // Same shape as this wrapper's other refusals: a refused journal record must not report as appended.
                 error(log_,
                       "agent_disk[{}]::append_pg_catalog_row_inner: the catalog row's WAL record did not reach "
                       "the journal for oid={}, the row is NOT appended: {}",
@@ -3408,11 +2709,8 @@ namespace services::disk {
                         components::vector::vector_t casted(resource(), target_type, local.size());
                         for (uint64_t r = 0; r < local.size(); r++) {
                             if (src_vec.validity().row_is_valid(r)) {
-                                // THE GUARD ABOVE DOES NOT PROVE THIS CAST SUCCEEDS. It admits
-                                // STRING_LITERAL on either side, and 'abc' -> BIGINT is a refusal, not
-                                // a conversion — so the wrapper must be read here rather than
-                                // asserted on, or .value() reads the value half of an ERRORED result
-                                // and the catalog row is built out of an undefined cell.
+                                // The guard above doesn't prove the cast succeeds ('abc'->BIGINT refuses); check
+                                // the result, don't assert.
                                 auto casted_val = src_vec.value(r).cast_as(target_type, ctx.session_tz);
                                 if (casted_val.has_error()) {
                                     co_return casted_val
@@ -3428,31 +2726,20 @@ namespace services::disk {
                 }
             }
 
-            // The append chain can surface write_conflict / out_of_memory, and it is REPORTED:
-            // this is the DDL write path, and the range it returns carries no way to tell "wrote
-            // nothing" from "wrote nothing because it could not". A CREATE TABLE whose pg_class
-            // row never landed would answer a zero-count range, which the caller reads as a
-            // no-op append, and the statement would report success over a catalog that does not
-            // contain the table it just claimed to create.
+            // Reported, not swallowed: the range can't distinguish "wrote nothing" from "failed to write".
             auto append_r = s->append(local, ctx.txn);
             if (append_r.has_error()) {
                 co_return append_r.convert_error<components::pg_catalog_append_range_t>();
             }
             start_row = append_r.value();
         } else if (row.size() == 0) {
-            // The one legitimate no-op: nothing was asked to be written. Zero rows in,
-            // zero rows out, no storage touched.
+            // The one legitimate no-op: nothing was asked to be written.
             trace(log_,
                   "agent_disk[{}]::append_pg_catalog_row_inner: empty row for oid={} — nothing to append",
                   pool_idx_,
                   static_cast<unsigned>(table_oid));
         } else {
-            // NOT a routing miss. manager_disk_t::append_pg_catalog_row picks this agent with
-            // pool_idx_for_oid(table_oid), so the owner is decided before the message is sent
-            // and THIS agent is it. What the missing entry means is that the owner has no
-            // storage for the table — never created, never loaded, or dropped — and the row
-            // has nowhere to go. Refusing is the whole point: a silent leg here lets DDL report
-            // success while the catalog was never written.
+            // Not a routing miss (the manager picked this agent) — refusing avoids reporting unwritten success.
             std::pmr::string msg{"agent_disk::append_pg_catalog_row: no storage on the owning agent for catalog "
                                  "oid ",
                                  resource()};
@@ -3472,16 +2759,10 @@ namespace services::disk {
                                                components::catalog::oid_t table_oid,
                                                std::int64_t oid_col_idx,
                                                components::catalog::oid_t target_oid) {
-        // Read the slice directly. Bind entry NON-const so inline_scan binds the
-        // non-const data_table_t& overload (no const_cast).
+        // Bind entry NON-const so inline_scan binds the non-const data_table_t& overload (no const_cast).
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            // NOT a routing miss, and the same leg append_pg_catalog_row_inner refuses on: the
-            // manager picked this agent with pool_idx_for_oid(table_oid), so the owner is decided
-            // before the message is sent and THIS agent is it. A missing entry means the owner
-            // holds no storage for that catalog table, so the rows the caller asked to be gone
-            // were neither found nor removed — and answering "deleted nothing" would be read as
-            // a healthy no-op by every caller.
+            // Same reasoning as append_pg_catalog_row_inner's refusal: "0 deleted" would read as a healthy no-op.
             std::pmr::string msg{"agent_disk::delete_pg_catalog_rows: no storage on the owning agent for catalog "
                                  "oid ",
                                  resource()};
@@ -3491,16 +2772,8 @@ namespace services::disk {
         }
         auto& entry = it->second;
 
-        // THE SCAN CARRIES ctx.txn, and the delete is only allowed to judge what it can see.
-        // Without it the scan ran on transaction_data{0, 0} — direct writes only — while every
-        // caller that decides "0 deleted is a refusal" had READ the row it is deleting through
-        // a route that DOES carry the transaction (manager_disk_t::read_chunks_by_key ->
-        // agent_disk_t::read_chunks_by_key_inner, and the txn-aware resolve funnel). A catalog
-        // row written inside an explicit transaction is invisible to {0, 0} until the commit
-        // publishes it, so `BEGIN; ALTER TABLE t ADD COLUMN c; ALTER TABLE t DROP COLUMN c;`
-        // deleted nothing and the DROP refused a legal sequence — the read saw a row the delete
-        // was told did not exist. Gate: integration/cpp/test/test_catalog_delete_refusal.cpp,
-        // a_column_added_and_dropped_in_one_transaction_is_dropped.
+        // The scan must carry ctx.txn, not transaction_data{0, 0}: a catalog row written inside an explicit
+        // transaction is invisible to {0,0} until commit. Regression: test_catalog_delete_refusal.cpp.
         core::pmr::otterbrix_resource scan_resource;
         std::pmr::vector<std::int64_t> row_ids(resource());
         detail::inline_scan(entry->table_storage.table(),
@@ -3517,12 +2790,7 @@ namespace services::disk {
                                 return true;
                             });
         if (row_ids.empty()) {
-            // The one legitimate emptiness at THIS floor: the scan ran and no row of this table
-            // VISIBLE TO ctx.txn carried that oid. Whether that is a healthy no-op or the sign
-            // of a catalog the caller has already read and expects to delete from is a question
-            // only the caller can answer, so the count travels up unjudged — and because the
-            // scan above shares the caller's snapshot, "the caller read it" and "the delete can
-            // see it" are now the same claim.
+            // The one legitimate emptiness: no row visible to ctx.txn carried that oid, so 0 travels up unjudged.
             co_return std::uint64_t{0};
         }
         if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
@@ -3537,11 +2805,7 @@ namespace services::disk {
                                                         components::catalog::well_known_oid::main_database);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
-                // REFUSED, and the rows stay. Falling through to the delete below would put
-                // storage one state ahead of a journal holding no record to replay it from — the
-                // delete would simply not exist after a restart. Same rule and same shape as
-                // append_pg_catalog_row_inner's WAL leg: the row whose journal record was refused
-                // is not written, and the row whose delete record was refused is not deleted.
+                // Falling through would leave storage ahead of a journal with no record to replay.
                 error(log_,
                       "agent_disk[{}]::delete_pg_catalog_rows_inner: the PHYSICAL_DELETE did not reach the "
                       "journal for oid={}, the rows are NOT deleted: {}",
@@ -3556,10 +2820,8 @@ namespace services::disk {
                       static_cast<unsigned>(table_oid));
             }
         }
-        // The storage was scanned two blocks up to produce `row_ids`, so the refusal
-        // direct_delete_sync carries cannot be reached from here. READ IT ANYWAY, say so at
-        // error level, and REPORT it — an assert on "cannot happen" would vanish under NDEBUG
-        // and leave the caller nowhere to put it.
+        // Unreachable in practice (row_ids came from scanning this storage), but still reported — an assert
+        // would vanish under NDEBUG.
         if (auto del_err = direct_delete_sync(table_oid, row_ids, static_cast<std::uint64_t>(row_ids.size()), ctx.txn);
             del_err.contains_error()) {
             error(log_,
@@ -3572,11 +2834,7 @@ namespace services::disk {
         co_return static_cast<std::uint64_t>(row_ids.size());
     }
 
-    // Implementation pitfall (preserved from the manager body): data_table_t::update()
-    // rewrites EVERY column in the target row (it builds column_ids = [0..count)
-    // unconditionally), so a "patch one column" chunk would NULL out the others. We
-    // read the full row, mutate the target field in the read-back chunk, and write the
-    // whole chunk back.
+    // data_table_t::update() rewrites every column unconditionally, so a one-column patch would NULL the rest.
     agent_disk_t::unique_future<core::error_t>
     agent_disk_t::update_pg_attribute_commit_id_field_inner(execution_context_t ctx,
                                                             components::catalog::oid_t attoid,
@@ -3585,10 +2843,7 @@ namespace services::disk {
         constexpr auto pg_attr_oid = components::catalog::well_known_oid::pg_attribute_table;
         auto it = storages_.find(pg_attr_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            // There is no legitimate empty on this leg. Every marker names a pg_attribute row
-            // the same transaction has already written, and pg_attribute always routes to the
-            // agent this message was addressed to; an agent that does not hold it is a misroute,
-            // not a backfill with nothing to do.
+            // No legitimate empty here: pg_attribute always routes to this agent, so a missing entry is a misroute.
             std::pmr::string what{"update_pg_attribute_commit_id_field: this agent holds no pg_attribute; "
                                   "the commit_id stamp for attoid ",
                                   resource()};
@@ -3598,8 +2853,7 @@ namespace services::disk {
         }
         auto& entry = it->second;
 
-        // Scan all columns for the attoid row, capturing row_id + a snapshot of
-        // every column value. attoid is never reused, so at most one row matches.
+        // attoid is never reused, so at most one row matches; captures row_id plus every column value.
         auto& tbl = entry->table_storage.table();
         const std::size_t col_count = tbl.column_count();
         std::vector<std::int64_t> all_col_indices;
@@ -3613,18 +2867,8 @@ namespace services::disk {
         std::pmr::vector<components::types::logical_value_t> row_values(resource());
         row_values.reserve(col_count);
 
-        // ctx.txn, NOT transaction_data{}.
-        // This patch runs at STEP 4 of operator_commit_transaction_t, whose premise is that "the
-        // rows still carry insert_id == transaction_id" — they are not published yet, which is what
-        // makes patching them invisible to everyone else. A default transaction_data is NOT
-        // "horizon 0": its snapshot_horizon is UINT64_MAX, meaning "see all COMMITTED rows", and
-        // that is exactly why it cannot see these —
-        // transaction_version_operator::use_inserted_version rejects any insert_id at or above
-        // TRANSACTION_ID_START unless txn.transaction_id equals it, and a default transaction_data
-        // carries transaction_id 0. The scan would then find nothing, and added_at_commit_id would
-        // keep its placeholder 0 — which reads as "added before every snapshot" (the rule is
-        // added_at_commit_id <= snapshot horizon) and shows the new column to snapshots older than
-        // the ALTER that created it. The delete a few hundred lines up carries the same argument.
+        // ctx.txn, not a default transaction_data: its snapshot_horizon UINT64_MAX means "see all COMMITTED
+        // rows", so it can't see this txn's own unpublished insert_id, leaving added_at_commit_id at 0.
         detail::inline_scan(tbl,
                             all_col_indices,
                             &scan_resource,
@@ -3642,9 +2886,7 @@ namespace services::disk {
                                 return false; // single-row identity — short-circuit
                             });
         if (row_ids.empty()) {
-            // The scan carries ctx.txn (see above), so the row the caller just wrote is exactly
-            // the row this sees; an empty result therefore means the stamp cannot be applied at
-            // all — never "there was nothing to stamp", which as a trace line would hide it.
+            // The scan carries ctx.txn, so empty means the stamp truly cannot apply — never "nothing to stamp".
             std::pmr::string what{"update_pg_attribute_commit_id_field: no pg_attribute row visible to this "
                                   "transaction carries attoid ",
                                   resource()};
@@ -3652,13 +2894,7 @@ namespace services::disk {
             what.append("; its commit_id stamp was not applied");
             co_return core::error_t{core::error_code_t::do_not_exists, std::move(what)};
         }
-        // THE WHOLE ROW WIDTH, not just the patch column's ordinal. The scan callback pushes
-        // exactly col_count values per matched row, so a shorter row_values here should be
-        // impossible — but the two chunk-fill loops below guard against exactly that shape
-        // (`c < row_values.size()`), and a fill loop that stops early leaves the TAIL cells of
-        // the patch chunk uninitialised with their validity defaulting to VALID: garbage
-        // written into pg_attribute. If the width is ever short, refusing is the only honest
-        // answer; the reactive guards below then never fire.
+        // Should be impossible, but a short row_values would leave tail cells defaulting to VALID — garbage.
         if (row_values.size() != col_count) {
             std::pmr::string what{"update_pg_attribute_commit_id_field: the scan returned ", resource()};
             what.append(std::to_string(row_values.size()).c_str());
@@ -3674,8 +2910,7 @@ namespace services::disk {
         const std::size_t patch_col_idx =
             (kind == components::pg_attribute_commit_id_backfill_t::kind_t::added_at) ? 10u : 11u;
         if (patch_col_idx >= row_values.size()) {
-            // pg_attribute narrower than its own schema: the row cannot carry a commit_id at
-            // all. A trace line here would let the stamp silently stay 0.
+            // pg_attribute narrower than its own schema: refuse, don't let the stamp silently stay 0.
             std::pmr::string what{"update_pg_attribute_commit_id_field: pg_attribute row for attoid ",
                                   resource()};
             what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
@@ -3689,10 +2924,7 @@ namespace services::disk {
         row_values[patch_col_idx] =
             components::types::logical_value_t(resource(), static_cast<std::int64_t>(commit_id));
 
-        // Build a full-width update chunk: every column keeps its scanned value, only
-        // patch_col_idx gets the new commit_id. Aliases mirror the table's column names
-        // so direct_update_sync's name-match routing lands each vector on the correct
-        // storage column.
+        // Full-width update chunk; aliases mirror column names so direct_update_sync's name-match routing works.
         const auto& table_columns = entry->table_storage.table().columns();
         std::pmr::vector<components::types::complex_logical_type> chunk_types(resource());
         chunk_types.reserve(table_columns.size());
@@ -3711,8 +2943,7 @@ namespace services::disk {
             }
         }
 
-        // WAL physical_update: the chunk mirrors the patch chunk full-width so replay's
-        // direct_update_sync takes the same alias-matching path.
+        // WAL chunk mirrors the patch chunk full-width so replay takes the same alias-matching path.
         if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
             components::vector::data_chunk_t wal_chunk(resource(), chunk_types, 1);
             wal_chunk.set_cardinality(1);
@@ -3737,12 +2968,7 @@ namespace services::disk {
                                                         components::catalog::well_known_oid::main_database);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
-                // WAL-FIRST, AND THE PATCH BELOW DOES NOT RUN. Applying the storage patch over a
-                // refused journal record would leave storage one state ahead of a journal that
-                // has no record to replay it from — the same rule delete_pg_catalog_rows_inner
-                // and storage_append_inner keep. Declining the patch keeps the two in agreement:
-                // the stamp stays at its placeholder in memory, on the platter and in the
-                // journal.
+                // The patch below does not run: it would leave storage ahead of a journal with no record.
                 error(log_,
                       "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: the PHYSICAL_UPDATE did not "
                       "reach the journal for attoid={}, the stamp is NOT applied: {}",
@@ -3751,15 +2977,7 @@ namespace services::disk {
                       wal_result.error().what);
                 co_return core::error_on(resource(), wal_result.error());
             }
-            // A ZERO ID IS A LEGAL ANSWER, NOT A QUIET REFUSAL, and the patch below runs over
-            // it on purpose: the WAL manager's write_physical_* legs answer wal::id_t{0} for
-            // exactly two states — the journal is DISABLED by configuration, or the record
-            // carried no rows — and their own contract comment says so ("a zero id from these
-            // two legs means 'nothing was asked to be written' ... the wrapper is what a
-            // REFUSAL travels in", manager_wal_replicate.cpp). This chunk always carries one
-            // row, so zero here means WAL-off, where there is no journal for the patch to
-            // stay in agreement with; declining the patch on it would turn every backfill of
-            // a journal-less deployment into a refusal.
+            // A zero id here means WAL-off, not a refusal — declining the patch would break journal-less deployments.
             if (wal_result.value() == wal::id_t{}) {
                 trace(log_,
                       "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: WAL write returned zero id "
@@ -3769,9 +2987,7 @@ namespace services::disk {
             }
         }
 
-        // The row was READ from this slice a few lines up, so a refusal here is not expected —
-        // which is not the same as impossible (out_of_memory in the update segment is neither a
-        // bug nor visible from the read), so it is answered rather than logged.
+        // Unexpected (just read from this slice) but not impossible — answered, not logged.
         if (auto upd_err = direct_update_sync(pg_attr_oid, row_ids, patch); upd_err.contains_error()) {
             error(log_,
                   "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: the slice it had just read "
@@ -3783,26 +2999,8 @@ namespace services::disk {
         co_return core::error_t::no_error();
     }
 
-    // Whole-op intra-agent compaction: read own slice, compute the columns NOT in `live_attnames`,
-    // drop each via entry->drop_column on its own slice, and return the dropped count. Eliminates
-    // the per-column manager<->agent round-trips the former manager body did.
-    // WHY THIS ACTS UNCONDITIONALLY. table_storage_t::drop_column frees nothing here: it NAMES the
-    // outgoing column's blocks into pending_released_blocks_ and rebuilds the table by SHARING
-    // every surviving column, so the call allocates nothing; the release itself is drained by the
-    // next checkpoint, the one place under the split free pool that can commit it. The sibling
-    // compact(), which really does spend space outside a committed round, is not an argument
-    // against a drop.
-    // WHAT REFUSING WOULD COST: nothing else re-derives this drop. A 'g' table's DROP routes to
-    // operator_computed_field_unregister_t, which writes only a pg_computed_column refcount=0
-    // tombstone and defers the physical half to VACUUM — to here. The checkpoint round compacts but
-    // does not drop columns (compact() enumerates the collection as it stands), and the bootstrap
-    // re-arm excludes 'g' at the source. So a refusal keeps the column in the durable root forever;
-    // measured end to end: CREATE TABLE g(); INSERT (a,b); ALTER ... DROP COLUMN b; VACUUM;
-    // CHECKPOINT; reopen the .otbx offline — the root still named [a, b].
-    // THE RISK IT CARRIES, stated plainly: unlike drop_storage_column_inner, which is told WHICH
-    // column to drop, this leg is SUBTRACTIVE — it drops the complement of `live_attnames`. Any gap
-    // in the caller's derivation of that live set becomes a physical drop of a SURVIVING column.
-    // The derivation is operator_vacuum_t's pg_computed_column scan.
+    // Drops every column NOT in `live_attnames` unconditionally — refusing would leave a 'g' column forever,
+    // since nothing else re-derives the drop. SUBTRACTIVE: a gap in the caller's derivation drops a SURVIVING column.
     agent_disk_t::unique_future<std::uint64_t>
     agent_disk_t::compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
                                                   std::set<std::string> live_attnames) {
@@ -3838,34 +3036,19 @@ namespace services::disk {
         co_return dropped;
     }
 
-    // ALTER TABLE DROP COLUMN's physical half on this agent's own slice.
-    // The body is deliberately the compact leg's inner loop without its subtractive
-    // "everything not in live_attnames" enumeration: the ALTER names its column, so there is no
-    // live set to re-derive and no gap in that derivation to turn into a physical drop of a
-    // SURVIVING column. Both legs share the same split: rebuild now, blocks released by the
-    // checkpoint that can commit their release.
-    // WHEN this runs is the safety argument, and it is not local: operator_commit_transaction
-    // drives it only AFTER the txn's WAL commit marker and the ProcArray publish barrier, so
-    // the pg_attribute tombstone is already both durable and visible. A rebuild is not
-    // undoable, so it must never precede a tombstone that a ROLLBACK or a lost commit can
-    // still take back.
+    // Deliberately the compact leg's loop without its subtractive enumeration — the ALTER names its own
+    // column, so this runs only after the WAL commit marker + ProcArray barrier, since the rebuild is irreversible.
     agent_disk_t::unique_future<core::result_wrapper_t<bool>>
     agent_disk_t::drop_storage_column_inner(components::catalog::oid_t table_oid, std::string attname) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            // Not owned here, or a record-only marker whose storage was never materialized.
-            // The caller's tombstone is already committed, so this cannot be reported as a
-            // quiet 0: nothing else re-derives the drop, and the blocks would stay named by a
-            // root nobody ever revisits.
+            // Not owned here, or record-only. The caller's tombstone is already committed, so this can't be a quiet 0.
             std::pmr::string msg{"agent_disk::drop_storage_column: no materialized storage for table oid ",
                                  resource()};
             msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
             co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::other_error, std::move(msg)});
         }
-        // Same primitive the compact leg calls: rebuild the table without the column and
-        // recreate the adapter (which holds a data_table_t& the rebuild invalidates). On a
-        // DISK-backed storage the rebuild also NAMES the outgoing column's blocks into
-        // table_storage_t::pending_released_blocks_; the checkpoint round drains them.
+        // Rebuilds without the column and recreates the adapter; on DISK storage it also queues blocks to drain.
         const bool dropped = it->second->drop_column(attname, resource());
         trace(log_,
               "agent_disk[{}]::drop_storage_column_inner: oid={} column='{}' {}",
@@ -3876,31 +3059,15 @@ namespace services::disk {
         co_return core::result_wrapper_t<bool>(dropped);
     }
 
-    // ALTER TABLE RENAME COLUMN's physical half on this agent's own slice — the sibling of
-    // drop_storage_column_inner, and it exists for a reason that is not symmetry.
-    // manager_disk_t::rearm_dropped_column_blocks_sync reconciles every loaded storage's column
-    // names against the live pg_attribute rows at bootstrap and reads a storage-only name as a
-    // DROP: it takes the column out of the collection and arms its blocks. That reading is
-    // correct only while a catalog name and a storage name cannot diverge. A RENAME that wrote
-    // pg_attribute and stopped there would make them diverge by construction, and the next start
-    // would physically remove a SURVIVING column together with its data. So the same commit that
-    // writes the new name into the catalog writes it here.
-    // WHEN this runs is the same argument drop_storage_column_inner makes:
-    // operator_commit_transaction drives it only after the txn's WAL commit marker and the
-    // ProcArray publish barrier, so an explicit ROLLBACK — which reverts the pg_attribute rows,
-    // being ordinary inserts under this txn id — can never leave the storage renamed against a
-    // catalog that took the rename back. What it does NOT close, and it is written down rather
-    // than glossed: the rename is memory-resident until this table's next checkpoint, while the
-    // catalog half is durable at the marker. See the note on table_storage_t::rename_column.
+    // Not for symmetry: bootstrap reconciliation reads a storage-only name as a DROP, so a RENAME that
+    // stopped at pg_attribute would delete a surviving column's data on the next start.
     agent_disk_t::unique_future<core::result_wrapper_t<bool>>
     agent_disk_t::rename_storage_column_inner(components::catalog::oid_t table_oid,
                                               std::string old_attname,
                                               std::string new_attname) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            // Not owned here, or a record-only marker. The caller's catalog rename is already
-            // committed, so a quiet "done" would leave the two halves disagreeing forever with
-            // nothing to re-derive the rename from.
+            // Not owned here, or record-only. A quiet "done" would leave catalog and storage disagreeing forever.
             std::pmr::string msg{"agent_disk::rename_storage_column: no materialized storage for table oid ",
                                  resource()};
             msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
@@ -3920,11 +3087,7 @@ namespace services::disk {
         co_return renamed;
     }
 
-    // Runtime DROP path, canonical per-oid mark: read otbx_path + derive the .wal_id
-    // sidecar from the own slice, then record the GC entry via
-    // register_dropped_storage_inner_sync. Replaces the manager-side storage_entry borrow
-    // at mark_storage_dropped_many. Synchronous (no co_await) — the caller runs on the
-    // agent thread.
+    // Reads otbx_path + derives the .wal_id sidecar, then records the GC entry. Synchronous, no co_await.
     void agent_disk_t::mark_storage_dropped_one_local(components::catalog::oid_t table_oid,
                                                       uint64_t dropped_at_commit_id) {
         trace(log_,
@@ -3937,25 +3100,16 @@ namespace services::disk {
         if (auto it = storages_.find(table_oid); it != storages_.end() && it->second != nullptr) {
             otbx_path = it->second->otbx_path;
             if (!otbx_path.empty()) {
-                // Both names the engine owns next to the .otbx, not just the published one: a
-                // crash between stage_checkpoint_sidecar's fsync and publish_checkpoint_sidecar's
-                // rename leaves `<table>.otbx.wal_id.tmp` behind, verify_otbx_sidecars declares
-                // that name legitimate, and nothing else ever removes it — so a DROP that named
-                // only the published sidecar left the staging file to outlive the table.
+                // Also the staging file: a crash mid-checkpoint can leave it behind, and nothing else removes it.
                 sidecars.push_back(checkpoint_sidecar_path(otbx_path));
                 sidecars.push_back(checkpoint_sidecar_staging_path(otbx_path));
             }
         }
-        // An entry whose construction failed leaves otbx_path/sidecars empty, but we still
-        // record a GC entry so disk_has_dropped_ bookkeeping is uniform (sweep no-ops on an
-        // empty path).
+        // A failed-construction entry leaves paths empty, but a GC entry is still recorded for uniform bookkeeping.
         register_dropped_storage_inner_sync(table_oid, dropped_at_commit_id, std::move(otbx_path), std::move(sidecars));
     }
 
-    // Batched DROP-mark: one message per agent carries that agent's whole oid slice
-    // (manager partitioned by pool_idx_for_oid) plus the shared dropped_at_commit_id.
-    // Loops the canonical per-oid mark; an over-routed / not-owned oid records an empty
-    // GC entry (no-op sweep).
+    // One message per agent carries its whole oid slice; an over-routed oid just records an empty GC entry.
     agent_disk_t::unique_future<void>
     agent_disk_t::mark_storage_dropped_many_inner(std::pmr::vector<components::catalog::oid_t> table_oids,
                                                   uint64_t dropped_at_commit_id) {
@@ -3965,11 +3119,7 @@ namespace services::disk {
         co_return;
     }
 
-    // See the declaration and collection_storage_entry_t::note_column_identity: this parks the
-    // identity of a column the catalog has already created and the storage has not materialised
-    // yet, so that whichever INSERT does materialise it stamps the right attoid instead of
-    // leaving a 0 the bootstrap reconciliation would have to refuse — and so that every reader in
-    // between answers the column with the DEFAULT the ALTER declared for it.
+    // Parks a not-yet-materialised column's identity so the eventual INSERT stamps the right attoid.
     agent_disk_t::unique_future<void>
     agent_disk_t::note_column_identity_inner(components::catalog::oid_t table_oid,
                                              std::string attname,
@@ -3983,18 +3133,8 @@ namespace services::disk {
                   static_cast<unsigned>(table_oid));
             co_return;
         }
-        // The DEFAULT arrives in pg_attribute.attdefspec's own encoding and is decoded HERE,
-        // against the type that travelled with it — the agent owns no catalog and has nowhere
-        // else to read either from. Decoded on THIS agent's resource(), which is what the parked
-        // definition is then stored under: logical_value_t's copy constructor carries the SOURCE
-        // resource pointer along, so a value decoded on a caller-local arena would outlive its
-        // allocator inside the entry.
-        // A spec this agent cannot decode is LOUD and not fatal: the ALTER is long
-        // committed and the pg_attribute row is durable, so refusing would only cost the caller
-        // an answer it cannot act on — this is a fire-and-forget note with no error channel back
-        // to the statement. What it must not do is park the column WITHOUT the default and let it
-        // read NULL in silence; the log is the channel, and the value stays recoverable because
-        // every later load re-derives the publication from pg_attribute.
+        // Decoded on this agent's resource(): logical_value_t's copy ctor carries the source resource pointer,
+        // so a caller-local arena would dangle. Loud, not fatal — every later load re-derives the value.
         std::optional<components::types::logical_value_t> default_value;
         if (!type.default_spec.empty()) {
             auto ec =

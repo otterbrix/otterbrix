@@ -12,12 +12,6 @@ namespace services::disk {
     namespace {
         namespace wk = components::catalog::well_known_oid;
 
-        // ----------------------------------------------------------------------
-        // Builtin seed rows for pg_catalog bootstrap.
-        // Previously a standalone catalog builtin-seed unit; inlined here
-        // since manager_disk_bootstrap.cpp is the only consumer.
-        // ----------------------------------------------------------------------
-
         struct ns_seed_row_t {
             components::catalog::oid_t oid;
             std::string_view name;
@@ -43,10 +37,7 @@ namespace services::disk {
 
         std::vector<type_seed_row_t> builtin_type_rows() {
             return {
-                // Canonical otterbrix names. Note: int8_type is the 1-byte (8-bit) signed
-                // integer in otterbrix's vocabulary, so its canonical name is "int1" — NOT
-                // PostgreSQL's "int8" which means 8 bytes (64-bit). PG's "int8" alias is
-                // listed below under "PostgreSQL internal typnames" and maps to int64_type.
+                // int8_type is otterbrix's 1-byte signed int ("int1"), NOT PostgreSQL's 8-byte "int8" (aliased below).
                 {wk::boolean_type, "bool"},
                 {wk::int8_type, "int1"},
                 {wk::uint8_type, "uint1"},
@@ -67,16 +58,13 @@ namespace services::disk {
                 {wk::blob_type, "blob"},
                 {wk::numeric_type, "numeric"},
                 {wk::uuid_type, "uuid"},
-                // PostgreSQL internal typnames. int2/int4/int8/float4/float8 are the
-                // canonical names above — PG counts bytes too — so only the spellings that
-                // differ appear here.
+                // PostgreSQL internal typnames; only spellings differing from the canonical names above appear here.
                 {wk::int64_type, "int8_t"},
                 {wk::string_type, "text"},
                 {wk::string_type, "varchar"},
                 {wk::string_type, "bpchar"},
                 {wk::string_type, "name"},
                 {wk::blob_type, "bytea"},
-                // SQL-facing user aliases
                 {wk::boolean_type, "boolean"},
                 {wk::int8_type, "tinyint"},
                 {wk::uint8_type, "utinyint"},
@@ -93,7 +81,6 @@ namespace services::disk {
                 {wk::float64_type, "double"},
                 {wk::float64_type, "double precision"},
                 {wk::numeric_type, "decimal"},
-                // Timestamp variants
                 {wk::timestamp_type, "timestamp"},
                 {wk::timestamp_tz_type, "timestamp with time zone"},
                 {wk::date_type, "date"},
@@ -115,8 +102,7 @@ namespace services::disk {
     } // namespace
 
     void manager_disk_t::bootstrap_system_tables_sync() {
-        // Refuse rather than build a relative-path database under the process CWD.
-        // Unreachable in production: every binding fills config_disk::path from `<base>/...`.
+        // Refuses a relative-path database under the process CWD (every binding fills config_disk::path).
         if (config_.path.empty()) {
             error(log_,
                   "manager_disk_t::bootstrap_system_tables_sync: config_disk::path is empty — there is no "
@@ -127,8 +113,6 @@ namespace services::disk {
         const std::filesystem::path sys_dir = config_.path / std::to_string(static_cast<unsigned>(sys_db_oid));
         std::filesystem::create_directories(sys_dir);
 
-        // The only tables where "loaded, and empty" is a loss rather than a legitimate
-        // steady state — matches the seeding branches below.
         auto has_builtin_seed_rows = [](catalog::oid_t tbl_oid) {
             return tbl_oid == catalog::well_known_oid::pg_settings_table || tbl_oid == pg_database_oid ||
                    tbl_oid == pg_namespace_oid_tbl || tbl_oid == pg_type_oid || tbl_oid == pg_proc_oid;
@@ -142,15 +126,13 @@ namespace services::disk {
             if (entry == nullptr) {
                 return 0;
             }
+            // const_cast, here and at every other site in this file: the agent thread is idle during
+            // bootstrap, so mutating behind the const pointer races with nothing.
             return const_cast<collection_storage_entry_t*>(entry)->table_storage.table().calculate_size();
         };
 
-        // Returns true if the table needs seeding: freshly created, or loaded healthy but
-        // empty (see the young-file note below).
         auto bootstrap_one = [&](const components::catalog::system_table_def_t& def) -> bool {
             const auto tbl_oid = def.relation_oid;
-            // agents_[0] (CATALOG agent) is the sole source of truth for
-            // pg_* system tables.
             if (!agents_.empty() && agents_[0] != nullptr) {
                 if (agents_[0]->has_storage_sync(tbl_oid))
                     return false;
@@ -165,12 +147,7 @@ namespace services::disk {
                           "manager_disk_t::bootstrap_system_tables_sync loading : {} oid={}",
                           std::string(def.name),
                           static_cast<unsigned>(tbl_oid));
-                    // Throws rather than reports: unlike load_storage_disk_sync's own load ctor
-                    // (noexcept, runs on the agent thread), this frame runs on the bootstrap
-                    // thread pre-scheduler-start, so std::runtime_error here is catchable by the
-                    // embedder (same contract as the base_spaces startup refusals). Refusing
-                    // instead of skipping matters: leaving the table unloaded would let DDL mint
-                    // fresh oids over live storage the catalog can no longer see.
+                    // Throws: pre-scheduler here makes std::runtime_error catchable by the embedder.
                     if (auto err = load_storage_disk_sync(tbl_oid, sys_db_oid, otbx, def.columns);
                         err.contains_error()) {
                         error(log_,
@@ -182,19 +159,13 @@ namespace services::disk {
                             "a pg_catalog system table could not be opened, refusing to start: " +
                             std::string(err.what.c_str()));
                     }
-                    // A crash between "created" and "first checkpoint committed" leaves a
-                    // proven-young file that opens healthy and empty, and counts as freshly
-                    // created here so seeding still runs — but only for the 5 builtin-row
-                    // tables: doing this for every pg_* table would rewrite it on every start
-                    // and break bootstrap idempotence. Accepted side effect: deleting builtin
-                    // pg_proc rows (operator_unregister_udf) gets them restored on restart.
+                    // A crash before first-checkpoint leaves an empty file treated as fresh for the 5 builtin tables.
                     needs_seeding = has_builtin_seed_rows(tbl_oid) && rows_in_sync(tbl_oid) == 0;
                 } else {
                     trace(log_,
                           "manager_disk_t::bootstrap_system_tables_sync creating disk : {} oid={}",
                           std::string(def.name),
                           static_cast<unsigned>(tbl_oid));
-                    // The shared post-condition below decides the refusal; this only logs the cause.
                     if (auto create_err =
                             create_storage_disk_sync(tbl_oid, sys_db_oid, def.columns, otbx, /*is_computed=*/false);
                         create_err.contains_error()) {
@@ -208,12 +179,7 @@ namespace services::disk {
                     needs_seeding = true;
                 }
             }
-            // One shared post-condition over both legs: create_storage_disk_sync returns void
-            // and swallows its own failure, so this is the only place that checks for
-            // "no storage landed for this oid".
             if (agents_.empty() || agents_[0] == nullptr || !agents_[0]->has_storage_sync(tbl_oid)) {
-                // Cleanup of the zero-byte file from a refused first write lives inside
-                // create_storage_disk_sync; `took_create_leg` only picks which leg to blame below.
                 error(log_,
                       "bootstrap REFUSED , system table {} oid={} did not come up on the {} leg (path {})",
                       std::string(def.name),
@@ -226,15 +192,9 @@ namespace services::disk {
             return needs_seeding;
         };
 
-        // Refuse only where a retry with the cause removed succeeds: no throw on a failed
-        // checkpoint of a fresh table (would refuse forever on a file that never gets
-        // checkpointed), none on a successful empty load either (handled by seeding above).
+        // Refuses only where a retry would succeed — never a failed checkpoint or a successful empty load.
 
-        // direct_append_sync returns the appended row's start row, not a count
-        // (table_storage_adapter_t::append), so only its error wrapper — not the return value —
-        // can tell a refused row from one that landed; require_seeded still re-checks the
-        // table's total row count afterwards, since a seed can go missing without any single
-        // append refusing.
+        // direct_append_sync answers with the start row, not a count, so require_seeded re-checks the total afterwards.
         auto seed_row = [&](catalog::oid_t tbl_oid, std::string_view tbl_name, components::vector::data_chunk_t& row) {
             if (auto seeded = direct_append_sync(tbl_oid, row); seeded.has_error()) {
                 error(log_,
@@ -261,15 +221,13 @@ namespace services::disk {
 
         std::unordered_set<catalog::oid_t> freshly_created;
 
-        // Bootstrap pg_settings FIRST so stored_catalog_ is populated before any
-        // other table's seeding calls direct_append_sync (which takes the timezone).
+        // pg_settings must bootstrap FIRST — seeding elsewhere reads the timezone via direct_append_sync.
         if (const auto* settings_def = catalog::find_system_table(pg_settings_oid)) {
             if (bootstrap_one(*settings_def)) {
                 freshly_created.insert(catalog::well_known_oid::pg_settings_table);
                 auto row = make_row(resource(), settings_def->columns, [&](data_chunk_t& chunk, auto*) {
                     chunk.set_value(0, 0, std::string_view("TimeZone"));
-                    // Lowercase deliberately: core::date::timezone_to_offset only recognizes
-                    // lowercase input, and "UTC" here would make every start warn on it.
+                    // Lowercase deliberately: timezone_to_offset needs lowercase; "UTC" here would warn on every start.
                     chunk.set_value(1, 0, std::string_view("utc"));
                 });
                 seed_row(catalog::well_known_oid::pg_settings_table, settings_def->name, row);
@@ -283,21 +241,12 @@ namespace services::disk {
             }
         }
 
-        // Remaining tables — pg_settings is already in storages_ so bootstrap_one skips it.
         for (const auto& def : components::catalog::all_system_tables()) {
             if (bootstrap_one(def)) {
                 freshly_created.insert(def.relation_oid);
             }
         }
 
-        // The catalog describes itself, the way PostgreSQL's does: pg_class carries a row
-        // for every system table and pg_attribute one for each of their columns. That is
-        // what lets SQL address `pg_catalog.pg_class` through the same resolver as any
-        // user relation. Runs when pg_class is fresh, and catches up databases created
-        // before self-description existed (loaded pg_class without a self-row). The probe
-        // keeps this idempotent: once the self-row persists, no start re-seeds. A probe
-        // ERROR seeds nothing — bootstrap_one already refused an unreadable pg_class, and
-        // guessing over a readable-but-odd one could double-seed.
         {
             const bool self_rows_missing = [&] {
                 if (freshly_created.count(pg_class_oid) != 0) {
@@ -332,9 +281,7 @@ namespace services::disk {
                         std::int32_t attnum = 0;
                         for (const auto& col : def.columns) {
                             ++attnum;
-                            // Deterministic identity below FIRST_USER_OID: system columns
-                            // are never altered, so a derived attoid stays stable across
-                            // starts and never meets the oid generator.
+                            // Deterministic identity: a derived attoid never meets the oid generator.
                             const auto attoid = static_cast<catalog::oid_t>(
                                 def.relation_oid * 100 + static_cast<catalog::oid_t>(attnum));
                             const auto atttypid = catalog::builtin_type_to_oid(col.type().type());
@@ -361,9 +308,6 @@ namespace services::disk {
                 }
             }
             if (self_rows_catch_up) {
-                // The fresh-table checkpoint loop below only covers freshly_created;
-                // a caught-up database persists its new self-rows here or re-seeds
-                // them (idempotently) on the next start.
                 for (const auto tbl_oid : {pg_class_oid, pg_attribute_oid}) {
                     const collection_storage_entry_t* entry = nullptr;
                     if (!agents_.empty() && agents_[0] != nullptr) {
@@ -383,8 +327,6 @@ namespace services::disk {
 
         if (freshly_created.empty() ||
             freshly_created == std::unordered_set<catalog::oid_t>{catalog::well_known_oid::pg_settings_table}) {
-            // storage_entry_sync returns nullptr for a record-only marker; checkpoint runs
-            // on whichever entry holds the SFBM.
             if (freshly_created.count(catalog::well_known_oid::pg_settings_table)) {
                 constexpr auto settings_oid = catalog::well_known_oid::pg_settings_table;
                 const collection_storage_entry_t* entry = nullptr;
@@ -392,8 +334,6 @@ namespace services::disk {
                     entry = agents_[0]->storage_entry_sync(settings_oid);
                 }
                 if (entry != nullptr) {
-                    // const_cast: checkpoint mutates state behind a const pointer; safe
-                    // because the agent thread is idle at this bootstrap-time call.
                     auto cp_r = const_cast<collection_storage_entry_t*>(entry)->table_storage.checkpoint();
                     if (cp_r.has_error()) {
                         warn(log_, "manager_disk bootstrap: pg_settings checkpoint failed (rules 2/9)");
@@ -470,13 +410,11 @@ namespace services::disk {
         }
 
         for (auto tbl_oid : freshly_created) {
-            // Checkpoint each fresh catalog table (same probe as the pg_settings branch above).
             const collection_storage_entry_t* entry = nullptr;
             if (!agents_.empty() && agents_[0] != nullptr) {
                 entry = agents_[0]->storage_entry_sync(tbl_oid);
             }
             if (entry != nullptr) {
-                // out_of_memory only warns; bootstrap has no error channel.
                 auto cp_r = const_cast<collection_storage_entry_t*>(entry)->table_storage.checkpoint();
                 if (cp_r.has_error()) {
                     warn(log_,
@@ -488,8 +426,7 @@ namespace services::disk {
     }
 
     void manager_disk_t::restore_oid_generator_sync() {
-        // agents_[0] (catalog agent) owns all catalog SFBM entries.
-        // Pre-scheduler-start, single-threaded.
+        // agents_[0] (catalog agent) owns all catalog SFBM entries; scans below run pre-scheduler, single-threaded.
         if (agents_.empty() || agents_[0] == nullptr) {
             trace(log_, "manager_disk_t::restore_oid_generator_sync : no catalog agent, skipping");
             return;
@@ -508,10 +445,7 @@ namespace services::disk {
             if (table.column_count() == 0 || table.calculate_size() == 0) {
                 continue;
             }
-            // id_col is column 0, except pg_computed_column which allocates on attoid
-            // (column 1 — column 0 is the parent relid and never raises the frontier).
-            // The UINTEGER type check below guards the general case: pg_settings keys on
-            // a string column 0, and reading that as an oid would poison high_water.
+            // id_col is 0, except pg_computed_column (attoid, col 1); UINTEGER guards pg_settings' string column.
             const std::uint64_t id_col = (tbl_oid == catalog::well_known_oid::pg_computed_column_table)
                                              ? catalog::pg_computed_column_col::attoid
                                              : 0;
@@ -523,8 +457,6 @@ namespace services::disk {
             components::table::table_scan_state scan_state(&scan_resource);
             table.initialize_scan(scan_state, col_indices);
 
-            // Sparse chunk-slot convention (same as scan_live_table_oids_sync): a slot
-            // per storage column up to id_col, only id_col gets a buffer.
             const auto& all_cols = table.columns();
             std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
             all_types.reserve(all_cols.size());
@@ -560,16 +492,11 @@ namespace services::disk {
     }
 
     std::uint64_t manager_disk_t::max_persisted_commit_id_sync() const {
-        // agents_[0] (catalog agent) owns all catalog SFBM entries.
-        // Pre-scheduler-start, single-threaded (same window as restore_oid_generator_sync).
         if (agents_.empty() || agents_[0] == nullptr) {
             return 0;
         }
 
-        // pg_attribute is the ONLY system table carrying commit-id columns
-        // (added_at_commit_id @ index 10, dropped_at_commit_id @ index 11 — both
-        // i64). pg_class et al. carry none, so scanning pg_attribute is sufficient
-        // and authoritative.
+        // pg_attribute is the ONLY system table carrying commit-id columns (added_at/dropped_at @ 10/11).
         constexpr std::size_t kAddedAtCol = 10;
         constexpr std::size_t kDroppedAtCol = 11;
 
@@ -588,12 +515,7 @@ namespace services::disk {
         }
 
         core::pmr::otterbrix_resource scan_resource;
-        // Read via storage->scan with a default ("see all committed") transaction_data
-        // (snapshot_horizon = UINT64_MAX). This is the SAME read path resolve_table
-        // takes, so it folds the MVCC UPDATE that the schema-growth backfill applies
-        // to added_at_commit_id (the stamp is written as an UPDATE producing a newer
-        // row version; a raw table.scan/create_index_scan would surface the original
-        // added_at = NULL/0 version instead and miss the real commit-id).
+        // Reads via the same default-transaction_data path resolve_table takes, folding the backfill's MVCC UPDATE.
         components::vector::data_chunk_t chunk(&scan_resource, types, total);
         storage.scan(chunk, /*filter=*/nullptr, /*limit=*/-1, components::table::transaction_data{});
 
@@ -617,18 +539,13 @@ namespace services::disk {
     }
 
     void manager_disk_t::load_user_table_storages_sync() {
-        // Walks ${config_.path}/${db_oid}/${tbl_oid} for every user-table
-        // directory and calls load_storage_disk_sync, which records the
-        // OID on the routed agent slice. Precondition: agents_ non-empty
-        // (base_spaces pre-scheduler-start ordering).
         if (config_.path.empty()) {
             return;
         }
         if (!std::filesystem::exists(config_.path)) {
             return;
         }
-        // Layout: ${config_.path}/${database_oid}/${table_oid}/table.otbx. System
-        // tables (db_oid = main_database) are already loaded; here we walk the rest.
+        // Layout: ${config_.path}/${database_oid}/${table_oid}/table.otbx; system tables are already loaded here.
         for (const auto& db_entry : std::filesystem::directory_iterator(config_.path)) {
             if (!db_entry.is_directory())
                 continue;
@@ -653,7 +570,6 @@ namespace services::disk {
                 const auto tbl_oid = static_cast<catalog::oid_t>(tbl_oid_raw);
                 if (tbl_oid < catalog::FIRST_USER_OID)
                     continue;
-                // User-OID SFBM ownership lives on the routed agent slice.
                 if (has_storage(tbl_oid))
                     continue;
                 auto otbx = tbl_entry.path() / "table.otbx";
@@ -663,9 +579,7 @@ namespace services::disk {
                       "manager_disk_t::load_user_table_storages_sync : oid={} db_oid={}",
                       static_cast<unsigned>(tbl_oid),
                       static_cast<unsigned>(db_oid));
-                // No overlay — columns resolve from pg_attribute. A never-checkpointed .otbx
-                // whose catalog rows are still only in the WAL is deferred here (traced, not
-                // an error) and picked up by the post-replay walk in base_spaces.
+                // A never-checkpointed .otbx whose rows are still in the WAL is deferred here, not an error.
                 if (auto err = load_storage_disk_sync(tbl_oid, db_oid, otbx, {}); err.contains_error()) {
                     warn(log_,
                          "load_user_table_storages_sync: failed for oid={} : {}",
@@ -677,16 +591,13 @@ namespace services::disk {
     }
 
     core::result_wrapper_t<std::size_t> manager_disk_t::rehydrate_missing_user_storages_sync() {
-        // "Did not run" must stay distinguishable from "found nothing": the four early
-        // returns below use error_t rather than 0, since 0 is also what a healthy database
-        // reports.
+        // The four early returns below use error_t, not 0 — 0 is also what a healthy, empty database answers.
         if (agents_.empty() || agents_[0] == nullptr) {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"rehydrate_missing_user_storages_sync: there is no catalog agent to "
                                                   "read pg_class from; no alive table could be examined",
                                                   resource()});
         }
-        // Refuse rather than build relative paths under the process CWD.
         if (config_.path.empty()) {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"rehydrate_missing_user_storages_sync: config_disk::path is empty — "
@@ -695,11 +606,7 @@ namespace services::disk {
         }
         std::size_t unclosed = 0;
 
-        // Pass 1: scan pg_class for alive, unloaded 'r'/'m' tables. pg_class layout:
-        // [0=oid, 1=relname, 2=relnamespace, 3=relkind, 4=relstoragemode].
-        // relnamespace is read because the recreated .otbx must land at
-        // ${db_root}/${relnamespace}/${oid} — hardcoding main_database would place it
-        // under a namespace no user table actually uses, invisible to the table's own resolve.
+        // pg_class layout: [oid, relname, relnamespace, relkind, relstoragemode]; avoids misplacing the .otbx.
         std::vector<std::pair<catalog::oid_t, catalog::oid_t>> need_oids; // (table oid, namespace oid)
         {
             const collection_storage_entry_t* cls_entry = agents_[0]->storage_entry_sync(pg_class_oid);
@@ -719,19 +626,15 @@ namespace services::disk {
                                      resource()});
             }
             if (cls_table.calculate_size() == 0) {
-                // An empty pg_class names no table: nothing to rehydrate, honestly.
                 return std::size_t{0};
             }
             core::pmr::otterbrix_resource scan_resource;
-            // Sparse scan of the non-adjacent [oid (0), relkind (3)] columns via
-            // the projected_cols data_chunk ctor: pass the FULL pg_class type list
-            // plus the projected absolute indices, and read by ABSOLUTE index
-            // (chunk.value(0,..) / chunk.value(3,..)). A compacted 2-type chunk
-            // mis-decodes the dictionary-encoded relkind string column (segfault).
+            // Sparse [oid,relnamespace,relkind] scan via projected_cols, read by ABSOLUTE index — a compacted chunk
+            // mis-decodes the dictionary-encoded relkind column (segfault).
             std::vector<components::table::storage_index_t> col_indices;
-            col_indices.emplace_back(static_cast<int64_t>(0)); // oid
-            col_indices.emplace_back(static_cast<int64_t>(2)); // relnamespace
-            col_indices.emplace_back(static_cast<int64_t>(3)); // relkind
+            col_indices.emplace_back(static_cast<int64_t>(0));
+            col_indices.emplace_back(static_cast<int64_t>(2));
+            col_indices.emplace_back(static_cast<int64_t>(3));
             components::table::table_scan_state scan_state(&scan_resource);
             cls_table.initialize_scan(scan_state, col_indices);
             const auto& all_cols = cls_table.columns();
@@ -762,14 +665,12 @@ namespace services::disk {
                     const bool rk_null = chunk.is_null(3, i);
                     const auto rk_v = rk_null ? std::string_view{} : chunk.get_value<std::string_view>(3, i);
                     const char relkind = (rk_null || rk_v.empty()) ? catalog::relkind::regular : rk_v.front();
-                    // Only relkinds with physical row storage. Views, computed/
-                    // virtual tables, sequences etc. have no append-target storage.
+                    // Only relkinds with physical row storage; views, computed tables, sequences etc. have none.
                     if (relkind != catalog::relkind::regular && relkind != catalog::relkind::materialized_view) {
                         continue;
                     }
                     if (chunk.is_null(2, i)) {
-                        // The namespace names the directory the file has to be
-                        // recreated in. Nothing else in the row implies it.
+                        // The namespace names the directory the file must be recreated in; nothing else implies it.
                         error(log_,
                               "manager_disk_t::rehydrate_missing_user_storages_sync: pg_class row oid={} "
                               "carries no relnamespace; cannot place its .otbx and refusing to guess",
@@ -786,9 +687,6 @@ namespace services::disk {
             return unclosed;
         }
 
-        // Pass 2: one pg_attribute scan resolving every needed table's columns in attnum
-        // (ordinal) order. Shared with the young-.otbx schema overlay (load_storage_disk_sync) —
-        // same catalog, same read, one implementation.
         std::unordered_set<catalog::oid_t> wanted;
         wanted.reserve(need_oids.size());
         for (const auto& need : need_oids) {
@@ -796,28 +694,15 @@ namespace services::disk {
         }
         auto cols_by_relid = collect_catalog_columns_sync(wanted);
 
-        // Pass 3: recreate the missing .otbx for each table at the standard path
-        // ${db_root}/${relnamespace}/${oid}/table.otbx — the layout create_storage_disk uses.
         for (const auto& [oid, ns_oid] : need_oids) {
             auto otbx = config_.path / std::to_string(static_cast<unsigned>(ns_oid)) /
                         std::to_string(static_cast<unsigned>(oid)) / "table.otbx";
 
-            // WHAT THIS WALK IS FOR, AND WHAT IT IS NOT FOR. It recreates the file of a table
-            // whose .otbx was LOST — a freshly created file's directory entry is not fsynced, so a
-            // crash can keep the catalog row and lose the file. A table whose .otbx is PRESENT is
-            // a different state entirely: it was refused by the loader (a corrupt sidecar, a
-            // rotten header) and is still every byte the operator has, so creating over it would
-            // answer a refusal by destroying the thing that was refused. Both states arrive here
-            // as "no storage for this oid"; only one of them is this walk's.
+            // Recreates a table whose .otbx was LOST (unfsynced dir entry after a crash) — NOT one PRESENT but
+            // refused by the loader, which is still every byte the operator has; creating over it destroys that.
             std::error_code file_ec;
             if (std::filesystem::exists(otbx, file_ec) && !file_ec) {
-                // AND ONE OF THE PRESENT FILES IS NOBODY'S FAULT. A file of exactly BLOCK_START
-                // bytes is the never-checkpointed signature: the pre-replay walk DEFERS it because
-                // the catalog rows describing its schema are still only in the WAL, and the
-                // post-replay walk in base_spaces opens it as a legitimately empty table once
-                // replay has put them back. That is a table mid-recovery, not a divergence, and
-                // calling it one would report an error on every crash-before-first-checkpoint
-                // restart.
+                // A file of exactly BLOCK_START bytes is the never-checkpointed signature, deferred to replay.
                 const auto file_bytes = std::filesystem::file_size(otbx, file_ec);
                 if (!file_ec && file_bytes == components::table::storage::BLOCK_START) {
                     trace(log_,
@@ -839,11 +724,7 @@ namespace services::disk {
 
             auto it = cols_by_relid.find(oid);
             if (it == cols_by_relid.end() || it->second.empty()) {
-                // A LEGITIMATE SKIP THAT MUST STILL BE HEARD. Nothing in this process can
-                // resolve columns pg_attribute does not have, and a zero-column storage is
-                // worse than none — so the skip is right and a refusal here would repeat on
-                // every start. It must not be silent, though: this is the one walk written to
-                // notice exactly this divergence.
+                // A zero-column storage is worse than none, so the skip is right — but it must not be silent.
                 error(log_,
                       "manager_disk_t::rehydrate_missing_user_storages_sync: alive table oid={} (ns={}) has a live "
                       "pg_class row, no storage and no pg_attribute columns — its .otbx cannot be rebuilt and the "
@@ -860,9 +741,6 @@ namespace services::disk {
                   static_cast<unsigned>(ns_oid),
                   defs.size());
             std::filesystem::create_directories(otbx.parent_path());
-            // Never computed here: the alive-oid scan is filtered to relkind 'r'/'m'
-            // (computed tables have no pg_attribute schema and are recovered by WAL
-            // replay synthesis instead — see the method comment).
             if (auto err = create_storage_disk_sync(oid, ns_oid, std::move(defs), otbx, /*is_computed=*/false);
                 err.contains_error()) {
                 error(log_,
@@ -876,72 +754,19 @@ namespace services::disk {
         return unclosed;
     }
 
-    // Re-arm a DISK-backed column drop whose release a crash discarded. The window it closes, the
-    // bootstrap ORDERING it depends on and the relkind='g' exclusion are stated at the declaration
-    // in manager_disk.hpp; what follows is the evidence and the two decisions not derivable from it.
-    // WHY BOOTSTRAP AND NOT THE CHECKPOINT ROUND. The comparison needs the catalog, and the disk
-    // agent holds none: at checkpoint it would be a cross-actor read from inside the per-entry
-    // loop. Here the catalog is a synchronous read of agent 0's own slice on the single-threaded
-    // pre-scheduler-start thread — no message, no await, no shared state.
-    // RE-ARMING ALONE IS A NO-OP, not a shortcut — this is the load-bearing decision, and it is
-    // MEASURED rather than argued. release_dropped_column_blocks() proves NON-ownership per id, and
-    // its second subtraction is "the live collection does not name it" (several columns pack into
-    // one 256 KiB block, so a candidate id routinely still carries a survivor). Leave the column in
-    // the collection and collect_disk_block_ids reports EVERY one of its blocks as live, so every
-    // armed id is skipped and the set is drained having freed nothing: run with the rebuild removed
-    // and the ids armed on their own, the durable root names the same 4 data blocks after the
-    // restart as before it — byte for byte the do-nothing outcome — with no free-list overlap and
-    // no unexplained block. The opposite risk — arming ids the collection still references, which
-    // would be a BAD FREE — is exactly what that subtraction exists to make impossible, and it is
-    // why the order is fixed: the column must leave the collection FIRST. So the drop is performed
-    // with the very primitive the commit path uses, table_storage_t::drop_column, which does both
-    // halves in the one order that is safe: name the ids, then rebuild.
-    // That rebuild is NOT a physical rewrite of the table. data_table_t(parent, removed_column)
-    // SHARES every surviving column with the successor collection and simply forgets the dropped
-    // one — zero blocks allocated, no segment rewritten, nothing written to the file. The bytes
-    // only move at the next checkpoint, which is where the release belongs.
-    // A catalog read that fails must be loud, never a quiet skip. Bootstrap has no
-    // statement to fail, so the shape is scan_storage_for_rebuild_sync's — log at error and change
-    // NOTHING. Which way to fail is not symmetric: leaving a leak is recoverable (the next start
-    // re-derives it from the same two durable facts), physically dropping a column the catalog does
-    // describe is not. So every ambiguous reading refuses.
-    // WHAT THIS WALK COMPARES ON, AND WHY IT CANNOT BE THE NAME. "In the storage, not in the live
-    // catalog" reads as "dropped" only while nothing can change a column's name in pg_attribute
-    // without changing it in the storage in the same durable breath — and nothing can guarantee
-    // that, because the two halves are durable at DIFFERENT points. An ALTER TABLE RENAME COLUMN's
-    // catalog half is durable at the WAL commit marker; its storage half only at that table's NEXT
-    // CHECKPOINT, unbounded later. A crash in between leaves a storage naming the old column
-    // against a catalog naming the new one, and a name-keyed walk reads that as a DROP and
-    // physically releases a SURVIVING column's blocks. Reversing the order does not help: the
-    // storage's durability point is later either way, and the comparison destroys on divergence in
-    // BOTH directions. The window is reachable from one ordinary statement, and it costs the column
-    // with all of its data.
-    // So the key is the IDENTITY the catalog minted for the column — pg_attribute.attoid — which
-    // the storage carries per column and serializes into the .otbx. A rename does not move it, so
-    // the divergence stops being observable here; what a rename leaves behind is a stale storage
-    // NAME, and this walk repairs that FROM the catalog instead of acting on it. It therefore does
-    // not DEPEND on operator_alter_column_rename_t / manager_disk_t::rename_storage_column having
-    // run — that path still writes the storage name at commit, which is the cheap way to keep the
-    // two halves agreeing without a restart. On the oid the two states the name conflated are
-    // finally distinct, and in opposite directions: a RENAMED column's attoid IS in the live
-    // catalog (under another name), while an ALTER ADD COLUMN not yet materialised is an attoid in
-    // the catalog with NO storage column — legal, common, and handled positively rather than by
-    // being ignored (its identity is published forward so the INSERT that materialises it is born
-    // identified).
-    // A storage column with NO attoid is refused, loudly, for the whole table. See the note at the
-    // refusal itself for why that refusal is here and not on the load path.
+    // Re-arming alone is a verified no-op — measured: with the rebuild removed, the durable root names the same
+    // blocks after restart as before (several columns pack per 256 KiB block), so the column must leave the collection
+    // via table_storage_t::drop_column BEFORE its blocks are armed. Comparison is by attoid, never name: a RENAME's
+    // catalog half is durable at the WAL commit marker, its storage half only at the table's next checkpoint.
     void manager_disk_t::rearm_dropped_column_blocks_sync() {
         if (agents_.empty() || agents_[0] == nullptr) {
             return;
         }
-        // relkind 'r'/'m' only — see the note above on 'g'.
         auto live_oids = scan_live_table_oids_sync();
         std::unordered_set<catalog::oid_t> wanted;
         std::pmr::vector<catalog::oid_t> ordered{resource()};
         for (auto oid : live_oids) {
-            // No loaded storage means no physical columns to compare against. Not an error:
-            // rehydrate already recreated everything the catalog describes and whose file was
-            // lost, and a record-only marker owns nothing to release.
+            // Not an error: rehydrate already recreated everything the catalog describes and whose file was lost.
             if (!has_storage(oid)) {
                 continue;
             }
@@ -955,9 +780,7 @@ namespace services::disk {
 
         auto cols_by_relid = collect_catalog_columns_sync(wanted);
         if (cols_by_relid.empty()) {
-            // pg_attribute is unreadable / empty while user tables are loaded and describable.
-            // Reading that as "every column of every table was dropped" is the one mistake this
-            // walk must never make, so it stops here, loudly, having touched nothing.
+            // pg_attribute resolving NO columns while tables are loaded must not be read as "every column was dropped".
             error(log_,
                   "manager_disk_t::rearm_dropped_column_blocks_sync: pg_attribute resolved NO columns for "
                   "{} loaded user table(s) — refusing to treat that as a drop; blocks released by a "
@@ -971,8 +794,6 @@ namespace services::disk {
             if (pool_idx >= agents_.size() || agents_[pool_idx] == nullptr) {
                 continue;
             }
-            // Same borrow the sibling bootstrap walks take: agent-owned entry, read
-            // synchronously on the pre-scheduler-start thread (see storage_entry_sync).
             const collection_storage_entry_t* entry = agents_[pool_idx]->storage_entry_sync(oid);
             if (entry == nullptr || entry->storage == nullptr) {
                 continue;
@@ -984,10 +805,6 @@ namespace services::disk {
 
             auto it = cols_by_relid.find(oid);
             if (it == cols_by_relid.end() || it->second.empty()) {
-                // The catalog knows the table (pg_class listed it as 'r'/'m') but describes no
-                // live column for it. "Every column was dropped" and "this table's
-                // pg_attribute rows are missing" are indistinguishable from here, and one of
-                // them ends in an emptied table, so neither is acted on.
                 error(log_,
                       "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} is a live 'r'/'m' table with "
                       "{} storage column(s) but NO live pg_attribute column — refusing to read that as a "
@@ -997,9 +814,6 @@ namespace services::disk {
                 continue;
             }
 
-            // THE COMPARISON IS BY attoid. Every live pg_attribute row carries one;
-            // a row that does not is a catalog this walk cannot reason about, and the whole
-            // table is left alone rather than compared on a weaker key.
             std::set<catalog::oid_t> live_attoids;
             for (const auto& def : it->second) {
                 if (def.attoid() != 0) {
@@ -1023,16 +837,7 @@ namespace services::disk {
                 continue;
             }
 
-            // The storage's own columns come from the file's serialized schema (load_from_disk
-            // reads each attoid back), so this is the durable root's answer, not the catalog's.
-            // attoid == 0 on a LOADED column is a loud refusal of the whole table, and it is
-            // refused HERE rather than at the load. Quiet degradation is forbidden —
-            // skipping the column, or falling back to the name — because both put a physical drop
-            // back on a key that cannot tell a rename apart. It does not follow that the refusal
-            // belongs on the READ path: aborting data_table_t::load_from_disk over an unidentified
-            // column would make the database unopenable over an accounting gap. Refusing here
-            // leaves every byte in place, every query answerable, and the leak re-derivable by the
-            // next start once whatever produced the 0 is fixed.
+            // attoid==0 on a loaded column is refused HERE, not at load — aborting the load would brick the database.
             const auto& storage_columns = owned->table_storage.table().columns();
             std::vector<std::string> unidentified;
             for (const auto& column : storage_columns) {
@@ -1051,19 +856,6 @@ namespace services::disk {
                 continue;
             }
 
-            // One pass over the storage schema, splitting it three ways against the catalog:
-            //   * attoid absent from the live set   -> a real DROP; arm the release;
-            //   * attoid present, name disagrees    -> a RENAME whose storage half a crash lost
-            //                                          before the table's next checkpoint. Not a
-            //                                          drop, and not a no-op either: the storage
-            //                                          NAME is a cache of the catalog's, and the
-            //                                          append path's column expansion and
-            //                                          drop_column still address columns by it;
-            //   * attoid present, name agrees       -> nothing to do.
-            // Catalog attoids with no storage column are the mirror image — an ALTER ADD COLUMN
-            // not materialised yet — and are handled after the drops, by publishing their
-            // identity forward (see below). By NAME those last two are the SAME observation,
-            // which is exactly why a name-keyed comparison has no guard to add on its own side.
             struct storage_rename_t {
                 std::string from;
                 std::string to;
@@ -1085,8 +877,7 @@ namespace services::disk {
                 }
             }
             if (to_drop.size() >= owned->table_storage.table().column_count() && !to_drop.empty()) {
-                // Not one attoid in common. That is a schema mismatch between the file and the
-                // catalog, not a DROP COLUMN — acting on it would empty the table.
+                // Sharing NO attoid with the catalog is a schema mismatch, not a DROP COLUMN.
                 error(log_,
                       "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} shares NO column attoid with "
                       "its {} live pg_attribute column(s) — refusing to drop all {} storage columns",
@@ -1096,13 +887,6 @@ namespace services::disk {
                 continue;
             }
 
-            // The forward half: publish the identity of every live catalog column this
-            // storage does not carry, so the INSERT that eventually materialises it stamps the
-            // right attoid. This is an OID-SET DIFFERENCE, not a name match — the storage's
-            // attoids are known and complete (refused above otherwise) — and it is what makes a
-            // crash between an ALTER TABLE ADD COLUMN's commit and the table's next checkpoint
-            // survivable: the pg_attribute row is durable, the parked identity is not, and this
-            // re-derives it from the catalog before any statement can run.
             for (const auto& def : it->second) {
                 bool in_storage = false;
                 for (const auto& column : storage_columns) {
@@ -1112,8 +896,6 @@ namespace services::disk {
                     }
                 }
                 if (!in_storage) {
-                    // The TYPE travels with the identity: this same list is what the storage
-                    // adapter reads to answer the column with NULLs until an INSERT materialises it.
                     owned->note_column_identity(def.name(), def.attoid(), def.type());
                     trace(log_,
                           "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} published identity "
@@ -1124,10 +906,6 @@ namespace services::disk {
                 }
             }
 
-            // The storage's NAME for a surviving column is repaired from the catalog before any
-            // drop, while `storage_columns` is still the live schema. A collision (two columns
-            // trading names) is refused by data_table_t::rename_column; it is logged and left
-            // alone — the divergence is inert (identity is the oid) and the next start retries.
             for (const auto& r : to_rename) {
                 auto renamed = owned->rename_column(r.from, r.to);
                 if (renamed.has_error()) {
@@ -1153,10 +931,6 @@ namespace services::disk {
             }
 
             for (const auto& attname : to_drop) {
-                // The commit path's primitive, unchanged: NAME the outgoing column's blocks
-                // into pending_released_blocks_, then rebuild the collection without it. The
-                // release itself belongs to the next checkpoint round, which is now reachable
-                // again — that is the whole repair.
                 if (!owned->drop_column(attname, resource())) {
                     error(log_,
                           "manager_disk_t::rearm_dropped_column_blocks_sync: oid={} column '{}' is in the "
@@ -1176,29 +950,16 @@ namespace services::disk {
 
     std::unordered_map<components::catalog::oid_t, std::vector<components::table::column_definition_t>>
     manager_disk_t::collect_catalog_columns_sync(const std::unordered_set<components::catalog::oid_t>& wanted) const {
-        // One scan of pg_attribute (agents_[0] owns every pg_* table; bootstrap thread,
-        // pre-scheduler-start) grouping live (non-dropped) columns by attrelid. Each column's
-        // (attnum, name, type, default) reconstructs the storage schema in ordinal order — the
-        // same order CREATE TABLE registered. Every ordinal below is named through
-        // catalog::pg_attribute_col so the width guard and the reads cannot drift apart.
-        // NOT-NULL is deliberately not part of the storage schema here: it is enforced ABOVE
-        // storage, by operator_check_constraint over the materialised row, from attnotnull.
+        // One pg_attribute scan groups live columns by attrelid in attnum order; NOT-NULL is enforced above storage.
         namespace att = catalog::pg_attribute_col;
-        // The widest ordinal read below, so the guard cannot end up narrower than the reads.
-        // A hand-written `< 9` here is what left attdefspec (column 9) out of this scan.
+        // The guard uses the widest ordinal read below — a hand-written `< 9` once left attdefspec out of this scan.
         constexpr std::uint64_t widest_read = att::attdefspec;
         struct catalog_col_t {
             std::int32_t attnum{0};
-            // pg_attribute.attoid — the column's IDENTITY, and from here on the ONLY
-            // thing the bootstrap reconciliation compares on. Carried into the
-            // column_definition_t so that every storage this function schemas (the rehydrated
-            // .otbx, the young-file overlay) is born with its columns identified.
             catalog::oid_t attoid{catalog::INVALID_OID};
             std::string name;
             components::types::complex_logical_type type;
-            // Decoded on resource_ (the manager's), NOT on the scan's local arena: a
-            // logical_value_t copy keeps its source resource pointer, and this value outlives
-            // this function by way of the storage entry that publishes it.
+            // Decoded on resource_, NOT the scan's local arena, since the value outlives this function.
             std::optional<components::types::logical_value_t> default_value;
         };
         std::unordered_map<catalog::oid_t, std::vector<catalog_col_t>> raw_by_relid;
@@ -1261,11 +1022,7 @@ namespace services::disk {
                     if (!typspec.empty()) {
                         auto rc_type_r = catalog::decode_type_spec(resource_, typspec);
                         if (rc_type_r.has_error()) {
-                            // DB-open path: a refusal here would brick the database, so the
-                            // failure is loud in the log and the column keeps an UNKNOWN
-                            // placeholder that every typed read refuses per-statement.
-                            // (const method — log through a local handle, log_t is a
-                            // shared_ptr-backed value.)
+                            // DB-open path: an unreadable atttypspec logs loudly; the column keeps an UNKNOWN type.
                             auto log = log_;
                             error(log,
                                   "manager_disk_t::collect_catalog_columns_sync: relid={} column '{}' "
@@ -1287,18 +1044,12 @@ namespace services::disk {
                     if (!rc.name.empty() && !rc.type.has_alias()) {
                         rc.type.set_alias(rc.name);
                     }
-                    // THE DEFAULT IS PART OF THE SCHEMA THIS REBUILDS, not a decoration on it. A
-                    // column ALTERed in with one and not yet materialised is answered from the
-                    // publication this feeds (collection_storage_entry_t::adopt_catalog_columns),
-                    // so a load that drops it makes the column read NULL — and the first INSERT
-                    // then backfills that NULL into the pre-existing rows for good.
+                    // The default is part of the schema: dropping it on load reads NULL until the first INSERT.
                     if (!chunk.is_null(att::attdefspec, i)) {
                         auto defspec_v = chunk.get_value<std::string_view>(att::attdefspec, i);
                         std::string defspec(defspec_v.data(), defspec_v.size());
                         auto def_ec = catalog::decode_default_spec(resource_, rc.type, defspec, rc.default_value);
                         if (def_ec.contains_error()) {
-                            // Same DB-open reading as an unreadable atttypspec above: loud, and
-                            // the column loads without the default rather than bricking the open.
                             auto log = log_;
                             error(log,
                                   "manager_disk_t::collect_catalog_columns_sync: relid={} column '{}' "
@@ -1344,21 +1095,14 @@ namespace services::disk {
         const auto total = entry->storage->total_rows();
         if (total == 0)
             return batches;
-        // REGULAR scan (default transaction_data) so the visibility filter drops
-        // committed-deleted tombstones. scan_segment (COMMITTED_ROWS, no filter)
-        // would seed the index with deleted rows whose column data is still present,
-        // and index_scan + fetch + WHERE would then return them. scan_batched emits the
-        // table as ≤DEFAULT_VECTOR_CAPACITY chunks, so no oversized chunk is built.
+        // REGULAR scan drops committed-deleted tombstones; scan_segment would let them leak back through a WHERE.
         auto scan_r = entry->storage->scan_batched(batches,
                                                    /*filter=*/nullptr,
                                                    /*limit=*/-1,
                                                    /*projected_cols=*/nullptr,
                                                    components::table::transaction_data{});
         if (scan_r.has_error()) {
-            // Rebuild feeds the post-restart index repopulate; a partial batch
-            // set would silently rebuild an index that disagrees with the table.
-            // Bootstrap has no statement to fail, so log LOUDLY and hand back
-            // nothing — an unindexed table costs a scan, a wrong index lies.
+            // A partial batch set would silently rebuild a disagreeing index, so a scan failure hands back nothing.
             auto log = log_.clone();
             error(log,
                   "manager_disk_t::scan_storage_for_rebuild_sync: scan failed for oid={}: {} — "
@@ -1371,7 +1115,6 @@ namespace services::disk {
     }
 
     std::pmr::vector<components::catalog::oid_t> manager_disk_t::scan_live_table_oids_sync() const {
-        // See header. Pre-scheduler-start, single-threaded scan of pg_class on agents_[0].
         std::pmr::vector<components::catalog::oid_t> live{resource_};
         if (agents_.empty() || agents_[0] == nullptr) {
             return live;
@@ -1385,10 +1128,6 @@ namespace services::disk {
             return live;
         }
         core::pmr::otterbrix_resource scan_resource;
-        // pg_class: 0=oid, 3=relkind. templated_scan writes into
-        // result.data[column.primary_index()] (by storage column index, not position
-        // in col_indices), so the chunk must have a slot at every storage index the
-        // scan touches. projected_cols ctor allocates buffers only for [0, 3].
         std::vector<components::table::storage_index_t> col_indices;
         col_indices.emplace_back(static_cast<int64_t>(0));
         col_indices.emplace_back(static_cast<int64_t>(3));
@@ -1428,13 +1167,6 @@ namespace services::disk {
     }
 
     core::result_wrapper_t<char> manager_disk_t::relkind_for_oid_sync(components::catalog::oid_t table_oid) const {
-        // See header. Same pg_class {0=oid, 3=relkind} sparse-scan shape as
-        // scan_live_table_oids_sync; the LAST matching row wins (latest append).
-        // THE THREE LEGS BELOW ARE NOT ONE ANSWER. "pg_class is not there to scan" is a read
-        // that did not happen; "pg_class is there and holds no row for this oid" is a read
-        // that did, and its '\0' is the honest one every consumer already handles. An EMPTY
-        // pg_class belongs with the second — a database where nothing has been created yet
-        // genuinely has no row for the oid.
         char result = '\0';
         if (agents_.empty() || agents_[0] == nullptr) {
             return core::error_t(core::error_code_t::io_error,
@@ -1502,8 +1234,6 @@ namespace services::disk {
     }
 
     components::catalog::oid_t manager_disk_t::relnamespace_for_oid_sync(components::catalog::oid_t table_oid) const {
-        // See header. Same pg_class sparse-scan shape as relkind_for_oid_sync, projecting
-        // {0=oid, 2=relnamespace}; the LAST matching row wins (latest append).
         auto result = catalog::INVALID_OID;
         if (agents_.empty() || agents_[0] == nullptr) {
             return result;
@@ -1550,10 +1280,6 @@ namespace services::disk {
     }
 
     std::pmr::vector<pg_index_row_t> manager_disk_t::scan_alive_pg_index_sync() const {
-        // Two single-pass catalog sweeps on agents_[0] (pg_index, then pg_attribute
-        // for indkey) instead of O(N_indexes × C) per-index rescans. No pg_class
-        // pass: everything below the planner is keyed by (table_oid, indexrelid),
-        // the relname never leaves the catalog. Pre-scheduler-start, single-threaded.
         std::pmr::vector<pg_index_row_t> result{resource_};
         if (agents_.empty() || agents_[0] == nullptr) {
             return result;
@@ -1563,17 +1289,10 @@ namespace services::disk {
             return result;
         }
         auto& idx_table = const_cast<collection_storage_entry_t*>(idx_entry)->table_storage.table();
-        // Local clone: the error() log helpers take log_t& and this method is const.
         auto log = log_.clone();
         if (idx_table.column_count() != 5) {
-            // pg_index carries exactly [indexrelid, indrelid, indkey, indisvalid,
-            // indtype]. Any other shape is catalog corruption — refuse to guess
-            // which backend owns each index directory: loud, no fallback.
-            // REFUSE THE START, NOT THE PROCESS: this runs pre-scheduler on the
-            // bootstrap thread (base_spaces), where std::runtime_error is the same
-            // catchable startup refusal bootstrap_one already throws twice. An abort
-            // here would be a SIGABRT driven purely by bytes read from disk,
-            // uncatchable by the embedder and unretryable once the row is repaired.
+            // pg_index must carry exactly [indexrelid, indrelid, indkey, indisvalid, indtype], or it's corrupt.
+            // Refuses the START via std::runtime_error (catchable, like bootstrap_one) not an uncatchable SIGABRT.
             error(log,
                   "manager_disk_t::scan_alive_pg_index_sync: pg_index has {} columns, expected 5 "
                   "(indtype missing?) — catalog is corrupt, refusing to start",
@@ -1585,17 +1304,15 @@ namespace services::disk {
             return result;
         }
 
-        // Pass 1: scan pg_index. The raw indkey attoid CSV is stashed per-row and
-        // resolved against pg_attribute in pass 2.
         std::pmr::vector<std::pmr::string> raw_indkeys{resource_};
         {
             core::pmr::otterbrix_resource scan_resource;
             std::vector<components::table::storage_index_t> col_indices;
-            col_indices.emplace_back(static_cast<int64_t>(0)); // indexrelid
-            col_indices.emplace_back(static_cast<int64_t>(1)); // indrelid
-            col_indices.emplace_back(static_cast<int64_t>(2)); // indkey
-            col_indices.emplace_back(static_cast<int64_t>(3)); // indisvalid
-            col_indices.emplace_back(static_cast<int64_t>(4)); // indtype
+            col_indices.emplace_back(static_cast<int64_t>(0));  // indexrelid/indrelid/indkey/indisvalid/indtype
+            col_indices.emplace_back(static_cast<int64_t>(1));
+            col_indices.emplace_back(static_cast<int64_t>(2));
+            col_indices.emplace_back(static_cast<int64_t>(3));
+            col_indices.emplace_back(static_cast<int64_t>(4));
             components::table::table_scan_state scan_state(&scan_resource);
             idx_table.initialize_scan(scan_state, col_indices);
             std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
@@ -1618,13 +1335,8 @@ namespace services::disk {
                     // indisvalid → ready_since sentinel (1 = alive, 0 = skip; see pg_index_row_t).
                     const bool valid = chunk.is_null(3, i) ? false : chunk.get_value<bool>(3, i);
                     row.ready_since = valid ? std::uint64_t{1} : std::uint64_t{0};
-                    // indtype: NOT nullable, no default. A missing or unknown code
-                    // means the restart cannot know which backend owns the index
-                    // directory — reading bitcask files through a B+tree (or vice
-                    // versa) silently corrupts them, so fail LOUDLY instead.
+                    // indtype is NOT nullable; an unknown code means the restart can't tell which backend owns it.
                     if (chunk.is_null(4, i)) {
-                        // Same start-refusal contract as the column-count check above:
-                        // loud, catchable, retryable once the row is deleted or repaired.
                         error(log,
                               "manager_disk_t::scan_alive_pg_index_sync: pg_index row "
                               "(indexrelid={}, indrelid={}) has NULL indtype — catalog is corrupt, refusing to start",
@@ -1639,9 +1351,6 @@ namespace services::disk {
                                    ? components::logical_plan::index_type_from_indtype_code(indtype_v.front())
                                    : components::logical_plan::index_type::no_valid;
                     if (row.type == components::logical_plan::index_type::no_valid) {
-                        // Same start-refusal contract as the two checks above. The refusal
-                        // to GUESS the owning backend stands: reading bitcask files through
-                        // a B+tree (or vice versa) silently corrupts them.
                         error(log,
                               "manager_disk_t::scan_alive_pg_index_sync: pg_index row "
                               "(indexrelid={}, indrelid={}) has unknown indtype '{}' — catalog is corrupt, "
@@ -1669,15 +1378,11 @@ namespace services::disk {
             return result;
         }
 
-        // Pass 2: resolve the stashed indkey CSVs to attnames via one pg_attribute
-        // scan (build attoid → attname, then walk each row's CSV).
         std::pmr::unordered_map<catalog::oid_t, std::pmr::string> attoid_to_name{resource_};
         if (const collection_storage_entry_t* attr_entry = agents_[0]->storage_entry_sync(pg_attribute_oid)) {
             auto& attr_table = const_cast<collection_storage_entry_t*>(attr_entry)->table_storage.table();
             if (attr_table.column_count() >= 3 && attr_table.calculate_size() > 0) {
                 core::pmr::otterbrix_resource scan_resource;
-                // Sparse scan [attoid, attname] via the projected_cols ctor — same
-                // chunk-slot convention as scan_live_table_oids_sync above.
                 std::vector<components::table::storage_index_t> col_indices;
                 col_indices.emplace_back(static_cast<int64_t>(catalog::pg_attribute_col::attoid));
                 col_indices.emplace_back(static_cast<int64_t>(catalog::pg_attribute_col::attname));
@@ -1715,7 +1420,6 @@ namespace services::disk {
             const auto& csv = raw_indkeys[i];
             if (csv.empty())
                 continue;
-            // Parse CSV of attoids inline (avoid std::string allocation roundtrip).
             std::size_t pos = 0;
             while (pos < csv.size()) {
                 std::size_t end = csv.find(',', pos);
@@ -1738,8 +1442,6 @@ namespace services::disk {
     }
 
     std::unordered_set<components::catalog::oid_t> manager_disk_t::alive_user_oids_sync() const {
-        // agents_[0] (catalog agent) owns pg_class. Pre-scheduler-start,
-        // single-threaded (see header comment on storage_entry_sync).
         std::unordered_set<components::catalog::oid_t> alive;
         if (agents_.empty() || agents_[0] == nullptr) {
             return alive;
@@ -1753,7 +1455,6 @@ namespace services::disk {
             return alive;
         }
         core::pmr::otterbrix_resource scan_resource;
-        // pg_class column 0 = oid.
         std::vector<components::table::storage_index_t> col_indices;
         col_indices.emplace_back(static_cast<int64_t>(0));
         components::table::table_scan_state scan_state(&scan_resource);
@@ -1778,10 +1479,7 @@ namespace services::disk {
     }
 
     std::pmr::vector<dropped_class_row_t> manager_disk_t::scan_dropped_oids_sync() {
-        // See header. Strategy: scan pg_class with COMMITTED_ROWS (includes
-        // tombstones) for every user OID ever recorded, then set-difference against
-        // alive_user_oids_sync (which omits permanently-deleted) to isolate the
-        // "DROP committed, GC pending" OIDs.
+        // Scans pg_class with COMMITTED_ROWS (includes tombstones), then set-differences against alive_user_oids_sync.
         std::pmr::vector<dropped_class_row_t> result{resource_};
         if (agents_.empty() || agents_[0] == nullptr) {
             return result;
@@ -1791,22 +1489,15 @@ namespace services::disk {
             return result;
         }
         auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
-        // Columns 0 (oid) and 2 (relnamespace) are both read below.
         if (table.column_count() < 3 || table.calculate_size() == 0) {
             return result;
         }
         core::pmr::otterbrix_resource scan_resource;
-        // Sparse, non-adjacent projection of {0 = oid, 2 = relnamespace}: the chunk carries
-        // pg_class's FULL type list plus the projected absolute indices and is read by ABSOLUTE
-        // index, the same shape rehydrate_missing_user_storages_sync uses. A compacted 2-type
-        // chunk mis-decodes the dictionary-encoded string columns in between.
         std::vector<components::table::storage_index_t> col_indices;
-        col_indices.emplace_back(static_cast<int64_t>(0)); // pg_class.oid
-        col_indices.emplace_back(static_cast<int64_t>(2)); // pg_class.relnamespace
+        col_indices.emplace_back(static_cast<int64_t>(0));  // pg_class.oid, then pg_class.relnamespace
+        col_indices.emplace_back(static_cast<int64_t>(2));
 
-        // create_index_scan exposes table_scan_type, so it can request COMMITTED_ROWS
-        // (incl. tombstones); the plain scan_committed/scan APIs are hard-wired to
-        // COMMITTED_ROWS_OMIT_PERMANENTLY_DELETED.
+        // create_index_scan is used since it exposes table_scan_type; plain scan APIs omit tombstones.
         std::unordered_map<components::catalog::oid_t, components::catalog::oid_t> ns_by_user_oid;
         {
             components::table::table_scan_state scan_state(&scan_resource);
@@ -1838,8 +1529,6 @@ namespace services::disk {
                     const auto ns = chunk.is_null(2, i)
                                         ? catalog::INVALID_OID
                                         : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(2, i));
-                    // The LAST row for an oid wins (latest append), matching every other
-                    // pg_class sparse scan on this path.
                     ns_by_user_oid[seen] = ns;
                 }
             }
@@ -1852,9 +1541,6 @@ namespace services::disk {
                 continue;
             }
             if (ns_oid == catalog::INVALID_OID) {
-                // The namespace is what names the directory the file sits in. Guessing
-                // one would either miss the file (leaking it forever) or point the sweep at
-                // somebody else's directory. Report and leave the row to an operator.
                 error(log_,
                       "manager_disk_t::scan_dropped_oids_sync: tombstoned pg_class row oid={} carries no "
                       "relnamespace; cannot locate its .otbx and refusing to guess",
@@ -1867,16 +1553,8 @@ namespace services::disk {
     }
 
     std::string manager_disk_t::read_setting_sync(std::string_view name) {
-        // agents_[0] (catalog agent) owns pg_settings. Pre-scheduler-start, single-threaded.
-        // AN EMPTY STRING MEANS EXACTLY "NO ROW WITH THAT NAME", never "pg_settings is not loaded"
-        // or "pg_settings has the wrong shape" — folding those in would silently revert a stored
-        // setting to the caller's built-in default whenever the read could not be performed. Those
-        // two states cannot legitimately occur after bootstrap_system_tables_sync (which seeds
-        // pg_settings FIRST and refuses the start when any system table does not come up), so
-        // reaching them here is a sequencing bug or catalog corruption — refused with the same
-        // pre-scheduler std::runtime_error the bootstrap refusals use, never folded into "absent".
-        // A manager with no agents at all (disk-less construction) has no stored settings by
-        // construction; its empty answer is the honest one and stays.
+        // Empty means EXACTLY "no row with that name" — never "not loaded" or "wrong shape", which can't occur
+        // after bootstrap (which seeds pg_settings FIRST and refuses the start otherwise).
         const auto settings_oid = catalog::well_known_oid::pg_settings_table;
         if (agents_.empty() || agents_[0] == nullptr) {
             return {};
@@ -1897,15 +1575,14 @@ namespace services::disk {
         }
         core::pmr::otterbrix_resource scan_resource;
         std::vector<components::table::storage_index_t> col_indices;
-        col_indices.emplace_back(static_cast<int64_t>(0)); // name column
-        col_indices.emplace_back(static_cast<int64_t>(1)); // setting column
+        col_indices.emplace_back(static_cast<int64_t>(0));  // name column, then setting column
+        col_indices.emplace_back(static_cast<int64_t>(1));
         components::table::table_scan_state scan_state(&scan_resource);
         table.initialize_scan(scan_state, col_indices);
         std::pmr::vector<components::types::complex_logical_type> types(&scan_resource);
         types.push_back(table.columns()[0].type());
         types.push_back(table.columns()[1].type());
-        // pg_settings is append-only: return the LAST row with the matching name
-        // so that a SET TIMEZONE append supersedes the seeded default.
+        // pg_settings is append-only: returns the LAST row, so a SET TIMEZONE append supersedes the seeded default.
         std::string last_value;
         while (true) {
             components::vector::data_chunk_t chunk(&scan_resource, types, components::vector::DEFAULT_VECTOR_CAPACITY);

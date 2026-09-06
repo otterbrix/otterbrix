@@ -47,9 +47,7 @@ namespace services::index {
 #endif
 
     namespace {
-        // errno must be captured immediately after open_file -- anything run afterward
-        // (incl. the DEV_MODE interposer below) may clobber it. thread_local: one store per
-        // index agent thread.
+        // errno must be captured immediately after open_file, before the DEV_MODE interposer below can clobber it.
         thread_local int last_open_errno = 0;
 
         std::string open_refusal_reason() {
@@ -80,11 +78,6 @@ namespace services::index {
                 case logical_type::SMALLINT:
                 case logical_type::INTEGER:
                 case logical_type::BIGINT: {
-                    // Signed-integer widening can not fail for the types this switch admits;
-                    // still, never assert-then-value() (a failed cast in Release would deref
-                    // an empty optional). A non-widenable key keeps its native representation
-                    // — identical to the default branch, and self-consistent between insert
-                    // and find (both normalize the same way).
                     auto casted = key.cast_as(complex_logical_type(logical_type::BIGINT), session_tz);
                     if (casted.has_error()) {
                         return key;
@@ -124,8 +117,7 @@ namespace services::index {
         };
 
         // The recover gate compares commit_id, not txn_id: txn_id is reused across restarts,
-        // commit_id never is. No version field -- an old build's 32-byte header just fails CRC
-        // and those frames are dropped rather than misread.
+        // commit_id never is. No version field -- an old build's header just fails CRC instead.
         struct txn_frame_header_t {
             uint32_t magic;
             uint32_t crc;
@@ -147,8 +139,8 @@ namespace services::index {
             return out;
         }
 
-        // The key codec leaves `pos` unmoved when it refuses, so ignoring a false return here
-        // would misread the row count out of the key's own bytes instead of yielding "no rows".
+        // The key codec leaves `pos` unmoved on refusal, so ignoring a false return here would
+        // misread the row count out of the key's own bytes.
         [[nodiscard]] bool deserialize_payload(std::pmr::memory_resource* resource,
                                                const std::pmr::string& payload,
                                                services::index::bitcask_index_disk_t::value_t& key,
@@ -161,8 +153,7 @@ namespace services::index {
                 return false;
             }
             rows.clear();
-            // n comes off disk untrusted; bound it against remaining payload bytes before
-            // reserve() so a corrupt count can't ask the allocator for e.g. 32GB.
+            // n is untrusted disk input; bounded before reserve() so a corrupt count can't ask for e.g. 32GB.
             if (n > (payload.size() - pos) / sizeof(uint64_t)) {
                 return false;
             }
@@ -205,10 +196,7 @@ namespace services::index {
             return ec == std::errc() && ptr == digits.data() + digits.size();
         }
 
-        // absent: nothing written yet (ordinary; caller may act on it). unopenable: file exists,
-        // open refused -- transient, clears itself. damaged: file opened but won't parse, does
-        // NOT clear itself. Folding unopenable into absent would let a transient permission/fd
-        // blip pass for "never written".
+        // unopenable (open refused) is transient and clears itself; damaged (opened but unparseable) does not.
         enum class sidecar_state_t
         {
             ok,
@@ -221,8 +209,6 @@ namespace services::index {
             std::error_code ec;
             const bool present = std::filesystem::exists(file, ec);
             if (ec) {
-                // exists() itself refusing is a directory this process cannot look into, which
-                // is the transient class, not "there is no such file".
                 return sidecar_state_t::unopenable;
             }
             if (!present) {
@@ -258,8 +244,6 @@ namespace services::index {
             }
             std::ifstream input(manifest_path_value);
             if (!input.good()) {
-                // Distinct from absent: the caller unlinks segments on the strength of "no
-                // manifest", so a refused open must not be reported as one.
                 return sidecar_state_t::unopenable;
             }
             std::size_t removed_count = 0;
@@ -268,9 +252,6 @@ namespace services::index {
                 return sidecar_state_t::damaged;
             }
             removed_segment_ids.clear();
-            // No reserve(removed_count): the count came off disk untrusted and a bogus value
-            // (e.g. 1e18) would throw std::bad_alloc uncaught. Bounded by the file
-            // itself instead -- the loop below stops when the stream runs out.
             for (std::size_t i = 0; i < removed_count; ++i) {
                 uint64_t removed_id = 0;
                 input >> removed_id;
@@ -283,23 +264,16 @@ namespace services::index {
             return sidecar_state_t::ok;
         }
 
-        // error_code overload, not remove_file's bool: that bool conflates "device refused to
-        // unlink" with "nothing was there" (the latter is success, not failure).
         [[nodiscard]] bool unlink_if_present(const std::filesystem::path& artifact, std::error_code& ec) {
             ec.clear();
             std::filesystem::remove(artifact, ec);
             return !ec;
         }
 
-        // false means the manifest is still on disk -- callers must not proceed as if the
-        // merge record were gone (a stale manifest would name segments already unlinked).
         [[nodiscard]] bool remove_merge_manifest(const std::filesystem::path& directory, std::error_code& ec) {
             return unlink_if_present(merge_manifest_path(directory), ec);
         }
 
-        // Logs only, never fails the caller: the writers below have already decided their
-        // return value, and a leftover temp is harmless since the next attempt reopens it
-        // with std::ios::trunc.
         void report_undroppable_temp(const std::filesystem::path& temp_path) {
             std::error_code ec;
             if (unlink_if_present(temp_path, ec)) {
@@ -312,9 +286,8 @@ namespace services::index {
                          ec.message().c_str());
         }
 
-        // Durably publish a sidecar: fsync temp, then rename over target.
-        // rename(2) atomically replaces an existing target on POSIX, so never
-        // unlink the target first — that leaves a crash window with no file.
+        // Durably publish a sidecar: fsync temp, then rename over target. rename(2) atomically
+        // replaces the target on POSIX, so never unlink it first -- that leaves a crash window with no file.
         [[nodiscard]] bool publish_replacement_file(core::filesystem::local_file_system_t& fs,
                                                     const std::filesystem::path& temp_path,
                                                     const std::filesystem::path& target_path) {
@@ -336,8 +309,6 @@ namespace services::index {
 #endif
         }
 
-        // false means the manifest is NOT on disk: a merge that can't record what it's about
-        // to do must stop before publishing anything.
         [[nodiscard]] bool write_merge_manifest(core::filesystem::local_file_system_t& fs,
                                                 const std::filesystem::path& directory,
                                                 uint64_t merged_segment_id,
@@ -363,14 +334,10 @@ namespace services::index {
             if (publish_replacement_file(fs, temp_path, manifest_path)) {
                 return true;
             }
-            // The publish left the temp behind; nothing reads it, and leaving it would have
-            // the next attempt write over a file it did not create.
             report_undroppable_temp(temp_path);
             return false;
         }
 
-        // Opening the index is a write to its directory: CURRENT is republished via temp file
-        // + rename here, on every start and every rotation, so the directory needs `w`.
         [[nodiscard]] bool write_current_segment_id(core::filesystem::local_file_system_t& fs,
                                                     const std::filesystem::path& directory,
                                                     uint64_t segment_id) {
@@ -395,16 +362,12 @@ namespace services::index {
             return false;
         }
 
-        // Returns how much landed, not just whether it finished: a record is two writes, and a
-        // bool would collapse "nothing written" and "header written, payload refused" into the
-        // same answer, leaving the caller unable to tell a stump from an untouched file.
         [[nodiscard]] core::filesystem::write_result_t write_record(core::filesystem::file_handle_t& file,
                                                                     uint8_t kind,
                                                                     uint64_t timestamp,
                                                                     const std::pmr::string& payload) {
-            // Value-init (`{}`) zeroes the 3 padding bytes at offsets 5-7 before they're CRC'd
-            // and written to disk; aggregate init (`{a,b,c,d}`) leaves them as uninitialized
-            // stack garbage. txn_frame_header_t below has the same padding issue.
+            // Value-init (`{}`) zeroes the padding bytes before they're CRC'd and written to disk (same for
+            // txn_frame_header_t below); aggregate init would leave them as uninitialized garbage.
             record_header_t header{};
             header.kind = kind;
             header.payload_size = static_cast<uint64_t>(payload.size());
@@ -432,12 +395,9 @@ namespace services::index {
             return core::filesystem::write_result_t::done(landed);
         }
 
-        // A half-landed record left in place would stop being a tail once the next append writes
-        // past it, turning it into an interior frame that fails CRC/magic and takes the WHOLE
-        // file down on replay -- so it must be truncated off here, while `record_offset` is
-        // still known. truncate/fsync/seek are all checked: any one silently failing would leave
-        // the descriptor past a now-shorter file. fsync matters because the truncate is a
-        // metadata change that a crash could otherwise undo, leaving the stump back.
+        // A half-landed record would become an interior frame the next append writes past, failing CRC/magic and
+        // taking the whole file down on replay -- truncated off here instead, with each step checked since an
+        // unsynced truncate is a metadata change a crash could undo.
         [[nodiscard]] bool discard_partial_record(core::filesystem::file_handle_t& file,
                                                   const core::filesystem::write_result_t& result,
                                                   uint64_t record_offset) {
@@ -454,8 +414,7 @@ namespace services::index {
         }
     } // namespace
 
-    // No I/O here -- the agent holds this store by value in its member initializer list, so
-    // construction must be the step that cannot fail; open() is the step that can.
+    // No I/O here: construction must be the step that cannot fail; open() is the step that can.
     bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
@@ -470,9 +429,8 @@ namespace services::index {
         , segment_record_limit_(segment_record_limit)
         , committed_commit_ids_(committed_commit_ids.begin(), committed_commit_ids.end(), resource) {}
 
-    // Opening this index is a write to its directory (CURRENT is republished via temp+rename
-    // on every open, see write_current_segment_id) -- the directory needs r+w+x, there is no
-    // read-only mode, and there is no lock: it must belong to exactly one process.
+    // Opening this index writes to its directory (CURRENT is republished via temp+rename): no read-only
+    // mode, and no lock, so it must belong to one process.
     core::error_t bitcask_index_disk_t::open() {
         RETURN_IF_ERROR(initialize_storage());
         if (auto open_result = open_hash_index(); open_result.contains_error()) {
@@ -485,18 +443,11 @@ namespace services::index {
         }
         RETURN_IF_ERROR(open_active_segment());
         RETURN_IF_ERROR(recover_txn_log());
-        // Recovery applies frames via insert()/remove(), which are void and park failures in
-        // pending_write_error_; force_flush() here drains that instead of deferring to a later
-        // statement's flush.
         return force_flush();
     }
 
-    // Construct-and-open, for backend tests only (test_bitcask_index_disk.cpp,
-    // stress_test_index.cpp): aborts on any open() failure since a ctor has no error channel
-    //. Production uses the deferred ctor + open() instead, inside
-    // bitcask_index_agent_t's member initializer list, so an environmental failure costs the
-    // index its registration, not the engine its start. A test that wants to observe a refusal
-    // must use the deferred ctor and read open()'s value directly.
+    // Test-only construct-and-open ctor: aborts on any open() failure since a ctor has no error channel. A test
+    // that wants to observe a refusal must use the deferred ctor + open() instead.
     bitcask_index_disk_t::bitcask_index_disk_t(const path_t& path,
                                                std::pmr::memory_resource* resource,
                                                uint64_t flush_threshold,
@@ -518,8 +469,8 @@ namespace services::index {
         }
     }
 
-    // Environmental failures (unopenable path, bad header) must cost the index its
-    // registration, not the engine's start (integration/cpp/test/test_index_bootstrap_failure.cpp).
+    // Environmental failures cost the index its registration, not the engine's start
+    // (integration/cpp/test/test_index_bootstrap_failure.cpp).
     core::error_t bitcask_index_disk_t::io_failure(std::string_view message) const {
         return core::error_t{core::error_code_t::index_create_fail,
                              std::pmr::string{message.data(), message.size(), resource_}};
@@ -537,19 +488,11 @@ namespace services::index {
 
     bitcask_index_disk_t::~bitcask_index_disk_t() {
         if (!hash_index_) {
-            // Keydir never opened, or drop() released it -- nothing to flush.
             return;
         }
-        // Last chance, not the only one: every write door already ends in a force_flush a
-        // caller reads, so by now either the flush already succeeded or its failure was
-        // already reported. A destructor has no error channel of its own.
         auto ignored_flush_error = force_flush();
     }
 
-    // read.value() (the record's kind) is deliberately not consulted: read_rows_at fills
-    // *out_key before classifying the record, so a tombstone carries the same key a value
-    // record does, and duplicating the kind check here would fold a read failure into
-    // "this entry is not your key".
     core::result_wrapper_t<std::pmr::string> bitcask_index_disk_t::load_hash_key_at(uint32_t segment_id,
                                                                                     uint64_t value_offset) const {
         row_ids_t rows(resource());
@@ -558,9 +501,7 @@ namespace services::index {
         if (read.has_error()) {
             return read.error();
         }
-        // Crosses to this store's resource since codec::encode_disk_hash_key builds a
-        // plain std::string; not a hot path -- called ZERO times in the randomized stress
-        // profile, since encoded integer keys (9 bytes) are well under inline_key_limit (64).
+        // Not a hot path -- called ZERO times in the randomized stress profile (integer keys stay inline).
         bool key_hashable = true;
         const auto key_bytes = key_bytes_for_hash(key, &key_hashable);
         if (!key_hashable) {
@@ -583,9 +524,6 @@ namespace services::index {
             hash_index_->set_auto_rehash_suppressed(bulk_prev_rehash_suppressed_);
             bulk_rehash_guard_active_ = false;
             if (!bulk_prev_rehash_suppressed_) {
-                // set_bulk_mode is void and its callers are handlers that have already
-                // written; a keydir that could not finish growing is handed to the next
-                // force_flush rather than dropped here.
                 note_write_error(hash_index_->trigger_rehash_if_needed());
             }
         }
@@ -605,19 +543,12 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    // `ok` is only ever set false; passed by the three callers whose key came off the disk
-    // (untrusted), unlike the other five whose key was vetted by CREATE INDEX.
     std::string bitcask_index_disk_t::key_bytes_for_hash(const value_t& key, bool* ok) const {
         auto normalized = normalize_hash_key(key, core::date::timezone_offset_t{});
         return components::index::codec::encode_disk_hash_key(normalized, ok);
     }
 
-    // None of the three refusal paths below may be swallowed: load_from_disk replays every
-    // segment it finds, so a manifest left unresolved would replay sources the merge already
-    // rewrote and resurrect the keys it dropped. A refusal here costs the index its
-    // registration, not the engine (open() -> bitcask_index_agent_t::create); every refusal
-    // leaves the manifest in place so the next open retries, except a damaged (unparseable)
-    // manifest, which is permanent -- the segment ids it named are unrecoverable.
+    // None of the three refusal paths below may be swallowed: an unresolved manifest would resurrect dropped keys.
     core::error_t bitcask_index_disk_t::apply_merge_recovery_cleanup() {
         const auto manifest_path = merge_manifest_path(path_);
         std::error_code ec;
@@ -626,18 +557,13 @@ namespace services::index {
         std::vector<uint64_t> removed_segment_ids;
         switch (read_merge_manifest(path_, merged_segment_id, removed_segment_ids)) {
             case sidecar_state_t::absent:
-                // No merge was interrupted -- the ordinary case.
                 return core::error_t::no_error();
             case sidecar_state_t::unopenable:
-                // Transient (permission/fd/device); clears itself and the next open retries.
                 return io_failure("bitcask: the merge manifest " + manifest_path.string() +
                                   " is present and could not be opened; the index is not registered while that "
                                   "lasts, and the next open retries it unchanged");
             case sidecar_state_t::damaged:
-                // Permanent, deliberately: the manifest is published via temp+rename so it's
-                // never half-written by a crash -- unparseable bytes mean the segment ids it
-                // named are gone for good, and neither replaying nor dropping the merged
-                // segment without them is safe.
+                // Permanent, deliberately: published via temp+rename, so unparseable bytes mean the ids are gone.
                 return io_failure("bitcask: the merge manifest " + manifest_path.string() +
                                   " is present and its bytes could not be read as a manifest; this does not clear by "
                                   "itself -- drop and re-create the index, or remove its directory, to rebuild it "
@@ -652,9 +578,6 @@ namespace services::index {
                               " could not be looked up: " + ec.message());
         }
         if (!merged_present) {
-            // The merge never published its output, so the sources it names are the whole
-            // truth about this index and every one of them stays. Only the record of the
-            // attempt goes.
             if (!remove_merge_manifest(path_, ec)) {
                 return io_failure("bitcask: the manifest of a merge that published nothing could not be removed from " +
                                   manifest_path.string() + ": " + ec.message());
@@ -665,14 +588,10 @@ namespace services::index {
         for (const auto removed_id : removed_segment_ids) {
             const auto removed_path = segment_file_path(path_, removed_id);
             if (!unlink_if_present(removed_path, ec)) {
-                // Manifest stays -- it's the only record that this unlink is still owed, so
-                // the next open retries this loop.
                 return io_failure("bitcask: the merged-away segment " + removed_path.string() +
                                   " could not be removed: " + ec.message());
             }
         }
-        // All sources gone: the next merge would overwrite this manifest, so it must go now
-        // or a source this merge failed to unlink stops being named by anything.
         if (!remove_merge_manifest(path_, ec)) {
             return io_failure("bitcask: the manifest of a finished merge could not be removed from " +
                               manifest_path.string() + ": " + ec.message());
@@ -690,8 +609,6 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::load_from_disk() {
-        // Every load re-derives: stale rotated-read handles and a stale crc_failure_ flag
-        // would otherwise pollute this reload's verdict with the previous one's.
         invalidate_rotated_read_cache_();
         crc_failure_ = false;
         const bool prev_rehash_suppressed = hash_index_->set_auto_rehash_suppressed(true);
@@ -707,16 +624,11 @@ namespace services::index {
 
         RETURN_IF_ERROR(apply_merge_recovery_cleanup());
 
-        // This function is the keydir's only author: everything in it is re-derived from the
-        // segments below, so a stale entry can only mean a live device refusal now, never a
-        // segment unlinked by a merge from restarts ago. Unconditional and BEFORE the early
-        // return on an empty segment set, or a fully-emptied index would keep answering find()
-        // out of a stale keydir.
+        // This function is the keydir's only author: reset unconditionally, before the early return below, or a
+        // fully-emptied index would keep answering find() out of a stale one.
         RETURN_IF_ERROR(hash_index_->reset_storage());
 
         VALUE_OR_RETURN(auto segments, collect_segments());
-        // Set on every road out of this function, so open_active_segment can never act on
-        // what a previous open left.
         active_segment_clean_end_ = no_tail_to_trim;
         if (segments.empty()) {
             active_segment_id_ = regular_segment_id_start_;
@@ -730,14 +642,9 @@ namespace services::index {
             return core::error_t::no_error();
         }
 
-        // Decided before the walk, because the walk needs it: a tail this build cannot read
-        // is repairable only in the active segment, plain damage in every other (see the CRC
-        // arm below).
         uint64_t configured_active_segment_id = 0;
         switch (read_current_segment_id(path_, configured_active_segment_id)) {
             case sidecar_state_t::absent:
-                // No CURRENT (pre-pointer layout, or a wipe that got this far): newest segment
-                // is the documented stand-in.
                 configured_active_segment_id = segments.back().id;
                 break;
             case sidecar_state_t::unopenable:
@@ -756,8 +663,6 @@ namespace services::index {
         const auto active_it = std::find_if(segments.begin(), segments.end(), [&](const auto& segment) {
             return segment.id == configured_active_segment_id;
         });
-        // Stores the index, not the iterator: the walk below writes through `segments` and
-        // must not read a position taken before it.
         const size_t active_segment_index =
             active_it == segments.end() ? segments.size() - 1 : static_cast<size_t>(active_it - segments.begin());
         const uint64_t active_segment_id = segments[active_segment_index].id;
@@ -765,9 +670,6 @@ namespace services::index {
         for (auto& segment : segments) {
             auto f = open_bitcask_file(fs_, segment.path, file_flags::READ, file_lock_type::NO_LOCK);
             if (!f) {
-                // Must cost the index its registration, not the engine's life
-                // (integration/cpp/test/test_index_bootstrap_failure.cpp): an unreadable
-                // segment here means the keydir this rebuild fills is missing its keys.
                 return io_failure("bitcask: segment " + segment.path.string() +
                                   " could not be opened for recovery: " + open_refusal_reason());
             }
@@ -775,8 +677,6 @@ namespace services::index {
             uint64_t offset = 0;
             while (offset + sizeof(record_header_t) <= file_size) {
                 record_header_t header{};
-                // The loop condition already proved the header fits, so a short read here is a
-                // device refusing, not a torn tail (that's handled by the size check below).
                 if (!f->read(&header, sizeof(header), offset)) {
                     return io_failure("bitcask: segment " + segment.path.string() +
                                       " refused a record header during recovery");
@@ -784,11 +684,8 @@ namespace services::index {
 
                 const auto payload_offset = offset + sizeof(record_header_t);
                 // Subtraction, not addition: payload_size is untrusted and the addition would
-                // wrap near UINT64_MAX, passing the check and then throwing std::bad_alloc on
-                // resize() below.
+                // wrap near UINT64_MAX, passing the check and then throwing std::bad_alloc below.
                 if (header.payload_size > file_size - payload_offset) {
-                    // Truncated tail: the record was never fully written (a crash mid-append).
-                    // Everything before it is intact, and there is nothing after it.
                     break;
                 }
 
@@ -796,7 +693,6 @@ namespace services::index {
                 payload.resize(static_cast<size_t>(header.payload_size));
                 if (header.payload_size != 0 &&
                     !f->read(payload.data(), static_cast<uint64_t>(header.payload_size), payload_offset)) {
-                    // Same as the header above: the size check says these bytes exist.
                     return io_failure("bitcask: segment " + segment.path.string() +
                                       " refused a record payload during recovery");
                 }
@@ -807,11 +703,7 @@ namespace services::index {
                 }
                 if (static_cast<uint32_t>(calc) != header.crc) {
                     if (segment.id == active_segment_id) {
-                        // Repairable here (unlike the rotated arm below): a CRC mismatch in the
-                        // active segment's tail is treated as a torn write, not fatal, or the
-                        // cut in open_active_segment that heals it would be unreachable and one
-                        // bad byte would cost the whole index. Committed rows are safe in the
-                        // txn log regardless. Logged because nothing else will ever mention it.
+                        // A CRC mismatch in the active tail is a torn write, not fatal: open_active_segment heals it.
                         std::fprintf(stderr,
                                      "bitcask: %s holds a record at offset %llu whose CRC does not match; the "
                                      "active segment's unreadable tail (%llu bytes) is being cut and the index "
@@ -821,16 +713,12 @@ namespace services::index {
                                      static_cast<unsigned long long>(file_size - offset));
                         break;
                     }
-                    // A rotated segment never gets appended to again, so a CRC mismatch here is
-                    // damage, not a torn write -- flagged rather than treated as fatal so
-                    // open() can report it as a value.
+                    // A rotated segment never gets appended to again, so a mismatch here is damage, not a torn write.
                     crc_failure_ = true;
                     return core::error_t::no_error();
                 }
                 value_t key(resource(), nullptr);
                 row_ids_t rows(resource());
-                // CRC already matched, so this is a foreign/newer key encoding, not a torn
-                // tail -- walking past it would publish a keydir missing these rows.
                 if (!deserialize_payload(resource(), payload, key, rows)) {
                     return io_failure("bitcask: segment " + segment.path.string() +
                                       " holds a record whose key could not be decoded");
@@ -850,8 +738,6 @@ namespace services::index {
                                                      static_cast<uint32_t>(segment.id),
                                                      payload_offset));
                 } else {
-                    // CRC matched: a well-formed record of an unknown kind (foreign/newer
-                    // format), not a torn tail -- must not stop quietly.
                     return io_failure("bitcask: segment " + segment.path.string() +
                                       " holds a record of an unknown kind");
                 }
@@ -859,8 +745,6 @@ namespace services::index {
                 ++segment.record_count;
                 offset = payload_offset + header.payload_size;
             }
-            // `offset` is the first byte the walk could not read as a record -- equal to
-            // file_size on a segment that ends cleanly.
             segment.scan_end = offset;
         }
 
@@ -879,8 +763,6 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    // error_code overload only: the throwing overload could escape as an exception,
-    // or worse, silently turn an unreadable directory into "no segments".
     core::result_wrapper_t<std::pmr::vector<bitcask_index_disk_t::segment_info_t>>
     bitcask_index_disk_t::collect_segments() const {
         std::pmr::vector<segment_info_t> segments(resource());
@@ -895,7 +777,6 @@ namespace services::index {
             return listing_failure(ec);
         }
         if (!directory_present) {
-            // The one legitimate empty answer: nothing written yet, so no segments is true.
             return segments;
         }
         const bool is_directory = std::filesystem::is_directory(path_, ec);
@@ -903,8 +784,7 @@ namespace services::index {
             return listing_failure(ec);
         }
         if (!is_directory) {
-            // Not "no segments yet" -- an empty list here would let the rebuild wipe the
-            // keydir over a layout this store cannot run on.
+            // Not "no segments yet": an empty list here would let the rebuild wipe the keydir over a bad layout.
             return io_failure("bitcask: the index path " + path_.string() + " is not a directory");
         }
 
@@ -948,11 +828,7 @@ namespace services::index {
             return io_failure("bitcask: active segment " + active_data_file_path_.string() +
                               " could not be opened: " + open_refusal_reason());
         }
-        // The crash half of discard_partial_record: a power cut inside write_record leaves a
-        // stump with nobody left to undo it, so it's cut here before anything appends past it.
-        // fsync'd because an unsynced truncate could leave the stump back after a second crash.
-        // active_segment_clean_end_ is only cleared after the cut succeeds, so a refused
-        // truncate can retry on the next open_active_segment call.
+        // The crash half of discard_partial_record: a stump is cut here, fsync'd so a crash can't bring it back.
         if (const auto clean_end = active_segment_clean_end_;
             clean_end != no_tail_to_trim && file_->file_size() > clean_end) {
             if (!file_->truncate(static_cast<int64_t>(clean_end)) || !file_->sync()) {
@@ -967,9 +843,7 @@ namespace services::index {
                               " could not be positioned at its end");
         }
         if (!write_current_segment_id(fs_, path_, active_segment_id_)) {
-            // Must refuse rather than write into a segment CURRENT doesn't name: load_from_disk
-            // picks the active segment by this file, so an unnamed append replays out of order
-            // after a restart.
+            // Must refuse rather than write into a segment CURRENT doesn't name, or a restart replays out of order.
             return io_failure("bitcask: the CURRENT segment pointer could not be published");
         }
         return core::error_t::no_error();
@@ -978,15 +852,13 @@ namespace services::index {
     uint64_t bitcask_index_disk_t::allocate_next_segment_id() { return next_segment_id_++; }
 
     core::error_t bitcask_index_disk_t::rotate_active_segment() {
-        // Nothing reopens the old segment for writing, so it must be synced before the handle goes.
         RETURN_IF_ERROR(sync_if_dirty());
         file_.reset();
         active_segment_id_ = allocate_next_segment_id();
         active_segment_records_ = 0;
         active_data_file_path_ = segment_file_path(path_, active_segment_id_);
         RETURN_IF_ERROR(open_active_segment());
-        // Record the debt, don't pay it here: bitcask_index_agent_t pays it once, at the end
-        // of the write handler, instead of once per rotation within one statement.
+        // Record the debt, don't pay it here: bitcask_index_agent_t pays it once at the end of the write handler.
         merge_pending_ = true;
         return core::error_t::no_error();
     }
@@ -995,20 +867,11 @@ namespace services::index {
         if (!merge_pending_) {
             return core::error_t::no_error();
         }
-        // Cleared FIRST, not after: an early return inside merge_immutable_segments would
-        // otherwise re-run the whole scan on the next call.
         merge_pending_ = false;
         auto merge_error = merge_immutable_segments();
         if (merge_error.contains_error()) {
-            // Re-armed regardless of failure mode (before or after manifest publish) so this
-            // uptime retries on the next rotation rather than waiting for a restart; the agent
-            // calls this once per write handler, so a permanently failing merge costs one
-            // attempt per statement, not a spin.
             merge_pending_ = true;
         }
-        // RETURNED, not parked: parking it in note_write_error would hold the refusal for the
-        // NEXT force_flush and mis-attribute it to a later round. The agent's pay_merge_debt
-        // folds it into the reply of the handler that ran the merge, which is where it belongs.
         return merge_error;
     }
 
@@ -1027,18 +890,13 @@ namespace services::index {
                                                                     row_ids_t& rows,
                                                                     value_t* out_key) const {
         const auto segment_path = segment_file_path(path_, segment_id);
-        // The active segment reuses the descriptor this store already holds instead of a fresh
-        // open()/close() per read (positional pread(2), so this is safe alongside the sequential
-        // append path). Observed under stress_test_index.cpp's parallel suite: a fresh open()
-        // per read hits a spurious refusal (system-wide fd table pressure from a neighbour)
-        // roughly once in ten runs. Rotated segments still open per read below -- this closes
-        // only the hot path.
+        // The active segment reuses the descriptor this store already holds instead of a fresh open()/close() per
+        // read: under stress_test_index.cpp's parallel suite, a fresh open() per read hit a spurious refusal
+        // roughly once in ten runs.
         core::filesystem::file_handle_t* f = nullptr;
         if (file_ && static_cast<uint64_t>(segment_id) == active_segment_id_) {
             f = file_.get();
         } else {
-            // Rotated files never change, so an LRU-held handle answers the same bytes a fresh
-            // open would.
             for (auto& lease : rotated_read_cache_) {
                 if (lease.segment_id == segment_id) {
                     lease.last_used = ++rotated_read_tick_;
@@ -1075,8 +933,6 @@ namespace services::index {
         record_header_t header{};
         std::pmr::string payload(resource());
         if (value_offset < sizeof(record_header_t)) {
-            // A keydir entry points PAST its record header, so an offset smaller than one
-            // header is an entry that cannot describe a record at all.
             return io_failure("bitcask: keydir entry points inside the record header of " + segment_path.string());
         }
         const auto header_offset = value_offset - sizeof(record_header_t);
@@ -1085,9 +941,6 @@ namespace services::index {
             return io_failure("bitcask: record header at " + std::to_string(header_offset) + " of " +
                               segment_path.string() + " could not be read");
         }
-        // Written as subtraction, not `value_offset + payload_size > segment_size`: payload_size
-        // came off disk untrusted and the addition wraps near UINT64_MAX, which would pass the
-        // check and then throw std::bad_alloc on resize() below.
         const auto segment_size = f->file_size();
         if (value_offset > segment_size || header.payload_size > segment_size - value_offset) {
             return io_failure("bitcask: the record at " + std::to_string(value_offset) + " of " +
@@ -1129,9 +982,8 @@ namespace services::index {
             return row_ids_t(resource());
         }
         row_ids_t rows(resource());
-        // A read failure must not come back as "no rows": append_snapshot REPLACES the key's
-        // row list with this result, so treating a refusal as empty would silently erase every
-        // row_id the key already had. A tombstone still legitimately answers empty below.
+        // A read failure must not come back as "no rows": append_snapshot REPLACES the row list, so a
+        // refusal read as empty would erase every row_id the key had.
         VALUE_OR_RETURN(const bool is_value, read_rows_at(ref->log_file_id, ref->log_offset, rows, nullptr));
         if (!is_value) {
             return row_ids_t(resource());
@@ -1139,8 +991,6 @@ namespace services::index {
         return rows;
     }
 
-    // erase()'s error must propagate rather than be read as "no ref left": otherwise refs
-    // behind an unreadable page would be silently left in place.
     core::error_t bitcask_index_disk_t::erase_all_refs_for_key(std::string_view key_bytes) {
         while (true) {
             VALUE_OR_RETURN(const bool erased, hash_index_->erase(key_bytes, key_loader()));
@@ -1151,13 +1001,9 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::append_snapshot(const value_t& key, const row_ids_t& rows) {
-        // Checked before rotation: rotating would hand this store a clean file, silently
-        // leaving the stump behind in a segment the replay still walks.
         RETURN_IF_ERROR(refuse_if_sealed());
         RETURN_IF_ERROR(rotate_active_segment_if_needed());
-        // Not a defensive check on an invariant that holds: rotate_active_segment drops the old
-        // handle before opening the new one, so a rotation whose open() refused leaves no handle
-        // -- without this check, the next INSERT would null-deref.
+        // Not just defensive: a rotation whose open() refused leaves no handle, and INSERT would null-deref.
         if (!file_) {
             return io_failure("bitcask: no active segment is open for " + path_.string());
         }
@@ -1166,10 +1012,6 @@ namespace services::index {
         const auto record_write =
             write_record(*file_, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload);
         if (!record_write.complete) {
-            // Discarded before the keydir is touched: running the erase/put below over a record
-            // that isn't on disk would make the key unfindable while reporting success. A repair
-            // that itself fails seals the store (seal_writes), since the stump would otherwise
-            // become an interior frame the next append lands behind.
             if (!discard_partial_record(*file_, record_write, offset)) {
                 return seal_writes("bitcask: a partly written snapshot record could not be discarded from " +
                                    active_data_file_path_.string());
@@ -1223,9 +1065,8 @@ namespace services::index {
 
     std::filesystem::path bitcask_index_disk_t::txn_applied_file_path() const { return path_ / txn_applied_file; }
 
-    // Zero is ambiguous: "never written" (fresh log, zero is correct) vs. "present but
-    // unopenable" (frames already applied up to an unknown point -- zero would re-replay them
-    // all). The caller refuses on the unopenable/damaged cases instead of substituting zero.
+    // Zero is ambiguous between "never written" and "present but unopenable" (re-replay risk), so the caller
+    // refuses rather than substituting zero.
     core::result_wrapper_t<uint64_t> bitcask_index_disk_t::read_applied_log_offset() const {
         const auto applied_path = txn_applied_file_path();
         uint64_t offset = 0;
@@ -1263,8 +1104,6 @@ namespace services::index {
             }
         }
         if (!publish_replacement_file(fs_, temp_path, applied_path)) {
-            // A leftover temp is harmless (reopened with std::ios::trunc next attempt), so its
-            // cleanup failure is folded into this same refusal rather than a second one.
             std::error_code cleanup_ec;
             if (!unlink_if_present(temp_path, cleanup_ec)) {
                 return io_failure("bitcask: the applied-offset sidecar could not be published as " +
@@ -1281,8 +1120,6 @@ namespace services::index {
                                                           uint64_t commit_id,
                                                           uint8_t op_kind,
                                                           const std::vector<std::pair<value_t, size_t>>& values) {
-        // Sealed like the segment doors: a stump here costs recovery every committed frame in
-        // the txn log, not just one segment's tail.
         RETURN_IF_ERROR(refuse_if_sealed());
         std::pmr::string payload(resource());
         components::index::codec::append_le<uint32_t>(payload, static_cast<uint32_t>(values.size()));
@@ -1312,15 +1149,9 @@ namespace services::index {
                                       file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                       file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                // Recoverable IO failure — surface, do not abort.
                 return core::error_t{core::error_code_t::index_create_fail,
                                      std::pmr::string{"bitcask: txn-log open failed", resource()}};
             }
-            // Same repair as open_active_segment, for the same reason: cut the tail recovery
-            // couldn't read before anything appends past it (fsync'd, so a second crash can't
-            // find the stump back). Belongs in this lazy open, the only door that creates the
-            // handle. txn_log_clean_end_ is cleared only after the cut succeeds, so a refused
-            // truncate can retry on the next call.
             if (const auto clean_end = txn_log_clean_end_;
                 clean_end != no_tail_to_trim && txn_log_file_->file_size() > clean_end) {
                 if (!txn_log_file_->truncate(static_cast<int64_t>(clean_end)) || !txn_log_file_->sync()) {
@@ -1331,20 +1162,13 @@ namespace services::index {
             }
             txn_log_clean_end_ = no_tail_to_trim;
         }
-        // recover_txn_log's invariant -- frames fsync'd durable BEFORE the WAL commit marker --
-        // holds only if the seek and both writes below are checked; dropping them could let a
-        // crash leave the commit marker pointing at a frame that never reached the device.
+        // recover_txn_log's durability invariant holds only if the seek and both writes below are checked.
         const auto frame_offset = txn_log_file_->file_size();
         if (!txn_log_file_->seek(frame_offset)) {
             return io_failure("bitcask: the txn log could not be positioned for an append");
         }
-        // A stump left here would become an interior frame on the next append, failing its
-        // magic check and taking every committed frame in the log down with it -- so both
-        // writes are undone back to frame_offset together on any failure.
         const auto header_write = txn_log_file_->write(&header, sizeof(header));
         if (!header_write.complete) {
-            // Dropping txn_log_file_ instead would repair itself straight back over the stump,
-            // since this function reopens it lazily and seeks to file_size().
             if (!discard_partial_record(*txn_log_file_, header_write, frame_offset)) {
                 return seal_writes("bitcask: a partly written txn-log frame header could not be discarded");
             }
@@ -1368,12 +1192,9 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    // Gated by the WAL committed COMMIT-ID set: index txn-log frames are fsync'd durable BEFORE
-    // the WAL commit marker, so a crash in that window can leave durable frames for a
-    // transaction whose WAL replay then rejects. A frame is applied only when its commit_id is
-    // in committed_commit_ids_; skipped frames still advance write_applied_log_offset so the
-    // log is consumed monotonically. The gate keys on commit_id, not txn_id, because txn ids
-    // are recycled across restarts and could vouch for the wrong transaction's frame.
+    // Index txn-log frames are fsync'd durable BEFORE the WAL commit marker, so a crash can leave durable frames
+    // for a transaction whose WAL replay later rejects; a frame is applied only when its commit_id is in
+    // committed_commit_ids_, and skipped frames still advance the applied offset.
     core::error_t bitcask_index_disk_t::recover_txn_log() {
         const auto log_path = txn_log_file_path();
         txn_log_clean_end_ = no_tail_to_trim;
@@ -1381,8 +1202,6 @@ namespace services::index {
             return core::error_t::no_error();
         }
 
-        // file_handle_t, not std::ifstream: keeps the log behind the same DEV_MODE seam as
-        // every other file this store opens, so tests can stage an open refusal on it.
         VALUE_OR_RETURN(const uint64_t applied_offset, read_applied_log_offset());
         auto in = open_bitcask_file(fs_, log_path, file_flags::READ, file_lock_type::NO_LOCK);
         if (!in) {
@@ -1398,9 +1217,6 @@ namespace services::index {
                 return io_failure("bitcask: the txn log refused a frame header during recovery");
             }
             if (header.magic != txn_magic) {
-                // Permanent refusal would cost every committed frame in the log for good (this
-                // runs on every open), so instead this ends the walk like a truncated tail: the
-                // lazy open in append_txn_record cuts the file here, and the next open is clean.
                 std::fprintf(stderr,
                              "bitcask: %s holds no readable frame at offset %llu (bad magic); the log's unreadable "
                              "tail (%llu bytes) is being cut and the index opens without it\n",
@@ -1410,11 +1226,7 @@ namespace services::index {
                 break;
             }
             const uint64_t payload_offset = frame_offset + sizeof(txn_frame_header_t);
-            // Same overflow guard as load_from_disk's: subtraction, not addition, since
-            // payload_size is untrusted and the addition would wrap.
             if (header.payload_size > log_size - payload_offset) {
-                // Truncated tail: the frame was never fully written. Everything before it
-                // is intact and has already been applied.
                 break;
             }
             std::pmr::string payload(resource());
@@ -1431,8 +1243,6 @@ namespace services::index {
                 calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
             }
             if (static_cast<uint32_t>(calc) != header.crc) {
-                // Same repair as the bad-magic arm above: readable frames end here, the lazy
-                // open in append_txn_record cuts at frame_offset, the next open reads clean.
                 std::fprintf(stderr,
                              "bitcask: %s holds a frame at offset %llu whose CRC does not match; the log's "
                              "unreadable tail (%llu bytes) is being cut and the index opens without it\n",
@@ -1442,25 +1252,14 @@ namespace services::index {
                 break;
             }
 
-            // Keyed on commit_id, not txn_id: txn ids recycle across restarts
-            // (transaction_manager_t::next_transaction_id_), so a recycled id could let a
-            // previous incarnation's COMMIT marker vouch for the current transaction's frame.
-            // commit_id is issued at most once ever (transaction_manager_t::restore_commit_clock
-            // reseeds the clock past the durable frontier on every reopen), so membership alone
-            // suffices; zero is never issued, so a zero frame is refused rather than looked up.
-            // The set only sees markers past the checkpoint frontier, so a skipped frame is a
-            // superset, not a hole (manager_index_t::apply_wal_record_for_index accepts this
-            // too) -- harmless while the row id stays absent; whether a later reused id makes it
-            // a wrong answer is the index scan's responsibility, not verified here.
+            // commit_id (unlike txn_id) is issued at most once ever, so membership in the set
+            // alone decides a frame; zero is never issued and is refused rather than looked up.
             const bool committed = header.commit_id != 0 && committed_commit_ids_.count(header.commit_id) > 0;
             if (header.op_kind != 1 && header.op_kind != 2) {
                 return io_failure("bitcask: the txn log holds a frame with an unknown op kind");
             }
             if (committed) {
                 size_t pos = 0;
-                // CRC already matched, so a decode failure means a foreign/newer encoding, not
-                // corruption -- refuse the open rather than risk inventing index entries from
-                // misread bytes.
                 bool frame_ok = true;
                 const auto count = components::index::codec::read_le<uint32_t>(payload, pos, &frame_ok);
                 for (uint32_t i = 0; i < count && frame_ok; ++i) {
@@ -1481,8 +1280,6 @@ namespace services::index {
                 }
                 RETURN_IF_ERROR(sync_if_dirty());
             }
-            // Every frame -- applied or skipped -- advances the applied offset, so a sidecar
-            // that can't be rewritten must refuse here rather than let the next open re-replay it.
             const uint64_t frame_end_offset = payload_offset + header.payload_size;
             RETURN_IF_ERROR(write_applied_log_offset(frame_end_offset));
             frame_offset = frame_end_offset;
@@ -1494,14 +1291,10 @@ namespace services::index {
     core::error_t bitcask_index_disk_t::apply_txn_inserts(uint64_t txn_id,
                                                           uint64_t commit_id,
                                                           const std::vector<std::pair<value_t, size_t>>& values) {
-        // The durable index frame is written BEFORE the data segments, so bailing here on
-        // failure leaves segments untouched and the frame is re-evaluated on the next open.
+        // The durable index frame is written BEFORE the data segments, so bailing here leaves segments untouched.
         if (auto err = append_txn_record(txn_id, commit_id, 1, values); err.contains_error()) {
             return err;
         }
-        // append_txn_record owns the only lazy open of this log (which also cuts an unreadable
-        // tail before appending); unreachable by construction, checked as an invariant rather
-        // than reimplementing that open here.
         if (!txn_log_file_) {
             return io_failure("bitcask: the txn log is closed after a frame this store reported as written");
         }
@@ -1524,13 +1317,9 @@ namespace services::index {
     core::error_t bitcask_index_disk_t::apply_txn_deletes(uint64_t txn_id,
                                                           uint64_t commit_id,
                                                           const std::vector<std::pair<value_t, size_t>>& values) {
-        // Mirror of apply_txn_inserts — IO failure becomes a returned error
-        // rather than a process abort. Same frame-before-segments ordering.
         if (auto err = append_txn_record(txn_id, commit_id, 2, values); err.contains_error()) {
             return err;
         }
-        // The same checked invariant as apply_txn_inserts', for the reason stated there: there
-        // is exactly ONE lazy open of this log, and it is the one that cuts the tail.
         if (!txn_log_file_) {
             return io_failure("bitcask: the txn log is closed after a frame this store reported as written");
         }
@@ -1559,9 +1348,6 @@ namespace services::index {
     void bitcask_index_disk_t::insert(const value_t& key, size_t value) {
         auto rows = current_rows(key);
         if (rows.has_error()) {
-            // The dedup read below decides whether this row is already indexed, so a read
-            // that could not finish cannot be treated as "not there": that would append a
-            // snapshot built from a PARTIAL row list and drop the rows it could not see.
             note_write_error(rows.error());
             return;
         }
@@ -1576,10 +1362,8 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::insert_bulk_unchecked(const value_t& key, size_t value) {
-        // bitcask's insert already IS its bulk insert -- there's no per-op find() scan to skip
-        // (unlike btree). Must NOT short-circuit to a snapshot holding only `value`: keys are
-        // not unique, and append_snapshot REPLACES the whole row list, so that would collapse
-        // every repeated key to its last-written row on the next CHECKPOINT/VACUUM rebuild.
+        // Must NOT short-circuit to a snapshot holding only `value`: keys are not unique, and append_snapshot
+        // REPLACES the whole row list.
         insert(key, value);
     }
 
@@ -1600,8 +1384,6 @@ namespace services::index {
     void bitcask_index_disk_t::remove(const value_t& key, size_t row_id) {
         auto read = current_rows(key);
         if (read.has_error()) {
-            // Same reason as insert(): an unfinished read here would look like "the key
-            // holds no such row" and skip a removal that is owed.
             note_write_error(read.error());
             return;
         }
@@ -1625,8 +1407,6 @@ namespace services::index {
     }
 
     void bitcask_index_disk_t::remove_bulk_unchecked(const value_t& key, size_t row_id) {
-        // No per-key find()-scan to avoid here (that's the btree backend's problem), so the
-        // bulk remove IS the normal remove.
         remove(key, row_id);
     }
 
@@ -1635,20 +1415,15 @@ namespace services::index {
             return;
         }
         if (should_flush()) {
-            // Callers (insert/remove) are void, so the refusal is parked for the next force_flush.
             note_write_error(sync_if_dirty());
         }
     }
 
     core::error_t bitcask_index_disk_t::force_flush() {
-        // The checkpoint trims the WAL behind this value, so reporting no_error over a refused
-        // fsync would cut the log in front of an index that never reached the device.
+        // The checkpoint trims the WAL behind this value, so a refused fsync must not report no_error.
         auto flush_error = sync_if_dirty();
-        // Hand over anything the void-returning write paths could not report themselves, once.
         auto pending = pending_write_error_;
         pending_write_error_ = core::error_t::no_error();
-        // The flush that just refused is the newer, more specific fact; a parked error from
-        // an earlier statement is not lost either -- it stays parked for the next call.
         if (flush_error.contains_error()) {
             note_write_error(std::move(pending));
             return flush_error;
@@ -1671,8 +1446,7 @@ namespace services::index {
         if (!writes_sealed_) {
             return core::error_t::no_error();
         }
-        // Flushing is deliberately not sealed: everything appended before the stump is real,
-        // and force_flush is how its durability still reaches the caller.
+        // Flushing is deliberately not sealed: force_flush is how durability still reaches the caller.
         return io_failure("bitcask: " + path_.string() +
                           " is not taking writes: a partly written record could not be discarded from the active "
                           "file, and every append after it would land behind a record no reader can pass");
@@ -1682,22 +1456,15 @@ namespace services::index {
         if (!is_dirty() || !file_) {
             return core::error_t::no_error();
         }
-        // Dirty flag stays set on a refusal, or the next flush would see "nothing to write"
-        // over data that never left the page cache.
         if (!file_->sync()) {
             return io_failure("bitcask: the active segment could not be made durable");
         }
-        // The keydir is the other half of the same answer: a segment on the device whose
-        // keydir entry is not makes the key unfindable just the same.
         RETURN_IF_ERROR(hash_index_->sync());
         reset_flush_state();
         return core::error_t::no_error();
     }
 
     core::error_t bitcask_index_disk_t::load_entries(entries_t& entries) const {
-        // for_each's callback returns void, so the first unreadable record is remembered here
-        // and returned once the walk finishes, instead of silently feeding a rebuild a partial
-        // index.
         core::error_t read_error = core::error_t::no_error();
         auto walk_error = hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
             if (read_error.contains_error()) {
@@ -1729,7 +1496,6 @@ namespace services::index {
             return core::error_t::no_error();
         }
         row_ids_t rows(resource());
-        // A read failure must not answer no_error with res untouched -- that reads as "no rows".
         VALUE_OR_RETURN(const bool is_value, read_rows_at(ref->log_file_id, ref->log_offset, rows, nullptr));
         if (!is_value) {
             return core::error_t::no_error();
@@ -1739,12 +1505,9 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    // No scan_range here: a hashed store has no ordering to scan. The refusal for that lives
-    // in bitcask_index_agent_t::read_rows instead.
+    // No scan_range here: a hashed store has no ordering to scan (bitcask_index_agent_t::read_rows refuses it).
 
     core::error_t bitcask_index_disk_t::merge_immutable_segments() {
-        // Dropped up front: a held rotated handle would keep an unlinked inode alive once the
-        // merge unlinks its sources and republishes the directory.
         invalidate_rotated_read_cache_();
         std::vector<segment_info_t> immutable_segments;
         std::vector<uint64_t> removed_segment_ids;
@@ -1761,26 +1524,16 @@ namespace services::index {
         if (immutable_segments.empty()) {
             return core::error_t::no_error();
         }
-        // Merged output alternates between reserved ids 1 and 0 -- NOT `front().id - 1`: on the
-        // third merge that computes `0 - 1`, which wraps to 2^64-1 and points every relocated
-        // key at a segment file that doesn't exist. Flipping the reserved bit (or taking 1 on
-        // the first merge) also keeps merged output below every regular id, so it replays before
-        // rotated data.
+        // Alternates between reserved ids 1 and 0 -- NOT `front().id - 1`: on the third merge that computes
+        // `0 - 1`, wrapping to 2^64-1 and pointing every relocated key at a segment file that doesn't exist.
         const uint64_t merged_segment_id =
             immutable_segments.front().id < regular_segment_id_start_ ? immutable_segments.front().id ^ 1u : 1u;
         for (const auto& seg : immutable_segments) {
-            // The output is published by renaming over its own path, so it must not also be
-            // unlinked afterwards.
             if (seg.id != merged_segment_id) {
                 removed_segment_ids.push_back(seg.id);
             }
         }
-        // A local, not bulk_prev_rehash_suppressed_: that member belongs to set_bulk_mode, and a
-        // merge overwriting it would leave the bulk window restoring the wrong value.
         const bool prev_rehash_suppressed = hash_index_->set_auto_rehash_suppressed(true);
-        // Restored by scope exit, not by hand at each return: same shape as load_from_disk's,
-        // since a refusal below returning mid-function must not leave auto-rehash suppressed
-        // for good.
         struct restore_rehash_state_t {
             disk_hash_table_t* table{nullptr};
             bool prev{false};
@@ -1790,8 +1543,6 @@ namespace services::index {
                 }
             }
         } restore_rehash_state{hash_index_.get(), prev_rehash_suppressed};
-        // This ref list decides which segments get deleted below, so a walk that stopped early
-        // would unlink segments holding keys it never relocated.
         RETURN_IF_ERROR(hash_index_->for_each([&](const disk_hash_table_t::value_ref_t& ref) {
             if (ref.log_file_id < static_cast<uint32_t>(frontier_segment_id)) {
                 refs.push_back(ref);
@@ -1803,9 +1554,7 @@ namespace services::index {
         const auto merged_path = segment_file_path(path_, merged_segment_id);
         const auto temp_path = merge_temp_file_path(path_, merged_segment_id);
         const auto meta_temp_path = std::filesystem::path(temp_path.string() + ".meta");
-        // Must not survive: FILE_CREATE is O_CREAT, not O_TRUNC, so a stale temp's bytes past
-        // what this attempt writes would stay and get published -- a garbage tail on the
-        // segment, or extra relocation entries the replay loop below applies to the keydir.
+        // Must not survive: FILE_CREATE is O_CREAT, not O_TRUNC, so a stale temp's bytes would get published.
         std::error_code stale_temp_ec;
         if (!unlink_if_present(temp_path, stale_temp_ec)) {
             return io_failure("bitcask: the merge output " + temp_path.string() +
@@ -1818,10 +1567,6 @@ namespace services::index {
                               stale_temp_ec.message());
         }
 
-        // Refusals routed through here (before the manifest is published) drop both temps and
-        // leave the directory exactly as found; merge_pending_segments' re-armed debt makes the
-        // next attempt retry. Refusals past the manifest publish do NOT go through here --
-        // apply_merge_recovery_cleanup finishes those on the next open instead.
         const auto abandon_merge = [&](std::unique_ptr<core::filesystem::file_handle_t>& merged,
                                        std::unique_ptr<core::filesystem::file_handle_t>& meta,
                                        core::error_t reason) {
@@ -1865,8 +1610,6 @@ namespace services::index {
             value_t key(resource(), nullptr);
             auto read = read_rows_at(ref.log_file_id, ref.log_offset, rows, &key);
             if (read.has_error()) {
-                // Must not be skipped: the segment holding this record is unlinked below, so a
-                // skip would lose the key from index and disk at once.
                 return abandon_merge(merged_file, meta_file, read.error());
             }
             if (!read.value()) {
@@ -1883,8 +1626,6 @@ namespace services::index {
             const auto offset = merged_file->seek_position();
             if (!write_record(*merged_file, static_cast<uint8_t>(record_kind_t::value), ++next_timestamp_, payload)
                      .complete) {
-                // No stump to discard: abandon_merge deletes the whole temp file, live segments
-                // untouched.
                 return abandon_merge(merged_file,
                                      meta_file,
                                      io_failure("bitcask: a relocated record could not be written to " +
@@ -1927,9 +1668,6 @@ namespace services::index {
                                      io_failure("bitcask: the merge manifest could not be published"));
             }
             if (!move_files(fs_, temp_path, merged_path)) {
-                // Manifest removed here because it names a segment that doesn't exist; leaving
-                // it is survivable (apply_merge_recovery_cleanup finds it missing next open),
-                // so failure to remove it is folded into this same refusal.
                 std::error_code manifest_ec;
                 if (!remove_merge_manifest(path_, manifest_ec)) {
                     return abandon_merge(merged_file,
@@ -1946,9 +1684,6 @@ namespace services::index {
             }
             built = true;
         } else {
-            // Nothing was worth merging (every ref below the frontier was a tombstone): drop
-            // both temps rather than let a survivor get published by the next attempt's
-            // FILE_CREATE (see the stale-temp handling at the top).
             merged_file.reset();
             meta_file.reset();
             std::error_code empty_merge_ec;
@@ -1973,10 +1708,7 @@ namespace services::index {
             return core::error_t::no_error();
         }
 
-        // Past this line the manifest is on disk, so a refusal below is no longer a lost merge
-        // (apply_merge_recovery_cleanup finishes it on the next open) -- but sources must NOT be
-        // unlinked over a half-applied relocation, so each step below returns rather than
-        // falling through to the removal loop.
+        // Past this line the manifest is on disk, so sources must NOT be unlinked over a half-applied relocation.
         meta_file = open_bitcask_file(fs_, meta_temp_path, file_flags::READ, file_lock_type::NO_LOCK);
         if (!meta_file) {
             return io_failure("bitcask: the merge journal " + meta_temp_path.string() + " could not be reopened: " +
@@ -1985,8 +1717,6 @@ namespace services::index {
         uint64_t meta_offset = 0;
         const uint64_t meta_size = meta_file->file_size();
         while (meta_offset < meta_size) {
-            // The journal was written by this same call and fsync'd, so a short read here is a
-            // device refusing, never a legitimate end -- meta_size is the end.
             uint32_t key_size = 0;
             if (!meta_file->read(&key_size, sizeof(key_size), meta_offset)) {
                 return io_failure("bitcask: the merge journal could not be read back");
@@ -2033,9 +1763,6 @@ namespace services::index {
                 hash_index_->put(key_bytes, row_value, static_cast<uint32_t>(merged_segment_id), new_log_offset));
         }
         meta_file.reset();
-        // Must go now: a survivor is a stale journal the next merge's FILE_CREATE wouldn't
-        // truncate, so its leftover tail would replay as bogus relocation entries. Cheap to
-        // refuse here -- sources and manifest are both still in place for the next open to redo.
         std::error_code journal_ec;
         if (!unlink_if_present(meta_temp_path, journal_ec)) {
             return io_failure("bitcask: the replayed merge journal " + meta_temp_path.string() +
@@ -2046,15 +1773,12 @@ namespace services::index {
             const auto removed_path = segment_file_path(path_, removed_id);
             std::error_code removal_ec;
             if (!unlink_if_present(removed_path, removal_ec)) {
-                // A source that survives is resurrected on the next open (load_from_disk
-                // replays every segment) -- the manifest still names it, so
-                // apply_merge_recovery_cleanup finishes the unlink then.
+                // A source that survives is resurrected on the next open; the manifest still names it.
                 return io_failure("bitcask: the merged-away segment " + removed_path.string() +
                                   " could not be removed: " + removal_ec.message());
             }
         }
-        // Sources first, manifest last, deliberately: a crash between them still leaves the
-        // manifest naming exactly what's left to unlink.
+        // Sources first, manifest last: a crash between them still leaves the manifest naming what's left.
         std::error_code manifest_ec;
         if (!remove_merge_manifest(path_, manifest_ec)) {
             return io_failure("bitcask: the manifest of the merge into " + merged_path.string() +
@@ -2068,34 +1792,22 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    // Wipe all stored data IN PLACE, keeping the instance alive and writable. Unlike drop(),
-    // the directory and a fresh active segment survive so subsequent txn_id==0 re-inserts
-    // repopulate cleanly. Returns its failure by value rather than parking it in
-    // pending_write_error_, which the read path never checks -- a parked failure here would let
-    // find() silently answer "no rows" over segments still on the device.
+    // Unlike drop(), wipes data IN PLACE, keeping the instance alive; returns its failure by value rather than
+    // parking it in pending_write_error_, which the read path never checks.
     core::error_t bitcask_index_disk_t::clear() {
-        // The one early return in this function: collect_segments is const, so failing before
-        // any mutation leaves the store exactly as it was for the next clear() to retry.
         VALUE_OR_RETURN(auto segments, collect_segments());
 
-        // Close every open handle before unlinking so stale inodes are not held --
-        // including the rotated-read leases, whose files are about to go.
         invalidate_rotated_read_cache_();
         file_.reset();
         txn_log_file_.reset();
 
-        // No early returns below: every step is a mutation, and bailing out mid-way would leave
-        // an object the caller still owns in drop()'s half-torn-down shape. All steps run; the
-        // first failure wins and is returned at the end.
+        // No early returns below: every step is a mutation, so all run and the first failure wins.
         core::error_t first_error = core::error_t::no_error();
         const auto record = [&first_error](core::error_t err) {
             if (err.contains_error() && !first_error.contains_error()) {
                 first_error = std::move(err);
             }
         };
-        // Every result is read: a clear() reporting success over a segment it couldn't remove
-        // would have load_from_disk replay the survivor back into the keydir, handing find()
-        // rows that clear() promised were gone.
         const auto unlink_artifact = [&](const std::filesystem::path& artifact) {
             std::error_code ec;
             if (!unlink_if_present(artifact, ec)) {
@@ -2104,9 +1816,8 @@ namespace services::index {
             }
         };
 
-        // hash_index.bin is NOT unlinked here: disk_hash_table_t::reset_storage (called from
-        // load_from_disk below) handles it, keeping the table object alive across the wipe
-        // (pinned by test_bitcask_index_disk.cpp's clear_keeps_shared_hash_storage).
+        // hash_index.bin is NOT unlinked here: disk_hash_table_t::reset_storage (from load_from_disk below)
+        // keeps the table object alive across the wipe (test_bitcask_index_disk.cpp's clear_keeps_shared_hash_storage).
         for (const auto& segment : segments) {
             unlink_artifact(segment.path);
         }
@@ -2121,27 +1832,17 @@ namespace services::index {
         active_segment_id_ = 0;
         active_segment_records_ = 0;
         active_data_file_path_.clear();
-        // The old txn log is unlinked above, so a clean-end measurement of it must not apply
-        // to the brand-new one append_txn_record creates next.
         txn_log_clean_end_ = no_tail_to_trim;
         bulk_mode_ = false;
         merge_pending_ = false;
-        // The file whose stump this sealed is gone too, so nothing remains for a later append
-        // to land behind -- without this reset, seal_writes would refuse forever over a file
-        // that no longer exists.
         writes_sealed_ = false;
 
-        // Recreate the backing exactly as the ctor does, but over the now-empty directory.
         record(initialize_storage());
         if (!hash_index_) {
-            // A broken invariant, not an I/O outcome: clear() must only ever run on a live
-            // store (drop() releases it exactly once), so reaching here means that guard was
-            // bypassed and every line below would work on a null keydir.
+            // A broken invariant, not an I/O outcome: clear() must only ever run on a live store.
             assert(false && "bitcask_index_disk_t::clear: the store was released by drop()");
             std::abort();
         }
-        // The actual wipe is load_from_disk's below; this door only owes clearing the
-        // rehash-suppression flag, since clear() exits bulk mode too.
         hash_index_->set_auto_rehash_suppressed(false);
         bool storage_is_open = true;
         if (auto load_error = load_from_disk(); load_error.contains_error()) {
@@ -2152,23 +1853,14 @@ namespace services::index {
             storage_is_open = false;
         }
         if (!storage_is_open) {
-            // Rebuild didn't finish: the keydir no longer describes what's on disk (its
-            // segments were just unlinked), so close_storage makes later reads/writes refuse
-            // instead of answering out of it. Not reached for a plain unlink failure above --
-            // that store is still consistent with its disk.
             hash_index_->close_storage();
         }
-        // No note_write_error here: this door has a return value, so parking the failure
-        // would make it invisible to find() instead. committed_commit_ids_ is left as-is --
-        // the txn log it gated is gone, and txn_id==0 re-inserts skip the gate.
         return first_error;
     }
     void bitcask_index_disk_t::drop() {
         merge_pending_ = false;
         invalidate_rotated_read_cache_();
         if (is_dirty() && file_) {
-            // Nothing downstream will act on these results (the files are unlinked below), but
-            // reading them keeps reset_flush_state honest about whether the sync actually took.
             const bool segment_synced = file_->sync();
             const bool keydir_synced = hash_index_ ? !hash_index_->sync().contains_error() : true;
             if (segment_synced && keydir_synced) {

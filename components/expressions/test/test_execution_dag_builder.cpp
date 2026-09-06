@@ -43,7 +43,7 @@ namespace {
     // A column reference already resolved to ordinal `column`, as validation leaves it.
     expr_key_t column(size_t index) {
         expr_key_t key{resource(), "c" + std::to_string(index)};
-        key.set_path(std::pmr::vector<size_t>({index}, resource()));
+        key.set_path(std::pmr::vector<size_t>(std::initializer_list<size_t>{index}, resource()));
         return key;
     }
 

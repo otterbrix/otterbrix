@@ -495,7 +495,7 @@ TEST_CASE("components::vector::data_chunk::sub_column_indices answers the error 
     SECTION("a resolvable top-level column answers its index") {
         auto r = chunk.sub_column_indices(path({"a"}));
         REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value() == std::pmr::vector<size_t>({0}, &resource));
+        REQUIRE(r.value() == std::pmr::vector<size_t>(std::initializer_list<size_t>{0}, &resource));
     }
     SECTION("a resolvable nested field answers the index chain") {
         auto r = chunk.sub_column_indices(path({"s", "inner"}));

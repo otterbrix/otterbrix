@@ -223,7 +223,7 @@ namespace components::table {
         row_group->columns_ = columns();
         row_group->columns_.push_back(adopt_column(std::move(added_column)));
 
-        return std::move(row_group);
+        return row_group;
     }
 
     std::unique_ptr<row_group_t> row_group_t::remove_column(collection_t* new_collection, uint64_t removed_column) {

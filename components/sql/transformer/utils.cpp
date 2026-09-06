@@ -648,7 +648,7 @@ namespace components::sql::transform {
             }
         }
 
-        return std::move(column);
+        return column;
     }
 
     core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
@@ -1572,7 +1572,7 @@ namespace components::sql::transform {
 
             out.emplace_back(coldef->colname, std::move(type.value()), not_null, std::move(default_val));
         }
-        return std::move(out);
+        return out;
     }
 
     namespace {

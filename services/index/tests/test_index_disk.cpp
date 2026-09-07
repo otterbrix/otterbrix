@@ -214,7 +214,6 @@ TEST_CASE("services::index::index_disk::persist_close_reopen") {
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    // Create, insert 100 values, flush.
     {
         auto index = btree_index_disk_t(path, &resource);
         for (int i = 1; i <= 100; ++i) {
@@ -223,11 +222,9 @@ TEST_CASE("services::index::index_disk::persist_close_reopen") {
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
-    // Reopen from same path, verify data persisted.
     {
         auto index = btree_index_disk_t(path, &resource);
 
-        // find exact values
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 50l)).size() == 1);
@@ -236,7 +233,6 @@ TEST_CASE("services::index::index_disk::persist_close_reopen") {
         REQUIRE(index.find(logical_value_t(&resource, 100l)).front() == 100);
         REQUIRE(index.find(logical_value_t(&resource, 101l)).empty());
 
-        // range queries still work after reload
         REQUIRE(index.lower_bound(logical_value_t(&resource, 10l)).size() == 9);
         REQUIRE(index.upper_bound(logical_value_t(&resource, 90l)).size() == 10);
     }
@@ -249,7 +245,6 @@ TEST_CASE("services::index::index_disk::remove_flush_reload") {
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    // Create, insert 100, remove even values, flush.
     {
         auto index = btree_index_disk_t(path, &resource);
         for (int i = 1; i <= 100; ++i) {
@@ -261,30 +256,25 @@ TEST_CASE("services::index::index_disk::remove_flush_reload") {
         REQUIRE(index.force_flush().type == core::error_code_t::none);
     }
 
-    // Reopen, verify odd values present, even absent.
     {
         auto index = btree_index_disk_t(path, &resource);
 
-        // Even values should be absent
         REQUIRE(index.find(logical_value_t(&resource, 2l)).empty());
         REQUIRE(index.find(logical_value_t(&resource, 10l)).empty());
         REQUIRE(index.find(logical_value_t(&resource, 100l)).empty());
 
-        // Odd values should be present
         REQUIRE(index.find(logical_value_t(&resource, 1l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 1l)).front() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 99l)).size() == 1);
         REQUIRE(index.find(logical_value_t(&resource, 99l)).front() == 99);
 
-        // lower_bound(10) should return only odd values < 10: {1,3,5,7,9} = 5
         REQUIRE(index.lower_bound(logical_value_t(&resource, 10l)).size() == 5);
-        // upper_bound(90) should return only odd values > 90: {91,93,95,97,99} = 5
         REQUIRE(index.upper_bound(logical_value_t(&resource, 90l)).size() == 5);
     }
 }
 
-// Values are adversarial: negative microsecond/day counts around zero, so a signedness
-// or truncation slip flips the comparison instead of hiding in an NA collapse.
+// Values are adversarial: negative microsecond/day counts around zero, where a signedness
+// slip would flip the comparison.
 TEST_CASE("services::index::index_disk::convert_temporal_preserves_order") {
     using components::types::physical_value;
     using core::date::date_t;
@@ -339,7 +329,6 @@ TEST_CASE("services::index::index_disk::convert_temporal_preserves_order") {
     require_strict_order(timestamps_tz);
 }
 
-// Insertion order is scrambled so the ordering guarantee comes from the tree, not the loop.
 TEST_CASE("services::index::index_disk::date_keys") {
     using core::date::date_t;
     using core::date::days;
@@ -396,7 +385,7 @@ TEST_CASE("services::index::index_disk::timestamp_keys") {
         return logical_value_t(&resource, timestamp_t{microseconds{int64_t{i} * 1'000'000}});
     };
     for (int i = 49; i >= -50; --i) {
-        REQUIRE(index.insert(key(i), static_cast<size_t>(i + 51)).type == core::error_code_t::none); // row ids 1..100
+        REQUIRE(index.insert(key(i), static_cast<size_t>(i + 51)).type == core::error_code_t::none);
     }
 
     REQUIRE(index.find(key(-50)).size() == 1);
@@ -408,29 +397,18 @@ TEST_CASE("services::index::index_disk::timestamp_keys") {
     REQUIRE(index.find(key(50)).empty());
     REQUIRE(index.find(key(-51)).empty());
 
-    // keys strictly below -40: -50..-41 = 10; strictly above 40: 41..49 = 9
     REQUIRE(index.lower_bound(key(-40)).size() == 10);
     REQUIRE(index.upper_bound(key(40)).size() == 9);
 }
-// --- resource and ordering gates -------------------------------------------------------
 
-// Gate is behavioural, not grep-able: point the default resource at null_memory_resource for
-// the duration and drive insert/remove/find, so anything that still reaches it fails to
-// allocate. Index and resource are built BEFORE the swap because
-// std::pmr::synchronized_pool_resource captures its upstream at construction.
-//
-// If flush_if_needed swallowed force_flush()'s io_error, a write that failed to reach disk
-// would look identical to one that persisted, with nothing left to retry. Injected by
-// replacing `<storage_directory>/metadata` with a directory so open_file refuses (same
-// shape as test_index_bootstrap_failure).
+// Index and resource are built BEFORE the null_memory_resource swap below: synchronized_pool_resource
+// captures its upstream at construction.
 TEST_CASE("services::index::index_disk::a_threshold_flush_that_cannot_reach_the_disk_is_reported") {
     auto resource = core::pmr::otterbrix_resource();
 
     std::filesystem::path path{index_fixture_path("flush_refused")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
-    // flush_threshold 1: every single write crosses the threshold, so flush_if_needed is on
-    // the path of each insert below rather than one in a thousand.
     auto index = btree_index_disk_t(path, &resource, /*flush_threshold=*/1);
 
     REQUIRE(index.insert(logical_value_t(&resource, int64_t(1)), size_t(1)).type == core::error_code_t::none);
@@ -444,7 +422,6 @@ TEST_CASE("services::index::index_disk::a_threshold_flush_that_cannot_reach_the_
     auto refused = index.insert(logical_value_t(&resource, int64_t(2)), size_t(2));
     CHECK(refused.type == core::error_code_t::io_error);
 
-    // remove() reaches flush_if_needed through the same branch as insert().
     auto refused_remove = index.remove(logical_value_t(&resource, int64_t(1)));
     CHECK(refused_remove.type == core::error_code_t::io_error);
 
@@ -480,8 +457,8 @@ TEST_CASE("services::index::index_disk::write_path_never_uses_the_default_resour
     REQUIRE(index.find(logical_value_t(&resource, int64_t(4))).size() == 1);
 }
 
-// Using scan_decending for upper_bound would make `gt` the one predicate arriving in
-// reverse order, breaking a reader merging two predicates' answers.
+// Using scan_decending for upper_bound would make `gt` arrive in reverse order, breaking a
+// reader merging two predicates' answers.
 TEST_CASE("services::index::index_disk::ordered_reads_are_ascending") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -505,9 +482,8 @@ TEST_CASE("services::index::index_disk::ordered_reads_are_ascending") {
     REQUIRE(above.back() == 100);
 }
 
-// The store enforces index_key_is_null too, since the agent isn't its only door: convert()
-// maps NULL to the NA physical_value, which would sort after every real key and land in
-// every upper-bound answer if admitted.
+// The store enforces this too, since the agent isn't its only door: convert() maps NULL to NA,
+// which would sort after every real key.
 TEST_CASE("services::index::index_disk::null_key_is_refused") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -535,8 +511,8 @@ TEST_CASE("services::index::index_disk::null_key_is_refused") {
     REQUIRE(index.upper_bound(null_key()).empty());
 }
 
-// Graded against an explicit expected set computed from the input rows, not a second
-// implementation: two implementations can agree on a wrong answer.
+// Graded against an explicit expected set, not a second implementation -- two implementations
+// can agree on a wrong answer.
 TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
     using components::expressions::compare_type;
 
@@ -552,10 +528,10 @@ TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
                                                           {0, 3},
                                                           {10, 4}, // duplicate key
                                                           {7, 5},
-                                                          {-5, 6}, // duplicate key
+                                                          {-5, 6},
                                                           {42, 7},
                                                           {3, 8},
-                                                          {10, 9}, // third row on key 10
+                                                          {10, 9},
                                                           {-100, 10}};
     for (const auto& [k, row] : rows) {
         components::types::logical_value_t v(&resource, k);
@@ -653,12 +629,8 @@ TEST_CASE("services::index::index_disk::scan_range_answers_every_comparison") {
     REQUIRE(probe(compare_type::eq, 4).empty());
 }
 
-// A leaf record whose key won't decode must fail the read, not answer row id 0. Without
-// id_of's `ok` channel, a refused key leaves `pos` on the bad byte and the row-id read
+// Without id_of's `ok` channel, a refused key leaves `pos` on the bad byte and the row-id read
 // takes the key's own payload instead -- indistinguishable from a real row 0.
-//
-// The corrupt record: tag byte 200 maps to no logical type, so skip_logical_value refuses
-// at pos 1; the real row id (4242) sits behind the zero bytes an unflagged read would return.
 TEST_CASE("services::index::index_disk::a_leaf_record_whose_key_will_not_decode_fails_the_read") {
     using components::expressions::compare_type;
 
@@ -680,9 +652,9 @@ TEST_CASE("services::index::index_disk::a_leaf_record_whose_key_will_not_decode_
                             static_cast<uint32_t>(good.size())));
 
         std::pmr::string corrupt(&resource);
-        components::index::codec::append_le<uint8_t>(corrupt, uint8_t{200}); // no logical type uses 200
-        components::index::codec::append_le<uint64_t>(corrupt, uint64_t{0}); // what the old read returned
-        components::index::codec::append_le<uint64_t>(corrupt, uint64_t{4242}); // the real row id, unreachable
+        components::index::codec::append_le<uint8_t>(corrupt, uint8_t{200});
+        components::index::codec::append_le<uint64_t>(corrupt, uint64_t{0});
+        components::index::codec::append_le<uint64_t>(corrupt, uint64_t{4242});
         REQUIRE(tree.append(reinterpret_cast<core::b_plus_tree::data_ptr_t>(corrupt.data()),
                             static_cast<uint32_t>(corrupt.size())));
         REQUIRE(tree.flush());
@@ -702,9 +674,7 @@ TEST_CASE("services::index::index_disk::a_leaf_record_whose_key_will_not_decode_
     CHECK(good_rows.front() == 5);
 }
 
-// Leaving btree_t::load_failure unread would make find/scan_range answer a short result
-// with no_error() over a block that couldn't be read -- an accepted duplicate for a UNIQUE
-// constraint, a lost parent for a FK.
+// Leaving btree_t::load_failure unread would make find/scan_range answer no_error() over a block that couldn't be read.
 TEST_CASE("services::index::index_disk::a_corrupt_block_refuses_the_probe_instead_of_shortening_it") {
     auto resource = core::pmr::otterbrix_resource();
     std::filesystem::path path{index_fixture_path("btree_block_corruption_refusal")};
@@ -764,9 +734,6 @@ TEST_CASE("services::index::index_disk::a_corrupt_block_refuses_the_probe_instea
     std::filesystem::remove_all(path);
 }
 
-// A permanently open descriptor per leaf would exhaust the process's descriptor budget
-// under `ctest -j4`, surfacing as "file could not be opened" in unrelated stores. Each
-// leaf's file is opened only for the operation that needs it.
 TEST_CASE("services::index::index_disk::the_tree_holds_no_descriptor_per_leaf_at_rest") {
     auto resource = core::pmr::otterbrix_resource();
     std::filesystem::path path{index_fixture_path("btree_leaf_descriptor_budget")};
@@ -810,15 +777,12 @@ TEST_CASE("services::index::index_disk::the_tree_holds_no_descriptor_per_leaf_at
     std::filesystem::remove_all(path);
 }
 
-// Rotated segments never change after rotation, so reads route through a small LRU of held
-// descriptors instead of one open/close pair per find().
 TEST_CASE("services::index::index_disk::rotated_segments_are_read_through_held_descriptors") {
     auto resource = core::pmr::otterbrix_resource();
     std::filesystem::path path{index_fixture_path("bitcask_rotated_read_descriptors")};
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
 
-    // segment_record_limit 10: 40 keys land as 3 rotated segments plus the active one.
     auto index = bitcask_index_disk_t(path,
                                       &resource,
                                       /*flush_threshold=*/1000,
@@ -841,7 +805,7 @@ TEST_CASE("services::index::index_disk::rotated_segments_are_read_through_held_d
     }
     const auto opens = services::index::bitcask_rotated_segment_opens();
     INFO("200 probes over ~3 rotated segments performed " << opens << " descriptor opens");
-    // What this catches: one open per rotated-key probe (150 for this workload).
+    // What this catches: one open per rotated-key probe.
     REQUIRE(opens <= 8);
 
     std::filesystem::remove_all(path);

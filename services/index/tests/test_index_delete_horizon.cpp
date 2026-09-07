@@ -1,14 +1,7 @@
-// The physical erase of an index entry waits for the snapshot floor. An index may name rows a
-// reader can't see (the table filters them on point fetch), but may not withhold an id -- nothing
-// downstream can put back a row the index never named. So a committed DELETE publishes its erase
-// only once every live snapshot already hides the row (the commit-id horizon reaches the delete's
-// commit_id). An in-memory index gets this for free from delete_id + cleanup_versions; a disk
-// index has no stamp, so the wait is a queue in the manager.
-//
-// integration/cpp/test/test_index_delete_horizon.cpp pins the user-visible half (two overlapping
-// SQL transactions). What it can't see is the other end -- that the entry is eventually erased
-// for real, driven by the horizon and nothing else -- which is what's asked here directly of the
-// manager, with the agent pumped by hand.
+// A committed DELETE publishes its erase only once every live snapshot already hides the row (the
+// commit-id horizon reaches the delete's commit_id); a disk index has no in-memory stamp for this,
+// so the wait is a queue in the manager. integration/cpp/test/test_index_delete_horizon.cpp pins
+// the user-visible half; this file asks the manager directly, with the agent pumped by hand.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -51,19 +44,16 @@ using services::index::manager_index_t;
 
 namespace {
 
-    // Kept far from the txn id it derives from -- different id spaces. txn id says which bucket
-    // to publish; commit id is what the hashed family stamps into its durable txn-log frame and
-    // the recover gate judges it by (bitcask_index_disk.cpp). Reusing one number for both is the
-    // exact confusion that let an earlier incarnation's COMMIT marker vouch for a later frame
-    // under a recycled txn id.
+    // Kept far from the txn id it derives from: reusing one number for both is the confusion that
+    // let an earlier incarnation's COMMIT marker vouch for a later frame under a recycled txn id
+    // (bitcask_index_disk.cpp).
     constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
     constexpr components::catalog::oid_t kTableOid = 17400;
     constexpr components::catalog::oid_t kIndexOid = 17401;
 
-    // Resume the coroutine `fut` is suspended in, the way the manager's own loop thread
-    // does. Copied from test_index_agent_reaping.cpp deliberately: a shared helper header
-    // for two test files would be the start of a test framework nobody asked for.
+    // Copied from test_index_agent_reaping.cpp deliberately: a shared helper header for two test
+    // files would be the start of a test framework nobody asked for.
     template<typename T>
     bool resume_awaited(const actor_zeta::unique_future<T>& fut) {
         auto handle = fut.coroutine_handle();
@@ -82,8 +72,7 @@ namespace {
         return true;
     }
 
-    // Drive a manager handler to completion, pumping the one agent it can talk to. A
-    // handler that sends nothing is already finished on the first check; one that fans out
+    // A handler that sends nothing is already finished on the first check; one that fans out
     // needs the agent resumed and its own continuation claimed.
     template<typename T, typename Agent>
     void settle(actor_zeta::unique_future<T>& fut, Agent* agent) {
@@ -94,7 +83,6 @@ namespace {
         REQUIRE(fut.is_ready());
     }
 
-    // One message to the agent, pumped to completion, its reply taken.
     template<auto Handler, typename Agent, typename... Args>
     auto ask(Agent* agent, Args&&... args) {
         auto [needs_sched, future] =
@@ -137,7 +125,6 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     const auto path = fresh_index_root("otterbrix_test_index_delete_horizon");
 
-    // Never started: everything below is driven by hand.
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
 
     auto manager = actor_zeta::spawn<manager_index_t>(&resource,
@@ -166,10 +153,9 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     const uint64_t onlooker_txn = TRANSACTION_ID_START + 3;
     const uint64_t delete_commit_id = 100;
     // The meter is process-wide (see index_deferred_deletes), so every check below is a
-    // DIFFERENCE against what this binary was already holding.
+    // difference against what this binary was already holding.
     const auto deferred_before = services::index::index_deferred_deletes();
 
-    // A committed row in the store, put there through the agent's own doors.
     REQUIRE_FALSE(
         ask<&index_agent_contract::stage_inserts>(agent, session, writer_txn, one_entry(&resource, 42, 7))
             .contains_error());
@@ -189,8 +175,6 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     };
     REQUIRE(probe(onlooker_txn) == std::vector<int64_t>{7});
 
-    // The deleting transaction stages its delete and then COMMITS through the manager, which
-    // is the door that must NOT dispatch the erase.
     REQUIRE_FALSE(
         ask<&index_agent_contract::stage_deletes>(agent, session, deleter_txn, one_entry(&resource, 42, 7))
             .contains_error());
@@ -205,8 +189,6 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
     CHECK(services::index::index_deferred_deletes() == deferred_before + 1);
 
     INFO("a reader whose snapshot predates the commit must still be given the id");
-    // A commit that fanned the erase out to the agent immediately would take the entry out of
-    // the tree, and no reader could be handed it any more.
     CHECK(probe(onlooker_txn) == std::vector<int64_t>{7});
 
     INFO("a horizon that has NOT reached the commit id changes nothing");

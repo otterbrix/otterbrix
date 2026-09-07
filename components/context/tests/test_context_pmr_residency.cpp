@@ -1,17 +1,8 @@
-// select_on_container_copy_construction() returns a DEFAULT-CONSTRUCTED allocator, so an
-// implicitly-defaulted copy (or a by-value parameter) of any pmr container silently lands on
-// the process-global default -- invisible to resource_tracer_t, exactly what the ban on
-// naming get_default_resource() is meant to prevent. A later move FREEZES that wrong allocator
-// into the member for good.
-//
-// Not fixed by making the copy constructor inherit the source's allocator: that trades this
-// accounting bug for a lifetime one (see the cross-arena cases below, where inheriting reads
-// back poisoned memory once the source arena is gone). The fix is that a copy which must live
-// on an arena NAMES it explicitly: key_t(key, resource), context_t(..., params).
-//
-// Measured, not read from the code: a counting resource installed as the process default must
-// see zero allocations during construction; get_allocator().resource() checks then say WHICH
-// arena a container actually landed on.
+// select_on_container_copy_construction() returns a default-constructed allocator, so an
+// implicit or by-value copy of a pmr container silently lands on the process-global default and
+// a later move freezes it there. Making the copy constructor inherit the source's allocator
+// instead would trade this accounting bug for a lifetime one (see the cross-arena cases below);
+// the fix is that a copy which must live on an arena names it explicitly.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -57,8 +48,8 @@ namespace {
         bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
     };
 
-    // Immortal on purpose: it is the process default for the duration of one construction, and
-    // whatever it hands out in that window may be freed long after the window closes.
+    // Immortal: it is the process default only during one construction, but whatever it hands
+    // out in that window may outlive it.
     counting_resource_t& process_default_probe() {
         static counting_resource_t* probe = new counting_resource_t();
         return *probe;
@@ -73,20 +64,17 @@ namespace {
         ~default_resource_window_t() { std::pmr::set_default_resource(previous); }
     };
 
-    // Longer than any small-string buffer, so copying one is a heap allocation the probe sees
-    // rather than an in-object memcpy it cannot.
+    // Longer than any small-string buffer, so copying one allocates -- the probe can see that,
+    // not an in-object memcpy.
     constexpr const char* long_column = "orders_customer_reference_identifier_column";
     constexpr const char* long_qualifier = "very_long_table_qualifier_that_never_fits_in_sso";
     constexpr const char* long_value = "a parameter value far too long to live inside the string object itself";
 
 } // namespace
 
-// key_t carries THREE pmr members (storage_, qualifier_, path_) that all go to the process
-// default under a plain copy, so cross-arena sites name the arena explicitly on every copy --
-// e.g. pushdown_filter's `key_t partner{*partner_on_key, resource}` -- which is the constructor
-// measured here: the copy must take NOTHING from the process default. (Which arena to pass is a
-// separate question, answered by the cases at the bottom of this file; here caller and original
-// share one, so this case alone only measures the default.)
+// This constructor alone measures accounting, not lifetime: caller and original share one arena
+// here, so a copy that wrongly inherited the source's allocator would still read the right
+// answer -- the cross-arena cases below catch that blind spot.
 TEST_CASE("components::expressions::key_t::a copy placed on an arena takes nothing from the default") {
     core::pmr::otterbrix_resource arena;
 
@@ -99,7 +87,6 @@ TEST_CASE("components::expressions::key_t::a copy placed on an arena takes nothi
     REQUIRE(original.resource() == &arena);
     REQUIRE(original.path().get_allocator().resource() == &arena);
 
-    // Built on the arena BEFORE the window, exactly as pushdown_filter builds its merged path.
     std::pmr::vector<size_t> merged_path{&arena};
     merged_path.push_back(7);
 
@@ -130,15 +117,14 @@ TEST_CASE("components::expressions::key_t::a copy placed on an arena takes nothi
          << probe.allocations.load() << " (" << probe.bytes.load() << " bytes)");
     CHECK(probe.allocations.load() == 0);
 
-    // A move afterwards must not freeze in another allocator: the source is already on the arena.
     expr::key_t frozen(std::move(*copy));
     CHECK(frozen.resource() == &arena);
     CHECK(frozen.path().get_allocator().resource() == &arena);
 }
 
-// Regression: context_t used to take storage_parameters BY VALUE, and the executor hands it an
-// lvalue (`*plan_data.parameters`) once per sub-plan, so every parameterised statement copied
-// its whole parameter map onto the process default and froze it there.
+// context_t must not take storage_parameters by value: the executor hands it an lvalue once per
+// sub-plan, and a by-value parameter would copy the whole map onto the process default and
+// freeze it there.
 TEST_CASE("components::pipeline::context_t::the parameter map keeps the arena the caller named") {
     namespace lp = components::logical_plan;
 
@@ -192,15 +178,9 @@ TEST_CASE("components::pipeline::context_t::the parameter map keeps the arena th
     CHECK(probe.allocations.load() == 0);
 }
 
-// CROSS-ARENA: everything above shares one arena between original and copy, so it cannot tell
-// LIFETIME apart from accounting -- a copy wearing the source's allocator reports the "right"
-// address right up until that arena dies (key_t crosses arenas throughout the pipeline: onto an
-// operator's context.resource in index_scan, a clone target's in clone_expression, a rewritten
-// node's in eager_aggregation, and the node's arena is the shorter-lived one).
-//
-// So these cases ask what the copy still READS after the source arena is gone: its upstream is
-// a bump allocator over bytes this test owns and outlives, poisoned once the arena dies. A copy
-// that kept the source's allocator reads back poison; one that didn't reads back its name.
+// key_t crosses arenas throughout the pipeline: an operator's context.resource in index_scan, a
+// clone target's in clone_expression, a rewritten node's in eager_aggregation -- and the node's
+// arena is the shorter-lived one, which is what these cases exercise.
 
 namespace {
 
@@ -209,8 +189,8 @@ namespace {
         static constexpr size_t capacity = 1u << 20; // 1 MiB: a pool's first chunks plus slack
         static constexpr char poison_byte = 'Z';
 
-        // Called only AFTER the arena above this upstream is destroyed. Nothing was ever handed
-        // back to the system, so these bytes are still ours to paint and still addressable.
+        // Only called after the arena above is destroyed; nothing was ever returned to the
+        // system, so these bytes are still ours to paint.
         void poison() noexcept { std::memset(buffer_, poison_byte, capacity); }
 
         size_t handed_out() const noexcept { return used_; }
@@ -236,8 +216,7 @@ namespace {
         size_t used_ = 0;
     };
 
-    // How much of the name survived: the count of poison bytes a reader sees where the column
-    // name should be. Reported as a NUMBER so a failure says how much was overwritten.
+    // Counted, not boolean, so a failure reports how much of the name was overwritten.
     size_t poison_bytes_in(const std::string& text) noexcept {
         size_t count = 0;
         for (char c : text) {
@@ -250,8 +229,8 @@ namespace {
 
 } // namespace
 
-// A copy made WITHOUT naming an arena must not be bound to the source's. If it is, it is bound
-// to an arena that dies first, and every later read of the name is a read of released memory.
+// If a copy with no arena named bound to the source's allocator, every later read of the name
+// would be a read of released memory.
 TEST_CASE("components::expressions::key_t::a copy with no arena named outlives the source arena") {
     owned_bytes_upstream_t upstream;
 
@@ -259,8 +238,6 @@ TEST_CASE("components::expressions::key_t::a copy with no arena named outlives t
     expr::key_t* copy = nullptr;
 
     {
-        // The logical node's arena: exactly core/pmr.hpp:29's otterbrix_resource, on bytes this
-        // test owns, so that its destructor's "release everything" is observable.
         core::pmr::otterbrix_resource source{&upstream};
 
         expr::key_t original(&source, long_column);
@@ -271,8 +248,8 @@ TEST_CASE("components::expressions::key_t::a copy with no arena named outlives t
         REQUIRE(original.resource() == &source);
         REQUIRE(original.storage().front().get_allocator().resource() == &source);
 
-        // Deliberately never destroyed: in the broken form its allocator IS the arena destroyed
-        // below, so ~key_t() would fault before any CHECK could report a number.
+        // Deliberately never destroyed: in the broken form, its allocator IS the source arena
+        // destroyed below, so ~key_t() would fault before any CHECK runs.
         copy = new (copy_storage) expr::key_t(original);
 
         INFO("copy allocator " << static_cast<const void*>(copy->resource()) << ", source arena "
@@ -281,7 +258,6 @@ TEST_CASE("components::expressions::key_t::a copy with no arena named outlives t
         CHECK(copy->storage().front().get_allocator().resource() != &source);
     }
 
-    // The source arena is gone; its bytes are ours again, and painted.
     upstream.poison();
 
     const std::string name = copy->as_string();
@@ -297,12 +273,8 @@ TEST_CASE("components::expressions::key_t::a copy with no arena named outlives t
     CHECK(qualifier == std::string(long_qualifier));
 }
 
-// And the form every cross-arena site uses: the copy is placed on the DESTINATION's arena — the
-// operator's, the clone target's, the rewriting rule's — which is the arena the caller has
-// proven outlives the copy. The source arena dies underneath it and the copy reads its name.
 TEST_CASE("components::expressions::key_t::a copy placed on the destination arena outlives the source") {
     owned_bytes_upstream_t upstream;
-    // The long-lived side: the operator / clone target the copy is being built for.
     core::pmr::otterbrix_resource destination;
 
     alignas(expr::key_t) unsigned char copy_storage[sizeof(expr::key_t)];
@@ -321,7 +293,6 @@ TEST_CASE("components::expressions::key_t::a copy placed on the destination aren
 
         copy = new (copy_storage) expr::key_t(original, &destination);
 
-        // Every pmr member, not just the one resource() reports.
         CHECK(copy->resource() == &destination);
         CHECK(copy->storage().get_allocator().resource() == &destination);
         REQUIRE(copy->storage().size() == 1);
@@ -345,7 +316,7 @@ TEST_CASE("components::expressions::key_t::a copy placed on the destination aren
     CHECK(copy->path().front() == 3);
     CHECK(copy->side() == expr::side_t::left);
 
-    // Safe to destroy, unlike the case above: everything this copy owns is on `destination`,
-    // which is still alive. That teardown is itself part of the claim.
+    // Safe to destroy here (unlike above): everything this copy owns is on `destination`, which
+    // is still alive -- that's part of the claim.
     copy->~key_t();
 }

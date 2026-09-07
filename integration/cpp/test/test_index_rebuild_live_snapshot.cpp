@@ -4,13 +4,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 
-// LIVE (no-crash, no-restart) counterpart to test_index_rebuild_crash.cpp: the checkpoint
-// rebuild keys entries by physical row id (manager_index.cpp::repopulate_table) precisely so
-// a compact() refusal (concurrent open snapshot) does not shift keys after a mid-table tombstone.
-//
-// Sessions: B opens an explicit txn (the open snapshot), C commits a mid-table
-// DELETE, A runs CHECKPOINT. Lookups by keys AFTER the deleted row must resolve
-// to the RIGHT rows through the rebuilt index.
+// The checkpoint rebuild keys entries by physical row id (manager_index.cpp::repopulate_table);
+// when compact() is refused because of an open snapshot, keys after a mid-table DELETE must
+// still resolve correctly, not shift as if the deleted slot had closed up.
 
 TEST_CASE("integration::cpp::index_rebuild_live_snapshot::open_snapshot_checkpoint_shifts_rebuilt_row_ids") {
     auto config = test_create_config(integration_fixture_path("test_index_rebuild_live_snapshot"));
@@ -44,8 +40,7 @@ TEST_CASE("integration::cpp::index_rebuild_live_snapshot::open_snapshot_checkpoi
         REQUIRE(exec(sql)->is_success());
     }
 
-    // Session B: BEGIN plus one read pins an active txn below the upcoming DELETE's
-    // commit stamp, so checkpoint_inner's compact() refuses the rebuild.
+    // The read after BEGIN pins the snapshot below the upcoming DELETE's commit stamp.
     auto session_b = otterbrix::session_id_t();
     REQUIRE(d->execute_sql(session_b, "BEGIN;")->is_success());
     {
@@ -55,11 +50,8 @@ TEST_CASE("integration::cpp::index_rebuild_live_snapshot::open_snapshot_checkpoi
         REQUIRE(pin->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRows));
     }
 
-    // Session C: the committed mid-table DELETE (auto-commit).
     REQUIRE(exec("DELETE FROM b.t WHERE id = 1000;")->is_success());
 
-    // compact() is refused (B's snapshot), but the rebuild still runs over the
-    // post-DELETE stream.
     REQUIRE(exec("CHECKPOINT;")->is_success());
 
     {

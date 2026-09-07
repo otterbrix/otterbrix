@@ -26,21 +26,11 @@
 #include <thread>
 #include <unistd.h>
 
-// Txn ids are reused across restarts (transaction_manager_t::next_transaction_id_ is never
-// seeded from the surviving journal, unlike the commit clock), while wal ids keep growing
-// (re-derived from segment files). Both replay filters used to collect committed txn ids into an
-// UNORDERED set, so a COMMIT marker from the PREVIOUS process could vouch for physical records
-// the NEXT one wrote under the recycled id:
-//
-//   session 1:  wal 1 PHYSICAL_INSERT(txn T)   wal 2 COMMIT(txn T)
-//   -- restart, no checkpoint; txn ids restart, wal ids do not --
-//   session 2:  wal 3 PHYSICAL_INSERT(txn T)   <crash before COMMIT>
-//   replay:     committed = {T}  ->  wal 3 is replayed as committed
-//
+// Txn ids are reused across restarts, while wal ids keep growing, so a COMMIT marker from a
+// previous process could vouch for physical records the next one wrote under the recycled id.
 // Fixed rule: a physical record at wal id r belongs to a committed transaction only if a COMMIT
-// marker for the SAME txn id sits STRICTLY GREATER than r — the one relation reuse cannot forge.
-// Sensitivity is proved by the control halves: appending the missing COMMIT for the second
-// incarnation replays BOTH inserts, so a reader that simply dropped everything would fail there.
+// marker for the same txn id sits strictly greater than r. Sensitivity is proved by appending
+// the missing COMMIT for the second incarnation, which then replays both inserts.
 
 using namespace services::wal;
 using namespace components::session;
@@ -73,11 +63,9 @@ namespace {
         return batch;
     }
 
-    // One process lifetime of the journal. Constructing it runs the manager's
-    // startup scan (and through it wal_worker_t::recover_from_disk), so a second
-    // instance over the same path IS the restart this record is about: the wal id
-    // allocator resumes above the surviving records while the caller is free to
-    // hand out a txn id the previous instance already used.
+    // One process lifetime of the journal; constructing a second instance over the same path IS
+    // the restart, since the wal id allocator resumes above the surviving records while the
+    // caller is free to reuse a txn id.
     struct journal_session_t {
         explicit journal_session_t(const std::filesystem::path& path)
             : resource_()
@@ -102,11 +90,9 @@ namespace {
             manager_.reset();
         }
 
-        // Returns the wal id the record landed on. Built on the fixture's own arena
-        // (core::pmr::otterbrix_resource, resource_tracer_t under ASAN), mirroring production
-        // (agent_disk_t::storage_append_inner builds off resource()); resource_ is declared FIRST
-        // so it outlives ~journal_session_t's teardown of manager_. to_batch takes the vector's
-        // arena from the chunk, so &resource_ carries through to the batch the message holds.
+        // Built on the fixture's own arena, mirroring production; resource_ is declared first so
+        // it outlives ~journal_session_t's teardown of manager_, and to_batch carries that arena
+        // into the batch the message holds.
         std::pmr::vector<data_chunk_t> make_insert_batch(size_t rows) {
             return to_batch(gen_data_chunk(rows, &resource_));
         }
@@ -177,9 +163,7 @@ namespace {
 
 } // namespace
 
-// wal_reader_t (the bootstrap replay in base_spaces.cpp).
-// BEFORE: read_committed_records answered 3 records — INSERT(1), COMMIT(2) and the UNCOMMITTED
-// INSERT(3) — because {T} was looked up without regard to where the marker sits.
+// wal_reader_t drives the bootstrap replay in base_spaces.cpp.
 TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn") {
     const auto path = base_path() / "reader";
     std::filesystem::remove_all(path);
@@ -191,18 +175,17 @@ TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn
     services::wal::id_t commit_marker_id = 0;
     services::wal::id_t orphan_insert_id = 0;
 
-    { // session 1: one transaction, committed.
+    {
         journal_session_t s(path);
         committed_insert_id = s.insert(kRecycledTxn, 4);
         commit_marker_id = s.commit(kRecycledTxn, /*commit_id=*/10);
     }
-    { // session 2 == the restart. The txn id counter starts over; the wal id
-      // allocator does not. The transaction never commits (crash).
+    {
         journal_session_t s(path);
         orphan_insert_id = s.insert(kRecycledTxn, 4);
     }
 
-    // The premise of the whole record: the ids really did move the way it says.
+    // Confirms the ids actually moved the way the setup assumes.
     REQUIRE(committed_insert_id < commit_marker_id);
     REQUIRE(commit_marker_id < orphan_insert_id);
 
@@ -224,10 +207,6 @@ TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn
         REQUIRE(count_physical(records.value()) == 1);
     }
 
-    // CONTROL — sensitivity. Append the missing COMMIT for the second
-    // incarnation: now a marker DOES sit above the orphan and both inserts
-    // replay. A reader that answered the first half by dropping everything
-    // would fail here.
     services::wal::id_t second_commit_id = 0;
     {
         journal_session_t s(path);
@@ -246,8 +225,8 @@ TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn
     std::filesystem::remove_all(path);
 }
 
-// wal_worker_t::load (the CREATE INDEX backfill catchup): same filter, second copy, same
-// defect — the backfill would index rows of a transaction that never committed.
+// wal_worker_t::load (the CREATE INDEX backfill catchup) carries the same filter, so the
+// backfill could index rows of a transaction that never committed.
 TEST_CASE("wal::txn_reuse::catchup_load_rejects_the_recycled_uncommitted_txn") {
     const auto path = base_path() / "load";
     std::filesystem::remove_all(path);
@@ -274,7 +253,6 @@ TEST_CASE("wal::txn_reuse::catchup_load_rejects_the_recycled_uncommitted_txn") {
         REQUIRE_FALSE(holds_wal_id(records, orphan_insert_id));
         REQUIRE(count_physical(records) == 1);
 
-        // CONTROL — commit the second incarnation and load again.
         s.commit(kRecycledTxn, /*commit_id=*/11);
         auto after = s.load_from(services::wal::id_t{0});
         REQUIRE(holds_wal_id(after, committed_insert_id));
@@ -285,8 +263,8 @@ TEST_CASE("wal::txn_reuse::catchup_load_rejects_the_recycled_uncommitted_txn") {
     std::filesystem::remove_all(path);
 }
 
-// Insert payload built on the fixture's own arena (see make_insert_batch above); the batch is
-// unobservable after send, so the assertion is made on make_insert_batch's own output.
+// The batch is unobservable after send, so the assertion is made on make_insert_batch's own
+// output instead.
 TEST_CASE("wal::txn_reuse::the_insert_payload_is_built_on_the_fixture_arena") {
     const auto path = base_path() / "payload_arena";
     std::filesystem::remove_all(path);

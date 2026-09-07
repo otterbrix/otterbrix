@@ -1,13 +1,5 @@
-// Characterization: a re-DELETE inside a transaction reports 0, not a stale count.
-//
-// operator_delete credits affected_rows_ += modified_size (the SCAN-matched count) rather
-// than the count storage actually marked, but the two never diverge through SQL: the MVCC
-// snapshot hides rows this transaction already deleted, so a re-DELETE matches nothing and
-// modified_size is 0 exactly where a stored row is already stamped. No code change was made
-// here -- forcing the count to storage's answer would alter a user-visible number with no
-// reachable defect behind it ("loud" does not mean "change a correct number"). This
-// test pins that standing contract so a future change to the count path cannot silently
-// regress it.
+// affected_rows_ counts SCAN-matched rows, not what storage marks: MVCC hides a transaction's
+// own prior deletes, so a re-DELETE always scans (and reports) 0 -- this is intended, not a gap.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -40,8 +32,6 @@ TEST_CASE("integration::cpp::delete_affected_count::txn_re_delete_reports_zero",
         CHECK(cur->size() == 2);
     }
     {
-        // The scan hides rows this transaction already deleted, so the same
-        // predicate now matches NOTHING — and the report says 0, not 2.
         auto cur = exec(txn, "DELETE FROM dc.t WHERE id <= 2;");
         REQUIRE(cur->is_success());
         CHECK(cur->size() == 0);

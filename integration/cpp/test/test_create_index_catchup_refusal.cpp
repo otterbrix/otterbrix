@@ -1,22 +1,6 @@
-// The CREATE INDEX build does not read the journal.
-//
-// It used to: after the snapshot scan, a WAL catchup replayed physical records to pick up
-// concurrently committed rows, so an unreadable WAL segment had to FAIL the build (an empty
-// load reply would have silently published an index missing every row that segment described).
-// The build now feeds itself from a RAW read of every physical row plus the DML mirror /
-// post-append reconciliation — the journal is not consulted, so a journal that cannot be
-// opened is not the build's problem.
-//
-// The WAL-open refusal is produced deterministically by the WAL's own DEV_MODE seam
-// (services/wal/wal_page.hpp): a segment file that will not open makes
-// wal_page_reader_t::read_all_records refuse. It's armed only around the CREATE INDEX, so
-// the seeding traffic above it is untouched — and since the current segment is already open,
-// the build's own catalog writes keep landing.
-//
-// What this pins:
-//   * the CREATE INDEX SUCCEEDS with the journal unopenable — the build reads no segment;
-//   * the TABLE answers in full afterwards — the build touched no base row;
-//   * the built index is the one doing the answering (Index Scan) and answers in full.
+// The build feeds itself from a RAW read of every physical row plus the DML mirror; the journal is never
+// consulted, so an unopenable WAL segment does not touch it. The open refusal is produced by the WAL's own
+// DEV_MODE seam (services/wal/wal_page.hpp).
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -34,9 +18,6 @@ using namespace test_helpers;
 
 namespace {
 
-    // Process-wide seam, scoped by this object and narrowed to WAL segment files by path.
-    // Starts switched OFF: the seeding traffic must reach the journal, so that the only
-    // thing the arming can affect is the build's (absent) journal read.
     class wal_open_refusal_t final : public services::wal::wal_file_interposer_t {
     public:
         wal_open_refusal_t() { services::wal::dev_set_wal_file_interposer(this); }
@@ -45,7 +26,7 @@ namespace {
         wal_open_refusal_t(const wal_open_refusal_t&) = delete;
         wal_open_refusal_t& operator=(const wal_open_refusal_t&) = delete;
 
-        std::string refuse_open_marker; // segment files matching this do not open at all
+        std::string refuse_open_marker;
 
         std::unique_ptr<core::filesystem::file_handle_t>
         wrap(const std::filesystem::path& path, std::unique_ptr<core::filesystem::file_handle_t> inner) override {
@@ -95,15 +76,12 @@ TEST_CASE("integration::cpp::create_index_catchup_refusal::the_build_does_not_re
         REQUIRE(cur->size() == kRowCount);
     }
 
-    // The full answer, established BEFORE any index exists, so the comparison below is
-    // against the table itself and not against an expectation.
     {
         auto cur = exec(dispatcher, "SELECT id, grp, val FROM CatchupDb.t WHERE grp = 0;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kInGroup0);
     }
 
-    // Arm only now: from here no WAL segment file can be opened.
     fault.refuse_open_marker = "wal_";
 
     {
@@ -113,10 +91,8 @@ TEST_CASE("integration::cpp::create_index_catchup_refusal::the_build_does_not_re
         REQUIRE(create->is_success());
     }
 
-    // Disarm: everything below is about the state the statement left behind.
     fault.refuse_open_marker.clear();
 
-    // THE TABLE FIRST. The build must not have touched a single base row.
     {
         auto cur = exec(dispatcher, "SELECT id, grp, val FROM CatchupDb.t;");
         INFO("unfiltered SELECT after the build: " << (cur->is_error() ? cur->get_error().what.c_str() : "no error")
@@ -126,8 +102,6 @@ TEST_CASE("integration::cpp::create_index_catchup_refusal::the_build_does_not_re
         REQUIRE(cur->size() == kRowCount);
     }
 
-    // THE ANSWER, THROUGH THE INDEX. Prove the index is the one reading, then that it
-    // answers exactly what the table held before the build.
     {
         auto plan = exec(dispatcher, "EXPLAIN SELECT id FROM CatchupDb.t WHERE grp = 0;");
         REQUIRE(plan->is_success());
@@ -151,7 +125,6 @@ TEST_CASE("integration::cpp::create_index_catchup_refusal::the_build_does_not_re
         REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount / kGroups));
     }
 
-    // Rows written AFTER the build, with the journal healthy again, must reach the index too.
     REQUIRE(exec(dispatcher, "INSERT INTO CatchupDb.t (id, grp, val) VALUES (1000, 0, 10000);")->is_success());
     {
         auto cur = exec(dispatcher, "SELECT id, grp, val FROM CatchupDb.t WHERE grp = 0;");

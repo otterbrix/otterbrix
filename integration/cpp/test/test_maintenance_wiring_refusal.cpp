@@ -1,18 +1,7 @@
-// Maintenance operators over an unwired topology must refuse, not report success. Every
-// production topology wires the index and disk managers unconditionally, so an EMPTY address
-// means the statement cannot do its work, not a lighter mode. Two operators answered that with
-// quiet success instead: index_scan yielded an empty window indistinguishable from "no row
-// matches" (the same function's search-error branch refuses this case), and
-// operator_drop_index_t, given nothing to scrub, skipped its "at least one identity row went"
-// verdict and reported a no-op DROP INDEX as success.
-//
-// operator_create_index_backfill_t's quiet no-op is deliberately NOT converted here: the
-// dispatcher differential harness (test_variant_e3_differential.cpp) syncs an empty index
-// address by design and pins CREATE INDEX success there, comparing only the catalog half of
-// the statement. index_scan and drop_index have no such pin.
-//
-// These tests drive the operators DIRECTLY with a bare pipeline context (all addresses empty),
-// so every refusal completes synchronously with no cross-actor send.
+// Maintenance operators over an unwired topology must refuse, not silently succeed: an unwired index_scan
+// returning an empty window is indistinguishable from "no match", and a DROP INDEX with nothing to scrub
+// bypasses its no-identity-row verdict. operator_create_index_backfill_t is excluded on purpose:
+// test_variant_e3_differential.cpp pins its empty-index sync as success.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -40,11 +29,8 @@ namespace {
 
 } // namespace
 
-// A DROP INDEX with nothing to scrub can never fire its own no-identity-row
-// verdict, so "success" would mean an engine teardown over a catalog that may
-// still describe the index. The planner never emits this shape (it refuses an
-// unresolved index and always sends the full spec list), so reaching it is an
-// invariant violation, and the operator has to say so.
+// The planner never emits a DROP INDEX with an empty spec list, so reaching this path is a planner-invariant
+// violation.
 TEST_CASE("integration::cpp::maintenance_wiring::drop_index_with_nothing_to_scrub_refuses") {
     auto* res = std::pmr::new_delete_resource();
 
@@ -65,12 +51,8 @@ TEST_CASE("integration::cpp::maintenance_wiring::drop_index_with_nothing_to_scru
     CHECK(op->get_error().type == core::error_code_t::index_not_exists);
 }
 
-// index_scan is built ONLY when the planner proved an index exists, so an
-// unwired index service is the same planner-invariant violation manager_index
-// answers index_not_exists for ("no engine for the oid" / "no index on the
-// predicate key"). The old early return handed back an EMPTY window and
-// no_error() — a silently short result set. It must refuse through the same
-// channel the search-error branch already uses.
+// index_scan is only built once the planner has proved the index exists, so this path is the same
+// invariant violation.
 TEST_CASE("integration::cpp::maintenance_wiring::index_scan_without_index_service_refuses") {
     auto* res = std::pmr::new_delete_resource();
 

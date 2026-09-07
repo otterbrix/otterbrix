@@ -55,7 +55,6 @@ namespace services::dispatcher { namespace {
 
     using components::logical_plan::catalog_resolves_t;
 
-    // DEFAULT-backed NOT NULL columns included too: both write paths hand the operator a row with every column.
     void fill_not_null(const components::logical_plan::resolved_table_metadata_t& md, std::vector<std::string>& out) {
         for (const auto& col : md.columns) {
             if (col.attnotnull) {
@@ -64,7 +63,6 @@ namespace services::dispatcher { namespace {
         }
     }
 
-    // ALTER TABLE ADD PRIMARY KEY never back-fills pg_attribute.attnotnull, so PK columns are merged in separately.
     void merge_pk_not_null(const std::vector<std::string>& pk_columns, std::vector<std::string>& not_null) {
         for (const auto& col : pk_columns) {
             if (std::find(not_null.begin(), not_null.end(), col) == not_null.end()) {
@@ -73,8 +71,7 @@ namespace services::dispatcher { namespace {
         }
     }
 
-    // DEFAULT is expanded here, once — the only reader of pg_attribute.attdefspec. An empty
-    // column_bindings list means relkind='g' (dynamic schema): nothing is stamped.
+    // DEFAULT is expanded here, once — the only reader of pg_attribute.attdefspec.
     core::error_t build_insert_fill_list(components::logical_plan::node_insert_t* node,
                                          const components::logical_plan::resolved_table_metadata_t& md) {
         auto* resource = node->resource();
@@ -97,7 +94,6 @@ namespace services::dispatcher { namespace {
             }
             std::optional<components::types::logical_value_t> decoded;
             if (col.atthasdefault) {
-                // Fails the statement, not "no default" — that would put NULL into an already-cleared column.
                 if (auto ec = components::catalog::decode_default_spec(resource, col.type, col.attdefspec, decoded);
                     ec.contains_error()) {
                     return ec;
@@ -116,9 +112,8 @@ namespace services::dispatcher { namespace {
         return core::error_t::no_error();
     }
 
-    // Order operator_insert hands its constraint operators: statement columns, then DEFAULT
-    // fill-list columns. FK columns resolve against this list — an unresolved position silently
-    // qualifies 0 rows in operator_fk_check's success path, so `pid bigint DEFAULT 42` inserts unchecked.
+    // FK columns resolve positionally against statement columns then DEFAULT fill-list columns, in that
+    // order; an unresolved position silently qualifies 0 rows, so `pid bigint DEFAULT 42` inserts unchecked.
     std::vector<std::string> insert_chunk_column_names(const components::logical_plan::node_insert_t* node) {
         std::vector<std::string> names;
         const auto& bindings = node->column_bindings();
@@ -139,7 +134,6 @@ namespace services::dispatcher { namespace {
         return names;
     }
 
-    // A too-short fixed-ARRAY value pads NULL, which NOT NULL can't accept, so it must error before the append.
     std::vector<std::pair<std::string, uint64_t>>
     collect_array_size_reqs(const components::logical_plan::resolved_table_metadata_t& md) {
         std::vector<std::pair<std::string, uint64_t>> array_reqs;
@@ -153,7 +147,6 @@ namespace services::dispatcher { namespace {
         return array_reqs;
     }
 
-    // CHECK expressions are recorded in the catalog as plain SQL, to avoid explicit expression (de)serialization.
     [[nodiscard]] core::error_t
     parse_check_predicates(std::pmr::memory_resource* resource,
                            const std::vector<std::pair<std::string, std::string>>& stored,
@@ -177,8 +170,6 @@ namespace services::dispatcher { namespace {
         return core::error_t::no_error();
     }
 
-    // Re-reads bare fractional literals at the column's own scale: the transformer, with no
-    // catalog at parse time, could only park `0.1` as a double with no scale to honor.
     core::error_t spend_literal_digits(components::logical_plan::node_insert_t* node) {
         using components::types::logical_type;
         const auto& digits = node->literal_digits();
@@ -197,7 +188,6 @@ namespace services::dispatcher { namespace {
         }
         const uint64_t total_rows = chunk_start.back();
 
-        // Anything outside the chunk batch means the batch is no longer the one the transformer filled.
         std::unordered_map<uint64_t, std::vector<const std::pmr::string*>> by_column;
         for (const auto& record : digits) {
             if (record.row >= total_rows || record.column >= node->column_bindings().size()) {
@@ -265,7 +255,6 @@ namespace services::dispatcher { namespace {
                 }
                 chunk.data[column] = std::move(rebuilt);
             }
-            // The column is now the stored type, so the assignment cast would run a second, lossy conversion.
             node->column_bindings()[column].cast = {};
             if (source->has_output_types()) {
                 auto declared = source->output_types();
@@ -279,7 +268,6 @@ namespace services::dispatcher { namespace {
     }
 
     void enrich_insert_sync(components::logical_plan::node_insert_t* node) {
-        // bind_catalog_data already pasted the target's metadata onto the node.
         const auto* md = node->table_metadata();
         if (!md)
             return;
@@ -332,7 +320,6 @@ namespace services::catalog_resolve {
             std::string_view secondary_relname{};
             std::string_view namespace_dbname{};
             std::string_view type_name{};
-            // Database the secondary relation lives in; empty means same as dbname.
             std::string_view secondary_dbname{};
         };
 
@@ -396,7 +383,6 @@ namespace services::catalog_resolve {
                 }
                 case node_type::create_collection_t: {
                     const auto* d = static_cast<const node_create_collection_t*>(node);
-                    // The name being created is itself a target, or a second CREATE TABLE writes an ambiguous row.
                     return {d->dbname(), d->relname(), {}};
                 }
                 case node_type::create_sequence_t: {
@@ -442,8 +428,6 @@ namespace services::catalog_resolve {
 
     } // namespace
 
-    // Supports only single-table FROM with scalar_type::get_field expressions; returns empty on
-    // any other shape, which the planner surfaces as an error — not a fallback.
     static std::vector<components::table::column_definition_t>
     derive_matview_output_schema(const components::logical_plan::node_t* body_plan,
                                  const components::logical_plan::resolved_table_metadata_t* source_md) {
@@ -455,7 +439,6 @@ namespace services::catalog_resolve {
         if (body_plan->type() != node_type::aggregate_t) {
             return out;
         }
-        // The transformer routes the target list to GROUP and leaves select empty, so group is where columns live.
         const node_t* select_node = nullptr;
         const node_t* group_node = nullptr;
         for (const auto& c : body_plan->children()) {
@@ -479,17 +462,16 @@ namespace services::catalog_resolve {
             if (!expr) {
                 return {};
             }
-            // A grouping key is not an output column of its own — the target list names it separately.
             if (auto* key_expr = dynamic_cast<components::expressions::scalar_expression_t*>(expr.get());
                 key_expr != nullptr && key_expr->type() == components::expressions::scalar_type::group_field) {
                 continue;
             }
             auto* sc = dynamic_cast<components::expressions::scalar_expression_t*>(expr.get());
             if (!sc) {
-                return {}; // non-scalar (function/aggregate): out of scope
+                return {};
             }
             if (sc->type() != components::expressions::scalar_type::get_field) {
-                return {}; // arithmetic/case_expr/coalesce/...: out of scope
+                return {};
             }
             const auto& key_storage = sc->key().storage();
             if (key_storage.empty()) {
@@ -513,7 +495,6 @@ namespace services::catalog_resolve {
         return out;
     }
 
-    // Walks the whole tree by oid rather than position: the DML target isn't necessarily the last one resolved.
     void stamp_table_has_indexes(components::logical_plan::node_t* root,
                                  components::catalog::oid_t table_oid,
                                  bool has_indexes) {
@@ -680,7 +661,6 @@ namespace services::catalog_resolve {
                             if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
                                 d->set_table_oid(rt->table_oid());
                             }
-                            // A hit means the name is taken (by an index or table); a miss means it's free.
                             if (rt_index && rt_index->table_oid() != components::catalog::INVALID_OID) {
                                 d->set_name_conflict_oid(rt_index->table_oid());
                             }
@@ -693,7 +673,6 @@ namespace services::catalog_resolve {
                             }
                             break;
                         }
-                        // A FROM/USING source is a child sub-plan that self-resolves via this same walk.
                         case node_type::insert_t: {
                             auto* d = static_cast<node_insert_t*>(n);
                             if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
@@ -715,7 +694,6 @@ namespace services::catalog_resolve {
                             }
                             break;
                         }
-                        // alter_column_* cases already set their own table_oid; re-stamping is a no-op for them.
                         case node_type::alter_table_t:
                         case node_type::alter_column_t: {
                             if (rt && rt->table_oid() != components::catalog::INVALID_OID) {
@@ -836,7 +814,6 @@ namespace services::catalog_resolve {
         return nullptr;
     }
 
-    // A cast spelled in the query carries only its target type's name; unresolved is left for validation to report.
     std::vector<std::string> build_type_search_path_str(std::string_view target_dbname) {
         std::vector<std::string> path;
         if (!target_dbname.empty() && target_dbname != "public" && target_dbname != "pg_catalog") {
@@ -860,7 +837,6 @@ namespace services::dispatcher { namespace {
         std::string_view name;
         std::vector<constraint_column_view_t> columns;
         std::vector<std::string> pk_columns;
-        // False for a table created by this same statement: rewrite_create_table mints attoids later.
         bool attoids_minted{true};
     };
 
@@ -874,7 +850,6 @@ namespace services::dispatcher { namespace {
         return out;
     }
 
-    // An unresolvable constraint is refused, never trimmed — a shorter list would silently enforce a different one.
     [[nodiscard]] core::error_t resolve_constraint_columns(std::pmr::memory_resource* resource,
                                                            components::logical_plan::node_create_constraint_t* node,
                                                            const constraint_table_view_t* local,
@@ -902,7 +877,6 @@ namespace services::dispatcher { namespace {
             }
         };
         if (local == nullptr) {
-            // Unreachable through SQL, but the last line of defence against a pg_constraint row nailed to no table.
             std::string msg = describe_constraint();
             msg += ": table \"";
             msg += node->relname();
@@ -941,7 +915,6 @@ namespace services::dispatcher { namespace {
             return core::error_t::no_error();
         }
 
-        // An unresolved referenced table refuses here: PostgreSQL answers "relation does not exist", and so does this.
         if (referenced == nullptr) {
             std::string msg = describe_constraint();
             msg += ": referenced relation \"";
@@ -953,8 +926,6 @@ namespace services::dispatcher { namespace {
             msg += "\" does not exist";
             return core::error_t(core::error_code_t::invalid_constraint, std::pmr::string{std::move(msg), resource});
         }
-        // Omitted column list binds to the parent's PRIMARY KEY; left empty, orphans go in and
-        // ON DELETE RESTRICT lets the parent go too.
         if (node->ref_col_names().empty()) {
             if (referenced->pk_columns.empty()) {
                 return core::error_t(core::error_code_t::invalid_constraint,
@@ -1014,7 +985,6 @@ namespace services::dispatcher { namespace {
         return core::error_t::no_error();
     }
 
-    // bind_catalog_data has already stamped table_oid()/table_metadata() on every node by now.
     [[nodiscard]] actor_zeta::unique_future<core::error_t> enrich_node(std::pmr::memory_resource* resource,
                                                                        components::logical_plan::node_ptr root,
                                                                        components::execution_context_t ctx,
@@ -1026,13 +996,10 @@ namespace services::dispatcher { namespace {
             case node_type::insert_t: {
                 auto* node = static_cast<node_insert_t*>(root.get());
                 enrich_insert_sync(node);
-                // Before the fill list: an exact literal may still overflow its column, and
-                // that refusal must land before anything else is stamped onto the node.
                 if (auto ec = spend_literal_digits(node); ec.contains_error()) {
                     co_return ec;
                 }
                 const auto* md = node->table_metadata();
-                // The DEFAULT fill list comes first: the FK positions below are chunk positions, which include it.
                 if (md != nullptr) {
                     if (auto ec = build_insert_fill_list(node, *md); ec.contains_error()) {
                         co_return ec;
@@ -1085,7 +1052,6 @@ namespace services::dispatcher { namespace {
                     resolves ? resolves->constraints_for(node->table_oid(), resolve_direction::outgoing) : nullptr;
                 if (constraints) {
                     auto fks = constraints->fks;
-                    // An UPDATE is fed the scanned base row, so a child column sits at chunk_position, not a tuple pos.
                     if (md) {
                         for (auto& fk : fks) {
                             fk.child_col_indices.clear();
@@ -1150,10 +1116,8 @@ namespace services::dispatcher { namespace {
             }
             case node_type::create_collection_t: {
                 auto* node = static_cast<node_create_collection_t*>(root.get());
-                // Replaces the UNKNOWNs a CREATE TABLE spells by name with concrete types before validation.
                 resolve_column_definitions(node->column_definitions(), resolves);
 
-                // Targets the statement's own not-yet-cataloged table: attoids stay unstamped for rewrite_create_table.
                 bool has_inline_constraints = false;
                 for (const auto& child : root->children()) {
                     if (child && child->type() == node_type::create_constraint_t) {
@@ -1165,7 +1129,6 @@ namespace services::dispatcher { namespace {
                     break;
                 }
                 if (node->column_definitions().empty()) {
-                    // relkind='g' (dynamic schema): no pg_attribute rows, so a conkey attoid could never be matched.
                     co_return core::error_t(
                         core::error_code_t::schema_error,
                         std::pmr::string{"constraints are not supported on dynamic-schema (relkind='g') tables: "
@@ -1180,7 +1143,6 @@ namespace services::dispatcher { namespace {
                 for (const auto& col : node->column_definitions()) {
                     local.columns.push_back(constraint_column_view_t{col.name(), components::catalog::INVALID_OID});
                 }
-                // A self-referencing FK that omitted its column list binds to the PK declared in this same statement.
                 for (const auto& child : root->children()) {
                     if (!child || child->type() != node_type::create_constraint_t) {
                         continue;
@@ -1306,7 +1268,6 @@ namespace services::dispatcher { namespace {
                 if (const auto* tbl = node->table_metadata()) {
                     node->set_relkind(tbl->relkind);
                 }
-                // DROP CONSTRAINT: a missing name refuses, except under IF EXISTS (stays INVALID_OID, skipped below).
                 if (node->table_oid() != components::catalog::INVALID_OID) {
                     for (auto& sub : node->subcommands()) {
                         if (sub.kind != components::logical_plan::alter_table_kind::drop_constraint) {
@@ -1342,8 +1303,7 @@ namespace services::dispatcher { namespace {
             default:
                 break;
         }
-        // Recurses regardless of case: skip this and a DML child's table_oid stays unstamped,
-        // so DELETE WHERE silently becomes a no-op.
+        // Recurses regardless of case: skipped, a DML child's table_oid stays unstamped and DELETE WHERE is a no-op.
         for (auto& child : root->children()) {
             if (!child)
                 continue;
@@ -1398,9 +1358,6 @@ namespace services::dispatcher {
                                                               tbl_oid);
                 desc_futures.push_back(std::move(idf));
             }
-            // Also stamps "has an index" per node targeting that table, since DML operators can't
-            // reach context_storage at execution time; a stamp gone stale against a concurrent
-            // CREATE INDEX is corrected after the append via index_contract::unmirrored_ranges.
             for (std::size_t i = 0; i < keys_futures.size(); ++i) {
                 auto keys = co_await std::move(keys_futures[i]);
                 catalog_resolve::stamp_table_has_indexes(root.get(), queried_oids[i], !keys.empty());

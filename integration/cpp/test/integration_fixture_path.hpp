@@ -9,19 +9,14 @@
 #include <signal.h>
 #include <unistd.h>
 
-// Fixture root is qualified by pid: a literal shared "/tmp/..." directory gets
-// remove_all()+create_directories() by the first thing each test case does, so two test
-// binaries running at once corrupt each other's fixtures. Measured: two Debug binaries on
-// the same case at the same time, 5/5 iterations had one process fail on the other's
-// destroyed/recreated directory, reading as unrelated I/O and engine errors. Same convention
-// as services/index/tests/index_fixture_path.hpp and components/table/test/*, kept
-// per-directory rather than shared.
+// Fixture root is pid-qualified: a shared /tmp directory gets wiped and recreated by each test
+// case's setup, so concurrent binaries corrupt each other's fixtures (measured: two Debug binaries
+// racing the same case, 5/5 iterations failed on the other's destroyed directory).
 namespace integration_fixture_detail {
 
-    // Reclaimed from both a sweep here and an atexit hook below: the sweep covers runs that
-    // crashed/aborted/were killed, the hook covers the common exit without waiting on a
-    // later run. Without this, dead pid-qualified roots accumulated unbounded (872 dirs /
-    // 926 GiB observed before this was added).
+    // A sweep here covers crashed/killed runs; the atexit hook below covers the common exit
+    // without waiting on a later run. Without both, dead roots accumulated unbounded (872 dirs /
+    // 926 GiB observed).
     inline void reclaim_dead_roots(const std::filesystem::path& shared, const std::filesystem::path& mine) {
         std::error_code ec;
         for (std::filesystem::directory_iterator it{shared, ec}, end; !ec && it != end; it.increment(ec)) {
@@ -32,7 +27,6 @@ namespace integration_fixture_detail {
             const auto suffix = entry.filename().string().substr(std::strlen("otterbrix_integration_"));
             char* parsed = nullptr;
             const long owner = std::strtol(suffix.c_str(), &parsed, 10);
-            // Not a whole number, or a live owner: not ours to reclaim.
             if (parsed == nullptr || *parsed != '\0' || owner <= 0 || ::kill(static_cast<::pid_t>(owner), 0) == 0) {
                 continue;
             }
@@ -86,10 +80,9 @@ namespace integration_fixture_detail {
 
 } // namespace integration_fixture_detail
 
-// Safe: under integration_fixture_root() (pid-qualified), or entirely outside
-// integration_fixture_shared_root() (unreachable by another process's remove_all()).
-// Refused: anything else under the shared root, including a second, different pid
-// convention -- that would split the fixture root in two, cleanable by no single rule.
+// Safe under integration_fixture_root() or entirely outside integration_fixture_shared_root();
+// anything else under the shared root is refused, since a second pid convention would split the
+// fixture root in two.
 [[nodiscard]] inline bool integration_fixture_path_is_qualified(const std::filesystem::path& path) {
     const std::filesystem::path normal = path.lexically_normal();
     if (!integration_fixture_detail::path_is_within(normal, integration_fixture_shared_root())) {

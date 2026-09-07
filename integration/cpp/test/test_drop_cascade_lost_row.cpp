@@ -16,35 +16,9 @@
 #include <string>
 #include <thread>
 
-// A DROP CASCADE must not report success over a planned object the catalog does not hold.
-//
-// operator_dynamic_cascade_delete_t plans its steps from pg_depend edges and executes a
-// per-classid template of catalog-row deletes per step. The template is deliberately
-// over-generated (it re-issues e.g. the pg_sequence and pg_rewrite deletes for a plain
-// table), so most zero counts carry no information -- but ONE spec of every template is the
-// step's OWN row ({classid, col 0, objid}). A zero there means the catalog never held (or no
-// longer holds) the object the plan named, so proceeding would take the storage/index drop
-// marks over a catalog inconsistency -- the half-applied DROP the operator promises to avoid.
-//
-// The first case builds exactly that inconsistency: a pg_depend edge is forged through the
-// disk manager's own funnel, claiming a constraint with no pg_constraint row -- the state any
-// half-applied earlier scrub leaves behind. (Forged rather than deleted from a real row, to
-// keep the fixture honest: a td{0,0} funnel delete leaves a ghost the DROP's statement-time
-// scan still marks, and the failure would then come from the commit drain's replay instead --
-// a different, later channel.) The cascade walks the edge, plans the constraint step, its
-// own-row delete counts 0, and the statement must refuse -- leaving the parent table intact
-// (the autocommit abort puts the already-deleted rows back).
-//
-// The second case pins the reason a blanket zero-refusal was NOT the fix: the dependency
-// walker used to push a dependent once per edge that reached it, so an FK constraint
-// reachable from BOTH its table and its referenced table appeared TWICE in the plan, and the
-// second occurrence's own-row delete legitimately counted 0. The walker now emits an object
-// only when it FINISHES it, so one object is one step (components/catalog/dependency_walker.
-// {hpp,cpp} -- "A SET, NOT A MULTISET"). The dedup this case once described in the consumer is
-// gone on purpose and must not come back -- it was a second enforcement of the walker's own
-// invariant, and with it in place the walker could start emitting duplicates again with
-// nothing turning red, since the caller quietly repaired them. One invariant, one keeper: this
-// case now guards the walker from the far end, requiring the diamond to be judged exactly once.
+// A DROP CASCADE step's own-row delete ({classid, col 0, objid}) must count nonzero: a zero means
+// the catalog never held the planned object, so proceeding would push storage/index drops over a
+// catalog inconsistency.
 
 using namespace test_helpers;
 
@@ -62,8 +36,7 @@ namespace {
         services::disk::manager_disk_t* disk() noexcept { return manager_disk_.get(); }
     };
 
-    // Committed rows of `table_oid` whose column `key_col` equals `key`, read through the
-    // disk manager's own funnel (snapshot_horizon = max: every committed row).
+    // snapshot_horizon = max reads every committed row, not the calling transaction's view.
     template<typename Key>
     core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
     catalog_chunks_with(lost_row_spaces_t& space, catalog::oid_t table_oid, std::uint64_t key_col, Key key) {
@@ -99,7 +72,6 @@ namespace {
         return rows;
     }
 
-    // The relation's oid from the pg_class row that names it.
     catalog::oid_t table_oid_named(lost_row_spaces_t& space, const std::string& name) {
         auto batches = catalog_chunks_with(space,
                                            catalog::well_known_oid::pg_class_table,
@@ -116,8 +88,7 @@ namespace {
         return catalog::INVALID_OID;
     }
 
-    // The FK constraint whose confrelid names `parent_oid` (the PK row carries no
-    // confrelid, so this key selects the FK alone; contype is asserted anyway).
+    // The PK row carries no confrelid, so this key selects the FK alone.
     catalog::oid_t fk_oid_referencing(lost_row_spaces_t& space, catalog::oid_t parent_oid) {
         auto batches = catalog_chunks_with(space,
                                            catalog::well_known_oid::pg_constraint_table,
@@ -138,9 +109,8 @@ namespace {
         return catalog::INVALID_OID;
     }
 
-    // Forge one pg_depend edge through the manager's own funnel: (classid, objid) names a
-    // dependent whose own catalog row does not exist. This is the smallest honest replica
-    // of the half-applied state the case is about — the object row gone, the edge alive.
+    // Forges the edge instead of deleting a real row: a td{0,0} delete would leave a ghost the
+    // DROP's own scan still marks, failing through the commit-drain replay instead of the path under test.
     void forge_depend_edge(lost_row_spaces_t& space,
                            catalog::oid_t classid,
                            catalog::oid_t objid,
@@ -181,7 +151,6 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::planned_step_without_a_catal
     const auto parent_oid = table_oid_named(space, "parent");
     REQUIRE(parent_oid != catalog::INVALID_OID);
 
-    // Build the inconsistency: an edge names a constraint the catalog holds no row for.
     const catalog::oid_t ghost_oid = catalog::FIRST_USER_OID + 777777;
     REQUIRE(catalog_rows_with(space, catalog::well_known_oid::pg_constraint_table, catalog::pg_constraint_col::oid, ghost_oid) ==
             0);
@@ -193,10 +162,8 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::planned_step_without_a_catal
     REQUIRE(catalog_rows_with(space, catalog::well_known_oid::pg_depend_table, catalog::pg_depend_col::objid, ghost_oid) ==
             1);
 
-    // The cascade walks the surviving edge, plans the constraint step, and the step's own
-    // row deletes 0 rows. That zero is the statement's answer. CASCADE is written
-    // since #638: bare = RESTRICT, whose gate would refuse on the forged 'n' edge
-    // before the walk could ever reach the ghost step this case is about.
+    // CASCADE is required since #638: bare DROP = RESTRICT, whose gate would refuse on the
+    // forged edge before the walk could reach the ghost step this case is about.
     auto cur = exec(d, "DROP TABLE lost.parent CASCADE;");
     INFO("DROP over the lost constraint row: "
          << (cur->is_error() ? std::string{cur->get_error().what.begin(), cur->get_error().what.end()}
@@ -205,8 +172,6 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::planned_step_without_a_catal
     const std::string what{cur->get_error().what.begin(), cur->get_error().what.end()};
     REQUIRE(what.find("has no catalog row") != std::string::npos);
 
-    // Nothing was half-applied: the refused DROP left the parent readable, its pg_class
-    // row in place, and the edge that exposed the inconsistency still there to report.
     REQUIRE(catalog_rows_with(space, catalog::well_known_oid::pg_class_table, catalog::pg_class_col::oid, parent_oid) ==
             1);
     REQUIRE(exec(d, "SELECT * FROM lost.parent;")->is_success());
@@ -227,16 +192,15 @@ TEST_CASE("integration::cpp::drop_cascade_lost_row::diamond_dependent_is_judged_
     const auto fk_oid = fk_oid_referencing(space, parent_oid);
     REQUIRE(fk_oid != catalog::INVALID_OID);
 
-    // The constraint is reachable from BOTH tables, so the walker emits it twice; only a
-    // deduplicated plan may judge own-row counts. This DROP has to keep succeeding — a
-    // refusal here would be the zero policy misreading its own duplicate.
+    // The walker emits each object once per FINISHED node, not once per edge reaching it, so an
+    // FK reachable from both its table and its referenced table cannot appear twice with a
+    // falsely-zero duplicate own-row count; this DROP guards that invariant from the consumer side.
     auto cur = exec(d, "DROP DATABASE dia;");
     INFO("DROP DATABASE over the FK diamond: "
          << (cur->is_error() ? std::string{cur->get_error().what.begin(), cur->get_error().what.end()}
                              : std::string{"success"}));
     REQUIRE(cur->is_success());
 
-    // The cascade actually happened: constraint row, both tables' pg_class rows, gone.
     REQUIRE(catalog_rows_with(space, catalog::well_known_oid::pg_constraint_table, catalog::pg_constraint_col::oid, fk_oid) ==
             0);
     REQUIRE(catalog_rows_with(space, catalog::well_known_oid::pg_class_table, catalog::pg_class_col::oid, parent_oid) ==

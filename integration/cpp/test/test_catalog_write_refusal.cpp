@@ -13,35 +13,13 @@
 #include <string>
 #include <utility>
 
-// A DDL statement must not report success over a catalog row it did not write.
-//
-// A pg_catalog_append_range_t carries no error channel of its own, so an
-// agent_disk_t::append_pg_catalog_row_inner that answered with it alone could only leave
-// start_row/count at 0 -- indistinguishable from a legitimate no-op append. CREATE TABLE writes
-// pg_class, pg_attribute and pg_depend through that door: one of them failing would leave the
-// statement reporting success over a catalog that doesn't describe the table it just created.
-//
-// The fault seam (fault_injection_file.hpp) wraps the file handle single_file_block_manager_t
-// opens; the interposer below narrows it to ONE table's directory by path and is armed BEFORE
-// the engine starts, so create_new_database's header write for pg_depend's .otbx fails and the
-// storage is never emplaced.
-//
-// Asserted on the bootstrap refusal, not the CREATE TABLE statement: letting the engine come up
-// over a missing pg_depend and asserting the statement's failure instead needs exactly the
-// start this refusal forbids -- an engine holding an incomplete pg_catalog over live storage
-// mints fresh oids on top of it at the next DDL. Catching it one floor earlier is strictly
-// stronger, since the write it guards is then never attempted at all.
-//
-// Recoverability is asserted too: a refusal that can't be undone would be worse than the defect
-// it replaces. pg_depend rather than pg_class, since it's the one table CREATE TABLE only ever
-// writes -- nothing else in the statement path could be blamed for the outcome.
+// pg_catalog_append_range_t has no error channel, so a failed catalog write is caught by
+// refusing to boot rather than by the statement -- an engine that booted over an incomplete
+// catalog would mint fresh oids on top of it at the next DDL. pg_depend is the only table
+// CREATE TABLE writes exactly once, so failing it unambiguously blames this seam.
 
 namespace {
 
-    // The seam is process-wide and this engine opens one .otbx per catalog table plus one per
-    // user table, so filter by path: every handle whose path does not carry the marker is
-    // returned unwrapped, i.e. not interposed at all. Same shape as the one_table_fault_scope_t
-    // in services/disk/tests/test_persistence.cpp.
     class one_table_fault_scope_t final
         : public components::table::storage::single_file_block_manager_t::file_handle_interposer_t {
     public:
@@ -79,8 +57,7 @@ TEST_CASE("integration::cpp::test_catalog_write_refusal::create_table_fails_when
 
     {
         otterbrix_test::fault_plan_t plan;
-        // fail_writes_from is compared with >=, so 1 fails every write on the wrapped handle
-        // from the first one on — including the header write that creates the file.
+        // fail_writes_from is compared with >=, so 1 fails the header write too.
         plan.fail_writes_from = 1;
         one_table_fault_scope_t fault(plan, marker);
 
@@ -88,9 +65,6 @@ TEST_CASE("integration::cpp::test_catalog_write_refusal::create_table_fails_when
         REQUIRE_THROWS_AS(test_spaces(config), std::runtime_error);
     }
 
-    // THE REFUSAL IS RECOVERABLE, which is the whole licence for refusing: the fault is gone,
-    // nothing was left behind that blocks a retry, and the statement the case is named after
-    // now runs and succeeds.
     {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();

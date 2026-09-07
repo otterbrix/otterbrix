@@ -1,17 +1,7 @@
-// `gate_persistable_type` (services/dispatcher/validate_logical_plan.cpp) checks a column
-// type with the BINARY codec (encode_type_spec), but the row actually written to
-// pg_attribute.atttypspec/pg_type.typdefspec comes from a DIFFERENT, flat-text codec in
-// components/catalog/system_table_schemas.cpp (call sites in operator_alter_column_add.cpp,
-// ddl_metadata_builder.cpp, planner.cpp, operator_computed_field_register.cpp) that returns a
-// plain std::string and so can never refuse. The gate is sound only if the two codecs'
-// accept/reject domains coincide; nobody had checked that before this file did.
-//
-// Found before the fix: bare UNKNOWN aborted the flat encoder; a composite missing its
-// extension (or holding the WRONG kind, e.g. a mislabelled GENERIC) was dereferenced
-// unconditionally (SIGSEGV); and both the binary codec's plain-scalar tail (NA/ANY/BIT/
-// INTEGER_LITERAL/POINTER/VALIDITY) and its outright-refused types (USER/TABLE/FUNCTION/
-// LAMBDA/INVALID) fell through to "UNKNOWN(<n>)" — a silent type change or an outright
-// refusal candidate written as a plausible named user-type reference.
+// gate_persistable_type (services/dispatcher/validate_logical_plan.cpp) checks a column type
+// with the binary codec, but the row actually written (components/catalog/system_table_schemas.cpp)
+// comes from a different, flat-text codec that returns a plain std::string and can never refuse;
+// this file is the first check that the two codecs' accept/reject domains coincide.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -65,8 +55,8 @@ namespace {
 } // namespace
 
 TEST_CASE("catalog::encoder_domains::every_plain_scalar_the_gate_blesses_survives_the_flat_writer") {
-    // is_plain_scalar() in components/types/type_spec_codec.cpp, in full. Every one of
-    // these passes the gate, so every one of these must come back as ITSELF.
+    // is_plain_scalar() in components/types/type_spec_codec.cpp, in full; each must come back
+    // as itself.
     const logical_type plain_scalars[] = {
         logical_type::NA,         logical_type::ANY,           logical_type::BOOLEAN,
         logical_type::TINYINT,    logical_type::SMALLINT,      logical_type::INTEGER,
@@ -92,8 +82,7 @@ TEST_CASE("catalog::encoder_domains::every_plain_scalar_the_gate_blesses_survive
 }
 
 TEST_CASE("catalog::encoder_domains::a_bare_UNKNOWN_is_written_without_inventing_a_name") {
-    // The binary codec stores has_type_name = 0 for this and reads a bare UNKNOWN back.
-    // The flat one must not turn it into a NAMED user-type reference, and must not abort.
+    // has_type_name = 0 must not become a named UNKNOWN reference, nor abort the flat writer.
     const complex_logical_type bare{logical_type::UNKNOWN};
     REQUIRE(gate_accepts(bare));
     REQUIRE(encode_type_spec(bare) == "UNKNOWN()");
@@ -102,11 +91,10 @@ TEST_CASE("catalog::encoder_domains::a_bare_UNKNOWN_is_written_without_inventing
     REQUIRE(ok);
     REQUIRE(back.type() == logical_type::UNKNOWN);
     REQUIRE(back.type_name().empty());
-    // operator== tells a bare UNKNOWN from one carrying an empty-named UNKNOWN extension,
-    // so this is the assertion that actually pins the mirror of has_type_name = 0.
+    // operator== (not just type()+type_name()) is what distinguishes this from an
+    // empty-named extension.
     REQUIRE(back == bare);
 
-    // ...while a genuinely named reference keeps its name.
     const auto named = complex_logical_type::create_unknown("myudt");
     REQUIRE(gate_accepts(named));
     REQUIRE(encode_type_spec(named) == "UNKNOWN(myudt)");
@@ -118,12 +106,11 @@ TEST_CASE("catalog::encoder_domains::a_bare_UNKNOWN_is_written_without_inventing
 }
 
 TEST_CASE("catalog::encoder_domains::a_column_alias_must_not_be_written_as_a_type_name") {
-    // set_alias() on a bare UNKNOWN builds a GENERIC extension holding the COLUMN name;
-    // the flat writer used to hand that straight to the UNKNOWN leg, persisting a column
-    // named "mycol" as atttypspec "UNKNOWN(mycol)" — a dangling user-type reference.
+    // set_alias() on UNKNOWN builds a GENERIC extension holding the column name; the flat
+    // writer must not persist that as atttypspec "UNKNOWN(mycol)" (a dangling user-type reference).
     complex_logical_type aliased{logical_type::UNKNOWN};
     aliased.set_alias("mycol");
-    REQUIRE(aliased.type_name() == "mycol"); // the overloaded field, as it stands today
+    REQUIRE(aliased.type_name() == "mycol"); // type_name() is overloaded to also carry the alias
     REQUIRE(gate_accepts(aliased));
     REQUIRE(encode_type_spec(aliased) == "UNKNOWN()");
     bool ok = false;
@@ -158,8 +145,8 @@ TEST_CASE("catalog::encoder_domains::every_composite_the_gate_blesses_survives_t
 }
 
 TEST_CASE("catalog::encoder_domains::a_type_the_gate_refuses_is_not_written_as_a_plausible_one") {
-    // If one of these reaches the flat writer anyway, the spec must be REFUSED on
-    // readback, not "UNKNOWN(105)" — the shape of a legitimate named user-type reference.
+    // If one of these reaches the flat writer anyway, readback must refuse it, not decode
+    // "UNKNOWN(105)" -- the shape of a legitimate named reference.
     for (auto lt : {logical_type::USER,
                     logical_type::TABLE,
                     logical_type::FUNCTION,
@@ -176,8 +163,8 @@ TEST_CASE("catalog::encoder_domains::a_type_the_gate_refuses_is_not_written_as_a
 }
 
 TEST_CASE("catalog::encoder_domains::a_composite_without_its_extension_is_refused_not_dereferenced") {
-    // The flat writer used to static_cast the extension pointer and dereference it
-    // unconditionally (null for a bare composite, wrong-kind for a set_alias() one).
+    // The flat writer must not static_cast and dereference the extension pointer
+    // unconditionally: null for a bare composite, wrong-kind for a set_alias() one.
     const logical_type composites[] = {logical_type::DECIMAL,
                                        logical_type::LIST,
                                        logical_type::ARRAY,

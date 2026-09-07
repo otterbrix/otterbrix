@@ -425,7 +425,6 @@ TEST_CASE("integration::cpp::test_sql_features::like") {
 }
 
 TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
-    // Disk-backed variant of ::like: the predicate is pushed into the disk scan's constant_filter_t.
     auto config = test_create_config(integration_fixture_path("test_sql_features/like_disk_pushdown"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -563,7 +562,6 @@ TEST_CASE("integration::cpp::test_sql_features::like_non_string_operand_errors")
 }
 
 TEST_CASE("integration::cpp::test_sql_features::like_all_null_element_three_valued") {
-    // x LIKE NULL is UNKNOWN, so LIKE ALL over a NULL-bearing pattern set can never be TRUE for any row.
     auto config = test_create_config(integration_fixture_path("test_sql_features/like_all_null_element"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -615,7 +613,6 @@ TEST_CASE("integration::cpp::test_sql_features::like_all_null_element_three_valu
 }
 
 TEST_CASE("integration::cpp::test_sql_features::like_any_non_string_elements_need_a_cast") {
-    // LIKE ANY elements must be TEXT; there's no implicit stringification, so CAST non-text explicitly.
     auto config = test_create_config(integration_fixture_path("test_sql_features/like_any_non_string_elements"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -832,7 +829,6 @@ TEST_CASE("integration::cpp::test_sql_features::distinct_on") {
                 ->is_success());
     }
 
-    // DISTINCT ON (cust) keeps ONE row per cust, unlike full-row DISTINCT on the projected id.
     INFO("SELECT DISTINCT ON (cust) id ORDER BY cust, id -> one row per cust");
     {
         auto s = otterbrix::session_id_t();
@@ -1019,7 +1015,6 @@ TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
         }
     }
 
-    // A HAVING makes the query grouped (implicit GROUP BY ()), so an empty table is still ONE group.
     INFO("empty-input constant HAVING true -> one row");
     {
         auto session = otterbrix::session_id_t();
@@ -1035,8 +1030,6 @@ TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
     }
-
-    // A truly empty table hits a separate schema-on-write limit, so this uses a WHERE matching nothing instead.
 
     INFO("insert 100 rows");
     {
@@ -1059,7 +1052,6 @@ TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
                                            "GROUP BY name HAVING SUM(count) > 90;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        // The hidden __having_sum aggregate that resolve_having_operand appends must not leak as an output column.
         REQUIRE(cur->chunks().front().data.size() == 1);
     }
 
@@ -1122,7 +1114,6 @@ TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
         REQUIRE(cur->size() == 5);
     }
 
-    // HAVING sits above the group and filters the single scalar row a group emits even for empty input.
     INFO("empty-input scalar HAVING keeps the row when the predicate holds");
     {
         auto session = otterbrix::session_id_t();
@@ -1143,7 +1134,6 @@ TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
         REQUIRE(cur->size() == 0);
     }
 
-    // No-FROM HAVING builds operator_having over a synthetic row (table_oid INVALID_OID) that HAVING still filters.
     INFO("no-FROM constant HAVING true -> one row");
     {
         auto session = otterbrix::session_id_t();
@@ -1192,7 +1182,6 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
-        // column 'name' is not yet resolvable: schema-on-write, no row has ever been inserted
         REQUIRE(cur->is_error());
     }
 
@@ -1492,7 +1481,6 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_null_and_like") {
     run("CREATE TABLE db.t (id int, v int, s text);");
     run("INSERT INTO db.t (id, v, s) VALUES (1, 10, 'apple'), (2, NULL, 'banana');");
 
-    // Column 1 is the CASE result; row 0 is id=1 (v=10,'apple'), row 1 is id=2 (v=NULL,'banana').
     auto result_of = [](const components::cursor::cursor_t_ptr& cur, uint64_t row) {
         return std::string(cur->value(1, row).value<std::string_view>());
     };
@@ -1635,7 +1623,6 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
         REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
     }
 
-    // MIN/MAX/AVG over CASE need an ELSE, or unmatched rows are NULL and get skipped instead of counted.
     INFO("MIN(CASE WHEN ... THEN col ELSE large_sentinel END) — min over passing rows");
     {
         auto session = otterbrix::session_id_t();
@@ -2156,7 +2143,6 @@ TEST_CASE("integration::cpp::test_sql_features::decimal_type") {
             auto dec_type = cur->chunks().front().data[0].type();
             const auto* ext =
                 reinterpret_cast<const components::types::decimal_logical_type_extension*>(dec_type.extension());
-            // decimal(10,2) should fall into int64_t range
             REQUIRE(dec_type.to_physical_type() == components::types::physical_type::INT64);
             for (size_t i = 0; i < 4; i++) {
                 REQUIRE(components::types::decimal_to_string(*(cur->chunks().front().data[0].data<int64_t>()),
@@ -2396,7 +2382,6 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_on_update") {
 }
 
 TEST_CASE("integration::cpp::test_sql_features::check_constraint_invalid_expr") {
-    // A CHECK referencing a column the table lacks is rejected at creation, not silently bypassed on INSERT.
     auto config = test_create_config(integration_fixture_path("test_sql_features/check_constraint_invalid_expr"));
     test_clear_directory(config);
     config.wal.on = false;
@@ -2700,7 +2685,6 @@ TEST_CASE("integration::cpp::test_sql_features::fk_enforcement") {
     {
         {
             auto session = otterbrix::session_id_t();
-            // SIMPLE match type skips the FK check when dept_id is NULL.
             auto cur = dispatcher->execute_sql(session,
                                                "INSERT INTO TestDatabase.employees (id, name) VALUES (3, 'Charlie');");
             INFO("null fk insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
@@ -2819,7 +2803,6 @@ TEST_CASE("integration::cpp::test_sql_features::fk_match_full") {
     INFO("all-NULL FK columns: passes (MATCH FULL skips check)");
     {
         auto session = otterbrix::session_id_t();
-        // MATCH FULL: an all-NULL FK (both x and y) skips the check entirely.
         auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.child (x, y) VALUES (NULL, NULL);");
         INFO("all-null error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
@@ -2827,7 +2810,6 @@ TEST_CASE("integration::cpp::test_sql_features::fk_match_full") {
 
     INFO("partial-NULL FK columns: rejected (MATCH FULL requires all-or-none)");
     {
-        // MATCH FULL: a partial-NULL FK (x present, y NULL) is rejected, not skipped.
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.child (x) VALUES (1);");
         REQUIRE(cur->is_error());
@@ -3474,8 +3456,6 @@ TEST_CASE("integration::cpp::test_sql_features::explicit_txn_rollback_invisible"
     }
 }
 
-// DDL inside BEGIN accumulates catalog rows and DEFERS publish to COMMIT instead of rejecting or eagerly
-// committing; new rows are visible to the same txn via MVCC self-write, and ROLLBACK discards the whole unit.
 TEST_CASE("integration::cpp::test_sql_features::ddl_inside_explicit_txn_transactional") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/ddl_inside_explicit_txn"));
     test_clear_directory(config);
@@ -3562,8 +3542,6 @@ TEST_CASE("integration::cpp::test_sql_features::alter_table_nonexistent_characte
     }
 }
 
-// Repeated type changes on the same column (INT -> TEXT -> DOUBLE) bump attversion each time via a
-// fresh attoid; resolve_table always picks the latest version.
 #if 0
 TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_type_evolution_multistep") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/dynamic_schema_type_evolution"));
@@ -3782,7 +3760,6 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
 
     INFO("post-drop: same name is reusable for a fresh CREATE DATABASE");
     {
-        // Success proves the old namespace OID was actually deleted (else a duplicate-namespace error).
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE DropMe;")->is_success());
     }
@@ -3819,8 +3796,6 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
 
     INFO("post-drop schemaless: t3 starts fresh, no leftover col_a");
     {
-        // t3's old 'col_a' (registered via pg_computed_column) must not resurface after DROP DATABASE;
-        // inserting a different column 'col_b' and seeing col_a reappear would prove a stale metadata leak.
         {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.t3 (col_b) VALUES (7);")->is_success());
@@ -4415,7 +4390,6 @@ TEST_CASE("integration::cpp::test_sql_features::set_timezone") {
     }
 }
 
-// Comma-join synthesizes a left-deep cross JoinExpr; WHERE recovers inner-join semantics over the cross product.
 TEST_CASE("integration::cpp::test_sql_features::comma_join") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/comma_join"));
     test_clear_directory(config);
@@ -4469,7 +4443,6 @@ TEST_CASE("integration::cpp::test_sql_features::comma_join") {
     }
 }
 
-// Pass 1 stamps view_sql (pg_rewrite.ev_action); the executor re-parses/splices the body in (view_expansion.hpp).
 TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/create_view_e2e"));
     test_clear_directory(config);
@@ -4527,7 +4500,6 @@ TEST_CASE("integration::cpp::test_sql_features::create_matview_e2e") {
     REQUIRE(cur->size() == 0);
 }
 
-// Second CREATE ... IF NOT EXISTS is a no-op: dispatcher short-circuits when if_not_exists=true on an existing name.
 TEST_CASE("integration::cpp::test_sql_features::create_database_if_not_exists") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/create_db_if_not_exists"));
     test_clear_directory(config);
@@ -4582,7 +4554,6 @@ TEST_CASE("integration::cpp::test_sql_features::create_table_if_not_exists") {
         REQUIRE(cur->is_success());
     }
 
-    // Without IF NOT EXISTS, create_collection_t resolves the target (commit 2e69bb4e) and refuses pre-execute.
     INFO("third CREATE TABLE, this time without IF NOT EXISTS, is refused");
     {
         auto session = otterbrix::session_id_t();
@@ -4684,7 +4655,6 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_indexed_insert_leaves_c
     }
 }
 
-// Characterizes VACUUM after ALTER ADD/DROP COLUMN; deep GC invariants live in production::compaction_checkpoint_cycle.
 TEST_CASE("integration::cpp::test_sql_features::vacuum_after_alter_keeps_working") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/vacuum_after_alter"));
     test_clear_directory(config);
@@ -4818,7 +4788,6 @@ TEST_CASE("integration::cpp::test_sql_features::bare_commit_is_noop") {
         auto session = otterbrix::session_id_t();
         auto begin_cur = dispatcher->execute_sql(session, "BEGIN;");
         REQUIRE(begin_cur->is_success());
-        // A SELECT-only txn accumulates nothing, so !has_accumulated() makes COMMIT abort, not allocate a commit_id.
         auto sel_cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
         REQUIRE(sel_cur->is_success());
         REQUIRE(sel_cur->size() == 2);
@@ -4835,7 +4804,7 @@ TEST_CASE("integration::cpp::test_sql_features::bare_commit_is_noop") {
     }
 }
 
-// ROLLBACK after DELETE must clean both dml_appends AND parked PENDING index DELETE markers.
+// ROLLBACK after DELETE must clean both dml_appends and parked PENDING index DELETE markers.
 TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_index_clean") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/rollback_after_delete_index"));
     test_clear_directory(config);
@@ -4933,8 +4902,6 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_inde
     INFO("index still functional for a subsequent autocommit DELETE");
     {
         {
-            // revert_all_deletes(txn_id) un-stamps the aborted DELETE's heap slots, so chunk_vector_info::
-            // delete_rows sees an undeleted slot and this re-DELETE is a real heap delete, not a no-op.
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count = 20;");
             REQUIRE(cur->is_success());
@@ -4947,7 +4914,6 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_inde
             REQUIRE(cur->size() == 0);
         }
         {
-            // Without the revert, stale-stamped slots make the re-DELETE a no-op and the scan count stale.
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
@@ -4968,8 +4934,8 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_inde
     }
 }
 
-// CREATE INDEX validation failures are PRE-pipeline (before allocate_oids), so this characterizes that
-// rejection: error cursor, same-session health after, and no partial index left behind.
+// CREATE INDEX validation failures happen pre-pipeline (before allocate_oids), so this characterizes
+// that rejection: error cursor, same-session health after, and no partial index left behind.
 TEST_CASE("integration::cpp::test_sql_features::ddl_failure_pre_pipeline_characterization") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/ddl_failure_pre_pipeline"));
     test_clear_directory(config);
@@ -4998,7 +4964,6 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_failure_pre_pipeline_charact
         }
     }
 
-    // One shared session across the failing DDL and the next statement proves the rejection didn't poison it.
     auto session = otterbrix::session_id_t();
 
     INFO("CREATE INDEX on a non-existent column is rejected pre-pipeline (error cursor)");
@@ -5046,7 +5011,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_failure_pre_pipeline_charact
     }
 }
 
-// The commit pipeline runs per-table index commit_inserts/commit_deletes BEFORE storage_publish_*, so an
+// The commit pipeline runs per-table index commit_inserts/commit_deletes before storage_publish_*, so an
 // index-commit error aborts before publish; a committed indexed INSERT must be immediately visible via the index.
 TEST_CASE("integration::cpp::test_sql_features::indexed_insert_commit_visible_after_reorder") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/indexed_insert_commit_visible"));
@@ -5122,7 +5087,6 @@ TEST_CASE("integration::cpp::test_sql_features::indexed_insert_commit_visible_af
     }
 }
 
-// Regression guard: DDL must return an EMPTY cursor — operator_insert must set_output(nullptr) for pg_catalog rows.
 TEST_CASE("integration::cpp::test_sql_features::ddl statements return an empty cursor") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/ddl_empty_cursor"));
     test_clear_directory(config);
@@ -5189,7 +5153,6 @@ TEST_CASE("integration::cpp::test_sql_features::ddl statements return an empty c
     }
 }
 
-// Regression: a VALUES column whose first row is NULL must type NA, then promote when a later row is concrete.
 TEST_CASE("integration::cpp::test_sql_features::values_leading_null_column_promotes") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/values_leading_null"));
     test_clear_directory(config);
@@ -5232,8 +5195,6 @@ TEST_CASE("integration::cpp::test_sql_features::values_leading_null_column_promo
     }
 }
 
-// A constant WHERE predicate must fold to all-rows/no-rows even nested in booleans/arithmetic/AND-OR combos.
-// Table: three rows, (x, y) = (1,10), (2,20), (3,30).
 TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/constant_predicate"));
     test_clear_directory(config);
@@ -5255,7 +5216,6 @@ TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
                     ->is_success());
     }
 
-    // Runs `SELECT x FROM db.t WHERE <where>` and returns the row count; must always succeed, never crash/error.
     auto rows = [&](const char* where) -> std::size_t {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, std::string{"SELECT x FROM db.t WHERE "} + where + ";");
@@ -5304,7 +5264,6 @@ TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
     }
 }
 
-// WHERE a.x OP a.y pushes into the disk scan as column_column_filter_t; a NULL operand excludes the row.
 TEST_CASE("integration::cpp::test_sql_features::column_vs_column") {
     auto config = test_create_config(integration_fixture_path("test_sql_features/column_vs_column"));
     test_clear_directory(config);
@@ -5369,7 +5328,7 @@ TEST_CASE("integration::cpp::test_sql_features::column_vs_column") {
 }
 
 // A comparison with a FUNCTION/ARITHMETIC operand (substring(s,1,3)='abc', x+1>5, length(name)=5) must
-// PUSH into the disk scan as an expression_filter_t — observable via EXPLAIN (no "Filter" node) and NULL exclusion.
+// push into the disk scan as an expression_filter_t -- observable via EXPLAIN (no "Filter" node) and NULL exclusion.
 TEST_CASE("integration::cpp::test_sql_features::expression_filter_pushdown") {
     auto plan_text = [](const auto& cur) {
         std::string out;
@@ -5399,7 +5358,6 @@ TEST_CASE("integration::cpp::test_sql_features::expression_filter_pushdown") {
                         ->is_success());
         }
         {
-            // name=NULL row: length/substring over NULL are NULL, so it must never match (NULL excluded).
             auto s = otterbrix::session_id_t();
             REQUIRE(d->execute_sql(s, "INSERT INTO TestDatabase.t (x, s) VALUES (7, 'abczzz');")->is_success());
         }
@@ -5465,8 +5423,6 @@ TEST_CASE("integration::cpp::test_sql_features::expression_filter_pushdown") {
     }
 }
 
-// A WHERE above a UNION [ALL] is cloned into a filter above EACH branch (positional column identity),
-// letting the disk agent push into each branch's Seq Scan instead of filtering the merged output.
 TEST_CASE("integration::cpp::test_sql_features::union_filter_pushdown") {
     auto plan_text = [](const auto& cur) {
         std::string out;
@@ -5492,7 +5448,6 @@ TEST_CASE("integration::cpp::test_sql_features::union_filter_pushdown") {
             REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t2 (a bigint, b bigint);")->is_success());
         }
         {
-        // t3 renames column 2 to `c`, so a filter on the union's `b` is not identity-mappable into t3's branch.
             auto s = otterbrix::session_id_t();
             REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t3 (a bigint, c bigint);")->is_success());
         }
@@ -5591,10 +5546,10 @@ TEST_CASE("integration::cpp::test_sql_features::union_filter_pushdown") {
     }
 }
 
-// The pushed column_column_filter_t must cast bidirectionally with the SESSION timezone like the canonical
-// comparator — casting right->left ONLY with a hardcoded zero timezone dropped rows whenever that direction
-// yielded NULL. TIMESTAMP vs TIME exposes it (TIMESTAMP->TIME exists, TIME->TIMESTAMP does not); two
-// independently-created databases assert the same absolute answer.
+// The pushed column_column_filter_t must cast bidirectionally with the session timezone like the
+// canonical comparator -- casting right->left only with a hardcoded zero timezone dropped rows
+// whenever that direction yielded NULL. TIMESTAMP vs TIME exposes it (TIMESTAMP->TIME exists,
+// TIME->TIMESTAMP does not).
 TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in_memory") {
     auto plan_text = [](const auto& cur) {
         std::string out;
@@ -5616,7 +5571,6 @@ TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in
             REQUIRE(d->execute_sql(s, "CREATE TABLE TestDatabase.t (ts timestamp, tm time);")->is_success());
         }
         {
-            // No PG timestamp-to-time comparison exists, so CAST(ts AS TIME) is spelled explicitly each query.
             auto s = otterbrix::session_id_t();
             REQUIRE(d->execute_sql(s,
                                    "INSERT INTO TestDatabase.t (ts, tm) VALUES "
@@ -5658,14 +5612,12 @@ TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in
         auto mem_cur = run(mem, q);
         REQUIRE(mem_cur->size() == 2);
         REQUIRE(disk_cur->size() == 2);
-        // Pin the surviving rows, not just the cardinality — a wrong-but-right-sized result would still pass.
         const auto t_a = *core::date::parse_time("10:30:00");
         const auto t_b = *core::date::parse_time("22:45:10");
         auto v0 = disk_cur->value(1, 0).value<core::date::time_t>();
         auto v1 = disk_cur->value(1, 1).value<core::date::time_t>();
         REQUIRE(((v0 == t_a && v1 == t_b) || (v0 == t_b && v1 == t_a)));
 
-        // Must ride the disk scan (no "Filter" node), or this would silently pass via the in-memory comparator.
         auto t = plan_text(run(disk, std::string("EXPLAIN ") + q));
         INFO("EXPLAIN:\n" << t);
         REQUIRE(contains(t, "Seq Scan"));

@@ -12,24 +12,18 @@
 #include <set>
 #include <string>
 
-// The WAL manager spawns one worker per database directory under the WAL root. Table storage
-// shares that root (config_disk.path == config_wal.path), so a table's per-namespace directory
-// (${wal_root}/${relnamespace}/${oid}/table.otbx) sits right next to the real database WAL
-// directories. Those namespace directories are named after a relnamespace oid, which parses as a
-// valid oid, so the manager's startup scan classified them by NAME and spawned a worker over each
-// one — a worker for a database that does not exist.
-//
-// A real WAL database directory holds wal_<oid>_NNNNNN segment files; a storage namespace
-// directory holds only <table_oid>/ subdirectories. The fix distinguishes them by that STRUCTURE,
-// not by whether the name parses as an oid.
+// Table storage shares the WAL root (config_disk.path == config_wal.path), so a table's
+// per-namespace directory (${wal_root}/${relnamespace}/${oid}/table.otbx) is named after an oid
+// too; classifying startup-scan directories by name alone spawned a worker for a database that
+// does not exist. The fix classifies by STRUCTURE instead: a real WAL directory holds
+// wal_<oid>_NNNNNN segment files, a storage namespace directory holds only <table_oid>/ dirs.
 
 using namespace test_helpers;
 
 namespace {
 
-    // Exposes the WAL manager's live worker count. base_otterbrix_t's constructor and its
-    // manager_wal_ member are protected, so a thin subclass is the only way to read it without
-    // touching base_spaces.
+    // base_otterbrix_t's manager_wal_ is protected, so a thin subclass is the only way to read the
+    // live worker count.
     class wal_probe_spaces_t final : public otterbrix::base_otterbrix_t {
     public:
         explicit wal_probe_spaces_t(const configuration::config& config)
@@ -60,8 +54,6 @@ TEST_CASE("integration::cpp::wal_storage_namespace_dirs::no_worker_for_a_storage
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
-    // Populate: user databases with tables create per-namespace storage directories under the WAL
-    // root, alongside the single real database WAL directory.
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
@@ -74,8 +66,6 @@ TEST_CASE("integration::cpp::wal_storage_namespace_dirs::no_worker_for_a_storage
         REQUIRE(exec(d, "INSERT INTO bdb.t (id) VALUES (1);")->is_success());
     }
 
-    // Classify every direct child of the WAL root: a real database directory carries wal_ segment
-    // files, a storage namespace directory carries only table subdirectories.
     std::set<components::catalog::oid_t> db_dirs;      // parse as oid AND hold a wal_ segment
     std::set<components::catalog::oid_t> storage_dirs; // parse as oid but hold NO wal_ segment
     for (const auto& e : std::filesystem::directory_iterator(config.wal.path)) {
@@ -94,8 +84,6 @@ TEST_CASE("integration::cpp::wal_storage_namespace_dirs::no_worker_for_a_storage
     INFO("there must be a real database WAL directory to spawn a worker for");
     REQUIRE_FALSE(db_dirs.empty());
 
-    // Reopen: the manager scans the WAL root and spawns workers. It must spawn exactly one per
-    // real database directory and NONE for a storage namespace directory.
     wal_probe_spaces_t space(config);
     const auto workers = space.wal_worker_count();
     INFO("db dirs (should each get a worker): " << db_dirs.size()

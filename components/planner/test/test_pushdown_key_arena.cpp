@@ -1,8 +1,3 @@
-// Two planner properties, both measured here rather than read off the source:
-// 1. pushdown_filter's transitive-equi-predicate derivation must place its key_t copies
-//    on the given arena, not the process default (an un-placed copy lands there silently).
-// 2. planner.cpp's rewrite_alter_table cannot reuse types' logical_value_t::cast_as() for
-//    DEFAULT coercion -- see the narrowing test below for why.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -25,9 +20,8 @@ namespace {
     core::dbname_t adb() { return core::dbname_t{std::string{"database"}}; }
     core::relname_t arel() { return core::relname_t{std::string{"collection"}}; }
 
-    // Fronts the process default resource for its scope to count what lands there --
-    // the only way to observe pmr copies nobody gave an arena. Relies on Catch2 running
-    // cases on a single thread.
+    // Counts what lands on the process default resource, the only way to see un-placed pmr copies;
+    // assumes Catch2 runs cases on a single thread.
     class default_resource_counter_t final : public std::pmr::memory_resource {
     public:
         default_resource_counter_t() { previous_ = std::pmr::set_default_resource(this); }
@@ -51,8 +45,7 @@ namespace {
         size_t allocations_ = 0;
     };
 
-    // A key naming column `name`, path()[0] pre-stamped to `idx` (what validate_schema
-    // stamps at runtime), with an explicit join side.
+    // path()[0] is pre-stamped to `idx`, matching what validate_schema stamps at runtime.
     components::expressions::key_t akey(std::pmr::memory_resource* r, const char* name, size_t idx, side_t side) {
         components::expressions::key_t k(r, name, side);
         std::pmr::vector<size_t> p{r};
@@ -71,9 +64,8 @@ namespace {
         return agg;
     }
 
-    // t1={a,k}, t2={b,k2} joined ON t1.k=t2.k2, WHERE <col>=5. jt=inner runs the
-    // derivation, anything else gates it off; where_on_key selects WHERE t1.k=5
-    // (derives t2.k2=5) vs WHERE t1.a=5 (pushes only, derives nothing).
+    // t1={a,k}, t2={b,k2} joined ON t1.k=t2.k2, WHERE <col>=5; where_on_key selects WHERE t1.k=5 (derives
+    // t2.k2=5) vs WHERE t1.a=5 (pushes only, derives nothing).
     size_t default_allocations_of_run(join_type jt, std::pmr::memory_resource* plan_arena, bool where_on_key) {
         auto params = make_parameter_node(plan_arena);
         auto p5 = params->add_parameter(int64_t(5));
@@ -113,20 +105,16 @@ namespace {
     }
 } // namespace
 
-// The rule's own key copies must land on the given arena. Two 0-baseline controls confirm it; the
-// deriving run costs exactly 5 (4 from the expression layer's copies of the derived key, 1 from
-// relocalize_key_path) — before this rule placed its own copies, the same run cost 12.
+// The deriving run costs exactly 5 (4 from the expression layer's copies of the derived key, 1 from
+// relocalize_key_path); before this rule placed its own copies, the same run cost 12.
 TEST_CASE("components::planner::pushdown_filter::derivation_allocates_on_the_named_arena") {
     auto resource = core::pmr::otterbrix_resource();
 
-    // Control 1: LEFT join gates the derivation off (a null-padded partner would wrongly
-    // drop preserved rows).
+    // LEFT gates the derivation off: a null-padded partner would wrongly drop preserved rows.
     CHECK(default_allocations_of_run(join_type::left, &resource, true) == 0);
 
-    // Control 2: INNER join with WHERE on a non-key column pushes but derives nothing.
     CHECK(default_allocations_of_run(join_type::inner, &resource, false) == 0);
 
-    // Calibration A: cost of one un-placed key_t copy (storage vector + path vector).
     size_t one_plain_key_copy = 0;
     {
         auto k = akey(&resource, "k2", 3, side_t::right);
@@ -137,7 +125,6 @@ TEST_CASE("components::planner::pushdown_filter::derivation_allocates_on_the_nam
     }
     CHECK(one_plain_key_copy == 2);
 
-    // Calibration B: cost of one `key OP param` comparison built from an already-placed key.
     size_t one_compare_expression = 0;
     {
         auto params = make_parameter_node(&resource);
@@ -150,23 +137,19 @@ TEST_CASE("components::planner::pushdown_filter::derivation_allocates_on_the_nam
     }
     CHECK(one_compare_expression == 2 * one_plain_key_copy);
 
-    // The deriving run: everything this rule copies is placed, so what remains is the
-    // expression layer's share plus relocalize's one path vector.
     const size_t deriving = default_allocations_of_run(join_type::inner, &resource, true);
     CHECK(deriving == 5);
     REQUIRE(deriving <= one_compare_expression + 1);
 }
 
-// DEFAULT parity is closed in executor.cpp (alter_table_t reuses create_collection_t's
-// convert_column_defaults), which needs cast_registry_t that the planner doesn't have.
-// planner-side logical_value_t::cast_as() can't substitute: it has no range check (unlike
-// cast_registry_t's numeric_cast.hpp) and silently truncates instead of refusing — not an
-// endorsement, just characterizing today's behavior.
+// DEFAULT parity is closed in executor.cpp (alter_table_t reuses create_collection_t's convert_column_defaults)
+// via cast_registry_t, which the planner lacks; planner-side logical_value_t::cast_as() has no range check
+// (unlike numeric_cast.hpp) and silently truncates instead of refusing.
 TEST_CASE("components::planner::alter_default_coercion::value_cast_narrows_without_saying_so") {
     auto resource = core::pmr::otterbrix_resource();
     constexpr auto no_session_tz = core::date::timezone_offset_t{};
 
-    // 5'000'000'000 does not fit INT32. An assignment cast must refuse it.
+    // 5'000'000'000 overflows INT32; PostgreSQL would refuse this cast.
     const components::types::logical_value_t written{&resource, static_cast<int64_t>(5000000000)};
     CHECK(written.type().type() == components::types::logical_type::BIGINT);
 
@@ -174,9 +157,8 @@ TEST_CASE("components::planner::alter_default_coercion::value_cast_narrows_witho
         components::types::complex_logical_type{components::types::logical_type::INTEGER},
         no_session_tz);
 
-    // No error channel used -- the conversion reports success ...
     REQUIRE_FALSE(narrowed.has_error());
     CHECK(narrowed.value().type().type() == components::types::logical_type::INTEGER);
-    // ... but the value is 5'000'000'000 - 2^32 (low 32 bits), not what was written.
+    // 705032704 is 5'000'000'000's low 32 bits, not what was written.
     CHECK(narrowed.value().value<int32_t>() == 705032704);
 }

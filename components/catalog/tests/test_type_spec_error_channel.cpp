@@ -1,8 +1,6 @@
-// The flat-text type codec (pg_attribute.atttypspec/pg_type.typdefspec) must refuse what
-// it cannot read through core::result_wrapper_t, not shrug it into a plausible type:
-// without this, unbounded LIST nesting SIGSEGVs (the binary codec next door caps depth at
-// MAX_SPEC_DEPTH=64), trailing garbage silently drops, and an unreadable keyword decodes
-// as an UNKNOWN named after itself — indistinguishable from a real named type reference.
+// The codec must refuse what it can't read, not guess a plausible type: unbounded LIST nesting
+// SIGSEGVs, the shared depth window is MAX_SPEC_DEPTH=64 (the binary codec's cap), trailing
+// garbage silently drops, and an unreadable keyword would decode as an UNKNOWN named after itself.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/system_table_schemas.hpp>
@@ -35,9 +33,8 @@ namespace {
 } // namespace
 
 TEST_CASE("catalog::type_spec::a_spec_deeper_than_the_shared_window_is_refused_not_a_stack_overflow") {
-    // Unbounded, this input recurses to a SIGSEGV at 2^20 levels.
+    // Unbounded, this recurses to a SIGSEGV at 2^20 levels; 65 is exactly past the shared window.
     REQUIRE(decode_refusal(nested_lists(1u << 20)) == core::error_code_t::data_corruption);
-    // The refusal starts exactly past the window shared with the binary codec.
     REQUIRE(decode_refusal(nested_lists(65)) == core::error_code_t::data_corruption);
 }
 
@@ -48,19 +45,17 @@ TEST_CASE("catalog::type_spec::the_window_boundary_itself_still_decodes") {
 }
 
 TEST_CASE("catalog::type_spec::trailing_garbage_is_not_a_clean_type") {
-    // Unrefused: a clean DECIMAL(10,2), with the garbage silently dropped.
     REQUIRE(decode_refusal("numeric(10,2)garbage") == core::error_code_t::data_corruption);
 }
 
+// FROBNICATE(int4,7) has the exact shape of a valid UNKNOWN(name) reference, so unrefused
+// corruption would travel on as a resolvable type name.
 TEST_CASE("catalog::type_spec::an_unreadable_keyword_must_not_become_a_plausible_type") {
-    // Unrefused: UNKNOWN named "FROBNICATE" — the exact shape of a valid named
-    // user-type reference, so corruption travels on as a resolvable name.
     REQUIRE(decode_refusal("FROBNICATE(int4,7)") == core::error_code_t::data_corruption);
 }
 
+// No production caller refuses an UNKNOWN column type on its own, so this refusal must live here.
 TEST_CASE("catalog::type_spec::decimal_outside_the_window_is_a_refusal_not_unknown") {
-    // No production caller refuses an UNKNOWN column type on its own, so the refusal
-    // has to live HERE.
     REQUIRE(decode_refusal("numeric(300,5)") == core::error_code_t::data_corruption);
     REQUIRE(decode_refusal("numeric(10,)") == core::error_code_t::data_corruption);
     REQUIRE(decode_refusal("numeric(1e2,0)") == core::error_code_t::data_corruption);
@@ -81,17 +76,16 @@ TEST_CASE("catalog::type_spec::missing_separators_are_refused") {
     REQUIRE(decode_refusal("STRUCT(point,x:int4") == core::error_code_t::data_corruption);
 }
 
+// Three legitimate answers: an empty spec (atttypid reconstructs the builtin), an explicit
+// UNKNOWN(name) the resolver chases, and a zero-entry ENUM (what the encoder writes for one).
 TEST_CASE("catalog::type_spec::the_two_legitimate_unknown_answers_stay_answers") {
-    // Empty spec: a builtin scalar stored without one; atttypid reconstructs it.
     auto empty = decode_type_spec(g_resource, "");
     REQUIRE_FALSE(empty.has_error());
     REQUIRE(empty.value().type() == logical_type::UNKNOWN);
-    // Explicit UNKNOWN(name): a named user-type reference the resolver chases.
     auto named = decode_type_spec(g_resource, "UNKNOWN(myudt)");
     REQUIRE_FALSE(named.has_error());
     REQUIRE(named.value().type() == logical_type::UNKNOWN);
     REQUIRE(named.value().type_name() == "myudt");
-    // A zero-entry ENUM is what the encoder writes for one: still legal.
     auto empty_enum = decode_type_spec(g_resource, "ENUM:mood:");
     REQUIRE_FALSE(empty_enum.has_error());
     REQUIRE(empty_enum.value().type() == logical_type::ENUM);

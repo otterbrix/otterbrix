@@ -194,7 +194,6 @@ namespace {
     static_assert(offsetof(crashed_record_header_t, timestamp) == 16,
                   "the stump must be the store's record header, byte for byte");
 
-    // Named once instead of a bare 8 at each write site; tied to the offsets above.
     constexpr uint64_t record_payload_size_field_offset = offsetof(crashed_record_header_t, payload_size);
 
     void append_crashed_record_stump(const std::filesystem::path& segment) {
@@ -232,7 +231,6 @@ namespace {
                   "the stump must be the store's txn frame header, byte for byte");
 
 
-    // Once a frame follows the stump, recovery misreads it as this payload and CRC-refuses the log.
     void append_crashed_txn_frame_stump(const std::filesystem::path& log_path, uint64_t declared_payload) {
         crashed_txn_frame_header_t stump{};
         stump.payload_size = declared_payload;
@@ -548,9 +546,7 @@ TEST_CASE("services::index::bitcask_index_disk::merge_drops_tombstoned_keys") {
     REQUIRE(rows_of(index.find(logical_value_t(&resource, 60001l))).front() == 60001);
 }
 
-// Regression: merged segment id = "lowest merged id - 1" wraps to 2^64-1 on the third merge
-// (merge1 {2}->1, merge2 {1,3}->0, merge3 lowest=0 -> wraps); the keydir stores only the low
-// 32 bits, so relocated keys become unfindable.
+// Regression: merged segment id can wrap to 2^64-1, and the keydir stores only its low 32 bits.
 TEST_CASE("services::index::bitcask_index_disk::merge_survives_more_than_two_rounds") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -645,7 +641,7 @@ TEST_CASE("services::index::bitcask_index_disk::remove_specific_row_id") {
         REQUIRE(after_noop_remove[1] == 102);
 
         index.remove(logical_value_t(&resource, 42l), 100);
-        index.remove(logical_value_t(&resource, 42l), 102); // transitions to tombstone
+        index.remove(logical_value_t(&resource, 42l), 102);
         REQUIRE(rows_of(index.find(logical_value_t(&resource, 42l))).empty());
 
         REQUIRE(index.force_flush().type == core::error_code_t::none);
@@ -787,7 +783,6 @@ TEST_CASE("services::index::bitcask_index_disk::flush_threshold_persists_without
     std::filesystem::create_directories(path);
 
     {
-        // flush_threshold = 3, so the third insert triggers flush_if_needed.
         auto index = bitcask_index_disk_t(path, &resource, 3, 1000, std::pmr::set<std::uint64_t>{});
         index.insert(logical_value_t(&resource, 1l), 10);
         index.insert(logical_value_t(&resource, 2l), 20);
@@ -1009,8 +1004,6 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
     }
 }
 
-// A missing CURRENT falls back to the newest segment -- documented and safe. A CURRENT that is
-// present but unparsable must refuse rather than substitute: guessing wrong could replay frames out of order.
 TEST_CASE("services::index::bitcask_index_disk::an_unreadable_current_refuses_and_a_missing_one_does_not") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -1391,8 +1384,6 @@ TEST_CASE("services::index::bitcask_index_disk::recover_gates_uncommitted_txn_fr
     }
 }
 
-// txn ids get reused across incarnations; commit ids never repeat. The old gate compared by txn
-// id, so an earlier incarnation's marker could vouch for a later one's frame.
 TEST_CASE("services::index::bitcask_index_disk::recover_gate_refuses_a_reused_txn_id_vouched_by_an_earlier_run") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -1546,9 +1537,8 @@ TEST_CASE("services::index::bitcask_index_disk::clear_keeps_shared_hash_storage"
     REQUIRE(rows.front() == 986);
 }
 
-// Section: an I/O refusal must never look like a legitimate empty answer.
+// An I/O refusal must never look like a legitimate empty answer.
 
-// append_snapshot replaces the whole row list, so an unfinished read writes an empty snapshot over it.
 TEST_CASE("services::index::bitcask_index_disk::insert_refuses_when_the_previous_rows_are_unreadable") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -1606,7 +1596,6 @@ TEST_CASE("services::index::bitcask_index_disk::insert_refuses_when_the_previous
     }
 }
 
-// The checkpoint reads force_flush()'s value before trimming the WAL; a dropped refusal here would skip the retry.
 TEST_CASE("services::index::bitcask_index_disk::force_flush_refuses_a_failed_fsync_and_stays_dirty") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -1642,8 +1631,6 @@ TEST_CASE("services::index::bitcask_index_disk::force_flush_refuses_a_failed_fsy
     }
 }
 
-// write_record didn't check either write's return value, so a refusing device produced a keydir
-// entry pointing at nothing.
 TEST_CASE("services::index::bitcask_index_disk::a_refused_record_write_refuses_the_operation") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -1669,8 +1656,6 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_record_write_refuses_t
     REQUIRE(rows.front() == 55);
 }
 
-// A torn write must report its partial count, not -1, or the stump becomes an interior frame
-// whose CRC failure refuses the index.
 TEST_CASE("services::index::bitcask_index_disk::a_torn_record_write_leaves_no_stump_in_the_segment") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -1726,8 +1711,6 @@ TEST_CASE("services::index::bitcask_index_disk::a_torn_record_write_leaves_no_st
     }
 }
 
-// discard_partial_record's truncate lives in the page cache until fsync'd, less durable than the
-// stump it undoes -- so the store must refuse further writes until clear() removes the file.
 TEST_CASE("services::index::bitcask_index_disk::a_repair_that_was_not_made_durable_stops_the_store") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -1780,7 +1763,6 @@ TEST_CASE("services::index::bitcask_index_disk::a_repair_that_was_not_made_durab
     REQUIRE(after_clear.front() == 44);
 }
 
-// A crash leaves nobody to run discard_partial_record, so the tail is cut at restart, before anything is appended.
 TEST_CASE("services::index::bitcask_index_disk::a_crash_left_stump_does_not_swallow_the_records_after_it") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2017,10 +1999,8 @@ TEST_CASE("services::index::bitcask_index_disk::an_unopenable_segment_refuses_th
     }
 }
 
-// Section: the keydir is derived -- segments must hold everything it holds.
+// The keydir is derived -- segments must hold everything it holds.
 
-// merge_immutable_segments publishes+renames the merged segment before replaying the relocation
-// journal, so a SIGKILL there can leave a keydir entry pointing at an already-unlinked source.
 TEST_CASE("services::index::bitcask_index_disk::open_survives_a_keydir_entry_left_by_a_killed_merge") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2180,8 +2160,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_killed_merge_never_broke_the_o
     }
 }
 
-// An additive rebuild never visits an entry whose segment is gone. Decisive assertion is entry
-// count -- a repair that swallowed the read failure would leave two.
+// The decisive assertion is entry count: a repair that swallowed the read failure would leave two.
 TEST_CASE("services::index::bitcask_index_disk::a_reopen_drops_a_keydir_entry_no_segment_justifies") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2300,8 +2279,6 @@ TEST_CASE("services::index::bitcask_index_disk::the_keydir_is_derived_from_the_s
     }
 }
 
-// disk_hash_table_t::clear() used to std::abort() on a re-open it couldn't finish; now it
-// returns the reason as a value.
 TEST_CASE("services::index::bitcask_index_disk::a_refused_keydir_reset_is_a_value_not_a_death") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2416,7 +2393,6 @@ TEST_CASE("services::index::bitcask_index_disk::opening_over_a_read_only_directo
     }
 }
 
-// The old open_or_create() branched on file_size() and replayed segments on top of a keydir that survived the wipe.
 TEST_CASE("services::index::bitcask_index_disk::a_wipe_that_left_the_keydir_behind_refuses_the_open") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2468,7 +2444,6 @@ TEST_CASE("services::index::bitcask_index_disk::a_wipe_that_left_the_keydir_behi
     }
 }
 
-// The old clear() parked collect_segments' listing failure and wiped the keydir anyway.
 TEST_CASE("services::index::bitcask_index_disk::clear_over_an_unlistable_directory_refuses_and_keeps_every_row") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2514,8 +2489,6 @@ TEST_CASE("services::index::bitcask_index_disk::clear_over_an_unlistable_directo
     }
 }
 
-// rotate_active_segment drops the old handle before opening the new one, so a refused open
-// leaves the next append at a null handle.
 TEST_CASE("services::index::bitcask_index_disk::an_append_after_a_refused_rotation_refuses_instead_of_crashing") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2629,8 +2602,6 @@ TEST_CASE("services::index::bitcask_index_disk::a_clear_whose_wipe_refused_stays
     REQUIRE(rows.front() == 5152);
 }
 
-// The old body dropped remove_file's return value on all four artifacts, so clear() could report
-// success while load_from_disk honestly replayed whatever survived.
 TEST_CASE("services::index::bitcask_index_disk::clear_reports_the_artifact_it_could_not_remove") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2665,8 +2636,6 @@ TEST_CASE("services::index::bitcask_index_disk::clear_reports_the_artifact_it_co
     std::filesystem::remove_all(txn_log);
 }
 
-// A key codec refusal leaves `pos` where the bad byte was; ignoring that would invent every row
-// id from wherever it landed.
 TEST_CASE("services::index::bitcask_index_disk::a_record_whose_key_will_not_decode_refuses_the_open") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2729,8 +2698,6 @@ TEST_CASE("services::index::bitcask_index_disk::a_record_whose_key_will_not_deco
     }
 }
 
-// A crash between append_txn_record's two writes leaves a frame header with no payload; recovery
-// doesn't record where it stopped, so the next append lands past the stump as an interior frame.
 TEST_CASE("services::index::bitcask_index_disk::a_crash_left_txn_log_stump_does_not_take_the_whole_log_down") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2790,9 +2757,8 @@ TEST_CASE("services::index::bitcask_index_disk::a_crash_left_txn_log_stump_does_
     }
 }
 
-// record_header_t has 3 padding bytes (offsets 5-7) that aggregate init leaves indeterminate, and
-// write_record hashed+wrote them anyway -- UB. This pins the contract rather than reproducing the
-// bug (which only reproduces standalone at -O0 over a poisoned stack, coming out 0xA5 0xA5 0xA5).
+// This pins the contract rather than reproducing the bug, which only reproduces standalone at
+// -O0 over a poisoned stack, coming out 0xA5 0xA5 0xA5.
 TEST_CASE("services::index::bitcask_index_disk::every_byte_of_a_record_header_is_written_by_this_store") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2845,8 +2811,6 @@ TEST_CASE("services::index::bitcask_index_disk::every_byte_of_a_record_header_is
     REQUIRE(records_seen > 100);
 }
 
-// apply_merge_recovery_cleanup was `void`, returning silently on a manifest that wouldn't parse
-// -- so the merged segment and its unremoved sources both survived, and dropped keys came back.
 TEST_CASE("services::index::bitcask_index_disk::a_merge_manifest_that_will_not_parse_refuses_the_open") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2890,8 +2854,6 @@ TEST_CASE("services::index::bitcask_index_disk::a_merge_manifest_that_will_not_p
     }
 }
 
-// The success path unlinked sources but never removed the manifest; the next merge overwrote it,
-// orphaning the record of any source the previous merge failed to unlink.
 TEST_CASE("services::index::bitcask_index_disk::a_finished_merge_leaves_no_manifest_behind") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2921,8 +2883,6 @@ TEST_CASE("services::index::bitcask_index_disk::a_finished_merge_leaves_no_manif
     REQUIRE_FALSE(std::filesystem::exists(manifest));
 }
 
-// A source that survives its merge is not an untidy directory: both unlink loops (merge and
-// recovery cleanup) called remove_file and dropped the answer, so a compacted delete could return.
 TEST_CASE("services::index::bitcask_index_disk::a_source_the_merge_cleanup_cannot_unlink_refuses_the_open") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -2980,7 +2940,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_source_the_merge_cleanup_canno
     REQUIRE_FALSE(std::filesystem::exists(manifest));
 }
 
-// Section: a length/count read off disk must never be believed straight into an allocator.
+// A length/count read off disk must never be believed straight into an allocator.
 
 // `7 999999999999999999` parses cleanly (18 digits fit a size_t) and would ask vector::reserve
 // for 8 exabytes. The list is bounded by the file instead: it reads ids until the stream runs out.
@@ -3026,8 +2986,6 @@ TEST_CASE("services::index::bitcask_index_disk::a_merge_manifest_count_is_bounde
     }
 }
 
-// The old guard read `payload_offset + payload_size > file_size` with both sides uint64, so a
-// length near UINT64_MAX wrapped the sum under file_size and passed. The guard now subtracts.
 TEST_CASE("services::index::bitcask_index_disk::a_record_whose_declared_payload_wraps_is_a_tail_not_an_allocation") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -3066,8 +3024,6 @@ TEST_CASE("services::index::bitcask_index_disk::a_record_whose_declared_payload_
     REQUIRE(std::filesystem::file_size(segment) == size_before);
 }
 
-// read_rows_at (behind every find(), snapshot write and merge relocation) resized straight to
-// the header's declared length with no bound at all -- not even a wrapping check to get wrong.
 TEST_CASE("services::index::bitcask_index_disk::find_refuses_a_record_claiming_a_payload_past_the_segment") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -3092,7 +3048,6 @@ TEST_CASE("services::index::bitcask_index_disk::find_refuses_a_record_claiming_a
         REQUIRE(file.good());
     }
 
-    // A value, not an allocation: the old code called resize(UINT64_MAX) and ended the process.
     auto found = index.find(logical_value_t(&resource, 71l));
     REQUIRE(found.has_error());
     REQUIRE(message_mentions(found.error(), "runs past the end of the segment"));
@@ -3132,7 +3087,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_txn_frame_whose_declared_paylo
     }
 }
 
-// Section: "not there", "won't open" and "won't parse" are different facts -- only the first is safe to treat quietly.
+// "Not there", "won't open" and "won't parse" are different facts -- only the first is safe to treat quietly.
 
 namespace {
     bool file_really_refuses_reads(const std::filesystem::path& file) {
@@ -3205,7 +3160,6 @@ TEST_CASE("services::index::bitcask_index_disk::an_unopenable_merge_manifest_is_
     REQUIRE_FALSE(std::filesystem::exists(manifest));
 }
 
-// Same two-into-one as the manifest: the sidecar answered zero both for "nothing applied yet" and "unreadable file".
 TEST_CASE("services::index::bitcask_index_disk::an_unreadable_applied_offset_sidecar_refuses_instead_of_replaying") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -3258,8 +3212,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unreadable_applied_offset_sid
     }
 }
 
-// Both merge temp files open with O_CREAT (not O_TRUNC), so bytes an abandoned attempt left
-// beyond the new ones get published too.
+// Both merge temp files open with O_CREAT (not O_TRUNC), so a stale one blocks the merge instead of being replaced.
 TEST_CASE("services::index::bitcask_index_disk::a_stale_merge_temp_that_will_not_unlink_refuses_the_merge") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -3358,9 +3311,8 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_txn_log_repair_keeps_i
     }
 }
 
-// Root cause of a ~1-in-10 flaky failure under parallel runs (stress_test_index.cpp): find()
-// opened a new descriptor per read even for the segment already held open. RLIMIT_NOFILE (not
-// the file interposer, which can't model an open call that never happens) is set to the next
+// Root cause of a ~1-in-10 flaky failure under parallel runs (stress_test_index.cpp). RLIMIT_NOFILE
+// (not the file interposer, which can't model an open call that never happens) is set to the next
 // descriptor number, the soft limit restored by the guard.
 namespace {
     struct descriptor_ceiling_t {

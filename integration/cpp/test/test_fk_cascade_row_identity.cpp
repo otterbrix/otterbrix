@@ -1,23 +1,7 @@
-// Which child rows an FK referential action is allowed to touch.
-//
-// The point fetch is a producer: collection_t::fetch gathers only rows the asking
-// transaction may see and stamps result.row_ids with exactly those, so a reply can be
-// SHORTER than the request. operator_fk_cascade's SET NULL / SET DEFAULT branch used to
-// slice a flat child-id list positionally against the fetched chunks; one dropped row would
-// shift every later id and write the transform into somebody else's child rows. It slices by
-// chunk.row_ids instead.
-//
-// These tests pin the observable half of that contract for every referential action, at the
-// level the defect would show: which rows survived and what they hold, not how many there
-// are -- a count-only assertion can't tell "deleted the two rows the cascade owned" from
-// "deleted two rows one position over".
-//
-// The arrangement is the test: in every case below one child of the deleted parent is
-// deleted BY THE SAME TRANSACTION before the cascade runs (the reachable way a child row is
-// invisible to the very statement about to act on it), and the children of an untouched
-// parent are interleaved in insert order with the children of the deleted one. A positional
-// slip of one therefore lands on a row that must not move, and the per-row content
-// assertions see it.
+// operator_fk_cascade's SET NULL / SET DEFAULT branch used to slice a flat child-id list positionally against
+// the fetched chunks, so a row invisible to the acting transaction shifted every later id onto the wrong
+// child; it now slices by chunk.row_ids instead. These tests assert row content, not count, since a shifted
+// id set still reports the same count.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -29,8 +13,7 @@ using namespace components::cursor;
 
 namespace {
 
-    // parent_id sentinel for the expectation tables below: no seeded parent has
-    // id 0, so 0 can only mean "this cell must be NULL".
+    // Sentinel: no seeded parent has id 0, so 0 in the expectation tables means NULL.
     constexpr int64_t kNullParent = 0;
 
     cursor_t_ptr run(otterbrix::wrapper_dispatcher_t* dispatcher,
@@ -39,9 +22,6 @@ namespace {
         return dispatcher->execute_sql(session, sql);
     }
 
-    // Read one BIGINT column out of a result cursor, in the order the cursor
-    // returned it. The callers always ORDER BY, so the comparison is on the set
-    // AND on the order.
     std::vector<int64_t> column_i64(const cursor_t_ptr& cur, uint64_t col) {
         std::vector<int64_t> out;
         out.reserve(cur->size());
@@ -51,16 +31,8 @@ namespace {
         return out;
     }
 
-    // Parent 1 / 2 / 3, and children whose insert order INTERLEAVES parent 2's
-    // rows with parent 3's, so any positional slip crosses the parent boundary.
-    //
-    //   row 0: child 10 -> parent 1
-    //   row 1: child 20 -> parent 2      (deleted by the same txn, pre-cascade)
-    //   row 2: child 30 -> parent 3
-    //   row 3: child 21 -> parent 2      (the referential action owns this one)
-    //   row 4: child 31 -> parent 3
-    //   row 5: child 22 -> parent 2      (and this one)
-    //   row 6: child 32 -> parent 3
+    // Children of the deleted parent are interleaved with an untouched parent's, and one is deleted by this
+    // transaction before the cascade runs, so a positional slip lands on a row that must not move.
     void seed(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& del_action) {
         {
             auto s = otterbrix::session_id_t();
@@ -92,8 +64,6 @@ namespace {
                         ->is_success());
         }
         {
-            // tag == id: a second, independent witness that a surviving row is the
-            // row it claims to be and not a neighbour that got moved onto its id.
             auto s = otterbrix::session_id_t();
             REQUIRE(run(dispatcher,
                         s,
@@ -104,7 +74,6 @@ namespace {
         }
     }
 
-    // Every surviving child row, ordered by id, with its parent_id and tag.
     void require_children(otterbrix::wrapper_dispatcher_t* dispatcher,
                           otterbrix::session_id_t& session,
                           const std::vector<int64_t>& ids,
@@ -114,8 +83,7 @@ namespace {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == ids.size());
         REQUIRE(column_i64(cur, 0) == ids);
-        // tag was written equal to id at insert time and no statement here ever
-        // changes it, so tag != id means the row identity moved under us.
+        // tag was set equal to id at insert time and never changed, so tag != id means identity moved.
         REQUIRE(column_i64(cur, 2) == ids);
         for (std::size_t row = 0; row < ids.size(); ++row) {
             INFO("child id " << ids[row]);
@@ -129,12 +97,8 @@ namespace {
 
 } // namespace
 
-// ON DELETE CASCADE. The cascade must remove children 21 and 22 (parent 2's
-// remaining rows) and nothing else — child 20 is already gone by this
-// transaction's own hand, and 30/31/32 belong to a parent that was never
-// touched. The cascade reaches storage_delete_rows by ROW ID, so the ids it
-// deletes are the ids scan_by_keys reported; a set that drifted by one position
-// would take 30 or 31 with it, and the surviving-rows assertion sees that.
+// The cascade deletes by row id via storage_delete_rows, so a drifted id set would remove 30 or 31 instead
+// of 21/22.
 TEST_CASE("integration::cpp::fk_cascade_row_identity::cascade_deletes_only_the_children_it_owns") {
     auto config = test_create_config(integration_fixture_path("test_fk_cascade_row_identity/cascade"));
     test_clear_directory(config);
@@ -179,10 +143,8 @@ TEST_CASE("integration::cpp::fk_cascade_row_identity::cascade_deletes_only_the_c
     }
 }
 
-// The same shape with the cascade set emptied entirely: the transaction deletes
-// ALL of parent 2's children itself, so scan_by_keys reports nothing and the
-// cascade has no ids at all. The branch takes its empty-set exit; the point is
-// that the parent delete still succeeds and no OTHER parent's children move.
+// With every child already gone, the cascade takes its empty-set exit; the parent delete must still succeed
+// without moving other parents' children.
 TEST_CASE("integration::cpp::fk_cascade_row_identity::cascade_over_an_already_emptied_child_set") {
     auto config = test_create_config(integration_fixture_path("test_fk_cascade_row_identity/cascade_empty"));
     test_clear_directory(config);
@@ -213,12 +175,8 @@ TEST_CASE("integration::cpp::fk_cascade_row_identity::cascade_over_an_already_em
     require_children(dispatcher, fresh, {10, 30, 31, 32}, {1, 3, 3, 3});
 }
 
-// ON DELETE SET NULL — the branch the row-identity contract actually bites on. It is the one that
-// FETCHES the child rows and writes them back, so it is the one where a reply
-// shorter than the request can be paired with the wrong ids. Children 21 and 22
-// must end up NULL; 30/31/32, interleaved between them in row order, must still
-// point at parent 3. Under positional slicing a short reply writes
-// the NULL one row over — onto parent 3's children.
+// SET NULL fetches child rows and writes them back, so a short reply from an invisible row can pair with
+// the wrong ids and NULL parent 3's children instead of parent 2's.
 TEST_CASE("integration::cpp::fk_cascade_row_identity::set_null_writes_only_the_children_it_owns") {
     auto config = test_create_config(integration_fixture_path("test_fk_cascade_row_identity/set_null"));
     test_clear_directory(config);

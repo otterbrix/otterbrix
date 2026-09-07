@@ -1,31 +1,9 @@
 // Exhaustive crash-point enumeration: for every k, the reopened file must equal root N or root
-// N+1, never a third state or an error — proving shadow paging (two-slot header, split free pool,
-// superseded-root reclaim) holds at every crash point and no external backup is needed.
-// One round (table_storage_t::checkpoint, services/disk/manager_disk.cpp; compact() first when
-// the round compacts, mirroring agent_disk_t::checkpoint_inner): [compact] -> table.checkpoint ->
-// writer.flush -> set_meta_block -> serialize_free_list -> file_sync (1st fsync, barrier) ->
-// write_header (write W + 2nd fsync, the atomic commit point).
-// The matrix measures a healthy round first to get W = writes in the round, then for a compacting
-// and a non-compacting round enumerates: clean crash after k=0..W writes (both persisted-on-device
-// and reverted-to-last-fsync survival); a torn write at k=1..W (half of write k lands, the rest
-// doesn't — a torn header reassembles into a valid new-generation slot and commits via reconcile
-// case 1); a failed fsync at each of the two barriers; a crash strictly between the two fsyncs.
-// Each cell is reopened by a fresh manager and judged on 3 axes: open succeeds; the scan matches
-// root N or N+1 exactly (id set, payloads, no dupes/strays — asserting only the open has hidden
-// real corruption before); the block-reachability walker reports zero unexplained/overlapping
-// blocks. A round that reported COMMITTED must recover as N+1. Reopened via a bare
-// load_existing_database + load_from_disk (this test lives below services/disk, so no
-// agent_disk_t exists to mask what the matrix measures).
-// Fault-seam facts (rediscovered at cost):
-//   * fault_injection_scope_t must wrap the handle BEFORE the manager is constructed, or counters
-//     read zero;
-//   * arming is absolute over the plan's life, so each scenario aims at base_writes + k, not k
-//     alone — a blanket fail_after_writes would also kill data writes and hide the point under
-//     test behind the degraded() gate;
-//   * fail_writes_from is 1-based because fail_after_writes counts successes and can't express k=0.
-// Base state: one steady table (BASE_ROWS rows, 3 committed compact+checkpoint rounds), copied per
-// cell; the crashed round appends EXTRA_ROWS first so root N vs N+1 is decidable from row count/ids
-// alone.
+// N+1, never a third state or an error, proving shadow paging holds at every crash point.
+// Fault-seam gotchas (rediscovered at cost): fault_injection_scope_t must wrap the handle BEFORE
+// the manager is constructed, or counters read zero; arming aims at base_writes + k, not k alone,
+// since a blanket fail_after_writes would also kill data writes; fail_writes_from is 1-based
+// (can't express k=0).
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -107,8 +85,6 @@ namespace {
         }
     }
 
-    // Mirrors table_storage_t::checkpoint exactly (see file header); errors are recorded, not
-    // asserted -- failure is the expected event in a crash scenario.
     struct round_trace_t {
         bool committed{false};
         bool compact_ok{true};
@@ -133,7 +109,6 @@ namespace {
             t.syncs_total = plan.syncs_seen;
         };
         if (do_compact) {
-            // Mirrors production: agent_disk_t::checkpoint_inner still checkpoints when compact refuses.
             t.compact_ok = table.compact(WATERMARK);
         }
         t.writes_after_compact = plan.writes_seen;
@@ -187,8 +162,6 @@ namespace {
         return t;
     }
 
-    // --- Recovery + judgement (the three axes of the gate) ---
-
     struct recovery_outcome_t {
         bool open_ok{false};
         bool load_ok{false};
@@ -234,7 +207,6 @@ namespace {
         out.load_ok = true;
         auto table = std::move(loaded.value());
 
-        // Aggregated booleans, not per-row asserts: ids must form {0..rows-1} with payload==id.
         std::vector<storage_index_t> column_ids{storage_index_t(0), storage_index_t(1)};
         table_scan_state state(&env.resource);
         table->initialize_scan(state, column_ids, nullptr);
@@ -275,7 +247,6 @@ namespace {
         out.rows = rows;
         out.scan_clean = clean;
 
-        // Walker with the table still loaded (the registry bin needs the live handles).
         auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
         out.walker_ok = report.ok;
         if (!report.ok) {
@@ -286,18 +257,16 @@ namespace {
         return out;
     }
 
-    // --- Scenario driver ---
-
     enum class crash_kind_t { clean_writes, torn_write, sync_fail, before_header };
     enum class survival_t { persisted, reverted };
 
     struct round_shape_t {
-        uint64_t base_writes{0};   // writes before the round (reload + append): proven stable
-        uint64_t round_writes{0};  // W — the header write is write W
-        uint64_t compact_end{0};   // stage boundaries, in round-relative write numbers
+        uint64_t base_writes{0};
+        uint64_t round_writes{0};  // W: the header write is write W
+        uint64_t compact_end{0};
         uint64_t table_ckpt_end{0};
         uint64_t free_list_end{0};
-        uint64_t iter_before{0};   // root N's iteration, read from the base file
+        uint64_t iter_before{0};
     };
 
     struct cell_result_t {
@@ -320,7 +289,7 @@ namespace {
         {
             matrix_env_t env;
             otterbrix_test::fault_plan_t plan;
-            otterbrix_test::fault_injection_scope_t scope(plan); // BEFORE the manager: wraps at open
+            otterbrix_test::fault_injection_scope_t scope(plan);
             tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, work_path);
             REQUIRE_FALSE(bm.load_existing_database().has_error());
 
@@ -333,21 +302,20 @@ namespace {
             auto table = std::move(loaded.value());
             append_rows(*table, env, BASE_ROWS, EXTRA_ROWS);
 
-            // Must match the measurement run exactly, or the absolute write numbers below are wrong.
             REQUIRE(plan.writes_seen == shape.base_writes);
 
             switch (kind) {
                 case crash_kind_t::clean_writes:
-                    plan.fail_writes_from = shape.base_writes + k + 1; // k successes, then failure
+                    plan.fail_writes_from = shape.base_writes + k + 1;
                     break;
                 case crash_kind_t::torn_write:
                     plan.torn_at_write = shape.base_writes + k;
                     break;
                 case crash_kind_t::sync_fail:
-                    plan.fail_syncs_from = k; // syncs happen only inside the round
+                    plan.fail_syncs_from = k;
                     break;
                 case crash_kind_t::before_header:
-                    break; // no fault: the crash IS stopping between the two barriers
+                    break;
             }
 
             cell.trace = run_round(bm, *table, plan, do_compact, kind == crash_kind_t::before_header);
@@ -392,7 +360,6 @@ namespace {
         return tag;
     }
 
-    // CHECK, not REQUIRE: a failing k must not hide the rest of the matrix.
     void judge_cell(const cell_result_t& cell, const round_shape_t& shape, const std::string& label) {
         INFO(label << " -> " << outcome_str(cell.out, shape) << (cell.out.note.empty() ? "" : " | " + cell.out.note));
         CHECK(cell.out.open_ok);
@@ -405,7 +372,6 @@ namespace {
         const bool is_n1 = cell.out.iteration == shape.iter_before + 1 && cell.out.rows == BASE_ROWS + EXTRA_ROWS;
         CHECK((is_n || is_n1));
         if (cell.committed) {
-            // Reported success is a durability promise the caller's WAL bookkeeping relies on.
             CHECK(is_n1);
         }
     }
@@ -436,7 +402,6 @@ namespace {
         REQUIRE_FALSE(bm.create_new_database().has_error());
         auto table = make_table(env, bm);
         append_rows(*table, env, 0, BASE_ROWS);
-        // No fault scope: the base must be a file the engine itself produced, healthy end to end.
         otterbrix_test::fault_plan_t unused_plan;
         for (int warmup = 0; warmup < 3; ++warmup) {
             auto t = run_round(bm, *table, unused_plan, true, false);
@@ -477,8 +442,6 @@ namespace {
         shape.compact_end = t.writes_after_compact - shape.base_writes;
         shape.table_ckpt_end = t.writes_after_table_ckpt - shape.base_writes;
         shape.free_list_end = t.writes_after_free_list - shape.base_writes;
-        // Pinned, not adapted to: exactly 1 header write and 2 fsyncs. If this ever changes, the
-        // matrix must be RE-DERIVED, not silently re-shaped around it.
         REQUIRE(t.writes_before_header == t.writes_after_free_list);
         REQUIRE(shape.round_writes == shape.free_list_end + 1);
         REQUIRE(t.syncs_total == 2);
@@ -500,7 +463,6 @@ namespace {
                       << shape.table_ckpt_end + 1 << ".." << shape.free_list_end
                       << ", 1st fsync, header:" << W << ", 2nd fsync)");
 
-        // Clean crash after k successful writes, both persistence shapes.
         for (auto survival : {survival_t::persisted, survival_t::reverted}) {
             const char* sname = survival == survival_t::persisted ? "persisted" : "reverted";
             std::vector<std::string> outcomes;
@@ -537,8 +499,8 @@ namespace {
             WARN("[a7.4 " << family << "] torn/persisted: " << rle_digest(outcomes, 1));
         }
 
-        // s=1: data/metadata barrier (round dies before the header). s=2: header commit itself
-        // (write landed, durability unproven — reconcile case 3, the indeterminate latch).
+        // s=1: data/metadata barrier, round dies before the header. s=2: header commit itself,
+        // write landed but durability unproven (reconcile's indeterminate latch).
         {
             std::string digest;
             for (uint64_t s = 1; s <= 2; ++s) {
@@ -561,7 +523,6 @@ namespace {
             WARN("[a7.4 " << family << "] sync-fail: " << digest);
         }
 
-        // Crash strictly BETWEEN the two barriers: 1st fsync done, header never attempted.
         {
             std::string digest;
             for (auto survival : {survival_t::persisted, survival_t::reverted}) {
@@ -587,32 +548,28 @@ namespace {
         remove_file(work_path);
     }
 
-} // namespace
+}
 
 TEST_CASE("crash_matrix: a COMPACTING checkpoint round recovers to root N or N+1 at every crash point", "[a7.4]") {
-    // Compaction moves the superseded root's blocks to pending_free_ mid-round; only this family
-    // exercises that a block the durable root still reads is never overwritten by a crashing round.
+    // Only this family exercises that compaction never overwrites a block the durable root still reads.
     run_matrix(true, "compacting");
 }
 
 TEST_CASE("crash_matrix: a non-compacting checkpoint round recovers to root N or N+1 at every crash point",
           "[a7.4]") {
-    // Root N's data blocks stay live and SHARED with the successor here; proves the incremental
-    // round (appended tail + fresh chains only) never touches them in place.
+    // Root N's data blocks stay live and shared with the successor; the incremental round must not touch them.
     run_matrix(false, "noncompact");
 }
 
 
-// Regression: without publishing compact's write-through blocks in the serialized free
-// list, a committed round leaked 8 blocks (2 MiB at 6k rows) that no root names — orphaned forever
-// on process exit since reclaim only walks roots. Proves: (1) a fresh open of a steady-state file
-// explains every block; (2) repeated reopen+checkpoint cycles do not grow the file.
+// Regression: without publishing compact's write-through blocks in the free list, a committed
+// round leaked 8 blocks (2 MiB at 6k rows) that no root names, orphaned since reclaim only walks
+// roots.
 TEST_CASE("crash_matrix: a restart does not orphan the previous process's live tree", "[a7.4]") {
     const auto path = matrix_db_path("restart_leak");
     remove_file(path);
     build_base(path);
 
-    // Half 1: the reopened file is fully explained.
     {
         matrix_env_t env;
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
@@ -631,11 +588,9 @@ TEST_CASE("crash_matrix: a restart does not orphan the previous process's live t
                                           << " overlap=" << report.reachable_free_overlap.size());
         CHECK(report.unexplained.empty());
         CHECK(report.reachable_free_overlap.empty());
-        // Fresh open: registry holds only what the root names, so live-tree overlap is EMPTY here.
         CHECK(report.live_superseded.empty());
     }
 
-    // Half 2: restart cycles are a closed cycle, like the in-process steady state.
     uint64_t prev_blocks = 0;
     for (int cycle = 1; cycle <= 3; ++cycle) {
         matrix_env_t env;

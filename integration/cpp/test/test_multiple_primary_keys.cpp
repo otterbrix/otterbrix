@@ -1,14 +1,5 @@
-// One primary key per table. Unlike PostgreSQL, this engine's declaration legs (inline CREATE
-// TABLE, ALTER TABLE ADD CONSTRAINT) accept a second 'p' row instead of refusing it, so
-// pg_constraint can end up holding two. What must never follow is silent misenforcement:
-// operator_resolve_constraint used to fold both rows into one flattened pk_columns list — a
-// multi-column "primary key" nobody declared.
-//
-// These cases pin the floor: the moment the doubled key would be USED (a DML gathering
-// constraints, or an FK binding to "the" primary key), the statement is refused, naming both
-// constraints. They also pin that the state stays REPAIRABLE: ALTER TABLE ... DROP CONSTRAINT
-// gathers names only (no enforcement decode), so repair itself must not trip the refusal —
-// test_alter_drop_constraint.cpp pins that end to end.
+// Declaration legs accept a second 'p' row in pg_constraint (unlike PostgreSQL); refusal happens
+// only at first USE (DML gather or FK bind), naming both constraints, and the doubled state stays repairable.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -56,8 +47,6 @@ TEST_CASE("integration::cpp::multiple_pk::doubled_by_alter_is_refused_at_use_and
     run_ok(d, "CREATE DATABASE mpk;");
     run_ok(d, "CREATE TABLE mpk.t (a bigint, b bigint);");
     run_ok(d, "ALTER TABLE mpk.t ADD CONSTRAINT pk_a PRIMARY KEY (a);");
-    // The declaration leg still accepts this today (upstream of the physical
-    // plan); the floor below is what this file gates.
     run_ok(d, "ALTER TABLE mpk.t ADD CONSTRAINT pk_b PRIMARY KEY (b);");
 
     {
@@ -66,25 +55,19 @@ TEST_CASE("integration::cpp::multiple_pk::doubled_by_alter_is_refused_at_use_and
         INFO("error: " << what);
         INFO("a table with two 'p' rows must refuse the DML that would enforce them");
         REQUIRE(cur->is_error());
-        // The refusal names the real cause and both offenders, not a symptom.
         REQUIRE(what.find("multiple primary keys") != std::string::npos);
         REQUIRE(what.find("pk_a") != std::string::npos);
         REQUIRE(what.find("pk_b") != std::string::npos);
     }
 
-    // Repair path, the COLUMN route: DROP COLUMN scrubs the constraints keyed
-    // on it through their 'i' pg_depend edges, and its plan registers no
-    // constraint gather for the target — the refusal must not fire on the
-    // statement that fixes the catalog, or a per-statement refusal would turn
-    // into a dead table. (DROP CONSTRAINT is the other exit;
-    // test_alter_drop_constraint.cpp pins it.)
+    // DROP COLUMN scrubs the constraint via its pg_depend edge and registers no constraint gather
+    // for the target, so repair must not trip the refusal (the other exit: test_alter_drop_constraint.cpp).
     run_ok(d, "ALTER TABLE mpk.t DROP COLUMN b;");
     {
         auto cur = run_ok(d, "INSERT INTO mpk.t (a) VALUES (1);");
         REQUIRE(cur->is_success());
     }
     {
-        // ... and the surviving key is still enforced.
         auto cur = exec(d, "INSERT INTO mpk.t (a) VALUES (1);");
         INFO("error: " << error_text(cur));
         REQUIRE(cur->is_error());
@@ -100,10 +83,8 @@ TEST_CASE("integration::cpp::multiple_pk::doubled_inline_is_refused_at_use") {
 
     run_ok(d, "CREATE DATABASE mpk;");
     {
-        // The inline leg accepts this today too. If a later change makes the
-        // declaration refuse it (the PostgreSQL answer), this case's setup
-        // fails loudly and the case should be re-pointed at the declaration
-        // error — that is a strictly better world, not a regression.
+        // If a later change makes this declaration refuse the second PRIMARY KEY (the PostgreSQL
+        // answer), this setup fails loudly and the case should move to that declaration error.
         auto cur = exec(d, "CREATE TABLE mpk.t2 (a bigint PRIMARY KEY, b bigint PRIMARY KEY);");
         INFO("error: " << error_text(cur));
         REQUIRE(cur->is_success());

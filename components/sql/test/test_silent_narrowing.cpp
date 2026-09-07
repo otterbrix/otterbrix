@@ -1,6 +1,6 @@
-// The contract: a clause the executor does not implement is REFUSED at the transformer, never
-// silently dropped, and a literal under a declared cast carries the DECLARED type, never the one
-// the literal happened to parse as.
+// Contract: a clause the executor doesn't implement is refused at the transformer, never
+// silently dropped; a literal under a declared cast carries the declared type, never the one
+// it happened to parse as.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
@@ -58,10 +58,8 @@ TEST_CASE("components::sql::narrowing::window_functions_refused") {
     TEST_TRANSFORMER_ERROR(
         "SELECT number, avg(number) OVER (PARTITION BY name) FROM db.tbl;",
         R"_(window function OVER is not supported yet: avg(...) would have been computed as a plain aggregate)_");
-    // The WINDOW clause itself is dropped, with or without an OVER referencing it.
     TEST_TRANSFORMER_ERROR("SELECT sum(number) FROM db.tbl WINDOW w AS (PARTITION BY name);",
                            R"_(the WINDOW clause is not supported yet)_");
-    // An OVER buried in an expression, not at the top of the select list.
     TEST_TRANSFORMER_ERROR(
         "SELECT number + sum(number) OVER () FROM db.tbl;",
         R"_(window function OVER is not supported yet: sum(...) would have been computed as a plain aggregate)_");
@@ -118,24 +116,22 @@ TEST_CASE("components::sql::narrowing::create_table_constraint_kinds_refused") {
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT, CONSTRAINT ex EXCLUDE (a WITH =));",
         R"_(EXCLUDE constraints are not supported yet: the constraint would have been silently dropped)_");
-    // Column-level constraint ATTRIBUTES (deferrability) ride the same seam in extract_column_constraints.
+    // Column-level constraint attributes (deferrability) ride the same seam in extract_column_constraints.
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT UNIQUE DEFERRABLE);",
         R"_(the DEFERRABLE constraint attribute is not supported yet: it would have been silently dropped)_");
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT UNIQUE INITIALLY DEFERRED);",
         R"_(the INITIALLY DEFERRED constraint attribute is not supported yet: it would have been silently dropped)_");
-    // Table-level deferrability travels as FIELDS on the constraint node (gram.y's processCASbits), a second carrier for the same attribute.
+    // Table-level deferrability also travels as fields on the constraint node (gram.y's processCASbits).
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT, UNIQUE (a) DEFERRABLE);",
         R"_(the DEFERRABLE constraint attribute is not supported yet: it would have been silently dropped)_");
     TEST_TRANSFORMER_ERROR(
         "CREATE TABLE db.tbl (a INT, UNIQUE (a) DEFERRABLE INITIALLY DEFERRED);",
         R"_(the INITIALLY DEFERRED constraint attribute is not supported yet: it would have been silently dropped)_");
-    // NOT DEFERRABLE / INITIALLY IMMEDIATE restate the default: accepted.
     TEST_TRANSFORMER_OK("CREATE TABLE db.tbl (a INT UNIQUE NOT DEFERRABLE);");
     TEST_TRANSFORMER_OK("CREATE TABLE db.tbl (a INT UNIQUE INITIALLY IMMEDIATE);");
-    // An explicit NULL column marker restates the default: accepted.
     TEST_TRANSFORMER_OK("CREATE TABLE db.tbl (a INT NULL);");
 }
 
@@ -157,7 +153,6 @@ TEST_CASE("components::sql::narrowing::create_sequence_options_refused") {
                            R"_(RESTART is not supported in CREATE SEQUENCE)_");
     TEST_TRANSFORMER_ERROR("CREATE SEQUENCE db.seq RESTART WITH 5;",
                            R"_(RESTART is not supported in CREATE SEQUENCE)_");
-    // The default-restating spellings stay accepted.
     TEST_TRANSFORMER_OK("CREATE SEQUENCE db.seq NO CYCLE;");
     TEST_TRANSFORMER_OK("CREATE SEQUENCE db.seq CACHE 1;");
     TEST_TRANSFORMER_OK("CREATE SEQUENCE db.seq OWNED BY NONE;");
@@ -168,24 +163,19 @@ TEST_CASE("components::sql::narrowing::cast_targets_honoured") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    // Fractions round half away from zero (PostgreSQL numeric -> int).
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1.5 AS INT);", v(&resource, int32_t{2}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(2.4 AS SMALLINT);", v(&resource, int16_t{2}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS BIGINT);", v(&resource, int64_t{1}));
-    // Numeric literal, float target: 1 becomes 1.0, not an int64.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS DOUBLE PRECISION);", v(&resource, double{1.0}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS REAL);", v(&resource, float{1.0f}));
-    // String literal, numeric target: parsed, not passed through as a string.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('123' AS BIGINT);", v(&resource, int64_t{123}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('9223372036854775807' AS BIGINT);",
                      v(&resource, std::numeric_limits<int64_t>::max()));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('12.5' AS DOUBLE PRECISION);", v(&resource, double{12.5}));
-    // BOOLEAN accepts PostgreSQL's full literal set, not just 't'.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('yes' AS BOOLEAN);", v(&resource, true));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('off' AS BOOLEAN);", v(&resource, false));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(2 AS BOOLEAN);", v(&resource, true));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(0 AS BOOLEAN);", v(&resource, false));
-    // What cannot be honoured is refused, never handed back untyped.
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE x = CAST('abc' AS BIGINT);",
                            R"_(invalid input for a cast to BIGINT: 'abc')_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE x = CAST('1.5' AS INT);",
@@ -198,7 +188,6 @@ TEST_CASE("components::sql::narrowing::cast_targets_honoured") {
                            R"_(invalid input for a cast to BOOLEAN: 1.5)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE x = CAST('x' AS UUID);",
                            R"_(a literal cast to UUID is not supported yet)_");
-    // NUMERIC without (width, scale) is a refused target type, not a silent string.
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE x = CAST(1.5 AS NUMERIC);",
                            R"_(Incorrect modifiers for DECIMAL, width and scale required)_");
 }
@@ -211,10 +200,10 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
     using components::types::complex_logical_type;
     using components::types::int128_t;
 
-    // 123456789.12345678901234567890 at scale 20 has 29 significant digits — more than a double can carry.
+    // Chosen to exceed a double's precision, so the exact-decimal path is actually exercised.
     const int128_t ten_to_10 = int128_t{10000000000LL};
     const int128_t scaled = int128_t{123456789} * ten_to_10 * ten_to_10 + int128_t{1234567890123456789LL} * 10 +
-                            int128_t{0}; // 12345678901234567890 assembled inside int128
+                            int128_t{0};
     auto dec_type_res = complex_logical_type::create_decimal(&resource, 38, 20);
     REQUIRE(!dec_type_res.has_error());
     const auto expected = v::create_decimal(&resource, dec_type_res.value(), scaled);
@@ -258,11 +247,10 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
     }
 }
 
-// `numeric(38,20) DEFAULT 0.12345678901234567890` used to go through numeric_literal_value's
-// double tail and land on ...567168 — short by 722 at the 20th decimal place. Scoped to DECIMAL
-// only: widening it to every type would flip the ALTER-vs-CREATE divergence that
-// services/collection/executor.cpp's convert_column_defaults already performs for both spellings
-// (see test "alter_add_column_default_is_coerced_like_create_table").
+// `numeric(38,20) DEFAULT 0.12345678901234567890` landed on ...567168 via numeric_literal_value's
+// double tail -- short by 722 at the 20th decimal place. Scoped to DECIMAL only: widening it would
+// flip the ALTER-vs-CREATE divergence services/collection/executor.cpp's convert_column_defaults
+// already performs for both spellings (see "alter_add_column_default_is_coerced_like_create_table").
 TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -285,7 +273,6 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
         return create->column_definitions().front().default_value();
     };
 
-    // Assembled inside int128 because 12345678901234567890 is past int64's max.
     const int128_t written = int128_t{1234567890123456789LL} * 10;
     auto dec_res = complex_logical_type::create_decimal(&resource, 38, 20);
     REQUIRE(!dec_res.has_error());
@@ -320,7 +307,6 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
                 R"_(numeric field overflow: 100.0 does not fit NUMERIC(2, 1))_");
     }
 
-    // --- controls: no other declared type changes reading.
     SECTION("a BIGINT column still reads its default as the integer ladder produced it") {
         auto stored = only_default("CREATE TABLE db.tbl (c bigint DEFAULT 7);");
         REQUIRE(stored.type().type() == logical_type::BIGINT);
@@ -338,9 +324,8 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
     }
 }
 
-// The exact reader that replaced the double tail under a declared target used to refuse valid
-// PostgreSQL exponent syntax ("not a decimal number"); the exponent must instead be applied by
-// MOVING THE POINT through the written digits, not by multiplying by 10^exp (which would put the rounding back).
+// The exponent must be applied by moving the point through the written digits, not by
+// multiplying by 10^exp, which would put the rounding back.
 TEST_CASE("components::sql::narrowing::decimal_literal_exponent") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -354,33 +339,25 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exponent") {
         return res.value();
     };
 
-    // 1e-5 at scale 6 is 10; the point moved five places left, no double involved.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST(1e-5 AS NUMERIC(10,6));",
                      v::create_decimal(&resource, dec(10, 6), int64_t{10}));
-    // The same digits written as a string literal read the same way.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST('1e-5' AS NUMERIC(10,6));",
                      v::create_decimal(&resource, dec(10, 6), int64_t{10}));
-    // A positive exponent moves the point right: 1.5e3 = 1500.00 at scale 2.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST(1.5e3 AS NUMERIC(10,2));",
                      v::create_decimal(&resource, dec(10, 2), int64_t{150000}));
-    // Capital E, explicit sign.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST(1.5E+3 AS NUMERIC(10,2));",
                      v::create_decimal(&resource, dec(10, 2), int64_t{150000}));
-    // Rounding survives the shift: 1.999e0 at scale 2 rounds half away from zero.
+    // Rounding survives the exponent shift.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST(1.999e0 AS NUMERIC(3,2));",
                      v::create_decimal(&resource, dec(3, 2), int64_t{200}));
-    // A shift far past the scale is zero, not a refusal and not garbage.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST('1e-40' AS NUMERIC(10,6));",
                      v::create_decimal(&resource, dec(10, 6), int64_t{0}));
-    // PostgreSQL's 1e3::int == 1000.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1e3 AS INTEGER);", v(&resource, int32_t{1000}));
 
-    // --- what the shift must NOT swallow.
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST(1e3 AS NUMERIC(3,1));",
                            R"_(numeric field overflow: 1e3 does not fit NUMERIC(3, 1))_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST('1e400' AS NUMERIC(10,6));",
                            R"_(numeric field overflow: 1e400 does not fit NUMERIC(10, 6))_");
-    // The reader never reads a prefix and calls it a number.
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST('1e' AS NUMERIC(10,2));",
                            R"_(not a decimal number: 1e)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST('1e+' AS NUMERIC(10,2));",
@@ -389,15 +366,13 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exponent") {
                            R"_(not a decimal number: 1e2x)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST('e5' AS NUMERIC(10,2));",
                            R"_(not a decimal number: e5)_");
-    // Two exponents are not two shifts.
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST('1e2e3' AS NUMERIC(10,2));",
                            R"_(not a decimal number: 1e2e3)_");
 
-    // --- the shift is bounded BY THE MANTISSA, not by a constant clamp: a fixed clamp would drag
-    // digits back inside scale (wrongly answering a value) or cut them short of width (a false overflow).
-    // Digits are built here, not spelled out, so the query and the refusal it must quote back cannot drift apart.
+    // The shift is bounded by the mantissa, not a constant clamp: a fixed clamp would drag digits
+    // back inside scale (a wrong value) or cut them short of width (a false overflow). Digits are
+    // built here, not spelled out, so the query and the refusal it quotes back cannot drift apart.
     SECTION("a mantissa longer than any constant clamp still shifts down to zero") {
-        // 10^149 shifted down by 1000 is 10^-851: zero at every declarable scale.
         std::string huge = "1";
         huge.append(149, '0');
         huge += "e-1000";
@@ -414,7 +389,6 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exponent") {
         REQUIRE(bound == zero);
     }
     SECTION("and a mantissa longer than any constant clamp still shifts up to an overflow") {
-        // 10^-150 shifted up by 1000 is 10^850: past every declarable width.
         std::string tiny = "0.";
         tiny.append(149, '0');
         tiny += "1e1000";
@@ -478,8 +452,6 @@ TEST_CASE("components::sql::narrowing::double_literal_out_of_range_is_refused") 
                            R"_(numeric literal out of range: 1e400 does not fit a double)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE x = -1e400;",
                            R"_(numeric literal out of range: -1e400 does not fit a double)_");
-    // The rung just below the ceiling still reads, so the refusal is a ceiling and
-    // not a ban on exponents.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = 1e308;", v(&resource, 1e308));
 }
 
@@ -504,7 +476,6 @@ TEST_CASE("components::sql::narrowing::subscript_read_by_tag") {
         REQUIRE(ins->key_translation().size() == 1);
         REQUIRE(ins->key_translation().front().as_string() == "arr/3000000000");
     }
-    // A fractional subscript is not an index at all: refuse it by name.
     TEST_TRANSFORMER_ERROR("UPDATE db.tbl SET arr[1.5] = 3;",
                            R"_(an array subscript must be an integer literal, got: 1.5)_");
     TEST_TRANSFORMER_ERROR("INSERT INTO db.tbl (arr[1.5]) VALUES (5);",
@@ -513,8 +484,7 @@ TEST_CASE("components::sql::narrowing::subscript_read_by_tag") {
 
 TEST_CASE("components::sql::narrowing::get_type_refuses_an_absent_typename") {
     auto resource = core::pmr::otterbrix_resource();
-    // A null TypeName must not answer a default-constructed NA type: that is a
-    // failure reported as a value.
+    // A null TypeName must not answer a default-constructed NA type -- a failure reported as a value.
     auto res = transform::get_type(&resource, nullptr);
     REQUIRE(res.has_error());
     REQUIRE(std::string_view{res.error().what} == R"_(cannot determine a type: the TypeName is absent)_");

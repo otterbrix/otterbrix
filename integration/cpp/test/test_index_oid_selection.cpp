@@ -1,18 +1,8 @@
-// Index selection must be PER-OID, not "last table wins": enrich_logical_plan fetches index
-// info per table, stored per table_oid (context_storage_t::table_indexes). It used to land in
-// two flat vectors each loop iteration OVERWROTE, so a multi-table statement was judged against
-// whichever table's index set happened to enumerate LAST (table_oid_dependencies() is an
-// unordered_set — the "winner" is hash-order): an unindexed predicate column could inherit
-// another table's index set and silently return zero rows, or a real index could be hidden the
-// same way and silently degrade to a full scan.
-//
-// Only UNION branches and scalar-sub-query (InitPlan) statements reach create_plan_match_'s
-// index selection with multiple tables — JOIN children lower to Filter-over-Seq-Scan and never
-// consult index info. The UNION tests use symmetric shapes so either enumeration order poisons
-// exactly one branch, independent of oid hashing.
-//
-// Tables: ta(id, ka INDEXED, kb) and tb(id, ka, kb INDEXED); each table's unindexed column
-// shares its name with the other table's indexed one.
+// Per-oid index selection: table_oid_dependencies() is an unordered_set, so a shared per-table
+// vector overwritten each loop pass picked whichever table enumerated last, letting one table
+// borrow or hide another's indexes and mismatch the row count. Only UNION branches and
+// scalar-sub-queries reach create_plan_match_'s multi-table selection; JOIN lowers to
+// Filter-over-Seq-Scan first.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -81,11 +71,8 @@ namespace {
 
 } // namespace
 
-// Direction 1 — CORRECTNESS: a scan whose predicate column is NOT indexed on
-// its own table, while another table of the same statement carries an index on
-// a same-named column. An oid-blind planner lowers that predicate to an
-// index_scan on the scan target's oid; the index manager finds no such index
-// there and the empty id set silently reads as "matched nothing" — zero rows.
+// An oid-blind planner could apply another table's index set (or none) to this scan, so the
+// unindexed predicate column would silently return zero rows instead of matching.
 TEST_CASE("integration::cpp::index_oid_selection::unindexed_predicate_column_returns_rows") {
     auto config = test_create_config(integration_fixture_path("test_index_oid_selection/rows"));
     test_clear_directory(config);
@@ -119,11 +106,8 @@ TEST_CASE("integration::cpp::index_oid_selection::unindexed_predicate_column_ret
     }
 }
 
-// Direction 2 — the MIRROR (performance): the predicate column IS indexed on
-// the scan's own table; another table of the statement has no index on it. An
-// oid-blind planner sees only the surviving table's key set, so at most ONE
-// branch keeps its index scan and the other silently degrades to a full scan.
-// Per-oid selection must produce an Index Scan for BOTH branches.
+// Mirror: an oid-blind planner could hide this table's own index behind another table's key set,
+// silently degrading its Index Scan to a full scan.
 TEST_CASE("integration::cpp::index_oid_selection::each_table_uses_its_own_index") {
     auto config = test_create_config(integration_fixture_path("test_index_oid_selection/explain"));
     test_clear_directory(config);

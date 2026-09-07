@@ -36,8 +36,6 @@
 #include "pushdown_plan_builders.hpp"
 
 namespace {
-    // The resolver takes the cast registry unconditionally; these tests validate no DML node.
-    // No (void)-cast to silence an unused local: registration runs inside the static's own initializer.
     const components::casts::cast_registry_t* test_cast_registry() {
         static const components::casts::cast_registry_t& registry = []() -> components::casts::cast_registry_t& {
             static components::casts::cast_registry_t r{std::pmr::new_delete_resource()};
@@ -930,8 +928,6 @@ TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
     REQUIRE(op->type() == components::operators::operator_type::full_scan);
 }
 
-// pushdown_aggregate stamps node_group_t::pushdown() on single-owned-table, fragment-mergeable
-// aggregates, driven via optimize() with can_push_to_agent=true; it's a no-op on non-match otherwise.
 namespace {
     constexpr auto pushable_oid = components::catalog::oid_t{4242};
 
@@ -969,8 +965,6 @@ TEST_CASE("optimizer::pushdown_aggregate::no_agent_capability_does_not_stamp") {
     auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
-    // Capability precondition (not a rollout flag): no reachable owning agent means optimize()
-    // never calls the rule.
     REQUIRE(run_and_get_pushdown(&resource, agg, /*can_push=*/false) == false);
 }
 
@@ -985,7 +979,6 @@ TEST_CASE("optimizer::pushdown_aggregate::having_is_skipped") {
     auto resource = core::pmr::otterbrix_resource();
     auto having = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "h"));
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    // HAVING is a node_having_t child of the AGGREGATE (not carried in the group).
     auto agg = planner_test::make_agg(&resource, group, pushable_oid, expression_ptr(having));
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
@@ -1039,8 +1032,6 @@ TEST_CASE("optimizer::pushdown_aggregate::non_mergeable_kind_is_skipped") {
 }
 
 TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
-    // The rule reads the resolved fragment-merge capability (is_mergeable(), stamped at validate);
-    // a mergeable builtin SUM over one owned table is stamped, but the same SUM made DISTINCT is not.
     auto resource = core::pmr::otterbrix_resource();
     {
         std::vector<expression_ptr> exprs;
@@ -1067,11 +1058,9 @@ TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
 
 TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
     auto resource = core::pmr::otterbrix_resource();
-    // A shape-/kind-pushable fragment, but an aggregate arg references a UDF: the owning agent
-    // rebuilds its registry with builtins only, so the pushed fragment could not resolve it.
+    // A UDF-referencing aggregate arg is skipped: the owning agent rebuilds its pushed registry with builtins only.
     std::vector<expression_ptr> exprs;
     auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
-    // SUM itself is mergeable; stamped so the skip below comes from the UDF gate, not this check.
     sum->set_mergeable(true);
     auto udf = make_function_expression(&resource, std::string("my_udf"));
     udf->add_function_uid(components::compute::DEFAULT_FUNCTIONS.size());
@@ -1082,9 +1071,8 @@ TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 
-// Unqualified comma-join names stamp both equi keys side=left over the merged schema, so
-// detect_equi_columns can't accept the cross join as-is; promote_cross_joins reclassifies them by path
-// range against the stamped scans instead, moving the eq onto a fresh INNER join to lower afterward.
+// Unqualified comma-join columns get merged with ambiguous side=left stamps that detect_equi_columns can't
+// use; promote_cross_joins reclassifies them by path range instead, onto a fresh INNER join.
 namespace {
     // Left unstamped on purpose: validate_schema derives output_types() from the data chunk.
     static node_ptr make_promote_scan(std::pmr::memory_resource* r, std::initializer_list<const char*> cols) {
@@ -1102,8 +1090,6 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     auto params = make_parameter_node(&resource);
     auto lt_param = params->add_parameter(int64_t(5));
 
-    // Distinct column names make each unqualified reference resolve to exactly one merged
-    // column, which is what makes the promote rule's path-range classification well-defined.
     auto scan_a = make_promote_scan(&resource, {"ak", "ap"});
     auto scan_b = make_promote_scan(&resource, {"bk"});
 
@@ -1134,7 +1120,6 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     auto validated =
         services::dispatcher::validate_schema(test_validation_context(&resource), outer.get(), params->parameters());
     REQUIRE_FALSE(validated.has_error());
-    // Precondition the promote rule relies on: scans carry columns in output_types().
     REQUIRE(scan_a->output_types().size() == 2);
     REQUIRE(scan_b->output_types().size() == 1);
 
@@ -1175,8 +1160,7 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     REQUIRE(agg->children()[2]->type() == node_type::group_t);
 }
 
-// Regression: without folding a union_not over a fully-folded child to the complementary constant,
-// `WHERE NOT (1=2)` hit filter construction's Release-erased asserts (crash), `NOT (1=1)` errored.
+// Regression: folding union_not must yield the complementary constant, not a partial fold that asserts in Release.
 TEST_CASE("optimizer::not_fold_all_false_child") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
@@ -1209,8 +1193,6 @@ TEST_CASE("optimizer::not_fold_all_true_child") {
     REQUIRE(c->children().empty());
 }
 
-// Column pruning is ungated (a projection hint, valid in-memory too), so it runs through the
-// 3-arg optimize() with no owning agent; paths here are pre-stamped by hand instead of via validate_schema.
 namespace {
     using components::catalog::oid_t;
     constexpr auto prune_db = "database";
@@ -1238,8 +1220,6 @@ namespace {
         return agg;
     }
 
-    // Advertises `ncols` columns for `oid` so column_pruning's collect_table_md learns the
-    // per-side column count for JOIN splits.
     void add_resolved_table(std::pmr::memory_resource* r,
                             components::logical_plan::catalog_resolves_t& resolves,
                             oid_t oid,
@@ -1344,8 +1324,7 @@ TEST_CASE("optimizer::column_pruning::group_by_projects_key_and_agg_arg") {
     group_exprs.push_back(expression_ptr(sum));
     auto group = make_node_group(&resource, pdb(), prel(), group_exprs);
 
-    // Grouped queries also carry a $select over the group OUTPUT columns, whose paths are
-    // output indices (not storage indices); the rule must ignore it.
+    // The group's $select carries output indices, not storage indices; the rule must ignore it.
     auto sel = make_node_select(&resource, pdb(), prel());
     sel->append_expression(proj_get_field(&resource, "k", 0));
     sel->append_expression(proj_get_field(&resource, "sum_x", 1));
@@ -1399,8 +1378,8 @@ TEST_CASE("optimizer::column_pruning::inner_join_splits_columns_per_side") {
     REQUIRE(agg_t2->projected_cols() == std::vector<size_t>{0});
 }
 
-// A WHERE match above a union_t is cloned into a node_match above each branch (positional column
-// identity: output column i == branch column i); a conjunct a branch can't expose stays residual above.
+// A WHERE match above a union is cloned onto each branch via positional identity (output column i == branch
+// column i); a conjunct a branch can't expose via that mapping stays residual above instead.
 namespace {
     static node_ptr branch_match_child(const node_ptr& branch) {
         if (!branch || branch->type() != node_type::aggregate_t) {
@@ -1507,8 +1486,6 @@ TEST_CASE("optimizer::pushdown_filter::union_residual_stays_above_for_non_mappab
     auto gt = params->add_parameter(int64_t(5));
     auto lt = params->add_parameter(int64_t(10));
 
-    // Renaming position 1 ("b" -> "c") breaks identity-mapping: a conjunct on "b" stays
-    // residual above the union while the "a" conjunct still pushes into both branches.
     auto c1 = make_compare_expression(&resource, compare_type::gt, key(&resource, "a"), gt);
     auto c2 = make_compare_expression(&resource, compare_type::lt, key(&resource, "b"), lt);
     auto where = make_compare_union_expression(&resource, compare_type::union_and);
@@ -1543,11 +1520,9 @@ TEST_CASE("optimizer::pushdown_filter::union_residual_stays_above_for_non_mappab
     }
 }
 
-// When the filtered column name collides across both join sides (`WHERE t1.id=5 AND t2.id=7`,
-// both exposing "id"), name-based bucketing would strand both residual; bucketing uses the stamped path instead.
+// A filtered column name colliding across join sides would strand both under name-based bucketing; this
+// buckets by the stamped path instead.
 namespace {
-    // A disk-scan shape: columns live only in output_types(), so pushdown reads a known
-    // left_width off children()[0].
     node_aggregate_ptr join_scan(std::pmr::memory_resource* r, std::initializer_list<const char*> cols) {
         auto agg = make_node_aggregate(r, pdb(), prel());
         std::pmr::vector<components::types::complex_logical_type> out(r);
@@ -1598,8 +1573,6 @@ TEST_CASE("optimizer::pushdown_filter::join_shared_column_name_buckets_by_side")
     REQUIRE(join->children()[1]->children()[1]->type() == node_type::match_t);
 }
 
-// Under a LEFT join, a filter on the null-padded right side must stay residual even though the
-// side-based classifier resolves the name collision; the left-side conjunct still pushes.
 TEST_CASE("optimizer::pushdown_filter::left_join_null_padded_side_filter_stays_residual") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
@@ -1653,8 +1626,8 @@ TEST_CASE("optimizer::pushdown_filter::left_join_null_padded_side_filter_stays_r
     REQUIRE(as_key(rcmp->left()).path()[0] == 2);
 }
 
-// On `t1 JOIN t2 ON t1.k = t2.k2`, `WHERE t1.k = 5` also synthesizes `t2.k2 = 5` and pushes it below
-// t2's scan too, since a matched inner-join row has t1.k == t2.k2.
+// An equi-join condition lets a WHERE on one side (`t1.k=5`) synthesize the same filter on the other side
+// (`t2.k2=5`) and push it below both scans.
 TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_equi_propagation") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
@@ -1708,8 +1681,6 @@ TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_equi_propagation") 
     REQUIRE(as_parameter(rc->right()) == p5);
 }
 
-// Carries ANY comparison op through the equality: `WHERE t1.k > 5` on an equi-key also derives
-// `t2.k2 > 5`, since a matched row has t1.k == t2.k2.
 TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_range_propagation") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
@@ -1749,8 +1720,7 @@ TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_range_propagation")
     REQUIRE(as_parameter(rc->right()) == p5);
 }
 
-// Unsound on a LEFT join's null-padded side (an unmatched left row has t2.k2 = NULL), so it's
-// gated to INNER/CROSS only.
+// Transitive propagation is gated to INNER/CROSS: on LEFT join, an unmatched row has the right key NULL.
 TEST_CASE("optimizer::pushdown_filter::left_join_no_transitive_propagation") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
@@ -1783,7 +1753,6 @@ TEST_CASE("optimizer::pushdown_filter::left_join_no_transitive_propagation") {
     REQUIRE(join->children()[1] == right);
 }
 
-// drop_redundant_distinct clears a DISTINCT a GROUP BY already makes redundant.
 namespace {
     using components::logical_plan::make_node_group;
     using components::logical_plan::make_node_select;
@@ -1907,8 +1876,7 @@ TEST_CASE("optimizer::drop_redundant_distinct::distinct_on_keys_not_subset") {
     REQUIRE(static_cast<node_aggregate_t*>(out.get())->is_distinct());
 }
 
-// eager_aggregation pushes a MIN/MAX partial aggregate onto the single join side owning every group
-// key + aggregate arg, leaving a final merge above the join.
+// eager_aggregation pushes a MIN/MAX partial onto the single join side owning every group key and aggregate arg.
 namespace { namespace eag {
     using components::expressions::side_t;
 
@@ -1938,8 +1906,6 @@ namespace { namespace eag {
         return k;
     }
 
-        // agg_arg_path / key_path let a caller move the measure or key to the other (b) side
-        // for the cross-side negative test.
     node_aggregate_ptr make_join_agg(std::pmr::memory_resource* r,
                                      const std::string& fn,
                                      bool hash = true,
@@ -1960,8 +1926,6 @@ namespace { namespace eag {
         auto gexpr = make_scalar_expression(r, scalar_type::group_field, col(r, "g", key_path));
         auto aexpr = make_aggregate_expression(r, fn, key(r, "m"), col(r, "x", agg_arg_path));
         aexpr->set_mergeable(true);
-        // Stands in for what validation stamps: the rule runs after it, so the partial it
-        // builds must carry this type itself.
         aexpr->set_result_type(components::types::complex_logical_type{components::types::logical_type::BIGINT});
         std::vector<expression_ptr> gxs;
         gxs.emplace_back(gexpr);
@@ -1993,9 +1957,6 @@ TEST_CASE("optimizer::eager_aggregation::min_is_pushed") {
 
     auto* partial = eag::pushed_partial(outer);
     REQUIRE(partial != nullptr);
-    // A key is both grouped-on and named, so it appears twice in the expression list (the
-    // group_field that reduces it and the get_field that outputs it): 5 expressions for a
-    // 3-column output.
     REQUIRE(partial->expressions().size() == 5);
     for (size_t i = 0; i < 2; i++) {
         REQUIRE(partial->expressions()[i]->group() == expression_group::scalar);
@@ -2007,8 +1968,6 @@ TEST_CASE("optimizer::eager_aggregation::min_is_pushed") {
     }
     REQUIRE(partial->expressions()[4]->group() == expression_group::aggregate);
     CHECK(static_cast<aggregate_expression_t*>(partial->expressions()[4].get())->function_name() == "min");
-    // The rule runs after validation, so it must stamp what it builds itself; MIN(MIN)=MIN over
-    // the same column, so the partial reduces to the type the final one was resolved to.
     CHECK(static_cast<aggregate_expression_t*>(partial->expressions()[4].get())->result_type().type() ==
           components::types::logical_type::BIGINT);
 
@@ -2036,7 +1995,6 @@ TEST_CASE("optimizer::eager_aggregation::max_is_pushed") {
     components::planner::optimizer::eager_aggregation(&resource, outer);
     auto* partial = eag::pushed_partial(outer);
     REQUIRE(partial != nullptr);
-    // See min_is_pushed for the 5-expression layout.
     REQUIRE(partial->expressions().size() == 5);
     CHECK(static_cast<aggregate_expression_t*>(partial->expressions()[4].get())->function_name() == "max");
 }
@@ -2051,7 +2009,6 @@ TEST_CASE("optimizer::eager_aggregation::sum_is_not_pushed") {
 
 TEST_CASE("optimizer::eager_aggregation::nested_loop_join_is_not_pushed") {
     auto resource = core::pmr::otterbrix_resource();
-    // No single equi-key (algo stays nested), so there's no join column to add to the partial grouping.
     auto outer = eag::make_join_agg(&resource, "min", /*hash=*/false);
     components::planner::optimizer::eager_aggregation(&resource, outer);
     REQUIRE(eag::pushed_partial(outer) == nullptr);
@@ -2059,15 +2016,13 @@ TEST_CASE("optimizer::eager_aggregation::nested_loop_join_is_not_pushed") {
 
 TEST_CASE("optimizer::eager_aggregation::cross_side_reference_is_not_pushed") {
     auto resource = core::pmr::otterbrix_resource();
-    // Group key on the left (a), aggregate arg on the right (b): the measure spans both sides,
-    // so it isn't pushable to one side.
     auto outer = eag::make_join_agg(&resource, "min", /*hash=*/true, /*key_path=*/0, /*agg_arg_path=*/3);
     components::planner::optimizer::eager_aggregation(&resource, outer);
     REQUIRE(eag::pushed_partial(outer) == nullptr);
 }
 
-// try_fold_compare must skip (not assert) an unfoldable kind like regex; try_fold_scalar must not box
-// non-numeric constants either, since compute_binary_arithmetic throws std::logic_error on them.
+// try_fold_compare must skip (not assert) an unfoldable kind like regex; try_fold_scalar must decline
+// non-numeric constants rather than box them, since compute_binary_arithmetic throws on them.
 TEST_CASE("optimizer::constant_folding::unfoldable_comparison_kind_is_left_unfolded") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
@@ -2100,8 +2055,6 @@ TEST_CASE("optimizer::constant_folding::non_numeric_constant_arithmetic_is_decli
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
 
-    // Mixed STRING/BIGINT: fold declines and the expression survives; boxing into vectors instead
-    // would fold this to a constant NULL.
     components::planner::optimize(&resource, node, params.get());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());

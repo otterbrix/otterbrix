@@ -1,27 +1,6 @@
-// The CREATE INDEX catchup may add to the index; it may not take anything away.
-//
-// operator_create_index_backfill scans under the build's snapshot, then re-reads the journal past
-// the build's start watermark so rows committed mid-scan aren't missed. Each record goes to
-// manager_index_t::apply_wal_record_for_index, which has one leg: PHYSICAL_INSERT/UPDATE stage
-// inserts, PHYSICAL_DELETE is recognised and dropped.
-//
-// The delete leg isn't a mirror of the insert leg, for the same reason commit_deletes holds its
-// erases back: a physical record reaches the journal before its transaction has decided anything,
-// and only the COMMIT marker (which crash recovery reads, not this catchup) can filter it. So an
-// undecided record fails in opposite directions:
-//
-//   INSERT leg  names a row nobody can see  -> a SUPERSET, dropped by storage_fetch under the
-//                                              reader's own snapshot.
-//   DELETE leg  takes an id off a LIVE row  -> a SUBSET, and nothing downstream can restore an
-//                                              id the index never named.
-//
-// Such a staged-delete bucket would also have no exit: a build publishes through commit_inserts,
-// and commit_deletes keys off base-table DELETE ranges a build has none of. The staged deletes
-// would sit in the agent for the index's whole life, visible only to the build itself (read_rows
-// merges the asking transaction's own bucket), which they'd answer short.
-//
-// Both cases drive the manager's handlers directly with the agent pumped by hand, as
-// test_index_delete_horizon.cpp does, so the interleaving is chosen rather than raced for.
+// The CREATE INDEX catchup may add to the index; it may not take anything away --
+// apply_wal_record_for_index stages only the INSERT/UPDATE leg of a re-read journal record, since
+// an undecided DELETE would take an id off a still-live row nothing could restore.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -70,7 +49,6 @@ namespace {
     constexpr components::catalog::oid_t kTableOid = 17500;
     constexpr components::catalog::oid_t kIndexOid = 17501;
 
-    // Resume the coroutine `fut` is suspended in, the way the manager's own loop thread does.
     // Duplicated from test_index_delete_horizon.cpp rather than shared, per that file's note.
     template<typename T>
     bool resume_awaited(const actor_zeta::unique_future<T>& fut) {
@@ -90,7 +68,6 @@ namespace {
         return true;
     }
 
-    // Drive a manager handler to completion, pumping the one agent it can talk to.
     template<typename T, typename Agent>
     void settle(actor_zeta::unique_future<T>& fut, Agent* agent) {
         for (int attempt = 0; attempt < 8 && !fut.is_ready(); ++attempt) {
@@ -100,7 +77,6 @@ namespace {
         REQUIRE(fut.is_ready());
     }
 
-    // One message to the agent, pumped to completion, its reply taken.
     template<auto Handler, typename Agent, typename... Args>
     auto ask(Agent* agent, Args&&... args) {
         auto [needs_sched, future] =
@@ -145,13 +121,8 @@ namespace {
 
 } // namespace
 
-// Three rows are backfilled by the scan leg (keys 10/20/30 at physical ids 0/1/2). The journal
-// then shows one PHYSICAL_DELETE for the middle row -- a record with no commit marker behind it,
-// which is every physical record the catchup can ever see. A full scan at this point still
-// answers all three rows: nothing committed that delete, so the index must answer with at least
-// those three ids to every reader, build included. A staged delete would instead sit in
-// pending_deletes_[build txn], and read_rows merges the asking transaction's own bucket -- so
-// the build's own read would come back {0, 2}.
+// Keys 10/20/30 backfilled at ids 0/1/2, then one undecided PHYSICAL_DELETE for the middle row: a
+// staged-delete bucket would answer {0, 2} for the build's own read; a full scan still answers all three.
 TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the built index") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");
@@ -185,10 +156,8 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
     const uint64_t onlooker_txn = TRANSACTION_ID_START + 12;
     const uint64_t build_commit_id = 300;
 
-    // What the table holds, and what a full scan of it therefore answers for `id >= 10`.
     const std::vector<int64_t> live_rows{0, 1, 2};
 
-    // 1. The backfill scan leg: three rows, contiguous from physical id 0.
     {
         auto fut = manager->insert_rows(ctx_for(session, build_txn),
                                         kTableOid,
@@ -199,9 +168,7 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
         REQUIRE_FALSE(std::move(fut).take_ready().contains_error());
     }
 
-    // 2. The catchup leg, exactly as operator_create_index_backfill sends it: one
-    //    PHYSICAL_DELETE naming physical row 1, carrying the OLD chunk the operator
-    //    recovered with a RAW storage_fetch, tagged with the CREATE INDEX transaction.
+    // Exactly as operator_create_index_backfill sends it: the OLD chunk from a RAW storage_fetch.
     const auto deferred_before = services::index::index_deferred_deletes();
     {
         std::pmr::vector<int64_t> row_ids(&resource);
@@ -220,10 +187,7 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
         settle(fut, agent);
     }
 
-    // 3. The build publishes, the only way a build ever does: commit_inserts for the
-    //    indexed table (executor.cpp, the CREATE INDEX back-channel). There is no
-    //    commit_deletes here and there cannot be one -- the build wrote no base-table
-    //    DELETE ranges.
+    // No commit_deletes here, and there cannot be one -- the build wrote no base-table DELETE ranges.
     {
         std::pmr::vector<components::catalog::oid_t> oids(&resource);
         oids.emplace_back(kTableOid);
@@ -261,9 +225,7 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
     std::filesystem::remove_all(path);
 }
 
-// The bucket the build left behind can't be fixed by publishing it later, so this pins the
-// other end: a horizon that has run past every commit id in sight must not erase anything the
-// catchup saw. Nothing committed those deletes, so the horizon has no opinion on them.
+// Nothing committed the catchup's undecided deletes, so the horizon has no opinion on them.
 TEST_CASE("services::index::the horizon does not erase what a CREATE INDEX catchup read") {
     auto resource = core::pmr::otterbrix_resource();
     auto log = initialization_logger("python", "/tmp/docker_logs/");

@@ -1,14 +1,7 @@
-// The unwritten DROP defaults to RESTRICT -- PostgreSQL parity (#638).
-//
-// gram.y's opt_drop_behavior yields DROP_RESTRICT for both the written word and the empty
-// alternative -- in PostgreSQL they are the same thing, so the two are deliberately one
-// token. drop_behavior_of reads that token as restrict_, and a bare DROP is refused when a
-// 'n' (normal) pg_depend edge lands on the seed.
-//
-// The one statement form that stays implicitly CASCADE is DROP DATABASE: its grammar takes
-// no behavior at all ("This is implicitly CASCADE", gram.y ~:11047), so
-// transform_drop_database stamps cascade_ explicitly -- the control case below is what fails
-// if that stamp is ever lost.
+// PostgreSQL parity (#638): gram.y's opt_drop_behavior yields DROP_RESTRICT for both the written word and
+// the empty alternative, since PG treats them as the same token; drop_behavior_of reads it as restrict_.
+// DROP DATABASE's grammar takes no behavior word at all ("implicitly CASCADE", gram.y ~11047), so
+// transform_drop_database stamps cascade_ explicitly.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -47,8 +40,6 @@ namespace {
 
 } // namespace
 
-// A bare DROP TABLE on a table a live FOREIGN KEY references is refused, and the
-// refusal leaves the parent fully alive; the same statement WITH CASCADE drops it.
 TEST_CASE("integration::cpp::drop_default_restrict::bare_drop_table_refuses_fk_parent", "[dropdefault]") {
     auto config = make_test_config(fixture_path("fk_parent"));
     config.log.level = log_t::level::off;
@@ -62,7 +53,6 @@ TEST_CASE("integration::cpp::drop_default_restrict::bare_drop_table_refuses_fk_p
         REQUIRE(cur->is_error());
     }
 
-    // The refusal touched nothing: the parent answers, and the FK still enforces.
     REQUIRE(run_ok(d, "SELECT id FROM ddr.parent;")->size() == 1);
     {
         auto bad = exec(d, "INSERT INTO ddr.child (id, pid) VALUES (11, 999);");
@@ -70,14 +60,12 @@ TEST_CASE("integration::cpp::drop_default_restrict::bare_drop_table_refuses_fk_p
         REQUIRE(bad->is_error());
     }
 
-    // The written word still cascades.
     run_ok(d, "DROP TABLE ddr.parent CASCADE;");
     auto gone = exec(d, "SELECT id FROM ddr.parent;");
     CHECK_FALSE(gone->is_success());
 }
 
-// Control: a table with only its own dependents — PK constraint ('i' edges) and
-// an index ('a' edge) — is droppable bare: auto/internal children never block.
+// Control: only 'i' (PK) and 'a' (index) pg_depend edges -- auto/internal children never block a bare DROP.
 TEST_CASE("integration::cpp::drop_default_restrict::own_dependents_do_not_block", "[dropdefault]") {
     auto config = make_test_config(fixture_path("own_deps"));
     config.log.level = log_t::level::off;
@@ -95,10 +83,8 @@ TEST_CASE("integration::cpp::drop_default_restrict::own_dependents_do_not_block"
     CHECK_FALSE(gone->is_success());
 }
 
-// Control: bare ALTER TABLE ... DROP COLUMN keeps working when the column's only
-// dependents are an index ('a') and its own PK membership ('i') — the sole 'n'
-// edge a column can carry is an FK parent reference, and THAT refuses under
-// every behavior (test_fk_parent_column_drop.cpp pins it).
+// Control: only 'a'/'i' edges here; a column's sole 'n' edge (FK parent ref) refuses under every behavior
+// (test_fk_parent_column_drop.cpp).
 TEST_CASE("integration::cpp::drop_default_restrict::bare_drop_column_with_index_still_drops", "[dropdefault]") {
     auto config = make_test_config(fixture_path("drop_column"));
     config.log.level = log_t::level::off;
@@ -116,9 +102,7 @@ TEST_CASE("integration::cpp::drop_default_restrict::bare_drop_column_with_index_
     REQUIRE(run_ok(d, "SELECT a FROM ddr.t;")->size() == 1);
 }
 
-// Control: DROP DATABASE takes no behavior word in the grammar and is implicitly
-// CASCADE — a populated database still drops bare. Loses red the day
-// transform_drop_database stops stamping cascade_.
+// Regresses if transform_drop_database stops stamping cascade_.
 TEST_CASE("integration::cpp::drop_default_restrict::drop_database_stays_implicit_cascade", "[dropdefault]") {
     auto config = make_test_config(fixture_path("drop_db"));
     config.log.level = log_t::level::off;

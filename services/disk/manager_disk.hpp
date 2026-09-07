@@ -71,7 +71,6 @@ namespace services::disk {
         /// Refuses a `.wal_id` sidecar that claims a checkpoint over a never-checkpointed file.
         [[nodiscard]] bool never_checkpointed() const noexcept { return never_checkpointed_; }
 
-        // Ctors must not throw (noexcept bootstrap path); errors are recorded here instead.
         bool construction_failed() const noexcept { return construction_error_.contains_error(); }
         [[nodiscard]] const core::error_t& construction_error() const noexcept { return construction_error_; }
 
@@ -141,13 +140,10 @@ namespace services::disk {
         // Blocks drop_column removed but not yet released; NOT durable, so a crash just leaks space.
         std::pmr::vector<uint64_t> pending_released_blocks_;
         wal::id_t checkpoint_wal_id_{0};
-        // True unless a LOAD's sidecar could not be read (see checkpoint_wal_id_known()).
         bool checkpoint_wal_id_known_{true};
         wal::id_t prev_checkpoint_wal_id_{0};
-        // Cleared by a successful checkpoint; a transient failure costs one un-compacted round.
         bool last_checkpoint_failed_{false};
         core::error_t construction_error_{core::error_t::no_error()};
-        // Set by the DISK load ctor when the .otbx was proven young and built empty (see never_checkpointed()).
         bool never_checkpointed_{false};
 #ifdef DEV_MODE
         // DEV_MODE safety net: fingerprint of the durable root, checked whenever needs_checkpoint() answers false.
@@ -167,9 +163,7 @@ namespace services::disk {
         // Declared BEFORE `storage`: every adapter built below borrows it (see note_column_identity).
         std::vector<components::table::column_definition_t> unmaterialized_columns;
         std::unique_ptr<components::storage::storage_t> storage;
-        // On-disk path; used by checkpoint_all (sidecar) and drop_storage_one_local (file removal).
         std::filesystem::path otbx_path;
-        // relkind='g' dynamic-schema table; only these may hold same-named columns of different types.
         bool is_computed = false;
 
         /// Create new table.otbx; `is_computed_create` is explicit rather than inferred (WAL-replay would misfile it).
@@ -198,7 +192,6 @@ namespace services::disk {
 
         void add_column(components::table::column_definition_t& col, std::pmr::memory_resource* res) {
             table_storage.add_column(col);
-            // The column now HAS rows; it must stop being answered with NULLs.
             drop_unmaterialized(col.name());
             storage = std::make_unique<components::storage::table_storage_adapter_t>(table_storage.table(),
                                                                                      res,
@@ -222,7 +215,6 @@ namespace services::disk {
             return table_storage.rename_column(old_attname, new_attname);
         }
 
-        // Parks a column's identity before it materialises; reads see default/NULL until then (PG's attmissingval).
         void note_column_identity(std::string attname,
                                   std::uint32_t attoid,
                                   const components::types::complex_logical_type& type,
@@ -230,7 +222,6 @@ namespace services::disk {
             if (attname.empty() || attoid == 0) {
                 return;
             }
-            // Already materialised columns win over a stale note (avoids a duplicate all-NULL copy).
             for (const auto& column : table_storage.table().columns()) {
                 if (column.name() == attname) {
                     return;
@@ -241,7 +232,6 @@ namespace services::disk {
                     if (p.attoid() == 0) {
                         p.set_attoid(attoid);
                     }
-                    // A publisher that knows the default fills an entry that doesn't; never overwrites a filled one.
                     if (!p.has_default_value() && default_value.has_value()) {
                         p.set_default_value(default_value);
                     }
@@ -286,11 +276,10 @@ namespace services::disk {
             }
         }
 
-        // Re-derives published columns via the same diff as rearm_dropped_column_blocks_sync; NAME guards attoid 0.
         void adopt_catalog_columns(const std::vector<components::table::column_definition_t>& catalog_columns) {
             for (const auto& def : catalog_columns) {
                 if (def.attoid() == 0) {
-                    continue; // relkind='g' columns live in pg_computed_column and carry none
+                    continue;
                 }
                 bool in_storage = false;
                 for (const auto& column : table_storage.table().columns()) {
@@ -307,14 +296,12 @@ namespace services::disk {
         }
     };
 
-    // One tombstoned pg_class row, as scan_dropped_oids_sync reports it.
     struct dropped_class_row_t {
         components::catalog::oid_t oid;
         components::catalog::oid_t namespace_oid;
         std::uint64_t delete_id;
     };
 
-    // Deferred DROP TABLE GC entry; on_horizon_advanced removes entries older than new_horizon.
     struct dropped_storage_entry_t {
         components::catalog::oid_t oid;
         uint64_t dropped_at_commit_id;
@@ -326,7 +313,6 @@ namespace services::disk {
     [[nodiscard]] core::error_t verify_otbx_sidecars(const std::filesystem::path& otbx_path,
                                                      std::pmr::memory_resource* resource);
 
-    // One entry per live pg_index row; `type` is never defaulted — invalid indtype fails loudly.
     struct pg_index_row_t {
         components::catalog::oid_t oid;
         components::catalog::oid_t table_oid;
@@ -359,7 +345,6 @@ namespace services::disk {
                        log_t& log);
         ~manager_disk_t();
 
-        // True if a storage entry is registered for `table_oid`; sync probe, single-threaded callers only.
         bool has_storage(components::catalog::oid_t table_oid) const noexcept {
             if (agents_.empty())
                 return false;
@@ -368,7 +353,6 @@ namespace services::disk {
                 return false;
             return agents_[idx]->has_storage_sync(table_oid);
         }
-        // Observability: is a live fetch-next cursor still gating compact() on this oid?
         bool has_active_scan_for_oid_sync(components::catalog::oid_t table_oid) const noexcept {
             if (agents_.empty())
                 return false;
@@ -392,15 +376,12 @@ namespace services::disk {
                                                              std::vector<components::table::column_definition_t> columns,
                                                              const std::filesystem::path& otbx_path,
                                                              bool is_computed);
-        // System catalog (pg_*) bootstrap, called pre-actor-spawn; idempotent across restarts.
         void bootstrap_system_tables_sync();
-        // Walks config_.path for user-table .otbx files, loaded after bootstrap_system_tables_sync.
         void load_user_table_storages_sync();
         // Rebuilds the .otbx for tables load_user_table_storages_sync couldn't load; returns divergences NOT closed.
         [[nodiscard]] core::result_wrapper_t<std::size_t> rehydrate_missing_user_storages_sync();
         // Re-derives a column drop whose release a crash discarded; runs after both user-table walks and WAL replay.
         void rearm_dropped_column_blocks_sync();
-        // Live user-table OIDs from pg_class, so WAL replay skips records for an already-dropped table.
         std::unordered_set<components::catalog::oid_t> alive_user_oids_sync() const;
         // Resolves pg_class.relkind. '\0' means "no such row" ONLY — an unreadable pg_class travels
         // the error wrapper instead, or a DOCUMENT table's dynamic schema would silently vanish.
@@ -409,20 +390,16 @@ namespace services::disk {
         // Resolves pg_class.relnamespace, naming a table's `.otbx` directory (not well_known_oid::main_database).
         components::catalog::oid_t relnamespace_for_oid_sync(components::catalog::oid_t table_oid) const;
 
-        // Live user-OIDs with relkind 'r'/'m', for manager_index_t to populate empty engines at startup.
         std::pmr::vector<components::catalog::oid_t> scan_live_table_oids_sync() const;
 
-        // One pg_index_row_t per live pg_index row (see that struct), to spawn per-index disk agents.
         std::pmr::vector<pg_index_row_t> scan_alive_pg_index_sync() const;
 
         // Full-storage scan for post-bootstrap index rebuild; NO CALLER TODAY (the rebuild it fed was a no-op).
         std::pmr::vector<components::vector::data_chunk_t>
         scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid, std::pmr::memory_resource* resource) const;
 
-        // (oid, relnamespace, delete_id) per tombstoned pg_class row, for on_horizon_advanced's crash-mid-DROP GC.
         std::pmr::vector<dropped_class_row_t> scan_dropped_oids_sync();
 
-        // Index-bootstrap alias — same tombstones matter for index GC as for table GC.
         std::pmr::vector<dropped_class_row_t> scan_dropped_table_oids_sync() { return scan_dropped_oids_sync(); }
 
         const std::filesystem::path& path_db() const noexcept { return config_.path; }
@@ -431,20 +408,16 @@ namespace services::disk {
         static constexpr components::catalog::oid_t system_dir_oid() noexcept {
             return components::catalog::well_known_oid::main_database;
         }
-        // Seeds oid_gen_ to (max on-disk system OID)+1 so future allocate() never collides.
         void restore_oid_generator_sync();
 
-        // Max MVCC commit-id in pg_attribute's commit-id columns, to re-seed the dispatcher's clock on reopen.
         std::uint64_t max_persisted_commit_id_sync() const;
 
         // Most recent value for `name` in pg_settings, empty ONLY if no such row exists (else throws).
         std::string read_setting_sync(std::string_view name);
 
-        // Per-item resolve methods; all wrap result_wrapper_t since the SCAN can fail, distinct from "not found".
         unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
         resolve_namespace(execution_context_t ctx, std::string name);
 
-        // Cross-namespace: ALL pg_proc rows matching `name`. Used by UDF admin (conflict detection / purge).
         unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
         resolve_function_by_name(execution_context_t ctx, std::string name);
 
@@ -454,13 +427,10 @@ namespace services::disk {
                       components::catalog::oid_t source_oid,
                       components::catalog::oid_t target_oid);
 
-        // Admin-path enumerator; bypasses the per-name cache, which can't serve "all namespaces".
         unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>> list_namespaces(execution_context_t ctx);
 
-        // Batch OIDs for the planner to build catalog rows before create_plan; wasted OIDs on rejection are fine.
         unique_future<std::vector<components::catalog::oid_t>> allocate_oids_batch(std::size_t count);
 
-        // WAL-safe append of one row, or why not; wrapped since a zero-count range reads as a no-op.
         unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>
         append_pg_catalog_row(execution_context_t ctx,
                               components::catalog::oid_t table_oid,
@@ -471,7 +441,6 @@ namespace services::disk {
                                                    std::int64_t oid_col_idx,
                                                    components::catalog::oid_t target_oid);
 
-        // Batched delete: per-spec row counts or why not; a zero count is honest, refusals travel the wrapper.
         unique_future<core::result_wrapper_t<std::pmr::vector<std::uint64_t>>>
         delete_pg_catalog_rows_many(execution_context_t ctx, std::pmr::vector<pg_catalog_delete_spec_t> specs);
 
@@ -482,7 +451,6 @@ namespace services::disk {
                                              std::pmr::vector<components::pg_attribute_commit_id_backfill_t> backfills,
                                              std::uint64_t commit_id);
 
-        // Batched keyed scan: result[i] = matching row_ids for key-tuple i (columnar `keys`, shared table_oid).
         unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>>
         scan_by_keys(execution_context_t ctx,
                      components::catalog::oid_t table_oid,
@@ -497,7 +465,6 @@ namespace services::disk {
                            components::vector::data_chunk_t keys,
                            std::pmr::vector<std::uint64_t> projected_cols);
 
-        // Batched multi-key version of read_chunks_by_key; result.size() == keys.size(), input order.
         unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
         read_chunks_by_keys(execution_context_t ctx,
                             components::catalog::oid_t table_oid,
@@ -524,7 +491,6 @@ namespace services::disk {
 
         // ALTER TABLE ADD COLUMN: operator_alter_column_add_t; computed tables: operator_computed_field_register_t.
 
-        // Direct WAL replay: answers the START ROW written, or why not — a bare 0 is ambiguous otherwise.
         core::result_wrapper_t<uint64_t> direct_append_sync(components::catalog::oid_t table_oid,
                                                             components::vector::data_chunk_t& data);
         // These three REFUSE (not no-op) with no storage: on WAL replay, a dropped mutation never re-derives.
@@ -534,7 +500,6 @@ namespace services::disk {
         [[nodiscard]] core::error_t direct_update_sync(components::catalog::oid_t table_oid,
                                                        const std::pmr::vector<int64_t>& row_ids,
                                                        components::vector::data_chunk_t& new_data);
-        // WAL-replay of PHYSICAL_ADD_COLUMN; `schema_chunk` is a 0-row chunk of the new columns, idempotent by name.
         [[nodiscard]] core::error_t direct_add_column_sync(components::catalog::oid_t table_oid,
                                                            const components::vector::data_chunk_t& schema_chunk);
 
@@ -557,12 +522,10 @@ namespace services::disk {
         checkpoint_all(session_id_t session, wal::id_t current_wal_id, uint64_t compact_watermark);
         // Fans cleanup_versions to every agent; renumbers nothing, so VACUUM owes no index rebuild.
         unique_future<void> vacuum_all(session_id_t session, uint64_t lowest_active_start_time);
-        // Batched GC-check + compact, routed per owning agent and dispatched two-phase.
         unique_future<void> maybe_cleanup_many(execution_context_t ctx,
                                                std::pmr::vector<components::catalog::oid_t> table_oids,
                                                uint64_t compact_watermark);
 
-        // Event-driven GC subscriber: each agent purges its own dropped_storages_ past new_horizon.
         unique_future<void> on_horizon_advanced(uint64_t new_horizon);
 
         /// Bootstrap-only: crash-recovery rebuild populates dropped_storages_ (runtime DROP uses
@@ -599,13 +562,11 @@ namespace services::disk {
         unique_future<void> drop_storage_many(session_id_t session,
                                               std::pmr::vector<components::catalog::oid_t> table_oids);
 
-        // Storage queries; both wrap result_wrapper_t since empty/zero are real answers, not "oid unowned".
         unique_future<core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>>
         storage_types(session_id_t session, components::catalog::oid_t table_oid);
         unique_future<core::result_wrapper_t<uint64_t>> storage_total_rows(session_id_t session,
                                                                            components::catalog::oid_t table_oid);
 
-        // Streaming fetch-next scan source; cursor_id==0 OPENs, non-zero ADVANCEs.
         unique_future<core::result_wrapper_t<fetch_batch_t>>
         storage_fetch_next_batch(session_id_t session,
                                  components::catalog::oid_t table_oid,
@@ -617,7 +578,6 @@ namespace services::disk {
         unique_future<void> storage_close_cursor(session_id_t session,
                                                  components::catalog::oid_t table_oid,
                                                  uint64_t cursor_id);
-        // Compact-hold open (see disk_contract); released via storage_close_cursor.
         unique_future<core::result_wrapper_t<uint64_t>> storage_open_scan_hold(session_id_t session,
                                                                                components::catalog::oid_t table_oid);
         unique_future<core::result_wrapper_t<uint64_t>> storage_compact_epoch(session_id_t session,
@@ -642,13 +602,11 @@ namespace services::disk {
                       components::table::fetch_visibility_t visibility,
                       int64_t limit,
                       uint64_t expected_compact_epoch);
-        // Appends every chunk into one coalesced range; wrapped so write_conflict/OOM reaches operator_insert.
         unique_future<core::result_wrapper_t<std::pair<uint64_t, uint64_t>>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::data_chunk_t> data);
 
-        // Updates every chunk; row_ids[i] pairs positionally with data[i], wrapped for write_conflict/OOM.
         unique_future<core::result_wrapper_t<std::pair<int64_t, uint64_t>>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
@@ -725,7 +683,6 @@ namespace services::disk {
                                const std::filesystem::path& otbx_path,
                                std::vector<components::table::column_definition_t> catalog_columns);
 
-        // One pg_attribute scan grouping live columns per `wanted` relid; oids with none are absent.
         [[nodiscard]] std::unordered_map<components::catalog::oid_t,
                                          std::vector<components::table::column_definition_t>>
         collect_catalog_columns_sync(const std::unordered_set<components::catalog::oid_t>& wanted) const;
@@ -752,7 +709,6 @@ namespace services::disk {
 
         void create_agent(int count_agents);
 
-        // Single scan funnel over the owning agent; REFUSES (io_error) with no owner, empty batch = no rows.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         scan_table(components::catalog::oid_t table_oid,
                    std::unique_ptr<components::table::table_filter_t> filter,

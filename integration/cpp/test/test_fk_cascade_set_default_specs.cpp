@@ -1,16 +1,8 @@
-// SET DEFAULT with a spec list shorter than the column list is a refusal, not a SET NULL.
-//
-// operator_fk_cascade_t's ON DELETE SET DEFAULT leg reads child_col_default_specs[ci] for
-// every child_col_schema_indices[ci], guarded only by `ci < child_col_default_specs.size()`.
-// A spec vector SHORTER than the position vector therefore didn't fail: the tail columns
-// silently fell into the SET NULL arm, substituting one referential action for another. The
-// one producer (enrich) fills both vectors in a single loop, so the skew isn't reachable
-// through SQL today -- this guard is the floor under an fk_info_t arriving by another road,
-// and this test drives the operator directly with the poisoned descriptor.
-//
-// The guard sits BEFORE the first disk send, which is what lets this test run without a disk
-// actor: without it the coroutine would sail past the arity check into a send on an empty
-// address (abort); with it, a clean refusal naming the actual defect.
+// A default-spec list shorter than the position list must refuse rather than silently fall
+// through to SET NULL, substituting one referential action for another; unreachable via SQL, so
+// this drives operator_fk_cascade_t directly with the poisoned descriptor.
+// The refusal must run before the first disk send, or an empty mailbox address would abort
+// instead of erroring cleanly -- which is also why this test needs no disk actor.
 
 #include <catch2/catch_test_macros.hpp>
 #include <core/pmr.hpp>
@@ -28,8 +20,8 @@ using namespace components;
 
 namespace {
 
-    // Same stand-in as test_unique_constraint_operator.cpp: exposes a fixed
-    // write-set (the deleted parent rows) as constraint_input().
+    // Same stand-in as test_unique_constraint_operator.cpp: exposes a fixed write-set as
+    // constraint_input().
     class cascade_source_operator_t final : public operators::read_only_operator_t {
     public:
         cascade_source_operator_t(std::pmr::memory_resource* resource, operators::operator_data_ptr data)
@@ -44,7 +36,6 @@ TEST_CASE("fk cascade: SET DEFAULT with fewer default specs than columns is refu
           "[fk_cascade_specs]") {
     auto resource = core::pmr::otterbrix_resource();
 
-    // One deleted parent row with its key column, so the cascade has work to do.
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("id");
@@ -58,7 +49,7 @@ TEST_CASE("fk cascade: SET DEFAULT with fewer default specs than columns is refu
     fk.child_col_indices = {0};
     fk.parent_col_indices = {0};
     fk.child_col_schema_indices = {1};
-    fk.child_col_default_specs = {}; // SHORTER than the position list — the poison.
+    fk.child_col_default_specs = {}; // shorter than the position list — the poison.
     fk.child_table_oid = catalog::oid_t{16385};
     fk.parent_table_oid = catalog::oid_t{16386};
     fk.del_action = 'd'; // SET DEFAULT

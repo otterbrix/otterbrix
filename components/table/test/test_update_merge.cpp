@@ -9,20 +9,6 @@
 #include <string>
 #include <unistd.h>
 
-// update_segment_t::update's merge leg (merge_update -> merge_update_loop ->
-// merge_update_loop_internal) had never been exercised by any test in this tree before this file
-// (test_column.cpp updates each column exactly once).
-//
-// Its tail loop:
-//     for (; aidx < count; aidx++) { ...; count++; }
-// uses `count` as BOTH the loop bound and the running output index, so the condition never turns
-// false: indexing.get_index(aidx) walks off the indexing vector and result_values[result_offset++]
-// overruns its 2048-entry stack array (EXC_BAD_ACCESS at update_segment.hpp).
-//
-// Triggered whenever an incoming id sorts AFTER every id already in base_info — i.e. the second
-// update names a HIGHER row than the first, the shape
-// agent_disk_t::update_pg_attribute_commit_id_field_inner drives once it can see the row.
-
 using namespace components::types;
 using namespace components::vector;
 using namespace components::table;
@@ -54,8 +40,7 @@ namespace {
         ~update_merge_env() { std::remove(path.c_str()); }
     };
 
-    // UINTEGER on purpose: the crash was reported out of
-    // merge_update_loop_internal<unsigned int, unsigned int>.
+    // UINTEGER on purpose: the crash was reported out of merge_update_loop_internal<unsigned int, unsigned int>.
     std::unique_ptr<column_data_t> make_filled_column(update_merge_env& env, uint64_t count) {
         auto column = column_data_t::create_column(&env.resource, env.block_manager, 0, 0, logical_type::UINTEGER);
         vector_t v(&env.resource, logical_type::UINTEGER, count);
@@ -68,7 +53,7 @@ namespace {
         return column;
     }
 
-    // One-row update of `row_id`, through the same entry point row_group_t::update uses.
+    // Through the same entry point row_group_t::update uses.
     void update_one(update_merge_env& env, column_data_t& column, int64_t row_id, uint32_t value) {
         vector_t v(&env.resource, logical_type::UINTEGER, 1);
         v.set_value(0, value);
@@ -86,12 +71,13 @@ namespace {
 
 } // namespace
 
+// merge_update_loop_internal's tail loop uses `count` as both the loop bound and the running
+// output index, so it never terminates and overruns the 2048-entry result_values stack array.
 TEST_CASE("components::table::update_merge::a_second_update_of_a_higher_row_in_the_same_vector") {
     update_merge_env env("higher_row");
     auto column = make_filled_column(env, 64);
 
     update_one(env, *column, 0, 900);
-    // Row 5 sorts after row 0, so the merge exhausts base_info and falls into the tail loop.
     update_one(env, *column, 5, 905);
 
     CHECK(read_row(env, *column, 0) == 900);
@@ -99,8 +85,6 @@ TEST_CASE("components::table::update_merge::a_second_update_of_a_higher_row_in_t
     CHECK(read_row(env, *column, 6) == 6);
 }
 
-// Same defect, reached by ascending row ids across successive updates instead. Every
-// earlier update stays readable.
 TEST_CASE("components::table::update_merge::repeated_ascending_updates_do_not_run_off_the_merge") {
     update_merge_env env("ascending");
     auto column = make_filled_column(env, 64);
@@ -114,14 +98,8 @@ TEST_CASE("components::table::update_merge::repeated_ascending_updates_do_not_ru
     CHECK(read_row(env, *column, 8) == 8);
 }
 
-// update_select_element_t::operation copies an incoming std::string_view into the segment's own
-// heap (initialize_update_data and merge's phase-1 base branch both do it) — but phase 2's
-// pick_new stored the raw view straight off the caller's update vector, a temporary at every
-// caller (e.g. agent_disk_t::direct_update_sync's local data_chunk_t), leaving the merged row
-// pointing at freed memory.
-//
-// Reads as catalog corruption, not a crash: a pg_attribute commit-id backfill left an attname
-// pointing at reused memory (observed as "path 'd' was not found" / "path 'a' is ambiguous").
+// pick_new (merge's phase 2) stored the caller's std::string_view uncopied, unlike phase 1's base
+// branch, leaving the merged row pointing at the caller's freed temporary.
 TEST_CASE("components::table::update_merge::a_merged_string_update_owns_its_bytes") {
     update_merge_env env("strings");
     constexpr uint64_t rows = 64;
@@ -146,8 +124,6 @@ TEST_CASE("components::table::update_merge::a_merged_string_update_owns_its_byte
     }
 
     auto update_string = [&](int64_t row_id, const std::string& value) {
-        // Scoped exactly as every production caller scopes it: the chunk holding the
-        // bytes dies the moment update() returns.
         data_chunk_t upd(&env.resource, string_types, 1);
         upd.set_cardinality(1);
         upd.set_value(0, 0, std::string_view{value});
@@ -165,10 +141,8 @@ TEST_CASE("components::table::update_merge::a_merged_string_update_owns_its_byte
     };
 
     update_string(0, "first_update_value_for_row_zero");
-    // Row 5 sorts after row 0: the merge leg, whose pick_new stored the view uncopied.
     update_string(5, "second_update_value_for_row_five");
 
-    // Give the resource every chance to hand those freed bytes to somebody else.
     for (int i = 0; i < 32; ++i) {
         data_chunk_t churn(&env.resource, string_types, 64);
         churn.set_cardinality(64);
@@ -183,8 +157,8 @@ TEST_CASE("components::table::update_merge::a_merged_string_update_owns_its_byte
     CHECK(read_string(6) == "original_row_value_6");
 }
 
-// The mirror leg: a second update naming a LOWER row runs the OTHER tail loop, bounded by
-// base_info.N, which terminates fine — guards the working half against a regression.
+// The mirror leg: a lower row runs the other tail loop, bounded by base_info.N, which
+// terminates fine, guarding the working half against regression.
 TEST_CASE("components::table::update_merge::a_second_update_of_a_lower_row_keeps_both") {
     update_merge_env env("lower_row");
     auto column = make_filled_column(env, 64);
@@ -196,15 +170,8 @@ TEST_CASE("components::table::update_merge::a_second_update_of_a_lower_row_keeps
     CHECK(read_row(env, *column, 5) == 905);
 }
 
-// undo_buffer_pointer_t::pin() must not swallow buffer_manager_t::pin()'s refusal in an assert
-// (vanishes under -DNDEBUG, returning an undo_buffer_reference with an empty handle): every
-// consumer calls update_info() = reinterpret_cast<update_info_t*>(handle.ptr() + position), so an
-// empty handle silently yields `nullptr + position` in release builds. Returns
-// core::result_wrapper_t<undo_buffer_reference> instead — the refusal is a value.
-//
-// NOT covered: the refusal leg itself. Forcing standard_buffer_manager_t::pin to fail on a
-// TRANSACTION block needs it evicted and reload starved, and this tree has no seam for that
-// (test_eviction_guard.cpp exhausts the pool at allocate(), not at re-pin).
+// pin() returns a result_wrapper_t<undo_buffer_reference> rather than swallowing
+// buffer_manager_t::pin()'s refusal in an assert, which vanishes under -DNDEBUG into nullptr + position.
 TEST_CASE("components::table::update_merge::a_pinned_undo_node_is_a_real_address") {
     update_merge_env env("pin_contract");
 
@@ -217,35 +184,27 @@ TEST_CASE("components::table::update_merge::a_pinned_undo_node_is_a_real_address
 
     auto pinned = pointer.pin();
     REQUIRE_FALSE(pinned.has_error());
-    // The whole point: a successful pin resolves to a real address, never nullptr + position.
     CHECK(pinned.value().ptr() != nullptr);
     CHECK(pinned.value().is_set());
 }
 
-// buffer_pointer() on a default (unset) undo_buffer_reference must answer unset: an unguarded
-// `return {*entry, position};` binds a reference to *nullptr — UB that only looks harmless
-// because the compiler folds &*nullptr back to nullptr.
+// An unguarded `return {*entry, position};` binds a reference to *nullptr — UB that only looks
+// harmless because the compiler folds &*nullptr back to nullptr.
 TEST_CASE("components::table::update_merge::an_unset_undo_reference_has_no_buffer_pointer") {
     undo_buffer_reference none;
     CHECK_FALSE(none.is_set());
     CHECK_FALSE(none.buffer_pointer().is_set());
 
-    // pin() keeps an assert here on purpose: naming no entry is a CALLER precondition (every
-    // call site guards with is_set()), not a runtime refusal — and an error_t would need a
-    // resource for its message that a bare pointer has none of.
     undo_buffer_pointer_t nowhere;
     CHECK_FALSE(nowhere.is_set());
 }
 
-// initialize_update_data must index the update vector by indexing.get_index(i) alone: adding
-// vector_index * DEFAULT_VECTOR_CAPACITY reads past a count-element vector, and the neighbouring
-// initialize_update_validity does not add it. With the addend, read_row(1500) returns heap garbage
-// instead of 906.
+// initialize_update_data must index by indexing.get_index(i) alone; adding
+// vector_index * DEFAULT_VECTOR_CAPACITY, which initialize_update_validity omits, reads past the vector.
 TEST_CASE("components::table::update_merge::the_first_update_of_a_second_vector_stores_the_updates_values") {
     update_merge_env env("second_vector");
     auto column = make_filled_column(env, 1024);
     {
-        // Grow the column to 2048 rows with a second append; vector capacity is 1024.
         vector_t v(&env.resource, logical_type::UINTEGER, 1024);
         for (uint64_t i = 0; i < 1024; i++) {
             v.set_value(i, static_cast<uint32_t>(1024 + i));

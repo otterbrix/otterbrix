@@ -45,7 +45,6 @@ namespace services::dispatcher {
         constexpr uint8_t INDEX_KIND = 2;
     } // namespace
 
-    // Catches a missed behavior() case for a dispatch_traits method — silent message loss otherwise.
     namespace {
         template<typename MethodList>
         struct behavior_expected_ids_t;
@@ -127,7 +126,6 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
         components::casts::register_default_casts(cast_registry_);
 
-        // Spawned before the event loop starts, so the loop thread never observes a half-populated pool.
         executors_.reserve(executor_pool_size_);
         executor_addresses_.reserve(executor_pool_size_);
         for (std::size_t i = 0; i < executor_pool_size_; ++i) {
@@ -145,10 +143,8 @@ namespace services::dispatcher {
         }
         trace(log_, "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses", executor_pool_size_);
 
-        // Event-loop-in-thread: only this thread processes inbox_, so the in-flight list needs no mutex.
         loop_thread_ = std::thread([this] {
-            // Readiness in flight is discovered only by this wait timing out — ~20 hops at 100us
-            // floors a statement at ~3.5ms; the idle tick must stay longer, or risks the race below.
+            // ~20 hops at 100us floors a statement at ~3.5ms, so idle_wait must exceed in_flight_wait.
             constexpr auto in_flight_wait = pump_tuning_t::in_flight_wait;
             constexpr auto idle_wait = pump_tuning_t::idle_wait;
             constexpr uint32_t stale_tick_threshold = pump_tuning_t::stale_tick_threshold;
@@ -165,8 +161,6 @@ namespace services::dispatcher {
                 while (progress) {
                     progress = false;
 
-                    // Runs synchronously to its first co_await, holding a raw pointer into
-                    // pending_msg across suspension — pending_msg must stay in the slot.
                     {
                         in_flight_entry_t* slot = nullptr;
                         for (auto& e : in_flight) {
@@ -230,8 +224,6 @@ namespace services::dispatcher {
                         break;
                     }
                 if (any_stale) {
-                    // Routine, expected firings (reproduced by the hidden [lostwakeup] tests);
-                    // hundreds of consecutive stale rounds instead escalates to a single warn.
                     constexpr uint32_t escalate_poke_rounds = 256;
                     bool escalate = false;
                     for (auto& e : in_flight) {
@@ -251,23 +243,19 @@ namespace services::dispatcher {
                     }
                     for (auto& ex : executors_) {
                         if (ex) {
-                            // The one send here that is not actor_zeta::otterbrix::send: it targets a raw
-                            // actor pointer, which the shorthand has no overload for.
                             [[maybe_unused]] auto [ns, f] =
                                 actor_zeta::send(ex.get(), &collection::executor::executor_t::poke_msg);
                             if (ns)
                                 scheduler_->enqueue(ex.get());
                         }
                     }
-                    for (auto& e : in_flight) e.stale_ticks = 0; // backoff: re-arm threshold
+                    for (auto& e : in_flight) e.stale_ticks = 0;
                 }
 
                 std::unique_lock<std::mutex> lk(mutex_);
                 if (inbox_.empty()) {
                     pump_cv_.wait_for(lk, in_flight.empty() ? idle_wait : in_flight_wait);
                 }
-                // NOTE: a push+notify may slip between empty() and wait_for; bounded by the wait
-                // timeout above (staleness, not loss).
             }
         });
     }
@@ -278,7 +266,6 @@ namespace services::dispatcher {
         if (loop_thread_.joinable()) {
             loop_thread_.join();
         }
-        // Re-wrap each leftover inbox_ raw pointer into a message_ptr temporary so its PMR memory is freed.
         actor_zeta::mailbox::message* raw = nullptr;
         while (inbox_.pop(raw)) {
             actor_zeta::mailbox::message_ptr drop{raw};
@@ -291,7 +278,6 @@ namespace services::dispatcher {
 
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_dispatcher_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
-        // Delivery only — notifying without mutex_ is safe since the loop re-checks inbox_.empty() under the lock.
         inbox_.push(msg.release());
         pump_cv_.notify_one();
         return {false, actor_zeta::detail::enqueue_result::success};
@@ -379,16 +365,11 @@ namespace services::dispatcher {
     }
 
     void manager_dispatcher_t::try_trigger_cleanup_if_horizon_advanced() noexcept {
-        // Must compare against lowest_active_snapshot_horizon() (commit-id space), not
-        // lowest_active_start_time — mixing the two left DROP-GC permanently dead. The
-        // dropped-committed remap reaches disk/index pre-publish, before txn_publish_msg triggers
-        // this broadcast to the same subscribers, so same-mailbox FIFO lands the remap first.
+        // Must key off lowest_active_snapshot_horizon() (commit-id space), not lowest_active_start_time
+        // — mixing the two left DROP-GC permanently dead.
         auto new_lowest = txn_manager_.lowest_active_snapshot_horizon();
         if (new_lowest > last_broadcast_horizon_) {
             last_broadcast_horizon_ = new_lowest;
-            // BYPASS (2 of 3, see core/pipeline_bypass.hpp): legal since it carries no rows/query,
-            // only the reclaim of a DROP already committed. Any horizon but this, or firing
-            // before the remap above lands, silently unlinks files a live snapshot can still read.
             auto sweep_broadcast =
                 core::maintenance::pipeline_bypass<core::maintenance::bypass_site::horizon_gc_sweep>([&] {
                     if (disk_has_dropped_) {
@@ -449,7 +430,6 @@ namespace services::dispatcher {
                   plan.sub_queries.back()->to_string());
         }
 
-        // Pure session-hash routing — no plan inspection; the executor owns optimize/resolve/validate/enrich.
         assert(!executors_.empty());
         const std::size_t pool_idx = std::hash<components::session::session_id_t>{}(session) % executors_.size();
         trace(log_, "manager_dispatcher_t::execute_plan: routing to executor[{}]", pool_idx);
@@ -462,13 +442,11 @@ namespace services::dispatcher {
         }
         auto exec_result = co_await std::move(future);
 
-        // Only post-execute bookkeeping left on the dispatcher: refresh default_tz_cat_ for session_tz() reads.
         if (!exec_result.applied_timezone.empty()) {
             auto tz_err = default_tz_cat_.set_timezone(
                 resource(),
                 std::string_view{exec_result.applied_timezone.data(), exec_result.applied_timezone.size()});
             if (tz_err.contains_error()) {
-                // Unreachable today, but a refusal here means pg_settings and the session cache disagree.
                 error(log_,
                       "manager_dispatcher_t::execute_plan: session timezone cache refused '{}' AFTER it was "
                       "persisted to pg_settings: {}",
@@ -482,9 +460,8 @@ namespace services::dispatcher {
               "manager_dispatcher_t::execute_plan: result received, success: {}",
               exec_result.cursor->is_success());
         if (exec_result.cursor && exec_result.cursor->is_error()) {
-            // IMPLICIT txns only: an executor error path returning before its commit/abort tail
-            // would otherwise pin compact_watermark() forever. EXPLICIT txns are left alive on
-            // purpose — the client's ROLLBACK runs the abort-drain revert cascade instead.
+            // IMPLICIT txns only: left open, this would pin compact_watermark() forever; EXPLICIT ones stay
+            // alive on purpose, for the client's ROLLBACK to run the abort-drain cascade.
             if (auto* txn = txn_manager_.find_transaction(session); txn != nullptr && !txn->is_explicit()) {
                 txn_manager_.abort(session);
                 try_trigger_cleanup_if_horizon_advanced();
@@ -502,7 +479,6 @@ namespace services::dispatcher {
         }
         trace(log_, "dispatcher_t::register_udf session: {}, function name: {}", session.data(), function->name());
 
-        // Pool-admin: dispatcher drives the fan-out itself, each send carrying its own deep copy via get_copy().
         auto plan =
             boost::intrusive_ptr(new components::logical_plan::node_register_udf_t(resource(), std::move(function)));
 
@@ -521,7 +497,6 @@ namespace services::dispatcher {
             }
             ack_futures.push_back(std::move(fut));
         }
-        // Tracks which executors registered so a later failure can unwind them.
         core::error_t fanout_error = core::error_t::no_error();
         std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered(resource());
         registered.reserve(ack_futures.size());
@@ -576,8 +551,6 @@ namespace services::dispatcher {
         pctx.txn = components::table::transaction_data{0, 0};
 
         op->prepare();
-        // Sourceless sink: work runs inside await_async_and_resume, since the dispatcher (a
-        // different actor than the executor) cannot call drive_subplan_.
         co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {
             auto futures = pctx.take_pending_disk_futures();
@@ -683,7 +656,6 @@ namespace services::dispatcher {
             }
             ack_futures.push_back(std::move(fut));
         }
-        // pg_proc/pg_depend purge below is skipped unless every executor confirmed the drop.
         core::error_t fanout_error = core::error_t::no_error();
         for (std::size_t i = 0; i < ack_futures.size(); ++i) {
             const bool dropped = co_await std::move(ack_futures[i]);
@@ -756,7 +728,6 @@ namespace services::dispatcher {
     }
 
     namespace {
-        // Resolves any UDT source/target type names against the catalog before execute_plan_full.
         components::logical_plan::execution_plan_t
         make_cast_resolve_plan(std::pmr::memory_resource* resource,
                                components::logical_plan::node_ptr leaf,
@@ -1023,8 +994,6 @@ namespace services::dispatcher {
         co_return core::error_t::no_error();
     }
 
-    // Every handler below is a pure co_return over intra-actor calls — no awaits, no executor round-trips.
-
     manager_dispatcher_t::unique_future<txn_session_context_t>
     manager_dispatcher_t::txn_begin_session_msg(components::session::session_id_t session) {
         auto& txn = txn_manager_.begin_transaction(session);
@@ -1058,13 +1027,11 @@ namespace services::dispatcher {
         txn_commit_drain_t out;
         if (auto* txn_t = txn_manager_.find_transaction(session)) {
             if (!txn_t->has_accumulated()) {
-                // Empty COMMIT: aborting is the MVCC-equivalent end, since it must not allocate a
-                // commit_id or advance the horizon; out stays default so the caller skips publish().
+                // Empty COMMIT aborts instead of committing: it must not allocate a commit_id or advance the horizon.
                 txn_manager_.abort(session);
                 try_trigger_cleanup_if_horizon_advanced();
                 co_return out;
             }
-            // Must snapshot + drain before commit() purges the active map.
             out.txn = txn_t->data();
             txn_t->drain_pg_catalog_pending(out.swap_appends, out.swap_deletes);
             out.swap_backfills = txn_t->drain_pg_attribute_commit_id_backfills();
@@ -1082,8 +1049,7 @@ namespace services::dispatcher {
             out.created_storage_oids = txn_t->drain_created_storages();
             out.created_indexes = txn_t->drain_created_indexes();
         }
-        // Publish barrier deliberately not run here — the caller sends txn_publish_msg after
-        // storage_publish_*/WAL, so concurrent snapshots never see a half-flipped pg_catalog.
+        // No publish barrier here — txn_publish_msg runs it after storage/WAL, so no snapshot sees it half-flipped.
         out.commit_id = txn_manager_.commit(session);
         co_return out;
     }
@@ -1094,13 +1060,9 @@ namespace services::dispatcher {
         txn_abort_drain_t out;
         if (auto* txn_t = txn_manager_.find_transaction(session)) {
             out.txn = txn_t->data();
-            // Keep the pg_catalog delete-tables too: a DROP in this txn stamped delete marks that
-            // persist on the heap unless the abort operator un-stamps them via storage_revert_deletes.
             txn_t->drain_pg_catalog_pending(out.swap_appends, out.pg_catalog_delete_tables);
             auto backfills_discarded = txn_t->drain_pg_attribute_commit_id_backfills();
             (void) backfills_discarded;
-            // Only the touched table oids matter here: the abort operator fans out
-            // manager_index_t::revert_insert/revert_delete per oid to clear this txn's PENDING index entries.
             auto drained_appends = txn_t->drain_base_appends();
             for (const auto& r : drained_appends) {
                 out.base_append_tables.insert(r.table_oid);
@@ -1109,8 +1071,7 @@ namespace services::dispatcher {
             for (const auto& d : drained_deletes) {
                 out.base_delete_tables.insert(d.table_oid);
             }
-            // DROP-retired storage oids: informational today — the abort operator does not yet
-            // un-stamp them on abort.
+            // DROP-retired storage oids are informational today — the abort operator does not yet un-stamp them.
             out.dropped_storage_oids = txn_t->drain_dropped_storages();
             out.created_storage_oids = txn_t->drain_created_storages();
             out.created_indexes = txn_t->drain_created_indexes();
@@ -1145,7 +1106,6 @@ namespace services::dispatcher {
                                  "accumulated ranges cannot be parked",
                                  resource()}};
         }
-        // transaction_t's single-owner-thread invariant is enforced here: only this loop thread mutates the body.
         for (const auto& app : payload.base_appends) {
             txn_t->accumulate_base_append(app);
         }
@@ -1179,14 +1139,11 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::txn_publish_msg, commit_id: {}", commit_id);
         txn_manager_.publish(commit_id);
         try_trigger_cleanup_if_horizon_advanced();
-        // Distinct from the GC horizon broadcast above (lowest_active_snapshot_horizon): this one
-        // bounds data_table_t::compact()'s version-history collapse, not the DROP-tombstone sweep.
         co_return txn_manager_.compact_watermark();
     }
 
     manager_dispatcher_t::unique_future<void> manager_dispatcher_t::txn_discard_msg(uint64_t commit_id) {
         trace(log_, "manager_dispatcher_t::txn_discard_msg, commit_id: {}", commit_id);
-        // discard() doesn't touch published_horizon_, so this call is what notices if the floor moved.
         txn_manager_.discard(commit_id);
         try_trigger_cleanup_if_horizon_advanced();
         co_return;

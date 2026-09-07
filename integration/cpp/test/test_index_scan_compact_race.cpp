@@ -14,33 +14,21 @@
 #include <string_view>
 #include <thread>
 
-// An index scan's matched absolute row ids must stay valid until the storage_fetch that applies
-// them.
-//
-// index_scan crosses actors twice with those ids in hand: the one-shot index search answers a set
-// of ABSOLUTE physical row ids, and a later storage_fetch reads the table at exactly those
-// positions. Between the two awaits the executor yields; a compacting checkpoint from another
-// session renumbers every surviving row (compact() rebuilds at id 0). Neither existing gate
-// protects this window: the cursor gate sees no cursor (index_scan holds none), and the MVCC gate
-// looks at version stamps IN the table, which a reading snapshot leaves none of. The stale
-// positions then pass the visibility filter — every row is "just committed" — so the SELECT
-// silently answers a DIFFERENT row (or none, when the stale position fell off the end).
-//
-// The window is microseconds wide under natural timing; the index_fetch_gate_t seam holds the
-// scan between its two awaits so the checkpoint lands inside deterministically. No timing, no
-// flake. Same methodology as test_delete_floor_resurrection.
+// An index scan's matched row ids cross two actor hops (search, then storage_fetch); a compact
+// landing between them renumbers every survivor (rebuilt at id 0), so index_scan holds
+// compaction off its table from before the search until the fetch has the rows. The
+// index_fetch_gate_t seam below parks the scan between the two awaits so a checkpoint lands
+// inside the window deterministically instead of racing for it.
 
 using namespace test_helpers;
 
 namespace {
 
-    // 3 row groups; deleting the FRONT third shifts every survivor down by a full 1000 ids, and
-    // a mid-table survivor's STALE position still lands inside the compacted table — so the
-    // corruption shape is a silently WRONG row, not a short read.
+    // Deleting the front 1000 of 3000 rows shifts every survivor's physical id down by 1000, so
+    // probe id 1500's stale position (1499) lands on id 2500 after compaction -- a wrong row,
+    // not a short read or an out-of-range miss.
     constexpr int64_t kRows = 3000;
-    constexpr int64_t kDeleteUpTo = 1000; // DELETE ... WHERE id <= 1000
-    // The probe: id 1500 sits at physical row 1499 before the compact and 499 after it. The row
-    // the STALE position 1499 names after the compact is id 2500 — 1000 ids away, unmissable.
+    constexpr int64_t kDeleteUpTo = 1000;
     constexpr int64_t kProbeId = 1500;
     constexpr int64_t kProbeKey = 10 * kProbeId;
 
@@ -49,8 +37,6 @@ namespace {
         std::atomic<bool> reached{false};
         std::atomic<bool> released{false};
 
-        // Only user tables: catalog reads never plan an index_scan, but the guard keeps the gate
-        // honest if that ever changes.
         bool hold(components::catalog::oid_t table_oid) override {
             if (!armed.load(std::memory_order_acquire) ||
                 static_cast<uint32_t>(table_oid) < static_cast<uint32_t>(components::catalog::FIRST_USER_OID)) {
@@ -92,8 +78,8 @@ namespace {
 
     std::string indexed_query() { return "SELECT id FROM rdb.t WHERE k = " + std::to_string(kProbeKey) + ";"; }
 
-    // UNINDEXED control leg: same table, same row, a column no index covers — a full scan, so it
-    // reads the post-compact truth regardless of what the indexed leg did.
+    // Full scan on an unindexed column, so it reads the post-compact truth regardless of the
+    // indexed leg's outcome.
     std::string control_query() { return "SELECT k FROM rdb.t WHERE id = " + std::to_string(kProbeId) + ";"; }
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
@@ -111,8 +97,6 @@ namespace {
             sql += ";";
             REQUIRE(exec(d, sql)->is_success());
         }
-        // The front third goes: after the racing compact every survivor's physical id drops by
-        // 1000 while the index scan already holds the OLD ids.
         REQUIRE(exec(d, "DELETE FROM rdb.t WHERE id <= " + std::to_string(kDeleteUpTo) + ";")->is_success());
     }
 
@@ -123,8 +107,8 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
-    // No automatic checkpoint: the ONLY compact in this case is the explicit CHECKPOINT fired
-    // into the held window, so a wrong answer can only be that compact's renumbering.
+    // No automatic checkpoint, so the only compact is the explicit CHECKPOINT fired into the
+    // held window.
     config.wal.auto_checkpoint_threshold_bytes = 0;
 
     gate_guard_t guard;
@@ -133,8 +117,7 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
     auto* d = space.dispatcher();
     seed(d);
 
-    // Load-bearing: without this the case can pass (or fail) via a full scan instead of the
-    // index (methodology of test_index_stale_after_compact).
+    // Load-bearing: without it the case could pass via a full scan instead of the index.
     {
         auto plan = exec(d, "EXPLAIN " + indexed_query());
         REQUIRE(plan->is_success());
@@ -143,7 +126,6 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
         REQUIRE(text.find("Index Scan") != std::string::npos);
     }
 
-    // Baseline, gate unarmed: the indexed probe answers the right row.
     {
         auto cur = exec(d, indexed_query());
         REQUIRE(cur->is_success());
@@ -151,8 +133,7 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
         REQUIRE(cur->value(0, 0).value<int64_t>() == kProbeId);
     }
 
-    // CONTROL: the held window ALONE (no checkpoint inside it) does not corrupt the answer —
-    // whatever goes wrong below is the checkpoint's doing, not the seam's.
+    // Control: the held window alone, with no checkpoint inside it, must not corrupt the answer.
     {
         guard.gate.armed.store(true, std::memory_order_release);
         components::cursor::cursor_t_ptr held_cur;
@@ -171,8 +152,6 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
         REQUIRE(held_cur->value(0, 0).value<int64_t>() == kProbeId);
     }
 
-    // THE RACE: the same probe parks between its index search (old ids in hand) and its
-    // storage_fetch; a checkpoint from another session compacts the table inside the window.
     services::disk::reset_checkpoint_entry_tallies();
     guard.gate.armed.store(true, std::memory_order_release);
     components::cursor::cursor_t_ptr raced_cur;
@@ -193,7 +172,6 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
     INFO("checkpoint round inside the window: rewritten=" << services::disk::checkpoint_entries_rewritten()
                                                           << " deferred=" << services::disk::checkpoint_entries_deferred());
 
-    // The TABLE is intact either way — the full-scan control leg reads the post-compact truth.
     {
         auto cur = exec(d, control_query());
         REQUIRE(cur->is_success());
@@ -201,8 +179,6 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
         REQUIRE(cur->value(0, 0).value<int64_t>() == kProbeKey);
     }
 
-    // The raced indexed probe must still answer THE ROW IT MATCHED — not a renumbered stranger,
-    // not nothing.
     REQUIRE(raced_cur->is_success());
     {
         INFO("raced indexed probe returned " << raced_cur->size() << " row(s)");
@@ -212,9 +188,8 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
         REQUIRE(got == kProbeId);
     }
 
-    // Once the reader is gone a later round must still compact and rebuild, and the indexed
-    // probe must keep answering through the REBUILT index — the race protection must defer, not
-    // permanently pin.
+    // The protection must defer compaction, not disable it: a later round must still compact
+    // and rebuild, and the probe must keep answering through the rebuilt index.
     REQUIRE(exec(d, "CHECKPOINT;")->is_success());
     {
         auto cur = exec(d, indexed_query());

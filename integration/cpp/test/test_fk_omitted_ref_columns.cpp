@@ -1,14 +1,7 @@
-// `REFERENCES parent` without a column list must bind to the parent's primary key.
-//
-// SQL lets the referenced column list be omitted (`FOREIGN KEY (pid) REFERENCES D.parent`).
-// PostgreSQL resolves it to the primary key of the referenced table, and refuses the DDL
-// outright when that table has no primary key. Otterbrix did neither: the transformer
-// copied an absent pk_attrs as an EMPTY ref list, enrich resolved that to an empty confkey,
-// and pg_constraint got a row whose referenced side names nothing. operator_resolve_constraint
-// drops such a row on the floor (it requires BOTH name lists to be non-empty), so the
-// constraint the user declared simply did not exist: an orphan INSERT succeeded, ON DELETE
-// RESTRICT did not block deleting a referenced parent, and ON DELETE CASCADE left the
-// children behind, pointing at nothing.
+// The transformer copied an absent pk_attrs (omitted REFERENCES column list) as an EMPTY ref list; enrich
+// resolved that to an empty confkey, and operator_resolve_constraint silently drops any row where either
+// name list is empty -- so the declared constraint simply never existed. PostgreSQL instead resolves the
+// omitted list to the referenced table's primary key, or refuses the DDL if it has none.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -39,9 +32,7 @@ namespace {
         REQUIRE(column_i64(cur, 0) == ids);
     }
 
-    // parent(id PRIMARY KEY, val), child(id, pid) with `REFERENCES fkr.parent`
-    // spelled WITHOUT a column list. Rows are seeded BEFORE the constraint so the
-    // seeding INSERTs never run through the FK check themselves.
+    // Seeded before the constraint exists, so these inserts never run through the FK check themselves.
     void seed(otterbrix::wrapper_dispatcher_t* d, const std::string& del_action) {
         REQUIRE(exec(d, "CREATE DATABASE fkr;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE fkr.parent (id bigint, val text);")->is_success());
@@ -59,8 +50,6 @@ namespace {
 
 } // namespace
 
-// (1) The INSERT side. A child row whose pid is in no parent row must be refused
-// by the omitted-list FK exactly as it would be by `REFERENCES fkr.parent (id)`.
 TEST_CASE("integration::cpp::fk_omitted_ref_columns::orphan_insert_is_refused") {
     auto config = make_test_config(integration_fixture_path("test_fk_omitted_ref_columns/orphan_insert"));
     test_spaces space(config);
@@ -86,8 +75,6 @@ TEST_CASE("integration::cpp::fk_omitted_ref_columns::orphan_insert_is_refused") 
     require_ids(d, "fkr.child", {10, 12});
 }
 
-// (2) ON DELETE RESTRICT over the same omitted-list FK: deleting a parent that
-// still has children must be refused, and both tables must be untouched.
 TEST_CASE("integration::cpp::fk_omitted_ref_columns::restrict_blocks_parent_delete") {
     auto config = make_test_config(integration_fixture_path("test_fk_omitted_ref_columns/restrict"));
     test_spaces space(config);
@@ -106,9 +93,7 @@ TEST_CASE("integration::cpp::fk_omitted_ref_columns::restrict_blocks_parent_dele
     require_ids(d, "fkr.child", {10});
 }
 
-// (3) ON DELETE CASCADE over the same omitted-list FK: the parent delete must
-// succeed AND take the referencing child rows with it. An unenforced constraint
-// shows up here as a surviving orphan, not as an error.
+// An unenforced constraint here shows up as a surviving orphan, not an error.
 TEST_CASE("integration::cpp::fk_omitted_ref_columns::cascade_removes_children") {
     auto config = make_test_config(integration_fixture_path("test_fk_omitted_ref_columns/cascade"));
     test_spaces space(config);
@@ -131,9 +116,6 @@ TEST_CASE("integration::cpp::fk_omitted_ref_columns::cascade_removes_children") 
     require_ids(d, "fkr.child", {20});
 }
 
-// (4) The referenced table has NO primary key. PostgreSQL refuses the DDL; the
-// one thing that must NOT happen is accepting the statement and enforcing
-// nothing. The constraint has no referenced side to bind to, so the ALTER fails.
 TEST_CASE("integration::cpp::fk_omitted_ref_columns::no_primary_key_refuses_the_ddl") {
     auto config = make_test_config(integration_fixture_path("test_fk_omitted_ref_columns/no_pk"));
     test_spaces space(config);
@@ -154,9 +136,8 @@ TEST_CASE("integration::cpp::fk_omitted_ref_columns::no_primary_key_refuses_the_
     REQUIRE(exec(d, "INSERT INTO fkr.child (id, pid) VALUES (11, 999);")->is_success());
 }
 
-// (5) Arity: the referencing list is longer than the parent's primary key. There
-// is no pairing to make, so the DDL must say so instead of binding the columns
-// positionally and losing the tail.
+// No pairing exists for the extra column, so the DDL must refuse instead of binding positionally and
+// losing the tail.
 TEST_CASE("integration::cpp::fk_omitted_ref_columns::arity_against_primary_key_is_checked") {
     auto config = make_test_config(integration_fixture_path("test_fk_omitted_ref_columns/arity"));
     test_spaces space(config);

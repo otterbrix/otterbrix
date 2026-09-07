@@ -132,7 +132,6 @@ namespace {
             return inner_->trim(offset_bytes, length_bytes);
         }
         uint64_t file_size() override { return inner_->file_size(); }
-        // Must forward the refusal -- an own "no error" while the handle refused would be a new liar.
         core::error_t close() override { return inner_->close(); }
 
     private:
@@ -273,7 +272,6 @@ TEST_CASE("core::b_plus_tree::block_t") {
             handle->read(test_block->internal_buffer(), test_block->block_size(), 0);
             handle.reset();
 
-            //! important to call restore_block()
             test_block->restore_block();
 
             REQUIRE(test_block->varify_checksum());
@@ -308,7 +306,6 @@ TEST_CASE("core::b_plus_tree::block_t") {
             handle->read(test_block_1->internal_buffer(), test_block_1->block_size(), 0);
             handle.reset();
 
-            //! important to call restore_block()
             test_block_1->restore_block();
 
             REQUIRE(test_block_1->varify_checksum());
@@ -602,7 +599,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         REQUIRE(tree.count() == 0);
         REQUIRE(tree.unique_indices_count() == 0);
         tree.clean_load();
-        REQUIRE(tree.count() == 500); // should be at state of last flush
+        REQUIRE(tree.count() == 500);
         REQUIRE(tree.unique_indices_count() == 500);
 
         for (uint64_t i = 0; i < 500; i++) {
@@ -729,7 +726,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         REQUIRE(tree.count() == 0);
         REQUIRE(tree.unique_indices_count() == 0);
         tree.clean_load();
-        REQUIRE(tree.count() == 500); // should be at state of last flush
+        REQUIRE(tree.count() == 500);
         REQUIRE(tree.unique_indices_count() == 500);
 
         for (uint64_t i = 0; i < 500; i++) {
@@ -865,7 +862,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         segment_tree_t tree(&limited_resource, key_getter, std::move(handle));
 
         size_t dummy_size = DEFAULT_BLOCK_SIZE / 32;
-        size_t test_count = 5000; // about x10 of what allocator can handle
+        size_t test_count = 5000;
         uint64_t* buffer = static_cast<uint64_t*>(resource.allocate(dummy_size));
         std::vector<uint64_t> test_data;
         test_data.resize(test_count);
@@ -890,7 +887,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
         REQUIRE(tree.flush());
         tree.clean_load();
         CHECK(tree.load_failure() == load_failure_t::out_of_memory);
-        CHECK_FALSE(tree.poisoned()); // no room is not corruption
+        CHECK_FALSE(tree.poisoned());
         tree.reset_load_failure();
 
         for (uint64_t i = 0; i < test_count; i++) {
@@ -1013,7 +1010,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_split_persists_the_shrunk_source") {
     for (uint64_t i = 0; i < kItems; i++) {
         REQUIRE(tree.append(test_data[i].buffer, test_data[i].size));
     }
-    REQUIRE(tree.blocks_count() > 1); // the split point has to be able to fall inside a block
+    REQUIRE(tree.blocks_count() > 1);
 
     // Must flush before splitting, or the fill-time `modified` flags mask the defect.
     REQUIRE(tree.flush());
@@ -1048,7 +1045,6 @@ TEST_CASE("core::b_plus_tree::segment_tree_split_persists_the_shrunk_source") {
         CHECK(all[i] == i);
     }
 
-    // Free the test's own scratch buffers (not the tree's) so ASAN doesn't flag them.
     for (auto& dummy : test_data) {
         resource.deallocate(dummy.buffer, dummy.size);
     }
@@ -1231,8 +1227,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_close_gaps_moves_unloaded_blocks") {
     }
 }
 
-// Regression: remove_index() loaded the FIRST block of a multi-block range but not the LAST,
-// leaving a null dereference for a lazily loaded tree.
+// Regression: remove_index() loaded the FIRST block of a multi-block range but not the LAST.
 TEST_CASE("core::b_plus_tree::segment_tree_remove_index_loads_the_last_block_of_the_range") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_remove_index_lazy");
@@ -1296,8 +1291,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_remove_index_loads_the_last_block_of_
     }
 }
 
-// Regression: remove() charged unique_id_count_ once per-BLOCK extinction, so a key straddling K
-// blocks was charged K times, driving the counter to 0 with other groups still present.
+// Regression: remove() charged unique_id_count_ once per-BLOCK, so a key spanning K blocks was charged K times.
 TEST_CASE("core::b_plus_tree::segment_tree_remove_charges_a_multi_block_key_once") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_remove_unique_count");
@@ -1313,8 +1307,8 @@ TEST_CASE("core::b_plus_tree::segment_tree_remove_charges_a_multi_block_key_once
         return block_t::index_t(val);
     };
 
-    constexpr uint64_t kDoomed = 1;   // every item of this key is removed, one by one
-    constexpr uint64_t kSurvivor = 2; // untouched
+    constexpr uint64_t kDoomed = 1;
+    constexpr uint64_t kSurvivor = 2;
     constexpr uint64_t kPerKey = 40;
     std::vector<dummy_alloc> doomed_items;
     std::vector<dummy_alloc> survivor_items;
@@ -1368,8 +1362,6 @@ TEST_CASE("core::b_plus_tree::segment_tree_remove_charges_a_multi_block_key_once
     }
 }
 
-// Both persistence layers write a fixed-size region but initialize only its head; a hit is
-// heap contents leaked onto disk.
 TEST_CASE("core::b_plus_tree::flush_does_not_write_uninitialised_memory") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_uninitialised");
@@ -1396,8 +1388,7 @@ TEST_CASE("core::b_plus_tree::flush_does_not_write_uninitialised_memory") {
         }
     };
 
-    // Counts a RUN of the pattern, not single matches (one coincided once, on a CI runner); eight
-    // in a row is 2^-64 by chance.
+    // Counts a RUN of the pattern, not single matches — a single coincidence hit once on a CI runner.
     auto count_poison = [&](const path_t& file, size_t bytes) {
         constexpr size_t kMinRun = 8;
         std::vector<uint8_t> raw(bytes, 0);
@@ -1457,8 +1448,7 @@ TEST_CASE("core::b_plus_tree::flush_does_not_write_uninitialised_memory") {
     }
 }
 
-// Regression: clean_load()/lazy_load() replace the whole leaf state without clearing dirty_, so
-// the first flush after any restart rewrote and fsynced every leaf.
+// Regression: clean_load()/lazy_load() replaced the whole leaf without clearing dirty_, so every restart reflushed all leaves.
 TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_load_clears_dirty");
@@ -1523,8 +1513,7 @@ TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
     }
 }
 
-// Regression: flush() threw away write()/sync() results and cleared dirty regardless, so a failed
-// write was reported success (injected via a read-only descriptor, pwrite() on O_RDONLY).
+// Regression: flush() threw away write()/sync() results and cleared dirty regardless, reporting a failed write as success.
 TEST_CASE("core::b_plus_tree::flush_reports_io_failure_and_stays_dirty") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_io_failure");
@@ -1561,8 +1550,7 @@ TEST_CASE("core::b_plus_tree::flush_reports_io_failure_and_stays_dirty") {
     CHECK_FALSE(tree.flush());
 }
 
-// Regression: flush() returned early when the tree had no leaves left, and nothing ever unlinks a
-// leaf file, so the next load() rebuilt the whole pre-delete tree.
+// Regression: flush() returned early with no leaves left, and nothing unlinks a leaf file, so load() rebuilt the whole pre-delete tree.
 TEST_CASE("core::b_plus_tree::flush_persists_an_emptied_tree") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("btree_emptied");
@@ -1670,7 +1658,7 @@ TEST_CASE("core::b_plus_tree::a_flipped_bit_in_a_block_is_refused_not_served") {
     {
         segment_tree_t reopened(&resource, key_getter, open_file(fs, fname, file_flags::READ | file_flags::WRITE));
         reopened.lazy_load();
-        CHECK(reopened.load_failure() == load_failure_t::none); // nothing has been read yet
+        CHECK(reopened.load_failure() == load_failure_t::none);
         const size_t count = reopened.item_count(probe);
         CHECK(count == 0);
         for (size_t i = 0; i < count; i++) {
@@ -1687,15 +1675,14 @@ TEST_CASE("core::b_plus_tree::a_flipped_bit_in_a_block_is_refused_not_served") {
         surviving_markers += read_unaligned<uint64_t>(bytes.data() + off) == marker ? 1u : 0u;
     }
     INFO("markers still recognisable in the leaf file");
-    CHECK(surviving_markers >= items - 1); // the flipped one is no longer a marker
+    CHECK(surviving_markers >= items - 1);
 
     if (directory_exists(fs, testing_directory)) {
         remove_directory(fs, testing_directory);
     }
 }
 
-// Regression: all four load sites dropped the result of file_->read(), so an unread block was
-// "restored" as empty, and flush() then wrote that emptiness over the rows.
+// Regression: all four load sites dropped file_->read()'s result, so an unread block was "restored" as empty and later reflushed as such.
 TEST_CASE("core::b_plus_tree::a_block_that_could_not_be_read_is_never_written_back") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_refused_read");
@@ -1761,8 +1748,7 @@ TEST_CASE("core::b_plus_tree::a_block_that_could_not_be_read_is_never_written_ba
     }
 }
 
-// A string-keyed metadata entry's min/max index is a POINTER, so re-deriving it means reading the
-// block; if that read fails the leaf must give up whole, or compare a stale pointer.
+// A string-keyed metadata entry's min/max index is a POINTER, so re-deriving it means re-reading the block.
 TEST_CASE("core::b_plus_tree::a_string_keyed_leaf_that_will_not_load_gives_up_whole") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_string_bitflip");
@@ -1840,8 +1826,6 @@ TEST_CASE("core::b_plus_tree::a_string_keyed_leaf_that_will_not_load_gives_up_wh
     }
 }
 
-// Regression: unload_old_segments_() dropped the eviction WRITE's result, so on a full disk the
-// block left memory, was called written, and flush() skipped it.
 TEST_CASE("core::b_plus_tree::a_failed_eviction_write_does_not_drop_the_block") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_eviction");
@@ -1902,8 +1886,7 @@ TEST_CASE("core::b_plus_tree::a_failed_eviction_write_does_not_drop_the_block") 
     }
 }
 
-// The load path must not retry allocation INSIDE a catch that already caught everything: a second
-// refusal has nothing above it to catch, and the throw would cross the actor owning the index.
+// The load path must not retry allocation INSIDE a catch that already caught everything — a second refusal has nothing above it to catch.
 TEST_CASE("core::b_plus_tree::an_allocation_refusal_comes_back_as_a_value") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_no_room");
@@ -2018,8 +2001,7 @@ TEST_CASE("core::b_plus_tree::a_corrupt_leaf_still_opens_answers_and_drops") {
     CHECK_FALSE(directory_exists(fs, testing_directory));
 }
 
-// A leaf's block metadata holds max_segments (8191) entries; both insert_segment_ and
-// clean_load()/lazy_load() can walk past that unguarded (the insert side is driven via a lowered ceiling).
+// A leaf's block metadata holds max_segments (8191) entries; insert_segment_ and clean_load()/lazy_load() can walk past that unguarded.
 TEST_CASE("core::b_plus_tree::the_block_metadata_array_is_guarded_on_both_sides") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_metadata_capacity");
@@ -2106,8 +2088,7 @@ TEST_CASE("core::b_plus_tree::the_block_metadata_array_is_guarded_on_both_sides"
     }
 }
 
-// METADATA_SIZE holds two counters and one uint64 id per leaf (32766 of them); unguarded, flush()
-// writes past that buffer and load() sizes its read off an uncompared disk count.
+// METADATA_SIZE holds two counters and one uint64 id per leaf (32766 of them); unguarded, flush()/load() can walk past that buffer.
 TEST_CASE("core::b_plus_tree::the_leaf_ceiling_is_guarded_on_both_sides") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("btree_leaf_ceiling");
@@ -2179,7 +2160,7 @@ TEST_CASE("core::b_plus_tree::the_leaf_ceiling_is_guarded_on_both_sides") {
         }
         INFO("leaf count poked to " << poked);
         btree_t reopened(&resource, fs, testing_directory, key_getter, 4);
-        reopened.load(); // must return, and must not ask the allocator for the poked count
+        reopened.load();
         CHECK(reopened.load_failure() == load_failure_t::data_corruption);
         CHECK(reopened.size() == 0);
     }
@@ -2189,10 +2170,8 @@ TEST_CASE("core::b_plus_tree::the_leaf_ceiling_is_guarded_on_both_sides") {
     }
 }
 
-// poison_segment_()'s stand-in is an empty block, but split() treats every block it walks as real:
-// an empty block's prev_index/max_index compare equal, so `count` underflows to SIZE_MAX and
-// split_uniques() dereferences one entry past the allocation -- a heap-buffer-overflow READ of
-// size 24 (sizeof(physical_value)) under -DNDEBUG.
+// poison_segment_()'s stand-in is an empty block, but split() treats every block it walks as real: an empty block's
+// prev_index/max_index compare equal, underflowing `count` to SIZE_MAX (a heap-buffer-overflow READ under -DNDEBUG).
 TEST_CASE("core::b_plus_tree::split_does_not_carve_up_a_block_it_could_not_read") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_split_poisoned");
@@ -2269,8 +2248,6 @@ TEST_CASE("core::b_plus_tree::split_does_not_carve_up_a_block_it_could_not_read"
     }
 }
 
-// The `unreadable` flag travels with a moved block, but the destination's poisoned flag doesn't, so
-// it flushes happily and overwrites a real block with the empty stand-in.
 TEST_CASE("core::b_plus_tree::an_unreadable_block_is_never_carried_into_another_leaf") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_stand_in_travels");
@@ -2352,8 +2329,7 @@ TEST_CASE("core::b_plus_tree::an_unreadable_block_is_never_carried_into_another_
     }
 }
 
-// split_uniques() is called INSIDE insert_segment_()'s argument list -- a refusal there destroys
-// the temporary node holding the moved-out items while the source has already lost them.
+// split_uniques() is called INSIDE insert_segment_()'s argument list — a refusal there destroys the temporary node.
 TEST_CASE("core::b_plus_tree::a_refused_move_does_not_destroy_the_items_it_took_out") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_refused_move");
@@ -2461,8 +2437,6 @@ TEST_CASE("core::b_plus_tree::a_refused_move_does_not_destroy_the_items_it_took_
     }
 }
 
-// `poisoned_` was cleared only by a load replacing the WHOLE leaf, so a transient refusal made every
-// later write error out long after the device recovered.
 TEST_CASE("core::b_plus_tree::a_transient_read_failure_does_not_wedge_the_leaf") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_transient_failure");
@@ -2498,7 +2472,7 @@ TEST_CASE("core::b_plus_tree::a_transient_read_failure_does_not_wedge_the_leaf")
     io_faults_t faults;
     auto inner = open_file(fs, fname, file_flags::READ | file_flags::WRITE);
     segment_tree_t tree(&resource, key_getter, std::make_unique<faulty_leaf_file_t>(std::move(inner), faults));
-    tree.lazy_load(); // integer keys: metadata only, no block has been read yet
+    tree.lazy_load();
     REQUIRE(tree.load_failure() == load_failure_t::none);
 
     faults.refuse_block_read_number = 1;
@@ -2564,8 +2538,6 @@ TEST_CASE("core::b_plus_tree::the_first_item_of_a_fresh_tree_is_not_counted_unle
     }
 }
 
-// append() counts a new key as soon as it's decided new, undoing that on every false-returning path
-// except two block-split sites, which return false without putting it back.
 TEST_CASE("core::b_plus_tree::a_refused_append_does_not_count_the_key_it_did_not_store") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_refused_append_count");
@@ -3026,8 +2998,7 @@ TEST_CASE("core::b_plus_tree::b+tree") {
         }
     }
 }
-// Regression: the leaf header had no checksum, only a structural check (segment count vs
-// capacity), so a flipped bit passed silently.
+// Regression: the leaf header had only a structural check (segment count vs capacity), so a flipped bit passed silently.
 TEST_CASE("core::b_plus_tree::a_tampered_leaf_header_is_refused_not_believed") {
     auto resource = core::pmr::otterbrix_resource();
     local_file_system_t fs = local_file_system_t();
@@ -3070,17 +3041,14 @@ TEST_CASE("core::b_plus_tree::a_tampered_leaf_header_is_refused_not_believed") {
         reopened.lazy_load();
         INFO("a header the seal disowns must be refused on the channel, not believed empty");
         REQUIRE(reopened.load_failure() != load_failure_t::none);
-        REQUIRE(reopened.count() == 0); // refused leaves serve nothing, not something else
+        REQUIRE(reopened.count() == 0);
         REQUIRE_FALSE(reopened.flush());
     }
 
     remove_directory(fs, testing_directory);
 }
 
-// Regression: the allocation-refusal leg can't poison a slot with a stand-in (itself an
-// allocation), so the slot stayed null and the iterators dereferenced it unchecked.
 TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_block") {
-    // Refuses every allocation while armed, between load() (blocks stay unloaded) and the scan.
     class armable_oom_resource_t : public std::pmr::memory_resource {
     public:
         void arm() noexcept { armed_ = true; }
@@ -3171,8 +3139,7 @@ TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_bl
     remove_directory(fs, testing_directory);
 }
 
-// Regression: flush() wrote the metadata list unconditionally, naming a leaf whose flush refused;
-// load() answers a named-but-missing leaf by emptying the whole tree.
+// Regression: flush() wrote the metadata list unconditionally, naming a leaf whose flush refused; load() then emptied the whole tree.
 TEST_CASE("core::b_plus_tree::a_refused_leaf_flush_does_not_poison_the_metadata") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("btree_flush_refused_leaf");
@@ -3231,8 +3198,6 @@ TEST_CASE("core::b_plus_tree::a_refused_leaf_flush_does_not_poison_the_metadata"
     remove_directory(fs, testing_directory);
 }
 
-// Regression: both leaf iterators' prefix ++/-- moved AGAINST their postfix twins, latent only
-// because every traversal in the tree spells the postfix form.
 TEST_CASE("core::b_plus_tree::segment_tree_iterator_prefix_matches_postfix") {
     auto resource = core::pmr::otterbrix_resource();
     path_t testing_directory = scratch_dir("segment_tree_iter_prefix");
@@ -3341,8 +3306,7 @@ TEST_CASE("core::b_plus_tree::segment_tree_iterator_assignment_rebinds_the_tree"
         REQUIRE((i < 4 ? *tree_a : *tree_b).append(dummy.buffer, dummy.size));
     }
 
-    // Regression: operator= copied metadata_ but not seg_tree_, so an iterator assigned across
-    // trees kept reading the OLD tree's segment table with the NEW tree's metadata pointer.
+// Regression: operator= copied metadata_ but not seg_tree_, so an assigned iterator read the OLD tree's segment table.
     auto it = tree_a->begin();
     it = tree_b->begin();
     REQUIRE(it.get() == tree_b->begin().get());

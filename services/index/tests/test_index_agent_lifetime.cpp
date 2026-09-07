@@ -1,26 +1,7 @@
-// An agent may not be destroyed while a request the manager itself issued is still unanswered.
-//
-// A cross-actor reply's promise lives IN THE MESSAGE. Destroying an actor closes its mailbox,
-// which deletes every queued message; ~message() then cancels the shared_state (sets
-// operation_canceled, releases the promise -- actor-zeta mailbox/message.hpp init_future_slot,
-// impl/mailbox/default_mailbox.ipp close_impl). state_flags::result_set is value_set|error_set,
-// so a cancellation still resumes the waiter's co_await, whose await_resume() does:
-//
-//     assert(!state->has_error());  // <- compiled out under NDEBUG
-//     return state->take_value();   // <- moves out of an UNINITIALISED union
-//
-// In release, a std::pmr::vector<int64_t> reply comes back with a garbage pointer: foreign
-// "rows", then free() on a wild address. Nothing on our side can intercept this -- actor-zeta's
-// promise types offer no checked co_await -- so the only fix is LIFETIME: the agent must still
-// exist when the reply lands.
-//
-// The window: manager_index_t::drop_index awaited the agent's drop() and only then erased the
-// owning pointer. A search suspended on read_rows() (or one started after drop was sent, while
-// the index was still registered) could be left waiting on an agent destroyed underneath it.
-//
-// The test lays out that window by hand rather than racing for it: the agent is pumped one
-// message at a time (cooperative_actor::resume(1)), and the manager's handlers are called
-// directly, so no scheduler thread decides the interleaving.
+// An agent may not be destroyed while a request the manager itself issued is still unanswered:
+// destroying it closes the mailbox and cancels the reply's promise (which lives in the message),
+// but the waiter's co_await still resumes and reads that cancelled state as a value under NDEBUG
+// (actor-zeta mailbox/message.hpp init_future_slot / impl/mailbox/default_mailbox.ipp close_impl).
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -60,9 +41,6 @@ namespace {
     constexpr components::catalog::oid_t kTableOid = 17100;
     constexpr components::catalog::oid_t kIndexOid = 17101;
 
-    // Resume the coroutine that `fut` is suspended in, the way an actor loop does it:
-    // claim the deepest awaited continuation atomically and run it. Returns false when
-    // there is nothing suspended (the coroutine already ran to completion).
     template<typename T>
     bool resume_awaited(const actor_zeta::unique_future<T>& fut) {
         auto handle = fut.coroutine_handle();
@@ -81,10 +59,6 @@ namespace {
         return true;
     }
 
-    // Did the request this coroutine is suspended on come back as a FAILED future rather
-    // than as an answer? That is the shape a destroyed agent leaves behind
-    // (operation_canceled from the mailbox close), and it is the shape the waiter cannot
-    // survive: its await_resume takes a value that was never set.
     template<typename T>
     bool awaited_request_failed(const actor_zeta::unique_future<T>& fut) {
         auto handle = fut.coroutine_handle();
@@ -115,9 +89,7 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
     std::filesystem::create_directories(path / std::to_string(static_cast<unsigned>(kTableOid)) /
                                         std::to_string(static_cast<unsigned>(kIndexOid)));
 
-    // Never started: the agent is driven by hand below, so nothing runs behind the test's
-    // back. enqueue() on an unstarted scheduler only parks the job (work_sharing
-    // central_enqueue), which is exactly what is wanted here.
+    // Never started: driven entirely by hand, so nothing runs behind the test's back.
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
 
     auto manager = actor_zeta::spawn<manager_index_t>(&resource,
@@ -129,10 +101,8 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
                                                       /*btree_flush_threshold=*/1000);
 
     manager->bootstrap_engine_sync(kTableOid);
-    // The manager raises the agent itself now (one class per storage family, one factory
-    // that picks between them), so the test asks it for the agent instead of spawning one
-    // and handing it over. index_type::single is the ORDERED family, hence the b+tree
-    // accessor below.
+    // The manager spawns the agent itself (one factory picks bitcask vs b+tree by index type);
+    // index_type::single is the ORDERED family, hence the b+tree accessor.
     REQUIRE_FALSE(manager
                       ->bootstrap_index_sync(kTableOid,
                                              kIndexOid,
@@ -146,12 +116,9 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
 
     const auto session = session_id_t::generate_uid();
 
-    // (1) DROP INDEX starts. It sends drop() to the agent and suspends on the reply.
     auto drop_future = manager->drop_index(session, kTableOid, kIndexOid);
     REQUIRE_FALSE(drop_future.is_ready());
 
-    // (2) A SELECT arrives while the drop is still in flight. Whatever it decides to do,
-    //     it must not end up parked on a request nobody will answer.
     auto search_future = manager->search_with_preferred_type(session,
                                                              kTableOid,
                                                              one_key(&resource),
@@ -162,26 +129,17 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
                                                              /*txn_id=*/0,
                                                              core::date::timezone_offset_t{});
 
-    // (3) Let the agent handle EXACTLY ONE message. Its mailbox is FIFO, and drop() was
-    //     posted first, so this is the drop -- and anything the search posted afterwards
-    //     is still sitting there unanswered.
+    // Mailbox is FIFO and drop() was posted first, so this resume is the drop; the search stays queued.
     agent_raw->resume(1);
 
-    // (4) The drop reply is in; hand the manager's suspended drop_index its continuation.
-    //     This is where the owning pointer is erased, taking the agent with it.
+    // drop_index erases the owning pointer here, destroying the agent.
     REQUIRE(resume_awaited(drop_future));
     REQUIRE(drop_future.is_ready());
-    // agent_raw is dead from here on: whoever owns the agent, drop_index finishes by
-    // destroying it. Nothing below may touch it.
+    // agent_raw is dead from here on -- nothing below may touch it.
 
-    // (5) THE POINT. The search must not be left holding a cancelled request. Either it
-    //     was answered before the agent went away, or it was refused outright -- never
-    //     "resumed with a result that is really an error", which is what a destroyed agent
-    //     hands back and what await_resume reads as an uninitialised value under NDEBUG.
     REQUIRE_FALSE(awaited_request_failed(search_future));
 
-    // ... and the refusal is LOUD: an error, not a quietly empty match set. An empty
-    // vector out of manager_index_t::search means "no row matches" and nothing else.
+    // An empty vector from search means only "no match", never a refusal.
     REQUIRE(search_future.is_ready());
     auto answer = std::move(search_future).take_ready();
     REQUIRE(answer.has_error());

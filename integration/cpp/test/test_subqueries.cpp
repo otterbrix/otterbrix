@@ -277,8 +277,7 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
     }
 }
 
-// A correlated WHERE EXISTS(...) is the canonical SEMI join (kept iff the inner side produces >=1
-// row); NOT EXISTS is the ANTI join. Both lower to a LATERAL join binding the correlation per outer row.
+// Both correlated EXISTS and NOT EXISTS lower to a LATERAL join binding the correlation per outer row.
 
 TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/correlated_exists_semi_anti"));
@@ -968,7 +967,6 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
                                            "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        // UNION ALL keeps each branch as its own chunk; read via the chunk-spanning accessor, not chunks().front().
         for (size_t row = 0; row < 4; ++row) {
             REQUIRE(cur->value(0, row).value<int64_t>() == 1);
         }
@@ -1033,7 +1031,6 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
 }
 
 // F1: operator_limit applies the MERGED window once, not per UNION arm or GROUP BY scan.
-
 TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/union_group_limit_offset"));
     test_clear_directory(config);
@@ -1222,8 +1219,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
     }
 }
 
-// Hierarchy (depth): CEO=0; VP Eng, VP Mkt=1; Engineer, Designer=2.
-
 namespace {
     void setup_recursive_db(otterbrix::wrapper_dispatcher_t* dispatcher) {
         {
@@ -1339,8 +1334,8 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
     }
 }
 
-// Tier-0: unsupported SubLink forms used to assert(false) (Release UB) or null-deref under AND/OR/NOT.
-// Now: EXPR bare boolean predicate is supported; every other unsupported form errors cleanly instead of crashing.
+// Tier-0: every unsupported SubLink form must error cleanly, not crash via assert(false) (Release UB)
+// or a null-deref under AND/OR/NOT; EXPR bare boolean predicates are supported.
 TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/tier0_unsupported_sublink_forms"));
     test_clear_directory(config);
@@ -1401,8 +1396,7 @@ TEST_CASE("integration::cpp::test_subqueries::tier0_unsupported_sublink_forms") 
     }
 }
 
-// F4: a bare boolean-context scalar sub-query (WHERE/HAVING (SELECT ...)) must have a BOOLEAN static
-// output type (PostgreSQL); a non-boolean scalar is rejected before binding, not silently coerced.
+// F4: a bare boolean-context scalar sub-query is rejected before binding, never silently coerced (PostgreSQL).
 TEST_CASE("integration::cpp::test_subqueries::where_having_boolean_required") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/where_having_boolean_required"));
     test_clear_directory(config);
@@ -1527,8 +1521,8 @@ TEST_CASE("integration::cpp::test_subqueries::bool_numeric_coercion") {
     }
 }
 
-// Tier-1: a compound (UNION) SELECT used to silently drop its trailing ORDER BY/LIMIT/OFFSET
-// (gram.y attaches them to the SETOP node; the transformer early-returned before lowering them).
+// Tier-1: a compound SELECT dropped its trailing ORDER BY/LIMIT/OFFSET -- gram.y hangs them on the SETOP
+// node and the transformer returned before lowering them.
 TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/union_order_by_limit"));
     test_clear_directory(config);
@@ -1580,7 +1574,6 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
 
     INFO("WITH on a compound UNION is visible to the arms (was dropped with the tail clauses)");
     {
-        // The CTE `e` is referenced by the first UNION arm; register_with_ctes must run before the arms.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "WITH e AS (SELECT id FROM TestDatabase.Employees WHERE dept_id = 1) "
@@ -1595,8 +1588,8 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
     }
 }
 
-// F5: positional ORDER BY <int> maps to the n-th output column, in a plain SELECT and over a UNION
-// (PostgreSQL); a bare integer used to error ("Unknown node type in ORDER BY").
+// F5: positional ORDER BY <int> names the n-th output column; a bare integer used to error
+// "Unknown node type in ORDER BY".
 TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/positional_order_by"));
     test_clear_directory(config);
@@ -1701,7 +1694,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
 
     INFO("scalar sub-query with 2 rows split across chunks still errors (not chunk-0's value)");
     {
-        // UNION ALL keeps each branch as its own chunk; a scalar `=` sub-query must see BOTH and error.
+        // A scalar `=` sub-query must see both UNION ALL chunks, not just the first, and error.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s,
                                            "SELECT v FROM TestDatabase.probe WHERE v = "
@@ -1711,7 +1704,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
     }
 }
 
-// Tier-1: recursive UNION (DISTINCT) used to run as UNION ALL — duplicate rows, cyclic graphs hit the depth cap.
+// Tier-1: recursive UNION (DISTINCT) ran as UNION ALL -- duplicate rows, and cyclic graphs hit the depth cap.
 TEST_CASE("integration::cpp::test_subqueries::recursive_cte_union_distinct") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/recursive_cte_union_distinct"));
     test_clear_directory(config);
@@ -1807,7 +1800,7 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_dedup_fidelity") {
     }
 }
 
-// Tier-1: a leading WITH (CTE) on DML used to be dropped, so `FROM cte` fell through to a base-table lookup.
+// Tier-1: a leading WITH on DML was dropped, so `FROM cte` fell through to a base-table lookup.
 TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/with_before_dml"));
     test_clear_directory(config);
@@ -1863,7 +1856,6 @@ TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
 
     INFO("a data-modifying CTE (WITH x AS (DELETE ...)) is rejected cleanly, not a bad cast");
     {
-        // Deferred feature: register_with_ctes errors instead of casting a DeleteStmt ctequery to SelectStmt.
         auto cur = exec("WITH c AS (DELETE FROM TestDatabase.u RETURNING id) SELECT id FROM c;");
         REQUIRE(cur->is_error());
     }
@@ -1872,8 +1864,6 @@ TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
 // LIMIT unification: operator_limit is the SINGLE authoritative LIMIT/OFFSET operator for every SELECT
 // shape, inserted ABOVE DISTINCT/GROUP/JOIN/SORT whenever the window is effective.
 
-// (1) SELECT DISTINCT ... LIMIT/OFFSET: the scan is NOT capped before dedup; with ORDER BY it's
-// full sort + dedup, then the window.
 TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/distinct_limit_offset"));
     test_clear_directory(config);
@@ -1932,8 +1922,8 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
     }
 }
 
-// (2) A non-pushable WHERE (column-vs-column, routes through operator_match) where only TAIL rows
-// match: the inner scan must stay UNLIMITED so LIMIT windows the FILTERED stream, not a capped scan.
+// A non-pushable WHERE (column-vs-column, routes through operator_match) where only tail rows
+// match: the inner scan must stay unlimited so LIMIT windows the filtered stream, not a capped scan.
 TEST_CASE("integration::cpp::test_subqueries::nonpushable_where_limit_tail") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/nonpushable_where_limit_tail"));
     test_clear_directory(config);
@@ -1948,7 +1938,6 @@ TEST_CASE("integration::cpp::test_subqueries::nonpushable_where_limit_tail") {
 
     exec("CREATE DATABASE TestDatabase;");
     REQUIRE(exec("CREATE TABLE TestDatabase.tail_match (a bigint, b bigint);")->is_success());
-    // 6 HEAD rows never match (a=100>b); 4 TAIL rows do — exercises the unlimited-inner-scan requirement above.
     REQUIRE(exec("INSERT INTO TestDatabase.tail_match (a, b) VALUES "
                  "(100, 1),(100, 2),(100, 3),(100, 4),(100, 5),(100, 6),"
                  "(1, 100),(1, 100),(1, 100),(1, 100);")
@@ -1976,8 +1965,6 @@ TEST_CASE("integration::cpp::test_subqueries::nonpushable_where_limit_tail") {
     }
 }
 
-// (3) Regressions: shapes already correct before the unification (plain LIMIT, a pushable `col=const`
-// LIMIT, GROUP BY LIMIT, UNION ALL LIMIT) must stay correct under the unified operator_limit.
 TEST_CASE("integration::cpp::test_subqueries::limit_unification_regressions") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/limit_unification_regressions"));
     test_clear_directory(config);
@@ -2031,8 +2018,8 @@ TEST_CASE("integration::cpp::test_subqueries::limit_unification_regressions") {
     }
 }
 
-// (4) Top-level `VALUES (...) LIMIT/OFFSET` — previously a hard parse error. The
-// literal rows are wrapped in an aggregate so operator_limit windows them.
+// Top-level VALUES (...) LIMIT/OFFSET: the literal rows are wrapped in an aggregate so
+// operator_limit can window them.
 TEST_CASE("integration::cpp::test_subqueries::values_top_level_limit") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/values_top_level_limit"));
     test_clear_directory(config);
@@ -2063,8 +2050,6 @@ TEST_CASE("integration::cpp::test_subqueries::values_top_level_limit") {
     }
 }
 
-// #563: a SubLink as a comparison operand is lowered by kind — `flag = EXISTS (...)` must compare
-// against EXISTS's BOOLEAN result (compact_to_bool_value), not the sub-query's first value.
 TEST_CASE("integration::cpp::test_subqueries::exists_operand") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/exists_operand"));
     test_clear_directory(config);
@@ -2098,8 +2083,6 @@ TEST_CASE("integration::cpp::test_subqueries::exists_operand") {
     }
 }
 
-// #559: scalar sub-queries in value position — projected in the SELECT list and as an arithmetic
-// operand — plus a NULL/0-row scalar sub-query returning a typed NULL row.
 TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/value_position_scalar"));
     test_clear_directory(config);
@@ -2149,8 +2132,6 @@ TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
     }
 }
 
-// #559/#563: a bare NULL literal in value position is typed (PG unknown->text) instead of rejected,
-// and `NULL::T` is a proper NULL rather than a garbage non-null value.
 TEST_CASE("integration::cpp::test_subqueries::null_literal_typing") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/null_literal_typing"));
     test_clear_directory(config);
@@ -2191,8 +2172,6 @@ TEST_CASE("integration::cpp::test_subqueries::null_literal_typing") {
     }
 }
 
-// #563: `<op> ANY (SELECT ...)` for LIKE/ILIKE. LIKE ANY converts each pattern via like_to_regex,
-// ILIKE ANY matches case-insensitively, NOT LIKE ANY negates per-element before the ANY fold.
 TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/like_ilike_family"));
     test_clear_directory(config);
@@ -2245,8 +2224,6 @@ TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
     }
 }
 
-// A comparison ANY/ALL over a sub-query pushes into the disk scan as a conjunction of per-element
-// constant_filters (bound once); an empty sub-query leaves it empty, so `= ANY` matches nothing, `<> ALL` matches all.
 TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/any_subquery_disk_pushdown"));
     test_clear_directory(config);
@@ -2304,8 +2281,6 @@ TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
     }
 }
 
-// Positive LIKE/ILIKE ANY|ALL over a sub-query pushes into the disk scan as a conjunction of regex_filter_t
-// (per-element, RE2); NOT LIKE ANY stays in-memory since per-element negation isn't a conjunction of positives.
 TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/like_any_disk_pushdown"));
     test_clear_directory(config);
@@ -2367,8 +2342,6 @@ TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
     }
 }
 
-// #559/#563: a bare NULL literal in one UNION branch reconciles to the other branch's type
-// (PostgreSQL), instead of a spurious "UNION column type mismatch". A genuine text-vs-int mismatch still errors.
 TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/union_null_reconcile"));
     test_clear_directory(config);
@@ -2400,9 +2373,8 @@ TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {
     }
 }
 
-// SORT ELIMINATION: an ORDER BY without LIMIT/OFFSET inside a sub-query whose result is COMPACTED
-// (IN/ANY/ALL, EXISTS, scalar) is dead work and the transformer strips it. A sort carrying
-// LIMIT/OFFSET (top-N) is OBSERVABLE and stays; a TOP-LEVEL ORDER BY is never touched.
+// A sub-query's ORDER BY is dead work when its result is compacted (IN/ANY/ALL, EXISTS, scalar),
+// so the transformer strips it; it survives when it carries LIMIT/OFFSET (an observable top-N).
 TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/sort_elimination"));
     test_clear_directory(config);
@@ -2494,8 +2466,8 @@ TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
         REQUIRE(contains(plan_text(ex), "Sort"));
     }
 }
-// x IN/NOT IN (S) is three-valued when S has a NULL: a non-match is UNKNOWN (dropped), not the
-// naive opposite — this is NOT IN's classic surprise. S empty: IN->FALSE, NOT IN->TRUE for all x.
+// IN/NOT IN over an S holding NULL is three-valued: a non-match is UNKNOWN, not the naive opposite.
+// S empty: IN -> FALSE, NOT IN -> TRUE for every x.
 TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/in_not_in_null_semantics"));
     test_clear_directory(config);
@@ -2577,9 +2549,8 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
     }
 }
 
-// The pending internal-aggregate stash (an aggregate hidden in SELECT-list arithmetic, e.g. `SELECT sum(x)+1`)
-// must survive a sub-query transform that runs before the stash flushes — without a save/restore around
-// every inner transform, the OUTER aggregate leaks into the INNER group.
+// The pending internal-aggregate stash must survive a sub-query transform that runs before it flushes --
+// without a save/restore around each inner transform, the outer aggregate leaks into the inner group.
 TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_subquery") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/outer_agg_where_subquery"));
     test_clear_directory(config);
@@ -2624,8 +2595,7 @@ TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_sub
     }
 }
 
-// DISTINCT ON makes a sub-query ORDER BY OBSERVABLE even without LIMIT (it keeps the first row per
-// ON-key group in ORDER BY order); the bare-sort elimination above must not strip it under DISTINCT ON.
+// DISTINCT ON makes a sub-query's ORDER BY observable without LIMIT; sort elimination must not strip it here.
 TEST_CASE("integration::cpp::test_subqueries::distinct_on_subquery_sort_kept") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/distinct_on_subquery_sort"));
     test_clear_directory(config);
@@ -2641,8 +2611,7 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_on_subquery_sort_kept") {
 
     REQUIRE(run("CREATE DATABASE db;")->is_success());
     REQUIRE(run("CREATE TABLE db.events (k bigint, ts bigint, v bigint);")->is_success());
-    // Insertion order is oldest-ts first, so a wrongly-stripped sort would keep the OLDEST row per k,
-    // not the latest DISTINCT ON demands.
+    // Insertion order is oldest-ts first, so a wrongly-stripped sort would keep the oldest, not latest, row per k.
     REQUIRE(run("INSERT INTO db.events (k, ts, v) VALUES "
                 "(1, 1, 100), (2, 1, 300), (1, 2, 200), (2, 2, 400);")
                 ->is_success());
@@ -2655,7 +2624,6 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_on_subquery_sort_kept") {
                        "(SELECT DISTINCT ON (k) v FROM db.events ORDER BY k, ts DESC);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        // Latest-ts rows are v=200 (k=1) and v=400 (k=2), in either output order.
         const auto a = cur->value(0, 0).value<int64_t>();
         const auto b = cur->value(0, 1).value<int64_t>();
         const bool latest_pair = (a == 200 && b == 400) || (a == 400 && b == 200);

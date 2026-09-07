@@ -1,28 +1,5 @@
-// A rebuild's clear() must not destroy another transaction's staged batch.
-//
-// manager_index_t::repopulate_table (VACUUM / CHECKPOINT) posts clear -> stage_inserts(0) ->
-// commit_inserts(0) to every agent in one uninterrupted burst. FIFO against the agent's mailbox,
-// but a writer transaction that staged before the burst and commits after it straddles the
-// whole thing -- and clear() used to wipe pending_inserts_/pending_deletes_ wholesale, every
-// bucket of every transaction, not just the rebuild's own bucket 0.
-//
-// The cost was not a superset: the rebuild feed is a visibility-filtered scan under the
-// maintenance snapshot, so an uncommitted writer's rows are not in it, and the writer's own
-// commit then finds an empty bucket and reports no_error (the `journal.empty()` road). The heap
-// keeps the row, the index doesn't -- an index scan silently answers fewer rows than a
-// sequential scan. The mirror case: a staged DELETE wiped by clear leaves the row in the
-// rebuilt index after the deleting transaction commits.
-//
-// Same rule as test_index_agent_commit_retry.cpp pins one level down: a bucket belongs to the
-// transaction that staged it, and nothing but that transaction's own commit, revert or drop may
-// take it away.
-//
-// Staged physical row ids stay valid across the round because a pending txn id is >=
-// TRANSACTION_ID_START, above every compact watermark, so table_storage_t::has_versions_above
-// defers compaction for the whole round (agent_disk_t::checkpoint_inner). The fix narrowed
-// clear() to bucket 0; test_index_agent_buffer.cpp's SECTION("clear() wipes the tree and the
-// REBUILD's bucket, and nobody else's") was updated under the same ruling to check that the
-// committed row goes and the onlooker's own staged row stays.
+// manager_index_t::repopulate_table posts clear -> stage_inserts(0) -> commit_inserts(0) to every
+// agent as one uninterrupted burst, so clear() may only wipe bucket 0, not a straddling writer's.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -65,11 +42,8 @@ using services::index::index_agent_contract;
 
 namespace {
 
-    // Kept far from the txn id it derives from -- different id spaces. txn id says which bucket
-    // to publish; commit id is what the hashed family stamps into its durable txn-log frame and
-    // the recover gate judges it by (bitcask_index_disk.cpp). Reusing one number for both is the
-    // exact confusion that let an earlier incarnation's COMMIT marker vouch for a later frame
-    // under a recycled txn id.
+    // Offset from txn id, not equal to it: reusing one number for both would let a recycled txn
+    // id's earlier COMMIT marker vouch for a new frame (bitcask_index_disk.cpp).
     constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
     constexpr components::catalog::oid_t kTableOid = 17500;
@@ -92,9 +66,7 @@ namespace {
         return values;
     }
 
-    // One message, pumped to completion, its reply taken -- the same single-resume shape
-    // test_index_agent_commit_retry.cpp uses, and sound for the same reason: every handler
-    // under test is a straight-line coroutine with no cross-actor await.
+    // Single resume suffices: every handler here is a straight-line coroutine with no cross-actor await.
     template<auto Handler, typename Agent, typename... Args>
     auto ask(Agent& agent, Args&&... args) {
         auto [needs_sched, future] =
@@ -110,13 +82,11 @@ namespace {
         return out;
     }
 
-    // The two families answer the same contract, so the body below is written once and
-    // instantiated for each. Only construction differs.
+    // Same contract for both agent families, so the body is written once; only construction differs.
     template<typename Agent>
     void rebuild_clear_keeps_other_transactions_buckets(Agent& agent, std::pmr::memory_resource* resource) {
         const auto session = session_id_t::generate_uid();
-        // A live writer, and a second id that never stages anything -- the reader below asks as
-        // the second one so nothing it sees can come out of the writer's own pending bucket.
+        // The reader asks as `onlooker`, which never stages anything.
         const uint64_t writer = TRANSACTION_ID_START + 1;
         const uint64_t onlooker = TRANSACTION_ID_START + 2;
 
@@ -131,38 +101,28 @@ namespace {
         };
 
         SECTION("a staged insert survives a rebuild's clear and the writer's commit publishes it") {
-            // The writer stages before the maintenance round starts.
             REQUIRE_FALSE(
                 ask<&index_agent_contract::stage_inserts>(agent, session, writer, entries(resource, {{42, 7}}))
                     .contains_error());
 
-            // ---- repopulate_table's burst, in its exact order --------------------------
+            // Row 7 is NOT in the rebuild feed: the scan ran under the maintenance snapshot.
             REQUIRE_FALSE(ask<&index_agent_contract::clear>(agent, session).contains_error());
-            // The rebuild feed is the scan's own rows. Row 7 is NOT among them: the scan ran
-            // under the maintenance snapshot and the writer has not committed.
             REQUIRE_FALSE(
                 ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(resource, {{99, 3}}))
                     .contains_error());
             REQUIRE_FALSE(
                 ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
-            // ---------------------------------------------------------------------------
 
-            // The writer commits. Its batch was staged, never reverted and never dropped, so
-            // this commit owes the index row 7.
             REQUIRE_FALSE(
                 ask<&index_agent_contract::commit_inserts>(agent, session, writer, commit_id_of(writer))
                     .contains_error());
 
-            // What this catches: a wiped bucket turning commit_inserts into a no-op that still
-            // reports success, so the heap keeps the row and the index does not.
+            // What this catches: a wiped bucket turning commit_inserts into a silent no-op.
             CHECK(read(42, onlooker) == std::vector<int64_t>{7});
-            // The rebuild's own rows are there either way -- if they were not, the failure above
-            // would be about the clear, not about whose bucket it took.
             CHECK(read(99, onlooker) == std::vector<int64_t>{3});
         }
 
         SECTION("a staged delete survives a rebuild's clear and the writer's commit applies it") {
-            // Row 7 is durable and committed for everyone.
             REQUIRE_FALSE(
                 ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(resource, {{42, 7}}))
                     .contains_error());
@@ -170,27 +130,23 @@ namespace {
                 ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
             REQUIRE(read(42, onlooker) == std::vector<int64_t>{7});
 
-            // The writer stages the delete and has not committed it.
             REQUIRE_FALSE(
                 ask<&index_agent_contract::stage_deletes>(agent, session, writer, entries(resource, {{42, 7}}))
                     .contains_error());
 
-            // ---- repopulate_table's burst. Row 7 IS in the feed: the delete is uncommitted,
-            // so the maintenance snapshot still sees the row. -----------------------------
+            // Row 7 IS in the feed here: the delete is uncommitted, so the snapshot still sees it.
             REQUIRE_FALSE(ask<&index_agent_contract::clear>(agent, session).contains_error());
             REQUIRE_FALSE(
                 ask<&index_agent_contract::stage_inserts>(agent, session, uint64_t{0}, entries(resource, {{42, 7}}))
                     .contains_error());
             REQUIRE_FALSE(
                 ask<&index_agent_contract::commit_inserts>(agent, session, uint64_t{0}, uint64_t{0}).contains_error());
-            // ---------------------------------------------------------------------------
 
             REQUIRE_FALSE(
                 ask<&index_agent_contract::commit_deletes>(agent, session, writer, commit_id_of(writer))
                     .contains_error());
 
-            // What this catches: the delete reported as landed while the row stays in the
-            // rebuilt index for every later reader.
+            // What this catches: the delete reported as landed while the row stays in the rebuilt index.
             CHECK(read(42, onlooker).empty());
         }
     }

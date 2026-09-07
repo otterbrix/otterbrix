@@ -8,14 +8,10 @@
 #include <string>
 #include <unistd.h>
 
-// bootstrap_indexes_sync used to fold two different skip reasons — unfinished backfill vs.
-// unopenable storage — into one PHASE 4 count, so the log couldn't tell them apart. This stages
-// the reachable half (unopenable storage, test_index_bootstrap_failure's directory-for-file trick).
-//
-// The other half (ready_since == 0) can't be staged from this tree: CREATE INDEX is one
-// transaction, and a CHECKPOINT taken over an open CREATE INDEX transaction leaves pg_index
-// EMPTY in the crash image (probed empirically) — replay filters whole transactions by their
-// COMMIT marker.
+// bootstrap_indexes_sync folds skip reasons into a PHASE 4 count; this stages the reachable one
+// (unopenable storage). The other (ready_since == 0, unfinished backfill) can't be staged here:
+// a CHECKPOINT over an open CREATE INDEX transaction leaves pg_index EMPTY in the crash image
+// (probed empirically), since replay filters whole transactions by their COMMIT marker.
 
 using namespace test_helpers;
 
@@ -60,8 +56,7 @@ TEST_CASE("integration::cpp::index_unfinished_bootstrap::an_unopenable_index_is_
         REQUIRE(exec(d, "CREATE INDEX k_idx ON b.t USING hash (k);")->is_success());
         REQUIRE(exec(d, "INSERT INTO b.t (id, k) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
 
-        // The on-disk layout is oid-keyed and carries no index name; find the index
-        // directory by content (it owns the hash storage file).
+        // The on-disk layout is oid-keyed with no index name, so find the directory by content.
         for (const auto& entry : std::filesystem::recursive_directory_iterator(config.disk.path)) {
             if (entry.is_directory() && std::filesystem::exists(entry.path() / "hash_index.bin")) {
                 index_dir = entry.path();
@@ -71,19 +66,16 @@ TEST_CASE("integration::cpp::index_unfinished_bootstrap::an_unopenable_index_is_
         REQUIRE_FALSE(index_dir.empty());
     }
 
-    // The engine is down; make the per-index storage unopenable for the next start — a
-    // directory where a regular file is expected.
     const auto storage_file = index_dir / "hash_index.bin";
     std::filesystem::remove_all(storage_file);
     std::filesystem::create_directories(storage_file);
     REQUIRE(std::filesystem::is_directory(storage_file));
 
-    // Reopen at trace level: the PHASE 4 accounting line is the assertion target.
+    // Trace level, so the PHASE 4 accounting line the assertion checks for gets logged.
     config.log.level = log_t::level::trace;
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        // The skip must not cost the start or the table.
         auto cur = exec(d, "SELECT id FROM b.t WHERE k = 20;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);

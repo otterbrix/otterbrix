@@ -1,14 +1,6 @@
-// `CREATE TABLE ... WITH (...)` must not swallow an option it does not implement.
-//
-// The option loop in components/sql/transformer/impl/transform_table.cpp compared each
-// DefElem's name against exactly one string, "storage" (refused because every table is
-// disk-backed), and `continue`d past everything else -- but that reasoning covers every
-// other option just as well, since none of them is implemented either. Any other name fell
-// out of the bottom of the loop and CREATE TABLE proceeded as if the WITH clause were absent.
-//
-// The sharpest shape is a typo of the one handled name: `storag = 'memory'` carries the same
-// "you have selected a storage mode" belief the `storage` refusal exists to correct, and got
-// no refusal at all.
+// components/sql/transformer/impl/transform_table.cpp's option loop compared each DefElem's name against
+// only "storage" and silently `continue`d past every other name, so an unimplemented or misspelled option
+// was accepted instead of refused.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -45,8 +37,7 @@ namespace {
 
 } // namespace
 
-// The pre-existing refusal, kept pinned: `storage` keeps its own sentence,
-// which names the reason the option is gone rather than just its absence.
+// `storage` keeps its own message naming why it's gone, not just that it's unsupported.
 TEST_CASE("integration::cpp::create_table_with_options::storage_keeps_its_own_message") {
     auto config = make_test_config(fixture_path("storage"));
     config.log.level = log_t::level::off;
@@ -60,8 +51,6 @@ TEST_CASE("integration::cpp::create_table_with_options::storage_keeps_its_own_me
     CHECK(error_text(cur).find("always disk-backed") != std::string::npos);
 }
 
-// The defect: every other option name. The refusal must NAME the option, so a
-// user can tell which of several they wrote is the unsupported one.
 TEST_CASE("integration::cpp::create_table_with_options::unknown_option_is_refused_by_name") {
     auto config = make_test_config(fixture_path("unknown"));
     config.log.level = log_t::level::off;
@@ -74,13 +63,11 @@ TEST_CASE("integration::cpp::create_table_with_options::unknown_option_is_refuse
     REQUIRE_FALSE(cur->is_success());
     CHECK(error_text(cur).find("fillfactor") != std::string::npos);
 
-    // and nothing was created under that name.
     auto gone = exec(d, "SELECT id FROM opt.t;");
     CHECK_FALSE(gone->is_success());
 }
 
-// A typo of `storage` is the worst case: it carries the very belief the `storage`
-// refusal exists to correct, and it is the one shape guaranteed to slip past a
+// `storag` carries the same false belief the `storage` refusal corrects, yet is invisible to a
 // single-name comparison.
 TEST_CASE("integration::cpp::create_table_with_options::a_typo_of_storage_is_refused") {
     auto config = make_test_config(fixture_path("typo"));
@@ -98,9 +85,7 @@ TEST_CASE("integration::cpp::create_table_with_options::a_typo_of_storage_is_ref
     CHECK_FALSE(gone->is_success());
 }
 
-// The specific `storage` sentence must win wherever in the list it is written,
-// not only when it comes first — otherwise the message a user gets for the same
-// clause depends on the order they typed it in.
+// The `storage` message must not depend on where in the WITH list it appears.
 TEST_CASE("integration::cpp::create_table_with_options::storage_wins_from_any_position") {
     auto config = make_test_config(fixture_path("storage_second"));
     config.log.level = log_t::level::off;
@@ -114,8 +99,6 @@ TEST_CASE("integration::cpp::create_table_with_options::storage_wins_from_any_po
     CHECK(error_text(cur).find("always disk-backed") != std::string::npos);
 }
 
-// No WITH clause at all is the overwhelmingly common case and must stay free of
-// the new refusal.
 TEST_CASE("integration::cpp::create_table_with_options::no_options_still_creates") {
     auto config = make_test_config(fixture_path("none"));
     config.log.level = log_t::level::off;

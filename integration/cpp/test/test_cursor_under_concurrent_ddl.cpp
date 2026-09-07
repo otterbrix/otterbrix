@@ -12,26 +12,10 @@
 #include <string>
 #include <thread>
 
-// An open streaming cursor meets a committed ALTER TABLE DROP COLUMN from another session.
-//
-// The cursor stores the POSITIONAL projection it was opened with and re-applies it to the
-// storage's CURRENT schema on every fetch; the commit of a concurrent DROP COLUMN rebuilds the
-// table between two fetches of the same cursor, so from that batch on the stored positions name
-// DIFFERENT columns. Observed on a 50k-row table without any seam: SELECT b returned SUCCESS and
-// the full row count, but from a batch boundary on every value was byte-for-byte the NEIGHBOUR
-// column of the same row — a silent wrong answer, hit in 5 of 8 timing-based runs.
-//
-// These tests close the window deterministically with the between-batches pause gate
-// (services::disk::scan_advance_gate_t): batch one flows, the scan is held between batches, the
-// ALTER runs to full commit from another session, the scan is released. No timing, no flake.
-//
-// The pinned semantics:
-//   * a projected column that SURVIVES the DROP keeps answering with its own data
-//     (the cursor resolves columns by identity, not by stored position);
-//   * a projected column whose data is physically GONE refuses loudly — the fetch errors
-//     instead of silently serving whichever column now sits at the stored position;
-//   * a cursor whose pushed-down filter was bound against ordinals the DROP shifted refuses
-//     loudly — the filter would otherwise be evaluated against the wrong columns.
+// A cursor re-applies its stored positional projection to storage's current schema on every
+// fetch, so a concurrent DROP COLUMN between two fetches makes stored positions name different
+// columns. Measured on a 50k-row table under plain timing (no gate): SELECT b returned success
+// but silently served the neighbour column from the DROP's batch on, in 5 of 8 timing-based runs.
 
 namespace {
 
@@ -40,10 +24,8 @@ namespace {
     constexpr int64_t B_BASE = 1'000'000;
     constexpr int64_t C_BASE = 2'000'000;
 
-    // Holds every ADVANCE of a USER-table scan while armed-and-not-released. Catalog scans
-    // (oids below FIRST_USER_OID) pass freely, so the interleaved DDL's own internal reads can
-    // never park themselves on the gate. The only user table in these fixtures is the one the
-    // reader scans.
+    // Holds a user-table scan while armed-and-not-released; catalog scans (oid < FIRST_USER_OID)
+    // pass free, so the interleaved DDL's own internal reads never park on the gate.
     struct pause_gate_t final : services::disk::scan_advance_gate_t {
         std::atomic<bool> armed{false};
         std::atomic<bool> reached{false};
@@ -110,10 +92,8 @@ namespace {
         bool ddl_ok{false};
     };
 
-    // The deterministic interleave: `reader_sql` streams from one session, the gate parks it
-    // between batch one and batch two, `ddl_sql` runs TO FULL COMMIT from another session,
-    // then the reader is released and joined. Every REQUIRE happens after the join so a failed
-    // assertion can never leave the reader thread running.
+    // Every REQUIRE runs after reader.join(), so a failed assertion can never leave the reader
+    // thread running.
     interleave_result_t run_interleaved(otterbrix::wrapper_dispatcher_t* dispatcher,
                                         const std::string& reader_sql,
                                         const std::string& ddl_sql) {
@@ -153,9 +133,6 @@ TEST_CASE("integration::cursor_under_concurrent_ddl::surviving_projected_column_
     REQUIRE(r.gate_reached);
     REQUIRE(r.ddl_ok);
 
-    // The reader projected `b` and `b` survived the DROP: the answer must be `b` — the whole
-    // column, its own data. The broken cursor answered SUCCESS with the full row count but
-    // served the NEIGHBOUR column `c` from the first post-DDL batch on.
     REQUIRE(r.reader_cursor != nullptr);
     REQUIRE(r.reader_cursor->is_success());
     REQUIRE(r.reader_cursor->size() == ROWS);
@@ -173,8 +150,8 @@ TEST_CASE("integration::cursor_under_concurrent_ddl::surviving_projected_column_
     INFO("first wrong row: " << first_wrong << " of " << ROWS);
     REQUIRE(wrong == 0);
 
-    // A FRESH cursor over the post-DDL table sees the post-DDL schema — the identity
-    // resolution above must not have bent the normal path.
+    // A fresh cursor must still see the post-DDL schema normally, unbent by the identity
+    // resolution above.
     auto session = otterbrix::session_id_t();
     auto fresh = dispatcher->execute_sql(session, "SELECT b FROM TestDatabase.t;");
     REQUIRE(fresh->is_success());
@@ -193,15 +170,11 @@ TEST_CASE("integration::cursor_under_concurrent_ddl::projected_column_dropped_re
     auto* dispatcher = space.dispatcher();
     seed_table(dispatcher);
 
-    // Project the column the DROP takes away, with a SAME-TYPED neighbour right behind it:
-    // after the rebuild the stored position names `c` (BIGINT, like `b`), so no downstream
-    // type check can error by accident — the broken cursor answers SUCCESS and serves `c`.
+    // b and c are both BIGINT, so a type mismatch can't accidentally catch the DROP-b case.
     auto r = run_interleaved(dispatcher, "SELECT b FROM TestDatabase.t;", "ALTER TABLE TestDatabase.t DROP COLUMN b;");
     REQUIRE(r.gate_reached);
     REQUIRE(r.ddl_ok);
 
-    // The reader projected the column the DROP took away: its data is physically gone, so the
-    // only honest answer is a loud error.
     REQUIRE(r.reader_cursor != nullptr);
     REQUIRE_FALSE(r.reader_cursor->is_success());
 }
@@ -222,9 +195,8 @@ TEST_CASE("integration::cursor_under_concurrent_ddl::shifted_filter_ordinals_ref
     REQUIRE(r.gate_reached);
     REQUIRE(r.ddl_ok);
 
-    // The pushed-down filter was bound against the pre-DDL ordinals and the DROP shifted every
-    // column it can touch; evaluating it against the rebuilt table would silently test the
-    // wrong columns. The only honest answer is a loud error.
+    // The filter was bound against pre-DDL ordinals; evaluating it after the shift would
+    // silently test the wrong columns.
     REQUIRE(r.reader_cursor != nullptr);
     REQUIRE_FALSE(r.reader_cursor->is_success());
 }

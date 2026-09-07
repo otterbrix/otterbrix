@@ -12,8 +12,7 @@ using components::operators::operator_type;
 
 namespace {
 
-    // 137 bytes, well past the small-string threshold, so the message is a real heap block a
-    // resource_tracer_t can be asked about. Shaped like the DROP COLUMN refusal.
+    // Well past the small-string threshold, so the message is a real heap block resource_tracer_t can track.
     constexpr std::string_view refusal =
         "ALTER TABLE: column \"parent_id\" of relation \"edb.child\" may not be dropped: "
         "FOREIGN KEY constraint \"fk_child_parent\" still depends on it.";
@@ -25,10 +24,9 @@ namespace {
 
 } // namespace
 
-// `error_ = error` (the copy ~98 of ~100 call sites use) reallocates onto the DEFAULT resource
-// (std::pmr::string's copy ctor does not propagate the allocator); `error_ = std::move(error)` would keep
-// the producer's allocator instead, leaving the operator holding — and later freeing into — an arena it
-// never owned.
+// `error_ = error` (~98 of ~100 call sites) doesn't propagate std::pmr::string's allocator, so it lands
+// on the DEFAULT resource; a move would instead adopt the producer's arena and leave the operator freeing
+// memory it never owned.
 TEST_CASE("components::operators::set_error_leaves_the_message_on_the_operator_resource") {
     resource_tracer_t producer;
     resource_tracer_t owner;
@@ -48,11 +46,9 @@ TEST_CASE("components::operators::set_error_leaves_the_message_on_the_operator_r
         CHECK(op.get_error().type == core::error_code_t::schema_error);
         CHECK(std::string_view{op.get_error().what} == refusal);
 
-        // The whole contract in one line: the operator's error lives on the operator's arena.
         CHECK(op.get_error().what.get_allocator().resource() == &owner);
 
-        // ... and it is a rebuild, not a hand-over: the caller's error_t is untouched, still
-        // on its own arena, and holding a different buffer.
+        // Rebuild, not hand-over: the caller's error_t keeps its own arena and buffer.
         CHECK(error.what.get_allocator().resource() == &producer);
         CHECK(std::string_view{error.what} == refusal);
         CHECK(error.what.data() != op.get_error().what.data());
@@ -60,14 +56,12 @@ TEST_CASE("components::operators::set_error_leaves_the_message_on_the_operator_r
         CHECK(owner.live_allocations() >= 1);
     }
 
-    // Nothing was freed into the wrong arena on the way out.
     CHECK(producer.live_allocations() == 0);
     CHECK(owner.live_allocations() == 0);
 }
 
-// The same entry point reached with an rvalue. There is deliberately only ONE set_error
-// overload: an &&-overload could not do better than the rebuild (it would have to keep the
-// producer's allocator to be worth having), so it can only reintroduce the adoption.
+// Deliberately only one set_error overload: an &&-overload could only reintroduce the arena-adoption bug
+// it would need to avoid.
 TEST_CASE("components::operators::set_error_of_a_temporary_still_lands_on_the_operator_resource") {
     resource_tracer_t producer;
     resource_tracer_t owner;
@@ -81,8 +75,7 @@ TEST_CASE("components::operators::set_error_of_a_temporary_still_lands_on_the_op
         CHECK(std::string_view{op.get_error().what} == refusal);
         CHECK(op.get_error().what.get_allocator().resource() == &owner);
 
-        // The temporary is gone; if the operator had adopted its buffer, the producer would
-        // still be holding a live block here.
+        // If the operator had adopted the buffer, producer would still show a live block here.
         CHECK(producer.live_allocations() == 0);
     }
 
@@ -90,8 +83,7 @@ TEST_CASE("components::operators::set_error_of_a_temporary_still_lands_on_the_op
     CHECK(owner.live_allocations() == 0);
 }
 
-// An operator that never failed must not be made to allocate: no_error() carries no message,
-// so there is nothing to rebuild and nothing to put anywhere.
+// no_error() carries no message, so there is nothing to rebuild or place.
 TEST_CASE("components::operators::set_error_of_no_error_allocates_nothing") {
     resource_tracer_t owner;
 

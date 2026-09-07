@@ -1,17 +1,10 @@
 // In-place checkpointing: a segment whose payload already lives in a real FILE block is
-// read-only (appends start a fresh transient, updates ride the overlay the checkpoint refuses
-// to serialize), so its bytes cannot have changed since the round that wrote them. The new
-// root may therefore NAME the existing block instead of copying it — the shadow-paging
-// machinery already supports blocks shared between the live tree and the root under
-// construction (reclaim_superseded_root skips pending_root_data_, serialize_free_list never
-// publishes a block the root names).
+// read-only, so its bytes cannot have changed since the round that wrote them; the new root can
+// therefore NAME the existing block instead of copying it.
 //
-// Without this, every checkpoint rewrites the WHOLE table into fresh blocks and the previous
-// round's copies go to the free list: measured offline on a 4090-byte-per-row layout, 113 of
-// 294 blocks (29.6 MB of a 77 MB file) were free-listed garbage — one full superseded
-// generation, ~2851 bytes per row, held forever because the file is never truncated.
-//
-// The gates below pin the fix; the [probe] cases print the before/after numbers.
+// Without this, every checkpoint rewrites the whole table into fresh blocks: measured offline on
+// a 4090-byte-per-row layout, 113 of 294 blocks (29.6 MB of a 77 MB file) were free-listed
+// garbage, ~2851 bytes per row, held forever since the file is never truncated.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -57,8 +50,8 @@ namespace {
             , buffer_manager(&resource, fs, buffer_pool) {}
     };
 
-    // Deliberately incompressible (splitmix64): the analysis must DECLINE every compressed
-    // form, so the copy the in-place reference replaces would have been byte-identical.
+    // Deliberately incompressible (splitmix64), so the copy the in-place reference replaces
+    // would have been byte-identical.
     int64_t fixed_value(uint64_t row) {
         uint64_t x = row + 0x9E3779B97F4A7C15ull;
         x ^= x >> 30;
@@ -69,8 +62,6 @@ namespace {
         return static_cast<int64_t>(x & 0x7FFFFFFFFFFFFFFFull);
     }
 
-    // The measured layout: ~4090 bytes per row (inline strings, just under the big-string
-    // limit); every 17th row is a BIG string (>= 4096) so the overflow path is exercised too.
     std::string string_payload(uint64_t row) {
         const bool big = (row % 17) == 0;
         const size_t target = big ? 8192 : 4074;
@@ -236,13 +227,8 @@ namespace {
         return missing;
     }
 
-} // namespace
+}
 
-// ---------------------------------------------------------------------------------------
-// GATE 1 — two committed rounds over an UNCHANGED fixed-size table name the SAME data
-// blocks: after one round has landed every segment on disk, the next round has nothing to
-// rewrite, so its root differs only in metadata chains.
-// ---------------------------------------------------------------------------------------
 TEST_CASE("checkpoint_in_place: unchanged fixed-size segments are named, not copied", "[inplace]") {
     const auto path = inplace_db_path("fixed");
     remove_file(path);
@@ -254,17 +240,10 @@ TEST_CASE("checkpoint_in_place: unchanged fixed-size segments are named, not cop
     constexpr uint64_t ROWS = 300000;
     append_fixed_rows(*table, env, 0, ROWS);
 
-    // Round A: first checkpoint. Fresh segments legitimately get written; the round also
-    // re-points the live tail to disk-backed blocks, so from here on EVERY segment of this
-    // table is disk-backed.
     checkpoint_production(bm, *table);
-    // Round B: the round whose in-place references settle the root onto the live tree's own
-    // blocks (round A's root still named the copies it made of segments that were not yet
-    // disk-backed when it pinned them).
     checkpoint_production(bm, *table);
     const auto root_b = bm.dev_durable_root_data_snapshot();
 
-    // Round C over the unchanged table: nothing may be rewritten.
     bm.dev_reset_tracking();
     checkpoint_production(bm, *table);
     const auto root_c = bm.dev_durable_root_data_snapshot();
@@ -283,7 +262,7 @@ TEST_CASE("checkpoint_in_place: unchanged fixed-size segments are named, not cop
 
     REQUIRE(verify_fixed_rows(*table, env) == ROWS);
 
-    // The proof that matters: a FRESH process reads the un-copied blocks back correctly.
+    // The proof that matters: a fresh process reads the un-copied blocks back correctly.
     table.reset();
     {
         inplace_env_t env2;
@@ -295,12 +274,6 @@ TEST_CASE("checkpoint_in_place: unchanged fixed-size segments are named, not cop
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE 2 — the measured workload: a LOADED table (strings just under the big-string limit,
-// plus big-string overflow rows) takes a small delta. The round must keep every loaded
-// block in the new root — the whole point: live data is not rewritten, so no superseded
-// generation of it lands in the free list.
-// ---------------------------------------------------------------------------------------
 TEST_CASE("checkpoint_in_place: a loaded string table keeps its blocks across a delta round", "[inplace]") {
     const auto path = inplace_db_path("strings");
     remove_file(path);
@@ -321,8 +294,6 @@ TEST_CASE("checkpoint_in_place: a loaded string table keeps its blocks across a 
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE_FALSE(bm.load_existing_database().has_error());
         auto table = reload_table(env, bm);
-        // What the durable root names, as adopted by the loader itself — segment blocks AND
-        // big-string overflow blocks.
         const auto loaded_root = bm.dev_durable_root_data_snapshot();
         REQUIRE_FALSE(loaded_root.empty());
 
@@ -330,7 +301,6 @@ TEST_CASE("checkpoint_in_place: a loaded string table keeps its blocks across a 
         checkpoint_production(bm, *table);
         const auto new_root = bm.dev_durable_root_data_snapshot();
 
-        // Not one loaded block was replaced by a copy.
         REQUIRE(count_missing(loaded_root, new_root) == 0);
 
         auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
@@ -341,7 +311,6 @@ TEST_CASE("checkpoint_in_place: a loaded string table keeps its blocks across a 
         REQUIRE(verify_string_rows(*table, env) == ROWS + DELTA);
     }
 
-    // Reopen from the committed root and verify every payload byte-exactly.
     {
         inplace_env_t env;
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
@@ -352,18 +321,13 @@ TEST_CASE("checkpoint_in_place: a loaded string table keeps its blocks across a 
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// PROBE (measurement, not a gate) — the shape the offline parse measured: rows of ~4090
-// bytes, repeated delta-append + checkpoint rounds, then the same with a process restart
-// between rounds. Prints blocks/free/file-size so the before/after cost is a number.
-// ---------------------------------------------------------------------------------------
 TEST_CASE("checkpoint_in_place: PROBE steady-state garbage per round", "[inplace][probe]") {
     constexpr uint64_t ROWS = 4000;
     constexpr uint64_t DELTA = 16;
 
-    // A: the measured workload — a LOADED string table taking small deltas, one process
-    // restart per round. Every string segment is disk-backed after the load, so this is where
-    // the in-place references carry the whole table.
+    // The measured workload: a loaded string table taking small deltas with a process restart per
+    // round; every string segment is disk-backed after the load, so in-place references carry the
+    // whole table here.
     {
         const auto path = inplace_db_path("probe_reopen");
         remove_file(path);
@@ -388,9 +352,6 @@ TEST_CASE("checkpoint_in_place: PROBE steady-state garbage per round", "[inplace
             append_string_rows(*table, env, next_row, DELTA);
             next_row += DELTA;
             checkpoint_production(bm, *table);
-            // published = what the durable root's own free list names — the metric an offline
-            // parse of the file sees (in-memory free_blocks() misses blocks that are only
-            // published for the NEXT open, e.g. superseded loaded blocks the registry pins).
             auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
             REQUIRE(report.ok);
             WARN("[probe A] reopened round " << round << ": blocks=" << bm.total_blocks()
@@ -409,10 +370,8 @@ TEST_CASE("checkpoint_in_place: PROBE steady-state garbage per round", "[inplace
         remove_file(path);
     }
 
-    // B: same-process string rounds. Historically the residual: STRING was excluded from the
-    // write-through, so a same-process round re-copied every string segment (one superseded
-    // generation per round). The transition now re-points STRING too, so this probe measures
-    // the settled per-delta cost (gates in test_string_write_through.cpp pin it).
+    // STRING segments were historically excluded from the write-through and re-copied every round
+    // (gates in test_string_write_through.cpp pin the fix).
     {
         const auto path = inplace_db_path("probe_sameproc");
         remove_file(path);
@@ -436,8 +395,6 @@ TEST_CASE("checkpoint_in_place: PROBE steady-state garbage per round", "[inplace
         remove_file(path);
     }
 
-    // C: fixed-size data converges in the SAME process — after one round every segment is
-    // disk-backed, so later rounds issue only metadata chains.
     {
         const auto path = inplace_db_path("probe_fixed");
         remove_file(path);

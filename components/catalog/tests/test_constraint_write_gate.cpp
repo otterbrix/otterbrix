@@ -1,6 +1,6 @@
-// build_create_constraint_writes refuses (invalid_constraint) a conkey/confkey column
-// whose attoid is INVALID_OID: written into the CSV without a pg_depend edge, it would let
-// ALTER TABLE DROP COLUMN drop a parent column out from under a live FK undetected.
+// build_create_constraint_writes refuses a conkey/confkey column whose attoid is INVALID_OID:
+// unpinned, it would let ALTER TABLE DROP COLUMN drop a parent column out from under a live FK
+// undetected.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/catalog_codes.hpp>
@@ -101,8 +101,7 @@ TEST_CASE("catalog::constraint_writes::an_empty_list_stays_legal") {
     REQUIRE(count_attribute_edges(writes.value()) == 0);
 }
 
-// Same class for CREATE INDEX: build_create_index_writes refuses an indkey column with
-// an INVALID_OID attoid, for the same DROP COLUMN blindness reason as above.
+// Same defect class, for CREATE INDEX's indkey.
 TEST_CASE("catalog::index_writes::an_unstamped_indkey_column_is_refused") {
     auto writes = build_create_index_writes(g_resource,
                                             "users_by_name",
@@ -138,8 +137,7 @@ TEST_CASE("catalog::index_writes::every_indkey_column_carries_a_dependency_edge"
 }
 
 TEST_CASE("catalog::row_builders::pg_attribute_row_is_always_full_width") {
-    // Well-known oids are always in the schema array, so the "missing definition" arm
-    // (which would answer with an empty, unchecked chunk) is unreachable; pins full width.
+    // Well-known oids are always in the schema array, so the missing-definition arm is unreachable here.
     auto row = build_pg_attribute_row(g_resource,
                                       /*attoid=*/oid_t{20001},
                                       /*table_oid=*/oid_t{20000},

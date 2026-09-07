@@ -1,18 +1,7 @@
-// An INSERT that does not name the foreign key column is still bound by it.
-//
-// operator_fk_check addresses the referencing columns BY POSITION in the chunk the DML just
-// wrote (fk_info_t::child_col_indices). Those positions are resolved in enrich, and the
-// INSERT branch resolved them against the statement's own column list only. A column the
-// statement did not name is not in that list -- it's DEFAULT-expanded by
-// operator_insert::push() and appended to the chunk AFTER the named ones -- so its position
-// came back "absent".
-//
-// An absent position then took the operator's quietest path: the row qualified for no parent
-// lookup, every row was skipped, the qualifying count stayed 0 -- the operator's SUCCESS
-// path. So `pid bigint DEFAULT 42` with no parent row 42 was inserted without a word, leaving
-// a child row referencing a parent that does not exist. The check has to see the row that was
-// actually stored, whichever half of the statement produced the value -- and the same
-// statement declared inline in CREATE TABLE takes the same path, so both forms are covered.
+// operator_fk_check addresses referencing columns BY POSITION in the DML chunk (fk_info_t::child_col_indices),
+// resolved in enrich against the statement's own column list; a DEFAULT-expanded column is appended AFTER
+// the named ones by operator_insert::push(), so its position came back absent and every such row took the
+// operator's quiet zero-qualifying-rows success path instead of being checked.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -80,9 +69,7 @@ TEST_CASE("integration::cpp::fk_default_column::inline_declared_fk_sees_the_defa
     CHECK(count_of("SELECT COUNT(*) FROM f.child;") == 0);
 }
 
-// The green half: a DEFAULT that names a parent row that EXISTS must still be
-// accepted, and must be stored. Without this the fix above could be "reject every
-// insert that omits the key column", which is not enforcement either.
+// Guards against an overcorrection that rejects every omitted key instead of checking it.
 TEST_CASE("integration::cpp::fk_default_column::a_resolvable_default_is_accepted", "[fkdefault]") {
     MAKE_ENV("resolvable");
     REQUIRE(exec("CREATE TABLE f.child (id bigint, pid bigint DEFAULT 1);")->is_success());
@@ -95,8 +82,7 @@ TEST_CASE("integration::cpp::fk_default_column::a_resolvable_default_is_accepted
     CHECK(count_of("SELECT COUNT(*) FROM f.child WHERE pid = 1;") == 1);
 }
 
-// A NULL foreign key is not a violation (MATCH SIMPLE): a column the statement
-// omitted that has NO default is filled with NULL, and the row must go in.
+// MATCH SIMPLE: an omitted key with no default is NULL, not a violation.
 TEST_CASE("integration::cpp::fk_default_column::an_omitted_key_without_a_default_is_null", "[fkdefault]") {
     MAKE_ENV("null_key");
     REQUIRE(exec("CREATE TABLE f.child (id bigint, pid bigint);")->is_success());

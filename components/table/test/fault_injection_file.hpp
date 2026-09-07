@@ -1,12 +1,8 @@
 #pragma once
 
-// Fault-injection file handle + crash simulation (test-side): wraps the real database file
-// handle (installed through the DEV_MODE interposer seam in single_file_block_manager_t) to
-// fail writes/reads/syncs on a plan, and to simulate kill -9 via crash_revert() (an undo
-// journal rolls the file back to exactly its state at the last fsync).
-// Must always delegate to the wrapped inner handle: the filesystem free functions
-// reinterpret_cast their handle argument to the platform handle type, so passing the wrapper
-// itself into them would read a garbage fd.
+// Wraps the real file handle to fail I/O per fault_plan_t or simulate a crash (crash_revert);
+// must always delegate to inner_, since filesystem free functions reinterpret_cast the handle
+// argument to the platform type. Ops with no knob (seek, close, truncate, trim) just forward.
 
 #include <cstddef>
 #include <cstring>
@@ -20,33 +16,25 @@
 namespace otterbrix_test {
 
     struct fault_plan_t {
-        // Fail the (N+1)th and every later positional write. 0 = off.
+        // Fail the (N+1)th write onward; fail_writes_from fails from the Nth instead, so it
+        // alone can express zero successes. 0 = off for both, and they OR together.
         uint64_t fail_after_writes{0};
-        // Fail the Nth and every later positional write (1-based). 0 = off. Exists because
-        // fail_after_writes counts ALLOWED successes and its 0 means "off", so it can't
-        // express "zero writes succeed". The two knobs compose by OR.
         uint64_t fail_writes_from{0};
-        // Tear the Nth positional write (1-based): persist only its first half, then fail
-        // it and everything after. 0 = off.
+        // Tear the Nth positional write: persist its first half, then fail it and the rest.
+        // 0 = off.
         uint64_t torn_at_write{0};
-        // Fail the Nth sync() and every later one (1-based). 0 = off; 1 fails the very first
-        // sync, the only one create_new_database issues. Models a write that reached the page
-        // cache but never the device — what the checkpoint's second fsync exists to catch.
+        // Fail the Nth sync() onward; models a write that reached the page cache but not the
+        // device. 0 = off.
         uint64_t fail_syncs_from{0};
-        // Fails only positional writes landing in a header slot (write_header's two
-        // alternating offsets), producing the RECOVERABLE checkpoint failure (write_header's
-        // case 2) instead of the degraded state the COUNTED knobs above would cause by also
-        // failing the preceding data/metadata writes. Names the offsets, not the caller:
-        // create_new_database's first header write lands at the same offset, so arming this
-        // during file creation fails creation instead — arm it around the round under test.
+        // Fails only header-slot writes (the RECOVERABLE checkpoint failure, not the degraded
+        // state the counted knobs above cause); create_new_database's first header write
+        // shares that offset, so arm this around the round under test, not during creation.
         bool fail_writes_at_header_slots{false};
-        // Fails the one positional READ at this exact offset — models a single rotten block,
-        // the case a metadata-chain walk must survive. UINT64_MAX = off; 0 can't be the
-        // sentinel since it's the main header's legitimate offset.
+        // Fails the one read at this exact offset, modeling a single rotten block. UINT64_MAX
+        // = off, since 0 is the main header's legitimate offset.
         uint64_t fail_reads_at_location{std::numeric_limits<uint64_t>::max()};
         // Set by crash_revert(): every further I/O fails.
         bool crashed{false};
-        // Diagnostics.
         uint64_t writes_seen{0};
         uint64_t syncs_seen{0};
         uint64_t reads_failed{0};
@@ -82,12 +70,10 @@ namespace otterbrix_test {
             }
             record_undo(location, nr_bytes);
             if (plan_.torn_at_write != 0 && plan_.writes_seen == plan_.torn_at_write) {
-                // Persist only the first half, report failure: a torn sector train.
                 uint64_t half = nr_bytes / 2;
                 if (half != 0) {
                     inner_->write(buffer, half, location);
                 }
-                // Everything after a torn write is lost too.
                 plan_.fail_after_writes = plan_.writes_seen;
                 return false;
             }
@@ -95,12 +81,6 @@ namespace otterbrix_test {
         }
 
         core::filesystem::write_result_t write(void* buffer, uint64_t nr_bytes) override {
-            // The block manager and WAL write positionally; the bitcask index's record and
-            // txn-log writers append sequentially through this overload instead, so it shares
-            // the same knobs. torn_at_write previously was honoured only by the positional
-            // overload, so a torn sequential append could be refused but never torn — the
-            // case where bytes land, the descriptor moves, yet the caller must still see
-            // "refused".
             if (plan_.crashed) {
                 return core::filesystem::write_result_t::refused(0);
             }
@@ -111,20 +91,13 @@ namespace otterbrix_test {
             if (plan_.fail_writes_from != 0 && plan_.writes_seen >= plan_.fail_writes_from) {
                 return core::filesystem::write_result_t::refused(0);
             }
-            // crash_revert() undoes overwrites via pre-images and growth via the
-            // synced-length truncate; a sequential write after seek() into the middle relies
-            // on the pre-image half, unlike a plain append. Uses the INNER handle's position
-            // — this wrapper keeps no descriptor of its own.
             record_undo(inner_->seek_position(), nr_bytes);
             if (plan_.torn_at_write != 0 && plan_.writes_seen == plan_.torn_at_write) {
-                // Persist only the first half and report the refusal WITH that count -- the
-                // shape write(2) itself produces when it short-counts and then refuses.
                 const uint64_t half = nr_bytes / 2;
                 core::filesystem::write_result_t landed{};
                 if (half != 0) {
                     landed = inner_->write(buffer, half);
                 }
-                // Everything after a torn write is lost too.
                 plan_.fail_after_writes = plan_.writes_seen;
                 return core::filesystem::write_result_t::refused(landed.bytes_written);
             }
@@ -179,21 +152,16 @@ namespace otterbrix_test {
             return inner_->trim(offset_bytes, length_bytes);
         }
 
-        // Must delegate to the inner descriptor (see the file-header note); nothing to
-        // inject here, a seek isn't a device operation any plan knob models.
         bool seek(uint64_t location) override { return inner_->seek(location); }
 
         uint64_t seek_position() override { return inner_->seek_position(); }
 
         uint64_t file_size() override { return inner_->file_size(); }
 
-        // Must forward the refusal: answering "no error" while the wrapped handle refused
-        // would make this wrapper a liar too.
         core::error_t close() override { return inner_->close(); }
 
-        // Simulate kill -9: revert every positional write since the last successful sync
-        // (restore pre-images newest-first, then restore the synced length) and kill the
-        // handle. The on-disk file is then exactly what a crash would conservatively leave.
+        // Leaves the file as a real crash would: pre-images undone newest-first, truncated to
+        // the last synced length.
         void crash_revert() {
             for (auto it = undo_.rbegin(); it != undo_.rend(); ++it) {
                 if (!it->old_bytes.empty()) {
@@ -209,9 +177,7 @@ namespace otterbrix_test {
     private:
         struct undo_entry_t {
             uint64_t location;
-            std::vector<char> old_bytes; // pre-image; may be shorter than the write when the
-                                         // write extended the file (the tail is handled by
-                                         // the synced-length truncate)
+            std::vector<char> old_bytes;
         };
 
         void record_undo(uint64_t location, uint64_t nr_bytes) {
@@ -230,11 +196,11 @@ namespace otterbrix_test {
 
         std::unique_ptr<core::filesystem::file_handle_t> inner_;
         fault_plan_t& plan_;
-        std::vector<undo_entry_t> undo_; // pre-images since the last successful sync
+        std::vector<undo_entry_t> undo_;
         uint64_t synced_size_{0};
     };
 
-    // Interposer + RAII installer. The seam is process-wide, so tests MUST scope it.
+    // RAII install/uninstall of the process-wide interposer; tests must scope it.
     class fault_injection_scope_t final
         : public components::table::storage::single_file_block_manager_t::file_handle_interposer_t {
     public:
@@ -253,7 +219,6 @@ namespace otterbrix_test {
             return wrapped;
         }
 
-        // The most recently wrapped handle (the block manager's current one).
         faulty_file_handle_t* last() const { return last_wrapped_; }
 
     private:

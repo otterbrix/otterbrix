@@ -1,18 +1,6 @@
-// CREATE INDEX vs DML in flight: every row a reader can see through the table must be
-// reachable through the index, no matter how the statement that wrote it interleaved
-// with the build. The index is allowed a SUPERSET of row ids (the table's visibility
-// check drops the extras); a MISSING id is the one defect nothing downstream can repair.
-//
-// Scenario A (reproduced): a transaction holds an UNCOMMITTED insert while CREATE INDEX
-// runs, then commits. The build's snapshot scan cannot see the foreign uncommitted row,
-// and the row's DML predates the build, so no mirror and no later feed ever carries it —
-// the committed row is visible in the table and permanently absent from the index.
-//
-// Scenario B: a DML statement PLANNED against "no indexes" (the enrich-time stamp) but
-// APPENDING after the build's scan captured its coverage bound. The stale plan mirrors
-// nothing, the scan is already past — the executor's post-append reconciliation with
-// manager_index (the one place that knows the live index set) must stage the rows.
-// Timed deterministically via the DEV_MODE pre-drive pause seam in executor.cpp.
+// Every row a reader can see through the table must be reachable through the index: the index
+// tolerates a superset of ids (the table's visibility check drops extras), but a missing id is a
+// defect nothing downstream can repair.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -69,7 +57,6 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::uncommitted_insert_lands
 
     REQUIRE(exec(d, "CREATE DATABASE db;")->is_success());
 
-    // Control: index FIRST, then the transactional insert — the row must be findable.
     REQUIRE(exec(d, "CREATE TABLE db.ctrl (id bigint, v bigint);")->is_success());
     REQUIRE(seed_rows(d, "db.ctrl", "id, v", 2000, [](unsigned i) {
                 return "(" + std::to_string(i) + ", " + std::to_string(i) + ")";
@@ -87,7 +74,8 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::uncommitted_insert_lands
         REQUIRE(cur->size() == 1);
     }
 
-    // Probe: the insert is HELD UNCOMMITTED while CREATE INDEX runs, and commits after.
+    // The build's snapshot scan cannot see a foreign transaction's uncommitted insert; since the
+    // row's DML predates the build, no mirror or later feed carries it once it commits.
     REQUIRE(exec(d, "CREATE TABLE db.probe (id bigint, v bigint);")->is_success());
     REQUIRE(seed_rows(d, "db.probe", "id, v", 2000, [](unsigned i) {
                 return "(" + std::to_string(i) + ", " + std::to_string(i) + ")";
@@ -100,7 +88,6 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::uncommitted_insert_lands
         REQUIRE(d->execute_sql(a, "COMMIT;")->is_success());
     }
 
-    // The row is in the table (the index-ineligible predicate reaches it)...
     {
         auto heap = exec(d, "SELECT v FROM db.probe WHERE id + 0 = 222222;");
         REQUIRE(heap->is_success());
@@ -111,7 +98,6 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::uncommitted_insert_lands
         REQUIRE(total->is_success());
         REQUIRE(total->size() == 2001);
     }
-    // ...so the index-eligible predicates must reach it too.
     {
         auto eq = exec(d, "SELECT v FROM db.probe WHERE id = 222222;");
         REQUIRE(eq->is_success());
@@ -126,8 +112,8 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::uncommitted_insert_lands
     }
 }
 
-// A DELETE held uncommitted across the build, then ROLLED BACK: the surviving row must
-// still be reachable through the index (the build may not act on an undecided delete).
+// A DELETE held uncommitted across the build, then rolled back: the surviving row must still be
+// reachable through the index, since the build may not act on an undecided delete.
 TEST_CASE("integration::cpp::create_index_inflight_dml::rolled_back_delete_keeps_the_row_indexed") {
     auto config = make_test_config(integration_fixture_path("test_create_index_inflight_dml/rolled_back_delete"),
                                    /*wal_on=*/true);
@@ -162,11 +148,9 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::rolled_back_delete_keeps
     }
 }
 
-// Scenario B: the INSERT is PLANNED while the table has no index (the plan's stamp says
-// "mirror nothing"), then frozen at the pre-drive seam while CREATE INDEX runs to completion
-// on another executor, then released. Its rows appear after the build's RAW read captured its
-// coverage bound, and the stale plan mirrors nothing — only the executor's post-append
-// reconciliation with manager_index can carry them into the index.
+// The INSERT is planned while the table has no index (stamped "mirror nothing"), then frozen at
+// the pre-drive seam while CREATE INDEX finishes elsewhere; only the executor's post-append
+// reconciliation with manager_index can carry its rows into the index.
 TEST_CASE("integration::cpp::create_index_inflight_dml::stale_planned_insert_reaches_the_built_index") {
     auto config = make_test_config(integration_fixture_path("test_create_index_inflight_dml/stale_plan"),
                                    /*wal_on=*/true);
@@ -180,8 +164,6 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::stale_planned_insert_rea
                 return "(" + std::to_string(i) + ", " + std::to_string(i) + ")";
             })->is_success());
 
-    // Sessions on DIFFERENT executors (pool of 4, sticky by session hash): the paused
-    // insert holds its executor's worker, the DDL must not queue behind it.
     auto ins_session = otterbrix::session_id_t();
     auto ddl_session = otterbrix::session_id_t();
     while (std::hash<components::session::session_id_t>{}(ins_session) % 4 ==
@@ -206,7 +188,6 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::stale_planned_insert_rea
     }
     REQUIRE(g_paused.load());
 
-    // The whole build happens while the already-planned insert is frozen.
     REQUIRE(d->execute_sql(ddl_session, "CREATE INDEX late_id ON db.late (id);")->is_success());
 
     g_release.store(true);
@@ -216,20 +197,17 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::stale_planned_insert_rea
     REQUIRE(ins_cur != nullptr);
     REQUIRE(ins_cur->is_success());
 
-    // The row is in the table...
     {
         auto heap = exec(d, "SELECT v FROM db.late WHERE id + 0 = 424242;");
         REQUIRE(heap->is_success());
         REQUIRE(heap->size() == 1);
     }
-    // ...and must be reachable through the index the stale plan knew nothing about.
     {
         auto eq = exec(d, "SELECT v FROM db.late WHERE id = 424242;");
         REQUIRE(eq->is_success());
         INFO("equality through the index answered " << eq->size() << " row(s), expected 1");
         REQUIRE(eq->size() == 1);
     }
-    // And it got there through the reconciliation leg, not by luck of timing.
     {
         const auto staged_after = services::collection::executor::index_reconcile_staged_ranges();
         INFO("reconcile-staged ranges during the scenario: " << (staged_after - staged_before));

@@ -12,20 +12,11 @@
 #include <string>
 #include <thread>
 
-// A streaming reader whose table is DROP'd out from under it, between two fetches of its cursor,
-// used to get a TRUNCATED result reported as SUCCESS: the re-resolve leg in
-// storage_fetch_next_batch_inner found the storage gone and replied the drained sentinel, which
-// the executor reads as "end of table". The reader saw a prefix of the rows and a success verdict.
-//
-// This is NOT PostgreSQL parity. PG's DROP takes ACCESS EXCLUSIVE, conflicting with the reader's
-// ACCESS SHARE, so the reader either finishes fully (the DROP waits) or the NEXT statement fails
-// with "relation does not exist" — it never gets an error mid-read. We have nothing to wait on
-// without a lock (a mailbox held across a fetch deadlocks), so a loud error on a fetch over a
-// vanished entry is the best achievable without locks: strictly better than the silent short
-// answer, still short of PG.
-//
-// The between-batches pause gate (services::disk::scan_advance_gate_t) holds the reader after its
-// first batch so the DROP commits deterministically in the window.
+// storage_fetch_next_batch_inner's re-resolve leg used to read a DROP'd table's gone storage as the drained
+// sentinel, so a reader losing its table mid-scan got a truncated result reported as success. This is not
+// PostgreSQL parity (PG's ACCESS EXCLUSIVE DROP either waits for the reader or fails the next statement,
+// never errors mid-read); without a lock to wait on, a loud error here is the best achievable. The pause gate
+// (scan_advance_gate_t) holds the reader after its first batch so the DROP commits deterministically.
 
 using namespace test_helpers;
 
@@ -108,7 +99,6 @@ TEST_CASE("integration::cpp::drop_under_cursor::vanished_entry_fails_loudly_not_
     INFO("the reader must reach the between-batches seam");
     REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
 
-    // Drop the table to full commit from another session, while the reader is held.
     {
         auto session = otterbrix::session_id_t();
         auto drop_cur = d->execute_sql(session, "DROP TABLE adb.t;");
@@ -118,8 +108,6 @@ TEST_CASE("integration::cpp::drop_under_cursor::vanished_entry_fails_loudly_not_
     guard.gate.released.store(true, std::memory_order_release);
     reader.join();
 
-    // The reader's storage vanished mid-scan: the only honest answer is a loud error. The bug
-    // reported SUCCESS with a truncated prefix of the rows.
     REQUIRE(reader_cursor != nullptr);
     INFO("a fetch over a dropped table must be a loud error, not a short success");
     REQUIRE_FALSE(reader_cursor->is_success());

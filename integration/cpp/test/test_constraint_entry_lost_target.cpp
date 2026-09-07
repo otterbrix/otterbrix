@@ -1,25 +1,8 @@
-// operator_resolve_constraint_t used to open its per-entry loop with three facts sharing ONE
-// `continue`:
-//
-//     if (ctx->disk_address == empty_address() || tables_node_ == nullptr ||
-//         entry.target >= tables_node_->entries().size()) {
-//         continue;
-//     }
-//
-// The first two are topology -- no disk to ask, no tables node to read out of -- and a
-// gather with nowhere to look has nothing to gather. The third is not topology: `target` is
-// a POSITION in the tables node, and an out-of-range one (resolve_entry_t::no_target,
-// size_t(-1), is the default) is a plan assembled without naming the table its constraints
-// belong to. Skipping it left fks, check_exprs, unique_constraints and pk_columns all empty
-// at once -- exactly what "this table declares no constraints" looks like -- so every
-// declared key on the table stopped existing while the statement reported success.
-//
-// The plan here is entirely the engine's own: database, table and its UNIQUE come from plain
-// SQL; the INSERT is a hand-built plan of the shape the C++/C API produces (make_node_insert +
-// name_catalog_target, as in test_arithmetic / test_batch_execution), with catalog lookups
-// registered through register_catalog_resolve_table. Exactly ONE thing differs between the
-// two INSERTs below -- the constraint entry's `target` -- and the control case (target naming
-// the table) proves the harness has teeth: the same plan is refused by the UNIQUE.
+// `target` is a position in the tables node, not a topology flag like a missing disk or tables
+// node; an out-of-range value (resolve_entry_t::no_target, the default) means the plan never
+// named its table, so treating it like the topology cases empties fks/check_exprs/
+// unique_constraints/pk_columns at once -- exactly what "no constraints declared" looks like --
+// and silently drops a declared UNIQUE.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -61,8 +44,6 @@ namespace {
         return types;
     }
 
-    // One row, two BIGINT columns aliased "id" and "code" — the shape the table
-    // below is created with.
     vector::data_chunk_t one_row(std::pmr::memory_resource* resource, int64_t id, int64_t code) {
         vector::data_chunk_t chunk{resource, two_col_types(resource), 1};
         chunk.set_value(0, 0, id);
@@ -71,9 +52,6 @@ namespace {
         return chunk;
     }
 
-    // An INSERT plan carrying ONE constraint entry for (db, rel), whose `target`
-    // is whatever the caller says. Everything else — the node, the naming, the
-    // table/namespace lookups — is the production path.
     components::cursor::cursor_t_ptr insert_with_constraint_target(otterbrix::wrapper_dispatcher_t* d,
                                                                    const std::string& db,
                                                                    const std::string& rel,
@@ -86,8 +64,6 @@ namespace {
             rel,
             logical_plan::make_node_insert(resource, one_row(resource, id, code)));
         logical_plan::execution_plan_t plan{resource, node, logical_plan::make_parameter_node(resource)};
-        // The table + its namespace, registered exactly as the transformer does.
-        // This is what puts the table entry at index 0 of the tables node.
         components::sql::transform::register_catalog_resolve_table(resource, &plan.catalog_resolves, db, rel);
 
         logical_plan::resolve_entry_t constraint_entry;
@@ -107,9 +83,8 @@ namespace {
 
 } // namespace
 
-// THE CONTROL. The constraint entry names the table (target 0, the index
-// register_catalog_resolve_table just minted for it), so the declared UNIQUE is
-// gathered and enforced: the second row carrying code = 100 does not go in.
+// Control: target 0 is the index register_catalog_resolve_table minted for this table, so the
+// declared UNIQUE is enforced.
 TEST_CASE("integration::cpp::constraint_entry_lost_target::a_named_target_enforces_the_declared_key") {
     auto config = make_test_config(integration_fixture_path("test_constraint_entry_lost_target/control"));
     test_spaces space(config);
@@ -130,10 +105,8 @@ TEST_CASE("integration::cpp::constraint_entry_lost_target::a_named_target_enforc
     REQUIRE(column_i64(stored, 0) == std::vector<int64_t>{1});
 }
 
-// THE DEFECT. The same plan with the entry's `target` left at its default,
-// resolve_entry_t::no_target — an entry that never named its table. The resolve
-// used to skip it, hand on an EMPTY constraint set, and let both rows in under a
-// UNIQUE the user declared and the engine had accepted.
+// Defect: an unnamed target (resolve_entry_t::no_target) makes the resolve skip the entry, so
+// the constraint set comes back empty and the UNIQUE goes silently unenforced.
 TEST_CASE("integration::cpp::constraint_entry_lost_target::an_unnamed_target_does_not_repeal_the_key") {
     auto config = make_test_config(integration_fixture_path("test_constraint_entry_lost_target/no_target"));
     test_spaces space(config);
@@ -156,7 +129,6 @@ TEST_CASE("integration::cpp::constraint_entry_lost_target::an_unnamed_target_doe
                                              logical_plan::resolve_entry_t::no_target);
     INFO("duplicate-code INSERT: " << (dup->is_error() ? dup->get_error().what : "accepted"));
 
-    // THE USER CONSEQUENCE, read off the table.
     auto stored = exec(d, "SELECT id FROM cur.t WHERE code = 100 ORDER BY id;");
     INFO("read error: " << (stored->is_error() ? stored->get_error().what : "none"));
     REQUIRE(stored->is_success());
@@ -166,8 +138,6 @@ TEST_CASE("integration::cpp::constraint_entry_lost_target::an_unnamed_target_doe
     REQUIRE(ids.size() <= 1);
 }
 
-// The same shape one step further out: a target that IS a number but points past
-// the end of the tables node. Same silence, same consequence.
 TEST_CASE("integration::cpp::constraint_entry_lost_target::an_out_of_range_target_does_not_repeal_the_key") {
     auto config = make_test_config(integration_fixture_path("test_constraint_entry_lost_target/out_of_range"));
     test_spaces space(config);
@@ -187,9 +157,7 @@ TEST_CASE("integration::cpp::constraint_entry_lost_target::an_out_of_range_targe
     REQUIRE(ids.size() <= 1);
 }
 
-// LOUD IS NOT FATAL. The refusal is per-STATEMENT: the plan that carries the
-// broken entry is refused, and everything else about the database — reading the
-// table, writing it through ordinary SQL, dropping it — still works.
+// The refusal is per-statement: everything else about the database keeps working.
 TEST_CASE("integration::cpp::constraint_entry_lost_target::the_refusal_does_not_brick_the_database") {
     auto config = make_test_config(integration_fixture_path("test_constraint_entry_lost_target/not_bricked"));
     test_spaces space(config);

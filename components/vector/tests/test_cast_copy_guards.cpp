@@ -28,13 +28,9 @@ namespace {
 
 } // namespace
 
-// copy_strided_target COPIES STRINGS.
-//
-// An `assert(false)` with no else on the STRING leg of copy_strided_callback_t copies nothing
-// and writes no validity under NDEBUG, while the caller (operator_update's ARRAY-element leg)
-// goes on to report success -- an UPDATE of one element of a string-array column answers
-// "done" and changes nothing. The leg deep-copies the payload into the target's own string
-// heap and carries validity per row.
+// Under NDEBUG, `assert(false)` with no else on the string leg of copy_strided_callback_t
+// copied nothing yet let the operator_update caller report success; the leg now deep-copies
+// into the target's own string heap with per-row validity.
 TEST_CASE("vector_ops: copy_strided_target copies the string leg") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -49,24 +45,18 @@ TEST_CASE("vector_ops: copy_strided_target copies the string leg") {
         dst.set_value(i, std::string_view{old});
     }
 
-    // rows 0..2 -> slots 1, 4, 7 (stride 3, offset 1)
     vector::vector_ops::copy_strided_target(src, dst, 3, 3, 1);
 
     CHECK(dst.value(1).value<std::string_view>() == "updated");
     CHECK(dst.value(4).value<std::string_view>() == "second");
     CHECK(dst.is_null(7));
-    // Neighbouring slots are untouched.
     CHECK(dst.value(0).value<std::string_view>() == "old0");
     CHECK(dst.value(2).value<std::string_view>() == "old2");
     CHECK(dst.value(3).value<std::string_view>() == "old3");
 }
 
-// deserialize_binary REFUSES A NULL MASK THAT DOES NOT COVER THE CHUNK.
-//
-// The reader indexes the mask by row * num_columns + column bits, so it must not trust the
-// header's null_mask_size: a truncated mask (corruption, or a short write) makes those reads
-// run PAST the mask into the first column's type header -- wrong NULL flags decoded silently,
-// ok still true. The mask must cover num_rows * num_columns bits.
+// A truncated null_mask_size let reads run past the mask into the first column's type header,
+// decoding wrong NULL flags silently; the mask must cover num_rows * num_columns bits.
 TEST_CASE("deserialize_binary: a null mask shorter than the chunk is a refusal") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -85,10 +75,9 @@ TEST_CASE("deserialize_binary: a null mask shorter than the chunk is a refusal")
     std::pmr::string buffer(&resource);
     vector::serialize_binary(chunk, buffer);
 
-    // Header: [cols:2][rows:4][null_mask_size:4][mask...]. 2 cols x 8 rows = 16 bits = 2 bytes.
+    // Header: [cols:2][rows:4][null_mask_size:4][mask...].
     REQUIRE(read_le32_at(buffer, 6) == 2);
 
-    // The intact record round-trips.
     {
         bool ok = false;
         auto back = vector::deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
@@ -97,8 +86,6 @@ TEST_CASE("deserialize_binary: a null mask shorter than the chunk is a refusal")
         REQUIRE_FALSE(back.data[1].is_null(4));
     }
 
-    // Truncate the mask: size says 1 byte, and the second mask byte is gone. The record
-    // still parses column-wise -- only the mask no longer covers rows 4..7 of either column.
     write_le32_at(buffer, 6, 1);
     buffer.erase(11, 1);
 
@@ -108,12 +95,9 @@ TEST_CASE("deserialize_binary: a null mask shorter than the chunk is a refusal")
     CHECK(broken.column_count() == 0);
 }
 
-// value() PASSES THE DECLARED LIST TYPE THROUGH, EXTENSION INCLUDED.
-//
-// The LIST leg of value_internal must not rebuild the value's type via create_list(child_type):
-// that constructs a FRESH list_logical_type_extension{field_id=0, required=true} and silently
-// drops the declared extension's field_id/required (produced by the catalog spec decoder). The
-// MAP and STRUCT legs pass vector->type_ through for the same reason.
+// value_internal's LIST leg must pass vector->type_ through rather than rebuild via
+// create_list(child_type), which resets field_id/required to defaults and drops the
+// catalog-decoded extension; MAP and STRUCT pass through for the same reason.
 TEST_CASE("vector: value() keeps the declared LIST extension (field_id/required)") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -128,9 +112,6 @@ TEST_CASE("vector: value() keeps the declared LIST extension (field_id/required)
     std::vector<types::logical_value_t> elements;
     elements.emplace_back(&resource, int64_t{10});
     elements.emplace_back(&resource, int64_t{20});
-    // create_list(child) would build a value typed with a FRESH default extension, which no
-    // longer equals the declared type -- set_value refuses that loudly. The declared type
-    // passes through create_list_from_type.
     v.set_value(0, types::logical_value_t::create_list_from_type(&resource, list_type, elements));
 
     auto value = v.value(0);
@@ -141,11 +122,8 @@ TEST_CASE("vector: value() keeps the declared LIST extension (field_id/required)
     CHECK(ext->required() == false);
 }
 
-// cast_vector RANGE-CHECKS EVERY ELEMENT.
-//
-// A bare static_cast truncates silently: INT32 70000 -> INT16 4464 (and -70000 -> -4464), so
-// an out-of-range index key hashes equal to an unrelated stored key. Out of range is a
-// conversion_failure; in-range values still cast, and validity travels per row.
+// A bare static_cast truncates silently, letting an out-of-range key hash equal to an
+// unrelated stored key; out-of-range values must return conversion_failure instead.
 TEST_CASE("vector_ops: cast_vector refuses an out-of-range value instead of truncating") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -192,13 +170,9 @@ TEST_CASE("vector_ops: cast_vector refuses an out-of-range value instead of trun
     }
 }
 
-// cast_vector's STRING PAIRS GO THROUGH THE ERROR CHANNEL.
-//
-// With `assert(false)` and no else on the string leg of the cast callback, and no error
-// channel on cast_vector, a CAST into or out of a string answers under NDEBUG with a freshly
-// allocated vector of UNINITIALISED data and validity (row 0 claiming valid with
-// string_view{ptr=nullptr}), as a normal value. A string source copies to a string target
-// (deep copy, validity carried); every other string pair is a refusal.
+// Under NDEBUG, the string leg's `assert(false)` with no error channel returned an
+// uninitialised vector as a normal value (row 0 valid with a null string_view); now every
+// string pair besides string-to-string is a refusal.
 TEST_CASE("vector_ops: cast_vector string pairs answer through the channel") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -231,11 +205,8 @@ TEST_CASE("vector_ops: cast_vector string pairs answer through the channel") {
     }
 }
 
-// A MISSING COLUMN NAME IS AN ERROR, NOT SIZE_MAX.
-//
-// A SIZE_MAX answer behind a bare assert would be forwarded by the public cursor API as a
-// sentinel, and an embedder that asked for a missing column would index the chunk out of
-// bounds. It is a field_not_exists error.
+// A SIZE_MAX sentinel here would be forwarded by the cursor API and let an embedder index the
+// chunk out of bounds; this is a field_not_exists error instead.
 TEST_CASE("data_chunk: column_index for a missing name is a refusal") {
     auto resource = core::pmr::otterbrix_resource();
 

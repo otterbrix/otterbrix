@@ -1,19 +1,8 @@
-// Catalog name uniqueness must hold across SESSIONS, not only within one statement's
-// resolve snapshot.
-//
-// The serial case is already refused: the executor's create arms read the statement's
-// resolve snapshot (check_collection_exists / check_namespace_exists / check_type_exists)
-// and answer *_already_exists. But that check reads a SNAPSHOT, while the pg_* row lands
-// many awaits later as a blind append (append_pg_catalog_row). Two sessions in explicit
-// transactions cannot see each other's uncommitted catalog rows, so both CREATEs of the
-// same name pass the snapshot check and BOTH rows are written: pg_class ends up with two
-// rows for one name, resolve binds whichever row its scan reaches first, and the loser's
-// storage is orphaned forever. Not a race — the snapshots make it deterministic.
-//
-// The refusal these tests pin lives at the WRITE point: the catalog agent (the single
-// writer of every pg_* table) checks name occupancy right before the append, where its
-// mailbox makes the check-and-append atomic. The second session's CREATE statement
-// itself must fail — not its COMMIT.
+// The executor's create arms check name occupancy against the statement's resolve snapshot, so
+// two sessions in separate uncommitted transactions both pass it and both append pg_* rows for
+// the same name -- deterministic, not a race. The refusal these tests pin moves the check to
+// the catalog agent's write point, where mailbox serialization makes check-and-append atomic;
+// the second session's CREATE statement itself must fail, not its COMMIT.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -62,9 +51,6 @@ TEST_CASE("catalog_name_uniqueness::control_serial_double_create_table") {
     REQUIRE(rows_named(d, "pg_class", "relname", "twin") == 1);
 }
 
-// Two sessions, both in explicit transactions, CREATE TABLE under one name. The second
-// CREATE statement must refuse — at the statement, not at COMMIT — and exactly one
-// pg_class row may exist afterwards.
 TEST_CASE("catalog_name_uniqueness::create_table_from_two_txn_sessions") {
     const auto dir = integration_fixture_path("test_catalog_name_uniqueness/table");
     auto config = make_test_config(dir, /*wal_on=*/true);
@@ -84,21 +70,18 @@ TEST_CASE("catalog_name_uniqueness::create_table_from_two_txn_sessions") {
     INFO("A CREATE (in txn): " << status_of(ca));
     INFO("B CREATE (in txn): " << status_of(cb));
     REQUIRE(ca->is_success());
-    // THE defect: B's snapshot cannot see A's uncommitted pg_class row, so this passed
-    // and a second 'twin' row was appended.
     REQUIRE(cb->is_error());
 
     auto commit_a = d->execute_sql(a, "COMMIT;");
     INFO("A COMMIT: " << status_of(commit_a));
     REQUIRE(commit_a->is_success());
-    // B's failed CREATE already ended B's transaction (failed-DDL statements abort their
-    // txn); its COMMIT closes nothing but must not crash. Only record the outcome.
+    // A failed DDL statement already aborts its own transaction, so B's COMMIT here closes
+    // nothing but must not crash.
     auto commit_b = d->execute_sql(b, "COMMIT;");
     INFO("B COMMIT after refused CREATE: " << status_of(commit_b));
 
     REQUIRE(rows_named(d, "pg_class", "relname", "twin") == 1);
 
-    // The survivor is A's schema, whole and writable.
     REQUIRE(exec(d, "INSERT INTO db.twin (id, from_a) VALUES (1, 10);")->is_success());
     auto ins_b = exec(d, "INSERT INTO db.twin (id, from_b) VALUES (2, 20);");
     INFO("INSERT via from_b (loser's schema): " << status_of(ins_b));
@@ -108,8 +91,7 @@ TEST_CASE("catalog_name_uniqueness::create_table_from_two_txn_sessions") {
     REQUIRE(sel->size() == 1);
 }
 
-// CREATE DATABASE has the same shape: pg_namespace is appended blind. A holds its row
-// uncommitted; B (autocommit) must be refused at the write point.
+// Same shape as CREATE TABLE, but for pg_namespace.
 TEST_CASE("catalog_name_uniqueness::create_database_against_uncommitted_namespace") {
     const auto dir = integration_fixture_path("test_catalog_name_uniqueness/database");
     auto config = make_test_config(dir, /*wal_on=*/true);
@@ -131,7 +113,7 @@ TEST_CASE("catalog_name_uniqueness::create_database_against_uncommitted_namespac
     REQUIRE(rows_named(d, "pg_namespace", "nspname", "dupdb") == 1);
 }
 
-// CREATE TYPE: pg_type is appended blind the same way.
+// Same shape, for pg_type.
 TEST_CASE("catalog_name_uniqueness::create_type_against_uncommitted_type") {
     const auto dir = integration_fixture_path("test_catalog_name_uniqueness/type");
     auto config = make_test_config(dir, /*wal_on=*/true);
@@ -153,8 +135,7 @@ TEST_CASE("catalog_name_uniqueness::create_type_against_uncommitted_type") {
     REQUIRE(rows_named(d, "pg_type", "typname", "dup_t") == 1);
 }
 
-// CREATE INDEX: the index's name lives in its own pg_class row (relkind='i'), appended
-// blind like the others.
+// Same shape; an index's name lives in its own pg_class row (relkind='i').
 TEST_CASE("catalog_name_uniqueness::create_index_against_uncommitted_index") {
     const auto dir = integration_fixture_path("test_catalog_name_uniqueness/index");
     auto config = make_test_config(dir, /*wal_on=*/true);

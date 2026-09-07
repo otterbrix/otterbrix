@@ -1,26 +1,8 @@
-// An ON DELETE action the cascade cannot read must not be read as "no children".
-//
-// operator_fk_cascade_t dispatches on fk_.del_action -- the char read out of
-// pg_constraint.confdeltype -- and the switch used to end with `default: break;` before
-// mark_executed(), so an action outside {'a','r','c','n','d'} performed NO cascade, reported
-// SUCCESS, and let the DELETE underneath the operator stand: the parent row goes and every
-// child row that referenced it stays behind pointing at nothing -- the exact outcome the
-// operator exists to prevent, produced by the operator itself. It was the last of three
-// silent exits in this file; an unresolved parent index and an unresolved child position
-// both used to fall the same way and now all three refuse out loud.
-//
-// The pg_constraint row here is written by the engine itself, through the same
-// node_create_constraint_t -> rewrite_create_constraint -> build_create_constraint_writes
-// path every ALTER TABLE ... ADD CONSTRAINT FOREIGN KEY takes; the test only sets del_action
-// on the node to a char the engine has no meaning for, which build_create_constraint_writes
-// stores in confdeltype verbatim. Not reachable from SQL, deliberately: both SQL routes
-// (transform_alter_table and extract_table_constraints) normalize the action, keeping it
-// only when it's one of the five. What's left is a catalog written by another build or
-// writer, which is what a floor is for.
-//
-// The controls prove the stand has teeth: the identical plan with 'r' refuses the parent
-// DELETE, and with 'c' removes the child row -- both read off the content of the two tables
-// in the same run.
+// Root cause: the del_action switch used to fall through `default: break;` before
+// mark_executed(), letting an unhandled action skip the cascade yet report success and
+// orphan children.
+// Unreachable via SQL (both ALTER TABLE routes normalize del_action to one of five values),
+// so the test writes confdeltype directly through the production node/build path instead.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -50,11 +32,8 @@ namespace {
         return out;
     }
 
-    // ALTER TABLE child ADD CONSTRAINT <name> FOREIGN KEY (pid) REFERENCES
-    // parent (id) ON DELETE <action> as a plan: the production node, the
-    // production resolve registration (both tables, exactly as
-    // transform_alter_table registers them), the production executor. `action`
-    // is the only thing that varies between the cases below.
+    // Builds the same ADD CONSTRAINT FOREIGN KEY plan transform_alter_table would, with
+    // del_action as the only variable across the cases below.
     components::cursor::cursor_t_ptr add_fk_constraint(otterbrix::wrapper_dispatcher_t* d,
                                                        const std::string& db,
                                                        const std::string& child_rel,
@@ -93,8 +72,6 @@ namespace {
 
 } // namespace
 
-// CONTROL A — ON DELETE RESTRICT. The referenced parent row cannot go while a
-// child references it, and both tables still hold what they held.
 TEST_CASE("integration::cpp::fk_cascade_unknown_action::restrict_blocks_the_parent_delete") {
     auto config = make_test_config(integration_fixture_path("test_fk_cascade_unknown_action/restrict"));
     test_spaces space(config);
@@ -117,8 +94,7 @@ TEST_CASE("integration::cpp::fk_cascade_unknown_action::restrict_blocks_the_pare
     REQUIRE(column_i64(children, 0) == std::vector<int64_t>{100});
 }
 
-// CONTROL B — ON DELETE CASCADE. The child row goes with the parent, so the
-// stand can tell a cascade that ran from one that did not.
+// Distinguishes a cascade that ran from one that silently did nothing.
 TEST_CASE("integration::cpp::fk_cascade_unknown_action::cascade_removes_the_child_row") {
     auto config = make_test_config(integration_fixture_path("test_fk_cascade_unknown_action/cascade"));
     test_spaces space(config);
@@ -142,10 +118,6 @@ TEST_CASE("integration::cpp::fk_cascade_unknown_action::cascade_removes_the_chil
     REQUIRE(column_i64(children, 0).empty());
 }
 
-// THE DEFECT — an action the engine has no meaning for. The DELETE must not be
-// answered with "nothing referenced this row": either it is refused, or the
-// child rows are dealt with. What must never happen is a success that leaves the
-// child pointing at a parent row that is gone.
 TEST_CASE("integration::cpp::fk_cascade_unknown_action::an_unknown_action_does_not_orphan_the_child") {
     auto config = make_test_config(integration_fixture_path("test_fk_cascade_unknown_action/unknown"));
     test_spaces space(config);

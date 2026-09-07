@@ -21,7 +21,7 @@
 
 namespace components::vector {
     class data_chunk_t;
-} // namespace components::vector
+}
 
 namespace components::table {
     class row_group_t;
@@ -35,7 +35,7 @@ namespace components::table {
         class buffer_handle_t;
         class block_handle_t;
         struct block_pointer_t;
-    } // namespace storage
+    }
 
     class column_segment_t;
     struct column_segment_state;
@@ -96,16 +96,11 @@ namespace components::table {
             return reinterpret_cast<const TARGET&>(*this);
         }
 
-        // Ids of extra (non-segment) DISK blocks this segment's payload lives in (for STRING,
-        // the big-string overflow list). uint64_t, not uint32_t: block ids share a domain with
-        // transient ids (>= storage::MAXIMUM_BLOCK == 1<<62); truncating made the overflow map
-        // unlookupable before.
+        // uint64_t, not uint32_t: block ids share a domain with transient ids (>= storage::MAXIMUM_BLOCK).
         std::vector<uint64_t> blocks;
     };
 
     struct column_append_state {
-        // Initialized, unlike before: nested nodes (STRUCT/LIST/ARRAY) never assign this, so a
-        // struct's own append state used to carry an indeterminate pointer.
         column_segment_t* current = nullptr;
         std::vector<column_append_state> child_appends;
         std::unique_ptr<std::unique_lock<std::mutex>> lock;
@@ -133,17 +128,9 @@ namespace components::table {
         uint64_t last_offset = 0;
         uint64_t result_offset = 0;
         std::vector<bool> scan_child_column;
-        // OOM (buffer-pool exhaustion) raised by a pin() while scanning this column.
-        // Leaf segment helpers set it; column_data_t::scan_vector bails on it and
-        // row_group_t aggregates it into collection_scan_state::scan_error. Success
-        // path leaves it as no_error().
         core::error_t scan_error{core::error_t::no_error()};
         bool has_error() const { return scan_error.contains_error(); }
 
-        // Lift the first error anywhere in the child subtree into this state (recursive, first
-        // error wins). Without it a leaf failure under a struct/list/array child left the scan
-        // "successful" with empty/garbage cells, since row_group_t only judges the top-level
-        // column_scans[i].
         void collect_child_errors();
 
         void initialize(const types::complex_logical_type& type, const std::vector<storage_index_t>& children);
@@ -154,34 +141,22 @@ namespace components::table {
     struct column_fetch_state {
         std::unordered_map<uint64_t, storage::buffer_handle_t> handles;
         std::vector<std::unique_ptr<column_fetch_state>> child_states;
-        // Set by a caller whose RESULT outlives this state. The handles above hold the pins that
-        // keep a fetched string's bytes alive, so a view borrowed from the block dangles once they
-        // are released with the state; with this set the string leg copies into the result's own
-        // heap instead. row_group_t::evaluate_predicate consumes its chunk inside the call and
-        // keeps the state alive throughout, so it borrows; the late-materialisation gather returns
-        // the chunk to its caller, so it must own.
+        // Set by a caller whose result outlives this state: the handles above pin a fetched
+        // string's bytes, so a borrowed view dangles once the state is released, and with this set
+        // the string copies into the result's own heap instead (evaluate_predicate borrows since
+        // the state outlives its chunk; late-materialization gather must own the reverse way).
         bool result_outlives_pins{false};
 
-        // OOM raised by the pin() inside get_or_insert_handle(); callers that route
-        // through a column_scan_state copy it into scan_error.
         core::error_t fetch_error{core::error_t::no_error()};
 
-        // THE ONLY way to reach a child state: a default-constructed one crosses neither channel
-        // a child needs -- result_outlives_pins DOWN (a fresh child wrongly promised false, so a
-        // big string in a struct field went into the chunk as a view into an unpinned block) and
-        // fetch_error UP via absorb_error() below. Re-stamps the flag on every hand-out since
-        // row_group_t::fetch_row reuses one state across columns.
+        // THE ONLY way to reach a child state: a default-constructed one gets result_outlives_pins
+        // and fetch_error wrong.
         column_fetch_state& child(uint64_t index);
 
-        // Lift ONE child's error into this state (first error wins). Without it a STRUCT column
-        // had no error channel: it owns no segments, so every byte is read on a child's state,
-        // and the single fetch_error callers read stayed clean while the field came back empty.
         bool absorb_error(const column_fetch_state& child_state);
 
         // Returns nullptr and sets fetch_error on buffer-pool exhaustion.
         storage::buffer_handle_t* get_or_insert_handle(column_segment_t& segment);
-        // Same, for a block that is not a segment's own -- a big string's overflow block, keyed
-        // by block id so a block packed with segment data shares the one pin.
         storage::buffer_handle_t* get_or_insert_handle(std::shared_ptr<storage::block_handle_t>& block);
     };
 
@@ -197,9 +172,7 @@ namespace components::table {
 
         virtual std::string segment_info() const { return ""; }
 
-        // DISK blocks this segment references besides its own block. data_table_t::compact
-        // reclaims them through column_data_t::collect_disk_block_ids, so a state that owns
-        // off-segment disk payload MUST report it here or the file grows every compact round.
+        // data_table_t::compact reclaims these via collect_disk_block_ids; omitting one leaks it every round.
         virtual std::vector<uint64_t> additional_blocks() const { return std::vector<uint64_t>(); }
         template<typename TARGET>
         TARGET& cast() {
@@ -215,42 +188,24 @@ namespace components::table {
         ~uncompressed_string_segment_state() override;
 
         std::unique_ptr<string_block_t> head;
-        // TRANSIENT overflow blocks written by write_string_memory, keyed by the FULL 64-bit
-        // transient block id (>= storage::MAXIMUM_BLOCK; a uint32 key would truncate it).
-        // Disjoint from handles_ below (real file blocks, id < MAXIMUM_BLOCK): the checkpoint
-        // rewrites every marker from this domain into that one.
+        // Keyed by the full 64-bit transient id (>= storage::MAXIMUM_BLOCK); disjoint from handles_.
         std::unordered_map<uint64_t, string_block_t*> overflow_blocks;
-        // Persisted (via data_pointer_t::overflow_blocks) ids of the DISK blocks holding this
-        // segment's big-string payload. Reported through additional_blocks() so compact can
-        // reclaim them.
         std::vector<uint64_t> on_disk_blocks;
 
         std::vector<uint64_t> additional_blocks() const override { return on_disk_blocks; }
 
         // Deliberately no `handle(manager, block_id)`: that would register an arbitrary id on a
-        // lookup miss, which registered_handle()'s contract below forbids. Read path goes
-        // through resolve_overflow_block -> registered_handle.
-
-        // Registers a persisted overflow block so a marker naming it resolves. FALSE means the id
-        // was already registered -- a corruption report, since persist_string_overflow dedupes
-        // the list it writes. Never a throw: this runs on the table-open path.
+        // lookup miss, which registered_handle()'s contract below forbids.
         [[nodiscard]] bool register_block(storage::block_manager_t& manager, uint64_t block_id);
 
-        // Lookup-only: the handle for an ALREADY registered on-disk overflow block, or nullptr.
-        // A marker naming an unregistered disk block is corruption, not "look it up anyway".
+        // Lookup-only: an unregistered disk block is corruption, not something to look up anyway.
         std::shared_ptr<storage::block_handle_t> registered_handle(uint64_t block_id);
 
     private:
-        // NO LOCK HERE: belongs to ONE column segment -> one data_table_t -> one disk
-        // agent, and actor-zeta resumes an agent on at most one thread. A caller from another
-        // thread has taken a segment across a mailbox boundary -- a defect a mutex would hide,
-        // not fix.
+        // NO LOCK: owned by one column segment -> one disk agent, resumed on at most one thread.
         std::unordered_map<uint64_t, std::shared_ptr<storage::block_handle_t>> handles_;
     };
 
-    // Every member carries an initializer. This is an aggregate filled field by field by
-    // column_data_t::get_column_segment_info, so any field a producer leaves unset would ship
-    // indeterminate bytes to whoever reads the report.
     struct column_segment_info {
         uint64_t row_group_index{0};
         uint64_t column_id{0};
@@ -266,4 +221,4 @@ namespace components::table {
         std::string segment_info;
     };
 
-} // namespace components::table
+}

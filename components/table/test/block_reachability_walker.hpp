@@ -1,12 +1,7 @@
 #pragma once
 
-// Block-reachability walker (test-side): classifies every block id into chain / registry /
-// free-list / unexplained, to prove leaked old-root blocks are attributable garbage and never
-// live data (the safety condition the old-root freeing formula relies on).
-// Reads the durable root straight from the file's double header, NOT the in-memory manager
-// state, because it judges what a crash would recover. Call only after a completed checkpoint
-// or right after load; before the first checkpoint, use the registry-only classification of
-// the issued-id journal instead.
+// Classifies each block id into chain / registry / free-list / unexplained, to prove leaked old-root
+// blocks are garbage, never live data; reads the on-disk header, so call only after a checkpoint or load.
 
 #include <algorithm>
 #include <cstring>
@@ -28,31 +23,20 @@ namespace otterbrix_test {
         std::string error;
         uint64_t iteration{0};
         uint64_t block_count{0};
-        uint64_t meta_root{storage::INVALID_INDEX};      // block_pointer of the table-metadata chain
-        uint64_t free_list_root{storage::INVALID_INDEX}; // block_pointer of the free-list chain
+        uint64_t meta_root{storage::INVALID_INDEX};      // root of the table-metadata chain
+        uint64_t free_list_root{storage::INVALID_INDEX}; // root of the free-list chain
         std::set<uint64_t> chain_blocks;                 // bin 1a: metadata chains
-        std::set<uint64_t> durable_data;                 // bin 1b: data blocks the durable root
-                                                         //         references (via a scratch load,
-                                                         //         so reachability can't drift
-                                                         //         from the on-disk format)
+        std::set<uint64_t> durable_data;                 // bin 1b: data the durable root references (scratch load)
         std::set<uint64_t> registry_live;                // bin 2: live table's blocks
         std::set<uint64_t> free_list_content;            // bin 3
         std::set<uint64_t> unexplained;                  // bin 4
-        // Complete named-data set from the manager's own snapshot (root re-adopted it on
-        // scratch load). durable_data above is only the registry DELTA, so it can't tell
-        // "loaded from root" apart from "live private copy root doesn't name" — root_data can
-        // (see live_superseded).
+        // Loader's own snapshot; durable_data above is only the registry delta and can't tell
+        // root-loaded apart from live-private-copy.
         std::set<uint64_t> root_data;
-        // Blocks the walker's own scratch load allocated. Measured: loading a 12k-row table
-        // and scanning it allocates zero blocks. Excluded from durable_data; callers must
-        // treat these as explained when classifying issued-id journals from a walk.
+        // Walker's own scratch-load allocations, measured zero for a 12k-row table load+scan.
         std::set<uint64_t> scratch_issued;
-        // Must stay empty: a block the durable root reads (chains or named data) that its own
-        // free list also publishes would be reissued over live data on the next open.
+        // Must stay empty: overlap here means the free list would reissue live data on the next open.
         std::set<uint64_t> reachable_free_overlap;
-        // free ∩ (registry-only): live tree's blocks the root doesn't name — the free list's
-        // deliberate third term, so a restart can reclaim write-through copies. Empty right
-        // after reopen, since then the registry holds only what the root names.
         std::set<uint64_t> live_superseded;
 
         bool explains(uint64_t id) const {
@@ -61,10 +45,8 @@ namespace otterbrix_test {
         }
     };
 
-    // Picks the active header slot: valid (checksum ok) with the greater iteration wins.
-    // Returns false if neither slot validates (load_existing_database's data_corruption case).
-    // The losing slot legitimately holds the PREVIOUS root, not a stale copy of the winner —
-    // a checkpoint writes only the slot its own iteration owns.
+    // The losing slot legitimately holds the previous root, not a stale copy of the winner — a
+    // checkpoint writes only the slot its own iteration owns.
     inline bool read_active_durable_header(const std::string& path, storage::database_header_t& out) {
         std::ifstream f(path, std::ios::binary);
         if (!f) {
@@ -86,10 +68,6 @@ namespace otterbrix_test {
         return true;
     }
 
-    // Follow a metadata sub-block chain from `start`, collecting the underlying block ids.
-    // Delegates to metadata_manager_t::chain_blocks — the same code the reclaim path uses to
-    // find a superseded root's chains, so this walker can't silently diverge from what it's
-    // meant to be checking.
     inline bool walk_chain(storage::metadata_manager_t& mgr,
                            storage::meta_block_pointer_t start,
                            std::set<uint64_t>& out_blocks,
@@ -105,11 +83,9 @@ namespace otterbrix_test {
         return true;
     }
 
-    // `bm` must be the open file's manager with the table loaded (so the registry reflects
-    // live data blocks). Reachability is computed by loading a scratch table from the durable
-    // root (initialize_column registers each segment) rather than re-parsing the format
-    // directly: an earlier version skipped this and mis-reported fresh checkpoint copies as
-    // unexplained.
+    // `bm` must be the open file's manager with the table loaded. Reachability comes from a
+    // scratch-load of the durable root, not direct re-parsing, which mis-reports fresh checkpoint
+    // copies as unexplained.
     inline walk_report_t walk_blocks(storage::single_file_block_manager_t& bm,
                                      const std::string& path,
                                      std::pmr::memory_resource* scratch_resource) {
@@ -159,8 +135,6 @@ namespace otterbrix_test {
         }
 
         if (header.meta_block != storage::INVALID_INDEX) {
-            // Scratch-load allocations are noise, not root data, so excluded from the delta.
-            // Measured: empty for a plain reload (validity is persistent).
             const size_t issued_before_scratch = bm.dev_issued_ids().size();
             storage::metadata_manager_t load_mgr(bm);
             storage::meta_block_pointer_t root_ptr;
@@ -183,16 +157,9 @@ namespace otterbrix_test {
                     report.durable_data.insert(id);
                 }
             }
-            // Loader's own answer (load_from_disk re-adopted this set from the pointer stream
-            // it just read), not a second, hand-rolled walk of the same data.
             report.root_data = bm.dev_durable_root_data_snapshot();
-            // scratch table destroyed here; its temporary registrations drop out of the
-            // registry with it (shared ids keep the live table's handles).
         }
 
-        // max(durable block_count, high-water mark), not block_count alone: after a round
-        // whose header never committed, the high-water mark can sit past block_count, and
-        // leaked ids live exactly in that gap.
         const uint64_t high_water = std::max(report.block_count, bm.total_blocks());
         for (uint64_t id = 0; id < high_water; ++id) {
             const bool root_needed = report.chain_blocks.count(id) != 0 || report.root_data.count(id) != 0 ||

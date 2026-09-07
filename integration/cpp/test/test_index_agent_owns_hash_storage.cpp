@@ -1,8 +1,6 @@
-// The index agent opens its own hash-storage file rather than having manager_index_t or
-// base_spaces::bootstrap_indexes_sync hand it one — either would share a store handle across
-// actors; both derive the identical path from the same two oids anyway.
-// Both cases below restart the instance: in-memory pending buckets would otherwise answer a
-// freshly-inserted key without ever touching the store the agent opened.
+// The index agent opens its own hash-storage file to avoid sharing a store handle across actors,
+// though manager_index_t/bootstrap_indexes_sync derive the identical path anyway. Both cases
+// restart the instance so pending in-memory buckets can't answer without touching the store.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -38,8 +36,7 @@ TEST_CASE("integration::cpp::index_agent_owns_hash_storage::existing_hash_index_
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
-    // Scoped: one otterbrix instance per directory, so the writing round has to be
-    // torn down before the reading one starts.
+    // Scoped: the writing instance must tear down before the reading one starts.
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
@@ -62,7 +59,6 @@ TEST_CASE("integration::cpp::index_agent_owns_hash_storage::existing_hash_index_
             return rd->execute_sql(session, sql);
         };
 
-        // Without an Index Scan this would be a full-scan test wearing an index's name.
         auto plan = exec("EXPLAIN SELECT id FROM hsdb.t WHERE k = 7;");
         REQUIRE(plan->is_success());
         std::string text;
@@ -80,32 +76,29 @@ TEST_CASE("integration::cpp::index_agent_owns_hash_storage::existing_hash_index_
         CHECK(services::index::index_agent_reads() >= 1);
         CHECK(ids_of(cur) == std::vector<int64_t>{1, 3});
 
-        // The singleton control: right even for a reader that keeps one row per key, so a
-        // failure above is a failure of the STORAGE, not of duplicate handling.
+        // Singleton control: a failure above is then a storage failure, not duplicate handling.
         auto single = exec("SELECT id FROM hsdb.t WHERE k = 9;");
         REQUIRE(single->is_success());
         CHECK(ids_of(single) == std::vector<int64_t>{4});
     }
 }
 
-// The trap. A hashed index over a key whose ENCODED form exceeds
-// disk_hash_table_t::inline_key_limit (64 bytes) is stored truncated, and only the
-// full-key hook can decide whether such an entry matches. Losing the hook loses every
-// long key SILENTLY: the SELECT succeeds and returns nothing.
+// Keys whose encoded form exceeds disk_hash_table_t::inline_key_limit (64 bytes) are stored
+// truncated; losing the full-key hook that resolves them loses every long key silently (SELECT
+// succeeds, returns nothing).
 TEST_CASE("integration::cpp::index_agent_owns_hash_storage::long_key_hash_index_answers_after_restart") {
     auto config = test_create_config(integration_fixture_path("test_index_agent_owns_hash_storage/long_key"));
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
 
-    // 200 characters: the encoded key is 1 type byte + 4 length bytes + 200, well past
-    // the 64-byte inline limit, so the keydir entry is truncated to a 32-byte prefix.
+    // 200 chars puts the encoded key well past the 64-byte inline limit; the keydir stores a
+    // 32-byte prefix of it.
     const std::string long_key(200, 'q');
-    // Shares the whole 32-byte prefix with long_key and differs only past it, so a
-    // reader that compares prefixes and stops confuses the two.
+    // Shares the whole 32-byte prefix with long_key and differs only past it, defeating a
+    // prefix-only comparison.
     const std::string sibling_key = std::string(120, 'q') + std::string(120, 'z');
-    // Short enough to stay INLINE: the control that separates "long keys are lost" from
-    // "the index is empty".
+    // Stays inline: the control separating "long keys are lost" from "the index is empty".
     const std::string short_key = "short";
 
     {
@@ -139,13 +132,10 @@ TEST_CASE("integration::cpp::index_agent_owns_hash_storage::long_key_hash_index_
         CHECK(services::index::index_agent_reads() >= 1);
         CHECK(ids_of(cur) == std::vector<int64_t>{1, 4});
 
-        // The prefix sibling must NOT come back with it: resolving a truncated entry means
-        // comparing the WHOLE key, not the stored prefix.
         auto sibling = exec("SELECT id FROM lkdb.t WHERE k = '" + sibling_key + "';");
         REQUIRE(sibling->is_success());
         CHECK(ids_of(sibling) == std::vector<int64_t>{2});
 
-        // The inline control: this one is answered without the hook at all.
         auto short_rows = exec("SELECT id FROM lkdb.t WHERE k = '" + short_key + "';");
         REQUIRE(short_rows->is_success());
         CHECK(ids_of(short_rows) == std::vector<int64_t>{3});

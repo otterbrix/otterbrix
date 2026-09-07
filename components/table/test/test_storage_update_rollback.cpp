@@ -1,11 +1,9 @@
-// Measures the IN-PLACE storage update (data_table_t::update -> ... -> update_segment_t::update):
-// no transaction identity, no version chain, no undo. This is NOT the SQL UPDATE path — a user
-// UPDATE goes through table_storage_adapter.hpp's three-argument update(row_ids, data, txn),
-// which is delete-stamp + append. The two-argument overload here is reached only from
-// services/disk/agent_disk.cpp (direct_update_sync: WAL replay, pg_attribute patches).
-//
-// The two [!shouldfail] cases assert what a version-chained update WOULD do; they must go RED
-// the moment someone implements the chain — that is the signal to drop the tag, not weaken it.
+// Measures the in-place storage update (data_table_t::update), not the SQL UPDATE path: a user
+// UPDATE goes through table_storage_adapter.hpp's three-argument update (delete-stamp + append);
+// this two-argument overload is reached only from agent_disk.cpp's direct_update_sync (WAL
+// replay, pg_attribute patches).
+// The two [!shouldfail] cases assert what a version-chained update WOULD do; they must go red
+// once someone implements the chain -- the signal to drop the tag, not weaken it.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
@@ -23,8 +21,7 @@ using namespace components::table;
 
 namespace {
 
-    // pid-qualified, like every other fixture in this directory: two concurrent runs must not
-    // share one .otbx.
+    // pid-qualified so concurrent runs don't share one .otbx.
     std::string update_rollback_db_path() {
         static std::string path = "/tmp/test_otterbrix_storage_update_rollback_" + std::to_string(::getpid()) + ".otbx";
         return path;
@@ -108,8 +105,6 @@ TEST_CASE("components::table::update_segment::snapshot_predating_an_in_place_upd
     auto table = make_one_column_table(env);
     append_committed_row(*table, env, 1);
 
-    // A reader that started BEFORE the update: start_time 10, and the update below is not
-    // stamped with any commit id at all.
     const transaction_data reader{TRANSACTION_ID_START + 5, 10};
     REQUIRE(scan_first_value(*table, env, reader) == 1);
 
@@ -142,15 +137,14 @@ TEST_CASE("components::table::update_segment::an_abandoned_in_place_update_leave
     REQUIRE(seen == 1);
 }
 
-// The one conflict this path can see is writer-vs-DDL: append_lock and update_column both
-// already refuse on a table an ALTER superseded (data_table.cpp); update() did neither, so an
-// in-place update of a superseded table silently wrote into a collection no reader reopens.
+// update() must refuse like append_lock/update_column already do (data_table.cpp) when a table
+// was superseded by an ALTER, or it silently writes into a collection no reader reopens.
 TEST_CASE("components::table::update_segment::updating_a_superseded_table_is_refused") {
     update_env env;
     auto table = make_one_column_table(env);
     append_committed_row(*table, env, 1);
 
-    // ALTER TABLE ADD COLUMN: the successor becomes root, `table` stops being one.
+    // ALTER TABLE ADD COLUMN: successor becomes root, `table` stops being one.
     column_definition_t added("added", complex_logical_type(logical_type::BIGINT));
     auto successor = std::make_unique<data_table_t>(*table, added);
 
@@ -160,8 +154,8 @@ TEST_CASE("components::table::update_segment::updating_a_superseded_table_is_ref
     REQUIRE(updated.error().type == core::error_code_t::write_conflict);
 }
 
-// NOT [!shouldfail]: pins that the overlay IS applied by the scan, so the two cases above fail
-// on "no MVCC", not on "the update never landed".
+// Control (not [!shouldfail]): pins that the overlay IS applied, so the two cases above fail on
+// "no MVCC," not "the update never landed."
 TEST_CASE("components::table::update_segment::an_in_place_update_is_published_to_the_next_reader") {
     update_env env;
     auto table = make_one_column_table(env);

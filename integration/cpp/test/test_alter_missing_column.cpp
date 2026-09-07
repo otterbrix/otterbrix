@@ -1,26 +1,11 @@
-// ALTER TABLE ... DROP / RENAME COLUMN naming a column that is not there.
+// Both operators used to take an early return on a column-name miss and still call
+// mark_executed(), reporting success on a no-op. A relkind='g' (document) table has no
+// pg_attribute row at all, so the fix routes document DROP/RENAME through pg_computed_column
+// rather than making every document ALTER an error.
 //
-// Both operators resolved the column by (attrelid, attname) and, on a miss, took
-// an early return ending in mark_executed() -- reporting SUCCESS having written
-// nothing. PostgreSQL refuses both ("column ... does not exist"), and only
-// DROP COLUMN IF EXISTS passes; RENAME has no IF EXISTS form for the column.
-//
-// A relkind='g' (document) table keeps its columns in pg_computed_column, not
-// pg_attribute, so EVERY name misses the pg_attribute lookup these operators do.
-// Turning the miss into an error without routing relkind='g' elsewhere would
-// refuse legal statements on every document table, so the document cases below
-// hold ONE rule for both table shapes: DROP of an existing field still routes to
-// the pg_computed_column operator and stays green; DROP of a missing field is
-// refused like on a regular table; RENAME on a document table is refused with
-// "not implemented" (never reported as done), since the storage half can't be
-// completed on this branch (see that case for why).
-//
-// ctest gives every case its own process. Running the whole tag in ONE process is
-// flaky: a refusal message built from an ALTER operator's resource can arrive
-// with a size spanning later copies of itself, so re-reading a cursor's error can
-// come back doubled/tripled or throw std::length_error. Reproduced but not fixed
-// here -- so every message is kept short and each cursor's error is read exactly
-// ONCE. The message-content checks stay; they are what caught it.
+// Reading a DDL cursor's error twice in one process intermittently corrupts it (doubled text
+// or std::length_error, reproduced but not fixed here); each error is read exactly once below,
+// and the content checks stay since they are what caught the corruption.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -32,8 +17,6 @@
 
 namespace {
 
-    // The column names a SELECT actually produced, read off the first chunk's
-    // vector aliases (same probe test_sql_features::has_column uses).
     bool column_present(const components::cursor::cursor_t& cur, std::string_view name) {
         if (cur.chunks().empty()) {
             return false;
@@ -47,11 +30,6 @@ namespace {
         return false;
     }
 
-    // Checked for the words that make the refusal actionable, not just that it refused.
-    // Read ONCE per cursor and keep the copy -- same convention as
-    // test_fk_parent_column_drop: a second read of a DDL cursor's `what` on this branch
-    // intermittently comes back doubled or throws std::length_error, a separate engine
-    // defect these cases are not here to pin.
     std::string error_text(const components::cursor::cursor_t& cur) {
         // get_error() on a successful cursor throws, so read it only when there is one.
         return cur.is_error() ? std::string{cur.get_error().what.begin(), cur.get_error().what.end()}
@@ -61,10 +39,6 @@ namespace {
     bool mentions(const std::string& text, std::string_view needle) { return text.find(needle) != std::string::npos; }
 
 } // namespace
-
-// ---------------------------------------------------------------------------
-// Regular (relkind='r') tables — the columns live in pg_attribute.
-// ---------------------------------------------------------------------------
 
 TEST_CASE("integration::cpp::test_alter_missing_column::drop_missing_column_is_refused", "[altermissing]") {
     auto config = test_create_config(integration_fixture_path("test_alter_missing_column/drop_missing"));
@@ -180,12 +154,6 @@ TEST_CASE("integration::cpp::test_alter_missing_column::rename_missing_column_is
     }
 }
 
-// ---------------------------------------------------------------------------
-// Document (relkind='g') tables — the columns live in pg_computed_column and
-// have NO pg_attribute row. These are the legal paths a loud pg_attribute miss
-// would brick.
-// ---------------------------------------------------------------------------
-
 TEST_CASE("integration::cpp::test_alter_missing_column::document_table_drop_existing_field_still_works",
           "[altermissing]") {
     auto config = test_create_config(integration_fixture_path("test_alter_missing_column/doc_drop"));
@@ -270,13 +238,9 @@ TEST_CASE("integration::cpp::test_alter_missing_column::document_table_rename_is
     REQUIRE(exec("CREATE TABLE amdb.docs ();")->is_success());
     REQUIRE(exec("INSERT INTO amdb.docs (a, b) VALUES (1, 'x');")->is_success());
 
-    // The catalog half of a document rename is easy: pg_computed_column is versioned, so
-    // it's a tombstone under the old name plus a live row under the new one. The storage
-    // half can't be completed: a relkind='g' column binds to its physical column by the
-    // storage column's TYPE ALIAS, and data_table_t::rename_column updates
-    // column_definition_t::name_ while set_name leaves type_ alone -- so the alias keeps
-    // the old name and the field would vanish from SELECT under BOTH names. Refused
-    // instead of silently "succeeding" into that state.
+    // The storage half can't be completed: a relkind='g' column binds to its physical column
+    // by the storage column's type alias, and rename_column updates column_definition_t::name_
+    // but leaves that alias alone, so the field would vanish from SELECT under both names.
     INFO("renaming a field that IS there is refused with a reason, never reported as renamed");
     {
         auto cur = exec("ALTER TABLE amdb.docs RENAME COLUMN b TO c;");

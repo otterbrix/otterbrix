@@ -1,20 +1,9 @@
-// A dropped agent must refuse a write, not perform one. drop() releases the store (btree_t's
-// db_ becomes null; bitcask resets its segment handle, txn-log handle and keydir), and every
-// write path below dereferences one of those, unlike the read side which already checks
-// is_dropped_:
-//
-//     btree      insert_bulk_unchecked -> db_->append(...)          // db_ == nullptr
-//     bitcask    apply_txn_inserts     -> append_snapshot -> file_->seek_position()
-//                insert_bulk_unchecked -> ... -> hash_index_->put   // both reset
-//
-// A write is two messages (stage_* records into the bucket, commit_* publishes it), and BOTH
-// must refuse: staging into a dropped agent wouldn't crash, so an unchecked stage would leave
-// rows in a bucket nothing ever reads while the statement is told they're indexed.
-//
-// The agent keeps a live address after drop (destroyed separately by its owner), so a message
-// posted before that still arrives here -- nothing upstream can recall a mailboxed message.
-// The test drives each agent by hand (cooperative_actor::resume(1)) to reach that state
-// deterministically rather than race for it.
+// drop() nulls the store (btree_t's db_; bitcask's segment/txn-log handles and keydir), and
+// every write path below dereferences one of those, unlike the read side which already checks
+// is_dropped_. A write is two messages (stage_* into a bucket, commit_* that publishes it), and
+// both must refuse, since an unchecked stage would tell the statement its rows are indexed
+// while they sit unread. The agent's address stays live after drop, so a message posted before
+// then still arrives here.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -52,11 +41,9 @@ using services::index::index_agent_contract;
 
 namespace {
 
-    // Kept far from the txn id it derives from -- different id spaces. txn id says which bucket
-    // to publish; commit id is what the hashed family stamps into its durable txn-log frame and
-    // the recover gate judges it by (bitcask_index_disk.cpp). Reusing one number for both is the
-    // exact confusion that let an earlier incarnation's COMMIT marker vouch for a later frame
-    // under a recycled txn id.
+    // Offset from txn_id so the two id spaces can't be confused: reusing one number for both
+    // once let an earlier incarnation's COMMIT marker vouch for a later frame under a recycled
+    // txn id.
     constexpr std::uint64_t commit_id_of(std::uint64_t txn_id) { return txn_id + 500000; }
 
     constexpr components::catalog::oid_t kTableOid = 17200;
@@ -83,8 +70,7 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     const auto path = fresh_index_root("otterbrix_test_index_agent_dropped_writes_btree");
 
-    // No scheduler at all: the agent is pumped by hand below
-    // (cooperative_actor::resume(1)), so nothing runs behind the test's back.
+    // No scheduler: the agent is pumped by hand below, so nothing runs behind the test's back.
     auto agent_result =
         btree_index_agent_t::create(&resource, path, kTableOid, kIndexOid, /*flush_threshold=*/1000, log);
     REQUIRE_FALSE(agent_result.has_error());
@@ -97,8 +83,6 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
     agent->resume(1);
     REQUIRE(drop_future.is_ready());
 
-    // The writes posted AFTER the drop was handled. The address is still live, so they
-    // arrive; the store behind them is gone.
     auto [stage_sched, stage_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::stage_inserts>(agent->address(),
                                                                           session,
@@ -146,8 +130,7 @@ TEST_CASE("services::index::btree_index_agent_t refuses writes after its drop") 
     REQUIRE(commit_del_error.contains_error());
     REQUIRE(commit_del_error.type == core::error_code_t::index_not_exists);
 
-    // clear() releases nothing but would wipe a store that is already gone; it refuses
-    // too, so a repopulate of a dropped index cannot report success.
+    // clear() must also refuse, so a repopulate of a dropped index cannot report success.
     auto [clear_sched, clear_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::clear>(agent->address(), session);
     agent->resume(1);
@@ -164,7 +147,6 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     const auto path = fresh_index_root("otterbrix_test_index_agent_dropped_writes_bitcask");
 
-    // No scheduler at all: the agent is pumped by hand, as above.
     auto agent_result = bitcask_index_agent_t::create(&resource,
                                                       path,
                                                       kTableOid,
@@ -183,8 +165,6 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
     agent->resume(1);
     REQUIRE(drop_future.is_ready());
 
-    // Staging first: a refusal here is what keeps a statement from being told its rows
-    // are indexed while they sit in a bucket nothing will ever publish.
     auto [stage_sched, stage_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::stage_inserts>(agent->address(),
                                                                           session,
@@ -197,9 +177,8 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
     REQUIRE(stage_error.contains_error());
     REQUIRE(stage_error.type == core::error_code_t::index_not_exists);
 
-    // txn_id != 0: the JOURNALLED route, the one only this family has. It opens the
-    // txn-log file and then walks into append_snapshot, which writes through the segment
-    // handle drop() reset.
+    // Bitcask has two write routes into the same freed store: journalled (txn_id != 0, via the
+    // segment handle) and direct bulk (txn_id == 0, via the keydir); both must refuse.
     auto [txn_sched, txn_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(),
                                                                            session,
@@ -212,7 +191,6 @@ TEST_CASE("services::index::bitcask_index_agent_t refuses writes after its drop"
     REQUIRE(txn_error.contains_error());
     REQUIRE(txn_error.type == core::error_code_t::index_not_exists);
 
-    // txn_id == 0: the direct bulk route, through the keydir drop() released.
     auto [bulk_sched, bulk_future] =
         actor_zeta::otterbrix::send<&index_agent_contract::commit_inserts>(agent->address(),
                                                                            session,

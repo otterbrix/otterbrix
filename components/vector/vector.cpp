@@ -72,9 +72,8 @@ namespace components::vector {
         : vector_type_(type.type() == types::logical_type::NA ? vector_type::CONSTANT : vector_type::FLAT)
         , type_(std::move(type))
         , data_(nullptr)
-        // A mask is only built when it will be kept: with create_data the body calls
-        // validity_.reset() a few lines down, so building one here would allocate and fill a
-        // buffer that every vector on the query path immediately throws away.
+        // Built only when it will be kept: create_data calls validity_.reset() a few lines down,
+        // so building a real mask here would just be thrown away.
         , validity_(type_.type() == types::logical_type::NA || create_data ? validity_mask_t{resource, nullptr}
                                                                            : validity_mask_t{resource, capacity}) {
         if (type_.type() == types::logical_type::NA) {
@@ -345,7 +344,6 @@ namespace components::vector {
         uint64_t index = path[0];
         bool null_seen = false;
 
-        // Resolve dictionary/constant layers so vector/index refer to the underlying flat storage.
         auto resolve_storage = [&]() {
             bool finished = false;
             while (!finished) {
@@ -397,7 +395,6 @@ namespace components::vector {
                 }
                 default:
                     if (vector->type_.to_physical_type() == types::physical_type::STRUCT) {
-                        // Struct field: the row index stays the same, only the child changes.
                         vector = vector->entries()[sub].get();
                     } else {
                         throw std::runtime_error("nested null access path is too deep for this type");
@@ -425,7 +422,6 @@ namespace components::vector {
         uint64_t index = row_index;
         bool null_seen = false;
 
-        // Resolve dictionary/constant layers so vector/index refer to the underlying flat storage.
         auto resolve_storage = [&]() {
             bool finished = false;
             while (!finished) {
@@ -473,15 +469,13 @@ namespace components::vector {
                     break;
                 }
                 case types::logical_type::STRUCT: {
-                    // Struct field: the row index stays the same, only the child changes.
                     vector = vector->entries()[sub].get();
                     break;
                 }
                 default:
-                    // A path step through a type with no sub-elements is a planner bug (paths are
-                    // built from the type tree). A bare assert vanishes under NDEBUG and the walk
-                    // stays on the parent vector, answering a WRONG leaf as valid; it must also not
-                    // throw through the noexcept executor coroutine, so it refuses in both builds.
+                    // A path step with no sub-elements is a planner bug; a bare assert would vanish
+                    // under NDEBUG and answer a wrong leaf as valid, so this refuses in both builds
+                    // instead (must not throw through the noexcept executor coroutine).
                     assert(false && "resolve_nested_element: path step through a non-container type");
                     std::abort();
             }
@@ -641,11 +635,9 @@ namespace components::vector {
             index = 0;
         }
         if (!val.is_null() && val.type() != type_) {
-            // A mistyped value here IS a caller bug (validation splices the cast in before any
-            // write reaches this point). A bare assert-then-return vanishes under NDEBUG and
-            // makes the write a silent no-op — old payload, old validity, caller reports success
-            // — turning a wrong type into data corruption; refuse loudly in both builds instead
-            // (must not throw through the noexcept executor coroutine).
+            // A mistyped value is a caller bug; a bare assert would vanish under NDEBUG and make
+            // the write a silent no-op (old payload, caller reports success), so this refuses
+            // loudly in both builds instead.
             assert(false && "value has to be casted to vector's type before set_value");
             std::abort();
         }
@@ -870,10 +862,8 @@ namespace components::vector {
             }
         }
 
-        // NULL rows never reach here: value() screens them with is_null(), which walks the very
-        // same DICTIONARY/CONSTANT chain this loop just walked. Answering a null row here with
-        // logical_value_t(resource, type_) would hand back a DEFAULT-CONSTRUCTED value of the
-        // declared type, whose is_null() is false -- a zero in place of a NULL, not a null.
+        // NULL rows never reach here: value() screens them with is_null() first. A default-built
+        // value of the declared type here would answer a zero in place of a NULL, not a null.
         assert(vector->validity_.row_is_valid(index) && "value_internal reached a NULL row");
 
         switch (vector->type_.type()) {
@@ -966,10 +956,8 @@ namespace components::vector {
                                               std::string(reinterpret_cast<std::string_view*>(vector->data_)[index]));
             }
             case types::logical_type::MAP: {
-                // MAP is materialized as a LIST of struct<key,value>. Surface the value as a
-                // logical_value whose type is MAP and whose children ARE those struct entries
-                // (the list-of-struct representation that set_value's LIST path and
-                // python_object_t::from_value(MAP) both consume).
+                // MAP is materialized as a LIST of struct<key,value>; the children here are those
+                // struct entries, the same representation python_object_t::from_value(MAP) consumes.
                 auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];
                 auto& child_vec = vector->entry();
                 std::vector<types::logical_value_t> children;
@@ -988,9 +976,8 @@ namespace components::vector {
                         children.back().set_alias(vector->type_.child_name(child_idx));
                     }
                 }
-                // The cell's type is the column's DECLARED type, never inferred from the field
-                // values: a NULL field carries logical_type::NA, so deriving the struct type from
-                // the children would answer STRUCT<BIGINT, NA> for a declared STRUCT<BIGINT, BIGINT>.
+                // The declared type, not one inferred from the fields: a NULL field carries
+                // logical_type::NA, which would answer STRUCT<BIGINT, NA> instead.
                 return types::logical_value_t::create_struct(vector->resource(),
                                                              vector->type_,
                                                              std::move(children));
@@ -1002,9 +989,8 @@ namespace components::vector {
                 for (uint64_t i = offlen.offset; i < offlen.offset + offlen.length; i++) {
                     children.push_back(child_vec.value(i));
                 }
-                // Pass the DECLARED list type through, extension included: create_list(child)
-                // would rebuild it with a fresh default list_logical_type_extension and drop the
-                // declared field_id/required.
+                // The declared type, extension included: create_list(child) would rebuild a fresh
+                // default extension and drop the declared field_id/required.
                 return types::logical_value_t::create_list_from_type(vector->resource(),
                                                                      vector->type_,
                                                                      std::move(children));
@@ -1035,14 +1021,11 @@ namespace components::vector {
                 uint8_t tag;
                 if (try_get_union_tag(*vector, index, tag)) {
                     auto value = vector->entries()[static_cast<size_t>(tag) + 1]->value(index);
-                    // The tag has to go, so this copy is real -- and it is handed straight to
-                    // create_union, which keeps it. `auto members = ...child_types()` would copy the
-                    // std::pmr::vector without propagating its allocator, so the member list inside a
-                    // UNION value would sit on the default resource while the value itself lives on
-                    // vector->resource(). Naming the resource is the only way a pmr copy inherits one.
+                    // Naming vector->resource() here is required: `auto members = ...child_types()`
+                    // would copy the pmr vector without propagating its allocator, leaving it on the
+                    // default resource instead of the one the UNION value itself lives on.
                     std::pmr::vector<types::complex_logical_type> members(vector->type().child_types(),
                                                                           vector->resource());
-                    // remove tag
                     members.erase(members.begin());
                     return types::logical_value_t::create_union(vector->resource(),
                                                                 std::move(members),
@@ -1128,7 +1111,6 @@ namespace components::vector {
         }
         assert(get_vector_type() == vector_type::FLAT || get_vector_type() == vector_type::CONSTANT);
         assert(auxiliary_);
-        // MAP is physically a LIST (of struct<key,value>), so it uses the list buffer too.
         if (type_.type() == types::logical_type::LIST || type_.type() == types::logical_type::MAP) {
             return static_cast<list_vector_buffer_t*>(auxiliary_.get())->nested_data();
         } else {
@@ -1173,7 +1155,7 @@ namespace components::vector {
         }
         switch (get_vector_type()) {
             case vector_type::DICTIONARY:
-                return child().is_null(indexing().get_index(index)); // resolve one layer, recurse
+                return child().is_null(indexing().get_index(index));
             case vector_type::SEQUENCE:
                 return false; // generated, never null
             case vector_type::CONSTANT:
@@ -1184,10 +1166,9 @@ namespace components::vector {
     }
 
     types::logical_value_t vector_t::value(uint64_t index) const {
-        // is_null(), not validity_ directly: on a DICTIONARY vector the caller's index addresses
-        // the indexing vector, while this vector's own validity_ is still the pre-slice mask, and
-        // on a CONSTANT vector every index resolves to row 0. Reading validity_[index] there
-        // answers about a different row than the one value_internal is about to read.
+        // is_null(), not validity_ directly: on DICTIONARY the caller's index addresses the
+        // indexing vector, and on CONSTANT every index resolves to row 0, so validity_[index]
+        // directly would answer about the wrong row.
         if (is_null(index)) {
             types::logical_value_t null_val(resource(), types::complex_logical_type{types::logical_type::NA});
             if (type_.has_alias()) {

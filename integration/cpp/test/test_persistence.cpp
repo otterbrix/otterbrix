@@ -44,7 +44,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {
             REQUIRE(cur->is_success());
         }
 
-        // INSERT first 50 rows (count = 0..49)
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -59,7 +58,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_mixed_batch") {
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
 
-        // INSERT 50 more rows (count = 50..99)
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -112,7 +110,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_multi_type") {
             REQUIRE(cur->is_success());
         }
 
-        // INSERT rows with all 3 types
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -166,7 +163,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
             REQUIRE(cur->is_success());
         }
 
-        // INSERT valid data
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -189,7 +185,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE tag = 'green';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE tag = 'blue';", 1);
 
-        // NOT NULL constraint must still be enforced after restart
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -200,7 +195,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null") {
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
 
-        // Valid insert still works after restart
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
@@ -235,7 +229,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
             REQUIRE(cur->is_success());
         }
 
-        // INSERT 100 rows with count = 0..99
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -250,7 +243,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
 
-        // DELETE WHERE count > 90 (removes 9 rows: 91..99)
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
@@ -260,7 +252,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
 
-        // UPDATE SET count=999 WHERE count=50
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -280,14 +271,10 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_dml_full_cycle") {
         auto* dispatcher = space.dispatcher();
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
-        // Deleted rows stay gone
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 95;", 0);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count > 90;", 1);
-        // Updated value persisted
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 999;", 1);
-        // Original updated value gone
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 0);
-        // Boundary rows intact
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 90;", 1);
     }
@@ -316,7 +303,6 @@ TEST_CASE("integration::cpp::test_persistence::default_application_in_session") 
             REQUIRE(cur->is_success());
         }
 
-        // INSERT omitting all defaulted columns — only provide name
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -326,12 +312,10 @@ TEST_CASE("integration::cpp::test_persistence::default_application_in_session") 
             REQUIRE(cur->size() == 3);
         }
 
-        // Verify defaults applied: status='active', count=0
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 3);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 3);
 
-        // INSERT omitting only one defaulted column — provide name + count
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -341,13 +325,11 @@ TEST_CASE("integration::cpp::test_persistence::default_application_in_session") 
             REQUIRE(cur->size() == 2);
         }
 
-        // dave and eve have status='active' (default), count explicit
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 5);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 10;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 20;", 1);
 
-        // INSERT with all columns — override defaults
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -386,7 +368,6 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
             REQUIRE(cur->is_success());
         }
 
-        // All INSERTs use only (name) — WAL records all have 1 column
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -396,7 +377,6 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
             REQUIRE(cur->size() == 5);
         }
 
-        // Verify defaults applied in session
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 5);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 5);
@@ -409,10 +389,8 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_consistent_wal_rec
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // The PHYSICAL_INSERT carries the chunk AFTER the disk agent's default-expansion
-        // stage, so status='active'/count=0 are baked into the WAL record (not just the
-        // supplied 'name'). On restart the storage is synthesised from the WAL chunk's
-        // column types, so the defaulted columns and their values survive replay.
+        // PHYSICAL_INSERT carries the chunk AFTER default-expansion, so status/count defaults are
+        // baked into the WAL record; restart synthesises storage from the WAL chunk's types.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'alice';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'bob';", 1);
@@ -444,7 +422,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
             REQUIRE(cur->is_success());
         }
 
-        // INSERT providing all columns
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -458,7 +435,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'pending';", 2);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'approved';", 1);
 
-        // NOT NULL on name: INSERT with NULL name should be rejected
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
@@ -480,7 +456,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'approved';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'alice';", 1);
 
-        // NOT NULL still enforced after restart
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
@@ -489,7 +464,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_recovery_not_null_with_defaul
             REQUIRE(cur->is_error());
         }
 
-        // Valid insert still works
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
@@ -526,7 +500,6 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
             REQUIRE(cur->is_success());
         }
 
-        // All INSERTs provide (name, score) — 2 columns consistently; tag uses default
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -547,24 +520,17 @@ TEST_CASE("integration::cpp::test_persistence::partial_insert_two_columns_wal") 
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // name and score columns survive (both in WAL records)
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'alice';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 100;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 200;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 300;", 1);
-        // DEFAULT-filled 'tag' persists too: PHYSICAL_INSERT carries the default-expanded chunk.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE tag = 'untagged';", 3);
     }
 }
 
-// Growth durability: PHYSICAL_ADD_COLUMN is written BEFORE the dependent PHYSICAL_INSERT
-// (agent_disk::storage_append_inner) and replayed via base_spaces -> direct_add_column_sync,
-// so restart reconstructs the grown schema ahead of the rows that reference it.
-// Scenario: a computing table is created with WAL ON, a first INSERT introduces (id,
-// name), a second INSERT introduces an ADDITIONAL new column (value) — triggering stage-1b
-// growth and a PHYSICAL_ADD_COLUMN record — then the engine is restarted and ALL columns +
-// rows must survive.
+// PHYSICAL_ADD_COLUMN is written BEFORE the dependent PHYSICAL_INSERT (agent_disk::storage_append_inner)
+// and replayed via direct_add_column_sync, so restart reconstructs the grown schema first.
 TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recovery") {
     auto config = test_create_config(integration_fixture_path("test_persistence/computed_schema_growth_wal"));
     test_clear_directory(config);
@@ -579,14 +545,12 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
 
-        // No columns => relkind='g' (computed).
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.TestCollection ();");
             REQUIRE(cur->is_success());
         }
 
-        // First INSERT: introduces columns (id bigint, name string). Schema adopted.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -596,9 +560,6 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
             REQUIRE(cur->size() == 2);
         }
 
-        // Second INSERT: introduces an ADDITIONAL new column 'value' alongside the
-        // existing (id, name). This is stage-1b schema growth and emits a
-        // PHYSICAL_ADD_COLUMN WAL record before the PHYSICAL_INSERT.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -608,7 +569,6 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
             REQUIRE(cur->size() == 1);
         }
 
-        // In-session sanity: 3 rows, 3 columns (id, name, value); rows 1-2 NULL for value.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
@@ -624,11 +584,8 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // All three rows survive WAL replay.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
 
-        // The dynamically-added 'value' column survives: its schema was reconstructed by
-        // replaying PHYSICAL_ADD_COLUMN ahead of the PHYSICAL_INSERT that filled it.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.TestCollection;");
@@ -638,15 +595,14 @@ TEST_CASE("integration::cpp::test_persistence::computed_schema_growth_wal_recove
         }
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE value = 100;", 1);
 
-        // The first-INSERT columns are still queryable and bind to the right rows.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'alice';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'charlie';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 3;", 1);
     }
 }
 
-// A table that lost is_computed on reload would match the post-restart {a:bool} chunk by
-// name and glue the boolean vector into the bigint 'a' column instead of a new variant column.
+// A table that lost is_computed on reload would glue the post-restart {a:bool} chunk into the
+// bigint 'a' column by name, instead of opening a new variant column.
 TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_restart") {
     auto config = test_create_config(integration_fixture_path("test_persistence/computed_variants_restart"));
     test_clear_directory(config);
@@ -686,8 +642,6 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             REQUIRE(cur->size() == 2);
             REQUIRE(cur->column_count() == 3); // id, a:bigint, a:string
         }
-        // '::?type' must be tagged variant_select, not lowered to a cast, or the
-        // multi-type name gets refused as ambiguous.
         {
             auto s2 = otterbrix::session_id_t();
             auto c2 = dispatcher->execute_sql(s2, "SELECT id, a::?bigint FROM TestDatabase.TestCollection ORDER BY id;");
@@ -715,7 +669,6 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             REQUIRE(c2->value(0, 0).value<int64_t>() == 10);
         }
 
-        // Growth after restart must key on (name, type) — only runs if the table is still computed.
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -784,9 +737,8 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             REQUIRE(c2->is_success());
             REQUIRE(c2->size() == 3);
         }
-        // Pins the reopened-oid-generator defect: a re-minted (a, bool) attoid reused one
-        // already taken by a persisted computed column, breaking resolve_table's attoid
-        // order and zeroing every pushed filter.
+        // Pins the reopened-oid-generator defect: a re-minted (a, bool) attoid reused one already
+        // taken by a persisted computed column, zeroing every pushed filter.
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE id = 3;", 1);
         {
             auto s2 = otterbrix::session_id_t();
@@ -798,11 +750,8 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
     }
 }
 
-// Computed flag must survive WAL replay SYNTHESIS, not just a clean .otbx reload. Crash model:
-// same as test_persistence_gaps::create_then_kill_before_checkpoint -- a freshly created
-// .otbx's directory entry is not fsynced, so a crash can keep pg_class+WAL while losing the
-// file. The synthesised entry must stay computed (from pg_class.relkind), or the post-recovery
-// {a:bool} insert glues into the bigint 'a' column instead of opening a new variant column.
+// Computed flag must survive WAL replay SYNTHESIS, not just a clean .otbx reload: a crash can
+// keep pg_class+WAL while losing the file, so the synthesised entry must stay computed (from pg_class.relkind).
 TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_crash_replay_synthesis") {
     auto config = test_create_config(integration_fixture_path("test_persistence/computed_variants_crash_src"));
     test_clear_directory(config);
@@ -843,8 +792,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
         std::filesystem::copy(config.main_path, crash_dir, std::filesystem::copy_options::recursive);
     }
 
-    // Drops every USER table's storage directory from the crash image (oid >= FIRST_USER_OID;
-    // system tables keep theirs). The WAL survives.
+    // Drops every USER table's storage directory (oid >= FIRST_USER_OID); system tables and the WAL survive.
     {
         std::vector<std::filesystem::path> user_table_dirs;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(crash_dir)) {
@@ -871,8 +819,7 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
 
-        // Only a synthesised entry that kept is_computed grows a NEW (a, bool) column here
-        // instead of gluing by name.
+        // Only a synthesised entry that kept is_computed grows a NEW column here instead of gluing by name.
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -932,11 +879,9 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
     }
 }
 
-// A table's file lives at ${disk_root}/${relnamespace}/${table_oid}/table.otbx — not under
-// well_known_oid::main_database (4), which no user table can carry. Recovery paths that rebuild
-// this path (replay synthesis here, the deferred-DROP GC sweep, lost-file rehydrate) used to
-// substitute 4, landing the file where nothing opens it. relkind='g' on purpose:
-// rehydrate_missing_user_storages_sync skips 'g' at the source, so only replay synthesis rebuilds it.
+// A table's file lives at ${disk_root}/${relnamespace}/${table_oid}/table.otbx, never under
+// well_known_oid::main_database (4) -- recovery paths used to substitute 4 there. relkind='g' is
+// deliberate: rehydrate_missing_user_storages_sync skips 'g', so only replay synthesis rebuilds it.
 TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_under_its_namespace") {
     auto config = test_create_config(integration_fixture_path("test_persistence/replay_ns_src"));
     test_clear_directory(config);
@@ -993,8 +938,6 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
         }
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
 
-        // Read the live layout off disk rather than assuming a value -- it is the answer
-        // recovery has to reproduce.
         const auto live = user_table_dirs(config.disk.path);
         INFO("the live directory must hold exactly the one user table");
         REQUIRE(live.size() == 1);
@@ -1006,7 +949,6 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
         std::filesystem::copy(config.main_path, crash_dir, std::filesystem::copy_options::recursive);
     }
 
-    // Removes the table's storage directory from the copy; the WAL survives.
     {
         auto crash_config = test_create_config(crash_dir);
         auto victim = crash_config.disk.path / std::to_string(live_ns) / std::to_string(live_tbl);
@@ -1020,19 +962,15 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
         {
             test_spaces space(crash_config);
             auto* dispatcher = space.dispatcher();
-            // Functional consequence: a storage the table can actually find holds the rows.
             CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 2);
         }
 
-        // A hardwired namespace oid fails this: the recreated file must sit under the
-        // table's own namespace, not under the main-database oid (4).
         REQUIRE(std::filesystem::exists(crash_config.disk.path / std::to_string(live_ns) /
                                         std::to_string(live_tbl) / "table.otbx"));
         REQUIRE_FALSE(std::filesystem::exists(
             crash_config.disk.path /
             std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::main_database)) /
             std::to_string(live_tbl) / "table.otbx"));
-        // Nothing else moved either: still exactly the one user table, at the same coordinates.
         const auto after = user_table_dirs(crash_config.disk.path);
         REQUIRE(after.size() == 1);
         REQUIRE(after.front().first == live_ns);
@@ -1042,9 +980,8 @@ TEST_CASE("integration::cpp::test_persistence::replay_synthesis_places_otbx_unde
     std::filesystem::remove_all(crash_dir);
 }
 
-// A zero-column REGULAR table (relkind='r', only column dropped) must not come back computed:
-// its empty pg_attribute schema is exactly the shape the load path once used as its computed
-// heuristic. Observable via INSERT: computed adopts arbitrary columns, regular refuses them.
+// A zero-column REGULAR table (relkind='r') must not come back computed: its empty
+// pg_attribute schema is the same shape the load path once used as its computed heuristic.
 TEST_CASE("integration::cpp::test_persistence::zero_column_regular_table_stays_regular") {
     auto config = test_create_config(integration_fixture_path("test_persistence/zero_col_regular"));
     test_clear_directory(config);
@@ -1067,7 +1004,6 @@ TEST_CASE("integration::cpp::test_persistence::zero_column_regular_table_stays_r
             auto cur = dispatcher->execute_sql(session, "ALTER TABLE TestDatabase.OneCol DROP COLUMN x;");
             REQUIRE(cur->is_success());
         }
-        // In-session: still a regular table — refuses arbitrary document columns.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.OneCol (id, a) VALUES (1, 10);");
@@ -1079,8 +1015,6 @@ TEST_CASE("integration::cpp::test_persistence::zero_column_regular_table_stays_r
     {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        // A computed table would adopt (id, a) and take the row; the regular
-        // zero-column table must still refuse it.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.OneCol (id, a) VALUES (1, 10);");
@@ -1110,7 +1044,6 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
             REQUIRE(cur->is_success());
         }
 
-        // INSERT 50 rows with count = 0..49
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -1131,12 +1064,10 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // Verify first batch survived
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 49;", 1);
 
-        // INSERT 50 more rows with count = 50..99
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -1158,16 +1089,13 @@ TEST_CASE("integration::cpp::test_persistence::double_restart") {
         auto* dispatcher = space.dispatcher();
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
-        // Rows from phase 1
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 49;", 1);
-        // Rows from phase 2
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
     }
 }
 
-// ---- Real DISK checkpoint tests ----
 
 TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
     auto config = test_create_config(integration_fixture_path("test_persistence/disk_basic"));
@@ -1191,7 +1119,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
             REQUIRE(cur->is_success());
         }
 
-        // INSERT 50 rows
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -1206,7 +1133,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_basic") {
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
 
-        // CHECKPOINT — writes data to table.otbx
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
@@ -1248,7 +1174,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
             REQUIRE(cur->is_success());
         }
 
-        // INSERT 100 rows
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -1261,7 +1186,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
             REQUIRE(cur->size() == 100);
         }
 
-        // DELETE WHERE count > 90 (removes 9 rows: 91..99)
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
@@ -1271,7 +1195,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
 
-        // UPDATE SET count=999 WHERE count=50
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -1282,7 +1205,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_after_update") {
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
 
-        // CHECKPOINT
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
@@ -1326,7 +1248,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
             REQUIRE(cur->is_success());
         }
 
-        // INSERT first 50 rows
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -1339,14 +1260,12 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
             REQUIRE(cur->size() == 50);
         }
 
-        // CHECKPOINT — first 50 go to table.otbx
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
             REQUIRE(cur->is_success());
         }
 
-        // INSERT 50 more rows (no checkpoint — these stay in WAL only)
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -1368,16 +1287,13 @@ TEST_CASE("integration::cpp::test_persistence::disk_checkpoint_plus_wal") {
         auto* dispatcher = space.dispatcher();
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 100);
-        // From checkpoint
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 49;", 1);
-        // From WAL
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 50;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
     }
 }
 
-// ---- DISK partial insert, constraints, WAL-only recovery, double restart, DML cycle ----
 
 TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
     auto config = test_create_config(integration_fixture_path("test_persistence/disk_partial_insert"));
@@ -1402,7 +1318,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
             REQUIRE(cur->is_success());
         }
 
-        // Partial INSERT: only (name, score) — tag uses default
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -1416,7 +1331,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE score = 100;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE tag = 'untagged';", 3);
 
-        // Partial INSERT: only (name) — score NULL, tag default
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -1428,7 +1342,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 5);
 
-        // CHECKPOINT
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
@@ -1448,8 +1361,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_partial_insert") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'dave';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'eve';", 1);
 
-        // Only a NEW partial INSERT proves the DEFAULT survived restart; pre-restart rows'
-        // tags were already materialised in the creating session.
+        // Only a NEW partial INSERT proves the DEFAULT survived restart.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
@@ -1486,7 +1398,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
             REQUIRE(cur->is_success());
         }
 
-        // INSERT with all columns
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -1496,7 +1407,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
             REQUIRE(cur->size() == 2);
         }
 
-        // NOT NULL violation — rejected
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
@@ -1505,7 +1415,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
             REQUIRE(cur->is_error());
         }
 
-        // Partial INSERT: only (name) — status gets DEFAULT 'pending'
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -1518,7 +1427,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'pending';", 2);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 1);
 
-        // CHECKPOINT
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
@@ -1536,8 +1444,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE status = 'active';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE name = 'charlie';", 1);
 
-        // A NEW partial INSERT proves the NOT NULL DEFAULT still fills; pre-restart rows'
-        // status was already materialised in the creating session.
+        // A NEW partial INSERT proves the NOT NULL DEFAULT still fills after restart.
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -1551,10 +1458,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_not_null_default") {
     }
 }
 
-// CHECK (c IS NOT NULL) on a column with a DEFAULT compiles against the PLAN's copy of the
-// default (pg_attribute.attdefspec, survives restart) and passes an INSERT omitting c; the
-// value actually written comes from the storage-layer column list, which after a restart has
-// no defaults, so NULL gets stored despite the CHECK admitting it.
+// CHECK (c IS NOT NULL) compiles against the PLAN's copy of the DEFAULT, but the value actually
+// written comes from the storage-layer column list, which has no defaults after a restart -- so
+// NULL gets stored despite the CHECK admitting it.
 TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_after_restart") {
     auto config = test_create_config(integration_fixture_path("test_persistence/default_check_agrees"));
     test_clear_directory(config);
@@ -1621,14 +1527,12 @@ TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_a
             INFO("CHECK (c IS NOT NULL) admitted the row, so the stored c must satisfy it");
             CHECK_FALSE(cur->value(0, 0).is_null());
         }
-        // No row may violate the CHECK the engine claims to enforce.
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE c IS NULL;", 0);
     }
 }
 
-// Uniqueness diverges the same way: an omitted key column is compared as its catalog DEFAULT
-// while NULL is what lands on disk after a restart -- the duplicate-key decision must be about
-// what is really written, not the catalog default.
+// Uniqueness diverges the same way: an omitted key is compared against the catalog DEFAULT,
+// while NULL is what actually lands on disk after a restart.
 TEST_CASE("integration::cpp::test_persistence::default_unique_constraint_agrees_after_restart") {
     auto config = test_create_config(integration_fixture_path("test_persistence/default_unique_agrees"));
     test_clear_directory(config);
@@ -1681,7 +1585,6 @@ TEST_CASE("integration::cpp::test_persistence::default_unique_constraint_agrees_
             INFO("a second row omitting the UNIQUE column takes the same DEFAULT key as row 1");
             CHECK(ins->is_error());
         }
-        // Whatever the verdict, no two rows may end up sharing the compared key.
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE code = 5;", 1);
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE code IS NULL;", 0);
     }
@@ -1722,7 +1625,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_wal_only_recovery") {
         }
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
-        // No CHECKPOINT — all data in WAL only
     }
 
     INFO("phase 2: restart — verify WAL recovery for DISK table");
@@ -1841,7 +1743,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
             REQUIRE(cur->is_success());
         }
 
-        // INSERT 100 rows
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;
@@ -1854,7 +1755,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
             REQUIRE(cur->size() == 100);
         }
 
-        // DELETE WHERE count > 90 (removes 9 rows: 91..99)
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
@@ -1864,7 +1764,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
 
-        // UPDATE SET count=999 WHERE count=50
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -1876,7 +1775,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_dml_full_cycle") {
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 91);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 999;", 1);
 
-        // CHECKPOINT
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
@@ -1981,9 +1879,7 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_table_survives_restart"
     }
 }
 
-// Recursive scan for every storage payload file under the disk root. The GC
-// sweep removes table.otbx + sidecars of dropped tables; comparing the scan
-// before/after pins the exact file set the sweep must reclaim.
+// Recursive scan for every storage payload file under the disk root, to diff before/after a GC sweep.
 static std::set<std::filesystem::path> scan_otbx_files(const std::filesystem::path& disk_root) {
     std::set<std::filesystem::path> files;
     std::error_code ec;
@@ -2001,16 +1897,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
     auto config = test_create_config(integration_fixture_path("test_persistence/disk_drop_gc"));
     test_clear_directory(config);
 
-    // End-to-end DROP-GC through the unified commit channel. Two nets:
-    //   PRIMARY — drop_storage during the DROP statement removes .otbx +
-    //   sidecars immediately (a surviving file would let WAL replay
-    //   synthesise a phantom storage);
-    //   SECONDARY — mark_storage_dropped_many parks a tombstone keyed by the
-    //   dropping TXN-ID, the commit operator remaps it to the real commit_id
-    //   (storage_dropped_committed), and the next commit's horizon broadcast
-    //   (on_horizon_advanced, commit-id space) drains the queue. The drain is
-    //   internal state; what this test pins is that the whole chain runs
-    //   without touching any OTHER table's storage.
+    // Two nets: PRIMARY drop_storage removes .otbx + sidecars during the DROP statement itself;
+    // SECONDARY mark_storage_dropped_many tombstones it for the next commit's horizon broadcast to sweep.
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
@@ -2061,7 +1949,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
         REQUIRE(cur->is_success());
     }
 
-    // The victim's payload file = exactly what appeared since the baseline.
     auto with_victim_files = scan_otbx_files(config.disk.path);
     std::set<std::filesystem::path> victim_files;
     for (const auto& f : with_victim_files) {
@@ -2078,16 +1965,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
         auto cur = dispatcher->execute_sql(session, "DROP TABLE TestDatabase.GcVictim;");
         REQUIRE(cur->is_success());
     }
-    // PRIMARY net: drop_storage ran inside the DROP statement — the payload
-    // file (and its per-oid directory) must already be gone when the
-    // statement's cursor returns.
     REQUIRE_FALSE(std::filesystem::exists(victim_otbx));
     REQUIRE_FALSE(std::filesystem::exists(victim_otbx.parent_path()));
 
-    // SECONDARY net: the next commit advances the published horizon past the
-    // DROP's commit_id; the dispatcher broadcast walks the (remapped)
-    // tombstone queue. Asynchronous fire-and-forget — give it a bounded
-    // window, then pin that it disturbed nothing else.
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.GcSurvivor (val) VALUES (43);");
@@ -2095,8 +1975,6 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // Every baseline file (the survivor's storage + system tables) must be
-    // untouched by both nets.
     auto after_gc_files = scan_otbx_files(config.disk.path);
     for (const auto& f : baseline_files) {
         REQUIRE(after_gc_files.find(f) != after_gc_files.end());
@@ -2104,19 +1982,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.GcSurvivor;", 2);
 }
 
-// A DROP TABLE inside an explicit transaction must be fully revertible until
-// COMMIT.
-//   - Same txn: the pg_class row delete is MVCC-visible to the dropping session
-//     (self-write), so SELECT from the table in that SAME session no longer
-//     resolves -> error cursor.
-//   - The storage drop (drop_storage / unregister_collection) is DEFERRED to the
-//     post-publish commit tail rather than run during the DROP plan. So on
-//     ROLLBACK the catalog delete is reverted, the storage was never dropped,
-//     and a fresh session sees the table alive with every row — and its
-//     table.otbx payload file is still on disk, untouched.
-//   - Only after COMMIT does the deferred drop run: the table disappears from
-//     the catalog and its storage payload file is reclaimed.
-// Statements share one session_id_t (active txns are keyed by session.data()).
+// A DROP TABLE inside an explicit transaction is revertible until COMMIT: the catalog delete is
+// MVCC-visible to the dropping session (self-write) but the storage drop is DEFERRED to the
+// post-publish commit tail, so ROLLBACK leaves the file untouched and only COMMIT reclaims it.
 TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
     auto config = test_create_config(integration_fixture_path("test_persistence/drop_rollback"));
     test_clear_directory(config);
@@ -2130,11 +1998,6 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
         }
-        // Snapshot the .otbx files that exist BEFORE DropVictim — these are the
-        // system / catalog tables, which a single-table DROP must NEVER remove.
-        // The DropVictim-specific file is then the delta against this baseline,
-        // isolating the assertions to the dropped table's own storage (a DROP of
-        // one user table cannot reclaim the shared catalog heaps).
         baseline_files = scan_otbx_files(config.disk.path);
         {
             auto session = otterbrix::session_id_t();
@@ -2157,8 +2020,6 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
         }
     }
 
-    // The DropVictim payload file is the delta over the pre-CREATE baseline: only
-    // these files belong to the dropped table and must disappear at COMMIT.
     std::set<std::filesystem::path> victim_files;
     for (const auto& f : scan_otbx_files(config.disk.path)) {
         if (baseline_files.find(f) == baseline_files.end()) {
@@ -2176,8 +2037,6 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
         auto drop_cur = dispatcher->execute_sql(session, "DROP TABLE TestDatabase.DropVictim;");
         REQUIRE(drop_cur->is_success());
 
-        // Same txn: the catalog delete is visible to this session (self-write),
-        // so the table no longer resolves for the dropping session.
         auto sel_cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.DropVictim;");
         REQUIRE(sel_cur->is_error());
 
@@ -2193,8 +2052,6 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
 
     INFO("after ROLLBACK: the storage payload file was never dropped");
     {
-        // The deferred drop_storage only runs at COMMIT; an aborted DROP must
-        // leave the DropVictim payload file intact (and the catalog files too).
         auto after_rollback_files = scan_otbx_files(config.disk.path);
         for (const auto& f : victim_files) {
             REQUIRE(std::filesystem::exists(f));
@@ -2225,9 +2082,6 @@ TEST_CASE("integration::cpp::test_persistence::drop_rollback") {
             auto cur = dispatcher->execute_sql(session, "SELECT * FROM TestDatabase.DropVictim;");
             REQUIRE(cur->is_error());
         }
-        // The committed DROP's deferred drop_storage reclaimed the DropVictim
-        // payload file (and its per-oid directory). The shared catalog files
-        // (baseline) must survive — a single-table DROP never touches them.
         for (const auto& f : victim_files) {
             REQUIRE_FALSE(std::filesystem::exists(f));
             REQUIRE_FALSE(std::filesystem::exists(f.parent_path()));
@@ -2329,12 +2183,9 @@ TEST_CASE("integration::cpp::test_persistence::disk_add_column_survives_restart"
     }
 }
 
-// MVCC commit-clock restore on reopen: without it a fresh post-restart reader snapshots
-// published_horizon_=0 and every committed DELETE reads as "after my snapshot" -- deleted rows
-// REAPPEAR (phase-2 count 100 instead of 50). Restore raises published_horizon_ to the durable
-// frontier (max persisted pg_attribute commit-id, max WAL COMMIT-marker commit-id). Sibling
-// coverage: test_wal_pool::insert_delete_checkpoint_restart; added-column frontier: see
-// test_catalog_delete_refusal.cpp::an_added_columns_commit_id_survives_a_restart.
+// MVCC commit-clock restore on reopen: without it a fresh reader snapshots published_horizon_=0
+// and every committed DELETE reads as "after my snapshot", so deleted rows REAPPEAR. Restore
+// raises published_horizon_ to the durable frontier (max persisted commit-id).
 TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_invisible") {
     auto config = test_create_config(integration_fixture_path("test_persistence/reopen_keeps_committed_deletes"));
     test_clear_directory(config);
@@ -2348,10 +2199,6 @@ TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_in
             auto session = otterbrix::session_id_t();
             dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
         }
-        // Default storage (WAL-recovered, no .otbx): reopen rebuilds the table from
-        // WAL + the committed MVCC stamps, so delete visibility depends on the
-        // restored published_horizon_ (a disk-backed table's CHECKPOINT compaction
-        // would mask the bug by physically dropping committed-deleted rows).
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -2369,8 +2216,6 @@ TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_in
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
         }
-        // DELETE WHERE count < 50 (removes 50 rows: 0..49). Each tombstone gets
-        // delete_id = this txn's committed commit-id (> 0).
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 50;");
@@ -2390,9 +2235,6 @@ TEST_CASE("integration::cpp::test_persistence::reopen_keeps_committed_deletes_in
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // Decisive: without the commit-clock restore published_horizon_=0, the
-        // committed delete tombstones (delete_id > 0) are judged not-yet-applied
-        // and the 50 deleted rows reappear → 100 here instead of 50.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 50);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 0);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 49;", 0);
@@ -2604,10 +2446,8 @@ TEST_CASE("integration::cpp::test_persistence::disk_index_massive_checkpoint_cyc
     }
 }
 
-// Restart recovery of an on-disk user index via bootstrap_indexes_sync, over a
-// clean shutdown (base_otterbrix_t dtor CHECKPOINTs, no explicit CHECKPOINT).
-// On restart bootstrap_indexes_sync must re-mint the engine and respawn the
-// disk agent from pg_index alone, so post-restart email lookups stay correct.
+// Restart recovery of an on-disk index via bootstrap_indexes_sync over a clean shutdown: it
+// must re-mint the engine and respawn the disk agent from pg_index alone.
 TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_driven_bootstrap") {
     auto config = test_create_config(
         integration_fixture_path("test_persistence/index_recovery_phase4_catalog_driven_bootstrap"));
@@ -2635,8 +2475,6 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
             REQUIRE(cur->is_success());
         }
 
-        // Stable emails ("user_0@x" … "user_9@x") so post-restart lookups can
-        // probe both an existing and a missing value unambiguously.
         {
             auto session = otterbrix::session_id_t();
             std::stringstream q;
@@ -2673,17 +2511,12 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
         }
         REQUIRE(found);
 
-        // Functional witness: equality lookups on the indexed column return
-        // correct rows. "Index was used" isn't observable from SQL, so dir
-        // existence + correct results together stand in for it.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.users;", 10);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_0@x';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_5@x';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'user_9@x';", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.users WHERE email = 'missing@x';", 0);
 
-        // A fresh INSERT + lookup proves the rewired engine takes runtime
-        // writes, not just read-only replay.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
@@ -2695,16 +2528,8 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
     }
 }
 
-// SET TIMEZONE writes a 'TimeZone' row into the pg_settings system table, which
-// the disk agent persists like any other catalog table; on restart the dispatcher
-// refreshes its default_tz_cat_ from that row. pg_settings is not queryable via
-// SELECT (no SHOW / no pg_catalog read path is wired into the SQL pipeline), so
-// the persisted value cannot be asserted directly. Instead we assert indirectly:
-// phase 1 sets the timezone alongside real table data; phase 2 confirms the
-// catalog/WAL still recover cleanly after the SET (the table data survives) and a
-// fresh SET TIMEZONE applies post-restart. Limitation: this characterizes that the
-// SET TIMEZONE write does not corrupt persistence and the path stays usable across
-// restart; the exact stored value is not observable from SQL.
+// SET TIMEZONE persists via pg_settings, refreshed into default_tz_cat_ on restart; not
+// queryable via SELECT, so this only characterizes that the write survives restart and stays usable.
 TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
     auto config = test_create_config(integration_fixture_path("test_persistence/set_timezone_survives_restart"));
     test_clear_directory(config);
@@ -2749,14 +2574,10 @@ TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // The SET TIMEZONE row in pg_settings did not corrupt catalog/WAL recovery:
-        // user table data survives the restart intact.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 3);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 1;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 3;", 1);
 
-        // The SET TIMEZONE path remains usable after restart: a fresh valid SET
-        // applies, and an unknown timezone is still rejected.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SET TIMEZONE TO 'Europe/London';");
@@ -2770,14 +2591,8 @@ TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
     }
 }
 
-// An indexed disk table whose rows are DELETE'd > 30% in a committed txn, then
-// CHECKPOINT'd, must survive a restart with index-path queries still exact.
-// Commit-path compaction is GATED for indexed tables (tables_without_indexes),
-// so the commit itself does NOT shift ids — but the result set must already be
-// correct (deleted rows invisible via the live index). The CHECKPOINT
-// repopulates the on-disk index against compacted ids, and on restart bootstrap
-// repopulate (txn_id=0) + the replay gate must reconstruct a consistent, visible
-// index.
+// Commit-path compaction is GATED for indexed tables, so a commit doesn't shift ids, but the
+// live index must already hide deleted rows; CHECKPOINT then repopulates the on-disk index.
 TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_restart") {
     auto config =
         test_create_config(integration_fixture_path("test_persistence/indexed_table_compact_survives_restart"));
@@ -2806,7 +2621,6 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
             REQUIRE(cur->is_success());
         }
 
-        // INSERT 100 rows, count = 0..99, inside an explicit txn that commits.
         {
             auto session = otterbrix::session_id_t();
             std::stringstream q;
@@ -2819,9 +2633,6 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
             REQUIRE(cur->size() == 100);
         }
 
-        // DELETE > 30% (count < 40 → 40 rows) in a committed statement; the
-        // commit-path compact is gated for this indexed table, but the live
-        // index must already hide the deleted rows.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 40;");
@@ -2829,14 +2640,12 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
             REQUIRE(cur->size() == 40);
         }
 
-        // Correct results even though commit-path compact is gated.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 60);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 0);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 39;", 0);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 40;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
 
-        // CHECKPOINT compacts ids and repopulates the on-disk index.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "CHECKPOINT;");
@@ -2850,10 +2659,8 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
         auto* dispatcher = space.dispatcher();
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 60);
-        // Deleted values stay gone through the rebuilt index.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 0);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 39;", 0);
-        // Surviving values resolve to exactly their one row (no stale id hit).
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 40;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 70;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 1);
@@ -2861,9 +2668,8 @@ TEST_CASE("integration::cpp::test_persistence::indexed_table_compact_survives_re
     }
 }
 
-// Regression guard for the SSB "4ms / 0 rows" bug: with disk+wal OFF, pg_class still
-// persists unconditionally and user tables stay disk-backed, so phase-1 rows survive the
-// reopen. Guards against storage_append silently no-opping against a catalog-only table.
+// Regression guard for the SSB "4ms / 0 rows" bug: with disk+wal OFF, pg_class still persists
+// unconditionally, so phase-1 rows must survive reopen (storage_append must not silently no-op).
 TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
     auto config = test_create_config(integration_fixture_path("test_persistence/reopen_in_memory_reinsert"));
     config.wal.on = false;
@@ -2904,8 +2710,6 @@ TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // Mirrors the benchmark runner: catalog already knows the table (no-op DDL), but
-        // the storage shell must exist for the inserts to land.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
@@ -2926,17 +2730,14 @@ TEST_CASE("integration::cpp::test_persistence::reopen_reinsert_visible") {
             REQUIRE(cur->size() == 100);
         }
 
-        // With the bug this returns 100 (only phase-1 rows survive); union of both phases
-        // is 200, each count value now matching two rows (row_N and reopen_N).
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", 200);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 0;", 2);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection WHERE count = 99;", 2);
     }
 }
 
-// Disk is the ONLY storage mode: a plain CREATE TABLE (no WITH clause, no opt-in) produces a
-// .otbx under ${db_oid}/${table_oid}/ with relstoragemode == 'd', and create -> insert ->
-// restart -> read back round-trips end to end through SQL.
+// Disk is the ONLY storage mode: a plain CREATE TABLE (no opt-in) produces a .otbx with
+// relstoragemode == 'd', round-tripping create -> insert -> restart -> read back.
 TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
     auto config = test_create_config(integration_fixture_path("test_persistence/b1a_disk_default"));
     test_clear_directory(config);
@@ -2960,15 +2761,8 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
             REQUIRE(cur->is_success());
         }
 
-        // Gate 1: .otbx exists at ${namespace_oid}/${table_oid}/, both user oids
-        // (>= FIRST_USER_OID). relstoragemode=='d' is asserted separately at the write site
-        // (catalog::ddl::create_table_writes_relstoragemode_disk_always) because
-        // `SELECT oid FROM pg_class` fails with "path: 'oid' was not found" -- MEASURED two
-        // independent causes: (1) nothing seeds pg_class/pg_attribute rows describing
-        // pg_class/pg_attribute/pg_type themselves, so operator_resolve_table_t's
-        // scan-by-relname can't tell a system table from a typo (qualified
-        // pg_catalog.pg_class fails too); (2) an UNQUALIFIED name loses its table schema at
-        // validation regardless of table (reproduces on a plain user table too).
+        // relstoragemode=='d' is asserted separately since `SELECT oid FROM pg_class` fails --
+        // MEASURED two causes: no seeded pg_class rows to resolve by name, and unqualified names losing schema.
         {
             auto numeric_oid = [](const std::filesystem::path& dir) -> unsigned long {
                 const auto name = dir.filename().string();
@@ -3016,12 +2810,9 @@ TEST_CASE("integration::cpp::test_persistence::b1a_disk_is_default") {
     }
 }
 
-// A checkpoint truncates the WAL by deleting segments at/below the floor checkpoint_all
-// reports; the restart replays what's left. Two failure directions, both wrong row counts:
-// floor too far deletes un-checkpointed rows (FEWER); a segment already folded into table.otbx
-// survives and replays again (MORE). Truncation only happens on the SECOND checkpoint (floor =
-// min(prev_checkpoint_wal_id), 0 until a round supersedes a root); max_segment_size is
-// deliberately small so segments actually retire.
+// A checkpoint truncates the WAL at/below the floor checkpoint_all reports; too far deletes
+// un-checkpointed rows, too little replays a folded segment again. Truncation starts on the
+// SECOND checkpoint; max_segment_size is deliberately small so segments actually retire.
 TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_replay") {
     auto config = test_create_config(integration_fixture_path("test_persistence/wal_truncate_no_double_replay"));
     test_clear_directory(config);
@@ -3082,7 +2873,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_re
 
         insert_range(0, kBeforeCheckpoint);
 
-        // Checkpoint #1: prev_checkpoint_wal_id is still 0, floor is 0, nothing truncated.
         {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
@@ -3093,7 +2883,6 @@ TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_re
         segments_before_truncate = count_wal_segments();
         REQUIRE(segments_before_truncate > 1);
 
-        // Checkpoint #2: floor is now checkpoint #1's wal id; segments below it are removed.
         {
             auto session = otterbrix::session_id_t();
             REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
@@ -3113,14 +2902,11 @@ TEST_CASE("integration::cpp::test_persistence::wal_truncate_restart_no_double_re
         auto* dispatcher = space.dispatcher();
 
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection;", kBeforeCheckpoint + kAfterCheckpoint);
-        // One row per key: a replayed-twice segment shows up here as 2.
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection WHERE count = 0;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection WHERE count = 199;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection WHERE count = 200;", 1);
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.TruncCollection WHERE count = 399;", 1);
 
-        // Write past the truncation point without checkpointing: these rows live only in the
-        // segments that survived, so the next restart has to replay them.
         {
             auto session = otterbrix::session_id_t();
             std::stringstream query;

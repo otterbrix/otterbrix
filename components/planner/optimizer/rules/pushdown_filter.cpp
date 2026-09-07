@@ -31,9 +31,7 @@ namespace components::planner::optimizer {
         using namespace components::expressions;
         using namespace components::logical_plan;
 
-        // db identity of a node.
-        // match_t and aggregate_t carry a table name;
-        // joins, functions and sub-aggregates return empty identifiers
+        // db identity of a node: match_t/aggregate_t carry a table name, everything else is empty.
         std::pair<core::dbname_t, core::relname_t> node_cfn(const node_ptr& n) {
             if (!n) {
                 return {core::dbname_t{}, core::relname_t{}};
@@ -52,12 +50,7 @@ namespace components::planner::optimizer {
             }
         }
 
-        // The ONE traversal of an expression's referenced column keys: compare
-        // operands (recursing through union connectives and nested expressions),
-        // scalar / aggregate params, sort keys and function args. Every collector
-        // below rides it, so the key set that NAMES a conjunct's columns, the set
-        // that CLASSIFIES its side and the set that gets RE-LOCALIZED are identical
-        // by construction. Fn is invoked as fn(key_t&) for every referenced key.
+        // Single traversal ridden by every collector below, so their key sets stay identical by construction.
         template<typename Fn>
         void for_each_referenced_key(const expression_ptr& expr, Fn&& fn);
 
@@ -128,22 +121,8 @@ namespace components::planner::optimizer {
             return result;
         }
 
-        // --- side classification by the validator's stamped merged path -----------
-        //
-        // A join's WHERE keys are stamped by validate_schema against the join's MERGED
-        // schema: a left-child column sits in the merged prefix [0, left_width), a
-        // right-child column in [left_width, left_width + right_width). So path()[0]
-        // alone tells which side a column belongs to — the SAME range test
-        // promote_cross_join uses. side() cannot be used: the validator stamps
-        // side=left on EVERY unqualified join-WHERE key (it resolves them against the
-        // merged schema), so an unqualified right-side column carries side=left with a
-        // right-range path. Correctness of the range test rests on the validator
-        // rejecting genuinely ambiguous duplicate bare names, so a resolvable name maps
-        // to exactly one merged column (validate_logical_plan.cpp).
-        //
-        // Gathers the merged path root of every key the conjunct references — the
-        // same key set collect_referenced_columns names (both ride
-        // for_each_referenced_key); a key lacking a stamped path flips has_unstamped.
+        // side() can't classify a join-WHERE key: validate_schema stamps side=left on every unqualified
+        // key, so an unqualified right-side column can carry side=left with a right-range path()[0].
         void collect_referenced_path_roots(const expression_ptr& expr,
                                            std::vector<size_t>& roots,
                                            bool& has_key,
@@ -165,14 +144,7 @@ namespace components::planner::optimizer {
             unclassified
         };
 
-        // Classify a single-table conjunct to a join side. Primary: the validator's
-        // stamped merged path roots (path()[0] < left_width => left child, else right).
-        // This routes a conjunct whose bare column name ALSO exists on the other side
-        // (e.g. t1.id when t2 also has id) — the name-based test below cannot, because
-        // the name is a subset of BOTH sides' alias sets, so it always fell to residual.
-        // An unvalidated plan (no path, or left_width unknown) is a second sanctioned shape, not a degraded
-        // one — it falls to the alias-subset test below. A conjunct referencing both sides (or no column)
-        // is unclassified => residual.
+        // Primary path handles a bare column name that also exists on the OTHER side (e.g. t1.id vs t2.id).
         conj_side classify_conjunct(const expression_ptr& conj,
                                     size_t left_width,
                                     bool left_width_known,
@@ -202,8 +174,7 @@ namespace components::planner::optimizer {
                 return conj_side::unclassified; // straddles both sides
             }
 
-            // Name-based classification — the sanctioned path for plans validate_schema
-            // has not stamped (their keys carry no merged paths to read).
+            // Fallback for plans validate_schema has not stamped.
             auto cols = collect_referenced_columns(conj);
             bool in_left = !cols.empty() && std::includes(left_cols.begin(), left_cols.end(), cols.begin(), cols.end());
             bool in_right =
@@ -217,18 +188,8 @@ namespace components::planner::optimizer {
             return conj_side::unclassified;
         }
 
-        // Re-localize a conjunct's column keys from the join's MERGED coordinate space
-        // to the right child's LOCAL space when a right-side single-table filter is
-        // pushed below the join. A key's merged path()[0] equals its local index only
-        // for the left prefix ([0, left_width)); a right-side column sits at
-        // left_width + local, so pushing it into the right child unchanged leaves an
-        // out-of-range column index. Subtract left_width from the leading path element
-        // (deeper elements index nested struct fields and stay put). Built on k.resource() — never
-        // set_path({...}) (defaults to the process arena) and never another arena either: set_path
-        // move-assigns, and pmr move-assignment keeps the TARGET's allocator, so a path built elsewhere
-        // would just be element-wise copied in and the original thrown away.
-        // The left bucket needs no rewrite (merged == local there) and the
-        // residual keeps its merged paths (it evaluates over the join's merged output).
+        // Subtracts left_width from the leading path element only (deeper elements are nested struct
+        // fields). Build the new path on k.resource(): set_path move-assigns and keeps the TARGET's allocator.
         void relocalize_key_path(key_t& k, size_t left_width) {
             const auto& old_path = k.path();
             if (old_path.empty()) {
@@ -243,27 +204,11 @@ namespace components::planner::optimizer {
             k.set_path(std::move(p));
         }
 
-        // Re-localizes every key the pushed conjunct references — the same key set
-        // the side classifier saw (both ride for_each_referenced_key), so every
-        // right-side key is rewritten.
         void relocalize_keys(const expression_ptr& expr, size_t left_width) {
             for_each_referenced_key(expr, [&](key_t& k) { relocalize_key_path(k, left_width); });
         }
 
-        // --- identity-projection resolution ----------------------------------------
-        //
-        // Both pushdown paths that route a filter THROUGH a projection (the
-        // identity-select consumer branch and the CTE-body prefix test below) share
-        // this single resolver of "is this output column an identity projection".
-        //
-        // Probe one visible projection output against a filter column `col`:
-        //   name_match — the output is a get_field NAMED col;
-        //   source     — non-null iff that output is an IDENTITY of col: its
-        //                base-source key (the sole key param when renamed /
-        //                explicit, else the expression key itself) carries the
-        //                SAME name. validate_schema stamped the source key's
-        //                path()[0] to the incoming column index.
-        // A name-matching but computed/renamed output yields {true, nullptr}.
+        // source is nullptr for a name-matching but computed/renamed (non-identity) output.
         struct identity_probe_t {
             bool name_match;
             const key_t* source;
@@ -305,10 +250,6 @@ namespace components::planner::optimizer {
                     if (expr->group() != expression_group::scalar) {
                         return false;
                     }
-                    // A name-matching but non-identity output is skipped: a later
-                    // output may still expose `col` identically (position is
-                    // irrelevant here — the filter evaluates by NAME above the
-                    // projection).
                     auto probe = probe_identity_output(static_cast<const scalar_expression_t*>(expr.get()), col);
                     if (probe.source != nullptr) {
                         ok_for_col = true;
@@ -322,32 +263,8 @@ namespace components::planner::optimizer {
             return true;
         }
 
-        // --- push a WHERE into an inlined single-table sub-plan / CTE body ---------
-        //
-        // A non-recursive CTE reference (and a plain FROM-subquery) is INLINED by the
-        // SQL transformer as a source aggregate BOUND TO ITS BASE TABLE
-        // (table_oid() != INVALID_OID) whose pipeline stages (select / sort / its own
-        // WHERE) sit at children[0..] with the scan IMPLICIT in the aggregate identity
-        // — there is NO separate data child at index 0. The generic aggregate-source
-        // branch handles only the OTHER shape (a sub-query over an in-memory data /
-        // non-scan child at index 0, pipeline at [1..]); its loops start at i=1 and
-        // miss this one. create_plan_aggregate lowers a table-scan aggregate on the
-        // canonical `base -> match -> group -> sort -> select` chain, so a match child
-        // of the body aggregate lands AT the base scan (a full_scan predicate = disk
-        // pushdown + column pruning) — exactly the goal.
-        //
-        // A pushed conjunct's keys keep their paths, stamped in the body's OUTPUT
-        // coordinates. Predicate evaluation reads columns BY PATH INDEX against the
-        // BASE scan chunk (predicates::create_value_getter -> chunk.at(path)), so the
-        // push is sound ONLY when a referenced column's body-output ordinal already
-        // equals its base column index — a LEADING-PREFIX IDENTITY projection like
-        // `SELECT a, b FROM t(a,b,c)`. A reorder (`SELECT b, a`) or rename (`a AS x`)
-        // fails this test and the conjunct stays above the body (residual). `SELECT *`
-        // (no projection) is trivially prefix-identity: the body output IS the base
-        // scan in base order.
-        //
-        // `sel` is the body's projection. Returns true iff EVERY column in `cols` is a
-        // position-preserving identity output of `sel`.
+        // Predicate evaluation reads columns by PATH INDEX against the base scan chunk, so a push is sound
+        // only when a column's body-output ordinal equals its base index (`SELECT a,b FROM t(a,b,c)`).
         bool select_prefix_identity_for(const node_select_t& sel, const std::set<std::string>& cols) {
             const auto& exprs = sel.expressions();
             const size_t hidden = sel.internal_aggregate_count;
@@ -366,10 +283,7 @@ namespace components::planner::optimizer {
                     if (!probe.name_match) {
                         continue; // output at position p is not this column
                     }
-                    // The FIRST name match decides. Position-preserving iff the
-                    // stamped base column index equals the output ordinal p; a
-                    // computed / renamed output (no source) or an unstamped (empty)
-                    // path cannot be proven safe -> not identity.
+                    // The first name match decides, and is identity only if its stamped path equals p.
                     if (probe.source != nullptr && probe.source->path().size() == 1 && probe.source->path()[0] == p) {
                         ok = true;
                     }
@@ -386,20 +300,10 @@ namespace components::planner::optimizer {
             if (!node) {
                 return;
             }
-            // Single canonical source: a node's own validate_schema-stamped
-            // output_types() carries its VISIBLE column names (aliases) — this is the
-            // set a predicate above the node references, and it is stamped for disk
-            // scans (aggregate_t{db,rel}), in-memory data_t, subquery and join nodes
-            // alike. Read it directly. Only when a node is UNstamped (an
-            // optimizer-synthesized wrapper — e.g. the aggregate this rule's own join
-            // branch appends) do we recurse into its children to the first stamped
-            // node. Never recurse straight to a leaf: a renamed side (`… AS x`) carries
-            // the pre-rename name at the leaf, which would mis-bucket a predicate on `x`.
+            // Never recurse straight to a leaf — a renamed side (`… AS x`) carries the pre-rename name.
             if (node->has_output_types()) {
                 for (const auto& t : node->output_types()) {
-                    // A projected constant is stamped alias-less (no type extension);
-                    // complex_logical_type::alias() asserts on that, so guard with
-                    // has_alias(). Such a column can never match a predicate name.
+                    // alias() asserts on an alias-less (projected-constant) column; guard with has_alias().
                     if (t.has_alias()) {
                         cols.insert(t.alias());
                     }
@@ -428,8 +332,7 @@ namespace components::planner::optimizer {
             return nullptr;
         }
 
-        // nullopt = no data node in the subtree
-        // otherwise = the summed byte width of all columns.
+        // nullopt when no data node is in the subtree; otherwise the summed byte width of all columns.
         std::optional<size_t> estimate_row_width(const node_ptr& node) {
             const node_data_t* data = find_data_node(node);
             if (!data) {
@@ -442,8 +345,7 @@ namespace components::planner::optimizer {
             return width;
         }
 
-        // nullopt = width can't be estimated (computed/constant column)
-        // otherwise = summed width.
+        // nullopt when the width can't be estimated (computed/constant column); otherwise summed width.
         std::optional<size_t> estimate_projection_width(const node_select_t& sel, const node_ptr& subtree) {
             const node_data_t* data = find_data_node(subtree);
             if (!data) {
@@ -469,7 +371,6 @@ namespace components::planner::optimizer {
                 const std::string out_name = sc->key().as_string();
                 bool found = false;
                 for (const auto& t : types) {
-                    // alias() asserts on an alias-less (extension-free) column type.
                     if (t.has_alias() && t.alias() == out_name) {
                         width += type_width(t);
                         found = true;
@@ -483,23 +384,8 @@ namespace components::planner::optimizer {
             return width;
         }
 
-        // --- transitive equi-predicate propagation --------------------------------
-        //
-        // Given an equi-join `... ON a.x = b.y` and a WHERE predicate on ONE of the
-        // join-key columns, the SAME predicate holds on the equality partner: on a
-        // matched row a.x == b.y, so `a.x OP c` <=> `b.y OP c`. Synthesizing the
-        // partner predicate here (BEFORE bucketing) lets the existing merged-path
-        // bucketer route it to the OTHER side's scan (the classic star-schema win: a
-        // literal on the fact join key reaches every joined dimension).
-        //
-        // Soundness rests on INNER/CROSS-only: on a null-padded outer side a preserved
-        // row has partner == NULL, so `partner OP c` would wrongly drop it — the caller
-        // gates the whole derivation on the join being inner/cross.
-
-        // Only these comparison ops transport across an equality. IS NULL / IS NOT NULL
-        // (excluded — they do not transport through `=`), LIKE/regex, ANY/ALL and the
-        // union connectives are all rejected: they are not simple key-vs-const
-        // predicates or do not preserve under substitution of an equal value.
+        // A WHERE predicate on one equi-join key also holds on its partner — sound only for INNER/CROSS
+        // (a null-padded outer row's partner is NULL, so deriving `partner OP c` would wrongly drop it).
         bool is_transportable_compare(compare_type t) {
             switch (t) {
                 case compare_type::eq:
@@ -514,15 +400,7 @@ namespace components::planner::optimizer {
             }
         }
 
-        // An equi-join key pair carried on the join ON condition. The ON keys are
-        // stamped SIDE-LOCAL (validate_key resolves each against its own side's schema;
-        // promote_cross_join re-localizes the same way), so the left key's local index
-        // equals its MERGED index (the left child spans the merged prefix) and the
-        // right key's merged index is left_width + its local index. We keep each side's
-        // full key (name + side + local path) so a synthesized partner predicate NAMES
-        // the partner column and rides the existing merged-path bucketer + relocalizer
-        // unchanged: a right partner is stamped at its merged index and relocalize_keys
-        // later subtracts left_width back to the right-local index.
+        // ON keys are stamped SIDE-LOCAL: the right key's merged index is left_width + its local index.
         struct equi_pair_t {
             key_t left_key;
             key_t right_key;
@@ -530,15 +408,7 @@ namespace components::planner::optimizer {
             size_t right_merged;
         };
 
-        // Extract an equi-pair from one ON conjunct `eq(key, key)` with both operands a
-        // single top-level column on opposite sides. Mirrors hash_join's
-        // detect_equi_columns (side-local paths + side()), returning the pair in the
-        // join's merged coordinate space. nullopt for anything else (non-eq, const
-        // operand, nested-field path, same-side).
-        //
-        // `resource` is the rule's own arena (outlives the `pairs` vector these are moved into). Named, not
-        // defaulted: key_t's copy constructor keeps standard pmr semantics (an un-placed copy lands on the
-        // process default), so a copy must say which arena explicitly to keep the rule's allocations traceable.
+        // `resource` is explicit because key_t's plain copy ctor lands an un-placed copy on the process default.
         std::optional<equi_pair_t>
         equi_pair_from_conjunct(std::pmr::memory_resource* resource, const expression_ptr& on_conj, size_t left_width) {
             if (!on_conj || on_conj->group() != expression_group::compare) {
@@ -573,9 +443,7 @@ namespace components::planner::optimizer {
             return pairs;
         }
 
-        // A WHERE conjunct of the transportable shape `key OP param` / `param OP key`,
-        // where key is a single top-level column and the other operand a bound
-        // parameter. `col` points into the conjunct (valid while it lives).
+        // `col` points into the conjunct (valid while it lives).
         struct key_const_conj_t {
             const key_t* col;
             core::parameter_id_t param;
@@ -608,8 +476,7 @@ namespace components::planner::optimizer {
             return std::nullopt;
         }
 
-        // Does the conjunct set already assert `<merged column> OP param`? Used to
-        // suppress a duplicate derivation (the partner filter was written explicitly).
+        // Suppresses a duplicate derivation when the partner filter was written explicitly.
         bool conjunct_set_has(const std::pmr::vector<expression_ptr>& conjuncts,
                               size_t merged_idx,
                               compare_type op,
@@ -623,9 +490,7 @@ namespace components::planner::optimizer {
             return false;
         }
 
-        // One pass (no fixpoint) over the ORIGINAL WHERE conjuncts: for each
-        // transportable `key OP param` whose key is an equi-pair column, synthesize the
-        // same predicate on the partner column (in merged coordinates) and append it.
+        // One pass (no fixpoint) over the original WHERE conjuncts.
         void derive_transitive_conjuncts(std::pmr::memory_resource* resource,
                                          const std::pmr::vector<equi_pair_t>& pairs,
                                          std::pmr::vector<expression_ptr>& conjuncts) {
@@ -659,20 +524,9 @@ namespace components::planner::optimizer {
                         conjunct_set_has(derived, partner_merged, kc->op, kc->param)) {
                         continue; // partner predicate already present — avoid duplicates
                     }
-                    // Copy the ON partner key (name + side) and stamp its MERGED path so
-                    // the existing bucketer routes it and relocalize_keys localizes it
-                    // below the partner scan. Reuse the SAME parameter (no value clone).
-                    // key_t's plain copy ctor keeps standard pmr semantics and would land an un-placed copy on
-                    // the process default, untracked; the allocator-extended ctor places it on `resource` (the
-                    // arena the caller handed the rule) instead.
-                    key_t partner{*partner_on_key, resource};
-                    // partner.resource() (== resource, now that partner is placed there), not `resource`
-                    // directly: set_path move-assigns into partner's path_, and pmr move-assignment keeps the
-                    // TARGET's allocator, so building on any other arena would degrade to an element-wise copy.
-                    //
-                    // Placing partner does not extend to the derived predicate's key: make_compare_expression
-                    // copies it twice more, un-placed. Verified this rule contributes zero extra allocation in
+                    // Built on partner.resource(), never a plain copy. Verified zero extra allocation in
                     // test_pushdown_key_arena.cpp ("derivation_allocates_on_the_named_arena").
+                    key_t partner{*partner_on_key, resource};
                     std::pmr::vector<size_t> p{partner.resource()};
                     p.push_back(partner_merged);
                     partner.set_path(std::move(p));
@@ -683,16 +537,8 @@ namespace components::planner::optimizer {
             conjuncts.insert(conjuncts.end(), derived.begin(), derived.end());
         }
 
-        // A consumer aggregate whose WHERE was fully pushed down may be collapsed
-        // into its sole remaining child ONLY when the node itself carries no
-        // semantics of its own. node_aggregate_t payload that would be silently
-        // dropped by a collapse: the DISTINCT / DISTINCT ON dedup lives on the
-        // aggregate node (not on any child), result_alias names a FROM-subquery's
-        // output, and projected_cols is a scan-projection annotation (column_pruning
-        // runs after this rule, so it is normally empty here — checked anyway).
-        // read_cap is likewise stamped only by the later pushdown_limit rule.
-        // Pipeline stages (group/sort/select/limit children) keep the node at
-        // children().size() > 1, which every collapse site already checks.
+        // Collapsing would drop payload living only on the aggregate node (DISTINCT/result_alias);
+        // read_cap is skipped — it is stamped only by the later pushdown_limit rule.
         bool aggregate_is_passthrough(const node_aggregate_t& agg) {
             return !agg.is_distinct() && agg.distinct_on_keys().empty() && agg.result_alias().empty() &&
                    agg.projected_cols().empty();
@@ -716,7 +562,7 @@ namespace components::planner::optimizer {
             }
 
             auto* agg = static_cast<node_aggregate_t*>(node.get());
-            // child[0] = data source, child[1..] = pipeline operations; <2 means nothing to rewrite.
+            // child[0] = data source, child[1..] = pipeline operations.
             if (agg->children().size() < 2) {
                 return node;
             }
@@ -738,22 +584,10 @@ namespace components::planner::optimizer {
                 }
             }
 
-            // Only a match child is required to attempt a push. A group_t/sort_t above
-            // the join no longer bails: pushing a single-table filter below the join
-            // under GROUP BY/ORDER BY + a projection is now driven end-to-end. That
-            // shape wraps the join's probe child in a streaming filter over its scan
-            // source (a 2-operator sub-plan); the executor's streaming driver
-            // (executor.cpp execute_pipeline) was taught to treat the TOPMOST executed
-            // operator — not a contiguous bottom prefix — as the materialized sub-plan
-            // boundary, so the filtered probe rows now reach the group/sort instead of
-            // the drained scan source being re-driven to 0 rows (repro:
-            // test_batch_execution "join + WHERE with UDF batch predicate",
-            // test_column_projection "inner JOIN + GROUP BY with WHERE on non-select
-            // column").
-            //
-            // The aggregate-SOURCE branch below keeps its original !group_child &&
-            // !sort_child guard: only the join-source branch is validated under
-            // grouping/sort here.
+            // A group_t/sort_t above the join does not block the push: execute_pipeline treats the TOPMOST
+            // executed operator as the materialized sub-plan boundary (repro: test_batch_execution "join +
+            // WHERE with UDF batch predicate", test_column_projection "inner JOIN + GROUP BY with WHERE on
+            // non-select column").
             if (!match_child) {
                 return node;
             }
@@ -798,7 +632,7 @@ namespace components::planner::optimizer {
                         if (filter_supported_through_identity_select(*src_select, filter_cols, input_cols)) {
                             auto width_full = estimate_row_width(source_agg->children()[0]);
                             auto width_proj = estimate_projection_width(*src_select, source_agg->children()[0]);
-                            // Veto only if both widths are known and the projection is strictly narrower than its input.
+                            // Veto only if both widths are known and the projection is narrower.
                             bool cost_ok = !width_full || !width_proj || *width_full <= *width_proj;
                             if (cost_ok) {
                                 source_agg->append_child(match_child);
@@ -889,44 +723,25 @@ namespace components::planner::optimizer {
 
             if (source->type() == node_type::join_t) {
                 auto* join = static_cast<node_join_t*>(source.get());
-                // a join is binary: child[0] = left input, child[1] = right input.
                 if (join->children().size() >= 2 && !match_child->expressions().empty()) {
                     std::set<std::string> left_cols, right_cols;
                     collect_subtree_columns(join->children()[0], left_cols);
                     collect_subtree_columns(join->children()[1], right_cols);
 
-                    // Width of the left child's output = the merged prefix that the left
-                    // columns occupy. A right-side column's merged path()[0] is
-                    // left_width + its local index, so pushing a right-side filter into
-                    // the right child requires subtracting left_width (relocalize_keys).
-                    // Read it from the child's stamped output_types() — reliable for a
-                    // validator-stamped scan/cross join AND a promoted inner join (which
-                    // promote_cross_join now stamps). MUST be captured BEFORE the left
-                    // bucket wraps children()[0] in an unstamped aggregate below.
+                    // Must be captured BEFORE the left bucket wraps children()[0] in an unstamped aggregate.
                     const bool left_width_known = join->children()[0]->has_output_types();
                     const size_t left_width = left_width_known ? join->children()[0]->output_types().size() : 0;
 
-                    // Only push below a row-preserving side of an outer join
-                    // Left preserves left, right preserves right, full preserves none, inner/cross preserve both.
+                    // Only push below a row-preserving side (full preserves neither).
                     const auto jt = join->type();
                     const bool can_push_left =
                         jt == join_type::inner || jt == join_type::cross || jt == join_type::left;
-                    // A right-side push also needs a known left_width to re-localize the
-                    // conjunct; without it, keep the conjunct in the residual (safe
-                    // no-op) rather than push an out-of-range merged path.
                     const bool can_push_right =
                         (jt == join_type::inner || jt == join_type::cross || jt == join_type::right) &&
                         left_width_known;
 
                     auto conjuncts = split_conjuncts(resource, match_child->expressions()[0]);
 
-                    // Transitive equi-predicate propagation. INNER/CROSS only: on a
-                    // null-padded outer side the partner is NULL, so deriving a partner
-                    // predicate would wrongly drop preserved rows. Needs a known
-                    // left_width to place the partner in merged coordinates (and to
-                    // interpret the side-local ON right-key path). Synthesized conjuncts
-                    // are appended to `conjuncts` so the bucketing below routes each to
-                    // its partner side exactly like an explicit single-table filter.
                     if ((jt == join_type::inner || jt == join_type::cross) && left_width_known &&
                         !join->expressions().empty()) {
                         auto pairs = collect_equi_pairs(resource, join->expressions().front(), left_width);
@@ -935,11 +750,6 @@ namespace components::planner::optimizer {
 
                     std::pmr::vector<expression_ptr> left_bucket{resource}, right_bucket{resource}, residual{resource};
                     for (const auto& conj : conjuncts) {
-                        // Classify by the validator's stamped merged path (side-based),
-                        // falling back to alias names only when the plan is unvalidated.
-                        // The row-preserving outer-join guard (can_push_left /
-                        // can_push_right) is applied UNCHANGED on top of the result, so a
-                        // filter on a null-padded side still stays in the residual.
                         conj_side cs = classify_conjunct(conj, left_width, left_width_known, left_cols, right_cols);
                         if (cs == conj_side::left_side && can_push_left) {
                             left_bucket.push_back(conj);
@@ -962,14 +772,7 @@ namespace components::planner::optimizer {
                         }
                         if (!right_bucket.empty()) {
                             auto [r_db, r_rel] = node_cfn(join->children()[1]);
-                            // Re-localize each pushed right-side conjunct from the join's
-                            // merged coordinates to the right child's local space (subtract
-                            // left_width). Each conjunct lands in exactly one bucket, so the
-                            // right-bucket entries are not shared with the residual or the
-                            // left bucket — mutating their keys in place is safe. The nested
-                            // recursion below re-applies this at each deeper level with that
-                            // level's own left_width, so a deep left-then-right push
-                            // localizes step by step.
+                            // Each conjunct lands in exactly one bucket, so mutating keys in place is safe.
                             for (const auto& conj : right_bucket) {
                                 relocalize_keys(conj, left_width);
                             }
@@ -981,16 +784,7 @@ namespace components::planner::optimizer {
                         }
                         auto residual_expr = rebuild_conjunction(resource, residual);
                         if (!residual_expr) {
-                            // All conjuncts pushed below the join → the match is empty.
-                            // Drop ONLY the (now-empty) match child, NOT the enclosing
-                            // aggregate: returning `source` here would discard node's
-                            // group_t/sort_t — reachable now that the group/sort bail
-                            // was lifted for this join branch (e.g. SSB
-                            // `SUM(...) ... GROUP BY ... ORDER BY` whose WHERE, after
-                            // promote moved the equi onto the join ON, is entirely
-                            // single-table filters). Preserve the aggregate; recurse
-                            // into the pushed join. The match sits at index >= 1, the
-                            // join at index 0, so erasing it does not shift index 0.
+                            // Drop only the match child: returning `source` would discard group_t/sort_t.
                             auto& agg_children = node->children();
                             for (size_t i = 0; i < agg_children.size(); ++i) {
                                 if (agg_children[i] == match_child) {
@@ -999,15 +793,7 @@ namespace components::planner::optimizer {
                                 }
                             }
                             auto pushed_source = pushdown_filter_impl(resource, source);
-                            // If the aggregate now wraps ONLY the join (its match was the
-                            // sole pipeline stage) AND carries no payload of its own
-                            // (DISTINCT/DISTINCT ON/result_alias live on the aggregate
-                            // node), it is a redundant pass-through — expose the pushed
-                            // join directly (the canonical minimal plan the unit tests
-                            // assert). Keep the aggregate when a group_t/sort_t (or other
-                            // pipeline stage) still needs it (the SSB SUM/GROUP BY/ORDER
-                            // BY case, which then keeps its residual) or when it carries
-                            // a dedup/naming payload a collapse would silently drop.
+                            // See aggregate_is_passthrough for what a collapse here would drop.
                             if (node->children().size() == 1 && aggregate_is_passthrough(*agg)) {
                                 return pushed_source;
                             }
@@ -1022,35 +808,14 @@ namespace components::planner::optimizer {
             }
 
             if (source->type() == node_type::union_t) {
-                // Push the WHERE below a UNION / UNION ALL by cloning it above EACH branch.
-                // A union is N-ary (>= 2 branch subplans). Both set-op kinds are safe
-                // targets: UNION ALL is pure duplication; plain UNION dedups ABOVE the
-                // union, so a row survives the outer filter iff it survived the same
-                // filter inside its branch — pushing the identical predicate into every
-                // branch preserves both membership and the dedup result.
-                //
-                // Union output columns are POSITIONAL: output column i is branch column i
-                // (validate_schema derives the union schema from the LEFT branch, and the
-                // set operation aligns operands by position). The match keys above the
-                // union reference the union output columns by NAME; map each name to its
-                // union output position, then require EVERY branch to expose the SAME name
-                // at that SAME position (an identity mapping). When a branch reorders or
-                // renames a referenced position, a shared pushed predicate would target
-                // the wrong branch column — so that conjunct is NOT cleanly mappable and
-                // stays in the residual above the union (correct, just not pushed),
-                // mirroring the join branch's residual bucket. Each branch receives its
-                // OWN deep copy of the pushed conjuncts: the per-branch recursion mutates
-                // pushed keys in place (relocalize_keys rewrites a right-side key's path
-                // when the branch wraps a join), so sharing leaves across branches would
-                // leak one branch's re-localized paths into the next branch's filter.
+                // Sound for both set-op kinds (UNION ALL duplicates, UNION dedups above the union). Union
+                // columns are POSITIONAL, so a NAME-based match key is pushable only when every branch
+                // exposes it at that position; each branch gets its own deep copy (keys relocalize in place).
                 if (source->children().size() >= 2 && !match_child->expressions().empty() &&
                     source->has_output_types()) {
                     const auto& u_types = source->output_types();
 
-                    // name -> unique union output position (nullopt if absent or duplicated).
-                    // An alias-less output column (a projected constant carries no type
-                    // extension, and alias() asserts on that) can never match a WHERE
-                    // column name — skip it.
+                    // nullopt if absent or duplicated (ambiguous).
                     auto union_pos_of = [&](const std::string& name) -> std::optional<size_t> {
                         std::optional<size_t> found;
                         for (size_t i = 0; i < u_types.size(); ++i) {
@@ -1066,8 +831,6 @@ namespace components::planner::optimizer {
                         }
                         return found;
                     };
-                    // A branch exposes `name` identically iff its stamped output alias at
-                    // the union position equals `name` (alias-less => no match, guarded).
                     auto branch_identity = [](const node_ptr& branch, const std::string& name, size_t pos) {
                         if (!branch || !branch->has_output_types()) {
                             return false;
@@ -1104,17 +867,7 @@ namespace components::planner::optimizer {
                         auto filter_cols = collect_referenced_columns(rebuild_conjunction(resource, pushable));
                         for (auto& branch : source->children()) {
                             auto [b_db, b_rel] = node_cfn(branch);
-                            // Prefer pushing the predicate INTO the branch's own single-table
-                            // aggregate, directly below an IDENTITY projection, so it rides the
-                            // branch's disk scan (create_plan_match lowers a table-bound match
-                            // over a plain compare to a full_scan). Only safe when the branch is
-                            // a single-table aggregate whose projection maps each pushed column
-                            // identically (output name == input name): the match keys reference
-                            // the union output name, which then equals the scan's column name.
-                            // Otherwise (a renaming/computed projection, a join/nested-union
-                            // source, or a raw scan) wrap the branch in a filter aggregate — the
-                            // predicate is applied above the branch output (in-memory Filter),
-                            // still correct.
+                            // Prefer pushing below an identity projection so it rides the branch's disk scan.
                             node_select_t* branch_select = nullptr;
                             if (branch->type() == node_type::aggregate_t &&
                                 branch->table_oid() != components::catalog::INVALID_OID) {
@@ -1131,9 +884,6 @@ namespace components::planner::optimizer {
                                 branch_select != nullptr &&
                                 filter_supported_through_identity_select(*branch_select, filter_cols, branch_out);
 
-                            // Deep-copy the pushed conjuncts for THIS branch (see the
-                            // sharing rationale above): the recursion below may
-                            // relocalize the copy's keys in place.
                             std::pmr::vector<expression_ptr> branch_pushed{resource};
                             branch_pushed.reserve(pushable.size());
                             for (const auto& conj : pushable) {
@@ -1142,9 +892,7 @@ namespace components::planner::optimizer {
                             auto pushed_match =
                                 make_node_match(resource, b_db, b_rel, rebuild_conjunction(resource, branch_pushed));
                             if (push_below_projection) {
-                                // Inherit the branch's already-resolved table_oid so
-                                // create_plan_match binds the pushed match to the branch table
-                                // (enrich also re-stamps it from the copied (db, rel) — same oid).
+                                // Inherit the branch's table_oid so create_plan_match binds to that table.
                                 pushed_match->set_table_oid(branch->table_oid());
                                 static_cast<node_aggregate_t*>(branch.get())->append_child(pushed_match);
                                 branch = pushdown_filter_impl(resource, branch);
@@ -1157,13 +905,7 @@ namespace components::planner::optimizer {
                         }
                         auto residual_expr = rebuild_conjunction(resource, residual);
                         if (!residual_expr) {
-                            // Whole WHERE pushed into every branch → the outer match is empty.
-                            // Drop the (now-empty) match child. Keep the enclosing aggregate
-                            // if it still carries other pipeline stages (group/sort/select)
-                            // OR its own payload (DISTINCT/DISTINCT ON/result_alias — the
-                            // dedup lives on the aggregate node, so collapsing would drop
-                            // it); otherwise expose the pushed union directly (the minimal
-                            // plan), mirroring the join branch.
+                            // Mirrors the join branch above: collapse only when aggregate_is_passthrough holds.
                             auto& agg_children = node->children();
                             for (size_t i = 0; i < agg_children.size(); ++i) {
                                 if (agg_children[i] == match_child) {
@@ -1185,21 +927,8 @@ namespace components::planner::optimizer {
             return node;
         }
 
-        // --- predicate pushdown INTO an inlined single-table CTE / sub-query body ----
-        //
-        // Runs as its OWN pass, BEFORE pushdown_filter, on the ORIGINAL tree. Deliberately
-        // separate from pushdown_filter_impl: that rule, while pushing a filter below a
-        // JOIN, synthesizes `aggregate{ scan, match }` wrappers and recurses into them —
-        // and this logic would then fuse those join-branch matches into their scans,
-        // altering the join EXPLAIN shape (and destabilizing the join lowering). Running
-        // first sidesteps that entirely: at this point no join wrappers exist, and the
-        // only source shape targeted here (a table-scan aggregate: table_oid stamped,
-        // scan implicit, pipeline at children[0..]) is DISJOINT from the join / union /
-        // in-memory-subquery shapes pushdown_filter handles.
-        //
-        // See select_prefix_identity_for above for why only a LEADING-PREFIX IDENTITY
-        // projection is pushable (predicate reads columns by PATH INDEX against the base
-        // scan).
+        // Runs BEFORE pushdown_filter_impl: that rule synthesizes join wrappers this pass would otherwise
+        // fuse into their scans, altering the join EXPLAIN shape.
         node_ptr pushdown_cte_filter_impl(std::pmr::memory_resource* resource, node_ptr node) {
             if (!node) {
                 return node;
@@ -1230,20 +959,13 @@ namespace components::planner::optimizer {
             }
 
             auto source = agg->children()[0];
-            // Only an inlined single-table body: a table-scan aggregate (resolved oid, scan
-            // implicit). A recursive-CTE reference lowers to an empty-identity aggregate over a
-            // node_recursive_cte (no oid) and is therefore left untouched here.
+            // A recursive-CTE reference lowers to an empty-identity aggregate with no oid and is skipped.
             if (source->type() != node_type::aggregate_t || source->table_oid() == components::catalog::INVALID_OID) {
                 return node;
             }
             auto* body = static_cast<node_aggregate_t*>(source.get());
 
-            // LIMIT/OFFSET, GROUP BY, HAVING and DISTINCT are HARD stops: pushing a filter below
-            // a LIMIT changes which rows survive (`ORDER BY .. LIMIT` then WHERE != WHERE then
-            // LIMIT); below a GROUP/HAVING it would run pre-aggregation against post-aggregation
-            // columns; DISTINCT ON dedups below the projection. Be conservative — leave the body
-            // untouched (correct, just not pushed) when any is present. A bare SORT is fine: it is
-            // row-preserving and the pushed match lands below it (base -> match -> sort).
+            // LIMIT, GROUP BY, HAVING and DISTINCT are hard stops; a bare SORT is fine (row-preserving).
             node_ptr body_select = nullptr;
             node_ptr body_match = nullptr;
             bool body_blocked = body->is_distinct();
@@ -1269,12 +991,11 @@ namespace components::planner::optimizer {
             }
 
             auto* sel = body_select ? static_cast<node_select_t*>(body_select.get()) : nullptr;
-            // With no projection the body output IS the base scan in base order, so every base
-            // column is prefix-identity; take the base column set from the stamped output_types().
+            // With no projection the body output IS the base scan, so every column is prefix-identity.
             std::set<std::string> base_cols;
             if (!sel && source->has_output_types()) {
                 for (const auto& t : source->output_types()) {
-                    if (t.has_alias()) { // alias() asserts on an alias-less column type
+                    if (t.has_alias()) {
                         base_cols.insert(t.alias());
                     }
                 }
@@ -1298,15 +1019,12 @@ namespace components::planner::optimizer {
             auto [m_db, m_rel] = node_cfn(source);
             auto pushed_expr = rebuild_conjunction(resource, pushable);
             if (body_match) {
-                // create_plan_aggregate builds ONE match_op (the last match child wins), so MERGE
-                // into the body's own WHERE rather than adding a second match child.
+                // create_plan_aggregate builds ONE match_op, so merge rather than add a second match child.
                 auto existing = split_conjuncts(resource, body_match->expressions()[0]);
                 existing.push_back(pushed_expr);
                 body_match->expressions()[0] = rebuild_conjunction(resource, existing);
             } else {
                 auto pushed_match = make_node_match(resource, m_db, m_rel, pushed_expr);
-                // Inherit the body table's resolved oid so create_plan_match binds the pushed match
-                // to the base scan (a plain compare lowers to a full_scan predicate).
                 pushed_match->set_table_oid(source->table_oid());
                 body->append_child(pushed_match);
             }
@@ -1321,9 +1039,7 @@ namespace components::planner::optimizer {
                         break;
                     }
                 }
-                // A bare wrapper { body } is a redundant pass-through -> expose the body
-                // directly. The consumer's own payload (DISTINCT/DISTINCT ON/result_alias)
-                // lives on the aggregate node itself — never collapse it away.
+                // See aggregate_is_passthrough for what a collapse here would drop.
                 if (node->children().size() == 1 && aggregate_is_passthrough(*agg)) {
                     return source;
                 }

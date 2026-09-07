@@ -8,46 +8,10 @@
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 
-// Intentional schema deviations from PostgreSQL — otterbrix is a single-process actor
-// framework that does not aim for PG wire-protocol compatibility. Each deviation:
-//
-//   pg_namespace  — no `nspowner`           : no role/user system today.
-//   pg_class      — no `reltuples/relpages` : optimizer reads counts live from data_table_t.
-//                 — no `reltype`             : composite-row types not implemented.
-//                 — adds `relstoragemode`    : always 'd' (disk-only; write-only column).
-//                 — relkind 'g' = computing : doc proposed 'c', but 'c' collides with
-//                                              PG's "composite type" relkind. 'g' aligns
-//                                              with PG GENERATED terminology.
-//   pg_attribute  — adds `attoid`            : stable column OID (FK target for indexes,
-//                                              constraints, deps).
-//                 — adds `atttypspec`        : flat-text encoded complex_logical_type for
-//                                              types that don't fit a single pg_type.oid.
-//                 — adds `attdefspec`        : binary-encoded default value (replaces
-//                                              text `attdefval` — survives roundtrip).
-//                 — adds `atthasdefault`/`attisdropped` : tombstone; attnum is never reused.
-//                 — no `attstattarget`       : no statistics layer yet.
-//   pg_type       — no `typlen/typbyval/typtype` : not used by current resolution path.
-//                 — adds `typdefspec`        : flat-text encoded type tree (mirrors
-//                                              `pg_attribute.atttypspec`).
-//   pg_proc       — no `proowner`            : same reason as nspowner.
-//                 — `proargmatchers`/`prorettype` as text  : matcher form lets a function
-//                                              declare polymorphic arity without N rows.
-//                 — adds `prouid`            : index into compute::function_registry where
-//                                              kernel_signature_t (function pointers) lives.
-//   pg_constraint — no `conindid`              : constraint→index backlink resolved via
-//                                              pg_index.indrelid instead.
-//                 — adds `conexpr`            : CHECK expr SQL text (stored verbatim;
-//                                              executor-side evaluation not yet wired).
-//                 — adds confrelid/confkey/conf{matchtype,deltype,updtype} : full FK metadata.
-//   pg_index      — no `indisprimary/indisunique` : PK/uniqueness is enforced via
-//                                              pg_constraint, not pg_index.
-//                 — adds `indtype`            : single-char physical-backend code (see
-//                                              catalog_codes.hpp); restart picks the on-disk
-//                                              reader (bitcask vs B+tree) from it.
-//   pg_database   — added                     : full hierarchy database → namespace → relation.
-//                                              10th system table beyond PG's 9.
-//
-// These deltas are intentional; do not revert them to plain PostgreSQL shapes.
+// Deviations below from stock PostgreSQL catalog shapes (missing owner/statistics columns;
+// relkind 'g' instead of 'c' to avoid colliding with PG's composite-type code; extra
+// attoid/atttypspec/prouid/indtype-family columns; pg_database as a 10th table) are
+// intentional for this single-process engine — do not revert them to plain PostgreSQL shapes.
 
 namespace components::catalog {
 
@@ -56,9 +20,6 @@ namespace components::catalog {
     using components::types::logical_type;
 
     namespace {
-        // OID columns: uint32_t → UINTEGER. Booleans → BOOLEAN. Single-char flags
-        // (relkind, deptype) → STRING_LITERAL.
-
         complex_logical_type oid_col() { return complex_logical_type{logical_type::UINTEGER}; }
         complex_logical_type i32_col() { return complex_logical_type{logical_type::INTEGER}; }
         complex_logical_type i64_col() { return complex_logical_type{logical_type::BIGINT}; }
@@ -67,14 +28,14 @@ namespace components::catalog {
 
         std::vector<column_definition_t> pg_database_columns() {
             std::vector<column_definition_t> c;
-            c.emplace_back("oid", oid_col(), /*not_null*/ true);     // pg_database.oid
-            c.emplace_back("datname", str_col(), /*not_null*/ true); // database name (unique)
+            c.emplace_back("oid", oid_col(), /*not_null*/ true);
+            c.emplace_back("datname", str_col(), /*not_null*/ true);
             return c;
         }
 
         std::vector<column_definition_t> pg_namespace_columns() {
             std::vector<column_definition_t> c;
-            c.emplace_back("oid", oid_col(), /*not_null*/ true); // pg_namespace.oid
+            c.emplace_back("oid", oid_col(), /*not_null*/ true);
             c.emplace_back("nspname", str_col(), /*not_null*/ true);
             return c;
         }
@@ -87,38 +48,28 @@ namespace components::catalog {
             c.emplace_back(
                 "relkind",
                 str_col(),
-                true); // 'r' relation, 'i' index, 'S' sequence, 'v' view, 'm' macro, 'c' composite, 'g' computing
-            c.emplace_back("relstoragemode", str_col(), true); // always 'd' (disk-only, write-only)
+                true); // see catalog_codes.hpp::relkind
+            c.emplace_back("relstoragemode", str_col(), true);
             return c;
         }
 
         std::vector<column_definition_t> pg_attribute_columns() {
             std::vector<column_definition_t> c;
-            c.emplace_back("attoid", oid_col(), true);   // pg_attribute identity (== column attoid)
-            c.emplace_back("attrelid", oid_col(), true); // pg_class.oid (parent relation)
+            c.emplace_back("attoid", oid_col(), true); // stable column OID; FK target for constraints/indexes
+            c.emplace_back("attrelid", oid_col(), true);
             c.emplace_back("attname", str_col(), true);
             c.emplace_back("atttypid",
                            oid_col(),
-                           true); // pg_type.oid (builtin scalar only; complex types use atttypspec)
-            c.emplace_back("attnum", i32_col(), true); // 1-based ordinal
+                           true); // builtin scalar only; complex types use atttypspec
+            c.emplace_back("attnum", i32_col(), true);
             c.emplace_back("attnotnull", bool_col(), true);
             c.emplace_back("atthasdefault", bool_col(), true);
             c.emplace_back("attisdropped", bool_col(), true); // tombstone; attnum is never reused
-            // atttypspec is empty and atttypid alone reconstructs the type. For ARRAY /
-            // DECIMAL / STRUCT / ENUM / UNKNOWN, atttypspec carries the flat-text encoded
-            // complex_logical_type (preserves precision/scale, element types, child types).
-            c.emplace_back("atttypspec", str_col(), false);
-            // attdefspec: binary logical_value_t default, hex-armoured (encode_default_spec)
-            // (pg_attrdef-equivalent inlined into pg_attribute). Empty when
-            // atthasdefault=false.
-            c.emplace_back("attdefspec", str_col(), false);
-            // MVCC column versioning. added_at_commit_id = ADD COLUMN's commit_id;
-            // dropped_at_commit_id = DROP COLUMN's commit_id (0 = still alive).
-            // Snapshot sees column iff added_at_commit_id <= snapshot.horizon
-            // AND (dropped_at_commit_id == 0 OR dropped_at_commit_id > snapshot).
-            // attisdropped tombstone is set in lockstep with dropped_at_commit_id > 0.
-            c.emplace_back("added_at_commit_id", i64_col(), true);   // 10
-            c.emplace_back("dropped_at_commit_id", i64_col(), true); // 11
+            c.emplace_back("atttypspec", str_col(), false); // non-empty only for ARRAY/DECIMAL/STRUCT/ENUM/UNKNOWN
+            c.emplace_back("attdefspec", str_col(), false); // hex-armoured default (encode_default_spec)
+            // MVCC: added_at_commit_id/dropped_at_commit_id (0=alive) gate visibility; attisdropped mirrors dropped>0.
+            c.emplace_back("added_at_commit_id", i64_col(), true);
+            c.emplace_back("dropped_at_commit_id", i64_col(), true);
             return c;
         }
 
@@ -127,13 +78,7 @@ namespace components::catalog {
             c.emplace_back("oid", oid_col(), true);
             c.emplace_back("typname", str_col(), true);
             c.emplace_back("typnamespace", oid_col(), true);
-            // typdefspec: flat-text encoded complex_logical_type via encode_type_spec
-            // (mirrors pg_attribute's atttypspec). Empty for built-in scalar pg_type entries;
-            // STRUCT/ENUM/UDT rows carry the full child-type tree so readers can
-            // reconstruct the rich definition after restart. Optional column; rows missing
-            // this field round-trip as UNKNOWN — decode_type_spec's legitimate empty-spec
-            // answer (not an error: the oid alone reconstructs builtin scalars).
-            c.emplace_back("typdefspec", str_col(), false);
+            c.emplace_back("typdefspec", str_col(), false); // encode_type_spec; empty/missing decodes as UNKNOWN
             return c;
         }
 
@@ -142,30 +87,18 @@ namespace components::catalog {
             c.emplace_back("oid", oid_col(), true);
             c.emplace_back("proname", str_col(), true);
             c.emplace_back("pronamespace", oid_col(), true);
-            // pronargs: arity (input count) of the function's first signature.
-            c.emplace_back("pronargs", i32_col(), false);
-            // prouid: opaque function_uid produced by executor's register_udf. Used by the
-            // dispatcher to route execution; restored by populate so the cat's
-            // registered_func_id matches what the executor knows.
-            c.emplace_back("prouid", i64_col(), false);
-            // proargmatchers: encoded per-arg type matcher kinds + parameters. Format is
-            // pipe-separated per arg: "e:N" exact (N=numeric logical_type id), "n" numeric,
-            // "i" integer, "f" floating, "a:N1,N2,..." any_of, "t" always_true. Empty when
-            // no matcher info was persisted (legacy rows / placeholder UDFs). Serializable
-            // tagged-kind form so matchers survive a catalog roundtrip.
-            c.emplace_back("proargmatchers", str_col(), false);
-            // prorettype: encoded output_type list. Format is comma-separated: "f:N" fixed
-            // (N=logical_type id), "s:N" same_type_at_index N. Empty falls back to
-            // same_type_at_index(0) — covers the legacy default.
-            c.emplace_back("prorettype", str_col(), false);
+            c.emplace_back("pronargs", i32_col(), false); // arity of the function's first signature
+            c.emplace_back("prouid", i64_col(), false); // opaque function_uid from register_udf
+            c.emplace_back("proargmatchers", str_col(), false); // see encode_proargmatchers below
+            c.emplace_back("prorettype", str_col(), false); // see encode_prorettype below
             return c;
         }
 
         std::vector<column_definition_t> pg_depend_columns() {
             std::vector<column_definition_t> c;
-            c.emplace_back("classid", oid_col(), true); // catalog of dependent (e.g. pg_class.oid)
+            c.emplace_back("classid", oid_col(), true);
             c.emplace_back("objid", oid_col(), true);
-            c.emplace_back("refclassid", oid_col(), true); // catalog of referenced
+            c.emplace_back("refclassid", oid_col(), true);
             c.emplace_back("refobjid", oid_col(), true);
             c.emplace_back("deptype", str_col(), true); // 'n','a','i','p' — see PG docs
             return c;
@@ -176,14 +109,11 @@ namespace components::catalog {
             c.emplace_back("oid", oid_col(), true);
             c.emplace_back("conname", str_col(), true);
             c.emplace_back("conrelid", oid_col(), true);
-            c.emplace_back("contype", str_col(), true);    // 'p','f','u','c','n'
-            c.emplace_back("confrelid", oid_col(), false); // FK reference — 0 if not FK
-            c.emplace_back("conkey", str_col(), false);    // CSV of attoids in this constraint
-            c.emplace_back("confkey", str_col(), false);   // CSV of attoids in referenced relation (FK only)
-            // FK match/delete/update behavior — null/empty defaults to ('s','a','a') = MATCH SIMPLE / NO ACTION.
-            //   confmatchtype: 's' SIMPLE (default), 'f' FULL, 'p' PARTIAL
-            //   confdeltype:   'a' NO ACTION (default), 'r' RESTRICT, 'c' CASCADE, 'n' SET NULL, 'd' SET DEFAULT
-            //   confupdtype:   same alphabet as confdeltype
+            c.emplace_back("contype", str_col(), true); // 'p','f','u','c','n'
+            c.emplace_back("confrelid", oid_col(), false); // 0 if not FK
+            c.emplace_back("conkey", str_col(), false);
+            c.emplace_back("confkey", str_col(), false);
+            // null/empty = ('s','a','a'); matchtype is s/f/p, del/updtype share a/r/c/n/d.
             c.emplace_back("confmatchtype", str_col(), false);
             c.emplace_back("confdeltype", str_col(), false);
             c.emplace_back("confupdtype", str_col(), false);
@@ -193,22 +123,21 @@ namespace components::catalog {
 
         std::vector<column_definition_t> pg_index_columns() {
             std::vector<column_definition_t> c;
-            c.emplace_back("indexrelid", oid_col(), true); // pg_class.oid of the index
-            c.emplace_back("indrelid", oid_col(), true);   // pg_class.oid of the indexed table
-            c.emplace_back("indkey", str_col(), true);     // CSV of attoid (compact serialization)
+            c.emplace_back("indexrelid", oid_col(), true);
+            c.emplace_back("indrelid", oid_col(), true);
+            c.emplace_back("indkey", str_col(), true);
             c.emplace_back("indisvalid",
                            bool_col(),
                            true); // false until backfill completes; planner ignores invalid indexes
             c.emplace_back("indtype",
                            str_col(),
-                           true); // single-char backend code (see catalog_codes.hpp indtype namespace);
-                                  // NOT nullable, no default — a row without it is catalog corruption
+                           true); // see catalog_codes.hpp::indtype
             return c;
         }
 
         std::vector<column_definition_t> pg_sequence_columns() {
             std::vector<column_definition_t> c;
-            c.emplace_back("seqrelid", oid_col(), /*not_null*/ true); // FK pg_class.oid
+            c.emplace_back("seqrelid", oid_col(), /*not_null*/ true);
             c.emplace_back("seqstart", i64_col(), true);
             c.emplace_back("seqincrement", i64_col(), true);
             c.emplace_back("seqmin", i64_col(), true);
@@ -220,30 +149,28 @@ namespace components::catalog {
 
         std::vector<column_definition_t> pg_rewrite_columns() {
             std::vector<column_definition_t> c;
-            c.emplace_back("oid", oid_col(), /*not_null*/ true); // rule OID
-            c.emplace_back("rulename", str_col(), true);         // mirrors pg_class.relname
-            c.emplace_back("ev_class", oid_col(), true);         // FK pg_class.oid
-            c.emplace_back("ev_type", str_col(), true);          // 'v' or 'm'
-            c.emplace_back("ev_action", str_col(), true);        // SQL or macro body
+            c.emplace_back("oid", oid_col(), /*not_null*/ true);
+            c.emplace_back("rulename", str_col(), true);
+            c.emplace_back("ev_class", oid_col(), true);
+            c.emplace_back("ev_type", str_col(), true); // 'v' or 'm'
+            c.emplace_back("ev_action", str_col(), true);
             return c;
         }
 
         std::vector<column_definition_t> pg_settings_columns() {
             std::vector<column_definition_t> c;
-            c.emplace_back("name", str_col(), /*not_null*/ true);    // setting name (e.g. "TimeZone")
-            c.emplace_back("setting", str_col(), /*not_null*/ true); // setting value
+            c.emplace_back("name", str_col(), /*not_null*/ true);
+            c.emplace_back("setting", str_col(), /*not_null*/ true);
             return c;
         }
 
         std::vector<column_definition_t> pg_cast_columns() {
             std::vector<column_definition_t> c;
-            c.emplace_back("oid", oid_col(), /*not_null*/ true); // cast identity — pg_depend anchor
-            c.emplace_back("castsource", oid_col(), true);       // pg_type.oid of the source type
-            c.emplace_back("casttarget", oid_col(), true);       // pg_type.oid of the target type
-            // (castsource, casttarget) is the registry lookup key; oid is the catalog-row identity
-            // used for by-oid delete and pg_depend edges. No castcontext column yet — implicitness
-            // lives on the in-memory cast_entry (set by register_default_casts) and is only needed
-            // here once user-defined CREATE CAST persists its own level.
+            c.emplace_back("oid", oid_col(), /*not_null*/ true);
+            c.emplace_back("castsource", oid_col(), true);
+            c.emplace_back("casttarget", oid_col(), true);
+            // (castsource,casttarget) is the lookup key; no castcontext yet (lives on cast_entry
+            // until CREATE CAST needs to persist it).
             return c;
         }
 
@@ -251,29 +178,20 @@ namespace components::catalog {
             std::vector<column_definition_t> c;
             c.emplace_back("relid",
                            oid_col(),
-                           true); // 0: pg_class.oid (parent relation, always relkind='g' generated/computing)
-            c.emplace_back("attoid", oid_col(), true);     // 1
-            c.emplace_back("attname", str_col(), true);    // 2
-            c.emplace_back("atttypid", oid_col(), true);   // 3: builtin scalar oid (complex types use atttypspec)
-            c.emplace_back("atttypspec", str_col(), true); // 4: flat-text encoded complex_logical_type
-                //    for ARRAY / STRUCT / UNION / DECIMAL / fixed-width sub-types.
-                //    Empty for builtin scalars (atttypid alone reconstructs the type).
-                //    Mirrors pg_attribute.atttypspec.
-            c.emplace_back("attversion", i64_col(), true);  // 5
-            c.emplace_back("attrefcount", i64_col(), true); // 6
+                           true); // always relkind='g' (generated/computing)
+            c.emplace_back("attoid", oid_col(), true);
+            c.emplace_back("attname", str_col(), true);
+            c.emplace_back("atttypid", oid_col(), true);
+            c.emplace_back("atttypspec", str_col(), true); // mirrors pg_attribute.atttypspec
+            c.emplace_back("attversion", i64_col(), true);
+            c.emplace_back("attrefcount", i64_col(), true);
             return c;
         }
     } // namespace
 
     std::span<const system_table_def_t> all_system_tables() {
-        // Built once on first call into a fixed-size std::array (no heap), thereafter
-        // returned as a zero-cost std::span. Schemas are immutable for the life of the
-        // process. C++11 magic-statics guarantee single-threaded initialisation.
-        //
-        // pg_database is bootstrapped first because every other catalog object (namespace,
-        // relation, type, function) is conceptually scoped to a database. The default "main"
-        // database row is seeded with well_known_oid::main_database in
-        // manager_disk_t::bootstrap_system_tables_sync.
+        // pg_database must come first — every catalog object is scoped to a database (seeded via
+        // well_known_oid::main_database, manager_disk_t::bootstrap_system_tables_sync).
         static const std::array<system_table_def_t, 14> tables = []() {
             const oid_t pg_catalog = well_known_oid::pg_catalog_namespace;
             return std::array<system_table_def_t, 14>{{
@@ -322,41 +240,30 @@ namespace components::catalog {
     }
 
 
-    // ── flat-text type spec helpers ──────────────────────────────────────────────
-    // Format (recursive, scalar names match pg_type.typname):
-    //   scalar            →  bool int1 int2 int4 int8 float4 float8 text
-    //                        timestamp bytea uuid
-    //   numeric(w,s)      →  DECIMAL (matches pg_type.typname)
-    //   UNKNOWN(name)
-    //   LIST(inner)
-    //   ARRAY(inner,size)
-    //   MAP(key,val)
-    //   STRUCT(name,f1:t1,f2:t2,...)
-    //   UNION(f1:t1,f2:t2,...)
-    //   VARIANT
-    //   ENUM:name:label=val,...  (legacy flat format; kept unchanged)
-    // ─────────────────────────────────────────────────────────────────────────────
+    // Flat-text type-spec grammar (recursive; scalar names match pg_type.typname):
+    //   scalar → bool int1 int2 int4 int8 float4 float8 text timestamp bytea uuid
+    //   numeric(w,s) | UNKNOWN(name) | LIST(inner) | ARRAY(inner,size) | MAP(key,val)
+    //   STRUCT(name,f1:t1,...) | UNION(f1:t1,...) | VARIANT | ENUM:name:label=val,...
 
-    // Canonical names match pg_type.typname so they're consistent with the rest of the catalog.
     static std::string_view scalar_type_to_name(types::logical_type lt) {
         using LT = types::logical_type;
         switch (lt) {
             case LT::BOOLEAN:
                 return "bool";
             case LT::TINYINT:
-                return "int1"; // no PG equivalent; 1-byte signed
+                return "int1"; // no PG equivalent
             case LT::UTINYINT:
                 return "uint1";
             case LT::SMALLINT:
-                return "int2"; // pg: int2
+                return "int2";
             case LT::USMALLINT:
                 return "uint2";
             case LT::INTEGER:
-                return "int4"; // pg: int4
+                return "int4";
             case LT::UINTEGER:
                 return "uint4";
             case LT::BIGINT:
-                return "int8"; // pg: int8
+                return "int8";
             case LT::UBIGINT:
                 return "uint8";
             case LT::HUGEINT:
@@ -364,11 +271,11 @@ namespace components::catalog {
             case LT::UHUGEINT:
                 return "uint16";
             case LT::FLOAT:
-                return "float4"; // pg: float4
+                return "float4";
             case LT::DOUBLE:
-                return "float8"; // pg: float8
+                return "float8";
             case LT::STRING_LITERAL:
-                return "text"; // pg: text
+                return "text";
             case LT::TIMESTAMP:
                 return "timestamp";
             case LT::TIMESTAMP_TZ:
@@ -382,7 +289,7 @@ namespace components::catalog {
             case LT::INTERVAL:
                 return "interval";
             case LT::BLOB:
-                return "bytea"; // pg: bytea
+                return "bytea";
             case LT::UUID:
                 return "uuid";
             default:
@@ -392,7 +299,6 @@ namespace components::catalog {
 
     static types::logical_type scalar_name_to_type(std::string_view n) {
         using LT = types::logical_type;
-        // Canonical pg_type.typname names
         if (n == "bool")
             return LT::BOOLEAN;
         if (n == "int1")
@@ -437,11 +343,7 @@ namespace components::catalog {
             return LT::BLOB;
         if (n == "uuid")
             return LT::UUID;
-        // Canonical seed names and SQL aliases that are not PG spellings. These exact strings
-        // are seeded into pg_type by this build's bootstrap (manager_disk_bootstrap.cpp,
-        // builtin_type_rows) and are resolved through pg_name_to_logical_type whenever the
-        // user writes one of them as a type name. Byte-width spellings live in the PG block
-        // above: "int16" is the 128-bit type there, NOT SMALLINT.
+        // Seed/alias names (manager_disk_bootstrap.cpp); this "int16" is unrelated to the PG-block one above.
         if (n == "string")
             return LT::STRING_LITERAL;
         if (n == "blob")
@@ -452,7 +354,6 @@ namespace components::catalog {
             return LT::INTEGER;
         if (n == "bigint")
             return LT::BIGINT;
-        // SQL standard aliases the parser emits when no pg_catalog prefix is used
         if (n == "double")
             return LT::DOUBLE;
         if (n == "float")
@@ -463,50 +364,29 @@ namespace components::catalog {
             return LT::TINYINT;
         if (n == "varchar")
             return LT::STRING_LITERAL;
-        // Grammar-internal names (SystemTypeName → pg_catalog.<name>)
         if (n == "int8_t")
             return LT::BIGINT; // BIGINT keyword in parser/gram.y
         return LT::UNKNOWN;
     }
 
-    // THE DEPTH WINDOW IS SHARED with the binary codec: type_spec_codec.cpp refuses nesting
-    // past MAX_SPEC_DEPTH = 64 on both encode and decode, and the dispatcher's write gate
-    // (gate_persistable_type, validate_logical_plan.cpp) runs that encoder over every
-    // plan-level column/type before this codec's text is written, so a flat spec deeper than
-    // the window is not something this engine wrote. Without the limit the parser recurses
-    // unbounded (a 2^20-deep LIST(...) walks it off the stack); encode_type_nested carries the
-    // same counter so a writer that accepts more than the reader does can't manufacture an
-    // unreadable row.
-    static constexpr uint32_t MAX_FLAT_SPEC_DEPTH = 64;
+    // Bounded, not unlimited: a deeply nested LIST would blow the stack, and an unbounded writer
+    // produces rows its own reader refuses forever.
+    static constexpr uint32_t MAX_FLAT_SPEC_DEPTH = 64; // must match type_spec_codec.cpp's MAX_SPEC_DEPTH
 
-    // Forward declaration for mutual recursion.
     static std::string encode_type_nested(const types::complex_logical_type& t, uint32_t depth);
 
-    // TWO ENCODERS WRITE THE SAME COLUMN TYPE, AND THE WRITE GATE ASKS ONLY THE OTHER ONE.
-    // gate_persistable_type (validate_logical_plan.cpp) runs the BINARY codec
-    // (encode_type_spec) over every plan-level type and refuses the statement when it says no,
-    // but the row actually written to pg_attribute.atttypspec / pg_type.typdefspec comes from
-    // THIS codec, which returns a plain std::string and cannot say no. This file has to keep
-    // the two domains in agreement since it has no channel of its own: wherever the binary
-    // codec REFUSES, this one emits a spec the strict decoder refuses (kFlatUnpersistable,
-    // same shape as encode_type_spec_or_poison in data_chunk_binary.cpp) instead of a
-    // plausible type; wherever it ACCEPTS, this one must have a spelling or a gate-approved
-    // column silently rehydrates as a different type.
-    //
-    // The marker is deliberately outside the format's language (read_token stops at '(', no
-    // keyword matches) so it fails with data_corruption; "" can't serve as the marker since it
-    // already means "a builtin scalar stored with atttypid alone".
+    // Two encoders write the same column type: the binary codec's gate (gate_persistable_type,
+    // validate_logical_plan.cpp) decides refusal, but atttypspec/typdefspec on disk comes from
+    // THIS flat codec — wherever the gate refuses, this must emit kFlatUnpersistable too, or an
+    // approved column silently rehydrates as a different type.
     static constexpr std::string_view kFlatUnpersistable = "!unpersistable";
 
     static std::string flat_unpersistable(types::logical_type lt) {
         return std::string{kFlatUnpersistable} + "(" + std::to_string(static_cast<int>(lt)) + ")";
     }
 
-    // The extension fetch the binary codec makes (checked_extension in
-    // components/types/type_spec_codec.cpp) and this one used not to: a type tagged DECIMAL
-    // whose extension is absent, or GENERIC because set_alias() ran on a bare tag, is
-    // in-memory corruption. Reading width/scale out of an object that has none is a
-    // SIGSEGV or two garbage bytes written to the catalog; both were live here.
+    // Mirrors type_spec_codec.cpp's checked_extension: absent/GENERIC used to SIGSEGV or write
+    // garbage here — both were live bugs.
     static const types::logical_type_extension* checked_flat_extension(
         const types::complex_logical_type& t,
         types::logical_type_extension::extension_type expected) {
@@ -514,16 +394,9 @@ namespace components::catalog {
         return (ext != nullptr && ext->type() == expected) ? ext : nullptr;
     }
 
-    // Plain scalars the binary codec persists (is_plain_scalar in type_spec_codec.cpp) that
-    // have NO pg_type name fell through to "UNKNOWN(<enum number>)" — decoding back as a
-    // NAMED user-type reference, i.e. a gate-approved column rehydrating as a different type
-    // in silence.
-    //
-    // They get the one form that cannot be confused with a name: BUILTIN(<logical_type>), the
-    // flat mirror of the binary codec's leading type byte. WHITELISTED on both sides —
-    // decoding BUILTIN(105) back into FUNCTION would reopen the same hole.
-    // encoder_domains::every_plain_scalar_the_gate_blesses_survives_the_flat_writer pins the
-    // correspondence.
+    // Plain scalars with no pg_type name used to fall through to UNKNOWN(<number>) and rehydrate
+    // as a NAMED type; they get whitelisted BUILTIN(<logical_type>) instead
+    // (encoder_domains::every_plain_scalar_the_gate_blesses_survives_the_flat_writer pins it).
     static bool is_nameless_flat_builtin(types::logical_type lt) {
         using LT = types::logical_type;
         switch (lt) {
@@ -539,12 +412,8 @@ namespace components::catalog {
         }
     }
 
-    // Names written AS IS produce a spec the strict decoder refuses whenever a struct field,
-    // union member, enum name/label or user-type name carries one of the format's own
-    // delimiters ( ) , : = — the DDL goes through and every later resolve fails per-statement.
-    // So the encoder escapes those characters (backslash-prefixed) and the decoder reads them
-    // back; a backslash before anything else is a loud data_corruption refusal, never a
-    // silent rename.
+    // Names with one of the format's own delimiters ( ) , : = are backslash-escaped so they
+    // can't corrupt the spec; any other backslash is a loud refusal, never a silent rename.
     static bool flat_name_needs_escape(char c) {
         return c == '\\' || c == '(' || c == ')' || c == ',' || c == ':' || c == '=';
     }
@@ -563,10 +432,6 @@ namespace components::catalog {
 
     static std::string encode_type_nested(const types::complex_logical_type& t, uint32_t depth) {
         using LT = types::logical_type;
-        // The depth window the decoder enforces, enforced on the way OUT too. The binary
-        // codec refuses past MAX_SPEC_DEPTH on BOTH sides for the same reason; this encoder
-        // used to have no limit at all, so a type past the window was written happily and
-        // then refused forever by the reader.
         if (depth > MAX_FLAT_SPEC_DEPTH) {
             return flat_unpersistable(t.type());
         }
@@ -586,12 +451,7 @@ namespace components::catalog {
             return "numeric(" + std::to_string(static_cast<unsigned>(dec->width())) + "," +
                    std::to_string(static_cast<unsigned>(dec->scale())) + ")";
         }
-        if (t.type() == LT::UNKNOWN) {
-            // Mirrors the binary codec's has_type_name byte exactly: a bare UNKNOWN (the
-            // value decode_type_spec("") and oid_to_builtin_type() hand a reader back) has
-            // NO name and must not acquire one here. A GENERIC extension is a bare tag that
-            // was merely aliased — its alias() is a COLUMN name, not a type name, and
-            // type_name() would hand it over as one.
+        if (t.type() == LT::UNKNOWN) { // bare UNKNOWN gets no name; GENERIC's alias() is a COLUMN name, not this
             const auto* ext = checked_flat_extension(t, types::logical_type_extension::extension_type::UNKNOWN);
             if (ext == nullptr) {
                 return "UNKNOWN()";
@@ -643,14 +503,11 @@ namespace components::catalog {
             return out;
         }
         if (t.type() == LT::UNION) {
-            // UNION reuses struct_logical_type_extension; child_types()[0] is the hidden
-            // UTINYINT tag create_union() prepends, and real members start at [1]. The
-            // binary codec refuses a UNION whose tag child is missing rather than writing a
-            // member list that means something else — same refusal here.
             const auto* raw = checked_flat_extension(t, types::logical_type_extension::extension_type::STRUCT);
             if (raw == nullptr) {
                 return flat_unpersistable(t.type());
             }
+            // child_types()[0] is the hidden UTINYINT tag create_union() prepends; members start at [1].
             const auto& children = static_cast<const types::struct_logical_type_extension*>(raw)->child_types();
             if (children.empty() || children.front().type() != LT::UTINYINT) {
                 return flat_unpersistable(t.type());
@@ -669,29 +526,17 @@ namespace components::catalog {
             return out;
         }
         if (t.type() == LT::VARIANT) {
-            // The internal struct layout is fixed and create_variant() rebuilds it on
-            // decode, so no payload is written — but a VARIANT that never got that struct
-            // is not a VARIANT, and the binary codec refuses it.
+            // create_variant() rebuilds the fixed layout on decode, so no payload is written.
             if (checked_flat_extension(t, types::logical_type_extension::extension_type::STRUCT) == nullptr) {
                 return flat_unpersistable(t.type());
             }
             return "VARIANT";
         }
-        // ENUM is handled by the outer encode_type_spec; reaching here means either a
-        // malformed ENUM or one of USER/TABLE/FUNCTION/LAMBDA/INVALID, which the binary codec
-        // refuses outright. Writing "UNKNOWN(<number>)" for them (the previous behaviour)
-        // produced the exact shape of a legitimate named user-type reference, letting the
-        // type the gate exists to stop travel on.
-        return flat_unpersistable(t.type());
+        return flat_unpersistable(t.type()); // malformed ENUM or USER/TABLE/FUNCTION/LAMBDA/INVALID
     }
 
-    // Recursive-descent parser for the flat-text format. The parse context owns the
-    // error channel (no exceptions): the FIRST failure wins, every later step
-    // short-circuits, and decode_type_spec turns the failure into a core::error_t.
-    // Without a channel everything unreadable collapses into logical_type::UNKNOWN, the
-    // very value that also means "named user-type reference" — corruption indistinguishable
-    // from a legitimate answer.
-
+    // No-exceptions error channel: first failure wins; without it, unreadable input collapses
+    // into UNKNOWN, the same value that means "named user-type reference".
     struct flat_parse_ctx_t {
         std::string_view s;
         size_t pos = 0;
@@ -707,8 +552,7 @@ namespace components::catalog {
                 what += ")";
             }
         }
-        // Consume exactly `c` or fail; short-circuits after a previous failure.
-        bool expect(char c, const char* inside) {
+        bool expect(char c, const char* inside) { // short-circuits after a previous failure
             if (failed) {
                 return false;
             }
@@ -724,9 +568,7 @@ namespace components::catalog {
     static types::complex_logical_type
     parse_flat_type(std::pmr::memory_resource* resource, flat_parse_ctx_t& ctx, uint32_t depth);
 
-    // Read characters until one of the stop chars (at depth 0). Keyword/number positions
-    // only — a backslash is consumed literally here and the keyword match refuses it.
-    static std::string read_token(std::string_view s, size_t& pos) {
+    static std::string read_token(std::string_view s, size_t& pos) { // backslash is literal here
         size_t start = pos;
         while (pos < s.size() && s[pos] != '(' && s[pos] != ')' && s[pos] != ',' && s[pos] != ':') {
             ++pos;
@@ -734,12 +576,7 @@ namespace components::catalog {
         return std::string{s.substr(start, pos - start)};
     }
 
-    // Read a NAME (struct/union field, struct/enum type name, UNKNOWN reference): the
-    // escape-aware twin of read_token. `\c` for c in the delimiter set yields c; a
-    // backslash before anything else — a trailing one included — fails the context, so a
-    // raw backslash written by a pre-escaping build refuses instead of decoding to a
-    // different name.
-    static std::string read_name_token(flat_parse_ctx_t& ctx) {
+    static std::string read_name_token(flat_parse_ctx_t& ctx) { // `\c` yields c; other backslashes fail the context
         std::string out;
         while (ctx.pos < ctx.s.size() && ctx.s[ctx.pos] != '(' && ctx.s[ctx.pos] != ')' && ctx.s[ctx.pos] != ',' &&
                ctx.s[ctx.pos] != ':') {
@@ -758,8 +595,6 @@ namespace components::catalog {
         return out;
     }
 
-    // Escape-aware scan for the ENUM leg's flat splitting: the position of `target`
-    // outside any `\x` pair, npos when absent.
     static size_t find_unescaped(std::string_view s, char target, size_t from) {
         for (size_t i = from; i < s.size(); ++i) {
             if (s[i] == '\\') {
@@ -773,7 +608,6 @@ namespace components::catalog {
         return std::string_view::npos;
     }
 
-    // Unescape one already-delimited name; false on a malformed escape.
     static bool unescape_flat_name(std::string_view in, std::string& out) {
         out.clear();
         out.reserve(in.size());
@@ -790,8 +624,7 @@ namespace components::catalog {
         return true;
     }
 
-    // Whole-token integer read (mirrors parse_oid_csv): from_chars stops at the first
-    // character it cannot use and still reports success, so "12x" would read as 12.
+    // from_chars stops at the first unusable char and still succeeds, so "12x" would read as 12.
     template<typename Int>
     static bool read_whole_int(const std::string& tok, Int& out) {
         const auto [ptr, ec] = std::from_chars(tok.data(), tok.data() + tok.size(), out);
@@ -819,16 +652,13 @@ namespace components::catalog {
             if (lt != LT::UNKNOWN) {
                 return types::complex_logical_type{lt};
             }
-            // A bare name outside the scalar table is NOT in the encoder's language:
-            // named user-type references are written as "UNKNOWN(name)", never bare.
+            // named user-type references are always written as "UNKNOWN(name)", never bare
             ctx.fail("type spec: unrecognised type name '" + name + "'");
             return unknown();
         }
         ++ctx.pos; // consume '('
 
-        if (name == "numeric" || name == "DECIMAL") {
-            // Both spellings of the decimal head are READ ("numeric" is what the encoder
-            // writes; "DECIMAL" is pinned by catalog::type_spec::decimal_with_old_name_compat).
+        if (name == "numeric" || name == "DECIMAL") { // "DECIMAL" pinned by decimal_with_old_name_compat
             const std::string w = read_token(ctx.s, ctx.pos);
             if (!ctx.expect(',', "numeric(width,scale)")) {
                 return unknown();
@@ -843,9 +673,7 @@ namespace components::catalog {
                 ctx.fail("type spec: numeric width/scale is not a number");
                 return unknown();
             }
-            // Range-check BEFORE narrowing: "numeric(256,0)" would otherwise wrap to
-            // DECIMAL(0,0). An out-of-window pair is refused HERE, through the decode
-            // error channel, rather than leaning on callers to read UNKNOWN as a rejection.
+            // range-check before narrowing — "numeric(256,0)" would otherwise wrap to DECIMAL(0,0)
             if (wv < 0 || scv < 0 || wv > types::DECIMAL_MAX_WIDTH || scv > types::DECIMAL_MAX_WIDTH) {
                 ctx.fail("type spec: numeric(" + w + "," + sc + ") is outside the DECIMAL window");
                 return unknown();
@@ -864,20 +692,13 @@ namespace components::catalog {
             if (!ctx.expect(')', "UNKNOWN(name)")) {
                 return unknown();
             }
-            // "UNKNOWN()" is the bare form — the mirror of the binary codec's
-            // has_type_name = 0. create_unknown("") would attach an UNKNOWN extension
-            // holding an empty name, which is a DIFFERENT value (operator== tells them
-            // apart) and would not round-trip.
+            // bare form mirrors has_type_name=0; create_unknown("") is a DIFFERENT value (operator==)
             if (tname.empty()) {
                 return unknown();
             }
             return types::complex_logical_type::create_unknown(tname);
         }
-        // The flat mirror of the binary codec's leading type byte, for the plain scalars
-        // that have no pg_type name (see is_nameless_flat_builtin). WHITELISTED on the way
-        // in as well as on the way out: reading an arbitrary number back would hand a
-        // reader FUNCTION or INVALID out of a catalog column.
-        if (name == "BUILTIN") {
+        if (name == "BUILTIN") { // whitelisted on read too — an arbitrary number could hand back FUNCTION
             const std::string tok = read_token(ctx.s, ctx.pos);
             if (!ctx.expect(')', "BUILTIN(type)")) {
                 return unknown();
@@ -932,7 +753,7 @@ namespace components::catalog {
             std::string struct_name = read_name_token(ctx);
             std::pmr::vector<types::complex_logical_type> fields(resource);
             while (!ctx.failed && ctx.pos < ctx.s.size() && ctx.s[ctx.pos] == ',') {
-                ++ctx.pos; // ','
+                ++ctx.pos;
                 std::string fname = read_name_token(ctx);
                 if (!ctx.expect(':', "STRUCT field")) {
                     return unknown();
@@ -948,7 +769,6 @@ namespace components::catalog {
         }
         if (name == "UNION") {
             std::pmr::vector<types::complex_logical_type> fields(resource);
-            // First member
             if (ctx.pos < ctx.s.size() && ctx.s[ctx.pos] != ')') {
                 std::string fname = read_name_token(ctx);
                 if (!ctx.expect(':', "UNION member")) {
@@ -959,7 +779,7 @@ namespace components::catalog {
                 fields.push_back(std::move(ftype));
             }
             while (!ctx.failed && ctx.pos < ctx.s.size() && ctx.s[ctx.pos] == ',') {
-                ++ctx.pos; // ','
+                ++ctx.pos;
                 std::string fname = read_name_token(ctx);
                 if (!ctx.expect(':', "UNION member")) {
                     return unknown();
@@ -973,29 +793,18 @@ namespace components::catalog {
             }
             return types::complex_logical_type::create_union(std::move(fields));
         }
-        // An unrecognised keyword WITH arguments is a REFUSAL: consuming it to the matching
-        // ')' and answering a named UNKNOWN round-trips a spec this build cannot parse as a
-        // plausible user-type reference.
         ctx.fail("type spec: unrecognised type keyword '" + name + "'");
         return unknown();
     }
 
     std::string encode_type_spec(const types::complex_logical_type& t) {
         using LT = types::logical_type;
-        // Only a type atttypid can carry on its own goes specless — every built-in scalar,
-        // signed and unsigned alike. Anything else — DECIMAL, ENUM, a nested type — is
-        // written out below, or it would come back as neither an oid nor a spec.
-        if (builtin_type_to_oid(t.type()) != INVALID_OID) {
+        if (builtin_type_to_oid(t.type()) != INVALID_OID) { // every builtin scalar carries goes specless
             return "";
         }
-        // ENUM: flat text "ENUM:type_name:label0=val0,label1=val1,..."
-        // Name and labels are escape_flat_name-escaped — see the note above it.
+        // ENUM flat format: "ENUM:type_name:label0=val0,...", escape_flat_name-escaped.
         if (t.type() == LT::ENUM) {
-            // An ENUM whose extension is absent, or GENERIC because set_alias() ran on a
-            // bare tag, is what the binary codec calls in-memory corruption and refuses.
-            // The old `if (ext != nullptr)` was two mistakes: a non-null GENERIC extension
-            // was static_cast to an enum one and walked for entries, and type_name() on a
-            // bare tag asserted (or, under NDEBUG, dereferenced null).
+            // absent/GENERIC extension is corruption (old code static_cast a GENERIC one as enum)
             const auto* ext = checked_flat_extension(t, types::logical_type_extension::extension_type::ENUM);
             if (ext == nullptr) {
                 return flat_unpersistable(t.type());
@@ -1022,25 +831,16 @@ namespace components::catalog {
     core::result_wrapper_t<types::complex_logical_type> decode_type_spec(std::pmr::memory_resource* resource,
                                                                          std::string_view spec) {
         using LT = types::logical_type;
-        if (spec.empty()) {
-            // No spec at all — a builtin scalar stored without one; the caller
-            // reconstructs the type from atttypid. A legitimate answer, not an error.
+        if (spec.empty()) { // builtin scalar stored without one — caller reconstructs from atttypid
             return types::complex_logical_type{LT::UNKNOWN};
         }
         const auto corrupt = [resource](const std::string& what) {
             return core::error_t{core::error_code_t::data_corruption, std::pmr::string{what.c_str(), resource}};
         };
-        // ENUM flat format: "ENUM:type_name:label0=val0,...". Actively WRITTEN by
-        // encode_type_spec above — a live format, not a compatibility shim.
-        if (spec.size() >= 5 && spec.compare(0, 5, "ENUM:") == 0) {
-            auto rest = spec.substr(5);
-            // Escape-aware from here on: the encoder escapes the format's delimiters
-            // inside the name and the labels, so every split looks only at UNESCAPED
-            // separators and every extracted name is unescaped (a malformed escape —
-            // including a raw backslash a pre-escaping build wrote — refuses loudly).
+        if (spec.size() >= 5 && spec.compare(0, 5, "ENUM:") == 0) { // live format, not a legacy shim
+            auto rest = spec.substr(5); // a malformed escape refuses loudly rather than decoding wrong
             auto colon = find_unescaped(rest, ':', 0);
-            if (colon == std::string_view::npos) {
-                // The encoder always writes the second ':', even for zero entries.
+            if (colon == std::string_view::npos) { // the encoder always writes this ':', even for zero entries
                 return corrupt("type spec: ENUM without an entry-list separator");
             }
             std::string name;
@@ -1051,16 +851,12 @@ namespace components::catalog {
             auto entries_str = rest.substr(colon + 1);
             if (!entries_str.empty()) {
                 std::size_t i = 0;
-                // for(;;) so the empty token behind a trailing ',' is visited too — the
-                // same truncation trace parse_oid_csv learned to keep (helpers.cpp).
-                for (;;) {
+                for (;;) { // visits the empty token behind a trailing ',' too (parse_oid_csv's truncation trap)
                     const std::size_t comma = find_unescaped(entries_str, ',', i);
                     const std::string_view token =
                         entries_str.substr(i, (comma == std::string_view::npos ? entries_str.size() : comma) - i);
                     const std::size_t eq = find_unescaped(token, '=', 0);
-                    if (eq == std::string_view::npos) {
-                        // Covers the empty token as well: the encoder writes label=value
-                        // pairs and nothing else.
+                    if (eq == std::string_view::npos) { // covers the empty token too
                         return corrupt("type spec: ENUM entry without '='");
                     }
                     std::string label;
@@ -1084,10 +880,7 @@ namespace components::catalog {
             }
             return components::types::complex_logical_type::create_enum(name, std::move(entries));
         }
-        // Flat-text format for all other types. No catch(...): it would swallow EVERYTHING
-        // (bad_alloc included) into UNKNOWN. The parser reports through its context instead
-        // of throwing.
-        flat_parse_ctx_t ctx{spec, 0, false, std::string{}};
+        flat_parse_ctx_t ctx{spec, 0, false, std::string{}}; // no catch(...): would swallow everything into UNKNOWN
         auto parsed = parse_flat_type(resource, ctx, 0);
         if (ctx.failed) {
             return corrupt(ctx.what);
@@ -1138,13 +931,9 @@ namespace components::catalog {
                     out += std::to_string(o.input_index());
                     break;
                 case K::custom:
-                    // A raw resolver closure has no introspectable form; its runtime
-                    // shape comes back through prouid → compute::function_registry,
-                    // never by parsing this column. Writing "s:0" here would claim a
-                    // same-type-as-argument-0 contract the function never declared; "c"
-                    // states the truth instead of guessing one. Refusing is not an option
-                    // either: registering a computed(...) output is pinned legal behaviour
-                    // (integration test_udfs does exactly that).
+                    // Not introspectable (shape comes via prouid → function_registry); "s:0"
+                    // would falsely claim a same-type-as-arg-0 contract, and computed(...)
+                    // outputs are pinned legal behaviour (integration test_udfs), so refusing isn't an option.
                     out += 'c';
                     break;
             }
@@ -1273,9 +1062,7 @@ namespace components::catalog {
             return core::error_t{code, std::pmr::string{text.c_str(), resource}};
         }
 
-        // Readable type for the rule-6 rejection message. encode_type_spec renders the
-        // full tree for complex types and "" for scalars, where the pg name is the answer.
-        std::string describe_default_type(const types::complex_logical_type& t) {
+        std::string describe_default_type(const types::complex_logical_type& t) { // for the rule-6 rejection message
             auto spec = encode_type_spec(t);
             if (!spec.empty()) {
                 return spec;
@@ -1331,9 +1118,7 @@ namespace components::catalog {
     core::error_t
     encode_default_spec(std::pmr::memory_resource* resource, const types::logical_value_t& v, std::string& out) {
         out.clear();
-        if (v.is_null()) {
-            // An explicit DEFAULT NULL is a default. Recording it as "" would make it
-            // indistinguishable from having none.
+        if (v.is_null()) { // must be recorded — "" would be indistinguishable from having no default
             out.push_back(kDefaultSpecNull);
             return core::error_t::no_error();
         }
@@ -1363,10 +1148,7 @@ namespace components::catalog {
         if (spec.empty()) {
             return core::error_t::no_error(); // no default at all
         }
-        if (spec.size() == 1 && spec.front() == kDefaultSpecNull) {
-            // An explicit DEFAULT NULL: present, and NULL. NULL is NA-typed here
-            // (is_null() IS type()==NA), so the value cannot carry column_type — the
-            // caller holds the type separately.
+        if (spec.size() == 1 && spec.front() == kDefaultSpecNull) { // NA-typed; caller holds column_type separately
             out.emplace(resource, types::complex_logical_type{types::logical_type::NA});
             return core::error_t::no_error();
         }

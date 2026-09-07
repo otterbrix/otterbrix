@@ -1,23 +1,10 @@
-// otterbrix has no json/jsonb type, no binary storage, no SQL/JSON path engine (pinned by
-// sql_json_standard_absent). Instead: nine postgres-spelled jsonb operators name-mangling over
-// FLATTENED columns (INSERT INTO t (a.b) stores column "a/b"; `t #>> 'a.b'` becomes a
-// get_field projection on it). ->> #>> return a scalar leaf; -> #> expand into child columns;
-// ? ?| ?& are per-row existence predicates; - #- project every column but the named subtree. A
-// path no column matches is a hard ERROR, not NULL.
-//
-// Cases are SUPPORTED or BUG (pins wrong-today behavior; intended result kept in a "correct:"
-// comment). Regression c59d95e8 (#622) refuses every TABLE-VALUED operator (-> #> - #-) in the
-// select list because the schema-expand pass it needs no longer runs -- pinned as BUG, along
-// with 4 smaller regressions from the same change (see view_over_navigation for one). Scalar
-// navigation and existence operators survived.
+// otterbrix has no native json/jsonb type; nine postgres-spelled jsonb operators work by
+// name-mangling over FLATTENED columns. Cases are SUPPORTED or BUG (a "correct:" comment gives
+// the intended result). Regression c59d95e8 (#622) refuses table-valued operators (-> #> - #-)
+// in the select list. The codec is components/expressions/jsonb_path.hpp.
 //
 // NOT PINNABLE: `SELECT CASE WHEN t #>> 'a.b' = 10 ... FROM t` SEGFAULTs on a NULL leaf row
 // (general 3VL bug) -- cannot live in a test binary.
-//
-// Invariants relied on below: path<->column codec lives in one place,
-// components/expressions/jsonb_path.hpp; a NULL into a not-yet-existing column of a computing
-// table is an absent key (no type) and the column is dropped, rather than reaching storage as
-// an all-NA column (which segfaulted).
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -31,20 +18,11 @@ using components::cursor::cursor_t_ptr;
 
 namespace {
 
-    // Fixture paths hang off the directory's pid-qualified root: parallel test processes
-    // share /tmp, and two of them clearing and reseeding one directory corrupt each other.
     std::string fixture_dir(const char* leaf) {
         return integration_fixture_path(std::string("test_jsonb_matrix/") + leaf).string();
     }
 
-    // The shared fixture used by most cases. Four rows over a computing table,
-    // deliberately ragged so that per-row-absent keys are covered:
-    //
-    //   id | a/b  | a/c | x
-    //    1 |   10 |  20 | 'p'
-    //    2 |   30 |  40 | 'q'
-    //    3 |   50 |  60 | NULL   <- x absent for this row
-    //    4 | NULL |  70 | NULL   <- a.b absent for this row
+    // Four rows over a computing table, deliberately ragged so per-row-absent keys are covered.
     void seed(otterbrix::wrapper_dispatcher_t* d) {
         REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
@@ -91,8 +69,7 @@ namespace {
         return cur->chunks().front().data[col_of(cur, alias)].type().type();
     }
 
-    // Every non-null integer value of one column, as a set. Used where ORDER BY
-    // cannot be applied — otterbrix does not accept an output alias as a sort key.
+    // Used where ORDER BY can't apply: otterbrix rejects an output alias as a sort key.
     std::set<int64_t> i64_set(const cursor_t_ptr& cur, const std::string& alias) {
         std::set<int64_t> s;
         REQUIRE(cur->is_success());
@@ -108,7 +85,6 @@ namespace {
         return s;
     }
 
-    // ids of every returned row, for set-comparison of predicates.
     std::set<int64_t> ids(const cursor_t_ptr& cur) { return i64_set(cur, "id"); }
 
     void check_value_position_refusal(otterbrix::wrapper_dispatcher_t* d, const std::string& sql) {
@@ -121,12 +97,7 @@ namespace {
 
 } // namespace
 
-// ===========================================================================
-// SUPPORTED
-// ===========================================================================
-
-// The flattened storage model itself: dotted INSERT targets become real columns
-// named with '/' separators, and rows that omit a target leave it NULL.
+// Dotted INSERT targets become real '/'-separated columns; an omitted target reads back NULL.
 TEST_CASE("integration::cpp::test_jsonb_support::flattened_storage_model") {
     auto config = make_test_config(fixture_dir("storage"));
     test_spaces space(config);
@@ -136,8 +107,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::flattened_storage_model") {
     auto cur = exec(d, "SELECT * FROM jp.t ORDER BY id;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 4);
-    // The dotted targets a.b / a.c are stored as two ordinary columns "a/b", "a/c" —
-    // there is no nested value anywhere.
     CHECK(aliases(cur) == std::set<std::string>{"id", "a/b", "a/c", "x"});
     CHECK(i64(cur, "a/b", 0) == 10);
     CHECK(i64(cur, "a/c", 0) == 20);
@@ -147,7 +116,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::flattened_storage_model") {
     CHECK(i64(cur, "a/c", 3) == 70);
 }
 
-// ->> and #>> : scalar extraction. Every spelling of the same path must agree.
 TEST_CASE("integration::cpp::test_jsonb_support::extract_scalar") {
     auto config = make_test_config(fixture_dir("extract"));
     test_spaces space(config);
@@ -160,8 +128,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::extract_scalar") {
         REQUIRE(cur->size() == 4);
         CHECK(str(cur, "v", 0) == "p");
         CHECK(str(cur, "v", 1) == "q");
-        // A key the row never supplied reads back as NULL (only a key that matches
-        // no column *at all* is an error — see bug_missing_key_errors_instead_of_null).
         CHECK(is_null(cur, "v", 2));
         CHECK(is_null(cur, "v", 3));
     }
@@ -187,30 +153,24 @@ TEST_CASE("integration::cpp::test_jsonb_support::extract_scalar") {
         auto cur = exec(d, "SELECT t ->> 'x' AS s, t #>> 'a.b' AS n FROM jp.t;");
         REQUIRE(cur->is_success());
         CHECK(type_of(cur, "s") == components::types::logical_type::STRING_LITERAL);
-        // In PostgreSQL ->> is text-returning; here an integer leaf stays BIGINT.
         CHECK(type_of(cur, "n") == components::types::logical_type::BIGINT);
     }
 
     SECTION("navigation works through a table alias, which hides the base name") {
         CHECK(i64(exec(d, "SELECT tt #>> 'a.b' AS v FROM jp.t AS tt ORDER BY id;"), "v", 0) == 10);
-        // An alias replaces the relation name, so the base name no longer reaches the table
-        // as in PostgreSQL, which answers such a reference with a hint to use the alias instead
         CHECK_FALSE(exec(d, "SELECT t #>> 'a.b' AS v FROM jp.t AS tt ORDER BY id;")->is_success());
     }
 
     SECTION("keys are case-sensitive") { CHECK_FALSE(exec(d, "SELECT t ->> 'X' AS v FROM jp.t;")->is_success()); }
 }
 
-// -> and #> : object expansion. These are table-valued — they widen the projection
-// to one column per child, which is why they cannot terminate a scalar chain.
+// Table-valued (widens to one column per child). correct: -> 'a' / #> '{a}' expand to {b, c}.
 TEST_CASE("integration::cpp::test_jsonb_support::expand_object") {
     auto config = make_test_config(fixture_dir("expand"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
 
-    // correct: -> 'a' / #> '{a}' expand to {b, c}; composes with ordinary columns
-    // ({id, b, c}) and with a further -> (chains to leaf b); -> on a leaf yields that column.
     SECTION("select-list expansion is refused (regression)") {
         check_value_position_refusal(d, "SELECT t -> 'a' FROM jp.t ORDER BY id;");
         check_value_position_refusal(d, "SELECT t #> '{a}' FROM jp.t ORDER BY id;");
@@ -226,15 +186,13 @@ TEST_CASE("integration::cpp::test_jsonb_support::expand_object") {
     }
 }
 
-// - and #- : project everything EXCEPT the named key/subtree.
+// Projects every column except the named key/subtree. correct: - 'x' -> {id,a/b,a/c}; - 'nokey' no-op.
 TEST_CASE("integration::cpp::test_jsonb_support::delete_keys") {
     auto config = make_test_config(fixture_dir("delete"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
 
-    // correct: - 'x' -> {id, a/b, a/c}; - 'a' drops the subtree -> {id, x}; #- 'a.b' drops
-    // one leaf/subtree; - 'nokey' is a no-op keeping all four columns.
     SECTION("select-list key deletion is refused (regression)") {
         check_value_position_refusal(d, "SELECT t - 'x' FROM jp.t ORDER BY id;");
         check_value_position_refusal(d, "SELECT t - 'a' FROM jp.t ORDER BY id;");
@@ -244,35 +202,28 @@ TEST_CASE("integration::cpp::test_jsonb_support::delete_keys") {
     }
 }
 
-// ? / ?| / ?& : per-row existence. "Exists" means the column exists in the schema
-// AND this row's value is not null — so a ragged row tests false, as in postgres.
+// Exists means the column exists AND the row's value is non-null; a ragged row tests false.
 TEST_CASE("integration::cpp::test_jsonb_support::existence_predicates") {
     auto config = make_test_config(fixture_dir("exists"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
 
-    // rows 3 and 4 never supplied x.
     CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ? 'x';")) == std::set<int64_t>{1, 2});
     CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE NOT (t ? 'x');")) == std::set<int64_t>{3, 4});
     CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ? 'x' AND t ? 'id';")) == std::set<int64_t>{1, 2});
 
-    // ?| any-of, ?& all-of.
     CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ?| '{x,id}';")) == std::set<int64_t>{1, 2, 3, 4});
     CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ?& '{x,id}';")) == std::set<int64_t>{1, 2});
 
-    // Degenerate key lists: an empty any-of is false for every row, an empty
-    // all-of is vacuously true for every row.
     CHECK(exec(d, "SELECT id FROM jp.t WHERE t ?| '{}';")->size() == 0);
     CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ?& '{}';")) == std::set<int64_t>{1, 2, 3, 4});
 
-    // Existence composes with COUNT and with a subquery.
     auto cnt = exec(d, "SELECT COUNT(*) AS n FROM jp.t WHERE t ? 'x';");
     REQUIRE(cnt->is_success());
     CHECK(cnt->chunks().front().get_value<uint64_t>(0, 0) == 2);
 }
 
-// Navigation as a predicate, and as the WHERE of a DML statement.
 TEST_CASE("integration::cpp::test_jsonb_support::predicates_and_dml") {
     auto config = make_test_config(fixture_dir("dml"));
     test_spaces space(config);
@@ -281,7 +232,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::predicates_and_dml") {
 
     SECTION("comparison, BETWEEN, boolean composition") {
         CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' = 10;")) == std::set<int64_t>{1});
-        // A string literal no longer coerces against an integer leaf (used to match row 1).
         auto coerced = exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' = '10';");
         REQUIRE_FALSE(coerced->is_success());
         CHECK(std::string(coerced->get_error().what).find("no type is common") != std::string::npos);
@@ -313,7 +263,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::predicates_and_dml") {
     }
 }
 
-// Navigated values inside expressions. The parenthesised form is the supported one.
 TEST_CASE("integration::cpp::test_jsonb_support::navigation_in_expressions") {
     auto config = make_test_config(fixture_dir("expr"));
     test_spaces space(config);
@@ -336,8 +285,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::navigation_in_expressions") {
     }
 
     SECTION("aggregates work over a navigated leaf once it is wrapped in arithmetic") {
-        // SUM(t #>> 'a.c') alone fails with "unable to parse value"; + 0 makes it an
-        // ordinary arithmetic expression, which the aggregate accepts.
+        // SUM(nav) alone fails ("unable to parse value"); + 0 makes it arithmetic the aggregate accepts.
         auto s = exec(d, "SELECT SUM((t #>> 'a.c') + 0) AS s FROM jp.t;");
         REQUIRE(s->is_success());
         CHECK(i64(s, "s", 0) == 190); // 20 + 40 + 60 + 70
@@ -360,8 +308,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::navigation_in_expressions") {
     }
 }
 
-// The operators are not gated on relkind: they work over an ordinary fixed-schema
-// table too, where they degrade to plain column access plus an is-not-null test.
+// Not gated on relkind: also works over an ordinary table. correct: SELECT r -> 'v' yields {v}.
 TEST_CASE("integration::cpp::test_jsonb_support::regular_table") {
     auto config = make_test_config(fixture_dir("regular"));
     test_spaces space(config);
@@ -376,15 +323,12 @@ TEST_CASE("integration::cpp::test_jsonb_support::regular_table") {
     CHECK(i64(nav, "nv", 0) == 10);
     CHECK(is_null(nav, "nv", 2));
 
-    // correct: SELECT r -> 'v' yields the single column {v}.
     check_value_position_refusal(d, "SELECT r -> 'v' FROM jp.r ORDER BY id;");
 
     CHECK(ids(exec(d, "SELECT id FROM jp.r WHERE r ->> 'v' = 10;")) == std::set<int64_t>{1});
-    // ? is a not-null test on the column: the row that never got a value is excluded.
     CHECK(ids(exec(d, "SELECT id FROM jp.r WHERE r ? 'v';")) == std::set<int64_t>{1, 2});
 }
 
-// Navigation on either side of a two-table join.
 TEST_CASE("integration::cpp::test_jsonb_support::two_table_join") {
     auto config = make_test_config(fixture_dir("join"));
     test_spaces space(config);
@@ -416,8 +360,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::two_table_join") {
     }
 }
 
-// Flattened columns survive a WAL/disk round-trip, and navigation still resolves
-// against the restored catalog.
+// Flattened columns survive a WAL/disk round-trip. correct: aliases == {b, c}.
 TEST_CASE("integration::cpp::test_jsonb_support::persistence") {
     auto config = make_test_config(fixture_dir("persist"), true);
     {
@@ -427,7 +370,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::persistence") {
         CHECK(i64(exec(d, "SELECT t #>> 'a.b' AS v FROM jp.t ORDER BY id;"), "v", 0) == 10);
     }
     {
-        // reopen the same directory: no clear, disk+wal on
         test_spaces space(config);
         auto* d = space.dispatcher();
 
@@ -444,14 +386,11 @@ TEST_CASE("integration::cpp::test_jsonb_support::persistence") {
         CHECK(str(nav, "s", 1) == "q");
 
         CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ? 'x';")) == std::set<int64_t>{1, 2});
-        // correct: aliases == {b, c}.
         check_value_position_refusal(d, "SELECT t -> 'a' FROM jp.t;");
     }
 }
 
-// A view can capture a navigation, which is the one way to hand a navigated value
-// to an outer query — the CTE / derived-table route loses the alias (see
-// clean_rejections). INSERT ... SELECT into dotted targets works as well.
+// A view is the one way to hand a navigated alias to an outer query; a CTE loses it.
 TEST_CASE("integration::cpp::test_jsonb_support::view_over_navigation") {
     auto config = make_test_config(fixture_dir("view"));
     test_spaces space(config);
@@ -467,23 +406,18 @@ TEST_CASE("integration::cpp::test_jsonb_support::view_over_navigation") {
     CHECK(i64_set(cur, "ab") == std::set<int64_t>{10, 30, 50});
     CHECK(is_null(cur, "ab", 3));
 
-    // Defect specific to an alias whose source is a navigation -- the same shape over plain
-    // columns is pinned green in test_view_expansion.cpp. correct: one column {ab}, 4 rows.
+    // Defect specific to a navigated alias (analog over plain columns is green). correct: {ab}, 4 rows.
     auto narrowed = exec(d, "SELECT ab FROM jp.v;");
     REQUIRE_FALSE(narrowed->is_success());
     CHECK(std::string(narrowed->get_error().what).find("'ab' was not found") != std::string::npos);
 }
 
-// INSERT...SELECT into a computing table routes by POSITION: the i-th projected column lands
-// in the i-th written target regardless of its name. Routing by source alias used to be wrong
-// three ways (unaliased projection had nothing to route by; a matching alias worked by luck; a
-// non-matching alias silently widened the schema). Only an ARITY disagreement is a refusal.
+// Routes by POSITION: the i-th projected column lands in the i-th written target; only an ARITY mismatch is refused.
 TEST_CASE("integration::cpp::test_jsonb_support::insert_select_maps_projection_to_target_columns") {
     auto config = make_test_config(fixture_dir("insert_select"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
-    // rows 1..4: a/b = 10,30,50,(absent); a/c = 20,40,60,70
 
     auto unaliased = exec(d, "INSERT INTO jp.t (id, a.b) SELECT 5, 55;");
     REQUIRE(unaliased->is_success());
@@ -492,19 +426,13 @@ TEST_CASE("integration::cpp::test_jsonb_support::insert_select_maps_projection_t
     auto cur = exec(d, "SELECT * FROM jp.t ORDER BY id;");
     REQUIRE(cur->is_success());
     CHECK(cur->size() == 5);
-    // no stray column was invented: the four seeded columns are still the schema
     CHECK(aliases(cur) == std::set<std::string>{"id", "a/b", "a/c", "x"});
-    // the new row carries its values, not NULLs: id=5, a/b=55, and the columns
-    // the projection did not name (a/c, x) are absent/null for it
     CHECK(i64(cur, "id", 4) == 5);
     CHECK(i64(cur, "a/b", 4) == 55);
     CHECK(is_null(cur, "a/c", 4));
     CHECK(is_null(cur, "x", 4));
-    // navigation sees the appended leaf too (row 4 keeps a/b absent -> null)
     CHECK(i64_set(exec(d, "SELECT t #>> 'a.b' AS v FROM jp.t;"), "v") == std::set<int64_t>{10, 30, 50, 55});
 
-    // An alias matching NO target routes by position all the same: 6 -> id,
-    // 66 -> a/b. c1/c2 must NOT become columns.
     REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b) SELECT 6 AS c1, 66 AS c2;")->is_success());
     auto widened = exec(d, "SELECT * FROM jp.t;");
     REQUIRE(widened->is_success());
@@ -515,7 +443,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::insert_select_maps_projection_t
     REQUIRE(routed->size() == 1);
     CHECK(i64(routed, "a/b", 0) == 66);
 
-    // TARGET ORDER, not projection order, decides: (a.b, id) SELECT w, k puts w in a/b, k in id.
     REQUIRE(exec(d, "CREATE TABLE jp.src ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.src (k, w) VALUES (100, 200);")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.t (a.b, id) SELECT w, k FROM jp.src;")->is_success());
@@ -523,7 +450,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::insert_select_maps_projection_t
     REQUIRE(from_src->is_success());
     REQUIRE(from_src->size() == 1);
     CHECK(i64(from_src, "a/b", 0) == 200);
-    // and again: no k/w columns were invented on the target
     CHECK(aliases(exec(d, "SELECT * FROM jp.t;")) == std::set<std::string>{"id", "a/b", "a/c", "x"});
 
     auto short_list = exec(d, "INSERT INTO jp.t (id) SELECT 7, 77;");
@@ -532,20 +458,13 @@ TEST_CASE("integration::cpp::test_jsonb_support::insert_select_maps_projection_t
           std::string::npos);
 }
 
-// A jsonb scalar navigation lowers to a plain read of its flattened column, so a
-// same-table comparison of two navigations is an ordinary column-vs-column
-// predicate: it returns exactly the rows whose two leaves are equal, with SQL
-// NULL semantics (an absent leaf never matches). A path naming no column at all
-// is still a clean error, as for any other navigation (see
-// navigation_over_missing_key_still_errors). This was pinned as an unsupported
-// rejection until the predicate/scan layer was generalized upstream.
+// A jsonb navigation lowers to a plain column read, so comparing two is an ordinary column comparison.
 TEST_CASE("integration::cpp::test_jsonb_support::compare_two_navigations") {
     auto config = make_test_config(fixture_dir("nav_cmp"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
-    // rows 2 and 3 have a.b == a.c; row 4 leaves a.b absent (NULL)
     REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c) VALUES (1, 10, 20), (2, 30, 30), (3, 99, 99);")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.t (id, a.c) VALUES (4, 70);")->is_success());
 
@@ -560,8 +479,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::compare_two_navigations") {
     }
 }
 
-// Everything that is NOT supported must fail loudly. This case exists so that a
-// future change cannot quietly start returning a wrong answer for any of them.
 TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
     auto config = make_test_config(fixture_dir("reject"));
     test_spaces space(config);
@@ -569,38 +486,21 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
     seed(d);
 
     const char* rejected[] = {
-        // navigation is not accepted as a GROUP key. It IS accepted as a sort key —
-        // see the pins below; the group branch keeps its own hand-written gate.
+        // not accepted as a GROUP key (unlike a sort key -- see the pins below).
         "SELECT t #>> 'a.b' AS k, COUNT(*) FROM jp.t GROUP BY t #>> 'a.b';",
-        // nor as an index expression
         "CREATE INDEX ix ON jp.t (t #>> 'a.b');",
-        // nor on the left of IN / LIKE
         "SELECT id FROM jp.t WHERE t #>> 'a.b' IN (10, 30);",
         "SELECT id FROM jp.t WHERE t ->> 'x' LIKE 'p%';",
-        // NOT a pin on navigated arguments -- those work now, see the pins below.
-        // This one is refused because `upper` is not a registered function at all
-        // ("unrecognized function 'upper'"), which is why it still belongs here.
         "SELECT upper(t ->> 'x') AS v FROM jp.t;",
-        // the delete operators are SELECT-list only
         "SELECT id FROM jp.t WHERE t #- 'a.b' = 1;",
-        // no deletion in a RETURNING clause (navigation there works — see the pins below)
         "DELETE FROM jp.t WHERE id = 3 RETURNING t - 'x';",
-        // UNION over expansions is only as valid as the two arities happen to be
         "SELECT t -> 'a' FROM jp.t UNION SELECT t -> 'nokey' FROM jp.t;",
-        // a navigated alias is not visible to an enclosing CTE (a VIEW does work —
-        // see view_over_navigation)
         "WITH c AS (SELECT id, t #>> 'a.b' AS ab FROM jp.t) SELECT ab FROM c;",
-        // a parameter cannot supply the key: $1 is taken as the literal path "$1"
         "SELECT t ->> $1 AS v FROM jp.t;",
-        // ARRAY[...] is not accepted as a path (only 'a.b' and '{a,b}' are)
         "SELECT t #>> ARRAY['a','b'] AS v FROM jp.t;",
-        // navigation in the SELECT list of a GROUP BY query
         "SELECT t #>> 'a.b' AS v FROM jp.t GROUP BY id;",
-        // path segments are not dequoted
         "SELECT t #>> '{\"a\",\"b\"}' AS v FROM jp.t;",
-        // an intermediate (non-leaf) key is not a scalar
         "SELECT t #>> 'a' AS v FROM jp.t;",
-        // postgres jsonpath / containment / concatenation operators do not exist
         "SELECT id FROM jp.t WHERE t @> '{\"x\":1}';",
         "SELECT id FROM jp.t WHERE t <@ '{\"x\":1}';",
         "SELECT id FROM jp.t WHERE t @? '$.x';",
@@ -613,24 +513,18 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
         CHECK_FALSE(cur->is_success());
     }
 
-    // Navigation as an UPDATE SET source now executes (was in the rejected list above);
-    // x := t ->> 'x' rewrites in place, so the row keeps 'p'.
     REQUIRE(exec(d, "UPDATE jp.t SET x = t ->> 'x' WHERE id = 1;")->is_success());
     auto after = exec(d, "SELECT id, x FROM jp.t WHERE id = 1;");
     REQUIRE(after->is_success());
     CHECK(str(after, "x", 0) == "p");
 
-    // Upstream #634 collapsed four duplicated resolvers into one transform_expression,
-    // removing hand-written refusals for ORDER BY, an aggregate argument and RETURNING over
-    // navigation. Pinned by VALUE, not is_success(): a navigation that executes and answers
-    // WRONGLY would still pass a success check. This file is commented out of origin/main's
-    // build, so these pins are the only guard the new behavior has.
+    // Upstream #634 folded four duplicated resolvers into one transform_expression. Pinned by
+    // VALUE, not is_success(): this file is excluded from origin/main's build, so these are the only guard.
     {
         INFO("ORDER BY over a navigated key sorts by the physical column it names");
         auto desc = exec(d, "SELECT id FROM jp.t ORDER BY t #>> 'a.b' DESC;");
         REQUIRE(desc->is_success());
         REQUIRE(desc->size() == 4);
-        // a/b is 10, 30, 50 for ids 1..3 and absent for id 4; a NULL key sorts first on DESC.
         CHECK(i64(desc, "id", 0) == 4);
         CHECK(i64(desc, "id", 1) == 3);
         CHECK(i64(desc, "id", 2) == 2);
@@ -659,8 +553,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
         CHECK(gone->size() == 0);
     }
 
-    // Refusals that survived the widening above: an unmatched path is still a hard error on
-    // each new site, and a table-valued operator still cannot stand where a scalar is required.
     CHECK_FALSE(exec(d, "SELECT id FROM jp.t ORDER BY t #>> 'nokey' DESC;")->is_success());
     CHECK_FALSE(exec(d, "SELECT SUM(t #>> 'nokey') FROM jp.t;")->is_success());
     CHECK_FALSE(exec(d, "SELECT id FROM jp.t ORDER BY t -> 'a' DESC;")->is_success());
@@ -675,12 +567,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::clean_rejections") {
     }
 }
 
-// A table-valued operator (expand '->'/'#>', delete '-'/'#-') is lowered to
-// per-column get_field only on the plain SELECT path. Under GROUP BY — or a bare
-// aggregate, which routes through the same group branch — it is never expanded, so
-// an un-expanded node used to reach physical execution and SEGFAULT the process.
-// It must be a clean rejection instead (expanding one row into several columns has
-// no meaning under grouping).
+// Under GROUP BY (or a bare aggregate) the operator used to reach physical execution and SEGFAULT.
 TEST_CASE("integration::cpp::test_jsonb_support::table_valued_op_rejected_under_grouping") {
     auto config = make_test_config(fixture_dir("gb_reject"));
     test_spaces space(config);
@@ -689,24 +576,18 @@ TEST_CASE("integration::cpp::test_jsonb_support::table_valued_op_rejected_under_
     REQUIRE(exec(d, "CREATE TABLE jp.gb ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.gb (g, a.b, x) VALUES (1, 1, 9), (1, 2, 90);")->is_success());
 
-    // clean errors, not crashes — with an explicit GROUP BY ...
     CHECK_FALSE(exec(d, "SELECT g, gb -> 'a' FROM jp.gb GROUP BY g;")->is_success());
     CHECK_FALSE(exec(d, "SELECT gb #> 'a' FROM jp.gb GROUP BY g;")->is_success());
     CHECK_FALSE(exec(d, "SELECT gb - 'x' FROM jp.gb GROUP BY g;")->is_success());
     CHECK_FALSE(exec(d, "SELECT gb #- 'a.b' FROM jp.gb GROUP BY g;")->is_success());
-    // ... and with a bare aggregate (routes through the group branch too)
     CHECK_FALSE(exec(d, "SELECT gb -> 'a', COUNT(x) FROM jp.gb;")->is_success());
 
-    // a genuine aggregate over the same table is unaffected
     auto ok = exec(d, "SELECT g, COUNT(x) AS n FROM jp.gb GROUP BY g;");
     REQUIRE(ok->is_success());
     CHECK(ok->size() == 1);
 }
 
-// The wiki's SQL-Standards matrix marks every SQL:2016 JSON row ❌ for otterbrix.
-// That is accurate, and this case keeps it honest: none of it may start silently
-// half-working. (The failure MODE differs per feature — type rejection, unknown
-// function, or plain syntax error — but none of them execute.)
+// Keeps the wiki's SQL-Standards matrix honest: every SQL:2016 JSON feature must fail, never half-work.
 TEST_CASE("integration::cpp::test_jsonb_support::sql_json_standard_absent") {
     auto config = make_test_config(fixture_dir("std"));
     test_spaces space(config);
@@ -747,23 +628,16 @@ TEST_CASE("integration::cpp::test_jsonb_support::sql_json_standard_absent") {
     }
 }
 
-// ===========================================================================
-// BUG characterization — each CHECK below pins behavior that is WRONG.
-// ===========================================================================
+// BUG characterization: each CHECK below pins behavior that is currently WRONG.
 
-// [F] A cast applied to a navigated value, then used in arithmetic, reads the
-// navigated column per row like every other operand. It used to fall through to
-// the constant-parameter path, which folded the navigation expression into an
-// uninitialized parameter: a per-run-varying garbage constant repeated on every
-// row. Both halves were individually correct — only the two together corrupted.
+// A cast on a navigated value used to fall through to the constant-parameter path, folding it
+// into a per-run garbage constant repeated on every row; it now reads the column per row.
 TEST_CASE("integration::cpp::test_jsonb_support::cast_nav_in_arithmetic_reads_the_column") {
     auto config = make_test_config(fixture_dir("cast_arith"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
-    // rows: a/c = 20, 40, 60, 70 (present on every row)
 
-    // correct: v == 20 on row 1 (the cast INSIDE arithmetic below still executes).
     auto cast_only = exec(d, "SELECT id, (t #>> 'a.c')::bigint AS v FROM jp.t ORDER BY id;");
     REQUIRE_FALSE(cast_only->is_success());
     CHECK(std::string(cast_only->get_error().what).find("cast spelled on a column reference") != std::string::npos);
@@ -772,7 +646,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::cast_nav_in_arithmetic_reads_th
     REQUIRE(arith_only->is_success());
     CHECK(i64(arith_only, "v", 0) == 21);
 
-    // together: now the per-row value, not a repeated garbage constant
     auto both = exec(d, "SELECT id, (t #>> 'a.c')::bigint + 1 AS v FROM jp.t ORDER BY id;");
     REQUIRE(both->is_success());
     CHECK(i64(both, "v", 0) == 21);
@@ -780,22 +653,17 @@ TEST_CASE("integration::cpp::test_jsonb_support::cast_nav_in_arithmetic_reads_th
     CHECK(i64(both, "v", 2) == 61);
     CHECK(i64(both, "v", 3) == 71);
 
-    // the cast composes on either side of the operator, still per row
     auto both2 = exec(d, "SELECT id, 100 - (t #>> 'a.b')::bigint AS v FROM jp.t WHERE id < 3 ORDER BY id;");
     REQUIRE(both2->is_success());
     CHECK(i64(both2, "v", 0) == 90); // 100 - 10
     CHECK(i64(both2, "v", 1) == 70); // 100 - 30
 
-    // the same shape over a plain column was always fine — this was nav-specific
     auto plain = exec(d, "SELECT id, (id)::bigint + 1 AS v FROM jp.t ORDER BY id;");
     REQUIRE(plain->is_success());
     CHECK(i64(plain, "v", 0) == 2);
 }
 
-// [G] An INSERT target of arbitrary depth flattens to the full slash-joined
-// column name — every interior segment is kept, and the path written is the path
-// read back. The write side and the read side share one codec, so any depth and
-// either spelling (dotted or pg-array) round-trip.
+// An INSERT target of any depth flattens to the full slash-joined name; either spelling round-trips.
 TEST_CASE("integration::cpp::test_jsonb_support::deep_path_insert_keeps_all_segments") {
     auto config = make_test_config(fixture_dir("depth"));
     test_spaces space(config);
@@ -811,20 +679,15 @@ TEST_CASE("integration::cpp::test_jsonb_support::deep_path_insert_keeps_all_segm
     CHECK(i64(cur, "a/b/c", 0) == 111);
     CHECK(i64(cur, "p/q/r/s/t", 1) == 222);
 
-    // the exact path that was written reads back, both spellings, both operators
     CHECK(i64(exec(d, "SELECT d #>> 'a.b.c' AS v FROM jp.d WHERE id = 1;"), "v", 0) == 111);
     CHECK(i64(exec(d, "SELECT d #>> '{a,b,c}' AS v FROM jp.d WHERE id = 1;"), "v", 0) == 111);
     CHECK(i64(exec(d, "SELECT d #>> 'p.q.r.s.t' AS v FROM jp.d WHERE id = 2;"), "v", 0) == 222);
-    // the truncated path nobody wrote is (correctly) absent now
     CHECK_FALSE(exec(d, "SELECT d #>> 'a.c' AS v FROM jp.d;")->is_success());
 
-    // correct: one rerooted column {c} holding 111.
     check_value_position_refusal(d, "SELECT d -> 'a' -> 'b' FROM jp.d WHERE id = 1;");
 }
 
-// [G] A subscript target such as arr[0] flattens like any other segment
-// (arr[0] -> "arr/0") instead of dereferencing the A_Indices node as a string,
-// which used to throw an uncaught std::exception.
+// A subscript like arr[0] flattens like any segment (-> "arr/0"); it used to throw uncaught std::exception.
 TEST_CASE("integration::cpp::test_jsonb_support::subscript_insert_target") {
     auto config = make_test_config(fixture_dir("subscript"));
     test_spaces space(config);
@@ -838,22 +701,12 @@ TEST_CASE("integration::cpp::test_jsonb_support::subscript_insert_target") {
     CHECK(aliases(cur) == std::set<std::string>{"id", "arr/0", "arr/1"});
     CHECK(i64(cur, "arr/0", 0) == 7);
     CHECK(i64(cur, "arr/1", 0) == 8);
-    // and it reads back through the path spelling
     CHECK(i64(exec(d, "SELECT d #>> 'arr.0' AS v FROM jp.d;"), "v", 0) == 7);
 }
 
-// [H] A NULL written to a column that does not yet exist has no type to create
-// the column from. On a schemaless computing table that is simply an absent key:
-// the column is not materialized (it used to build an all-NA column and segfault
-// the insert), and it comes into existence — with the earlier rows null — only
-// once some row supplies a concrete value.
-//
-// The arity guard (services/dispatcher/validate_logical_plan.cpp, bind_computed_rename)
-// compares the written column list against the TYPED incoming schema; an all-NULL column has
-// no type, so it's absent from that schema and the counts disagree, refusing the whole
-// statement (non-null values included). Should compare against the projection's expression
-// count, not its typeable count. Only the mixed case (every column gets a concrete value from
-// some row) still lands.
+// A NULL into a not-yet-existing column has no type, so it's dropped instead of segfaulting.
+// OPEN DEFECT: the arity guard (validate_logical_plan.cpp, bind_computed_rename) checks the TYPED
+// schema instead of the projection's expression count, wrongly refusing an all-NULL write.
 TEST_CASE("integration::cpp::test_jsonb_support::insert_null_into_new_column_is_absent") {
     auto config = make_test_config(fixture_dir("null_insert"));
     test_spaces space(config);
@@ -861,15 +714,12 @@ TEST_CASE("integration::cpp::test_jsonb_support::insert_null_into_new_column_is_
     REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
 
-    // correct: success, with {x} the only column ('z' stored, the all-null a.b key absent).
     auto nulled = exec(d, "INSERT INTO jp.t (a.b, x) VALUES (NULL, 'z');");
     REQUIRE_FALSE(nulled->is_success());
     CHECK(std::string(nulled->get_error().what).find("INSERT names 2 columns but the source provides 1") !=
           std::string::npos);
     CHECK(exec(d, "SELECT * FROM jp.t;")->size() == 0);
 
-    // Mixed case still works: the column springs into existence and earlier all-null rows
-    // read back null, not a zero.
     REQUIRE(exec(d, "CREATE TABLE jp.u ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.u (id, v) VALUES (1, NULL), (2, NULL), (3, 7);")->is_success());
     auto u = exec(d, "SELECT id, v FROM jp.u ORDER BY id;");
@@ -879,8 +729,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::insert_null_into_new_column_is_
     CHECK(is_null(u, "v", 1));
     CHECK(i64(u, "v", 2) == 7);
 
-    // an all-null insert is refused for the same reason, whatever its width.
-    // correct: success storing nothing and creating no column.
     REQUIRE(exec(d, "CREATE TABLE jp.w ();")->is_success());
     auto one = exec(d, "INSERT INTO jp.w (a.b) VALUES (NULL);");
     REQUIRE_FALSE(one->is_success());
@@ -893,9 +741,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::insert_null_into_new_column_is_
     CHECK(exec(d, "SELECT * FROM jp.w;")->size() == 0);
 }
 
-// [C] `- '{a,b}'` is the postgres text-array form of key deletion (`jsonb - text[]`):
-// it removes SEVERAL top-level keys at once. The bare `- 'key'` form still removes
-// one key, and `#- 'a.b'` still deletes a nested path — the three are distinct.
+// `- '{a,b}'` (`jsonb - text[]`) removes several keys; `- 'key'` removes one; `#- 'a.b'` deletes a path.
 TEST_CASE("integration::cpp::test_jsonb_support::delete_key_array_form") {
     auto config = make_test_config(fixture_dir("del_arr"));
     test_spaces space(config);
@@ -904,15 +750,6 @@ TEST_CASE("integration::cpp::test_jsonb_support::delete_key_array_form") {
     REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c, x, y) VALUES (1, 10, 20, 'p', 'q');")->is_success());
 
-    // correct:
-    //   - 'x'        -> {id, a/b, a/c, y}
-    //   - '{x}'      -> {id, a/b, a/c, y}
-    //   - '{x,y}'    -> {id, a/b, a/c}
-    //   - '{x,a}'    -> {id, y} (subtree + leaf together)
-    //   - '{}'       -> all five columns (deletes nothing)
-    //   - '{nokey}'  -> all five columns (unknown key: no-op, no error)
-    //   #- '{a,b}'   -> {id, a/c, x, y} (single nested PATH delete)
-    //   - '{a}'      -> {id, x, y} with the surviving values intact.
     check_value_position_refusal(d, "SELECT t - 'x' FROM jp.t;");
     check_value_position_refusal(d, "SELECT t - '{x}' FROM jp.t;");
     check_value_position_refusal(d, "SELECT t - '{x,y}' FROM jp.t;");
@@ -923,49 +760,26 @@ TEST_CASE("integration::cpp::test_jsonb_support::delete_key_array_form") {
     check_value_position_refusal(d, "SELECT t - '{a}' FROM jp.t;");
 }
 
-// Expanding a path that matches no column does not error — the expansion item is
-// silently ERASED from the select list. On its own that yields a zero-column
-// result; alongside other items it silently changes the arity of the answer.
-// [D] Expand ('->'/'#>') names a specific object; a key that matches no column is
-// a "path not found" error, exactly like the scalar form. It used to be erased to
-// nothing, so the select item silently vanished and the caller got fewer columns
-// than it asked for, with no indication that anything went wrong.
+// Expand now errors on a miss like the scalar form; it used to be silently ERASED, changing arity.
 TEST_CASE("integration::cpp::test_jsonb_support::zero_match_expand_is_an_error") {
     auto config = make_test_config(fixture_dir("zero_exp"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
 
-    // the scalar operator errors, as it always has
     CHECK_FALSE(exec(d, "SELECT t ->> 'nokey' AS v FROM jp.t;")->is_success());
-
-    // the table-valued one now errors too, instead of producing zero columns
     CHECK_FALSE(exec(d, "SELECT t -> 'nokey' FROM jp.t;")->is_success());
-
-    // ... and it no longer disappears silently from among other select items
     CHECK_FALSE(exec(d, "SELECT t -> 'nokey', x FROM jp.t;")->is_success());
     CHECK_FALSE(exec(d, "SELECT id, t -> 'nokey', x FROM jp.t;")->is_success());
 
-    // a dotted path handed to -> (which takes a single key, not a path) names the
-    // literal key "a.b", which no column matches -> error, not a vanished column
     CHECK_FALSE(exec(d, "SELECT t -> 'a.b' FROM jp.t;")->is_success());
 
-    // The miss-vs-match distinction is not observable here any more (both refused).
     // correct: a matching key expands to {b, c}.
     check_value_position_refusal(d, "SELECT t -> 'a' FROM jp.t;");
 }
 
-// LIMITATION of the flattened representation (documented, not a fix target here).
-// A computing-table column name and a nested path share one namespace, and the
-// path separator '/' is a legal identifier character, so the nested path a.b and a
-// column whose literal name is "a/b" are the same storage column "a/b" — a value
-// written one way is visible the other way. Making them distinct (postgres keeps
-// the jsonb key "a/b" separate from a nested a->b) would require percent-escaping
-// EVERY column identifier on read and write system-wide — including regular tables
-// and DDL, well outside jsonb — so we do not do it here. The one codec that owns
-// the mapping (jsonb_path.hpp) documents the same reservation. This case pins the
-// behavior so a future escaping change is a deliberate, visible flip rather than a
-// silent one.
+// LIMITATION: '/' is a legal identifier char, so nested path a.b and a column literally named
+// "a/b" collide; fixing this needs percent-escaping every identifier system-wide, so it's not done.
 TEST_CASE("integration::cpp::test_jsonb_support::flattened_name_and_nested_path_share_storage") {
     auto config = make_test_config(fixture_dir("sep"));
     test_spaces space(config);
@@ -977,52 +791,38 @@ TEST_CASE("integration::cpp::test_jsonb_support::flattened_name_and_nested_path_
 
     auto star = exec(d, "SELECT * FROM jp.s ORDER BY id;");
     REQUIRE(star->is_success());
-    // one shared column "a/b", not two
     CHECK(aliases(star) == std::set<std::string>{"id", "a/b"});
 
-    // both spellings address that one column, so each sees the other's row
     CHECK(i64_set(exec(d, "SELECT s #>> 'a.b' AS v FROM jp.s;"), "v") == std::set<int64_t>{10, 20});
     CHECK(i64_set(exec(d, "SELECT s ->> 'a/b' AS v FROM jp.s;"), "v") == std::set<int64_t>{10, 20});
 }
 
-// [E] Existence over a missing key follows postgres 3VL instead of hard-erroring,
-// which is what makes '?'/'?|'/'?&' usable: you can ask "does this row have key K"
-// without K being known to exist. A truly absent key is false; an intermediate
-// object key (a prefix of stored columns) is present iff a child is; and one
-// absent key no longer poisons an any-of another key satisfies.
+// Existence follows postgres 3VL instead of hard-erroring: absent is false, an intermediate key
+// is present iff a child is, and one absent key no longer poisons an any-of.
 TEST_CASE("integration::cpp::test_jsonb_support::existence_over_missing_key") {
     auto config = make_test_config(fixture_dir("missing"));
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
-    // rows: 1(a/b=10,a/c=20,x=p) 2(a/b=30,a/c=40,x=q) 3(a/b=50,a/c=60) 4(a/c=70)
 
-    // a key present in some rows
     CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ? 'x';")) == std::set<int64_t>{1, 2});
-    // a truly absent key -> false for every row (no error)
     CHECK(exec(d, "SELECT id FROM jp.t WHERE t ? 'nokey';")->size() == 0);
     CHECK(exec(d, "SELECT id FROM jp.t WHERE NOT (t ? 'nokey');")->size() == 4);
 
-    // one absent key no longer poisons an any-of / all-of
     CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ?| '{x,nokey}';")) == std::set<int64_t>{1, 2});
     CHECK(exec(d, "SELECT id FROM jp.t WHERE t ?& '{x,nokey}';")->size() == 0);
     CHECK(exec(d, "SELECT id FROM jp.t WHERE t ?| '{nokey,nokey2}';")->size() == 0);
 
-    // an intermediate object key 'a' (prefix of a/b, a/c) is PRESENT where a child
-    // is non-null — a/b or a/c is set for every row, so all four rows
     CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ? 'a';")) == std::set<int64_t>{1, 2, 3, 4});
     CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t ?& '{a,x}';")) == std::set<int64_t>{1, 2});
 
-    // a mistyped REGULAR column IS NULL still errors — only jsonb keys are lenient
     REQUIRE(exec(d, "CREATE TABLE jp.r (id BIGINT, v BIGINT);")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.r (id, v) VALUES (1, 5);")->is_success());
     CHECK_FALSE(exec(d, "SELECT id FROM jp.r WHERE nosuchcol IS NULL;")->is_success());
 }
 
-// STILL a hard error, deferred (documented): scalar navigation over an absent key
-// should yield SQL NULL, and `<nav> IS NULL` should be a boolean. Both need the
-// select-list / compare paths to synthesize a typed NULL leaf for a flagged key,
-// a larger change than the existence rewrite; pinned so the deferral is visible.
+// Deferred: scalar navigation over an absent key should yield SQL NULL (and `<nav> IS NULL` a
+// boolean), which needs the select-list/compare paths to synthesize a typed NULL leaf.
 TEST_CASE("integration::cpp::test_jsonb_support::navigation_over_missing_key_still_errors") {
     auto config = make_test_config(fixture_dir("missing_nav"));
     test_spaces space(config);
@@ -1034,10 +834,8 @@ TEST_CASE("integration::cpp::test_jsonb_support::navigation_over_missing_key_sti
     CHECK_FALSE(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' IS NULL;")->is_success()); // deferred: row 4
 }
 
-// [A] The key operand of a jsonb operator is a literal: a bare string/number, a
-// cast of one, or NULL. A cast is transparent (it names the same key as the bare
-// literal), a numeric key is stringified, a NULL key is a clean error, and none
-// of these crash the process — the three things get_str_value used to get wrong.
+// The key operand is a literal (string/number, a cast, or NULL): a cast is transparent, a
+// numeric key is stringified, and NULL is a clean error -- get_str_value used to crash on these.
 TEST_CASE("integration::cpp::test_jsonb_support::key_operand_literals") {
     auto config = make_test_config(fixture_dir("key_operand"));
     test_spaces space(config);
@@ -1045,25 +843,21 @@ TEST_CASE("integration::cpp::test_jsonb_support::key_operand_literals") {
     seed(d);
 
     SECTION("a cast on a scalar key names the same column as the bare key") {
-        // ->> takes a single key: ('x'::text) is exactly 'x'.
         auto cast = exec(d, "SELECT id, t ->> ('x'::text) AS v FROM jp.t ORDER BY id;");
         REQUIRE(cast->is_success());
         CHECK(str(cast, "v", 0) == "p");
         CHECK(str(cast, "v", 1) == "q");
         CHECK(is_null(cast, "v", 2));
-        // identical to the un-cast spelling
         auto plain = exec(d, "SELECT id, t ->> 'x' AS v FROM jp.t ORDER BY id;");
         REQUIRE(plain->is_success());
         CHECK(str(plain, "v", 0) == "p");
     }
 
     SECTION("a cast on a path key splits into segments just like the bare path") {
-        // #>> takes a whole path: ('a.b'::text) splits to a/b.
         auto cast = exec(d, "SELECT id, t #>> ('a.b'::text) AS v FROM jp.t ORDER BY id;");
         REQUIRE(cast->is_success());
         CHECK(i64(cast, "v", 0) == 10);
         CHECK(i64(cast, "v", 1) == 30);
-        // ->> is single-key, so ('a.b'::text) is the literal key "a.b" (no such column)
         CHECK_FALSE(exec(d, "SELECT t ->> ('a.b'::text) AS v FROM jp.t;")->is_success());
     }
 
@@ -1081,8 +875,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::key_operand_literals") {
     }
 
     SECTION("a non-string cast key resolves to its value and never crashes") {
-        // (1::bool) used to segfault; now the key is the text "1" (no such column).
-        // Both the scalar and the table-valued form error cleanly on the miss.
+        // (1::bool) used to segfault; now it resolves to the text "1" (no such column), erroring cleanly.
         CHECK_FALSE(exec(d, "SELECT t ->> (1::bool) AS v FROM jp.t;")->is_success());
         CHECK_FALSE(exec(d, "SELECT t -> (1::bool) FROM jp.t;")->is_success());
     }
@@ -1101,11 +894,8 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_cast_over_navigation_is_a_n
     CHECK(std::string(cur->get_error().what).find("cast spelled on a column reference") != std::string::npos);
 }
 
-// [D] Inside a join a jsonb operator names one table (its base), and the base's
-// side disambiguates a subtree name both joined tables carry. Expansion and key
-// deletion used to be side-blind — they matched columns from both sides, so every
-// produced column was ambiguous ("path not found") — while scalar navigation was
-// already side-aware. Now all three resolve to the side the operator named.
+// A jsonb operator's base table disambiguates a subtree name shared by both joined tables;
+// expansion/deletion used to be side-blind.
 TEST_CASE("integration::cpp::test_jsonb_support::expand_inside_join_is_side_aware") {
     auto config = make_test_config(fixture_dir("join_expand"));
     test_spaces space(config);
@@ -1116,22 +906,17 @@ TEST_CASE("integration::cpp::test_jsonb_support::expand_inside_join_is_side_awar
     REQUIRE(exec(d, "INSERT INTO jp.l (k, lv, d.e, d.f) VALUES (1, 100, 111, 112), (2, 200, 222, 223);")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.m (k, mv, d.e, d.f) VALUES (1, 10, 11, 12), (2, 20, 22, 23);")->is_success());
 
-    // Scalar navigation resolves each side correctly — this always worked.
     CHECK(i64_set(exec(d, "SELECT m #>> 'd.e' AS v FROM jp.l JOIN jp.m ON l.k = m.k;"), "v") ==
           std::set<int64_t>{11, 22});
     CHECK(i64_set(exec(d, "SELECT l #>> 'd.e' AS v FROM jp.l JOIN jp.m ON l.k = m.k;"), "v") ==
           std::set<int64_t>{111, 222});
 
-    // correct: m -> 'd' expands to {e, f} with m's values {11,22}/{12,23}; l -> 'd' the same
-    // with l's values {111,222}/{112,223}; m - 'd' keeps {k, mv} with mv == {10, 20}.
     check_value_position_refusal(d, "SELECT m -> 'd' FROM jp.l JOIN jp.m ON l.k = m.k;");
     check_value_position_refusal(d, "SELECT l -> 'd' FROM jp.l JOIN jp.m ON l.k = m.k;");
     check_value_position_refusal(d, "SELECT m - 'd' FROM jp.l JOIN jp.m ON l.k = m.k;");
 }
 
-// Expansion DOES work inside a join as long as the subtree name belongs to only
-// one of the joined tables — which is what makes the failure above a resolution
-// bug rather than a missing feature.
+// Works when the subtree name belongs to only one joined table -- a resolution bug, not a missing feature.
 TEST_CASE("integration::cpp::test_jsonb_support::expand_in_join_with_unique_subtree") {
     auto config = make_test_config(fixture_dir("join_expand_ok"));
     test_spaces space(config);
@@ -1142,15 +927,10 @@ TEST_CASE("integration::cpp::test_jsonb_support::expand_in_join_with_unique_subt
     REQUIRE(exec(d, "INSERT INTO jp.l (k, lv) VALUES (1, 100), (2, 200);")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.m (k, d.e, d.f) VALUES (1, 11, 12), (2, 22, 23);")->is_success());
 
-    // correct: {e, f} with values {11, 22} / {12, 23}.
     check_value_position_refusal(d, "SELECT m -> 'd' FROM jp.l JOIN jp.m ON l.k = m.k;");
 }
 
-// With three or more joined tables, a column name shared by several of them
-// silently resolves to the LEFTMOST table — so a navigation that names the third
-// table returns the first table's values. (The same holds for a plain qualified
-// column, so the root cause is join name resolution rather than jsonb; it is
-// pinned here because navigation has no way to disambiguate at all.)
+// With 3+ joins, a column shared by several tables silently resolves to the leftmost one (join resolution, not jsonb).
 TEST_CASE("integration::cpp::test_jsonb_support::bug_three_table_join_takes_leftmost_value") {
     auto config = make_test_config(fixture_dir("join3"));
     test_spaces space(config);

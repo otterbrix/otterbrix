@@ -81,7 +81,7 @@ namespace {
         auto free_ptr = bm.serialize_free_list();
         REQUIRE_FALSE(free_ptr.has_error());
         REQUIRE_FALSE(bm.file_sync().has_error());
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
         REQUIRE_FALSE(bm.write_header(header).has_error());
@@ -134,7 +134,7 @@ namespace {
     }
 
     tstorage::database_header_t garbage_slot(std::mt19937_64& rng, uint64_t iteration) {
-        tstorage::database_header_t h;
+        tstorage::database_header_t h{};
         auto* bytes = reinterpret_cast<uint8_t*>(&h);
         for (size_t i = 0; i < sizeof(h); i++) {
             bytes[i] = static_cast<uint8_t>(rng() & 0xFF);
@@ -160,7 +160,7 @@ namespace {
     int valid_slot_count(const std::string& path) {
         int valid = 0;
         for (int slot = 0; slot < 2; slot++) {
-            tstorage::database_header_t h;
+            tstorage::database_header_t h{};
             if (read_slot(path, slot, h) && h.checksum_ok()) {
                 valid++;
             }
@@ -194,8 +194,8 @@ TEST_CASE("shadow_header: a checkpoint writes ONE slot and leaves the previous r
     REQUIRE(root_b != tstorage::INVALID_INDEX);
     REQUIRE(root_a != root_b);
 
-    tstorage::database_header_t s0;
-    tstorage::database_header_t s1;
+    tstorage::database_header_t s0{};
+    tstorage::database_header_t s1{};
     REQUIRE(read_slot(path, 0, s0));
     REQUIRE(read_slot(path, 1, s1));
 
@@ -264,8 +264,8 @@ TEST_CASE("shadow_header: a crash after a checkpoint leaves the PREVIOUS root op
 
         CHECK(rows_at_root(env, bm, bm.meta_block(), 5000) == 4000);
 
-        tstorage::database_header_t s0;
-        tstorage::database_header_t s1;
+        tstorage::database_header_t s0{};
+        tstorage::database_header_t s1{};
         REQUIRE(read_slot(copy_path, 0, s0));
         REQUIRE(read_slot(copy_path, 1, s1));
         const auto& previous = (s0.iteration > s1.iteration) ? s1 : s0;
@@ -291,8 +291,8 @@ TEST_CASE("shadow_header: the durable header carries a verifiable checksum") {
         checkpoint_production(bm, *table);
     }
 
-    tstorage::database_header_t s0;
-    tstorage::database_header_t s1;
+    tstorage::database_header_t s0{};
+    tstorage::database_header_t s1{};
     REQUIRE(read_slot(path, 0, s0));
     REQUIRE(read_slot(path, 1, s1));
     const auto& newest = (s0.iteration >= s1.iteration) ? s0 : s1;
@@ -314,7 +314,7 @@ TEST_CASE("shadow_header: the durable header carries a verifiable checksum") {
     REQUIRE(s0.checksum_ok());
     REQUIRE(s1.checksum_ok());
     REQUIRE(s0.iteration != s1.iteration);
-    tstorage::database_header_t spliced;
+    tstorage::database_header_t spliced{};
     std::memcpy(&spliced, &s0, sizeof(spliced));
     std::memcpy(reinterpret_cast<char*>(&spliced) + HARDWARE_SECTOR,
                 reinterpret_cast<const char*>(&s1) + HARDWARE_SECTOR,
@@ -349,8 +349,8 @@ TEST_CASE("shadow_header: garbage with a huge iteration never beats a valid slot
 
     REQUIRE(valid_slot_count(pristine) == 2);
 
-    tstorage::database_header_t s0;
-    tstorage::database_header_t s1;
+    tstorage::database_header_t s0{};
+    tstorage::database_header_t s1{};
     REQUIRE(read_slot(pristine, 0, s0));
     REQUIRE(read_slot(pristine, 1, s1));
 
@@ -441,7 +441,7 @@ TEST_CASE("shadow_header: a freshly created database opens cleanly with one vali
 
     int rejected = 0;
     for (int slot = 0; slot < 2; slot++) {
-        tstorage::database_header_t h;
+        tstorage::database_header_t h{};
         REQUIRE(read_slot(path, slot, h));
         if (!h.checksum_ok()) {
             rejected++;
@@ -492,8 +492,8 @@ TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME sl
         checkpoint_production(bm, *table);
         root_a = bm.meta_block();
 
-        tstorage::database_header_t slot_a;
-        tstorage::database_header_t slot_b;
+        tstorage::database_header_t slot_a{};
+        tstorage::database_header_t slot_b{};
         REQUIRE(read_slot(path, 0, slot_a));
         REQUIRE(read_slot(path, 1, slot_b));
         iteration_a = std::max(slot_a.iteration, slot_b.iteration);
@@ -510,7 +510,7 @@ TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME sl
             REQUIRE_FALSE(bm.file_sync().has_error());
 
             plan.fail_after_writes = plan.writes_seen;
-            tstorage::database_header_t header;
+            tstorage::database_header_t header{};
             header.initialize();
             header.free_list = free_ptr.value().block_pointer;
             auto failed = bm.write_header(header);
@@ -527,8 +527,8 @@ TEST_CASE("shadow_header: a retry after a failed header write reuses the SAME sl
     REQUIRE(root_a != root_c);
     REQUIRE(valid_slot_count(path) == 2);
 
-    tstorage::database_header_t s0;
-    tstorage::database_header_t s1;
+    tstorage::database_header_t s0{};
+    tstorage::database_header_t s1{};
     REQUIRE(read_slot(path, 0, s0));
     REQUIRE(read_slot(path, 1, s1));
     const bool newest_in_s0 = s0.iteration > s1.iteration;
@@ -638,8 +638,8 @@ TEST_CASE("shadow_header: a checkpointed file falling back to the initial empty 
         checkpoint_production(bm, *table);
     }
     {
-        tstorage::database_header_t s0;
-        tstorage::database_header_t s1;
+        tstorage::database_header_t s0{};
+        tstorage::database_header_t s1{};
         REQUIRE(read_slot(path, 0, s0));
         REQUIRE(read_slot(path, 1, s1));
         REQUIRE(s0.checksum_ok());
@@ -699,7 +699,7 @@ TEST_CASE("shadow_header: an initial root whose header contradicts the file is r
             tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
             REQUIRE_FALSE(bm.create_new_database().has_error());
         }
-        tstorage::database_header_t initial;
+        tstorage::database_header_t initial{};
         REQUIRE(read_slot(path, 1, initial));
         REQUIRE(initial.checksum_ok());
         REQUIRE(initial.iteration == 0);

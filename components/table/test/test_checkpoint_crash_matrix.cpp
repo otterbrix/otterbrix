@@ -148,7 +148,7 @@ namespace {
             snap();
             return t;
         }
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
         if (auto committed = bm.write_header(header); committed.has_error()) {

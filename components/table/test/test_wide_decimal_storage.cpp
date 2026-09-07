@@ -162,7 +162,7 @@ namespace {
             metadata_writer_t writer(meta_mgr);
             REQUIRE_FALSE(table->checkpoint(writer).has_error());
             table_pointer = writer.get_block_pointer();
-            database_header_t header;
+            database_header_t header{};
             header.initialize();
             REQUIRE_FALSE(bm.write_header(header).has_error());
         }

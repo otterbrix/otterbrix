@@ -140,7 +140,7 @@ TEST_CASE("checkpoint_load: single INT64 column, 1000 rows") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -221,7 +221,7 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -285,7 +285,7 @@ TEST_CASE("checkpoint_load: empty table") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -336,7 +336,7 @@ TEST_CASE("checkpoint_load: multiple row groups") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -397,7 +397,7 @@ TEST_CASE("checkpoint_load: CONSTANT compression — all identical values") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -456,7 +456,7 @@ TEST_CASE("checkpoint_load: RLE compression — sorted runs") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -516,7 +516,7 @@ TEST_CASE("checkpoint_load: DICTIONARY compression — low cardinality cycling")
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -574,7 +574,7 @@ TEST_CASE("checkpoint_load: UNCOMPRESSED fallback — high cardinality") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -637,7 +637,7 @@ TEST_CASE("checkpoint_load: mixed row groups — constant + varied") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -701,7 +701,7 @@ TEST_CASE("checkpoint_load: DOUBLE column — constant compression") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -758,7 +758,7 @@ TEST_CASE("checkpoint_load: small segment — 2 rows edge case") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -805,7 +805,7 @@ namespace {
         auto free_list_ptr = bm.serialize_free_list();
         REQUIRE_FALSE(free_list_ptr.has_error());
         REQUIRE_FALSE(bm.file_sync().has_error());
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         header.free_list = free_list_ptr.value().block_pointer;
         REQUIRE_FALSE(bm.write_header(header).has_error());
@@ -1016,7 +1016,7 @@ TEST_CASE("checkpoint_load: LIST column round-trips its child data") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -1098,7 +1098,7 @@ TEST_CASE("checkpoint_load: ARRAY column round-trips its child data") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -1180,7 +1180,7 @@ TEST_CASE("checkpoint_load: STRUCT column round-trips its fields") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -1270,7 +1270,7 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
         blocks_after_checkpoint = bm.total_blocks();
@@ -1302,7 +1302,9 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
                 if (is_null_row(row)) {
                     CHECK(v.is_null());
                     CHECK(s.is_null());
-                    nulls_seen += v.is_null() ? 1 : 0;
+                    if (v.is_null()) {
+                        ++nulls_seen;
+                    }
                 } else {
                     REQUIRE_FALSE(v.is_null());
                     REQUIRE_FALSE(s.is_null());
@@ -1446,7 +1448,7 @@ TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -1596,7 +1598,7 @@ TEST_CASE("checkpoint_load: 4-byte CONSTANT segment must not misalign the segmen
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }

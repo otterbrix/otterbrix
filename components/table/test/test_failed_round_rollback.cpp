@@ -110,7 +110,7 @@ namespace {
             out.error = barrier.error();
             return out;
         }
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
         if (header_write_fails) {
@@ -493,7 +493,7 @@ TEST_CASE("failed_round: an INDETERMINATE header write releases nothing", "[a7.7
         REQUIRE_FALSE(free_ptr.has_error());
         REQUIRE_FALSE(bm.file_sync().has_error());
 
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
         plan.torn_at_write = plan.writes_seen + 1;

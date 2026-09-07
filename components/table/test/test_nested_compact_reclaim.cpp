@@ -165,7 +165,7 @@ namespace {
         auto free_ptr = bm.serialize_free_list();
         REQUIRE_FALSE(free_ptr.has_error());
         REQUIRE_FALSE(bm.file_sync().has_error());
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
         REQUIRE_FALSE(bm.write_header(header).has_error());

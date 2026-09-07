@@ -152,7 +152,7 @@ TEST_CASE("big_strings: a >=4096-byte string survives checkpoint and reload") {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -244,7 +244,7 @@ namespace {
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         result.table_pointer = writer.get_block_pointer();
 
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
         result.blocks_after_checkpoint = bm.total_blocks();
@@ -644,7 +644,7 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
         tstorage::metadata_manager_t meta_mgr(bm);
         tstorage::metadata_writer_t writer(meta_mgr);
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }

@@ -94,7 +94,7 @@ namespace {
         auto free_ptr = bm.serialize_free_list();
         REQUIRE_FALSE(free_ptr.has_error());
         REQUIRE_FALSE(bm.file_sync().has_error());
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
         REQUIRE_FALSE(bm.write_header(header).has_error());
@@ -317,7 +317,7 @@ TEST_CASE("root_reclaim: crash between reclaim and header write leaves root N re
 
     uint64_t iteration_before = 0;
     {
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         REQUIRE(otterbrix_test::read_active_durable_header(path, header));
         iteration_before = header.iteration;
     }
@@ -346,7 +346,7 @@ TEST_CASE("root_reclaim: crash between reclaim and header write leaves root N re
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.load_existing_database().has_error());
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         REQUIRE(otterbrix_test::read_active_durable_header(path, header));
         CHECK(header.iteration == iteration_before);
         auto table = reload_table(env, bm);
@@ -410,7 +410,7 @@ TEST_CASE("root_reclaim: one transient fsync failure does not grow the file with
                     if (!free_ptr.has_error()) {
                         auto barrier = bm.file_sync();
                         if (!barrier.has_error()) {
-                            tstorage::database_header_t header;
+                            tstorage::database_header_t header{};
                             header.initialize();
                             header.free_list = free_ptr.value().block_pointer;
                             auto committed = bm.write_header(header);
@@ -455,7 +455,7 @@ TEST_CASE("root_reclaim: a transient-domain candidate is dropped and latched, no
     REQUIRE(bm.has_allocation_error());
     CHECK(bm.allocation_error().type == core::error_code_t::data_corruption);
 
-    tstorage::database_header_t header;
+    tstorage::database_header_t header{};
     header.initialize();
     auto committed = bm.write_header(header);
     REQUIRE(committed.has_error());
@@ -494,7 +494,7 @@ TEST_CASE("root_reclaim: a failed reclaim latches degraded and stops the file gr
     CHECK_FALSE(bm.degraded());
 
     // The poison targets the DURABLE root's metadata chain, located via the file's own header.
-    tstorage::database_header_t durable;
+    tstorage::database_header_t durable{};
     REQUIRE(otterbrix_test::read_active_durable_header(path, durable));
     REQUIRE(durable.meta_block != tstorage::INVALID_INDEX);
     const uint64_t meta_block_id = durable.meta_block / tstorage::META_SUB_BLOCKS_PER_BLOCK;
@@ -528,7 +528,7 @@ TEST_CASE("root_reclaim: a failed reclaim latches degraded and stops the file gr
                     if (!free_ptr.has_error()) {
                         auto barrier = bm.file_sync();
                         if (!barrier.has_error()) {
-                            tstorage::database_header_t header;
+                            tstorage::database_header_t header{};
                             header.initialize();
                             header.free_list = free_ptr.value().block_pointer;
                             auto committed = bm.write_header(header);

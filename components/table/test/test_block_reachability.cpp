@@ -88,7 +88,7 @@ namespace {
         auto free_ptr = bm.serialize_free_list();
         REQUIRE_FALSE(free_ptr.has_error());
         REQUIRE_FALSE(bm.file_sync().has_error()); // the pre-header barrier reports; observe it
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
         REQUIRE_FALSE(bm.write_header(header).has_error());
@@ -348,7 +348,7 @@ TEST_CASE("block_reachability: pre-checkpoint write-through blocks live in the r
         // freeing formula to subtract it.
         append_rows(*table, env, 0, 5000);
 
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         REQUIRE(otterbrix_test::read_active_durable_header(walker_db_path(), header));
         CHECK(header.meta_block == tstorage::INVALID_INDEX); // no checkpoint has happened
 

@@ -101,7 +101,7 @@ namespace components::table::storage {
                                  buffer_manager.resource()});
         }
 
-        database_header_t db_header;
+        database_header_t db_header{};
         db_header.initialize();
         db_header.block_alloc_size = block_allocation_size();
         db_header.checksum = db_header.compute_checksum();

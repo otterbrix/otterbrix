@@ -1816,7 +1816,7 @@ TEST_CASE("core::b_plus_tree::a_string_keyed_leaf_that_will_not_load_gives_up_wh
     for (size_t i = 1; i < test_count; i++) {
         const bool present =
             std::search(bytes.begin(), bytes.end(), test_data[i].begin(), test_data[i].end()) != bytes.end();
-        found += present ? 1 : 0;
+        found += present ? 1u : 0u;
     }
     INFO("keys still recognisable inside the leaf file");
     CHECK(found == test_count - 1);

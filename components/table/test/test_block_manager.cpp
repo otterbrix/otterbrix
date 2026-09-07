@@ -101,7 +101,7 @@ TEST_CASE("single_file_block_manager: create, close, load existing") {
         }
         REQUIRE_FALSE(bm.write(*blk, id).has_error());
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -153,7 +153,7 @@ TEST_CASE("single_file_block_manager: free list reuse") {
 
     auto free_ptr = bm.serialize_free_list();
     REQUIRE_FALSE(free_ptr.has_error());
-    database_header_t promoting_header;
+    database_header_t promoting_header{};
     promoting_header.initialize();
     promoting_header.free_list = free_ptr.value().block_pointer;
     REQUIRE_FALSE(bm.write_header(promoting_header).has_error());
@@ -212,7 +212,7 @@ TEST_CASE("single_file_block_manager: free list survives checkpoint/load") {
         free_blocks_after_serialize = bm.free_blocks();
         REQUIRE(free_blocks_after_serialize > 0);
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         header.free_list = free_list_ptr.value().block_pointer;
         REQUIRE_FALSE(bm.write_header(header).has_error());
@@ -255,7 +255,7 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
 
         auto free_list_ptr = bm.serialize_free_list();
         REQUIRE_FALSE(free_list_ptr.has_error());
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         header.free_list = free_list_ptr.value().block_pointer;
         REQUIRE_FALSE(bm.write_header(header).has_error());
@@ -306,7 +306,7 @@ TEST_CASE("single_file_block_manager: corrupt block payload -> data_corruption (
         REQUIRE_FALSE(bm.write(*blk, block_id).has_error());
 
         // Without a committed header, load_existing_database refuses the reopen as an ambiguous crash state.
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
 
@@ -394,7 +394,7 @@ TEST_CASE("single_file_block_manager: load bad-magic header -> data_corruption (
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.create_new_database().has_error());
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -478,7 +478,7 @@ TEST_CASE("single_file_block_manager: a free list naming a LIVE block is refused
     CHECK(bm.allocation_error().type == core::error_code_t::data_corruption);
 
     // A checkpoint built on a free list known to be corrupt must not become the durable root.
-    database_header_t header;
+    database_header_t header{};
     header.initialize();
     auto committed = bm.write_header(header);
     REQUIRE(committed.has_error());
@@ -510,7 +510,7 @@ TEST_CASE("single_file_block_manager: a transient-domain id offered to mark_as_f
     REQUIRE(bm.has_allocation_error());
     CHECK(bm.allocation_error().type == core::error_code_t::data_corruption);
 
-    database_header_t header;
+    database_header_t header{};
     header.initialize();
     auto committed = bm.write_header(header);
     REQUIRE(committed.has_error());

@@ -99,7 +99,7 @@ namespace {
         if (bm.file_sync().has_error()) {
             return false;
         }
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
         return !bm.write_header(header).has_error();

@@ -91,7 +91,7 @@ namespace otterbrix_test {
                                      std::pmr::memory_resource* scratch_resource) {
         walk_report_t report;
 
-        storage::database_header_t header;
+        storage::database_header_t header{};
         if (!read_active_durable_header(path, header)) {
             report.error = "cannot read durable header from " + path;
             return report;

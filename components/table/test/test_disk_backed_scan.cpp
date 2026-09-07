@@ -236,7 +236,7 @@ TEST_CASE("disk_backed_scan: streaming fetch_next_batch over reopened checkpoint
         metadata_writer_t writer(meta_mgr);
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -331,7 +331,7 @@ TEST_CASE("disk_backed_scan: checkpoint of large table, reopen yields identical 
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
 
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -386,7 +386,7 @@ TEST_CASE("disk_backed_scan: repeated compaction does not bloat the file", "[ste
         auto free_ptr = bm.serialize_free_list();
         REQUIRE_FALSE(free_ptr.has_error());
         REQUIRE_FALSE(bm.file_sync().has_error());
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
         REQUIRE_FALSE(bm.write_header(header).has_error());
@@ -548,7 +548,7 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
         metadata_writer_t writer(meta_mgr);
         REQUIRE_FALSE(table->checkpoint(writer).has_error());
         table_pointer = writer.get_block_pointer();
-        database_header_t header;
+        database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }

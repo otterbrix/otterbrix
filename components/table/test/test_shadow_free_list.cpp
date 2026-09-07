@@ -96,7 +96,7 @@ namespace {
         auto free_ptr = bm.serialize_free_list();
         REQUIRE_FALSE(free_ptr.has_error());
         REQUIRE_FALSE(bm.file_sync().has_error());
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
         return header;
@@ -396,7 +396,7 @@ TEST_CASE("shadow_free_list: a durable header makes the released blocks reusable
     INFO("released but never handed back: " << id_set(never_returned));
     CHECK(never_returned.empty());
 
-    tstorage::database_header_t durable;
+    tstorage::database_header_t durable{};
     REQUIRE(otterbrix_test::read_active_durable_header(path, durable));
     CHECK(durable.free_list != tstorage::INVALID_INDEX);
 
@@ -478,7 +478,7 @@ TEST_CASE("shadow_free_list: a chain-spanning free list never lists its own chai
     REQUIRE_FALSE(bm.degraded());
     {
         // Without a durable header the hazard cannot even arise.
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
@@ -513,7 +513,7 @@ TEST_CASE("shadow_free_list: a chain-spanning free list never lists its own chai
     INFO("chain blocks the published list calls free: " << id_set(self_listed));
     CHECK(self_listed.empty());
 
-    tstorage::database_header_t header;
+    tstorage::database_header_t header{};
     header.initialize();
     header.free_list = free_ptr.value().block_pointer;
     REQUIRE_FALSE(bm.write_header(header).has_error());

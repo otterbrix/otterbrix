@@ -107,7 +107,7 @@ namespace {
         if (auto barrier = bm.file_sync(); barrier.has_error()) {
             return false;
         }
-        tstorage::database_header_t header;
+        tstorage::database_header_t header{};
         header.initialize();
         header.free_list = free_ptr.value().block_pointer;
         if (bm.write_header(header).has_error()) {
@@ -136,13 +136,13 @@ TEST_CASE("fault_injection: write failure after N writes does not advance the du
         append_rows(*table, env, 0, 3000);
 
         REQUIRE(try_checkpoint(bm, *table));
-        tstorage::database_header_t before;
+        tstorage::database_header_t before{};
         REQUIRE(otterbrix_test::read_active_durable_header(fault_db_path(), before));
 
         plan.fail_after_writes = plan.writes_seen;
         try_append_rows(*table, env, 3000, 100);
         try_checkpoint(bm, *table);
-        tstorage::database_header_t after;
+        tstorage::database_header_t after{};
         REQUIRE(otterbrix_test::read_active_durable_header(fault_db_path(), after));
         CHECK(after.iteration == before.iteration);
         CHECK(after.meta_block == before.meta_block);

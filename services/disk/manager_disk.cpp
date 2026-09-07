@@ -277,7 +277,7 @@ namespace services::disk {
             disk_bm->roll_back_uncommitted_round();
             return barrier_r;
         }
-        components::table::storage::database_header_t header;
+        components::table::storage::database_header_t header{};
         header.initialize();
         header.free_list = free_list_r.value().block_pointer;
         // The atomic point: write_header writes+fsyncs the slot in one call -- its fsync IS the commit.

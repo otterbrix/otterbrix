@@ -2,6 +2,7 @@
 // silently dropped; a literal under a declared cast carries the declared type, never the one
 // it happened to parse as.
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_data.hpp>

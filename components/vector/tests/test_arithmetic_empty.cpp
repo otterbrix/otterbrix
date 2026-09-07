@@ -142,8 +142,8 @@ TEST_CASE("compute arithmetic: an operand pair arithmetic cannot type is a refus
         auto r = components::vector::compute_binary_arithmetic(&resource, arithmetic_op::add, n, d, count);
         REQUIRE_FALSE(r.has_error());
         CHECK(r.value().type().type() == logical_type::DOUBLE);
-        CHECK(r.value().value(0).value<double>() == 2.5);
-        CHECK(r.value().value(1).value<double>() == 4.5);
+        CHECK(r.value().value(0).value<double>() == Catch::Approx(2.5));
+        CHECK(r.value().value(1).value<double>() == Catch::Approx(4.5));
     }
     SECTION("unary negation of a numeric still answers") {
         auto n = bigints();

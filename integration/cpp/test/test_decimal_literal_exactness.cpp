@@ -2,6 +2,7 @@
 #include "integration_fixture_path.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
@@ -124,8 +125,10 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::nulls_and_other_tar
     REQUIRE(cur->size() == 2);
     CHECK(cur->value(0, 0).value<components::types::int128_t>() == twenty_digit_fraction());
     CHECK(cur->value(0, 1).is_null());
-    CHECK(cur->value(1, 0).value<double>() == 0.5);
-    CHECK(cur->value(1, 1).value<double>() == 0.25);
+    // WithinULP(x, 0) is exact equality without a float `==`, which -Wfloat-equal refuses:
+    // this case is about the DOUBLE column staying exact, so Approx would defeat it.
+    CHECK_THAT(cur->value(1, 0).value<double>(), Catch::Matchers::WithinULP(0.5, 0));
+    CHECK_THAT(cur->value(1, 1).value<double>(), Catch::Matchers::WithinULP(0.25, 0));
 }
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::an_integer_literal_in_the_same_column_still_stores") {

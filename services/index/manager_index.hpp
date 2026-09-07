@@ -352,6 +352,17 @@ namespace services::index {
             [[nodiscard]] bool empty() const noexcept { return bitcask.empty() && btree.empty(); }
         };
 
+        // A detached agent keeps its own mailbox. Destroying it while something is still queued makes
+        // close_impl CANCEL that message (actor-zeta impl/mailbox/default_mailbox.ipp), and a
+        // cancellation is indistinguishable from a lost one; kept alive, the agent answers it itself,
+        // because drop() set is_dropped_ and every other handler refuses on that. Pinned by
+        // test_index_agent_lifetime.cpp.
+        //
+        // Freed by the next horizon advance, which is when the scheduler has long since drained them.
+        detached_agents_t parked_agents_;
+
+        void park_detached(detached_agents_t&& dying);
+
         // `type`/`ordered` come OUT: a composite index is built by the ordered family but published as `single`.
         struct spawned_agent_t {
             actor_zeta::address_t address;

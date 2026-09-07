@@ -83,9 +83,9 @@ TEST_CASE("integration::cpp::insert_param_retype::literal_before_a_wider_typed_p
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
     CHECK(cur->value(0, 0).value<int64_t>() == 1);
-    CHECK(cur->value(1, 0).value<double>() == 7.0);
+    CHECK(cur->value(1, 0).value<double>() == Catch::Approx(7.0));
     CHECK(cur->value(0, 1).value<int64_t>() == 2);
-    CHECK(cur->value(1, 1).value<double>() == 3.5);
+    CHECK(cur->value(1, 1).value<double>() == Catch::Approx(3.5));
 }
 
 TEST_CASE("integration::cpp::insert_param_retype::narrower_parameter_keeps_a_wider_literal") {
@@ -107,8 +107,8 @@ TEST_CASE("integration::cpp::insert_param_retype::narrower_parameter_keeps_a_wid
     auto cur = exec(d, "SELECT id, d FROM w.t ORDER BY id;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    CHECK(cur->value(1, 0).value<double>() == 7.5);
-    CHECK(cur->value(1, 1).value<double>() == 3.0);
+    CHECK(cur->value(1, 0).value<double>() == Catch::Approx(7.5));
+    CHECK(cur->value(1, 1).value<double>() == Catch::Approx(3.0));
 }
 
 TEST_CASE("integration::cpp::insert_param_retype::several_rows_and_columns_at_once") {
@@ -133,10 +133,10 @@ TEST_CASE("integration::cpp::insert_param_retype::several_rows_and_columns_at_on
     REQUIRE(cur->size() == 3);
     // row id=1: literals survive both later binds
     CHECK(cur->value(1, 0).value<int64_t>() == 10);
-    CHECK(cur->value(2, 0).value<double>() == 1.5);
+    CHECK(cur->value(2, 0).value<double>() == Catch::Approx(1.5));
     // row id=2: NULL literal in a, bound 2 -> 2.0 in b
     CHECK(cur->value(1, 1).is_null());
-    CHECK(cur->value(2, 1).value<double>() == 2.0);
+    CHECK(cur->value(2, 1).value<double>() == Catch::Approx(2.0));
     // row id=3: bound 3 in a, NULL literal in b
     CHECK(cur->value(1, 2).value<int64_t>() == 3);
     CHECK(cur->value(2, 2).is_null());

@@ -214,9 +214,11 @@ TEST_CASE("components::expressions::key_t::a copy with no arena named outlives t
 
     alignas(expr::key_t) unsigned char copy_storage[sizeof(expr::key_t)];
     expr::key_t* copy = nullptr;
+    const void* dead_source = nullptr;
 
     {
         core::pmr::otterbrix_resource source{&upstream};
+        dead_source = &source;
 
         expr::key_t original(&source, long_column);
         original.set_qualifier(long_qualifier);
@@ -248,6 +250,12 @@ TEST_CASE("components::expressions::key_t::a copy with no arena named outlives t
     CHECK(poison_bytes_in(qualifier) == 0);
     CHECK(name == std::string(long_column));
     CHECK(qualifier == std::string(long_qualifier));
+
+    // Destroying is safe ONLY because the checks above pinned the copy off the source arena; on the
+    // broken form its allocator IS the dead source and ~key_t() would fault instead of failing a CHECK.
+    if (static_cast<const void*>(copy->resource()) != dead_source) {
+        copy->~key_t();
+    }
 }
 
 TEST_CASE("components::expressions::key_t::a copy placed on the destination arena outlives the source") {

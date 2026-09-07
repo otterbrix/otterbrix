@@ -52,6 +52,12 @@ namespace {
     // Duplicated from test_index_delete_horizon.cpp rather than shared, per that file's note.
     template<typename T>
     bool resume_awaited(const actor_zeta::unique_future<T>& fut) {
+        // A ready future already ran final_suspend, where unique_future's promise destroys its own frame;
+        // coroutine_handle() would then point into freed memory (ASAN caught this in
+        // test_index_agent_lifetime.cpp). Read readiness off the shared state first.
+        if (fut.is_ready()) {
+            return false;
+        }
         auto handle = fut.coroutine_handle();
         if (!handle || handle.done()) {
             return false;

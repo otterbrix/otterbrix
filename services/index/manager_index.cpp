@@ -273,6 +273,7 @@ namespace services::index {
         , mirrored_ranges_(resource)
         , bitcask_agents_owned_(resource)
         , btree_agents_owned_(resource)
+        , parked_agents_(resource)
         , pending_void_(resource) {
         if (!path_db_.empty()) {
             std::filesystem::create_directories(path_db_);
@@ -767,6 +768,15 @@ namespace services::index {
         return futures;
     }
 
+    void manager_index_t::park_detached(detached_agents_t&& dying) {
+        for (auto& agent : dying.bitcask) {
+            parked_agents_.bitcask.emplace_back(std::move(agent));
+        }
+        for (auto& agent : dying.btree) {
+            parked_agents_.btree.emplace_back(std::move(agent));
+        }
+    }
+
     manager_index_t::unique_future<void> manager_index_t::register_collection(session_id_t /*session*/,
                                                                               components::catalog::oid_t table_oid) {
         trace(log_, "manager_index_t::register_collection: oid={}", static_cast<unsigned>(table_oid));
@@ -889,6 +899,9 @@ namespace services::index {
             co_await std::move(f);
         }
 
+        // Park, do not destroy: anything already queued behind drop() must still be ANSWERED, and
+        // destroying the agent here cancels it instead. The next horizon advance reaps this generation.
+        park_detached(std::move(dying));
         co_return;
     }
 
@@ -1708,6 +1721,12 @@ namespace services::index {
     // A declared bypass of the rule-3 pipeline; do not add a second sender.
     manager_index_t::unique_future<void> manager_index_t::on_horizon_advanced(uint64_t new_horizon) {
         trace(log_, "manager_index_t::on_horizon_advanced , horizon : {}", new_horizon);
+
+        // Agents parked by drop_index since the last advance go here: nothing routes to them any more
+        // (the registry entry left with the detach) and the scheduler has had the whole interval to
+        // drain what was queued.
+        parked_agents_.bitcask.clear();
+        parked_agents_.btree.clear();
 
         detached_agents_t dying(resource_);
         for (auto it = dropped_table_agents_.begin(); it != dropped_table_agents_.end();) {

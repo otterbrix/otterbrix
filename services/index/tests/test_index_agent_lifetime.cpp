@@ -1,6 +1,11 @@
-// An agent may not be destroyed while a request the manager itself issued is unanswered: destroying it
-// cancels the reply's promise, but the waiter's co_await still resumes and reads that as a value under NDEBUG
-// (actor-zeta mailbox/message.hpp init_future_slot / impl/mailbox/default_mailbox.ipp close_impl).
+// An agent may not be destroyed while a request already queued on it is unanswered: close_impl cancels
+// every message still in the mailbox (actor-zeta impl/mailbox/default_mailbox.ipp), so the caller gets
+// operation_canceled instead of the agent's own refusal -- a cancellation says "nobody answered", which
+// a caller cannot tell apart from a lost message.
+//
+// The read goes STRAIGHT to the agent's address on purpose. Routing it through the manager cannot build
+// this race: detach_index erases the registry entry synchronously, before drop_index's first co_await
+// (actor-zeta coroutines start eagerly), so search_with_preferred_type refuses before it sends anything.
 
 // clang-format off
 // <actor-zeta/spawn.hpp> requires std::unique_ptr, but does not include it itself
@@ -24,6 +29,7 @@
 #include <core/pmr.hpp>
 #include <filesystem>
 #include <services/index/btree_index_agent.hpp>
+#include <services/index/index_agent_contract.hpp>
 #include <services/index/manager_index.hpp>
 
 #include "index_fixture_path.hpp"
@@ -40,8 +46,15 @@ namespace {
     constexpr components::catalog::oid_t kTableOid = 17100;
     constexpr components::catalog::oid_t kIndexOid = 17101;
 
+    // A ready future has already run its final_suspend, and unique_future's promise_type destroys its
+    // own frame there (unlike behavior_t, which stays suspended until its dtor). coroutine_handle() is
+    // then a live-looking pointer into freed memory, so readiness must be read off the shared state
+    // FIRST -- actor-zeta does the same before touching a handle (future_awaiters.hpp, propagate_awaited_state).
     template<typename T>
     bool resume_awaited(const actor_zeta::unique_future<T>& fut) {
+        if (fut.is_ready()) {
+            return false;
+        }
         auto handle = fut.coroutine_handle();
         if (!handle || handle.done()) {
             return false;
@@ -58,8 +71,12 @@ namespace {
         return true;
     }
 
+    // Same gate as resume_awaited: a synchronous refusal leaves the frame already destroyed.
     template<typename T>
     bool awaited_request_failed(const actor_zeta::unique_future<T>& fut) {
+        if (fut.is_ready()) {
+            return false;
+        }
         auto handle = fut.coroutine_handle();
         if (!handle || handle.done()) {
             return false;
@@ -113,31 +130,39 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
 
     const auto session = session_id_t::generate_uid();
 
+    // drop first: the manager detaches the index and posts drop(), then suspends on the reply.
     auto drop_future = manager->drop_index(session, kTableOid, kIndexOid);
     REQUIRE_FALSE(drop_future.is_ready());
 
-    auto search_future = manager->search_with_preferred_type(session,
-                                                             kTableOid,
-                                                             one_key(&resource),
-                                                             logical_value_t(&resource, int64_t{42}),
-                                                             components::expressions::compare_type::eq,
-                                                             components::logical_plan::index_type::no_valid,
-                                                             /*start_time=*/0,
-                                                             /*txn_id=*/0,
-                                                             core::date::timezone_offset_t{});
+    // Straight to the agent, so it lands in the agent's OWN mailbox behind the drop.
+    auto [read_needs_sched, read_future] =
+        actor_zeta::otterbrix::send<&services::index::index_agent_contract::read_rows>(
+            agent_raw->address(),
+            session,
+            components::expressions::compare_type::eq,
+            logical_value_t(&resource, int64_t{42}),
+            /*txn_id=*/uint64_t{0});
+    REQUIRE_FALSE(read_future.is_ready());
 
-    // Mailbox is FIFO and drop() was posted first, so this resume is the drop; the search stays queued.
+    // Mailbox is FIFO and drop() was posted first, so this resume is the drop; the read stays queued.
     agent_raw->resume(1);
 
-    // drop_index erases the owning pointer here, destroying the agent -- nothing below may touch agent_raw.
+    // drop_index gives up the registry entry here; the agent itself must survive, because the read is
+    // still sitting in its mailbox.
     REQUIRE(resume_awaited(drop_future));
     REQUIRE(drop_future.is_ready());
 
-    REQUIRE_FALSE(awaited_request_failed(search_future));
-
-    REQUIRE(search_future.is_ready());
-    auto answer = std::move(search_future).take_ready();
+    // Readiness IS the discriminator, and asking it first is what keeps the broken form a readable
+    // failure instead of a use-after-free: a destroyed agent has close_impl cancel the queued read, so
+    // the future is already ready here, while a surviving one has not answered yet and needs a resume.
+    if (!read_future.is_ready()) {
+        agent_raw->resume(1);
+    }
+    REQUIRE(read_future.is_ready());
+    auto answer = std::move(read_future).take_ready();
     REQUIRE(answer.has_error());
+    INFO("error was: " << answer.error().what.c_str());
+    CHECK(answer.error().type == core::error_code_t::index_not_exists);
 
     std::filesystem::remove_all(path);
 }

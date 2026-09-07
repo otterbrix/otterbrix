@@ -320,7 +320,7 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
     SECTION("a DOUBLE column still reads its default as a double") {
         auto stored = only_default("CREATE TABLE db.tbl (c double precision DEFAULT 1.5);");
         REQUIRE(stored.type().type() == logical_type::DOUBLE);
-        REQUIRE(stored.value<double>() == 1.5);
+        REQUIRE(stored.value<double>() == Catch::Approx(1.5));
     }
 }
 

@@ -1,31 +1,8 @@
-// A UNIQUE / PRIMARY KEY whose conkey cannot be read must not quietly stop existing.
-//
-// operator_resolve_constraint decoded a 'u' / 'p' pg_constraint row like this:
-//
-//     auto attoids = catalog::parse_oid_csv(...conkey...);
-//     if (!attoids.empty()) { ... pending_uniques.push_back(...); }
-//
-// so a conkey that decoded to nothing never became a pending group, and the length guard
-// that refuses an unresolvable key list sits BELOW, inside the loop over pending_uniques,
-// where it could never see it -- the declared key left the constraint set without a word and
-// the table went back to accepting every row. parse_oid_csv made that easier: it swallowed
-// any token it could not read and answered with a bare vector, so "the CSV was empty" and
-// "the CSV was unreadable" arrived as the same value.
-//
-// The pg_constraint row here is written by the engine itself, through the same
-// node_create_constraint_t -> rewrite_create_constraint -> build_create_constraint_writes
-// path every ALTER TABLE ... ADD CONSTRAINT takes; the test only hands that node over with
-// its attoid list unstamped -- the state an inline (CREATE TABLE) constraint node is in
-// before rewrite_create_table mints the attoids, and the state any writer that lost the
-// column list leaves behind. The assertion is on the CONTENT of the table, not a return
-// code: the user declared UNIQUE (code), the engine said yes, and the question is whether
-// two rows carrying code = 100 are in the table afterwards.
-//
-// No live SQL route reaches this shape anymore: `UNIQUE (nosuchcol)` is refused by enrich,
-// and UNIQUE / PRIMARY KEY on a dynamic-schema (relkind='g') table is refused at DDL (see
-// test_constraint_unresolvable_target.cpp). What's left is a catalog written before those
-// gates existed -- which is what a floor is for. The third case below proves the floor is
-// not fatal: the same database still reads and still drops.
+// operator_resolve_constraint only queued a pg_constraint row into pending_uniques when
+// parse_oid_csv's decoded attoid list was non-empty, so a conkey that decoded to nothing (which
+// parse_oid_csv also returns for an unreadable one) silently left the constraint set unenforced.
+// No live SQL route reaches this shape anymore; what's left is a floor for a catalog written
+// before those gates existed.
 
 #include "test_config.hpp"
 #include "integration_fixture_path.hpp"
@@ -56,10 +33,7 @@ namespace {
         return out;
     }
 
-    // ADD CONSTRAINT <name> <kind> (<cols>) whose attoid list never got stamped:
-    // the node carries the column NAMES the user wrote, and an EMPTY attoid list,
-    // so build_create_constraint_writes encodes conkey as "". Everything else is
-    // the production path.
+    // The node carries the user's column NAMES and an EMPTY attoid list, so conkey encodes as "".
     components::cursor::cursor_t_ptr
     add_constraint_with_attoids(otterbrix::wrapper_dispatcher_t* d,
                                 const std::string& db,
@@ -75,9 +49,7 @@ namespace {
                                                                           core::constraint_name_t{con_name},
                                                                           kind);
         node->set_local_col_names(std::move(cols));
-        // Suppresses the attoid stamping in enrich (that is what an inline node
-        // does — its parent mints the attoids instead), so the list handed in here
-        // is the one that reaches the catalog write.
+        // Suppresses the attoid stamping in enrich, so the list handed in here reaches the catalog write.
         node->set_inline_with_table(true);
         node->set_fk_col_attoids(std::move(attoids));
         components::logical_plan::execution_plan_t plan{resource,
@@ -87,8 +59,6 @@ namespace {
         return d->execute_plan(otterbrix::session_id_t(), std::move(plan));
     }
 
-    // The conkey-loss shape: the column NAMES the user wrote, and no attoids at all,
-    // so build_create_constraint_writes encodes conkey as the empty string.
     components::cursor::cursor_t_ptr add_constraint_with_lost_conkey(otterbrix::wrapper_dispatcher_t* d,
                                                                      const std::string& db,
                                                                      const std::string& rel,
@@ -100,9 +70,7 @@ namespace {
 
 } // namespace
 
-// A UNIQUE the engine accepted, with a conkey it cannot read. Either the write
-// is refused, or the key is enforced — what must never happen is the third
-// answer, "accepted, and the duplicate is in the table".
+// Either the write is refused, or the key is enforced — never "accepted, and the duplicate is in the table".
 TEST_CASE("integration::cpp::declared_key_conkey_loss::unreadable_conkey_does_not_repeal_a_unique") {
     auto config = make_test_config(integration_fixture_path("test_declared_key_conkey_loss/unique"));
     test_spaces space(config);
@@ -124,7 +92,6 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::unreadable_conkey_does_no
     auto dup = exec(d, "INSERT INTO cur.t (id, code) VALUES (2, 100);");
     INFO("duplicate-code INSERT: " << (dup->is_error() ? dup->get_error().what : "accepted"));
 
-    // THE USER CONSEQUENCE, read off the table: how many rows carry code = 100.
     auto stored = exec(d, "SELECT id FROM cur.t WHERE code = 100 ORDER BY id;");
     INFO("read error: " << (stored->is_error() ? stored->get_error().what : "none"));
     REQUIRE(stored->is_success());
@@ -135,9 +102,7 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::unreadable_conkey_does_no
     REQUIRE_FALSE(accepted_and_duplicated);
 }
 
-// The same row shaped as a PRIMARY KEY. A silently dropped PK repeals TWO
-// promises at once — uniqueness and the NOT NULL it implies — so the key column
-// takes both a duplicate and a NULL.
+// A silently dropped PK repeals TWO promises at once — uniqueness and the NOT NULL it implies.
 TEST_CASE("integration::cpp::declared_key_conkey_loss::unreadable_conkey_does_not_repeal_a_primary_key") {
     auto config = make_test_config(integration_fixture_path("test_declared_key_conkey_loss/pk"));
     test_spaces space(config);
@@ -168,10 +133,7 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::unreadable_conkey_does_no
     REQUIRE_FALSE(accepted_and_duplicated);
 }
 
-// LOUD IS NOT FATAL. A refusal that made the database unopenable would be a
-// worse defect than the silence it replaces, so the same catalog that carries
-// the unreadable key row must still be readable and still be droppable — only
-// the writes that would ride on the unenforced key are refused.
+// Loud is not fatal: a refusal that bricked the database would be worse than the silence it replaces.
 TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unreadable_key_row_does_not_brick_the_database") {
     auto config = make_test_config(integration_fixture_path("test_declared_key_conkey_loss/not_bricked"));
     test_spaces space(config);
@@ -179,8 +141,6 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unreadable_key_row_doe
 
     REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cur.t (id bigint, code bigint);")->is_success());
-    // Rows that predate the bad constraint row: they are the ones a bricked
-    // database would take with it.
     REQUIRE(exec(d, "INSERT INTO cur.t (id, code) VALUES (1, 100), (2, 200);")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cur.other (id bigint);")->is_success());
 
@@ -212,25 +172,11 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unreadable_key_row_doe
     }
 }
 
-// The document-table population -- "loud" must not mean "unopenable".
-//
-// A dynamic-schema (relkind='g') table keeps its columns in pg_computed_column, whose
-// attoids come from a different sequence than pg_attribute's, so a UNIQUE / PRIMARY KEY
-// declared on one carries a conkey the resolve step's pg_attribute read can NEVER match.
-// Declaring one is refused at DDL now (executor_t::execute_plan_full), leaving exactly one
-// population that can still hold such a row: a catalog written before that gate existed --
-// the population a loud refusal could strand, and this case stands for it.
-//
-// The DDL gate refuses planting such a row on an actual relkind='g' table, so what's
-// reproduced instead is the same catalog SHAPE: a conkey of perfectly readable integers
-// matching no live pg_attribute row (`stale` below), which takes the same path through the
-// resolve. The relkind='g' end itself is held by
+// A dynamic-schema (relkind='g') table's columns live in pg_computed_column, a different oid
+// sequence than pg_attribute's, so a UNIQUE/PRIMARY KEY on one has a conkey that resolve can
+// never match; refused at DDL now, so what's reproduced here is the same catalog shape left by a
+// catalog written before that gate existed. The relkind='g' end itself is covered by
 // test_constraint_unresolvable_target::unique_on_dynamic_schema_is_never_a_no_op.
-//
-// `stale` is non-empty and readable, so it never reaches the empty/unreadable-conkey
-// refusals added for the conkey-loss defect -- it lands on the pre-existing length guard.
-// `lost` is the new one. Both are checked here because the property pinned is about the
-// database, not about which guard spoke.
 TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unenforceable_key_row_survives_a_restart_without_bricking") {
     const std::filesystem::path dir = integration_fixture_path("test_declared_key_conkey_loss/restart");
     auto config = make_test_config(dir);
@@ -243,8 +189,6 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unenforceable_key_row_
         REQUIRE(exec(d, "CREATE TABLE cur.lost (id bigint, code bigint);")->is_success());
         REQUIRE(exec(d, "CREATE TABLE cur.stale (id bigint, code bigint);")->is_success());
         REQUIRE(exec(d, "CREATE TABLE cur.plain (id bigint);")->is_success());
-        // Rows that predate both bad constraint rows: they are what a bricked
-        // database would take with it.
         REQUIRE(exec(d, "INSERT INTO cur.lost (id, code) VALUES (1, 100), (2, 200);")->is_success());
         REQUIRE(exec(d, "INSERT INTO cur.stale (id, code) VALUES (1, 100), (2, 200);")->is_success());
 
@@ -272,7 +216,6 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unenforceable_key_row_
 
     INFO("THE ENGINE OPENS over that catalog — this is the half that would be fatal");
     {
-        // Reopen the SAME directory: no clear, so both planted rows are read back.
         auto reopened = test_create_config(dir);
         test_spaces space(reopened);
         auto* d = space.dispatcher();
@@ -321,34 +264,14 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unenforceable_key_row_
     }
 }
 
-// The same silence on the foreign-key side.
-//
-// The UNIQUE / PRIMARY KEY leg above was gated on `if (!attoids.empty())`. The FK leg had
-// no such gate at the decode -- it was believed empty lists rode all the way down to a
-// refusal. They did not: pass 2 ended with
-//
-//     if (!fk.child_col_names.empty() && !fk.parent_col_names.empty()) {
-//         fks.push_back(std::move(fk));
-//     }
-//
-// and both length guards above it compared the resolved names against the attoid list they
-// were resolved FROM, so at length zero they compared 0 with 0, agreed, and passed. The FK
-// then fell out of `fks` without a word: enrich stamped no outgoing_fks, the planner spliced
-// no fk_check node, and the referencing table took orphans while ON DELETE RESTRICT let the
-// parent go.
-//
-// The row is produced the same way as the UNIQUE ones above -- the engine's own ADD
-// CONSTRAINT path with the attoid lists unstamped -- and the assertion is on the content of
-// the table: whether a row pointing at a parent that does not exist is sitting in the child
-// afterwards.
+// The same silence on the foreign-key side: the FK leg had no gate on empty decoded lists at all,
+// so both length guards compared resolved names against the attoid list they came FROM and, at
+// length zero, agreed and passed. The FK fell out of `fks` without a word — no outgoing_fks, no
+// fk_check node spliced in — so the referencing table could take orphans while ON DELETE RESTRICT
+// let the parent go.
 
 namespace {
 
-    // ADD CONSTRAINT <name> FOREIGN KEY (<cols>) REFERENCES <parent> (<ref_cols>)
-    // with neither attoid list stamped, so build_create_constraint_writes encodes
-    // BOTH conkey and confkey as the empty string. Everything else — the
-    // referenced table's oid, the pg_constraint row, the pg_depend rows — is the
-    // production path.
     components::cursor::cursor_t_ptr add_fk_with_lost_key_lists(otterbrix::wrapper_dispatcher_t* d,
                                                                 const std::string& db,
                                                                 const std::string& child_rel,
@@ -367,14 +290,10 @@ namespace {
         node->set_ref_relname(parent_rel);
         node->set_local_col_names(std::move(child_cols));
         node->set_ref_col_names(std::move(parent_cols));
-        // As above: suppresses the attoid stamping in enrich, so the EMPTY lists
-        // the node carries are the ones that reach the catalog write.
         node->set_inline_with_table(true);
         components::logical_plan::execution_plan_t plan{resource,
                                                         components::logical_plan::node_ptr{node},
                                                         components::logical_plan::make_parameter_node(resource)};
-        // Both tables: the child is the constraint's own target, the parent is what
-        // bind_catalog_data resolves confrelid from.
         components::sql::transform::register_catalog_resolve_tables(resource,
                                                                     &plan.catalog_resolves,
                                                                     {{db, child_rel}, {db, parent_rel}});
@@ -397,11 +316,9 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unreadable_fk_column_l
     INFO("ADD CONSTRAINT FOREIGN KEY (parent_id) REFERENCES parent (id): "
          << (ddl->is_error() ? ddl->get_error().what : "accepted"));
 
-    // 999 is in no parent row. Under the declared FK this row cannot exist.
     auto orphan = exec(d, "INSERT INTO cur.child (id, parent_id) VALUES (1, 999);");
     INFO("orphan INSERT: " << (orphan->is_error() ? orphan->get_error().what : "accepted"));
 
-    // THE USER CONSEQUENCE, read off the table.
     auto stored = exec(d, "SELECT id FROM cur.child WHERE parent_id = 999;");
     INFO("read error: " << (stored->is_error() ? stored->get_error().what : "none"));
     REQUIRE(stored->is_success());

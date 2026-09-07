@@ -18,26 +18,20 @@
 #include <string>
 #include <vector>
 
-// node_alter_column_t::set_attoid has no callers, so operator_alter_column_rename_t saw
-// attoid_ == INVALID_OID and no-oped while reporting success — same defect as DROP COLUMN,
-// noted at test_multi_database_isolation.cpp.
-// The mine: rearm_dropped_column_blocks_sync (manager_disk_t) reconciles storage columns
-// against pg_attribute BY NAME at bootstrap and treats an unmatched storage name as a DROP.
-// A catalog-only rename makes the OLD name look dropped next bootstrap, releasing a
-// SURVIVING column's blocks.
+// node_alter_column_t::set_attoid had no callers, so the RENAME operator no-oped while reporting
+// success. Bootstrap reconciliation matched storage columns against pg_attribute BY NAME, so a
+// catalog-only rename made the old name look dropped, releasing a SURVIVING column's blocks.
 
 using components::catalog::FIRST_USER_OID;
 
 namespace {
 
-    constexpr std::size_t FIRST_ROWS = 3072;  // 1.5 row groups, checkpointed
-    constexpr std::size_t SECOND_ROWS = 1024; // appended AFTER that root
+    constexpr std::size_t FIRST_ROWS = 3072;
+    constexpr std::size_t SECOND_ROWS = 1024;
     constexpr std::size_t TOTAL_ROWS = FIRST_ROWS + SECOND_ROWS;
     constexpr std::size_t ARRAY_LENGTH = 40;
     constexpr std::size_t INSERT_BATCH = 512;
 
-    // The only user table: `<oid>/table.otbx` with oid past FIRST_USER_OID (system catalogs
-    // sit below it).
     std::filesystem::path find_user_table_otbx(const std::filesystem::path& root) {
         std::filesystem::path found;
         if (!std::filesystem::exists(root)) {
@@ -61,12 +55,9 @@ namespace {
     struct offline_walk_t {
         otterbrix_test::walk_report_t report;
         std::vector<std::string> columns;
-        // the reconciliation's key, read straight off the file
         std::vector<std::uint32_t> attoids;
     };
 
-    // Engine shut down: a fresh table_storage_t load reads the schema back out of the root the
-    // last committed header names — the only place the storage's own column NAME lives.
     offline_walk_t walk_offline(const std::filesystem::path& otbx, std::pmr::memory_resource* resource) {
         offline_walk_t out;
         services::disk::table_storage_t ts(resource, otbx, std::vector<components::table::column_definition_t>{});
@@ -77,7 +68,6 @@ namespace {
         }
         components::table::storage::single_file_block_manager_t* bm = nullptr;
         {
-            // Scoped: a holder kept alive across a reclaim keeps block handles alive too.
             auto collection = ts.table().row_group();
             bm = static_cast<components::table::storage::single_file_block_manager_t*>(&collection->block_manager());
         }
@@ -93,8 +83,6 @@ namespace {
         REQUIRE(cur->is_success());
     }
 
-    // `(i, ARRAY[i*100, i*100+1, ...])`, content-addressed so a block freed while something
-    // still reads it shows up as wrong data, not just a row count that happens to match.
     void insert_rows(otterbrix::wrapper_dispatcher_t* dispatcher, std::size_t first, std::size_t count) {
         std::size_t done = 0;
         while (done < count) {
@@ -161,10 +149,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_column_rebinds_the
     }
 }
 
-// bigint[40] pushes past partial_block_manager_t's FULL_THRESHOLD into DEDICATED blocks (not
-// packed with column "a"), so a release from misreading the rename as a drop is measurable.
-// Rows are added in two rounds around a checkpoint, and content is checked per row — a row
-// count alone can't tell a dropped/NULL-refilled column from a survived one.
 TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_restart_with_its_data") {
     auto config = test_create_config(integration_fixture_path("test_alter_rename_column/restart"));
     test_clear_directory(config);
@@ -202,7 +186,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
         insert_rows(dispatcher, FIRST_ROWS, SECOND_ROWS);
         run_sql(dispatcher, "ALTER TABLE TestDatabase.wide RENAME COLUMN payload TO payload2;");
 
-        // catalog half of the rename, visible immediately
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT payload2 FROM TestDatabase.wide;");
@@ -214,9 +197,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
         run_sql(dispatcher, "CHECKPOINT;");
     }
 
-    // GATE 1 — the DURABLE storage schema carries the new name. This is the half that keeps the
-    // bootstrap reconciliation from reading the rename as a drop; a catalog-only rename leaves
-    // "payload" here and arms the mine.
     auto renamed = walk_offline(otbx, &resource);
     REQUIRE(renamed.report.ok);
     INFO("durable columns after RENAME+CHECKPOINT: " << renamed.columns.size() << " ["
@@ -234,13 +214,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // GATE 2 — the column and ALL of its rows are there, under the new name, with the
-        // content they were written with. A dropped column would fail this whether it comes
-        // back as an error, a missing column or a NULL one.
         {
-            // Read the payload through the renamed column with 1-based array subscripts: both
-            // ends of every row's array, so a column that came back empty, NULL-filled or
-            // shifted fails here rather than passing on the row count alone.
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
                 session,
@@ -258,7 +232,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
             }
         }
 
-        // The old name must not resolve after the restart either.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT payload FROM TestDatabase.wide;");
@@ -268,9 +241,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
         run_sql(dispatcher, "CHECKPOINT;");
     }
 
-    // GATE 3 — nothing was released. A rename moves no bytes, so the restart+checkpoint must
-    // leave the column's data blocks exactly where they were; a root that SHRANK is the
-    // signature of the reconciliation having dropped a surviving column.
     auto after = walk_offline(otbx, &resource);
     REQUIRE(after.report.ok);
     REQUIRE(after.columns.size() == 2);
@@ -283,35 +253,11 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_r
     CHECK(after.report.unexplained.empty());
 }
 
-// CASE 3 — THE CRASH WINDOW, and the reason the reconciliation cannot key on names.
-// CASE 2 above proves the rename reaches the storage and survives a CLEAN restart, because the
-// CHECKPOINT in between made both halves durable together. This case removes that checkpoint.
-// What the two halves are durable at is not symmetric and cannot be made so by ordering: the
-// CATALOG half (the pg_attribute row carrying the new attname) is durable at the ALTER's WAL
-// commit marker, while the STORAGE half (the renamed column definition inside the .otbx) is
-// durable only at that table's NEXT CHECKPOINT, an unbounded time later. Kill the process in
-// between and the next start loads a storage naming `payload` against a catalog naming
-// `payload2`. A reconciliation that reads "in the storage, not in the live catalog" as a DROP
-// then releases a SURVIVING column's blocks — the column and every one of its rows, gone, on a
-// database that was never asked to drop anything.
-// THE CRASH goes through the fault-injection seam only: a clean scope exit runs test_spaces'
-// destructor, which issues a CHECKPOINT — precisely the event this case must be missing.
-// Arming fail_writes_from AFTER the RENAME makes every later .otbx write fail, so no header
-// commits for any table and every durable file stays byte-identical (conservative crash
-// semantics). The WAL is a different file and does NOT go through the block manager's
-// interposer, so the ALTER's commit marker survives — the whole point: catalog half durable,
-// storage half not.
-// EVERY ROW IS CHECKPOINTED BEFORE THE RENAME, deliberately, and it costs the case nothing:
-// the rows are added in two rounds (so the column's blocks are named by two different durable
-// roots) and both are committed before the kill, so the ONLY thing the crash takes away is the
-// storage half of the rename. Leaving round 2 WAL-only would drag in an unrelated defect — an
-// ARRAY column's element data does not survive WAL replay — so the check would fail for a
-// reason no reconciliation can influence.
-// THE GATE is the CONTENT, on many rows, not a column count and not a row count: a column that
-// was dropped and re-derived as all-NULL keeps both intact. `payload` is bigint[40] so its
-// segments take DEDICATED blocks past partial_block_manager_t's FULL_THRESHOLD (packing would
-// otherwise hide the released space behind the surviving column's), and the durable root is
-// walked offline before and after so a release shows up as a root that SHRANK.
+// The two halves of a rename are not durable at the same time: the CATALOG half is durable at the
+// ALTER's WAL commit marker, while the STORAGE half (the renamed column definition in the .otbx)
+// is durable only at that table's next CHECKPOINT — kill the process in between and a restart
+// loads a storage naming `payload` against a catalog naming `payload2`. Arming fail_writes_from
+// after the RENAME fails every later .otbx write while the WAL, a different file, is untouched.
 TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a_crash_before_the_checkpoint") {
     auto config = test_create_config(integration_fixture_path("test_alter_rename_column/crash"));
     test_clear_directory(config);
@@ -340,8 +286,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
     REQUIRE(before.columns.size() == 2);
     REQUIRE(before.columns[1] == "payload");
     REQUIRE_FALSE(before.report.root_data.empty());
-    // The identity the whole mechanism turns on is DURABLE, and it is the catalog's own
-    // pg_attribute.attoid, so it is well past the well-known system OIDs.
     INFO("durable attoids: " << before.attoids[0] << ", " << before.attoids[1]);
     REQUIRE(before.attoids.size() == 2);
     CHECK(before.attoids[0] != 0);
@@ -350,9 +294,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
 
     INFO("phase 2: a second committed round, then RENAME COLUMN, then KILL before any checkpoint");
     {
-        // Declared before the engine so the interposer is installed when the block managers
-        // open their files (wrap() runs once per open) and is still installed while the engine
-        // tears down. Every knob is off until the kill is armed, so phase 2 runs normally.
         otterbrix_test::fault_plan_t plan;
         otterbrix_test::fault_injection_scope_t fault(plan);
 
@@ -363,15 +304,9 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
         run_sql(dispatcher, "CHECKPOINT;");
         run_sql(dispatcher, "ALTER TABLE TestDatabase.wide RENAME COLUMN payload TO payload2;");
 
-        // KILL. fail_writes_from is compared with >=, so 1 fails every write from here on
-        // without the test having to count them. The engine is idle between statements, so
-        // this write to the shared plan cannot race an in-flight one.
         plan.fail_writes_from = 1;
     } // ← the destructor's CHECKPOINT runs here and can commit nothing.
 
-    // What the crash left, asserted rather than assumed: the durable storage still names the
-    // OLD column, and carries the SAME attoid it always did. If the kill silently failed to
-    // land, the phase-3 claims would pass for the wrong reason.
     auto crashed = walk_offline(otbx, &resource);
     REQUIRE(crashed.report.ok);
     REQUIRE(crashed.columns.size() == 2);
@@ -383,9 +318,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // GATE 1 — the column and ALL of its rows are there, under the NEW name, with the
-        // content they were written with. On a name-keyed reconciliation the column is gone by
-        // now: this either errors, or comes back NULL-filled.
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(
@@ -412,19 +344,13 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
     INFO("durable columns after the restart+checkpoint: " << after.columns.size());
     REQUIRE(after.columns.size() == 2);
 
-    // GATE 2 — IDENTITY, and it is the point of the whole change: the durable schema still
-    // carries the same two attoids, in the same order. A rename moves the NAME and nothing
-    // else, so the reconciliation had a stable key to match on and no divergence to misread.
+    // The durable schema keeps the same attoids across the rename — the reconciliation's stable
+    // key — but drop_column and column expansion still address storage BY NAME, so the stale
+    // storage name has to be repaired from the catalog: the rename cannot be left un-applied there.
     CHECK(after.attoids == before.attoids);
-    // ...and the stale storage name was repaired FROM the catalog, so the write path (whose
-    // column expansion and drop_column are name-addressed) is no longer looking at a name the
-    // catalog retired.
     CHECK(after.columns[1] == "payload2");
 
-    // GATE 3 — nothing was released. A rename moves no bytes and the reconciliation must move
-    // none either, so the root that the post-restart checkpoint commits still names every data
-    // block the crashed one did. A root that SHRANK is the signature of a surviving column
-    // having been dropped.
+    // A rename moves no bytes; a root that SHRANK is the signature of a surviving column dropped.
     INFO("root data blocks crashed=" << crashed.report.root_data.size()
                                      << " after=" << after.report.root_data.size());
     CHECK(after.report.root_data.size() >= crashed.report.root_data.size());
@@ -432,19 +358,10 @@ TEST_CASE("integration::cpp::test_alter_rename_column::renamed_column_survives_a
     CHECK(after.report.unexplained.empty());
 }
 
-// CASE 4 — THE ACQUIRED PROPERTY: with identity carried by the attoid, a RENAME and an
-// ADD COLUMN that storage has not materialized yet are TELLABLE APART, and they sit on opposite
-// sides of the comparison:
-//   * the renamed column's attoid IS in the live catalog — under a different name — so it is
-//     not a drop and nothing may be released;
-//   * the added column's attoid is in the live catalog and NOT in the storage — an extra
-//     CATALOG-only attoid, which is legal and common. It is not merely ignored: its identity is
-//     PUBLISHED FORWARD, so the INSERT that eventually materializes the column stamps the
-//     catalog's attoid onto it instead of leaving a 0 the next reconciliation must refuse.
-// By NAME those two are the same observation ("the two lists disagree"), which is exactly why
-// the name-keyed walk had no guard to add on its own side. This case puts BOTH in flight in the
-// same crash window, and then closes the loop by materializing the added column after the
-// restart and checking the identity it was born with, offline, in the durable file.
+// With identity carried by the attoid, a RENAME and an unmaterialized ADD COLUMN are tellable
+// apart: the renamed column's attoid is in the live catalog under a different name (not a drop),
+// while the added column's attoid is in the catalog but not yet in storage — published forward so
+// the eventual INSERT stamps it instead of leaving a 0 the next reconciliation must refuse.
 TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_unmaterialized_add_column_are_distinguishable") {
     auto config = test_create_config(integration_fixture_path("test_alter_rename_column/add_vs_rename"));
     test_clear_directory(config);
@@ -479,8 +396,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_unmaterialized
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // No INSERT follows, so the storage never grows this column: it exists ONLY as a
-        // pg_attribute row. That is the "extra catalog attoid" half.
         run_sql(dispatcher, "ALTER TABLE TestDatabase.wide ADD COLUMN extra bigint;");
         run_sql(dispatcher, "ALTER TABLE TestDatabase.wide RENAME COLUMN payload TO payload2;");
 
@@ -499,8 +414,6 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_unmaterialized
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        // The renamed column kept its data. Every row here was checkpointed in phase 1, so
-        // this is the durable content, not a WAL-replayed approximation of it.
         {
             auto session = otterbrix::session_id_t();
             auto cur =
@@ -516,10 +429,8 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_unmaterialized
             }
         }
 
-        // Materialize `extra`. The identity the ALTER minted for it was parked on the owning
-        // agent by the ALTER's own commit and LOST with the crash; the bootstrap re-published
-        // it from pg_attribute (an oid-set difference against the storage), so this INSERT's
-        // schema-growth stage has it to stamp.
+        // The ALTER's minted identity was lost with the crash; bootstrap re-published it from
+        // pg_attribute for this INSERT to stamp.
         {
             std::stringstream q;
             q << "INSERT INTO TestDatabase.wide (a, payload2, extra) VALUES (" << FIRST_ROWS << ", ARRAY[";
@@ -546,10 +457,7 @@ TEST_CASE("integration::cpp::test_alter_rename_column::rename_and_unmaterialized
     auto after = walk_offline(otbx, &resource);
     REQUIRE(after.report.ok);
 
-    // GATE — the durable schema now carries THREE columns, the first two with the identities
-    // they were created with, and the third with a NON-ZERO one it could only have got from the
-    // catalog row the ALTER wrote before the crash. A 0 there is the mine this task exists to
-    // remove: the next reconciliation would have to refuse the whole table.
+    // The third column's attoid is non-zero only because it came from the catalog row before the crash.
     INFO("durable columns after the restart+checkpoint: " << after.columns.size());
     REQUIRE(after.columns.size() == 3);
     REQUIRE(after.attoids.size() == 3);

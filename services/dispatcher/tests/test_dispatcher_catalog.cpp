@@ -34,16 +34,11 @@ using namespace components::catalog;
 using namespace components::cursor;
 using namespace components::types;
 
-// Dispatcher integration test. Catalog assertions go through manager_disk_t::resolve_namespace
-// and the test_probe catalog oracle — there is no in-memory catalog snapshot to read.
+// Catalog assertions go through manager_disk_t::resolve_namespace and test_probe; there is no
+// in-memory snapshot to read.
 
 namespace {
-    // A run that dies before its destructor — an aborting REQUIRE, a crash, a kill, a timeout —
-    // leaves its disk directory behind, and the fixture then boots the NEXT run's catalog from
-    // those files instead of creating a fresh one, so a later, unrelated run fails and looks like a
-    // regression. Clearing on the way IN as well as on the way OUT makes the fixture idempotent.
-    // Called from the member-initializer list so it happens BEFORE manager_disk_t is constructed
-    // over this path.
+    // Clears on the way in too, so a run that died mid-test can't leave its directory for the next to boot from.
     const std::string& scrubbed(const std::string& path) {
         std::error_code ec;
         std::filesystem::remove_all(path, ec);
@@ -71,7 +66,6 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                                                    log_,
                                                                    manager_disk_->address(),
                                                                    components::pipeline::no_mailbox()))
-        // No index manager in this fixture — its absence is named, not defaulted away.
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
                                                                       scheduler_,
                                                                       log_,
@@ -79,17 +73,13 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                                                       manager_disk_->address(),
                                                                       components::pipeline::no_mailbox())) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
-        // Pass WAL address — disk's append_pg_catalog_row sends physical_insert to it.
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
 
-        // Bootstrap pg_catalog system tables so the disk-side catalog has tables to scan.
         manager_disk_->bootstrap_system_tables_sync();
     }
 
     ~test_dispatcher() {
-        // Destroy managers (self-driving on internal threads) before the
-        // scheduler to avoid use-after-free, in reverse dependency order:
-        // dispatcher, then wal, then disk.
+        // Destroy managers before the scheduler, in reverse dependency order, to avoid use-after-free.
         manager_dispatcher_.reset();
         manager_wal_.reset();
         manager_disk_.reset();
@@ -102,7 +92,6 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
 
     void step() { scheduler_->run(10000); }
 
-    // Generic disk-actor invoke used by the catalog_probe adapter below.
     template<typename Fn, typename... Args>
     auto disk_invoke(Fn fn, Args&&... args) {
         auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(), fn, std::forward<Args>(args)...);
@@ -115,7 +104,6 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         return std::move(fut).take_ready();
     }
 
-    // Adapter exposing the (resource, invoke) shape that test_probe helpers expect.
     struct probe_fixture {
         test_dispatcher* self;
         std::pmr::memory_resource& resource;
@@ -127,9 +115,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     probe_fixture probe_fx() { return probe_fixture{this, *resource_}; }
 
     cursor_t_ptr take_result() {
-        // execute_plan's future becomes ready asynchronously (the manager actors
-        // self-drive on internal threads). Pump the child scheduler until ready,
-        // bounded by a 5s wall-clock deadline.
+        // The future becomes ready asynchronously; pump the scheduler until ready, bounded by a 5s deadline.
         REQUIRE(pending_future_);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (!pending_future_->is_ready() && std::chrono::steady_clock::now() < deadline) {
@@ -140,13 +126,11 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         REQUIRE(pending_future_->is_ready());
         auto result = std::move(*pending_future_).take_ready();
         pending_future_.reset();
-        // Drain again so the executor's post-result DDL pipeline (catalog writes,
-        // flush, commit_txn, storage_publish_commits) finishes before returning.
+        // Drain again so the executor's post-result DDL pipeline finishes before returning.
         step();
         return result;
     }
 
-    // Resolve a namespace via disk actor — returns {found, oid}.
     resolve_namespace_result_t resolve_namespace(const std::string& name) {
         components::execution_context_t ctx{components::session::session_id_t{},
                                             components::table::transaction_data{0, 0},
@@ -161,15 +145,12 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
             std::this_thread::yield();
         }
         REQUIRE(fut.is_ready());
-        // The reader carries an error channel ("the catalog could not be READ" is not "the
-        // catalog does not have it"); no case here expects a failed read, and letting one
-        // through as {found=false} would conflate the two.
+        // A failed read isn't {found=false}; no case here expects one, avoiding that conflation.
         auto r = std::move(fut).take_ready();
         REQUIRE_FALSE(r.has_error());
         return std::move(r.value());
     }
 
-    // Resolve a table via the live read_chunks_by_key path (catalog-read oracle).
     test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
         components::execution_context_t ctx{components::session::session_id_t{},
                                             components::table::transaction_data{0, 0},
@@ -225,7 +206,6 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
         auto rt = test.resolve_table(rns.oid, "test");
         REQUIRE(rt.found);
         REQUIRE(rt.relkind == 'r');
-        // Locate columns by attname.
         bool seen_fld1 = false, seen_fld2 = false;
         for (const auto& col : rt.columns) {
             if (col.attname == "fld1")
@@ -306,8 +286,6 @@ TEST_CASE("services::dispatcher::computed_operations") {
     }
 
     test.execute_sql(query.str());
-    // INSERT into a relkind='g' table — columns visible on next resolve via
-    // pg_computed_column (operator_computed_field_register_t).
     {
         auto cur = test.take_result();
         REQUIRE(cur->is_success());
@@ -315,7 +293,6 @@ TEST_CASE("services::dispatcher::computed_operations") {
         REQUIRE(rns.found);
         auto rt = test.resolve_table(rns.oid, "test");
         REQUIRE(rt.found);
-        // After adoption the columns reflect the inserted shape.
         bool seen_name = false, seen_count = false;
         for (const auto& col : rt.columns) {
             if (col.attname == "name")
@@ -328,36 +305,18 @@ TEST_CASE("services::dispatcher::computed_operations") {
     }
 }
 
-// ===========================================================================
-// A conkey THAT IS NOT WHAT encode_oid_csv WROTE MUST STOP THE STATEMENT.
-//
-// pg_constraint.conkey is a CSV of column attoids, read POSITIONALLY and enforced as an ordered
-// tuple; parse_oid_csv answers an `ok` channel because the decoded list alone can't carry a
-// loss — every downstream guard compares names against the very attoid list they came from, so
-// a list that lost or gained a token agrees with itself and passes.
-//
-// Two shapes must never come back with `ok == true`:
-//   * TRUNCATED AT A COMMA ("7,11," for "7,11,13"): stopping at the last separator without
-//     checking the token behind it reads a 3-column key as 2-column, enforcing a NARROWER key;
-//   * A TOKEN TOO LARGE FOR AN OID ("4294967297"): read as 64-bit then cast to 32 bits, 2^32+N
-//     reads as N — the key silently binds to the NEIGHBOURING column.
-//
-// Both rows are built via the engine's own build_create_constraint_writes/append_pg_catalog_row
-// (same path operator_insert uses), with exactly ONE cell then hand-corrupted to conkey text
-// encode_oid_csv itself never emits — the only way this shape is reachable.
-// ===========================================================================
+// A conkey that is not what encode_oid_csv wrote must stop the statement: parse_oid_csv answers
+// `ok` even when a token was dropped or corrupted. Two shapes must never pass: a comma
+// truncation (a narrower key) and a token 2^32 above an oid (wraps into the neighbouring column).
 
 namespace {
 
-    // Same shape as test_wave_exec_dispatcher.cpp's wave_dir: ::getpid() in the path so two
-    // ctest shards (or two build directories) never boot a catalog out of each other's files.
     std::string catalog_dir(const char* leaf) {
         return "/tmp/test_dispatcher_catalog_" + std::to_string(::getpid()) + "/" + leaf;
     }
 
-    // Write one pg_constraint row (+ its pg_depend rows) for a UNIQUE constraint
-    // on `key_attoids` of `table_oid`. `conkey_text` replaces the encoded column
-    // list, and a non-null `contype_text` replaces the constraint-kind code.
+    // `conkey_text` overwrites the encoded column list; a non-null `contype_text` overwrites the
+    // constraint-kind code.
     void plant_unique_constraint_row(test_dispatcher& test,
                                      std::pmr::memory_resource* resource,
                                      components::catalog::oid_t table_oid,
@@ -401,8 +360,6 @@ namespace {
         test.step();
     }
 
-    // (table oid, attoid of `id`, attoid of `code`) for a freshly created
-    // two-column table, read back through the live catalog-read path.
     struct planted_table_t {
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t id_attoid{components::catalog::INVALID_OID};
@@ -435,10 +392,6 @@ namespace {
 
 } // namespace
 
-// UNIQUE (id, code) whose conkey lost its tail to a truncation. The declared key
-// permits two rows that share `id` and differ in `code`; the truncated key —
-// UNIQUE (id) — does not. Refusing that write as a DUPLICATE is the engine
-// enforcing a constraint the user never wrote, and saying so in the user's face.
 TEST_CASE("services::dispatcher::conkey_csv::a_conkey_truncated_at_a_comma_is_not_a_narrower_key") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     test_dispatcher test(mr.get(), catalog_dir("conkey_truncated"));
@@ -470,9 +423,6 @@ TEST_CASE("services::dispatcher::conkey_csv::a_conkey_truncated_at_a_comma_is_no
     }
 }
 
-// UNIQUE (id) whose conkey token is 2^32 above the attoid of `code`. Read through
-// a 64-bit integer and cast down, it IS the attoid of `code`: the declared key
-// silently becomes a key on the neighbouring column, and duplicate `id`s walk in.
 TEST_CASE("services::dispatcher::conkey_csv::an_out_of_range_conkey_does_not_bind_the_key_to_another_column") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     test_dispatcher test(mr.get(), catalog_dir("conkey_out_of_range"));
@@ -490,8 +440,6 @@ TEST_CASE("services::dispatcher::conkey_csv::an_out_of_range_conkey_does_not_bin
     auto dup = test.take_result();
     INFO("duplicate-id INSERT: " << (dup->is_error() ? std::string(dup->get_error().what) : std::string("accepted")));
 
-    // THE USER CONSEQUENCE, read off the table: how many rows carry id = 1 under
-    // a declared UNIQUE (id).
     test.execute_sql("SELECT code FROM conkey_db.t WHERE id = 1;");
     auto stored = test.take_result();
     INFO("read error: " << (stored->is_error() ? std::string(stored->get_error().what) : std::string("none")));
@@ -501,18 +449,11 @@ TEST_CASE("services::dispatcher::conkey_csv::an_out_of_range_conkey_does_not_bin
     REQUIRE(stored->size() <= 1);
 }
 
-// A pg_constraint row whose contype cannot be read is a constraint of UNKNOWN
-// KIND — it may be the UNIQUE the user declared. A decode loop that classifies rows
-// by that char and skips what it cannot classify drops such a row out of the
-// constraint set before any of the refusals below can see it: the same silence as a
-// dropped conkey group, one step earlier in the same loop.
 TEST_CASE("services::dispatcher::conkey_csv::a_constraint_row_of_unknown_kind_is_not_skipped") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     test_dispatcher test(mr.get(), catalog_dir("conkey_unknown_kind"));
     const auto planted = create_two_column_table(test);
 
-    // A perfectly readable key column list — only the KIND of the constraint is
-    // gone, so nothing but the classification step can notice this row at all.
     plant_unique_constraint_row(test,
                                 mr.get(),
                                 planted.table_oid,
@@ -538,22 +479,10 @@ TEST_CASE("services::dispatcher::conkey_csv::a_constraint_row_of_unknown_kind_is
     REQUIRE(stored->size() <= 1);
 }
 
-// ===========================================================================
-// A SOURCE COLUMN WITH NO TYPE MUST BE NAMED BY THE STATEMENT THAT NAMED IT, NOT BY THE
-// STORAGE SEGMENT THAT CHOKED ON IT.
-//
-// The VALUES form already answers by name: validate_types drops an all-NULL column and says
-// WHICH one and why. INSERT ... SELECT never reaches that check — the projection column stays
-// typed NA, bind_computed_rename binds it with target_type=NA, the computed-register wrap
-// creates the catalog column from it, and the append then dies in column_segment_t with
-// "no segment storage for physical type 127" (127 = physical_type::NA) — a message naming no
-// column, no statement, no cause, arriving AFTER a phantom NA column is already in the catalog:
-// the table reports columns it holds no rows for.
-//
-// The refusal must stay NARROW: an unknown key on a schemaless table keeps its own, earlier
-// diagnosis (validate_key), and a plain projection of NULL is unaffected — the guard lives on
-// the INSERT binding, not the select list.
-// ===========================================================================
+// A source column with no type must be named by the statement that named it, not by the storage
+// segment that chokes on it: INSERT...SELECT skips validate_types, so a typeless column dies in
+// column_segment_t naming no column, after a phantom NA column is already in the catalog. The
+// refusal stays narrow — an unknown key keeps its own diagnosis, and a plain NULL is unaffected.
 TEST_CASE("services::dispatcher::null_source_column::insert_select_names_the_typeless_column") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     test_dispatcher test(mr.get(), catalog_dir("null_source_column"));
@@ -567,28 +496,23 @@ TEST_CASE("services::dispatcher::null_source_column::insert_select_names_the_typ
     REQUIRE(run("CREATE TABLE nsc.src();")->is_success());
     REQUIRE(run("INSERT INTO nsc.src (a, b) VALUES (1, 2);")->is_success());
 
-    // ---- the defect: a written column list ----
     REQUIRE(run("CREATE TABLE nsc.d1();")->is_success());
     {
         auto refused = run("INSERT INTO nsc.d1 (x, y) SELECT a, NULL FROM nsc.src;");
         REQUIRE_FALSE(refused->is_success());
         const std::string what{refused->get_error().what.c_str()};
         INFO("refusal text: " << what);
-        // the column the statement named, and the reason, both readable
         CHECK(what.find("\"y\"") != std::string::npos);
         CHECK(what.find("no type to create the column from") != std::string::npos);
-        // and NOT the storage segment's sentence
         CHECK(what.find("column_segment_t::append") == std::string::npos);
     }
     {
-        // nothing registered: the target is still the empty computing table it was
         auto after = run("SELECT * FROM nsc.d1;");
         REQUIRE(after->is_success());
         INFO("columns registered on the refused target: " << after->column_count());
         CHECK(after->column_count() == 0);
     }
 
-    // ---- same defect without a written column list (the projection names it) ----
     REQUIRE(run("CREATE TABLE nsc.d2();")->is_success());
     {
         auto refused = run("INSERT INTO nsc.d2 SELECT a AS x, NULL AS y FROM nsc.src;");
@@ -599,9 +523,7 @@ TEST_CASE("services::dispatcher::null_source_column::insert_select_names_the_typ
         CHECK(what.find("column_segment_t::append") == std::string::npos);
     }
 
-    // ---- CAST does not give the column a type either, so it is refused the same way ----
-    // (NULL::bigint / CAST(NULL AS BIGINT) still resolve to logical_type::NA here; the
-    // refusal must therefore not advertise a cast as the way out.)
+    // CAST doesn't help either — it still resolves to NA, so the refusal must not suggest a cast as the fix.
     REQUIRE(run("CREATE TABLE nsc.d3();")->is_success());
     {
         auto refused = run("INSERT INTO nsc.d3 (x, y) SELECT a, CAST(NULL AS BIGINT) FROM nsc.src;");
@@ -611,23 +533,17 @@ TEST_CASE("services::dispatcher::null_source_column::insert_select_names_the_typ
         CHECK(what.find("column_segment_t::append") == std::string::npos);
     }
 
-    // ---- WHAT MUST NOT CHANGE ----
-    // A projection of NULL is a legal result column; only writing it into a
-    // dynamic-schema table is not.
+    // A projection of NULL is legal; only writing it into a dynamic-schema table is refused.
     {
         auto plain = run("SELECT a, NULL FROM nsc.src;");
         REQUIRE(plain->is_success());
         CHECK(plain->column_count() == 2);
     }
-    // A DECLARED target has a column type to store the null under.
     REQUIRE(run("CREATE TABLE nsc.reg (k bigint, v bigint);")->is_success());
     CHECK(run("INSERT INTO nsc.reg (k, v) SELECT a, NULL FROM nsc.src;")->is_success());
-    // A UNION branch that supplies a value types the column, so nothing is NA.
     REQUIRE(run("CREATE TABLE nsc.d4();")->is_success());
     CHECK(run("INSERT INTO nsc.d4 (x, y) SELECT a, b FROM nsc.src UNION ALL SELECT a, NULL FROM nsc.src;")
               ->is_success());
-    // An unknown key on a schemaless table keeps its OWN, earlier diagnosis —
-    // this is the distinction the guard must not blur.
     {
         auto unknown = run("INSERT INTO nsc.d4 (x, y) SELECT a, nosuchkey FROM nsc.src;");
         REQUIRE_FALSE(unknown->is_success());

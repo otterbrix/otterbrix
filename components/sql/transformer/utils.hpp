@@ -20,10 +20,6 @@ namespace components::sql::transform {
     inline constexpr size_t MAX_COLUMN_REF_SEGMENTS = 5;
 
 #ifdef DEV_MODE
-    // Test-observable count of ROWS rewritten by promote_column while parsing an INSERT.
-    // Widening a column's type rebuilds every row already filled in that chunk, cell by cell
-    // through logical_value_t. Widenings per column are bounded by the type lattice, so this
-    // measures whether the cost really is quadratic or linear with a large constant.
     void note_promoted_rows(uint64_t rows) noexcept;
     uint64_t insert_promote_rows() noexcept;
     void reset_insert_promote_rows() noexcept;
@@ -52,23 +48,12 @@ namespace components::sql::transform {
 
     inline std::string construct_alias(Alias* alias) { return alias ? construct(alias->aliasname) : std::string(); }
 
-    // arr[N] index shares gram.y's T_Integer/T_Float union slot; reading `ival`
-    // for an out-of-int32 index (arrived as T_Float) would read a pointer's bit
-    // pattern. arr[a:b] slices and computed subscripts are refusals.
     core::result_wrapper_t<std::pmr::string> indices_to_str(std::pmr::memory_resource* resource, A_Indices* indices);
 
-    // Refuses FuncCall decorations nothing downstream reads: OVER (would run as a
-    // plain aggregate), VARIADIC (argument passed unexpanded), agg ORDER BY/WITHIN
-    // GROUP (ordering dropped).
+    // Refuses FuncCall decorations nothing downstream reads: OVER, VARIADIC, aggregate ORDER BY/WITHIN GROUP.
     core::error_t refuse_dropped_call_decorations(std::pmr::memory_resource* resource, const FuncCall& call);
 
-    // Role-named DTO produced by the transformer when reading a RangeVar
-    // (table reference) out of the parser AST. Carries each of the four name
-    // components a SQL parser may attach to a qualified table reference:
-    // optional uid, optional catalog (database), optional schema, and the
-    // relation (table) name. Each slot holds what the grammar put there and
-    // nothing else — name resolution compares slots by position, so a value
-    // moved between slots is a wrong answer, not a convenience.
+    // The four name components a qualified table reference may carry; name resolution compares slots by position.
     struct qualified_name {
         std::string dbname;
         std::string relname;
@@ -83,12 +68,6 @@ namespace components::sql::transform {
         std::string schema = construct(table->schemaname);
         std::string rel = construct(table->relname);
         std::string uuid = construct(table->uid);
-        // The parser produces one RangeVar shape per arity, and both productions
-        // that build one (qualified_name and makeRangeVarFromAnyName) agree:
-        //   `tbl`               -> catalogname="",  schemaname=""
-        //   `db.tbl`            -> catalogname=db,  schemaname=""
-        //   `db.schema.tbl`     -> catalogname=db,  schemaname=schema
-        //   `uid.db.schema.tbl` -> uid=uid, catalogname=db, schemaname=schema
         return {std::move(dbname), std::move(rel), std::move(schema), std::move(uuid)};
     }
 
@@ -190,7 +169,6 @@ namespace components::sql::transform {
 
     inline types::logical_type get_logical_type(std::string_view str) {
         static const std::unordered_map<std::string_view, types::logical_type> lookup = {
-            // postgres built-ins
             {"int2", types::logical_type::SMALLINT},
             {"int4", types::logical_type::INTEGER},
             {"int8_t", types::logical_type::BIGINT},
@@ -236,10 +214,7 @@ namespace components::sql::transform {
                op == "~" || op == "<<" || op == ">>";
     }
 
-    // Unary plus is the identity (SQLite semantics: "+X is equivalent to X"): peel every
-    // `+`-layer off an expression and return what remains. A unary operator parses as
-    // A_Expr{op, lexpr = NULL, rexpr = operand}. Returns nullptr for a malformed `+` with
-    // no operand — callers must reject that.
+    // Peels every `+`-layer off an expression; returns nullptr for a malformed `+` with no operand.
     inline Node* strip_unary_plus(Node* node) {
         while (node && nodeTag(node) == T_A_Expr) {
             auto* plus = pg_ptr_cast<A_Expr>(node);
@@ -290,39 +265,20 @@ namespace components::sql::transform {
         operator_fixity_t fixity;
     };
 
-    // Operators that are spelled as function calls internally:
-    //   ^ -> pow   |/ -> sqrt   ||/ -> cbrt   @ -> abs
-    //   ! -> factorial (postfix)   !! -> factorial (prefix)
-
     operator_function_t operator_function(std::string_view op);
 
-    // --- JSONB operators -------------------------------------------------
-    // Path-navigation jsonb operators. On a computing table (relkind='g')
-    // nested fields are flattened into a single column whose name is the
-    // path joined by '/', so navigation reduces to building that joined key.
-    //   ->  /  #>   return jsonb  -> a (sub)table (relation position only)
-    //   ->> / #>>   return text   -> a typed scalar value (SELECT/WHERE)
-    // '#>'/'#>>' take a whole path on the right ('{a,b}' or dotted 'a.b').
+    // On a computing table (relkind='g'), nested fields flatten into one column named by the '/'-joined path.
     bool is_jsonb_nav_operator(std::string_view op);
 
-    // True for the scalar (text-returning) variants usable in SELECT/WHERE.
     bool jsonb_nav_returns_scalar(std::string_view op);
 
-    // True for operators whose right operand is a whole path ('{a,b}' / 'a.b'),
-    // not a single key — '#>', '#>>' (navigation) and '#-' (delete by path).
+    // True for operators whose right operand is a whole path, not a single key.
     bool jsonb_op_takes_path(std::string_view op);
 
     std::string node_tag_to_string(NodeTag type);
     std::string expr_kind_to_string(A_Expr_Kind type);
 
-    // The source text of a CHECK constraint's expression, sliced out of the statement it was
-    // written in. `check_location` is the Constraint node's own location — the CHECK keyword — and
-    // the expression is what sits between the '(' that follows it and the matching ')'.
-    // Taking the text the user wrote, rather than rebuilding it from the parse tree, is what makes
-    // the round trip exact: the stored bytes parse back to the same expression because they are the
-    // same bytes. Replaces a deparser that could only spell `column OP constant` and its boolean
-    // combinations, silently compiling anything else to constant TRUE; CHECK is now a general
-    // expression, so `a + b > 0` is enforced instead of skipped.
+    // Slices the CHECK expression out of the raw SQL text rather than rebuilding it, so the round trip is exact.
     core::result_wrapper_t<std::string>
     slice_check_expression(std::pmr::memory_resource* resource, const char* raw_sql, int check_location);
 
@@ -330,9 +286,7 @@ namespace components::sql::transform {
     core::result_wrapper_t<std::pmr::vector<types::complex_logical_type>> get_types(std::pmr::memory_resource* resource,
                                                                                     PGList& list);
 
-    // Exact integer reading of a literal's text; a literal wider than the scanner's 32-bit
-    // `ival` arrives here as T_Float digits (process_integer_literal in scan.l) since atof
-    // would round 9223372036854775807 to ...808.
+    // A literal wider than the scanner's 32-bit `ival` arrives as T_Float digits, since atof would round it.
     enum class integer_text_t
     {
         not_an_integer, // a fraction or an exponent — a real float, atof is correct for it
@@ -343,80 +297,52 @@ namespace components::sql::transform {
     // Sign + decimal digits only; int128 ceiling matches DECIMAL_MAX_WIDTH == 38.
     integer_text_t parse_exact_integer(std::string_view text, types::int128_t& out);
 
-    // Unsigned counterpart for 2^127..2^128-1 (UHUGEINT's top half), unreachable by the
-    // signed reader; a '-' sign reports out_of_range rather than wrapping.
+    // Unreachable by the signed reader (UHUGEINT's top half); a '-' sign reports out_of_range, not wrapping.
     integer_text_t parse_exact_unsigned_integer(std::string_view text, types::uint128_t& out);
 
-    // Exact scaled-integer parse for DECIMAL(width, scale): value * 10^scale, rounding
-    // half-away-from-zero past `scale` (atof would flatten NUMERIC(38,20) past ~15
-    // significant digits). Too many integer-part digits is a refusal, never a partial parse.
+    // value * 10^scale, rounding half-away-from-zero past `scale`; too many integer-part digits is a refusal.
     core::result_wrapper_t<types::int128_t>
     parse_exact_decimal(std::pmr::memory_resource* resource, std::string_view text, uint8_t width, uint8_t scale);
 
-    // Exact literal value: BIGINT/HUGEINT/UHUGEINT by magnitude, DOUBLE only if fractional.
-    // An integer past UHUGEINT or a fractional literal past double range is refused rather
-    // than silently rounded to double/±inf.
+    // BIGINT/HUGEINT/UHUGEINT by magnitude, DOUBLE only if fractional; out-of-range is refused, not rounded.
     core::result_wrapper_t<types::logical_value_t> numeric_literal_value(std::pmr::memory_resource* resource,
                                                                          Value* value);
 
-    // The digits of a fractional numeric literal, empty for anything else. This is the ONE
-    // literal shape numeric_literal_value has to answer as a double, so it is the one whose
-    // written digits do not survive into the plan; a caller that will later learn a DECIMAL
-    // target keeps them to re-read with parse_exact_decimal. The view borrows the parse
-    // tree's storage.
+    // The digits of a fractional numeric literal; a DECIMAL-typed caller re-reads them with parse_exact_decimal.
     std::string_view fractional_literal_text(Node* node);
 
     core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node);
     core::result_wrapper_t<types::logical_value_t> get_array(std::pmr::memory_resource* resource, PGList* list);
 
-    // Evaluate constant arithmetic expression at parse time (e.g., 10 * 5 in INSERT VALUES)
     core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource,
                                                                          A_Expr* node);
 
-    // gram.y's opt_drop_behavior maps both empty and RESTRICT to DROP_RESTRICT
-    // (PostgreSQL parity: unwritten means RESTRICT, #638) -> restrict_; DROP_CASCADE -> cascade_.
+    // gram.y maps empty and RESTRICT both to DROP_RESTRICT -> restrict_ (PostgreSQL parity, #638).
     components::catalog::drop_behavior_t drop_behavior_of(DropBehavior written) noexcept;
 
     core::result_wrapper_t<std::vector<table::column_definition_t>>
     get_column_definitions(std::pmr::memory_resource* resource, PGList& table_elts);
-    // Constraints written as a separate element of the CREATE TABLE column list
-    // (`PRIMARY KEY (id)`, `UNIQUE (code)`, `CHECK (...)`, `FOREIGN KEY (...) REFERENCES ...`).
     core::result_wrapper_t<std::vector<table::table_constraint_t>>
     extract_table_constraints(std::pmr::memory_resource* resource, PGList& table_elts, const char* raw_sql);
 
-    // Constraints written ON a column (`code bigint UNIQUE`). Same result shape as
-    // extract_table_constraints; NOT NULL/DEFAULT stay with get_column_definitions (column
-    // properties, not pg_constraint rows).
     core::result_wrapper_t<std::vector<table::table_constraint_t>>
     extract_column_constraints(std::pmr::memory_resource* resource, PGList& table_elts, const char* raw_sql);
 
-    // Transformer catalog-resolve emission.
-    // The transformer records every catalog lookup the statement depends on into
-    // the plan's `catalog_resolves`, which lives OUTSIDE the plan trees. Nothing
-    // is wrapped: the consumer node stays the sub-query root. Entries dedupe, so
-    // the same table named by several sub-queries is resolved once.
-
-    // Register (dbname, relname) — plus its namespace, and, when `with_constraints`
-    // is set, the constraint gather for that table (INSERT/UPDATE → outgoing,
-    // DELETE → referencing). An empty dbname/relname skips the corresponding entry.
+    // catalog_resolves lives OUTSIDE the plan trees; entries dedupe across sub-queries naming the same table.
     enum class constraint_resolve_kind
     {
         none,
         outgoing,
         referencing,
-        // (conname, oid) only, no enforcement decode: DROP CONSTRAINT must not refuse on the
-        // very catalog state (e.g. a doubled PRIMARY KEY) it exists to repair.
+        // No enforcement decode: DROP CONSTRAINT must not refuse on the catalog state it exists to repair.
         names_only
     };
 
-    // Name a hand-built plan node's catalog target — what the transform_* functions
-    // do for SQL-built plans. Plans assembled directly through the C++/C API never
-    // went through the transformer, and the executor registers a catalog lookup for
-    // every target the tree NAMES, so naming is all such a plan has to do.
-    // Returns the node, so it drops straight into an execution_plan_t.
+    // Names a hand-built plan node's catalog target — what transform_* does for SQL-built plans.
     logical_plan::node_ptr
     name_catalog_target(const std::string& dbname, const std::string& relname, logical_plan::node_ptr node);
 
+    // with_constraints gathers INSERT/UPDATE's outgoing or DELETE's referencing constraints.
     void register_catalog_resolve_table(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,
                                         const std::string& dbname,
@@ -427,14 +353,10 @@ namespace components::sql::transform {
                                         logical_plan::catalog_resolves_t* resolves,
                                         const std::vector<std::string>& type_names);
 
-    // Register a database-scoped DDL target (CREATE DATABASE, DROP DATABASE,
-    // CREATE TYPE, ...): its namespace only.
     void register_catalog_resolve_namespace(std::pmr::memory_resource* resource,
                                             logical_plan::catalog_resolves_t* resolves,
                                             const std::string& dbname);
 
-    // Multi-target form for DDL that touches several tables in one statement
-    // (CREATE CONSTRAINT FK with ref_table, DROP INDEX with parent table + index).
     void register_catalog_resolve_tables(std::pmr::memory_resource* resource,
                                          logical_plan::catalog_resolves_t* resolves,
                                          const std::vector<std::pair<std::string, std::string>>& targets);

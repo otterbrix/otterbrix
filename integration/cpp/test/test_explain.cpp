@@ -29,8 +29,7 @@ namespace {
 
     bool contains(const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; }
 
-    // A single-row cursor carrying `marker` in the "QUERY PLAN" column — the observable output of a
-    // host-supplied renderer, so a test can assert which renderer produced a query's EXPLAIN.
+    // A single-row cursor with `marker` in the QUERY PLAN column, standing in for a host renderer's output.
     cursor_t_ptr marker_cursor(std::pmr::memory_resource* mr, std::string_view marker) {
         std::pmr::vector<types::complex_logical_type> types(mr);
         types.emplace_back(types::logical_type::STRING_LITERAL, "QUERY PLAN");
@@ -40,21 +39,17 @@ namespace {
         return make_cursor(mr, std::move(chunk));
     }
 
-    // Distinct host renderers: each emits a fixed marker so the selected slot is observable.
     cursor_t_ptr fake_render(std::pmr::memory_resource* mr,
                              const services::collection::explain_plan_node& /*root*/,
                              bool /*analyze*/) {
         return marker_cursor(mr, std::string_view("FAKE-RENDERER"));
     }
-    // Marker deliberately NOT a substring of (nor containing) "FAKE-RENDERER", so a distinctness
-    // assertion can tell the two fakes apart both ways.
+    // Marker is not a substring of "FAKE-RENDERER" either way, so a distinctness assertion can tell them apart.
     cursor_t_ptr fake_render_2(std::pmr::memory_resource* mr,
                                const services::collection::explain_plan_node& /*root*/,
                                bool /*analyze*/) {
         return marker_cursor(mr, std::string_view("FAKE-SPARK"));
     }
-    // Reports the `analyze` flag it was called with, so a test can prove EXPLAIN ANALYZE reaches a
-    // custom renderer with analyze == true.
     cursor_t_ptr fake_render_analyze(std::pmr::memory_resource* mr,
                                      const services::collection::explain_plan_node& /*root*/,
                                      bool analyze) {
@@ -70,7 +65,6 @@ TEST_CASE("integration::cpp::test_explain::sql") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    // --- setup: two tables + rows so EXPLAIN has a scan + a join to render ---
     {
         auto s = otterbrix::session_id_t();
         dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
@@ -141,7 +135,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
             auto s = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(s, "SELECT COUNT(*) FROM TestDatabase.orders;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 3); // still 3 — plan-only never executed
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
         }
     }
 
@@ -157,13 +151,12 @@ TEST_CASE("integration::cpp::test_explain::sql") {
             auto s = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(s, "SELECT COUNT(*) FROM TestDatabase.orders;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 4); // now 4 — ANALYZE ran the insert
+            REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
         }
     }
 
     INFO("EXPLAIN (ANALYZE false/off/0) is plan-only — the inner DML must NOT execute");
     {
-        // Regression: an `ANALYZE <false-ish>` arg was misread as ANALYZE=true and ran the INSERT.
         for (const char* q : {"EXPLAIN (ANALYZE false) INSERT INTO TestDatabase.orders (id, cust) VALUES (77, 77);",
                               "EXPLAIN (ANALYZE off) INSERT INTO TestDatabase.orders (id, cust) VALUES (66, 66);",
                               "EXPLAIN (ANALYZE 0) INSERT INTO TestDatabase.orders (id, cust) VALUES (55, 55);"}) {
@@ -173,7 +166,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT COUNT(*) FROM TestDatabase.orders;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 4); // still 4 — no plan-only form executed
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
     }
 
     INFO("EXPLAIN (ANALYZE true) DOES execute the inner DML (positive control)");
@@ -189,13 +182,12 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT COUNT(*) FROM TestDatabase.orders;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 5); // now 5 — ANALYZE true ran the insert
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
     }
 
     INFO("plan-only EXPLAIN does NOT execute an uncorrelated sub-query");
     {
-        // The scalar sub-query returns 2 rows (customer); if plan-only EXPLAIN ran it, compaction to a
-        // single value would error. Plan-only must skip sub-query execution and still render the plan.
+        // The sub-query returns 2 rows; if plan-only EXPLAIN executed it, compacting to a scalar would error.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             s,
@@ -213,7 +205,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
 
     INFO("host customization: set_explain_renderer swaps output, SQL unchanged");
     {
-        // Register the fake at slot 0 — the default slot a plain EXPLAIN (render_id == 0) selects.
+        // Slot 0 is the default a plain EXPLAIN (render_id == 0) selects.
         REQUIRE_FALSE(dispatcher->set_explain_renderer(0, &fake_render).contains_error());
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;");
@@ -260,9 +252,9 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
                                            "max(id) FROM TestDatabase.customer);");
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
-        REQUIRE(contains(t, "InitPlan 1 (returns $")); // PostgreSQL-style InitPlan header + param slot
-        REQUIRE(contains(t, "customer"));              // the sub-query's scanned relation
-        REQUIRE(contains(t, "actual time"));           // ANALYZE stats present (main + sub tree)
+        REQUIRE(contains(t, "InitPlan 1 (returns $"));
+        REQUIRE(contains(t, "customer"));
+        REQUIRE(contains(t, "actual time"));
     }
 
     INFO("EXPLAIN ANALYZE: IN (SELECT ...) renders an InitPlan");
@@ -277,9 +269,7 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
         REQUIRE(contains(t, "customer"));
     }
 
-    // The attach-at-root placement is operator-INDEPENDENT: the flattened sub-query's param lands on a
-    // scan / match / aggregate / join, but the InitPlan renders at the root regardless. These three cover
-    // the carriers that motivated the rewrite (EXISTS->match, HAVING->aggregate, JOIN-ON->join).
+    // Attach-at-root is operator-independent: these three carriers (EXISTS, HAVING, JOIN-ON) motivated the rewrite.
     INFO("EXPLAIN ANALYZE: EXISTS (...) renders an InitPlan (carrier: operator_match)");
     {
         auto s = otterbrix::session_id_t();
@@ -327,7 +317,7 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "InitPlan 1 (returns $"));
-        REQUIRE(contains(t, "InitPlan 2 (returns $")); // global numbering, second sub-query
+        REQUIRE(contains(t, "InitPlan 2 (returns $"));
     }
 
     INFO("EXPLAIN ANALYZE: nested sub-query — both InitPlans present (all flattened top-level)");
@@ -340,14 +330,12 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "InitPlan 1 (returns $"));
-        REQUIRE(contains(t, "InitPlan 2 (returns $")); // nested sub-query is a sibling InitPlan, not dropped
+        REQUIRE(contains(t, "InitPlan 2 (returns $"));
     }
 
     INFO("plain EXPLAIN (not ANALYZE) shows the sub-query InitPlan STRUCTURE (PostgreSQL), without stats");
     {
-        // PostgreSQL's plain EXPLAIN shows the InitPlan shape even though it does not RUN the sub-query.
-        // We build each flattened sub-query's physical plan and capture its IR, but never execute it — so
-        // the InitPlan section appears with no `actual time`/rows/loops.
+        // Each flattened sub-query's IR is captured but never executed -- hence no actual time/rows/loops shown.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(
             s,
@@ -355,9 +343,9 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "orders"));
-        REQUIRE(contains(t, "InitPlan 1 (returns $")); // structure shown ...
+        REQUIRE(contains(t, "InitPlan 1 (returns $"));
         REQUIRE(contains(t, "customer"));
-        REQUIRE_FALSE(contains(t, "actual time")); // ... but the sub-query was NOT executed (no ANALYZE stats)
+        REQUIRE_FALSE(contains(t, "actual time"));
     }
 }
 
@@ -382,7 +370,6 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
                     ->is_success());
     }
 
-    // Register two DISTINCT host renderers into slots 1 and 2; slot 0 stays the built-in postgres.
     REQUIRE_FALSE(dispatcher->set_explain_renderer(1, &fake_render).contains_error());
     REQUIRE_FALSE(dispatcher->set_explain_renderer(2, &fake_render_2).contains_error());
 
@@ -399,7 +386,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
             auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", 0);
             REQUIRE(cur->is_success());
             const auto t = plan_text(cur);
-            REQUIRE(contains(t, "orders")); // built-in postgres output
+            REQUIRE(contains(t, "orders"));
             REQUIRE_FALSE(contains(t, "FAKE-RENDERER"));
         }
     }
@@ -422,8 +409,6 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
         auto c2 = dispatcher->execute_sql(s2, "EXPLAIN SELECT * FROM TestDatabase.orders;", 2);
         const auto t1 = plan_text(c1);
         const auto t2 = plan_text(c2);
-        // Cross negatives (markers are mutually non-substring) so this genuinely proves the two
-        // slots resolve to DIFFERENT renderers, not merely that each contains its own marker.
         REQUIRE(contains(t1, "FAKE-RENDERER"));
         REQUIRE_FALSE(contains(t1, "FAKE-SPARK"));
         REQUIRE(contains(t2, "FAKE-SPARK"));
@@ -436,7 +421,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", 999);
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
-        REQUIRE(contains(t, "orders")); // postgres default
+        REQUIRE(contains(t, "orders"));
         REQUIRE_FALSE(contains(t, "FAKE-RENDERER"));
     }
 
@@ -451,8 +436,6 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
 
     INFO("registration fan-out reaches every pooled executor");
     {
-        // The pool has 4 executors; a session hashes to one. Sweep enough sessions that a single
-        // set_explain_renderer(1, ...) registration must have reached whichever executor each hits.
         for (int i = 0; i < 12; ++i) {
             auto s = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", 1);
@@ -485,8 +468,7 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
 
     INFO("out-of-range registration id is rejected, not an unbounded allocation");
     {
-        // A bogus huge id must return false (bounded) — never resize the per-executor registry to
-        // gigabytes of fill (which, with exceptions disabled, would abort the process).
+        // A huge id must be rejected, not grow the registry to gigabytes (which, with exceptions off, would abort).
         REQUIRE(dispatcher->set_explain_renderer(4000000000u, &fake_render).contains_error());
     }
 
@@ -497,28 +479,24 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
 
     INFO("out-of-range render_id resolves to slot 0 — the host's default, not the built-in");
     {
-        // Host overwrites the default slot 0 with its own renderer; an out-of-range query id must
-        // resolve to THAT slot-0 default (not the hardcoded built-in postgres).
-        REQUIRE_FALSE(dispatcher->set_explain_renderer(0, &fake_render_2).contains_error()); // slot 0 = FAKE-SPARK
+        REQUIRE_FALSE(dispatcher->set_explain_renderer(0, &fake_render_2).contains_error());
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", 999);
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
-        REQUIRE(contains(t, "FAKE-SPARK"));   // host's slot-0 default
-        REQUIRE_FALSE(contains(t, "orders")); // NOT the built-in postgres plan
+        REQUIRE(contains(t, "FAKE-SPARK"));
+        REQUIRE_FALSE(contains(t, "orders"));
     }
 
     INFO("execute_sql_with_params honors render_id (previously dropped)");
     {
-        // slot 1 = FAKE-RENDERER; slot 0 was overwritten to FAKE-SPARK above. No bound parameters are
-        // needed — the point is that this entry point stamps render_id like execute_sql does.
         REQUIRE_FALSE(dispatcher->set_explain_renderer(1, &fake_render).contains_error());
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql_with_params(s, "EXPLAIN SELECT * FROM TestDatabase.orders;", {}, 1);
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
-        REQUIRE(contains(t, "FAKE-RENDERER"));    // render_id 1 honored (slot 1)
-        REQUIRE_FALSE(contains(t, "FAKE-SPARK")); // not the slot-0 default
+        REQUIRE(contains(t, "FAKE-RENDERER"));
+        REQUIRE_FALSE(contains(t, "FAKE-SPARK"));
     }
 }
 
@@ -560,19 +538,17 @@ TEST_CASE("integration::cpp::test_explain::analyze_recursive_cte_rows") {
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "Recursive Union"));
-        REQUIRE(contains(t, "CTE Scan")); // the recursive member scans the working table as a CTE Scan
-        // Isolate the Recursive Union line: before the fix it read "(actual time=0.000ms rows=0 loops=1)"
-        // because the producing bottom's record_analyze was never called.
+        REQUIRE(contains(t, "CTE Scan"));
+        // Isolated because before the fix this line alone read rows=0 -- record_analyze was never called on it.
         const auto pos = t.find("Recursive Union");
         const auto eol = t.find('\n', pos);
         const std::string ru_line = t.substr(pos, eol - pos);
-        REQUIRE_FALSE(contains(ru_line, "rows=0")); // now reports the actual produced row count
+        REQUIRE_FALSE(contains(ru_line, "rows=0"));
     }
 }
 
 TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
-    // Round-to-nearest per-loop rows (PostgreSQL rint), computed by render_postgres directly. Uses a
-    // monotonic arena over new_delete_resource — never std::pmr::get_default_resource().
+    // Rounds per-loop rows like PostgreSQL's rint(); uses a monotonic arena, never std::pmr::get_default_resource().
     std::pmr::monotonic_buffer_resource pool{std::pmr::new_delete_resource()};
     auto* mr = &pool;
 
@@ -601,11 +577,7 @@ TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
     }
 }
 
-// LIMIT unification: the canonical operator_limit renders a "Limit" node (renderer
-// label from renderer_postgres.cpp) as the OUTERMOST plan node — above the scan /
-// DISTINCT / GROUP — exactly when the LIMIT/OFFSET window is EFFECTIVE. An ineffective
-// window (LIMIT ALL -> unlimit()+offset 0, or no limit clause) inserts NO operator_limit,
-// so no "Limit" node appears.
+// operator_limit renders "Limit" as the outermost node exactly when the LIMIT/OFFSET window is effective.
 TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
     auto config = test_create_config(integration_fixture_path("test_explain/limit_node_when_effective"));
     test_clear_directory(config);
@@ -636,7 +608,7 @@ TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "Limit"));
         REQUIRE(contains(t, "orders"));
-        REQUIRE(t.find("Limit") < t.find("orders")); // outermost node — rendered above the scan
+        REQUIRE(t.find("Limit") < t.find("orders"));
     }
 
     INFO("EXPLAIN of DISTINCT ... LIMIT shows a Limit node (above the DISTINCT/scan)");
@@ -668,7 +640,6 @@ TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
 
     INFO("EXPLAIN of LIMIT ALL (an ineffective window) shows NO Limit node");
     {
-        // LIMIT ALL parses to unlimit()+offset 0 -> limit_effective == false -> operator_limit skipped.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN SELECT * FROM TestDatabase.orders LIMIT ALL;");
         REQUIRE(cur->is_success());
@@ -700,8 +671,7 @@ TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
                 ->is_success());
     }
 
-    // HAVING lowers to a dedicated operator_having_t (operator_type::having), rendered "Having"
-    // above the "Aggregate" — distinct from a WHERE "Filter".
+    // HAVING lowers to a dedicated operator_having_t, rendered "Having" -- distinct from a WHERE "Filter".
     INFO("EXPLAIN of GROUP BY ... HAVING shows a Having node above the Aggregate");
     {
         auto s = otterbrix::session_id_t();
@@ -712,13 +682,11 @@ TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "Having"));
         REQUIRE(contains(t, "Aggregate"));
-        REQUIRE(t.find("Having") < t.find("Aggregate")); // HAVING filter renders above the group
+        REQUIRE(t.find("Having") < t.find("Aggregate"));
     }
 }
 
-// One assertion per PostgreSQL node label the renderer can emit on a SELECT/DML spine, so a future
-// operator_type→label change (or a mis-tagged operator, as SELECT DISTINCT once rendered "Filter")
-// is caught here rather than silently shipping a wrong EXPLAIN label.
+// One assertion per node label; a mis-tagged operator (DISTINCT once rendered "Filter") is caught here, not shipped.
 TEST_CASE("integration::cpp::test_explain::operator_labels") {
     auto config = test_create_config(integration_fixture_path("test_explain/operator_labels"));
     test_clear_directory(config);
@@ -757,8 +725,7 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
     };
 
     REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders;"), "Seq Scan"));
-    // col-vs-col predicate now pushes into the scan (column_column_filter_t), so it renders as a Seq Scan
-    // with no standalone Filter / operator_match.
+    // col-vs-col predicates push into the scan (column_column_filter_t), rendering a bare Seq Scan with no Filter.
     REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders WHERE id > cust;"), "Seq Scan"));
     REQUIRE(contains(label_of("EXPLAIN SELECT * FROM TestDatabase.orders ORDER BY id;"), "Sort"));
     REQUIRE(contains(label_of("EXPLAIN SELECT id + cust FROM TestDatabase.orders;"), "Project"));
@@ -776,17 +743,10 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
     REQUIRE(contains(label_of("EXPLAIN INSERT INTO TestDatabase.orders (id, cust) VALUES (9, 9);"), "Insert"));
     REQUIRE(contains(label_of("EXPLAIN UPDATE TestDatabase.orders SET cust = 1 WHERE id = 1;"), "Update"));
     REQUIRE(contains(label_of("EXPLAIN DELETE FROM TestDatabase.orders WHERE id = 1;"), "Delete"));
-    // Regression: SELECT DISTINCT lowers to operator_distinct, which must render "Unique" (was "Filter").
     REQUIRE(contains(label_of("EXPLAIN SELECT DISTINCT cust FROM TestDatabase.orders;"), "Unique"));
 }
 
-// End-to-end proof that a single-table WHERE conjunct whose column
-// NAME also exists on the OTHER join side is pushed to the correct side's Seq Scan
-// — not stranded in a residual Filter above the join. Both t1 and t2 expose "id"
-// and "k"; `WHERE t1.id = 5 AND t2.id = 7` used to bucket by name (id is a subset
-// of BOTH sides) and stay in the residual; it now buckets by the validator's
-// stamped merged path and folds into each side's full_scan (a pushable
-// `column OP constant` becomes a Seq Scan predicate, so NO "Filter" node remains).
+// A WHERE conjunct on a name shared by both join sides must reach the correct side's scan, not a residual Filter.
 TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
     auto config = test_helpers::make_test_config(integration_fixture_path("test_explain/join_shared_col"), true);
     test_spaces space(config);
@@ -794,7 +754,6 @@ TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
 
     using test_helpers::exec;
     REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
-    // Both tables carry columns named "id" and "k" (name collision across sides).
     REQUIRE(exec(dispatcher, "CREATE TABLE db.t1 (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.t2 (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO db.t1 (id, k) VALUES (5,1),(5,2),(6,1);")->is_success());
@@ -808,12 +767,11 @@ TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, q + ";");
         REQUIRE(cur->is_success());
-        // t1 filtered id=5 -> (5,1),(5,2); t2 filtered id=7 -> (7,1),(7,3); join on k -> only k=1.
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 5); // a.id
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 1); // a.k
-        REQUIRE(cur->value(2, 0).value<int64_t>() == 7); // b.id
-        REQUIRE(cur->value(3, 0).value<int64_t>() == 1); // b.k
+        REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
+        REQUIRE(cur->value(1, 0).value<int64_t>() == 1);
+        REQUIRE(cur->value(2, 0).value<int64_t>() == 7);
+        REQUIRE(cur->value(3, 0).value<int64_t>() == 1);
     }
 
     INFO("EXPLAIN: both per-side filters ride the Seq Scans; no residual Filter remains");
@@ -822,38 +780,17 @@ TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
         auto cur = dispatcher->execute_sql(s, "EXPLAIN " + q + ";");
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
-        // The plan is (top-down):
-        //   Project -> Hash Join -> [Filter -> Seq Scan on t1], [Filter -> Seq Scan on t2]
-        // Each side's collision-named predicate rides its own scan BELOW the join. Before
-        // the side-based fix, the name collision (id/k on both sides) left BOTH conjuncts
-        // in a single residual Filter directly ABOVE the Hash Join.
         REQUIRE(contains(t, "Seq Scan on t1"));
         REQUIRE(contains(t, "Seq Scan on t2"));
         const auto join_pos = t.find("Hash Join");
         const auto first_filter = t.find("Filter");
         REQUIRE(join_pos != std::string::npos);
-        REQUIRE(first_filter != std::string::npos); // per-side filters are present, below the join
-        // The join precedes every Filter => NO residual Filter above the join (the fix).
+        REQUIRE(first_filter != std::string::npos);
         REQUIRE(join_pos < first_filter);
     }
 }
 
-// ============================================================================
-// TRANSITIVE EQUI-PREDICATE PROPAGATION — end-to-end.
-//
-// `t1 JOIN t2 ON t1.k = t2.k WHERE t1.k = 5` implies `t2.k = 5` on every matched
-// row, so the optimizer SYNTHESIZES that partner predicate and pushes it below
-// t2's scan too — in addition to the original `t1.k = 5` below t1.
-//
-// Correctness harness: t2 holds a row with k=7 that matches NO t1 row and is only
-// excludable via the join. The derived `t2.k = 5` pushes the filter EARLIER but
-// must NOT change the result set. We prove that two ways: (a) the exact expected
-// join rows come back, and (b) writing the partner predicate EXPLICITLY
-// (`... AND t2.k = 5`) yields an IDENTICAL result — the derivation is semantically
-// transparent. EXPLAIN then shows a Filter below BOTH scans for the inner join
-// (the derived predicate reached t2) but below ONLY t1 for a LEFT join (the
-// derivation is suppressed on the null-padded side — soundness).
-// ============================================================================
+// The optimizer derives t2.k=5 from t1.k=t2.k WHERE t1.k=5 and pushes it below t2's scan; suppressed on a LEFT join.
 namespace {
     size_t count_occurrences(const std::string& hay, const std::string& needle) {
         size_t n = 0;
@@ -873,8 +810,6 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
     REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.t1 (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.t2 (id2 bigint, k bigint, v bigint);")->is_success());
-    // t1.k in {5,5,9}; t2.k in {5,5,7}. The t2 row with k=7 matches NO t1 row and is
-    // only excludable via the join; the t1 row with k=9 is filtered by the WHERE.
     REQUIRE(exec(dispatcher, "INSERT INTO db.t1 (id, k) VALUES (1,5),(2,5),(3,9);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO db.t2 (id2, k, v) VALUES (10,5,100),(11,5,200),(12,7,300);")->is_success());
 
@@ -886,7 +821,6 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, inner + ";");
         REQUIRE(cur->is_success());
-        // t1 (k=5): {1,2}; t2 (k=5): {10,11}; inner join -> 2x2 = 4 rows; t2.k=7 never matches.
         REQUIRE(cur->size() == 4);
         REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
         REQUIRE(cur->value(1, 0).value<int64_t>() == 10);
@@ -900,7 +834,6 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
 
     INFO("parity: writing the partner predicate explicitly yields the IDENTICAL result");
     {
-        // The optimizer's derived `t2.k = 5` must equal what the user could write by hand.
         const std::string with_partner =
             "SELECT t1.id, t2.id2 FROM db.t1 JOIN db.t2 ON t1.k = t2.k WHERE t1.k = 5 AND t2.k = 5 "
             "ORDER BY t1.id, t2.id2";
@@ -914,10 +847,6 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
 
     INFO("EXPLAIN (inner): a Filter rides BOTH scans — the derived predicate reached t2");
     {
-        // Plan (top-down):
-        //   Project -> Sort -> Hash Join -> [Filter -> Seq Scan on t1], [Filter -> Seq Scan on t2]
-        // WITHOUT the transitive derivation the WHERE only touches t1, so t2 would be a
-        // bare Seq Scan (one Filter total). The DERIVED `t2.k = 5` adds the SECOND Filter.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN " + inner + ";");
         REQUIRE(cur->is_success());
@@ -925,8 +854,7 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
         REQUIRE(contains(t, "Seq Scan on t1"));
         REQUIRE(contains(t, "Seq Scan on t2"));
         REQUIRE(count_occurrences(t, "Seq Scan") == 2);
-        REQUIRE(count_occurrences(t, "Filter") == 2); // one per side — the derived predicate reached t2
-        // Every Filter sits BELOW the join (no residual predicate above it).
+        REQUIRE(count_occurrences(t, "Filter") == 2);
         REQUIRE(t.find("Hash Join") < t.find("Filter"));
     }
 
@@ -934,25 +862,17 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
         "SELECT t1.id, t2.id2 FROM db.t1 LEFT JOIN db.t2 ON t1.k = t2.k WHERE t1.k = 5 ORDER BY t1.id, t2.id2";
     INFO("EXPLAIN (LEFT): the derivation is suppressed on the null-padded side — only t1 filtered");
     {
-        // Plan (top-down):
-        //   Project -> Sort -> Hash Join -> [Filter -> Seq Scan on t1], [Seq Scan on t2]
-        // A LEFT join preserves unmatched left rows with a NULL-padded right side, so
-        // deriving `t2.k = 5` would be UNSOUND. It is gated out — t2 stays a bare scan.
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN " + outer + ";");
         REQUIRE(cur->is_success());
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "Seq Scan on t1"));
         REQUIRE(contains(t, "Seq Scan on t2"));
-        REQUIRE(count_occurrences(t, "Filter") == 1); // ONLY t1 — no derived predicate on t2
+        REQUIRE(count_occurrences(t, "Filter") == 1);
     }
 }
 
-// DISTINCT-under-GROUP-BY subsumption: a GROUP BY already emits rows distinct on its
-// key columns, so a DISTINCT over a projection that is a SUPERSET of those keys is
-// redundant. The optimizer clears it (no "Unique" operator_distinct pass), otherwise
-// the "Unique" label stays. The rendered "Unique" label is the observable proxy for the
-// operator_distinct that the drop_redundant_distinct rule removes.
+// A DISTINCT whose projection is a superset of the GROUP BY keys is redundant; drop_redundant_distinct clears it.
 TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
     auto config = test_create_config(integration_fixture_path("test_explain/distinct_under_group_by"));
     test_clear_directory(config);
@@ -969,14 +889,12 @@ TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
         REQUIRE(dispatcher->execute_sql(s, "CREATE TABLE TestDatabase.t(a int, b int);")->is_success());
     }
     {
-        // Distinct (a,b) combos: (1,10),(1,20),(2,10) -> 3. Groups on a: {1,2} -> 2.
         auto s = otterbrix::session_id_t();
         REQUIRE(
             dispatcher->execute_sql(s, "INSERT INTO TestDatabase.t (a, b) VALUES (1,10),(1,10),(1,20),(2,10),(2,10);")
                 ->is_success());
     }
 
-    // Positive: group keys == projection ({a,b} ⊆ {a,b}) -> DISTINCT cleared.
     INFO("DISTINCT a,b GROUP BY a,b: DISTINCT is redundant -> no Unique, still 3 rows");
     {
         auto s = otterbrix::session_id_t();
@@ -990,10 +908,7 @@ TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
         REQUIRE(cur->size() == 3);
     }
 
-    // Positive (subset direction): group keys ⊊ projection ({a} ⊆ {a, count}). The
-    // extra projected column is an AGGREGATE, so each group is still one row -> DISTINCT
-    // redundant. (`DISTINCT a, b GROUP BY a` cannot exercise this shape: a bare
-    // non-grouped, non-aggregated `b` is rejected as un-grouped SQL.)
+    // The extra projected column must be an aggregate here; a bare ungrouped column would be invalid SQL.
     INFO("DISTINCT a, COUNT(*) GROUP BY a: group ⊊ projection -> no Unique, 2 rows");
     {
         auto s = otterbrix::session_id_t();
@@ -1008,8 +923,7 @@ TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
         REQUIRE(cur->size() == 2);
     }
 
-    // NEGATIVE (the trap): group keys ⊄ projection ({a,b} ⊄ {a}). Groups (1,10),(1,20)
-    // both project a=1, so DISTINCT a really removes a duplicate -> MUST be kept.
+    // The trap: groups (1,10) and (1,20) both project a=1, so DISTINCT genuinely removes a duplicate here.
     INFO("TRAP: DISTINCT a GROUP BY a,b: DISTINCT is NOT redundant -> Unique kept, 2 rows");
     {
         auto s = otterbrix::session_id_t();
@@ -1020,16 +934,14 @@ TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
         auto s2 = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s2, "SELECT DISTINCT a FROM TestDatabase.t GROUP BY a, b;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 2); // distinct a: {1,2}; without the trap-kept DISTINCT it would be 3
+        REQUIRE(cur->size() == 2);
 
-        // Positive control: the SAME projection/keys WITHOUT DISTINCT keeps all 3 groups.
         auto s3 = otterbrix::session_id_t();
         auto cur_no_distinct = dispatcher->execute_sql(s3, "SELECT a FROM TestDatabase.t GROUP BY a, b;");
         REQUIRE(cur_no_distinct->is_success());
         REQUIRE(cur_no_distinct->size() == 3);
     }
 
-    // Negative: no GROUP BY at all -> DISTINCT must never be touched.
     INFO("DISTINCT a (no GROUP BY): untouched -> Unique kept, 2 rows");
     {
         auto s = otterbrix::session_id_t();

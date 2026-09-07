@@ -20,46 +20,20 @@
 #include <unistd.h>
 #include <vector>
 
-// What a restart must not do after a compacting round died between the compaction and the
-// index rebuild: a CHECKPOINT round compacts each table (new physical ids, committed by the
-// .otbx header and its `.wal_id` sidecar) and then rebuilds every index against them. Between
-// those two durable acts the device holds a POST-COMPACT TABLE UNDER PRE-COMPACT INDEXES, and
-// that state SURVIVES — base_spaces rebuilds no index at startup and WAL replay maintains
-// none. Closing this window needs a durable fact ("these indexes name pre-compact rows and
-// have not been rebuilt"), written before the compaction and cleared only after the rebuild's
-// force_flush, read by bootstrap. test_checkpoint_rebuild_before_truncate orders the rebuild
-// ahead of truncation but closes a different hole, not this one.
-//
-// The window is entered without a debugger by stripping the read bit off the index directory
-// for one CHECKPOINT: the rebuild's last leg (manager_index_t::repopulate_table ->
-// index_agent_contract::clear) begins with collect_segments(), a filesystem listing that is
-// also clear()'s ONE early return, so a directory it cannot list leaves the store untouched —
-// the exact state a kill -9 in the window leaves. The directory is copied while the engine is
-// up (same crash mechanism as test_index_rebuild_crash and test_index_stale_after_compact) and
-// reopened under a fresh engine.
-//
-// Guards, because this family can go green for the wrong reason:
-//   * the compaction really happened — checkpoint_inner writes the `.wal_id` sidecar only
-//     after data_table_t::compact returns true;
-//   * the rebuild really refused — the LIVE engine's index must disagree with its own full
-//     scan after the armed round;
-//   * the injection is real — a suite running as root would list the directory anyway;
-//   * the read path is the index — EXPLAIN on the same query text says Index Scan.
+// A crash between compacting a table and rebuilding its indexes can leave a POST-COMPACT TABLE
+// UNDER PRE-COMPACT INDEXES that SURVIVES restart; closing this needs a durable fact — "these
+// indexes name pre-compact rows, not yet rebuilt" — written before the compaction and cleared only
+// after the rebuild's force_flush. The window is entered here by stripping the read bit off the
+// index directory for one CHECKPOINT, the same state a kill -9 would leave.
 
 using namespace test_helpers;
 
 namespace {
 
-    // > row_group_size (1024) by a wide margin: 3000 rows span three row groups, and deleting
-    // the middle third moves every surviving tail row by a full 1000 ids, so a stale index
-    // cannot accidentally still name the right row.
     constexpr int64_t kRows = 3000;
-    constexpr int64_t kDeleteFrom = 1001; // inclusive
-    constexpr int64_t kDeleteTo = 2000;   // inclusive
+    constexpr int64_t kDeleteFrom = 1001;
+    constexpr int64_t kDeleteTo = 2000;
 
-    // Fixture roots are qualified by pid (see integration_fixture_path.hpp, and
-    // services/index/tests/index_fixture_path.hpp for the storage layer's own):
-    // two binaries running at once must not unlink each other's files.
     std::string fixture_root() {
         return integration_fixture_path("test_index_stale_marker_crash").string();
     }
@@ -88,8 +62,7 @@ namespace {
         }
     }
 
-    // THE FULL SCAN IS THE TRUTH. `SELECT id, k` carries no predicate an index could serve,
-    // so this is the table's own answer about which rows exist and what key each one holds.
+    // `SELECT id, k` carries no predicate an index could serve, so this is the table's own answer.
     std::map<int64_t, int64_t> full_scan_truth(otterbrix::wrapper_dispatcher_t* d) {
         auto cur = exec(d, "SELECT id, k FROM sdb.t;");
         REQUIRE(cur->is_success());
@@ -113,10 +86,6 @@ namespace {
         return probes;
     }
 
-    // How many probe keys the engine answers DIFFERENTLY from its own full scan. This is the
-    // ANSWER-level question and it does not care which access path produced it: an index that
-    // was refused (so the predicate falls back to a full scan) agrees, and an index still
-    // naming pre-compact rows does not.
     std::size_t disagreements_with_the_full_scan(otterbrix::wrapper_dispatcher_t* d) {
         const auto truth = full_scan_truth(d);
         std::size_t disagreements = 0;
@@ -137,8 +106,7 @@ namespace {
         return disagreements;
     }
 
-    // The bitcask index directory is found by CONTENT: it is the one holding a CURRENT
-    // marker, which bitcask writes as soon as it opens. sdb.t carries the only index here.
+    // Found by CONTENT: the one directory holding a CURRENT marker, which bitcask writes on open.
     std::filesystem::path find_bitcask_dir(const std::filesystem::path& disk_root) {
         std::filesystem::path found;
         std::error_code ec;
@@ -153,7 +121,6 @@ namespace {
         return found;
     }
 
-    // RAII around a DIRECTORY's permission bits; the refusal is the filesystem's own.
     struct dir_permissions_guard_t {
         std::filesystem::path directory;
         std::filesystem::perms previous;
@@ -174,10 +141,7 @@ namespace {
         dir_permissions_guard_t& operator=(const dir_permissions_guard_t&) = delete;
     };
 
-    // CHMOD DOES NOT BIND A SUPERUSER, so a suite run as root would turn the injection into
-    // one that never happened. Ask the FILESYSTEM whether the bits took, by trying the very
-    // operation clear() needs -- creating an entry in the directory -- rather than asking
-    // getuid(): the question is about the effect.
+    // A suite run as root ignores chmod, so this asks the filesystem by trying the write clear() needs, not getuid().
     bool directory_really_refuses_writes(const std::filesystem::path& directory) {
         std::error_code ec;
         const auto probe = directory / "otterbrix_write_probe";
@@ -190,8 +154,6 @@ namespace {
         return true;
     }
 
-    // The durable half of a table's checkpoint id, written by checkpoint_inner as
-    // `${db}/${namespace_oid}/${table_oid}/table.otbx.wal_id` through tmp+rename.
     uint64_t read_sidecar_wal_id(const std::filesystem::path& sidecar) {
         std::ifstream in(sidecar, std::ios::binary);
         uint64_t value = 0;
@@ -202,8 +164,6 @@ namespace {
         return in ? value : 0;
     }
 
-    // The ONE user table's sidecar. Every system table sits under the fixed system directory
-    // oid, so excluding that directory leaves exactly `sdb.t` in a database with one table.
     std::filesystem::path user_table_sidecar(const std::filesystem::path& db_root) {
         const auto system_dir =
             std::to_string(static_cast<unsigned>(services::disk::manager_disk_t::system_dir_oid()));
@@ -234,21 +194,13 @@ namespace {
 
 } // namespace
 
-// Nothing durable recorded that the round had renumbered the table under its indexes, so the
-// restart re-attached the bitcask store it found and wired the index as if it were current.
-// Every probe key then answered with whichever row had moved into the physical id the stale
-// entry holds: 34 of 34 probes disagreed with the table's own full scan, permanently.
-//
-// With the durable "renumbered and not rebuilt" fact in place, bootstrap declines to wire
-// exactly those indexes and says so at error level; the predicate falls back to a full scan
-// and the engine answers what the table holds.
+// Nothing durable recorded the renumbering, so the restart wired the stale bitcask store as
+// current and 34 of 34 probes disagreed with the table's own full scan, permanently.
 TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an_index_left_naming_precompact_rows") {
     auto config = test_create_config(fixture_root() + "/orig");
     test_clear_directory(config);
     config.wal.on = true;
     config.log.level = log_t::level::off;
-    // Far above anything this case writes: an automatic round DOES compact and DOES rebuild,
-    // and one firing mid-case would repair the very state under test.
     config.wal.auto_checkpoint_threshold_bytes = 1024ull * 1024ull * 1024ull;
 
     const std::filesystem::path crash_dir = fixture_root() + "/crashed";
@@ -259,13 +211,9 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
 
         REQUIRE(exec(d, "CREATE DATABASE sdb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE sdb.t (id bigint, k bigint);")->is_success());
-        // USING hash -> the bitcask backend, whose clear() reports a directory it cannot list
-        // by value and leaves the store untouched. That is the refusal this case injects.
         REQUIRE(exec(d, "CREATE INDEX t_k ON sdb.t USING hash (k);")->is_success());
         load(d);
 
-        // ROUND ONE, clean. It gives every entry a non-zero prev_checkpoint_wal_id_ and puts
-        // the index and the table into agreement, so a disagreement later is round two's.
         REQUIRE(exec(d, "CHECKPOINT;")->is_success());
 
         INFO("the middle third goes, so round two has 1000 ids of shift to hand out");
@@ -274,10 +222,6 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
                          " AND id <= " + std::to_string(kDeleteTo) + ";")
                     ->is_success());
 
-        // Erases must land BEFORE the injection: a committed DELETE queues in commit_deletes and
-        // the horizon sweep publishes it later via a write that lists the index directory. Arming
-        // over an unfinished erase would hit the round's FLUSH step instead of REBUILD, ending it
-        // before anything compacts.
         {
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
             while (services::index::index_deferred_deletes() != 0 &&
@@ -287,14 +231,8 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
             INFO("the deferred-erase queue has to be empty before the fault goes in");
             REQUIRE(services::index::index_deferred_deletes() == 0);
 
-            // AND LANDED, not merely sent: the horizon sweep decrements this meter when it erases
-            // the queue entry but only awaits the agents' commit_deletes futures afterward, so a
-            // zero meter alone only proves the messages reached the mailbox. An index scan is a
-            // message to that same FIFO mailbox, and commit_deletes has no suspension point before
-            // co_return, so an answer coming back proves the erase ahead of it finished.
-            //
-            // MEASURED: shortening this wait to zero did not fail in 8 runs (5 idle, 3 under
-            // 24-way load) — this is a shape fix, not a reproduction of a flake.
+            // AND LANDED: a zero meter only proves the erase reached the mailbox, not that it finished.
+            // MEASURED: shortening this wait to zero did not fail in 8 runs (5 idle, 3 under 24-way load).
             INFO("a read through the index orders the injection after the erase write");
             REQUIRE(disagreements_with_the_full_scan(d) == 0);
         }
@@ -323,12 +261,7 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
         std::string round_two_reason;
 
         {
-            // Read + execute, NO WRITE. index_agent_contract::clear lists the segments (still
-            // allowed) then unlinks them, CURRENT, the txn log and the offset sidecar — all
-            // writes, all refused by the kernel — leaving the store holding the pre-compact
-            // segments under a table that has just been renumbered. An already-open descriptor
-            // is untouched by chmod, so the round's earlier index FLUSH still succeeds and the
-            // round gets as far as compacting.
+            // Read-only: clear() lists the segments but every unlink is refused by the kernel.
             dir_permissions_guard_t no_writes(bitcask_dir,
                                               std::filesystem::perms::owner_read |
                                                   std::filesystem::perms::owner_exec);
@@ -359,13 +292,6 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
              << round_two_reason);
         REQUIRE(round_two_reason.find("could not be removed by clear()") != std::string::npos);
 
-        // Nothing is asserted about the live engine's answers here, deliberately: clear()'s
-        // failed unlink pass leaves the store without an open active segment, refusing reads
-        // until reopened — loud and correct, but not the state under test. That state is what
-        // the DEVICE holds, which only a reopen can ask about.
-
-        // kill -9 happens here. Nothing on disk is staged by hand: the fault above lived in
-        // this process only, so the copy is simply what the device holds right now.
         copy_dir_as_crash(config.main_path, crash_dir);
     } // the destructor's CHECKPOINT runs against the ORIGINAL directory only
 
@@ -377,14 +303,11 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
         test_spaces space(crash_config);
         auto* d = space.dispatcher();
 
-        // THE POINT. Nothing rebuilds an index at startup, so an index wired from a store
-        // left naming pre-compact rows answers wrong for the life of the database. The
-        // restart must decline to wire it instead.
+        // Nothing rebuilds an index at startup, so the restart must decline to wire one left naming pre-compact rows.
         INFO("the reopened engine must answer what its table holds, key by key");
         CHECK(disagreements_with_the_full_scan(d) == 0);
 
-        // AND THE REASON MUST BE THE DECLINE, not a rebuild nobody performs: the predicate
-        // that was an Index Scan before the crash is served by a scan now.
+        // The reason must be the decline: the predicate that was an Index Scan is served by a scan now.
         auto plan = exec(d, "EXPLAIN SELECT id FROM sdb.t WHERE k = 10;");
         REQUIRE(plan->is_success());
         const auto text = plan_text(plan);

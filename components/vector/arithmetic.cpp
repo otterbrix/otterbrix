@@ -9,7 +9,6 @@ namespace components::vector {
 
     namespace {
 
-        // Detect problematic int128 <-> float/double combinations
         template<typename L, typename R>
         constexpr bool is_int128_float_mix_v =
             ((std::is_same_v<std::decay_t<L>, types::int128_t> ||
@@ -17,7 +16,6 @@ namespace components::vector {
             (std::is_floating_point_v<L> &&
              (std::is_same_v<std::decay_t<R>, types::int128_t> || std::is_same_v<std::decay_t<R>, types::uint128_t>) );
 
-        // Binary vector-vector
         template<template<typename...> class Op>
         struct binary_op_wrapper {
             template<typename...>
@@ -52,7 +50,7 @@ namespace components::vector {
             };
         };
 
-        // Binary vector-vector with zero-check (for divide/mod): sets NULL on division by zero
+        // Divide/mod set NULL on division by zero, rather than throwing.
         template<template<typename...> class Op>
         struct binary_div_wrapper {
             template<typename...>
@@ -95,7 +93,6 @@ namespace components::vector {
             };
         };
 
-        // Vector-scalar
         template<template<typename...> class Op>
         struct vec_scalar_op_wrapper {
             template<typename...>
@@ -133,7 +130,6 @@ namespace components::vector {
             };
         };
 
-        // Vector-scalar with zero-check: sets NULL for all rows when scalar divisor is zero
         template<template<typename...> class Op>
         struct vec_scalar_div_wrapper {
             template<typename...>
@@ -186,7 +182,6 @@ namespace components::vector {
             };
         };
 
-        // Scalar-vector
         template<template<typename...> class Op>
         struct scalar_vec_op_wrapper {
             template<typename...>
@@ -224,7 +219,6 @@ namespace components::vector {
             };
         };
 
-        // Scalar-vector with zero-check: per-element zero check on vector divisor
         template<template<typename...> class Op>
         struct scalar_vec_div_wrapper {
             template<typename...>
@@ -271,7 +265,6 @@ namespace components::vector {
             };
         };
 
-        // Unary negation
         struct unary_neg_wrapper {
             template<typename...>
             struct callback {
@@ -368,8 +361,6 @@ namespace components::vector {
                 output,
                 count);
         }
-
-        // ---- Temporal arithmetic ----
 
         static constexpr core::date::microseconds ONE_DAY_US =
             std::chrono::duration_cast<core::date::microseconds>(core::date::days{1});
@@ -522,7 +513,6 @@ namespace components::vector {
             const bool is_add = (op == arithmetic_op::add);
             const int sign = is_add ? 1 : -1;
 
-            // DATE ± INTERVAL  →  DATE
             if (lhs == lt::DATE && rhs == lt::INTERVAL) {
                 const auto* dates = left.data<core::date::days>();
                 const auto ivl = ivl_ro::from(right);
@@ -532,7 +522,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL + DATE  →  DATE  (commutative)
             if (is_add && lhs == lt::INTERVAL && rhs == lt::DATE) {
                 const auto ivl = ivl_ro::from(left);
                 const auto* dates = right.data<core::date::days>();
@@ -542,7 +531,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIMESTAMP/TZ ± INTERVAL  →  TIMESTAMP/TZ
             if ((lhs == lt::TIMESTAMP || lhs == lt::TIMESTAMP_TZ) && rhs == lt::INTERVAL) {
                 const auto* ts = left.data<core::date::microseconds>();
                 const auto ivl = ivl_ro::from(right);
@@ -552,7 +540,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL + TIMESTAMP/TZ  →  TIMESTAMP/TZ  (commutative)
             if (is_add && lhs == lt::INTERVAL && (rhs == lt::TIMESTAMP || rhs == lt::TIMESTAMP_TZ)) {
                 const auto ivl = ivl_ro::from(left);
                 const auto* ts = right.data<core::date::microseconds>();
@@ -562,7 +549,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIME ± INTERVAL  →  TIME
             if (lhs == lt::TIME && rhs == lt::INTERVAL) {
                 const auto* times = left.data<core::date::microseconds>();
                 const auto* ivl_us = right.entries()[0]->data<core::date::microseconds>();
@@ -575,7 +561,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL + TIME  →  TIME  (commutative)
             if (is_add && lhs == lt::INTERVAL && rhs == lt::TIME) {
                 const auto* ivl_us = left.entries()[0]->data<core::date::microseconds>();
                 const auto* times = right.data<core::date::microseconds>();
@@ -588,7 +573,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIME_TZ ± INTERVAL  →  TIME_TZ
             if (lhs == lt::TIME_TZ && rhs == lt::INTERVAL) {
                 const auto* tz_us = left.entries()[0]->data<core::date::microseconds>();
                 const auto* tz_zone = left.entries()[1]->data<core::date::timezone_offset_t>();
@@ -604,7 +588,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL + TIME_TZ  →  TIME_TZ  (commutative)
             if (is_add && lhs == lt::INTERVAL && rhs == lt::TIME_TZ) {
                 const auto* ivl_us = left.entries()[0]->data<core::date::microseconds>();
                 const auto* tz_us = right.entries()[0]->data<core::date::microseconds>();
@@ -620,7 +603,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL ± INTERVAL  →  INTERVAL
             if (lhs == lt::INTERVAL && rhs == lt::INTERVAL) {
                 const auto livl = ivl_ro::from(left);
                 const auto rivl = ivl_ro::from(right);
@@ -632,25 +614,21 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL * numeric_vec → INTERVAL
             if (op == arithmetic_op::multiply && lhs == lt::INTERVAL && types::is_numeric(rhs)) {
                 const auto livl = ivl_ro::from(left);
                 auto out = ivl_rw::from(output);
                 dispatch_ivl_vec_scale(livl, out, right, false, count);
                 return output;
             }
-            // numeric_vec * INTERVAL → INTERVAL (commutative)
             if (op == arithmetic_op::multiply && types::is_numeric(lhs) && rhs == lt::INTERVAL) {
                 return compute_temporal_binary(resource, op, right, left, count);
             }
-            // INTERVAL / numeric_vec → INTERVAL
             if (op == arithmetic_op::divide && lhs == lt::INTERVAL && types::is_numeric(rhs)) {
                 const auto livl = ivl_ro::from(left);
                 auto out = ivl_rw::from(output);
                 dispatch_ivl_vec_scale(livl, out, right, true, count);
                 return output;
             }
-            // DATE - DATE  →  INTERVAL (days component)
             if (!is_add && lhs == lt::DATE && rhs == lt::DATE) {
                 const auto* ldates = left.data<core::date::days>();
                 const auto* rdates = right.data<core::date::days>();
@@ -662,7 +640,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIMESTAMP/TZ - TIMESTAMP/TZ  →  INTERVAL (µs component)
             if (!is_add && (lhs == lt::TIMESTAMP || lhs == lt::TIMESTAMP_TZ) &&
                 (rhs == lt::TIMESTAMP || rhs == lt::TIMESTAMP_TZ)) {
                 const auto* lts = left.data<core::date::microseconds>();
@@ -675,7 +652,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIME - TIME  →  INTERVAL (µs component)
             if (!is_add && lhs == lt::TIME && rhs == lt::TIME) {
                 const auto* lt_us = left.data<core::date::microseconds>();
                 const auto* rt_us = right.data<core::date::microseconds>();
@@ -702,7 +678,6 @@ namespace components::vector {
             const bool is_add = (op == arithmetic_op::add);
             const int sign = is_add ? 1 : -1;
 
-            // DATE ± INTERVAL_scalar  →  DATE
             if (lhs == lt::DATE && rhs == lt::INTERVAL) {
                 const auto ivl = scalar.value<core::date::interval_t>();
                 const auto id = ivl.day;
@@ -714,7 +689,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIMESTAMP/TZ ± INTERVAL_scalar  →  TIMESTAMP/TZ
             if ((lhs == lt::TIMESTAMP || lhs == lt::TIMESTAMP_TZ) && rhs == lt::INTERVAL) {
                 const auto ivl = scalar.value<core::date::interval_t>();
                 const auto it = ivl.time;
@@ -727,7 +701,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIME ± INTERVAL_scalar  →  TIME
             if (lhs == lt::TIME && rhs == lt::INTERVAL) {
                 const auto it = scalar.value<core::date::interval_t>().time;
                 const auto* times = vec.data<core::date::microseconds>();
@@ -740,7 +713,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIME_TZ ± INTERVAL_scalar  →  TIME_TZ
             if (lhs == lt::TIME_TZ && rhs == lt::INTERVAL) {
                 const auto it = scalar.value<core::date::interval_t>().time;
                 const auto* tz_us = vec.entries()[0]->data<core::date::microseconds>();
@@ -756,7 +728,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL ± INTERVAL_scalar  →  INTERVAL
             if (lhs == lt::INTERVAL && rhs == lt::INTERVAL) {
                 const auto ivl = scalar.value<core::date::interval_t>();
                 const auto livl = ivl_ro::from(vec);
@@ -768,7 +739,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL_vec * numeric_scalar → INTERVAL
             if (op == arithmetic_op::multiply && lhs == lt::INTERVAL && types::is_numeric(rhs)) {
                 const double f = scalar_as_double(scalar);
                 const auto livl = ivl_ro::from(vec);
@@ -782,7 +752,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL_vec / numeric_scalar → INTERVAL
             if (op == arithmetic_op::divide && lhs == lt::INTERVAL && types::is_numeric(rhs)) {
                 const double f = scalar_as_double(scalar);
                 const auto livl = ivl_ro::from(vec);
@@ -796,7 +765,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // numeric_vec * INTERVAL_scalar → INTERVAL
             if (op == arithmetic_op::multiply && types::is_numeric(lhs) && rhs == lt::INTERVAL) {
                 const auto ivl = scalar.value<core::date::interval_t>();
                 auto out = ivl_rw::from(output);
@@ -846,7 +814,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // DATE - DATE_scalar  →  INTERVAL
             if (!is_add && lhs == lt::DATE && rhs == lt::DATE) {
                 const auto scalar_days = scalar.value<core::date::date_t>().value;
                 const auto* dates = vec.data<core::date::days>();
@@ -858,7 +825,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIMESTAMP/TZ - TIMESTAMP/TZ_scalar  →  INTERVAL
             if (!is_add && (lhs == lt::TIMESTAMP || lhs == lt::TIMESTAMP_TZ) &&
                 (rhs == lt::TIMESTAMP || rhs == lt::TIMESTAMP_TZ)) {
                 const auto scalar_ts = (rhs == lt::TIMESTAMP) ? scalar.value<core::date::timestamp_t>().value
@@ -872,7 +838,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIME - TIME_scalar  →  INTERVAL
             if (!is_add && lhs == lt::TIME && rhs == lt::TIME) {
                 const auto scalar_t = scalar.value<core::date::time_t>().value;
                 const auto* t_us = vec.data<core::date::microseconds>();
@@ -899,7 +864,6 @@ namespace components::vector {
             const bool is_add = (op == arithmetic_op::add);
             const int sign = is_add ? 1 : -1;
 
-            // DATE_scalar ± INTERVAL_vec  →  DATE
             if (lhs == lt::DATE && rhs == lt::INTERVAL) {
                 const auto scalar_days = scalar.value<core::date::date_t>().value;
                 const auto ivl = ivl_ro::from(vec);
@@ -909,7 +873,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL_scalar + DATE_vec  →  DATE  (commutative)
             if (is_add && lhs == lt::INTERVAL && rhs == lt::DATE) {
                 const auto ivl = scalar.value<core::date::interval_t>();
                 const auto* dates = vec.data<core::date::days>();
@@ -919,7 +882,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIMESTAMP/TZ_scalar ± INTERVAL_vec  →  TIMESTAMP/TZ
             if ((lhs == lt::TIMESTAMP || lhs == lt::TIMESTAMP_TZ) && rhs == lt::INTERVAL) {
                 const auto scalar_ts = (lhs == lt::TIMESTAMP) ? scalar.value<core::date::timestamp_t>().value
                                                               : scalar.value<core::date::timestamptz_t>().value;
@@ -930,7 +892,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL_scalar + TIMESTAMP/TZ_vec  →  TIMESTAMP/TZ  (commutative)
             if (is_add && lhs == lt::INTERVAL && (rhs == lt::TIMESTAMP || rhs == lt::TIMESTAMP_TZ)) {
                 const auto ivl = scalar.value<core::date::interval_t>();
                 const auto* ts = vec.data<core::date::microseconds>();
@@ -940,7 +901,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIME_scalar ± INTERVAL_vec  →  TIME
             if (lhs == lt::TIME && rhs == lt::INTERVAL) {
                 const auto scalar_time = scalar.value<core::date::time_t>().value;
                 const auto* ivl_us = vec.entries()[0]->data<core::date::microseconds>();
@@ -953,7 +913,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL_scalar + TIME_vec  →  TIME  (commutative)
             if (is_add && lhs == lt::INTERVAL && rhs == lt::TIME) {
                 const auto it = scalar.value<core::date::interval_t>().time;
                 const auto* times = vec.data<core::date::microseconds>();
@@ -966,7 +925,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIME_TZ_scalar ± INTERVAL_vec  →  TIME_TZ
             if (lhs == lt::TIME_TZ && rhs == lt::INTERVAL) {
                 const auto timetz = scalar.value<core::date::timetz_t>();
                 const auto* ivl_us = vec.entries()[0]->data<core::date::microseconds>();
@@ -981,7 +939,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL_scalar + TIME_TZ_vec  →  TIME_TZ  (commutative)
             if (is_add && lhs == lt::INTERVAL && rhs == lt::TIME_TZ) {
                 const auto it = scalar.value<core::date::interval_t>().time;
                 const auto* tz_us = vec.entries()[0]->data<core::date::microseconds>();
@@ -997,7 +954,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL_scalar ± INTERVAL_vec  →  INTERVAL
             if (lhs == lt::INTERVAL && rhs == lt::INTERVAL) {
                 const auto ivl = scalar.value<core::date::interval_t>();
                 const auto rivl = ivl_ro::from(vec);
@@ -1009,7 +965,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // INTERVAL_scalar * numeric_vec → INTERVAL
             if (op == arithmetic_op::multiply && lhs == lt::INTERVAL && types::is_numeric(rhs)) {
                 const auto ivl = scalar.value<core::date::interval_t>();
                 auto out = ivl_rw::from(output);
@@ -1059,7 +1014,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // numeric_scalar * INTERVAL_vec → INTERVAL (commutative with scalar_as_double)
             if (op == arithmetic_op::multiply && types::is_numeric(lhs) && rhs == lt::INTERVAL) {
                 const double f = scalar_as_double(scalar);
                 const auto rivl = ivl_ro::from(vec);
@@ -1073,7 +1027,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // DATE_scalar - DATE_vec  →  INTERVAL
             if (!is_add && lhs == lt::DATE && rhs == lt::DATE) {
                 const auto scalar_days = scalar.value<core::date::date_t>().value;
                 const auto* dates = vec.data<core::date::days>();
@@ -1085,7 +1038,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIMESTAMP/TZ_scalar - TIMESTAMP/TZ_vec  →  INTERVAL
             if (!is_add && (lhs == lt::TIMESTAMP || lhs == lt::TIMESTAMP_TZ) &&
                 (rhs == lt::TIMESTAMP || rhs == lt::TIMESTAMP_TZ)) {
                 const auto scalar_ts = (lhs == lt::TIMESTAMP) ? scalar.value<core::date::timestamp_t>().value
@@ -1099,7 +1051,6 @@ namespace components::vector {
                 }
                 return output;
             }
-            // TIME_scalar - TIME_vec  →  INTERVAL
             if (!is_add && lhs == lt::TIME && rhs == lt::TIME) {
                 const auto scalar_t = scalar.value<core::date::time_t>().value;
                 const auto* t_us = vec.data<core::date::microseconds>();
@@ -1114,15 +1065,11 @@ namespace components::vector {
             return output;
         }
 
-        // arithmetic_result_type answers NA for every pair it can't type; by here the temporal
-        // guard has already claimed every date/time/interval pair, so NA means "not an
-        // arithmetic numeric" (string/blob/boolean/struct/array) -- except an NA-TYPED operand
-        // itself, this engine's untyped-NULL column: NULL + 1 is NULL, so that pair still
-        // answers NA instead of refusing.
+        // arithmetic_result_type answers NA for every untypeable pair; by here temporal has claimed date/time,
+        // so NA means "not numeric" — except an NA-TYPED (untyped-NULL) operand, which still answers NA.
         bool operand_is_untyped(types::logical_type t) noexcept { return t == types::logical_type::NA; }
 
-        // Wording and error code match logical_value_t's unsupported_operands (components/types/
-        // logical_value.cpp): one shape for "arithmetic has no meaning here", whichever layer noticed.
+        // Wording and error code match logical_value_t's unsupported_operands, whichever layer noticed.
         core::error_t untypeable_pair(std::pmr::memory_resource* resource,
                                       std::string_view fn,
                                       types::logical_type lhs,
@@ -1144,17 +1091,11 @@ namespace components::vector {
                                                                const vector_t& left,
                                                                const vector_t& right,
                                                                uint64_t count) {
-        // Empty input: produce an empty result without dereferencing operand
-        // vectors. On a 0-row chunk the operands may not be resolvable at all
-        // (e.g. a degenerate 0-column batch chunk yields out-of-bounds operand
-        // pointers), so reading left.type()/right.type() here would deref a
-        // dangling vector. A 0-row arithmetic result carries no values.
+        // Empty input: a 0-row chunk's operands may be unresolvable, so reading their type derefs a dangling vector.
         if (count == 0) {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
         }
-        // Compute the result values first (numeric or temporal), then apply NULL propagation as a
-        // single tail below. Capturing the temporal branch in this local instead of returning it
-        // directly keeps it on the same validity path as the numeric branch.
+        // Captures the temporal branch in this local so it shares the NULL-propagation tail below.
         if (!types::is_duration(left.type().type()) && !types::is_duration(right.type().type()) &&
             types::arithmetic_result_type(left.type().type(), right.type().type(), op) ==
                 types::logical_type::NA &&
@@ -1172,8 +1113,7 @@ namespace components::vector {
             auto result_type = types::complex_logical_type(result_logical);
             vector_t out(resource, result_type, count);
             if (result_type.type() == types::logical_type::NA) {
-                // Reached ONLY for an NA-typed operand now (the guard above refused every
-                // other untypeable pair): an untyped-NULL column answers NULL.
+                // Reached ONLY for an NA-typed operand (the guard above refused every other pair).
                 return out;
             }
             switch (op) {
@@ -1195,9 +1135,8 @@ namespace components::vector {
             }
             return out;
         }();
-        // SQL three-valued logic: a NULL operand makes the result NULL. combine is a word-wise
-        // AND that is a no-op when the operand mask is all-valid, so NULL-free columns pay nothing.
-        // Applied after the dispatch so it composes with the divide/mod zero-invalidation.
+        // SQL three-valued logic: a NULL operand makes the result NULL; combine is a no-op when the mask is
+        // all-valid, so NULL-free columns pay nothing.
         output.validity().combine(left.validity(), count);
         output.validity().combine(right.validity(), count);
         return output;
@@ -1208,9 +1147,7 @@ namespace components::vector {
                                                                       const vector_t& vec,
                                                                       const types::logical_value_t& scalar,
                                                                       uint64_t count) {
-        // Empty input: see compute_binary_arithmetic. The vec operand may be a
-        // dangling/out-of-bounds reference on a 0-row chunk, so do not read its
-        // type here.
+        // Empty input: see compute_binary_arithmetic — the vec operand may be dangling on a 0-row chunk.
         if (count == 0) {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
         }
@@ -1270,9 +1207,6 @@ namespace components::vector {
                                                                       const types::logical_value_t& scalar,
                                                                       const vector_t& vec,
                                                                       uint64_t count) {
-        // Empty input: see compute_binary_arithmetic. The vec operand may be a
-        // dangling/out-of-bounds reference on a 0-row chunk, so do not read its
-        // type here.
         if (count == 0) {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
         }
@@ -1296,7 +1230,6 @@ namespace components::vector {
             auto result_type = types::complex_logical_type(result_logical);
             vector_t out(resource, result_type, count);
             if (result_type.type() == types::logical_type::NA) {
-                // Reached ONLY for an NA-typed operand now (see compute_binary_arithmetic).
                 return out;
             }
             switch (op) {
@@ -1318,7 +1251,6 @@ namespace components::vector {
             }
             return out;
         }();
-        // A NULL scalar makes every result NULL; otherwise propagate the vector operand's nulls.
         if (scalar.is_null()) {
             output.validity().set_all_invalid(count);
         } else {
@@ -1329,15 +1261,11 @@ namespace components::vector {
 
     core::result_wrapper_t<vector_t>
     compute_unary_neg(std::pmr::memory_resource* resource, const vector_t& vec, uint64_t count) {
-        // Empty input: see compute_binary_arithmetic. The vec operand may be a
-        // dangling/out-of-bounds reference on a 0-row chunk, so do not read its
-        // type here.
         if (count == 0) {
             return vector_t(resource, types::complex_logical_type(types::logical_type::DOUBLE), 0);
         }
-        // This entry point had no type guard: it dispatched straight into unary_neg_wrapper,
-        // whose non-numeric branch THREW std::logic_error out of a compute path.
-        // An NA-typed operand still answers NA — an untyped-NULL column negates to NULL.
+        // Had no type guard before — dispatched into unary_neg_wrapper, whose non-numeric branch THREW out of
+        // a compute path.
         if (!types::is_arithmetic_numeric(vec.type().type()) && !operand_is_untyped(vec.type().type())) {
             return untypeable_pair(resource, "compute_unary_neg", vec.type().type(), vec.type().type());
         }

@@ -124,7 +124,6 @@ TEST_CASE("checkpoint_load: single INT64 column, 1000 rows") {
 
     meta_block_pointer_t table_pointer;
 
-    // write phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
@@ -146,7 +145,6 @@ TEST_CASE("checkpoint_load: single INT64 column, 1000 rows") {
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
-    // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -160,7 +158,6 @@ TEST_CASE("checkpoint_load: single INT64 column, 1000 rows") {
         REQUIRE(loaded->table_name() == "test_table");
         REQUIRE(loaded->column_count() == 1);
 
-        // scan all rows
         uint64_t scanned = 0;
         otterbrix_test::scan_table_segment(*loaded, 0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
@@ -187,7 +184,6 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
 
     meta_block_pointer_t table_pointer;
 
-    // write phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
@@ -230,7 +226,6 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
-    // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -248,14 +243,11 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
         otterbrix_test::scan_table_segment(*loaded, 0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 uint64_t row = scanned + i;
-                // INT64
                 auto id_val = chunk.data[0].value(i);
                 REQUIRE(id_val.value<int64_t>() == static_cast<int64_t>(row));
-                // STRING
                 auto name_val = chunk.data[1].value(i);
                 std::string expected_name = std::string("name_") + std::to_string(row);
                 REQUIRE(*name_val.value<std::string*>() == expected_name);
-                // DOUBLE
                 auto score_val = chunk.data[2].value(i);
                 REQUIRE(score_val.value<double>() == Catch::Approx(static_cast<double>(row) * 1.5));
             }
@@ -278,7 +270,6 @@ TEST_CASE("checkpoint_load: empty table") {
 
     meta_block_pointer_t table_pointer;
 
-    // write phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
@@ -299,7 +290,6 @@ TEST_CASE("checkpoint_load: empty table") {
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
-    // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -326,13 +316,10 @@ TEST_CASE("checkpoint_load: multiple row groups") {
     cleanup_test_file();
 
     test_env_t env;
-    // DEFAULT_VECTOR_CAPACITY is 1024, row_group_size defaults to that
-    // use enough rows to span multiple row groups
     constexpr uint64_t NUM_ROWS = DEFAULT_VECTOR_CAPACITY * 3 + 100;
 
     meta_block_pointer_t table_pointer;
 
-    // write phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
@@ -354,7 +341,6 @@ TEST_CASE("checkpoint_load: multiple row groups") {
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
-    // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -460,7 +446,6 @@ TEST_CASE("checkpoint_load: RLE compression — sorted runs") {
         columns.emplace_back("value", logical_type::BIGINT);
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "rle_table");
 
-        // 100x1, 100x2, 100x3, 100x4, 100x5
         append_int64_data_with_fn(*table, &env.resource, NUM_ROWS, [](uint64_t idx) {
             return static_cast<int64_t>(idx / 100 + 1);
         });
@@ -521,7 +506,6 @@ TEST_CASE("checkpoint_load: DICTIONARY compression — low cardinality cycling")
         columns.emplace_back("value", logical_type::BIGINT);
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "dict_table");
 
-        // cycle through 5 values: 1,2,3,4,5,1,2,3,...
         append_int64_data_with_fn(*table, &env.resource, NUM_ROWS, [](uint64_t idx) {
             return static_cast<int64_t>(idx % 5 + 1);
         });
@@ -582,7 +566,6 @@ TEST_CASE("checkpoint_load: UNCOMPRESSED fallback — high cardinality") {
         columns.emplace_back("value", logical_type::BIGINT);
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "unique_table");
 
-        // all unique values: 0..499
         append_int64_data(*table, &env.resource, NUM_ROWS);
         REQUIRE(table->calculate_size() == NUM_ROWS);
 
@@ -627,7 +610,7 @@ TEST_CASE("checkpoint_load: mixed row groups — constant + varied") {
     cleanup_test_file();
 
     test_env_t env;
-    constexpr uint64_t CONST_ROWS = DEFAULT_VECTOR_CAPACITY; // fills one row group
+    constexpr uint64_t CONST_ROWS = DEFAULT_VECTOR_CAPACITY;
     constexpr uint64_t UNIQUE_ROWS = 500;
     constexpr uint64_t TOTAL_ROWS = CONST_ROWS + UNIQUE_ROWS;
     constexpr int64_t CONSTANT_VALUE = 99;
@@ -804,25 +787,10 @@ TEST_CASE("checkpoint_load: small segment — 2 rows edge case") {
     cleanup_test_file();
 }
 
-// ---------------------------------------------------------------------------
-// REGRESSION: shared partial block corruption on REOPEN after table GROWS.
-//
-// The catalog table pg_attribute packs ~8 narrow, low-cardinality columns into
-// ONE shared partial block at distinct offsets (col0 @0, the rest at increasing
-// non-zero offsets). On REOPEN after the table GROWS and re-checkpoints, the
-// shared block's in-memory buffer was clobbered at the packed (non-zero-offset)
-// columns, so reads returned garbage.
-//
-// This mimics pg_attribute: 8 BIGINT columns, each very low cardinality so the
-// checkpointer DICTIONARY/RLE/CONSTANT-compresses every segment to a few bytes,
-// and the shared partial_block_manager packs all of them into one block. Then:
-//   checkpoint #1 -> reopen #1 -> GROW (append rows) -> checkpoint #2 ->
-//   reopen #2 -> scan and assert EVERY column reads back EXACTLY.
+// REGRESSION: pg_attribute-like packing (8 narrow low-cardinality BIGINT columns sharing ONE
+// partial block at non-zero offsets) clobbered the shared block's in-memory buffer on REOPEN
+// after the table GROWS and re-checkpoints, returning garbage from the packed columns.
 namespace {
-    // Replicate the agent-level checkpoint sequence (manager_disk.cpp): flush the
-    // table metadata, set the meta block, serialize the free list, and persist the
-    // header WITH the free list. Persisting the free list across reopen is what
-    // makes the block-recycling corruption deterministic.
     components::table::storage::meta_block_pointer_t
     full_checkpoint(components::table::data_table_t& table,
                     components::table::storage::single_file_block_manager_t& bm) {
@@ -845,27 +813,24 @@ namespace {
         return table_pointer;
     }
 
-    // pg_attribute-like value generator: column c at row r. Low cardinality per
-    // column so the checkpointer compresses each segment; distinct per-column
-    // patterns so a cross-column clobber is detectable.
     int64_t pg_attr_value(uint64_t col, uint64_t row) {
         switch (col) {
             case 0:
-                return static_cast<int64_t>(row); // attrelid-like, RLE-ish runs
+                return static_cast<int64_t>(row);
             case 1:
-                return static_cast<int64_t>(20 + row % 3); // atttypid: {20,21,22}
+                return static_cast<int64_t>(20 + row % 3);
             case 2:
-                return static_cast<int64_t>(row % 8 + 1); // attnum: 1..8 cycling (DICTIONARY)
+                return static_cast<int64_t>(row % 8 + 1);
             case 3:
-                return 1; // attnotnull: CONSTANT
+                return 1;
             case 4:
-                return 0; // atthasdefault: CONSTANT
+                return 0;
             case 5:
                 return 0; // attisdropped: CONSTANT 0 (the SSB symptom)
             case 6:
-                return 1000; // added_at_commit_id: CONSTANT
+                return 1000;
             case 7:
-                return 0; // dropped_at_commit_id: CONSTANT 0
+                return 0;
             default:
                 return static_cast<int64_t>(col * 100 + row % 4);
         }
@@ -917,9 +882,6 @@ namespace {
         REQUIRE(scanned == total_rows);
     }
 
-    // Pool large enough to hold the (tiny) working set resident: the corruption is an
-    // append-into-loaded-segment bug independent of eviction pressure, so the large
-    // pool keeps this guard focused on the data corruption, not pool exhaustion.
     struct small_pool_env_t {
         core::pmr::otterbrix_resource resource;
         core::filesystem::local_file_system_t fs;
@@ -940,7 +902,7 @@ TEST_CASE("checkpoint_load: shared partial block survives reopen after table gro
 
     small_pool_env_t env;
     constexpr uint64_t NUM_COLS = 8;
-    constexpr uint64_t INITIAL_ROWS = 200; // small -> compressed segments pack into one block
+    constexpr uint64_t INITIAL_ROWS = 200;
     constexpr uint64_t GROW_ROWS = 200;
     constexpr uint64_t TOTAL_ROWS = INITIAL_ROWS + GROW_ROWS;
 
@@ -962,7 +924,6 @@ TEST_CASE("checkpoint_load: shared partial block survives reopen after table gro
 
     meta_block_pointer_t table_pointer;
 
-    // Phase 1: create, append, checkpoint #1.
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
@@ -972,7 +933,6 @@ TEST_CASE("checkpoint_load: shared partial block survives reopen after table gro
         table_pointer = full_checkpoint(*table, bm);
     }
 
-    // Phase 2: REOPEN #1, verify, then GROW + checkpoint #2.
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -983,22 +943,13 @@ TEST_CASE("checkpoint_load: shared partial block survives reopen after table gro
         auto& loaded = loaded_result.value();
         REQUIRE(loaded->column_count() == NUM_COLS);
 
-        // After reopen the loaded data still reads correctly.
         scan_and_verify_pg_attr(*loaded, NUM_COLS, INITIAL_ROWS);
 
-        // GROW the table: append more rows, then re-checkpoint. This is where the
-        // shared partial block gets freed/recycled and its packed (non-zero-offset)
-        // columns clobbered.
         append_pg_attr_rows(*loaded, &env.resource, NUM_COLS, INITIAL_ROWS, GROW_ROWS);
         REQUIRE(loaded->calculate_size() == TOTAL_ROWS);
         table_pointer = full_checkpoint(*loaded, bm);
     }
 
-    // Phase 3: REOPEN #2, scan EVERY column. The packed columns at non-zero
-    // offsets (atttypid, attnum, attnotnull, atthasdefault, attisdropped,
-    // added_at_commit_id, dropped_at_commit_id) must read back EXACTLY. On the
-    // buggy code attisdropped/added_at_commit_id come back garbage (the SSB
-    // symptom).
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -1015,10 +966,8 @@ TEST_CASE("checkpoint_load: shared partial block survives reopen after table gro
     cleanup_test_file();
 }
 
-// LIST/ARRAY/STRUCT payload lives in CHILD column_data_t nodes; persisting only the top-level
-// segments leaves the reload with typed columns but EMPTY children (child scan asserts on a null
-// segment).
-
+// LIST/ARRAY/STRUCT payload lives in CHILD column_data_t nodes; persisting only the parent
+// leaves the reload with typed columns but EMPTY children.
 TEST_CASE("checkpoint_load: LIST column round-trips its child data") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -1028,11 +977,10 @@ TEST_CASE("checkpoint_load: LIST column round-trips its child data") {
 
     test_env_t env;
     constexpr uint64_t NUM_ROWS = 100;
-    auto list_length = [](uint64_t row) { return row % 5; }; // includes empty lists
+    auto list_length = [](uint64_t row) { return row % 5; };
 
     meta_block_pointer_t table_pointer;
 
-    // write phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
@@ -1073,7 +1021,6 @@ TEST_CASE("checkpoint_load: LIST column round-trips its child data") {
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
-    // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -1118,7 +1065,6 @@ TEST_CASE("checkpoint_load: ARRAY column round-trips its child data") {
 
     meta_block_pointer_t table_pointer;
 
-    // write phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
@@ -1157,7 +1103,6 @@ TEST_CASE("checkpoint_load: ARRAY column round-trips its child data") {
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
-    // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -1204,7 +1149,6 @@ TEST_CASE("checkpoint_load: STRUCT column round-trips its fields") {
 
     meta_block_pointer_t table_pointer;
 
-    // write phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
@@ -1241,7 +1185,6 @@ TEST_CASE("checkpoint_load: STRUCT column round-trips its fields") {
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
-    // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -1260,7 +1203,7 @@ TEST_CASE("checkpoint_load: STRUCT column round-trips its fields") {
                 REQUIRE(sv.type().type() == logical_type::STRUCT);
                 REQUIRE(sv.children().size() == 2);
                 REQUIRE(sv.children()[0].value<int64_t>() == static_cast<int64_t>(row * 7));
-                const auto& name_value = sv.children()[1]; // named local: chunk values are temporaries
+                const auto& name_value = sv.children()[1];
                 REQUIRE(name_value.value<std::string_view>() == std::string("row_") + std::to_string(row));
             }
             scanned += chunk.size();
@@ -1271,9 +1214,8 @@ TEST_CASE("checkpoint_load: STRUCT column round-trips its fields") {
     cleanup_test_file();
 }
 
-// Regression: (1) checkpoint never wrote the validity bitmap, so reload manufactured an all-valid
-// one and every NULL silently became present; (2) the manufactured bitmap was written THROUGH on
-// every load, so merely reopening a table grew the file.
+// Regression: checkpoint never wrote the validity bitmap (every NULL silently became present on
+// reload), and the manufactured bitmap was then written THROUGH on every load, growing the file.
 TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new blocks") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -1282,7 +1224,6 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
     cleanup_test_file();
 
     test_env_t env;
-    // 3 row groups (row group size == DEFAULT_VECTOR_CAPACITY == 1024).
     constexpr uint64_t NUM_ROWS = 3000;
     constexpr uint64_t NULL_STEP = 7;
     auto is_null_row = [](uint64_t row) { return row % NULL_STEP == 0; };
@@ -1290,7 +1231,6 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
     meta_block_pointer_t table_pointer;
     uint64_t blocks_after_checkpoint = 0;
 
-    // write phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
@@ -1337,7 +1277,6 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
         REQUIRE(blocks_after_checkpoint > 0);
     }
 
-    // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -1359,7 +1298,7 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
                 const uint64_t row = scanned + i;
                 INFO("row " << row);
                 const auto v = chunk.data[0].value(i);
-                const auto s = chunk.data[1].value(i); // named local: chunk values are temporaries
+                const auto s = chunk.data[1].value(i);
                 if (is_null_row(row)) {
                     CHECK(v.is_null());
                     CHECK(s.is_null());
@@ -1381,9 +1320,8 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
 }
 
 // Regression: the validity child's scan state never tracked the parent's result_offset during
-// compact's whole-table rebuild, so every vector's NULL bits landed at chunk offset 0 -- folding
-// all row groups' NULL patterns into the first 1024 rows (bit = row mod 1024) and reading every
-// later row as non-NULL. Total NULL count was preserved by the fold, which is what kept it silent.
+// compact's rebuild, folding every row group's NULL bits into the first 1024 rows (bit = row mod
+// 1024); total NULL count was preserved by the fold, which is what kept it silent.
 TEST_CASE("checkpoint_load: compact preserves NULL validity across row groups") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -1424,7 +1362,6 @@ TEST_CASE("checkpoint_load: compact preserves NULL validity across row groups") 
     }
     REQUIRE(table->calculate_size() == NUM_ROWS);
 
-    // The rebuild under test.
     REQUIRE(table->compact(0));
     REQUIRE(table->calculate_size() == NUM_ROWS);
 
@@ -1447,10 +1384,8 @@ TEST_CASE("checkpoint_load: compact preserves NULL validity across row groups") 
     cleanup_test_file();
 }
 
-// 100-row batches (unlike the test above) so appends CROSS row-group boundaries mid-call, matching
-// the SQL INSERT path. Regression: an append rolling into a fresh row group kept writing NULL bits
-// through the PREVIOUS group's validity buffer, folding later groups' NULL pattern into the first
-// group's bitmap (bit = row mod 1024) and leaving later groups all-valid.
+// Regression: an append rolling into a fresh row group kept writing NULL bits through the
+// PREVIOUS group's validity buffer, leaving later groups all-valid.
 TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -1460,15 +1395,12 @@ TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
 
     test_env_t env;
     constexpr uint64_t NUM_ROWS = 3000;
-    constexpr uint64_t BATCH = 100; // never aligned with the 1024-row group size
+    constexpr uint64_t BATCH = 100;
     constexpr uint64_t NULL_STEP = 100;
-    // Matches integration/cpp/test/test_null_persistence.cpp's NULL_STEP so the fold
-    // (bit = row mod 1024) is observable and distinct per group.
     auto is_null_row = [](uint64_t row) { return (row + 1) % NULL_STEP == 0; };
 
     meta_block_pointer_t table_pointer;
 
-    // write phase: 30 appends of 100 rows each
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.create_new_database().has_error());
@@ -1497,7 +1429,6 @@ TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
         }
         REQUIRE(table->calculate_size() == NUM_ROWS);
 
-        // The LIVE table must already read back the right NULLs (pre-checkpoint).
         uint64_t live_scanned = 0;
         otterbrix_test::scan_table_segment(*table, 0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
@@ -1520,7 +1451,6 @@ TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
         REQUIRE_FALSE(bm.write_header(header).has_error());
     }
 
-    // read phase
     {
         single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
         REQUIRE(!bm.load_existing_database().has_error());
@@ -1551,14 +1481,10 @@ TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
     cleanup_test_file();
 }
 
-// A LIST segment's RAW payload is one uint64 child-offset per row -- that is what the LIST legs of
-// append / fixed_size_scan / finalize_append write and read. complex_logical_type::size() for LIST
-// is sizeof(list_entry_t) == 16, twice that -- so column_segment_t::type_size taken from it makes
-// the checkpoint's compression analysis walk 16 bytes/row (2x the real extent) and the compressed
-// scan write 16 bytes/row into the 8-byte-sized offset vector: an 8 KiB heap overrun per 1024-row
-// vector on a plain SELECT. Byte-exact-looking round-trip; surfaces as an intermittent pmr-pool
-// free-not-allocated abort only when the overrun happens to land on pool metadata. All-empty lists
-// make the checkpoint pick CONSTANT with segment_size == 8 (physical) vs. the buggy 16 (logical).
+// A LIST segment's RAW payload is one uint64/row, but complex_logical_type::size() for LIST is
+// sizeof(list_entry_t) == 16 (2x); taking type_size from it made checkpoint's compression walk
+// and the compressed scan write 16 bytes/row into the 8-byte-sized offset vector — an 8 KiB heap
+// overrun per 1024-row vector on a plain SELECT, intermittent because it depends on pool layout.
 TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element width") {
     using namespace components::table;
     using namespace components::table::storage;
@@ -1584,7 +1510,7 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
         data_chunk_t input(&env.resource, types, NUM_ROWS);
         input.set_cardinality(NUM_ROWS);
         for (uint64_t i = 0; i < NUM_ROWS; i++) {
-            input.set_value(0, i, std::vector<uint64_t>{}); // every list empty
+            input.set_value(0, i, std::vector<uint64_t>{});
         }
         REQUIRE_FALSE(column->append(append_state, input.data[0], NUM_ROWS).has_error());
     }
@@ -1594,15 +1520,12 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
     REQUIRE_FALSE(persistent.has_error());
     REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());
 
-    // data_pointers is the LIST's own offsets segment; validity/elements are its children.
     REQUIRE(persistent.value().data_pointers.size() == 1);
     const auto& dp = persistent.value().data_pointers[0];
     REQUIRE(dp.tuple_count == NUM_ROWS);
     REQUIRE(dp.compression == compression::compression_type::CONSTANT);
-    // The LOGICAL width would read 16 == sizeof(list_entry_t).
     CHECK(dp.segment_size == sizeof(uint64_t));
 
-    // ...and the data still round-trips through a reload.
     auto reloaded = column_data_t::create_column(&env.resource, bm, 0, 0, list_type);
     REQUIRE_FALSE(reloaded->initialize_column(persistent.value()).has_error());
     REQUIRE(reloaded->count() == NUM_ROWS);
@@ -1616,7 +1539,7 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
     REQUIRE(scanned == NUM_ROWS);
     for (uint64_t i = 0; i < NUM_ROWS; i++) {
         INFO("row " << i);
-        const auto cell = result.value(i); // named local: value() returns a temporary
+        const auto cell = result.value(i);
         REQUIRE(cell.type().type() == logical_type::LIST);
         CHECK(cell.children().empty());
     }
@@ -1625,10 +1548,8 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
 }
 
 TEST_CASE("checkpoint_load: 4-byte CONSTANT segment must not misalign the segments packed after it") {
-    // Regression: before the partial-block packer aligned placements, a 4-byte CONSTANT segment
-    // (this INT32 column) pushed everything after it -- validity bitmap and the next BIGINT
-    // column -- to offset 4 mod 8, a persisted misalignment producing undefined uint64/int64 loads
-    // on scan (-fsanitize=alignment).
+    // Regression: before the packer aligned placements, a 4-byte CONSTANT segment pushed everything
+    // after it to offset 4 mod 8, producing undefined uint64/int64 loads on scan (-fsanitize=alignment).
     using namespace components::table;
     using namespace components::table::storage;
     using namespace components::types;
@@ -1646,8 +1567,8 @@ TEST_CASE("checkpoint_load: 4-byte CONSTANT segment must not misalign the segmen
         REQUIRE(!bm.create_new_database().has_error());
 
         std::vector<column_definition_t> columns;
-        columns.emplace_back("tag", logical_type::INTEGER);   // all-constant -> 4-byte segment
-        columns.emplace_back("value", logical_type::BIGINT);  // varied -> uncompressed int64 payload
+        columns.emplace_back("tag", logical_type::INTEGER);
+        columns.emplace_back("value", logical_type::BIGINT);
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "packed_misalign");
 
         auto types = table->copy_types();

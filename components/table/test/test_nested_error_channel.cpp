@@ -1,20 +1,6 @@
-// TEN REFUSALS IN THE COLUMN LAYER THAT MUST NOT BE THROWS.
-//
-// components/table runs inside the disk agent's actor-zeta coroutines, whose
-// unhandled_exception() is EMPTY: a throw there unwinds out of the coroutine and the statement
-// HANGS instead of erroring. Each refusal is pinned to the error channel its caller
-// ALREADY reads:
-//   * column_scan_state::scan_error — read by column_data_t::update after fetch(), aggregated by
-//     row_group_t into collection_scan_state::scan_error;
-//   * core::result_wrapper_t<bool> — returned by update / update_column / initialize_append all
-//     the way up to data_table_t.
-//
-// REACHABILITY IS STATED PER CASE, not assumed. Two of the ten (LIST/ARRAY point fetch) have NO
-// caller: column_data_t::fetch is only called from column_data_t::update and
-// struct_column_data_t::fetch, and LIST/ARRAY/STRUCT override both update and update_column, so
-// neither is ever entered with a nested node as `this`. Still tested directly: deleting the
-// override would let the base impl answer a LIST fetch with raw ELEMENT OFFSETS, or walk an
-// ARRAY's segment tree that node never fills.
+// Refusals here must not THROW: components/table runs inside the disk agent's actor-zeta
+// coroutines, whose unhandled_exception() is EMPTY, so a throw HANGS the statement instead of
+// erroring. Each refusal is pinned to the error channel its caller already reads.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -53,8 +39,7 @@ namespace {
             , buffer_manager(&resource, fs, buffer_pool) {}
     };
 
-    // One nested column, filled from `rows`, handed back with the append state so a case can reach
-    // the segments the append just wrote.
+    // Returns the append state too, so a case can reach the segments the append just wrote.
     struct built_column_t {
         std::unique_ptr<column_data_t> column;
         column_append_state append_state;
@@ -76,7 +61,6 @@ namespace {
         return out;
     }
 
-    // A single-column table with `rows` rows already committed.
     struct built_table_t {
         std::unique_ptr<data_table_t> table;
     };
@@ -124,11 +108,7 @@ namespace {
 
 } // namespace
 
-// ---------------------------------------------------------------------------------------------
-// (1) + (2) LIST / ARRAY point fetch: NOT IMPLEMENTED, and it says so instead of throwing.
-//
-// Unreachable via SQL (see file header); tested by direct call. The refusal lands in
-// state.scan_error, exactly where column_data_t::update checks it (column_data.cpp).
+// (1)+(2) LIST/ARRAY point fetch: NOT IMPLEMENTED, reported not thrown; unreachable via SQL, tested directly.
 TEST_CASE("nested column: a LIST point fetch refuses on the scan state instead of throwing") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -163,23 +143,15 @@ TEST_CASE("nested column: an ARRAY point fetch refuses on the scan state instead
     REQUIRE(state.scan_error.type == core::error_code_t::unimplemented_yet);
 }
 
-// ---------------------------------------------------------------------------------------------
-// (3) A stored list offset that runs past the element column is data_corruption, not a throw.
-//
-// REACHABLE FROM DATA: the offsets are this column's own segment payload (cumulative element
-// counts, one uint64 per row -- column_segment.cpp::stored_element_size pins the width at 8 for a
-// LIST), so a corrupt run is a read failure, not a program error. The surgery below writes one
-// such value directly, the same thing a bad block would hand the scan.
+// (3) A stored list offset past the element column reports data_corruption: REACHABLE FROM DATA
+// (own segment payload), so a corrupt run is a read failure, not a program error.
 TEST_CASE("nested column: a list offset past the element column reports data_corruption") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
 
     auto list_type = complex_logical_type::create_list(complex_logical_type{logical_type::UBIGINT});
-    // Two rows, 2 + 3 elements: the stored cumulative offsets are 2 and 5, and the element column
-    // holds exactly 5 entries.
     auto built = build_nested_column(env, bm, list_type, {{10, 20}, {30, 40, 50}});
 
-    // POSITIVE CONTROL ON THE FIXTURE: intact, this very scan reads both lists back.
     {
         column_scan_state state;
         state.initialize(list_type);
@@ -188,14 +160,12 @@ TEST_CASE("nested column: a list offset past the element column reports data_cor
         const auto scanned = built.column->scan_count(state, result, 2);
         REQUIRE_FALSE(state.has_error());
         REQUIRE(scanned == 2);
-        const auto row0 = result.value(0); // named local: value() hands back a temporary
+        const auto row0 = result.value(0);
         REQUIRE(row0.children().size() == 2);
         const auto row1 = result.value(1);
         REQUIRE(row1.children().size() == 3);
     }
 
-    // THE ISOLATION GATE: the segment being corrupted is the LIST node's OWN offsets segment, the
-    // one column_data_t::initialize_append assigned — not a child's.
     auto* offsets_segment = built.append_state.current;
     REQUIRE(offsets_segment != nullptr);
     REQUIRE(offsets_segment->type.to_physical_type() == physical_type::LIST);
@@ -207,7 +177,7 @@ TEST_CASE("nested column: a list offset past the element column reports data_cor
         auto* base = pinned.value().ptr() + offsets_segment->block_offset();
         uint64_t stored = 0;
         std::memcpy(&stored, base, sizeof(uint64_t));
-        REQUIRE(stored == 2); // the layout really is one cumulative uint64 per row
+        REQUIRE(stored == 2);
         // Row 0 now claims 100 elements over an element column that holds 5.
         const uint64_t poisoned = 100;
         std::memcpy(base, &poisoned, sizeof(uint64_t));
@@ -223,13 +193,8 @@ TEST_CASE("nested column: a list offset past the element column reports data_cor
     REQUIRE(state.scan_error.type == core::error_code_t::data_corruption);
 }
 
-// ---------------------------------------------------------------------------------------------
-// (4) An in-place LIST update that changes a row's list length is refused, through data_table_t.
-//
-// REACHABLE: data_table_t::update is the WAL REPLAY leg of an update
-// (table_storage_adapter_t::update); the txn leg is delete+append and never comes here. So the
-// offending length arrives from a journal, on the disk agent's thread -- exactly where a throw
-// becomes a hang.
+// (4) An in-place LIST update changing a row's list length is refused: REACHABLE via the WAL
+// REPLAY leg of update (the txn leg is delete+append and never hits this), on the disk agent's thread.
 TEST_CASE("nested column: an in-place LIST update cannot change the list length, and says so") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -242,8 +207,6 @@ TEST_CASE("nested column: an in-place LIST update cannot change the list length,
     auto row_ids = single_row_id(env, 0);
     auto types = built.table->copy_types();
 
-    // POSITIVE CONTROL: a SAME-length rewrite goes through, so the refusal below is about the
-    // length and not about LIST updates in general.
     {
         data_chunk_t upd(&env.resource, types, 1);
         upd.set_cardinality(1);
@@ -262,13 +225,7 @@ TEST_CASE("nested column: an in-place LIST update cannot change the list length,
     REQUIRE(updated.error().type == core::error_code_t::unimplemented_yet);
 }
 
-// ---------------------------------------------------------------------------------------------
-// (5) + (6) A malformed sub-column path into a STRUCT is refused on the update channel.
-//
-// PATH NOT NAMED: nothing outside components/table calls data_table_t::update_column, so the
-// direct call below is the whole reachable surface. It is still the contract that matters: both
-// shapes are caller errors on a function that already returns result_wrapper_t<bool>, so they
-// must leave by the return rather than by a throw across the disk agent's mailbox.
+// (5)+(6) A malformed STRUCT sub-column path is refused; this call is update_column's only reachable surface.
 TEST_CASE("nested column: a struct sub-column update path is validated on the update channel") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -293,8 +250,7 @@ TEST_CASE("nested column: a struct sub-column update path is validated on the up
     vector_t update_vector(&env.resource, logical_type::BIGINT, 1);
     update_vector.set_value(0, int64_t{99});
     int64_t row_ids[1] = {0};
-    // depth 1 is what row_group_t::update_column starts the walk at: element 0 of the path is the
-    // top-level column, and the struct reads the NEXT element.
+    // depth 1 is what row_group_t::update_column starts the walk at (element 0 is the top-level column).
     constexpr uint64_t start_depth = 1;
 
     SECTION("a path that ends ON the struct names nothing writable") {
@@ -310,23 +266,13 @@ TEST_CASE("nested column: a struct sub-column update path is validated on the up
         REQUIRE(updated.error().type == core::error_code_t::invalid_parameter);
     }
     SECTION("POSITIVE CONTROL: a well-formed path into the first field still writes") {
-        const std::vector<uint64_t> path{0, 1}; // field index 1 == sub_columns[0] == "a"
+        const std::vector<uint64_t> path{0, 1};
         auto updated = column->update_column(path, update_vector, row_ids, 1, start_depth);
         REQUIRE_FALSE(updated.has_error());
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// (7) An unnamed struct is refused at the append gate rather than thrown from a constructor.
-//
-// REACHABLE FROM DISK BYTES. A struct is unnamed when its ALIAS is empty; column_definition_t
-// and get_types name every top-level and field struct, so the shape can only arrive nested under
-// a LIST/ARRAY -- and it does: complex_logical_type::create_variant builds LIST(struct "children")
-// with no alias on either.
-//
-// struct_column_data_t's CONSTRUCTOR has no return value to refuse through, so the precondition
-// lives in column_data_t::validate_column_type instead, asked at collection_t::initialize_append
-// (which already returns result_wrapper_t<bool>) before every create_column on the write path.
+// (7) An unnamed struct is refused at the append gate: REACHABLE via create_variant's LIST(struct) with no alias.
 TEST_CASE("nested column: an unnamed nested struct is refused by initialize_append") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -335,7 +281,6 @@ TEST_CASE("nested column: an unnamed nested struct is refused by initialize_appe
     fields.emplace_back(logical_type::BIGINT, "a");
 
     SECTION("LIST of an unnamed struct is refused") {
-        // The LIST carries the column's name; its ELEMENT struct carries none.
         auto element = complex_logical_type::create_struct("pair", fields);
         REQUIRE(element.is_unnamed());
         auto list_type = complex_logical_type::create_list(element, "v");
@@ -367,18 +312,8 @@ TEST_CASE("nested column: an unnamed nested struct is refused by initialize_appe
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// (8) A flat-vector scan asked for a non-flat result reports instead of throwing.
-//
-// NO SQL PATH NAMES IT: every scan that picks its own mode goes through get_vector_scan_type,
-// which answers SCAN_ENTIRE_VECTOR for a non-flat result; the two places that name
-// SCAN_FLAT_VECTOR outright hand it a vector they just built flat (column_data_t::fetch's
-// pre-image, the LIST offset vectors). Reached here through the public fetch(), which passes the
-// CALLER's vector straight down -- the whole reachable surface.
-//
-// The second half guards the invariant that keeps the branch unreachable in production
-// (get_vector_scan_type must never answer SCAN_FLAT_VECTOR for a non-flat result); sensitivity
-// verified by inverting that early return by hand.
+// (8) A flat-vector scan over a non-flat result reports, not throws: reached through the public
+// fetch(), which passes the caller's vector straight down; no SQL path names it directly.
 TEST_CASE("column scan: a flat-vector scan over a non-flat result refuses on the scan state") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -404,22 +339,14 @@ TEST_CASE("column scan: a flat-vector scan over a non-flat result refuses on the
     REQUIRE(state.has_error());
     REQUIRE(state.scan_error.type == core::error_code_t::invalid_parameter);
 
-    // The sentinel: this is the answer that keeps every production scan away from the branch.
     column_scan_state mode_state;
     mode_state.initialize(complex_logical_type{logical_type::UBIGINT});
     column->initialize_scan(mode_state);
     REQUIRE(column->get_vector_scan_type(mode_state, 8, non_flat) == scan_vector_type::SCAN_ENTIRE_VECTOR);
 }
 
-// ---------------------------------------------------------------------------------------------
-// (9) An index-build scan over a column that carries updates refuses on the scan state.
-//
-// REACHABLE THROUGH A PUBLIC API: data_table_t::create_index_scan takes the scan type, and
-// table_scan_type::COMMITTED_ROWS_DISALLOW_UPDATES asks for a snapshot with no update overlay
-// (no production caller passes it today -- the one create_index_scan call site, in services/disk,
-// asks for COMMITTED_ROWS). The refusal lands in the column's scan_error, which row_group_t
-// already aggregates into collection_scan_state::scan_error. fetch_updates has no argument of its
-// own to report on, hence `state` threaded in.
+// (9) An index-build scan over a column with updates refuses: REACHABLE through the public
+// create_index_scan API, though no production caller passes COMMITTED_ROWS_DISALLOW_UPDATES today.
 TEST_CASE("column scan: an index-build scan over a column with updates refuses") {
     env_t env;
     tstorage::transient_block_manager_t bm(env.buffer_manager, tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
@@ -433,7 +360,6 @@ TEST_CASE("column scan: an index-build scan over a column with updates refuses")
     std::vector<storage_index_t> column_indices;
     column_indices.emplace_back(static_cast<uint64_t>(0));
 
-    // POSITIVE CONTROL on the fixture: with no updates recorded, the very same scan mode succeeds.
     {
         table_scan_state scan_state(&env.resource);
         built.table->initialize_scan(scan_state, column_indices);
@@ -444,7 +370,6 @@ TEST_CASE("column scan: an index-build scan over a column with updates refuses")
         REQUIRE(out.size() == 4);
     }
 
-    // Record an update overlay on the column (the in-place / replay leg).
     {
         auto row_ids = single_row_id(env, 0);
         auto types = built.table->copy_types();

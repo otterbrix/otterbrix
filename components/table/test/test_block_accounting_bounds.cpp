@@ -1,8 +1,4 @@
-// Block accounting: the boundary the guards MEASURE, and the failures they REPORT.
-// Six gates on one contract, all in components/table/storage, numbered in TEST_CASE order —
-// each gate's own comment below explains its specific bug. Corruption is injected by forging
-// header bytes in place and recomputing the checksum, so the file stays a VALID header
-// carrying a statement no writer of this build would make.
+// Corruption here is injected by forging header bytes and recomputing the checksum, so the header stays VALID.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_segment.hpp>
@@ -86,8 +82,6 @@ namespace {
         }
     }
 
-    // The checkpoint sequence table_storage_t::checkpoint runs, with no fault injection: these
-    // gates need a REAL durable root and a REAL published free list, not a crash state.
     bool checkpoint_round(tstorage::single_file_block_manager_t& bm, data_table_t& table) {
         tstorage::metadata_manager_t meta_mgr(bm);
         tstorage::metadata_writer_t writer(meta_mgr);
@@ -111,8 +105,7 @@ namespace {
         return !bm.write_header(header).has_error();
     }
 
-    // Three compacting rounds: from the third on an unchanged table is a closed cycle, so the
-    // free list is non-empty and the block count is stable.
+    // Three rounds: from the third on, an unchanged table is a closed cycle — free list stable.
     std::unique_ptr<data_table_t> reach_steady_state(bounds_env_t& env, tstorage::single_file_block_manager_t& bm) {
         auto table = make_table(env, bm);
         append_rows(*table, env, 0, BOUNDS_ROWS);
@@ -125,9 +118,7 @@ namespace {
 
     uint64_t slot_offset(uint64_t iteration) { return (iteration % 2 == 1) ? tstorage::SECTOR_SIZE : 2 * tstorage::SECTOR_SIZE; }
 
-    // Rewrite the slot the ACTIVE header lives in, with the checksum recomputed over the forged
-    // bytes: the file must stay a file whose header validates, or the gate would be testing the
-    // checksum instead of the field.
+    // Recomputes the checksum over the forged bytes, so the gate tests the field, not the checksum.
     void forge_active_header(const std::string& path, const tstorage::database_header_t& forged) {
         std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
         REQUIRE(f.is_open());
@@ -145,15 +136,8 @@ namespace {
 
 } // namespace
 
-// ---------------------------------------------------------------------------------------
-// GATE 1 — THE RELEASE GUARD MEASURES THE FILE, NOT THE DOMAIN.
-//
-// mark_as_free's guard rejected only the TRANSIENT domain (>= 2^62), so an id between the
-// file's end and 2^62 (the shape a corrupt free list or data_pointer_t delivers) walked into
-// the free pool, was promoted by the next header, and was handed out by free_block_id — the
-// write then seeks past EOF and grows the file by the gap while total_blocks() still claims
-// the old extent.
-// ---------------------------------------------------------------------------------------
+// GATE 1: mark_as_free rejected only the TRANSIENT domain (>= 2^62); an id between the file's
+// end and 2^62 walked into the free pool and was later handed out past EOF.
 TEST_CASE("accounting_bounds: releasing a block past the end of the file is refused", "[bounds]") {
     const auto path = bounds_db_path("release_past_end");
     remove_file(path);
@@ -167,15 +151,11 @@ TEST_CASE("accounting_bounds: releasing a block past the end of the file is refu
     REQUIRE(blocks > 1);
     REQUIRE_FALSE(bm.degraded());
 
-    // The guard must not be TIGHTER than the file either: the last block of the file is a
-    // perfectly ordinary release, and refusing it would quarantine live accounting.
     const uint64_t inside = blocks - 1;
     bm.mark_as_free(inside);
     CHECK_FALSE(bm.degraded());
     CHECK((bm.dev_pending_free_snapshot().count(inside) != 0 || bm.dev_reusable_snapshot().count(inside) != 0));
 
-    // ...and an id the file does not contain is refused and REPORTED, exactly like a transient
-    // one, because it is exactly as unaddressable.
     const uint64_t past_end = blocks + 4;
     REQUIRE(past_end < tstorage::MAXIMUM_BLOCK);
     bm.mark_as_free(past_end);
@@ -184,9 +164,6 @@ TEST_CASE("accounting_bounds: releasing a block past the end of the file is refu
     CHECK(bm.dev_reusable_snapshot().count(past_end) == 0);
     CHECK(bm.total_blocks() == blocks);
 
-    // Taken all the way to the file: "it sat in a pool" is not yet damage, the checkpoint that
-    // PUBLISHES the free list is. Either the release above is refused (and the commit with it),
-    // or the file ends up with a free list naming an id past its own block_count.
     CHECK_FALSE(checkpoint_round(bm, *table));
 
     auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
@@ -209,15 +186,8 @@ TEST_CASE("accounting_bounds: releasing a block past the end of the file is refu
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE 2 — THE SAME BOUNDARY ON THE DISK PATH, WHERE THERE IS AN ERROR CHANNEL.
-//
-// deserialize_free_list reads ids straight into reusable_ (the pool free_block_id draws from)
-// and rejected only the transient domain, so a list naming a block past the file's own
-// recorded extent opened CLEANLY and armed the next allocation to write past EOF. Corruption
-// is injected by forging the ACTIVE header's block_count down to the largest id its own free
-// list publishes.
-// ---------------------------------------------------------------------------------------
+// GATE 2: deserialize_free_list rejected only the transient domain, so a free list naming a
+// block past the file's own extent opened CLEANLY and armed the next allocation to write past EOF.
 TEST_CASE("accounting_bounds: a free list naming a block past the file's extent is refused at open",
           "[bounds]") {
     const auto path = bounds_db_path("freelist_past_end");
@@ -235,8 +205,6 @@ TEST_CASE("accounting_bounds: a free list naming a block past the file's extent 
         REQUIRE(report.ok);
         REQUIRE_FALSE(report.free_list_content.empty());
         offending_id = *report.free_list_content.rbegin();
-        // block_count is an EXTENT: the last legal id is block_count - 1. Claiming exactly
-        // `offending_id` blocks therefore puts that one id (and nothing below it) outside.
         forged_count = offending_id;
         REQUIRE(forged_count > 0);
     }
@@ -253,10 +221,8 @@ TEST_CASE("accounting_bounds: a free list naming a block past the file's extent 
     REQUIRE(opened.has_error());
     CHECK(opened.error().type == core::error_code_t::data_corruption);
     CHECK(message_names(opened.error(), std::to_string(offending_id)));
-    // The refused id never reached the pool the allocator draws from.
     CHECK(bm.dev_reusable_snapshot().count(offending_id) == 0);
-    // ...and neither did ANY id of the refused list: a manager whose load was refused must
-    // hold an EMPTY pool, not a half-installed one (ids before the offender were already read).
+    // A refused load must leave an EMPTY pool, not a half-installed one (earlier ids already read).
     const auto leftover = bm.dev_reusable_snapshot();
     INFO("ids left in reusable_ after the refused load: " << leftover.size());
     CHECK(leftover.empty());
@@ -264,14 +230,8 @@ TEST_CASE("accounting_bounds: a free list naming a block past the file's extent 
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE 3 — THE PEEK MIRRORS THE ALLOCATOR.
-//
-// free_block_id skips (permanently) a free-list candidate that still has a LIVE registry
-// handle, since reissuing it would overwrite live state with a valid CRC. peek_free_block_id
-// returned *reusable_.begin() regardless — disagreeing with the allocator exactly when the
-// free list is corrupt, the only case the peek matters.
-// ---------------------------------------------------------------------------------------
+// GATE 3: free_block_id skips a free-list candidate with a LIVE registry handle (reissuing it
+// would overwrite live state); peek_free_block_id returned *reusable_.begin() regardless.
 TEST_CASE("accounting_bounds: peek_free_block_id names the id free_block_id would hand out", "[bounds]") {
     const auto path = bounds_db_path("peek_mirror");
     remove_file(path);
@@ -284,8 +244,6 @@ TEST_CASE("accounting_bounds: peek_free_block_id names the id free_block_id woul
     auto reusable = bm.dev_reusable_snapshot();
     REQUIRE_FALSE(reusable.empty());
 
-    // The first candidate the allocator would look at, made live: a registered handle held by
-    // this test stands in for the live column_segment_t that owns it in production.
     const uint64_t alive_candidate = *reusable.begin();
     auto held = bm.register_block(alive_candidate);
     REQUIRE(held != nullptr);
@@ -300,14 +258,8 @@ TEST_CASE("accounting_bounds: peek_free_block_id names the id free_block_id woul
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE 4 — A HEADER THAT DECLARES NO GEOMETRY IS NOT A HEADER TO OPEN.
-//
-// The open adopted `active.block_alloc_size` only when non-zero AND different from the
-// manager's current size, so a zero skipped the geometry check entirely and the engine ran on
-// whatever size the CALLER passed to the constructor — legalising a header shape no writer of
-// this build produces, at the price of every block_location computed with the wrong stride.
-// ---------------------------------------------------------------------------------------
+// GATE 4: open adopted block_alloc_size only when non-zero, so a zero skipped the geometry check
+// and let the engine run on whatever size the caller passed — every block_location off-stride.
 TEST_CASE("accounting_bounds: a header claiming block_alloc_size 0 is refused", "[bounds]") {
     const auto path = bounds_db_path("zero_geometry");
     remove_file(path);
@@ -323,8 +275,6 @@ TEST_CASE("accounting_bounds: a header claiming block_alloc_size 0 is refused", 
     header.block_alloc_size = 0;
     forge_active_header(path, header);
 
-    // Constructed with a DIFFERENT, legal size: with the zero accepted, the open would keep
-    // it silently and address every block in the file at the wrong stride.
     const uint64_t other_size = 2 * tstorage::SECTOR_SIZE;
     bounds_env_t env2;
     tstorage::single_file_block_manager_t bm(env2.buffer_manager, env2.fs, path, other_size);
@@ -332,19 +282,13 @@ TEST_CASE("accounting_bounds: a header claiming block_alloc_size 0 is refused", 
     REQUIRE(opened.has_error());
     CHECK(opened.error().type == core::error_code_t::data_corruption);
     CHECK(message_names(opened.error(), "block allocation size"));
-    // A refused header changes nothing: the manager keeps the size it was constructed with.
     CHECK(bm.block_allocation_size() == other_size);
 
     remove_file(path);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE 5 — A RESERVATION THAT DID NOT HAPPEN MUST SAY SO.
-//
-// A void reserve_memory swallows evict_blocks_or_error's refusal on OOM and returns exactly
-// as it does on success, so the caller goes on to spend memory the pool never granted -- the
-// same defect class as a `void write()` one level down.
-// ---------------------------------------------------------------------------------------
+// GATE 5: a void reserve_memory swallowed evict_blocks_or_error's OOM refusal and returned as on
+// success, so the caller spent memory the pool never granted — same defect class as `void write()`.
 TEST_CASE("accounting_bounds: a reservation that could not be made is reported", "[bounds]") {
     core::pmr::otterbrix_resource resource;
     core::filesystem::local_file_system_t fs;
@@ -352,32 +296,20 @@ TEST_CASE("accounting_bounds: a reservation that could not be made is reported",
     tstorage::buffer_pool_t pool(&resource, pool_limit, false, uint64_t(1) << 24);
     tstorage::standard_buffer_manager_t manager(&resource, fs, pool);
 
-    // Nothing to reserve is trivially reserved.
     auto nothing = manager.reserve_memory(0);
     CHECK_FALSE(nothing.has_error());
 
-    // Comfortably inside the limit: granted, and the grant is reported as such.
     auto granted = manager.reserve_memory(pool_limit / 4);
     REQUIRE_FALSE(granted.has_error());
     manager.free_reserved_memory(pool_limit / 4);
 
-    // Larger than the pool can ever hold, with nothing evictable to make room: the reservation
-    // CANNOT be made, and that is the answer the caller must get.
     auto refused = manager.reserve_memory(pool_limit * 64);
     REQUIRE(refused.has_error());
     CHECK(refused.error().type == core::error_code_t::out_of_memory);
 }
 
-// ---------------------------------------------------------------------------------------
-// GATE 6 -- THE WRITER OBEYS THE READER'S BOUNDARY.
-//
-// Gate 2 made an id at or past block_count refused at open. serialize_free_list's third term
-// (registry-live ids not named by the root) is fed disk ids with no extent check
-// (column_data.cpp/column_state.cpp hand block ids straight to register_block), and on a
-// NON-compacting checkpoint nothing calls mark_as_free on such an id, so it got published
-// under a header whose own block_count disavows it — turning a recoverable leak into a file
-// that refuses to ever open again. The writer must refuse the round instead.
-// ---------------------------------------------------------------------------------------
+// GATE 6: serialize_free_list's registry-live term is fed disk ids with no extent check; on a
+// NON-compacting round nothing frees one, publishing an id the header's own block_count disavows.
 TEST_CASE("accounting_bounds: a checkpoint refuses to publish a free-list id its own header disavows",
           "[bounds]") {
     const auto path = bounds_db_path("writer_vs_reader");
@@ -390,17 +322,12 @@ TEST_CASE("accounting_bounds: a checkpoint refuses to publish a free-list id its
         auto table = reach_steady_state(env, bm);
         REQUIRE_FALSE(bm.degraded());
 
-        // What the loader does with a corrupt pointer: an id past the file's end (far below
-        // the transient domain) installed as a LIVE registry entry — register_block performs
-        // no extent check, that is the production path.
         const uint64_t bogus = bm.total_blocks() + 900;
         REQUIRE(bogus < tstorage::MAXIMUM_BLOCK);
         auto held = bm.register_block(bogus);
         REQUIRE(held != nullptr);
         REQUIRE(bm.registry_alive(bogus));
 
-        // A NON-compacting round: nothing calls mark_as_free on the bogus id, so the only
-        // guard between it and the durable free list is serialize_free_list's own.
         const bool committed = checkpoint_round(bm, *table);
         INFO("bogus id " << bogus << ", total_blocks " << bm.total_blocks() << ", committed "
                          << committed << ", degraded " << bm.degraded());
@@ -412,8 +339,6 @@ TEST_CASE("accounting_bounds: a checkpoint refuses to publish a free-list id its
         CHECK(message_names(bm.allocation_error(), std::to_string(bogus)));
     }
 
-    // The refused round landed NO header, so the durable root is still the last committed one
-    // and the file must open (an open failing here would be a file bricked by its own writer).
     bounds_env_t env2;
     tstorage::single_file_block_manager_t bm2(env2.buffer_manager, env2.fs, path);
     auto reopened = bm2.load_existing_database();
@@ -424,18 +349,9 @@ TEST_CASE("accounting_bounds: a checkpoint refuses to publish a free-list id its
     remove_file(path);
 }
 
-// (7) The seventh boundary, measured inside a constructor: column_segment_t must fit the
-// block it's built over (assert(!block || segment_size_ <= block_manager().block_size())). In
-// the reload/create constructor, `block` there named the CONSTRUCTOR PARAMETER, already moved
-// into the member one line earlier — a moved-from shared_ptr is guaranteed empty, so `!block`
-// was always TRUE and the size check never ran. The identical assert in the move constructors
-// reads the MEMBER and is live, which is what hid the dead one.
-//
-// No caller can ever pass a null handle here (create_segment, checkpoint, and reload all
-// forward an error-checked path ending in make_shared/register_block, never null), so the
-// size guard is the only one actually protecting anything.
-//
-// Built in a child process: the correct answer is a deliberate abort.
+// (7) column_segment_t must fit its block. In the reload/create constructor, the guarded
+// `block` names the constructor PARAMETER already moved-from one line earlier, so `!block` was
+// always TRUE and the size check never ran — hidden by the live, identical assert in the move constructors.
 #if !defined(NDEBUG) && (defined(__unix__) || defined(__APPLE__))
 TEST_CASE("components::table::column_segment::a_segment_larger_than_its_block_is_refused") {
     core::pmr::otterbrix_resource resource;
@@ -448,13 +364,10 @@ TEST_CASE("components::table::column_segment::a_segment_larger_than_its_block_is
     auto& block = registered.value();
     REQUIRE(block != nullptr);
 
-    // The number the guard compares against, read from the same road the constructor takes.
     const uint64_t limit = block->block_manager.block_size();
     REQUIRE(limit > 0);
 
-    // BIGINT on purpose: VALIDITY and STRING_LITERAL memset/format segment_size() bytes inside
-    // the constructor, so an oversize segment of those types would run off the block before
-    // reaching any guard, and the child would die of the overrun rather than of the check.
+    // BIGINT on purpose: VALIDITY/STRING_LITERAL types would overrun the block before reaching the guard.
     const pid_t child = ::fork();
     REQUIRE(child >= 0);
     if (child == 0) {
@@ -468,7 +381,6 @@ TEST_CASE("components::table::column_segment::a_segment_larger_than_its_block_is
                                    tstorage::INVALID_BLOCK,
                                    0,
                                    limit + 1);
-        // Reached only if the guard let it through: report the size it accepted.
         _exit(oversized.segment_size() == limit + 1 ? 42 : 43);
     }
     int status = 0;

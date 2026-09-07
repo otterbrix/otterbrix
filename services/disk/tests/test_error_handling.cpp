@@ -22,10 +22,6 @@
 #include <thread>
 #include <unistd.h>
 
-// Edge cases for ddl_*: missing parent, RESTRICT blocks with descriptive error,
-// CASCADE through chains, malformed names, OID monotonicity, drop-by-unknown-oid no-op,
-// dependency cycle detection, etc.
-
 using namespace services::disk;
 namespace catalog = components::catalog;
 using namespace components::catalog;
@@ -61,9 +57,7 @@ namespace {
             manager->bootstrap_system_tables_sync();
         }
         ~fixture() {
-            // Destroy the manager first: its dtor joins the internal loop thread,
-            // which may still enqueue children onto the scheduler. Only then is it
-            // safe to stop/delete the scheduler.
+            // The manager's dtor joins its loop thread, which may still enqueue onto the scheduler; destroy it first.
             manager.reset();
             scheduler->stop();
             delete scheduler;
@@ -87,7 +81,6 @@ namespace {
     };
 } // namespace
 
-// 1. resolve_namespace on unknown name returns found=false, no error.
 TEST_CASE("services::disk::error::resolve_unknown_namespace") {
     fixture fx;
     auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"));
@@ -95,7 +88,6 @@ TEST_CASE("services::disk::error::resolve_unknown_namespace") {
     REQUIRE_FALSE(r.value().found);
 }
 
-// 2. resolve_table with valid namespace_oid but unknown table name returns found=false.
 TEST_CASE("services::disk::error::resolve_unknown_table") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns");
@@ -103,19 +95,13 @@ TEST_CASE("services::disk::error::resolve_unknown_table") {
     REQUIRE_FALSE(rt.found);
 }
 
-// 3. resolve_table with INVALID_OID namespace returns found=false.
 TEST_CASE("services::disk::error::resolve_table_invalid_namespace") {
     fixture fx;
     auto rt = test_probe::probe_table(fx, fx.ctx(), INVALID_OID, std::string("any"));
     REQUIRE_FALSE(rt.found);
 }
 
-// 8. CREATE NAMESPACE refuses a duplicate name AT THE WRITE LAYER. The dispatcher's own
-//    check reads a resolve snapshot that cannot see another transaction's uncommitted row,
-//    so the catalog agent re-asks the question right before the append; the second
-//    same-name row must be refused, and resolve must keep answering the surviving oid.
-//    (Before the gate this appended a second 'dup' row and resolve bound to whichever row
-//    its scan reached first.)
+// The write layer refuses the duplicate; the dispatcher's resolve snapshot can't see another txn's uncommitted row.
 TEST_CASE("services::disk::error::duplicate_namespace_name_refused_at_write") {
     fixture fx;
     auto a = test_create_namespace(fx, "dup");
@@ -137,7 +123,6 @@ TEST_CASE("services::disk::error::duplicate_namespace_name_refused_at_write") {
     REQUIRE(r.value().oid == a);
 }
 
-// 12. topological_drop_order on an empty seed returns empty vector — caller pushes the seed.
 TEST_CASE("services::disk::error::topological_drop_empty") {
     core::pmr::otterbrix_resource resource;
     auto edges = [](std::pmr::memory_resource* mr, oid_t /*cls*/, oid_t /*oid*/) {
@@ -149,8 +134,7 @@ TEST_CASE("services::disk::error::topological_drop_empty") {
     REQUIRE(cycle_at == INVALID_OID);
 }
 
-// 13. CREATE NAMESPACE with a long name (PostgreSQL's typical 63-byte limit isn't
-//     enforced here — accept arbitrary length).
+// PostgreSQL's 63-byte name limit isn't enforced here; arbitrary length is accepted.
 TEST_CASE("services::disk::error::long_namespace_name_accepted") {
     fixture fx;
     std::string long_name(200, 'x');
@@ -161,28 +145,19 @@ TEST_CASE("services::disk::error::long_namespace_name_accepted") {
     REQUIRE(rs.value().found);
 }
 
-// 14. CREATE NAMESPACE with empty name accepted (no validation at primitive-write layer).
 TEST_CASE("services::disk::error::empty_name_accepted") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "");
     REQUIRE(ns_oid >= FIRST_USER_OID);
 }
 
-// 16. resolve_function on unknown name in valid namespace returns found=false.
 TEST_CASE("services::disk::error::resolve_unknown_function") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns");
     auto rf = test_probe::probe_function(fx, fx.ctx(), ns_oid, std::string("unknown_fn"));
     REQUIRE_FALSE(rf.found);
 }
-// 17. storage_delete_rows separates "how many marks were set" from "the delete couldn't be
-//     performed" -- both were 0 until the reply got a wrapper, so operator_delete and
-//     operator_fk_cascade simply dropped it (nothing in it to read); a cascade could then mark
-//     no child row and let its parent row go.
-//
-//     The two zeros are the point: a repeat delete legitimately reports 0 (chunk_vector_info::
-//     delete_rows skips an already-stamped row, same as duplicate ids in one request) and must
-//     stay a success. An oid no agent has storage for must not produce that same zero.
+// A repeat delete legitimately reports 0 marks set; an oid with no storage must not produce that same zero.
 TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -203,7 +178,6 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
               cols,
               /*is_computed=*/false);
 
-    // Three committed rows.
     int64_t first_row = 0;
     {
         std::pmr::vector<complex_logical_type> types(&fx.resource);
@@ -265,24 +239,11 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
     }
 }
 
-// 18-23. The rest of the family case 17 belongs to.
-//
-// storage_delete_rows got an error channel because "0 marks set" and "the delete never
-// reached a storage" were the same reply. Every other data leg on this contract still answers
-// a routing refusal with the shape of a legitimately empty table: an empty chunk vector
-// (storage_fetch), a zero-length append range (storage_append / storage_update), a drained
-// cursor (storage_fetch_next_batch), an empty schema (storage_types), and a zero row count
-// (storage_total_rows) -- each also the correct answer to a real question about a real table,
-// so no caller can tell the two apart.
-//
-// Every case below pairs the two: the legitimate empty answer must stay a success, and only
-// "this oid names no storage anywhere" becomes an error. A test asserting the refusal alone
-// would be satisfied by a leg that refuses everything.
+// Each case below pairs a routing miss (must error) with its empty-but-legitimate look-alike (must stay success).
 namespace {
     using namespace disk_test_helpers;
 
-    // A table with one BIGINT column `a`, its storage created, and `nrows` committed rows.
-    // Returns its oid; `first_row_out` receives the first appended row id.
+    // first_row_out receives the first appended row id (0 when nrows == 0).
     template<typename Fx>
     catalog::oid_t make_one_column_table(Fx& fx, const std::string& ns, std::uint64_t nrows, int64_t& first_row_out) {
         using components::types::complex_logical_type;
@@ -334,7 +295,6 @@ namespace {
         return table_oid;
     }
 
-    // One BIGINT column named `a`, `nrows` rows valued 1..nrows, as a one-chunk batch.
     inline std::pmr::vector<components::vector::data_chunk_t> one_column_batch(std::pmr::memory_resource* r,
                                                                                std::uint64_t nrows) {
         using components::types::complex_logical_type;
@@ -362,9 +322,6 @@ namespace {
     }
 } // namespace
 
-// 18. storage_fetch: an empty chunk vector is what a point-fetch of rows this snapshot may
-//     not see legitimately returns. It must NOT also be what "no agent has a storage for
-//     this oid" returns.
 TEST_CASE("services::disk::error::fetch_refusal_is_not_an_empty_result") {
     fixture fx;
     int64_t first_row = 0;
@@ -423,9 +380,7 @@ TEST_CASE("services::disk::error::fetch_refusal_is_not_an_empty_result") {
     }
 }
 
-// 19. storage_append: (start_row=0, count=0) is what appending an EMPTY batch legitimately
-//     answers. It must not also be what "no agent owns this oid" answers — that reading is
-//     what let an INSERT report success over rows that reached no storage.
+// Conflating (0,0)'s empty-batch meaning with "no agent owns this oid" let an INSERT report success over lost rows.
 TEST_CASE("services::disk::error::append_refusal_is_not_a_zero_range") {
     fixture fx;
     int64_t first_row = 0;
@@ -466,8 +421,6 @@ TEST_CASE("services::disk::error::append_refusal_is_not_a_zero_range") {
     }
 }
 
-// 20. storage_update: the twin of 19 on the mutation side. (0,0) is the honest answer to an
-//     empty request and must stay one; a routing miss is an UPDATE that did not happen.
 TEST_CASE("services::disk::error::update_refusal_is_not_a_zero_range") {
     fixture fx;
     int64_t first_row = 0;
@@ -500,13 +453,7 @@ TEST_CASE("services::disk::error::update_refusal_is_not_a_zero_range") {
     }
 }
 
-// 21. storage_fetch_next_batch: a cardinality-0 batch is the DRAINED SENTINEL — the honest
-//     end of a real scan, and the honest whole answer for an empty table. An OPEN (cursor
-//     id 0) against an oid no agent has a storage for replied with that same sentinel, so
-//     every scan source read "this table is empty" from a scan that never started.
-//
-//     ADVANCING an unknown cursor stays drained on purpose: the drain path erases the
-//     entry itself, so "I do not know this cursor" IS "that cursor is finished".
+// Advancing an unknown cursor stays drained on purpose: the drain path erases it, so "unknown" equals "finished".
 TEST_CASE("services::disk::error::scan_open_refusal_is_not_a_drained_cursor") {
     fixture fx;
     int64_t first_row = 0;
@@ -542,10 +489,7 @@ TEST_CASE("services::disk::error::scan_open_refusal_is_not_a_drained_cursor") {
     }
 }
 
-// 22. storage_types: an oid nothing owns answers with an EMPTY type list — the same list a
-//     storage whose schema has not been adopted yet answers with. resolve_table maps every
-//     live column onto that list by name; an empty one leaves every column's chunk_position
-//     at -1, i.e. a schema that describes nothing, derived from a read that never happened.
+// An empty type list leaves every column's chunk_position at -1 when resolve_table maps by name.
 TEST_CASE("services::disk::error::storage_types_refusal_is_not_an_empty_schema") {
     fixture fx;
     int64_t first_row = 0;
@@ -566,9 +510,6 @@ TEST_CASE("services::disk::error::storage_types_refusal_is_not_an_empty_schema")
     }
 }
 
-// 23. storage_total_rows: 0 is the honest row count of an empty table and must stay one.
-//     It is also what an oid nothing owns answers, so a count read that never reached a
-//     storage is indistinguishable from a table that really holds nothing.
 TEST_CASE("services::disk::error::total_rows_refusal_is_not_a_zero_count") {
     fixture fx;
     int64_t first_row = 0;
@@ -589,29 +530,17 @@ TEST_CASE("services::disk::error::total_rows_refusal_is_not_a_zero_count") {
     }
 }
 
-// 24. storage_fetch's `limit` — the contract half of the index-scan read cap, pinned here
-//     where the visibility can be arranged exactly (the end-to-end half is
-//     integration/cpp/test/test_index_scan_limit_cap.cpp).
-//
-//     The cap counts rows the fetch produced, never ids it was handed: under SNAPSHOT the
-//     fetch drops every row the asking transaction may not see, so a budget deducted from the
-//     id count would spend itself on rows the reader never receives -- which is why the cap
-//     can't live above this call, only here where visible rows are known. And it's a
-//     truncation, not a selection: the capped reply is the uncapped reply's prefix, same rows
-//     in the same order.
+// Contract half of the index-scan read cap (end-to-end half: test_index_scan_limit_cap.cpp).
+// Counts visible rows, not requested ids, and the capped reply is always the uncapped reply's prefix in order.
 TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_ids") {
     fixture fx;
-    // The hidden head is LONGER THAN ONE FETCH WINDOW (DEFAULT_VECTOR_CAPACITY == 1024) on
-    // purpose: the first window then produces ZERO rows, so a budget deducted per window —
-    // or per id — is spent before a single row has been handed back, and the cap has to
-    // survive into the second window to answer at all.
+    // Hidden head exceeds one fetch window (DEFAULT_VECTOR_CAPACITY == 1024) so the cap must survive into window two.
     constexpr std::uint64_t kRows = 1500;
     constexpr std::uint64_t kHidden = 1100;
     int64_t first_row = 0;
     const auto table_oid = make_one_column_table(fx, "nslimit", kRows, first_row);
 
-    // Hide the head from txn 88 by deleting it UNDER txn 88: a transaction does not see its
-    // own uncommitted delete, and every other reader still does.
+    // Deleted under txn 88 itself, which then can't see its own uncommitted delete, unlike every other reader.
     {
         auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
                            txn_ctx(),
@@ -663,21 +592,9 @@ TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_
     REQUIRE(fetch(0).empty());
 }
 
-// 25. The router's own refusal, one floor above the agent's. Every case above reaches the leg
-//     through a real agent that turns out to own no storage for the oid; this one removes the
-//     agent -- a manager configured with no disk agents has nowhere to send anything, and each
-//     leg must not answer that with its own natural empty value (an empty type list, 0 rows, an
-//     empty chunk vector, a zero-length append range, a drained cursor, an empty fold).
-//
-//     This topology isn't reached by a statement today, and the case doesn't pretend
-//     otherwise: an agentless manager owns no storage at all, so no DML can find a row to
-//     write and no scan a row to read, the same verdict storage_delete_rows' own routing legs
-//     carry. What it pins is that the refusal exists and is reachable through the public
-//     contract, so the day a topology can lose an agent slot the answer is an error, not an
-//     empty table.
+// One floor above the per-agent refusal: with zero disk agents, every leg must still error, not answer empty.
 TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_answering_empty") {
-    // No bootstrap: with zero agents there are no system tables to seed, and seeding is not
-    // what is under test.
+    // No bootstrap: zero agents means no system tables to seed, and seeding isn't under test.
     core::pmr::otterbrix_resource resource;
     auto log = initialization_logger("python", "/tmp/docker_logs/");
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
@@ -742,11 +659,7 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
     std::filesystem::remove_all(cfg.path);
 }
 
-// 26. NOT NULL enforcement (stage 2b of storage_append_inner) is a refusal, not a
-//     zero-length append: (0,0) is the exact value an empty batch legitimately produces, so
-//     the manager's per-chunk loop would read it as "continue" and report success with the
-//     rows silently dropped. The refusal sits above the WAL write and the materialization, so
-//     nothing lands anywhere -- same family as cases 17-23.
+// NOT NULL enforcement (storage_append_inner stage 2b) must refuse, not reuse append's (0,0) empty-batch reply.
 TEST_CASE("services::disk::error::a_not_null_violation_is_a_refusal_not_an_empty_append") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
@@ -782,7 +695,7 @@ TEST_CASE("services::disk::error::a_not_null_violation_is_a_refusal_not_an_empty
             chunk.set_value(1, i, static_cast<std::int64_t>(i + 10));
         }
         if (null_in_b) {
-            chunk.data[1].validity().set_invalid(1); // row 1 of column b
+            chunk.data[1].validity().set_invalid(1);
         }
         std::pmr::vector<data_chunk_t> batch(&fx.resource);
         batch.emplace_back(std::move(chunk));
@@ -815,12 +728,8 @@ TEST_CASE("services::disk::error::a_not_null_violation_is_a_refusal_not_an_empty
     }
 }
 
-// 27. A publish/revert leg that finds no storage on the owning agent is a flip that didn't
-//     happen, and says so. The manager partitions every range/oid to its owner with
-//     pool_idx_for_oid before forwarding, so a miss never means "somebody else's oid," and the
-//     four inner handlers must not skip it silently as "idempotent for a not-owned OID." They
-//     stay unique_future<void> (callers can only log), so the channel is an error line per
-//     miss plus this DEV tally.
+// pool_idx_for_oid routes every range/oid to its owner, so a miss here is real, not a not-owned OID.
+// These handlers return unique_future<void> (callers can only log), so this DEV tally is the only observable signal.
 TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says_so") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns_miss");
